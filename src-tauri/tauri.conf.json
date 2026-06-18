@@ -47,9 +47,9 @@
     },
     "updater": {
       "endpoints": [
-        "https://YOUR_UPDATE_SERVER_URL_HERE/update.json"
+        "https://github.com/m1d0e1/pharma/releases/latest/download/latest.json"
       ],
-      "pubkey": "YOUR_UPDATER_PUBLIC_KEY_HERE"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU5MTlBMjY3NUIxMTkwNkQKUldSdGtCRmJaNklaNllyck5WcGV3T3RDOERubVJUTFJvZTkybENOU2k2TFZUU0tNYnY5Sit6emwK"
     }
   }
 }
