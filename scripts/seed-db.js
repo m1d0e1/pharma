@@ -56,6 +56,10 @@ function parseCsvLine(line) {
 
 /** Parse CSV file into array of row arrays (skips header) */
 function parseCsv(filePath) {
+  if (!fs.existsSync(filePath)) {
+    console.warn(`  ⚠ Warning: ${path.basename(filePath)} not found. Skipping CSV parse.`);
+    return { header: [], rows: [] };
+  }
   console.log(`  Reading ${path.basename(filePath)}...`);
   const content = fs.readFileSync(filePath, 'utf8');
   // Remove BOM if present
