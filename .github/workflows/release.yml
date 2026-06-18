@@ -29,9 +29,6 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Build frontend for Tauri
-        run: npm run seed:db && npm run build:tauri
-
       - name: Build and publish Tauri release
         uses: tauri-apps/tauri-action@v0
         env:
@@ -44,5 +41,3 @@ jobs:
           releaseBody: "New update available! Download the .msi installer below."
           releaseDraft: false
           prerelease: false
-          # Skip beforeBuildCommand because we already ran it manually above for better logs
-          args: "--no-workspace"
