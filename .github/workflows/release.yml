@@ -15,20 +15,24 @@ jobs:
     runs-on: ${{ matrix.platform }}
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: setup node
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: lts/*
+          node-version: 20
 
-      - name: install Rust stable
+      - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
-      - name: install frontend dependencies
+      - name: Install dependencies
         run: npm install
 
-      - name: build and publish tauri
+      - name: Build frontend for Tauri
+        run: npm run seed:db && npm run build:tauri
+
+      - name: Build and publish Tauri release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -37,6 +41,8 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: "Pharma App v__VERSION__"
-          releaseBody: "New update available!"
+          releaseBody: "New update available! Download the .msi installer below."
           releaseDraft: false
           prerelease: false
+          # Skip beforeBuildCommand because we already ran it manually above for better logs
+          args: "--no-workspace"
