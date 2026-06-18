@@ -110,10 +110,47 @@ export default function DashboardLayout({
         const action = event.payload;
         if (action === 'print') window.print();
         if (action === 'about') {
-          toast('Pharma Tech - الإصدار 1.0.0\nنظام إدارة الصيدليات المتكامل', { icon: 'ℹ️', duration: 5000 });
+          toast(
+            <div dir="rtl">
+              <h3 className="font-bold text-lg mb-1">نظام فارما تيك المتكامل</h3>
+              <p className="text-sm text-slate-600 dark:text-slate-300">الإصدار 0.1.6</p>
+              <p className="text-xs text-slate-500 mt-2">نظام إدارة صيدليات ذكي، مبني بأحدث التقنيات لضمان السرعة والأمان والموثوقية.</p>
+            </div>, 
+            { icon: 'ℹ️', duration: 8000 }
+          );
         }
         if (action === 'shortcuts') {
-          toast('اختصارات النظام:\nCtrl+P: فاتورة مبيعات\nCtrl+I: المخزون', { icon: '⌨️', duration: 5000 });
+          toast(
+            <div dir="rtl" className="text-sm">
+              <h3 className="font-bold mb-2">اختصارات لوحة المفاتيح:</h3>
+              <ul className="space-y-1 text-slate-600 dark:text-slate-300">
+                <li><kbd className="bg-slate-100 dark:bg-slate-800 px-1 rounded">Ctrl+P</kbd> شاشة الكاشير (POS)</li>
+                <li><kbd className="bg-slate-100 dark:bg-slate-800 px-1 rounded">Ctrl+I</kbd> المخزون</li>
+                <li><kbd className="bg-slate-100 dark:bg-slate-800 px-1 rounded">Ctrl+N</kbd> فتح نافذة جديدة</li>
+                <li><kbd className="bg-slate-100 dark:bg-slate-800 px-1 rounded">F1</kbd> البحث السريع</li>
+              </ul>
+            </div>, 
+            { icon: '⌨️', duration: 10000 }
+          );
+        }
+        if (action === 'update') {
+          toast('جاري البحث عن تحديثات...', { icon: '🔄' });
+          try {
+            const { check } = await import('@tauri-apps/plugin-updater');
+            const { relaunch } = await import('@tauri-apps/plugin-process');
+            const update = await check();
+            if (update) {
+              toast('تم العثور على تحديث! جاري التحميل...', { icon: '⬇️', duration: 4000 });
+              await update.downloadAndInstall();
+              toast.success('تم التحميل بنجاح. سيتم إعادة تشغيل البرنامج.');
+              await relaunch();
+            } else {
+              toast.success('أنت تستخدم أحدث نسخة.', { duration: 4000 });
+            }
+          } catch (err) {
+            console.error('Update failed:', err);
+            toast.error('فشل البحث عن تحديثات. تأكد من اتصالك بالإنترنت.', { duration: 6000 });
+          }
         }
         if (action === 'logout') {
           const { logoutLocal } = await import('@/lib/auth/local');

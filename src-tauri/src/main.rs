@@ -121,6 +121,8 @@ fn main() {
 
             // 10. مساعدة (Help)
             let help_menu = Submenu::with_items(app, "مساعدة", true, &[
+                &MenuItem::with_id(app, "update_program", "تحديث البرنامج", true, None::<&str>)?,
+                &PredefinedMenuItem::separator(app)?,
                 &MenuItem::with_id(app, "help_shortcuts", "اختصارات لوحة المفاتيح", true, None::<&str>)?,
                 &MenuItem::with_id(app, "help_about", "عن النظام", true, None::<&str>)?,
             ])?;
@@ -191,6 +193,10 @@ fn main() {
                 }
                 "logout" => {
                     let _ = app.emit("menu-action", "logout");
+                    return;
+                }
+                "update_program" => {
+                    let _ = app.emit("menu-action", "update");
                     return;
                 }
                 "help_shortcuts" => {
