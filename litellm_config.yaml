@@ -1,0 +1,22 @@
+model_list:
+  - model_name: claude-sonnet-4-6
+    litellm_params:
+      model: custom_openai/glm-5.1
+      api_base: "https://agentrouter.org/v1"
+      api_key: "sk-yRoxtEStL9gvkwm2DGtz5cHuTWCF38BtHCQRSKsc2JSdqzJE"
+      drop_params: true
+  - model_name: claude-haiku-4-5-20251001
+    litellm_params:
+      model: custom_openai/glm-5.1
+      api_base: "https://agentrouter.org/v1"
+      api_key: "sk-yRoxtEStL9gvkwm2DGtz5cHuTWCF38BtHCQRSKsc2JSdqzJE"
+      drop_params: true
+  - model_name: claude-3-7-sonnet-20250219
+    litellm_params:
+      model: custom_openai/glm-5.1
+      api_base: "https://agentrouter.org/v1"
+      api_key: "sk-yRoxtEStL9gvkwm2DGtz5cHuTWCF38BtHCQRSKsc2JSdqzJE"
+      drop_params: true
+
+litellm_settings:
+  drop_params: true

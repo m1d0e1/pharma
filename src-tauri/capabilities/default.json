@@ -1,0 +1,19 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/schema-capabilities.json",
+  "identifier": "default",
+  "description": "Default capabilities for the pharmacy application",
+  "windows": [
+    "*"
+  ],
+  "permissions": [
+    "core:default",
+    "shell:allow-open",
+    "sql:default",
+    "sql:allow-execute",
+    "sql:allow-select",
+    "sql:allow-load",
+    "sql:allow-close",
+    "core:window:allow-create",
+    "core:webview:allow-create-webview-window"
+  ]
+}

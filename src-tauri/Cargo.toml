@@ -1,0 +1,23 @@
+[package]
+name = "pharma"
+version = "0.1.0"
+description = "Pharmacy Local Enforcer"
+authors = ["Pharma Management Team"]
+edition = "2021"
+
+
+# build-dependencies
+[build-dependencies]
+tauri-build = { version = "2.0.3", features = [] }
+
+[dependencies]
+tauri = { version = "2.0.6", features = [] }
+tauri-plugin-shell = "2.0.0"
+tauri-plugin-sql = { version = "2.0.2", features = ["sqlite"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+bcrypt = "0.15"
+uuid = { version = "1.8", features = ["v4", "serde"] }
+tokio = { version = "1.35", features = ["full"] }
+tauri-plugin-updater = "2.10.1"
+tauri-plugin-process = "2.3.1"

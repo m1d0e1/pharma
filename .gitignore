@@ -1,0 +1,60 @@
+node_modules
+# Added by code-review-graph
+.code-review-graph/
+# =========================================
+# 1. SECRETS & CREDENTIALS
+# =========================================
+*.key
+*.pem
+*.p12
+*.keystore
+.env
+.env.*.local
+.env.local
+# Catch the literal tilde folder created by PowerShell
+~/* # =========================================
+# 2. RUST & TAURI BACKEND
+# =========================================
+/src-tauri/target/
+**/*.rs.bk
+
+# =========================================
+# 3. NODE.JS, NEXT.JS & FRONTEND
+# =========================================
+node_modules/
+.next/
+out/
+.swc/
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# =========================================
+# 4. DATABASES & RAW DATA (CRITICAL)
+# =========================================
+*.db
+*.sqlite
+*.sqlite3
+*.csv
+*.xlsx
+.data/
+
+# =========================================
+# 5. LOCAL SCRATCHPADS & AI AGENT CACHES
+# =========================================
+scratch/
+.agents/
+.claude/
+.roo/
+.code-review-graph/
+.mcp.json
+
+# =========================================
+# 6. OS & EDITOR ARTIFACTS
+# =========================================
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
