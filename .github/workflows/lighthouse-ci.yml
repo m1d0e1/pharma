@@ -41,12 +41,11 @@ jobs:
           uploadArtifacts: true
           temporaryPublicStorage: true
           runs: 3
-          serverBaseUrl: 'http://localhost:3000'
-          pages: |
-            http://localhost:3000/dashboard
-            http://localhost:3000/dashboard/pos
-            http://localhost:3000/dashboard/inventory
-            http://localhost:3000/dashboard/patients
+          urls: |
+            http://localhost:3000/
+            http://localhost:3000/pos
+            http://localhost:3000/inventory
+            http://localhost:3000/patients
 
       - name: Upload Lighthouse report
         uses: actions/upload-artifact@v4
