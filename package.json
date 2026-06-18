@@ -1,6 +1,6 @@
 {
   "name": "phrama-system",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -15,7 +15,8 @@
     "seed:db": "node scripts/seed-db.js --dest src-tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "build:tauri": "node scripts/build-tauri.js"
+    "build:tauri": "node scripts/build-tauri.js",
+    "tauri": "tauri"
   },
   "dependencies": {
     "@sentry/nextjs": "^10.50.0",
