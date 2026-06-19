@@ -98,6 +98,7 @@ fn main() {
             let reports_menu = Submenu::with_items(app, "التقارير", true, &[
                 &MenuItem::with_id(app, "reports", "التقارير", true, None::<&str>)?,
                 &MenuItem::with_id(app, "reports_sales2", "تقارير المبيعات", true, None::<&str>)?,
+                &MenuItem::with_id(app, "reports_purchases", "تقارير المشتريات", true, None::<&str>)?,
                 &MenuItem::with_id(app, "reports_trial_balance", "ميزان المراجعة", true, None::<&str>)?,
                 &MenuItem::with_id(app, "expenses", "المصروفات", true, None::<&str>)?,
                 &MenuItem::with_id(app, "shifts", "الشفتات النقدية", true, None::<&str>)?,
@@ -166,6 +167,7 @@ fn main() {
                 .add_migrations("sqlite:pharma_local.db", migrations)
                 .build()
         )
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
@@ -254,6 +256,7 @@ fn main() {
                 "accounts_settings_trial_balance" => "/accounts/settings/trial-balance",
                 "reports" => "/reports",
                 "reports_trial_balance" => "/reports/trial-balance",
+                "reports_purchases" => "/reports/purchases",
                 "expenses" => "/expenses",
                 "shifts" => "/shifts",
                 "shifts_report" => "/shifts/report",

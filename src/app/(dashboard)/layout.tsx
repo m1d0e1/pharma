@@ -110,14 +110,17 @@ export default function DashboardLayout({
         const action = event.payload;
         if (action === 'print') window.print();
         if (action === 'about') {
-          toast(
-            <div dir="rtl">
-              <h3 className="font-bold text-lg mb-1">نظام فارما تيك المتكامل</h3>
-              <p className="text-sm text-slate-600 dark:text-slate-300">الإصدار 0.1.6</p>
-              <p className="text-xs text-slate-500 mt-2">نظام إدارة صيدليات ذكي، مبني بأحدث التقنيات لضمان السرعة والأمان والموثوقية.</p>
-            </div>, 
-            { icon: 'ℹ️', duration: 8000 }
-          );
+          try {
+            const { getVersion } = await import('@tauri-apps/api/app');
+            const { message } = await import('@tauri-apps/plugin-dialog');
+            const version = await getVersion();
+            await message(
+              `الإصدار: ${version}\nنظام إدارة صيدليات ذكي، مبني بأحدث التقنيات لضمان السرعة والأمان والموثوقية.`,
+              { title: 'نظام فارما تيك المتكامل', kind: 'info' }
+            );
+          } catch (e) {
+            console.error('Failed to show about dialog', e);
+          }
         }
         if (action === 'shortcuts') {
           toast(
@@ -138,18 +141,29 @@ export default function DashboardLayout({
           try {
             const { check } = await import('@tauri-apps/plugin-updater');
             const { relaunch } = await import('@tauri-apps/plugin-process');
+            const { message, ask } = await import('@tauri-apps/plugin-dialog');
+            
             const update = await check();
             if (update) {
-              toast('تم العثور على تحديث! جاري التحميل...', { icon: '⬇️', duration: 4000 });
-              await update.downloadAndInstall();
-              toast.success('تم التحميل بنجاح. سيتم إعادة تشغيل البرنامج.');
-              await relaunch();
+              const yes = await ask(`تم العثور على الإصدار الجديد ${update.version}.\nهل تريد التحديث الآن؟`, {
+                title: 'تحديث البرنامج',
+                kind: 'info',
+                okLabel: 'نعم، حدث الآن',
+                cancelLabel: 'لاحقاً'
+              });
+              if (yes) {
+                toast('جاري التحميل والتثبيت...', { icon: '⬇️', duration: 10000 });
+                await update.downloadAndInstall();
+                await message('تم التحديث بنجاح! سيتم إعادة تشغيل البرنامج الآن.', { title: 'نجاح التحديث', kind: 'info' });
+                await relaunch();
+              }
             } else {
-              toast.success('أنت تستخدم أحدث نسخة.', { duration: 4000 });
+              await message('أنت تستخدم أحدث إصدار من البرنامج. لا توجد تحديثات جديدة.', { title: 'لا يوجد تحديث', kind: 'info' });
             }
           } catch (err) {
             console.error('Update failed:', err);
-            toast.error('فشل البحث عن تحديثات. تأكد من اتصالك بالإنترنت.', { duration: 6000 });
+            const { message } = await import('@tauri-apps/plugin-dialog');
+            await message('حدث خطأ أثناء البحث عن تحديثات. يرجى التأكد من اتصالك بالإنترنت والمحاولة لاحقاً.', { title: 'خطأ', kind: 'error' });
           }
         }
         if (action === 'logout') {
