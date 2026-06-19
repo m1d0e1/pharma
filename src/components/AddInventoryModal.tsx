@@ -36,6 +36,7 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
   
   const [selectedDrug, setSelectedDrug] = useState<MasterDrug | null>(null)
   const [quantity, setQuantity] = useState('')
+  const [stripsQuantity, setStripsQuantity] = useState('')
   const [expiryDate, setExpiryDate] = useState('')
   const [localPrice, setLocalPrice] = useState('')
   const [barcode, setBarcode] = useState('')
@@ -85,11 +86,18 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
     if (!selectedDrug) return
 
     // Client-side validation
-    const qty = parseInt(quantity)
+    let qty = parseInt(quantity) || 0
+    const strips = parseInt(stripsQuantity) || 0
+    const conversion = largeToMedium ? parseInt(largeToMedium) : 1
+    
+    if (strips > 0) {
+      qty += strips / (conversion || 1)
+    }
+
     const price = parseFloat(localPrice)
     
-    if (isNaN(qty) || qty <= 0) {
-      toast.error('الكمية يجب أن تكون رقماً صحيحاً موجباً')
+    if (qty <= 0) {
+      toast.error('يجب إدخال كمية صحيحة (علب أو شرائط)')
       return
     }
     if (isNaN(price) || price < 0) {
@@ -252,17 +260,27 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
                </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-3 gap-4">
               <div className="space-y-1.5">
                 <label className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">الكمية ({selectedDrug.large_unit || 'علبة'})</label>
                 <input
                   type="number"
-                  required
-                  min="1"
+                  min="0"
                   value={quantity}
                   onChange={(e) => setQuantity(e.target.value)}
                   className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all font-bold"
                   placeholder="مثلاً: 20"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">الكمية (شريط)</label>
+                <input
+                  type="number"
+                  min="0"
+                  value={stripsQuantity}
+                  onChange={(e) => setStripsQuantity(e.target.value)}
+                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all font-bold"
+                  placeholder="اختياري"
                 />
               </div>
               <div className="space-y-1.5">
