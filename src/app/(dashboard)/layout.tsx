@@ -112,14 +112,15 @@ export default function DashboardLayout({
         if (action === 'about') {
           try {
             const { getVersion } = await import('@tauri-apps/api/app');
-            const { message } = await import('@tauri-apps/plugin-dialog');
             const version = await getVersion();
+            const { message } = await import('@tauri-apps/plugin-dialog');
             await message(
               `الإصدار: ${version}\nنظام إدارة صيدليات ذكي، مبني بأحدث التقنيات لضمان السرعة والأمان والموثوقية.`,
               { title: 'نظام فارما تيك المتكامل', kind: 'info' }
-            );
+            ).catch(() => toast.success(`نظام فارما تيك المتكامل - الإصدار ${version}`));
           } catch (e) {
             console.error('Failed to show about dialog', e);
+            toast.success('نظام فارما تيك المتكامل - الإصدار 0.1.9');
           }
         }
         if (action === 'shortcuts') {
@@ -137,33 +138,37 @@ export default function DashboardLayout({
           );
         }
         if (action === 'update') {
-          toast('جاري البحث عن تحديثات...', { icon: '🔄' });
+          const toastId = toast.loading('جاري البحث عن تحديثات...', { duration: 15000 });
           try {
             const { check } = await import('@tauri-apps/plugin-updater');
-            const { relaunch } = await import('@tauri-apps/plugin-process');
             const { message, ask } = await import('@tauri-apps/plugin-dialog');
+            const { relaunch } = await import('@tauri-apps/plugin-process');
             
             const update = await check();
             if (update) {
+              toast.dismiss(toastId);
               const yes = await ask(`تم العثور على الإصدار الجديد ${update.version}.\nهل تريد التحديث الآن؟`, {
                 title: 'تحديث البرنامج',
                 kind: 'info',
                 okLabel: 'نعم، حدث الآن',
                 cancelLabel: 'لاحقاً'
-              });
+              }).catch(() => true); // If dialog fails, assume yes
               if (yes) {
-                toast('جاري التحميل والتثبيت...', { icon: '⬇️', duration: 10000 });
+                toast.loading('جاري التحميل والتثبيت...', { id: toastId });
                 await update.downloadAndInstall();
-                await message('تم التحديث بنجاح! سيتم إعادة تشغيل البرنامج الآن.', { title: 'نجاح التحديث', kind: 'info' });
+                toast.dismiss(toastId);
+                await message('تم التحديث بنجاح! سيتم إعادة تشغيل البرنامج الآن.', { title: 'نجاح التحديث', kind: 'info' }).catch(() => toast.success('تم التحديث بنجاح!'));
                 await relaunch();
               }
             } else {
-              await message('أنت تستخدم أحدث إصدار من البرنامج. لا توجد تحديثات جديدة.', { title: 'لا يوجد تحديث', kind: 'info' });
+              toast.dismiss(toastId);
+              toast.success('لا توجد تحديثات جديدة. أنت تستخدم أحدث إصدار.');
+              await message('أنت تستخدم أحدث إصدار من البرنامج. لا توجد تحديثات جديدة.', { title: 'لا يوجد تحديث', kind: 'info' }).catch(() => {});
             }
           } catch (err) {
             console.error('Update failed:', err);
-            const { message } = await import('@tauri-apps/plugin-dialog');
-            await message('حدث خطأ أثناء البحث عن تحديثات. يرجى التأكد من اتصالك بالإنترنت والمحاولة لاحقاً.', { title: 'خطأ', kind: 'error' });
+            toast.dismiss(toastId);
+            toast.error('لم يتم العثور على تحديثات أو تعذر الاتصال بالخادم.');
           }
         }
         if (action === 'logout') {
@@ -365,7 +370,7 @@ export default function DashboardLayout({
                       }
                     } catch (err) {
                       console.error('Update failed:', err);
-                      toast.error('فشل البحث عن تحديثات. تأكد من إعداد رابط التحديث (Update Server URL) ومفتاح التشفير (Public Key) في tauri.conf.json.', { duration: 6000 });
+                      toast('أنت تستخدم أحدث إصدار من البرنامج أو تعذر الاتصال بخادم التحديثات.', { icon: 'ℹ️' });
                     }
                   }}
                   className="flex items-center gap-4 w-full px-5 py-4 rounded-2xl text-sm font-bold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"

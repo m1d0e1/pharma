@@ -18,6 +18,7 @@ export interface PurchaseItem {
   discount_percent: number | string;
   expiry_date: string;
   official_price: number;
+  strips_per_box?: number | string;
   barcode?: string;
 }
 

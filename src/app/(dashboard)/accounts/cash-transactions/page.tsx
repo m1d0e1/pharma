@@ -1,29 +1,17 @@
 import CashTransactionsClient from '@/components/finance/CashTransactionsClient';
-import { getClientSession } from '@/lib/auth/local';
-import { redirect } from 'next/navigation';
-import AccessDenied from '@/components/AccessDenied';
+import PermissionGuard from '@/components/PermissionGuard';
 
 export const metadata = {
   title: 'حركة النقدية | PharmaTech',
   description: 'إدارة عمليات صرف وتوريد النقدية',
 };
 
-export default async function CashTransactionsPage() {
-  const user = await getClientSession();
-  
-  if (!user) {
-    return <AccessDenied />;
-  }
-
-  const canManageFinance = user.role === 'owner' || user.role === 'admin' || user.role === 'pharmacist';
-  
-  if (!canManageFinance) {
-    return <AccessDenied />;
-  }
-
+export default function CashTransactionsPage() {
   return (
-    <div className="p-8">
-      <CashTransactionsClient />
-    </div>
+    <PermissionGuard permissionKey="acc_can_process_cash_flow">
+      <div className="p-8">
+        <CashTransactionsClient />
+      </div>
+    </PermissionGuard>
   );
 }

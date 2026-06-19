@@ -686,6 +686,7 @@ export default function PurchaseInvoiceClient() {
                     <th className="px-2 py-4 font-black text-slate-400 text-[10px] uppercase tracking-widest border-b border-slate-100 dark:border-slate-800">الكمية</th>
                     <th className="px-2 py-4 font-black text-slate-400 text-[10px] uppercase tracking-widest border-b border-slate-100 dark:border-slate-800">بونص</th>
                     <th className="px-2 py-4 font-black text-slate-400 text-[10px] uppercase tracking-widest border-b border-slate-100 dark:border-slate-800">تاريخ الصلاحية</th>
+                    <th className="px-2 py-4 font-black text-slate-400 text-[10px] uppercase tracking-widest border-b border-slate-100 dark:border-slate-800">شرائط/علبة</th>
                     <th className="px-2 py-4 font-black text-slate-400 text-[10px] uppercase tracking-widest border-b border-slate-100 dark:border-slate-800">ضريبة %</th>
                     <th className="px-2 py-4 font-black text-slate-400 text-[10px] uppercase tracking-widest border-b border-slate-100 dark:border-slate-800">خصم %</th>
                     <th className="px-2 py-4 font-black text-slate-400 text-[10px] uppercase tracking-widest border-b border-slate-100 dark:border-slate-800">سعر شراء الوحدة</th>
@@ -741,6 +742,17 @@ export default function PurchaseInvoiceClient() {
                           className="w-24 p-2.5 bg-slate-50 dark:bg-slate-800 border-none rounded-xl font-bold text-center outline-none focus:ring-2 focus:ring-primary-500/20 text-xs"
                           value={item.expiry_date}
                           onChange={(e) => updateCartItem(item.id, 'expiry_date', formatExpiryDate(e.target.value))}
+                        />
+                      </td>
+                      <td className="px-2 py-3">
+                        <input 
+                          type="text"
+                          className="w-12 p-2.5 bg-slate-50 dark:bg-slate-800 border-none rounded-xl font-bold text-center outline-none focus:ring-2 focus:ring-primary-500/20 text-xs"
+                          value={item.strips_per_box || 1}
+                          onChange={(e) => {
+                            const val = e.target.value.replace(/[^0-9]/g, '');
+                            updateCartItem(item.id, 'strips_per_box', val);
+                          }}
                         />
                       </td>
                       <td className="px-2 py-3">

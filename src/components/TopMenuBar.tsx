@@ -47,10 +47,9 @@ const MENUS: Menu[] = [
     ],
   },
   {
-    id: 'dashboard', label: 'لوحة التحكم',
-    ownerRoutes: ['/', '/receipts', '/sales', '/reports/sales', '/sales/delivery', '/sales/cogs', '/sales/settlement'],
+    id: 'sales', label: 'المبيعات',
+    ownerRoutes: ['/receipts', '/sales', '/reports/sales', '/sales/delivery', '/sales/cogs', '/sales/settlement'],
     items: [
-      { type: 'link', label: 'لوحة التحكم',       href: '/',                 icon: Home,           roles: ['owner','admin','pharmacist'] },
       { type: 'link', label: 'الفواتير',          href: '/receipts',         icon: Receipt,        roles: ['owner','admin','pharmacist'], permission: 'view_all_sales' },
       { type: 'link', label: 'المبيعات والتحصيل', href: '/sales',            icon: ShoppingCart,   roles: ['owner','admin','pharmacist'] },
       { type: 'separator' },
@@ -61,7 +60,7 @@ const MENUS: Menu[] = [
     ],
   },
   {
-    id: 'inventory', label: 'المخزون',
+    id: 'inventory', label: 'العمليات المخزنية',
     ownerRoutes: ['/inventory','/inventory/low-stock','/inventory/item-movements','/restock','/inventory/settlement','/inventory/opening-balances'],
     items: [
       { type: 'link', label: 'المخزون',             href: '/inventory',                  icon: Package,        roles: ['owner','admin','pharmacist'] },
@@ -88,9 +87,11 @@ const MENUS: Menu[] = [
     ],
   },
   {
-    id: 'stores', label: 'المخازن',
-    ownerRoutes: ['/stores','/stores/items','/stores/alternatives','/stores/categories','/stores/nature','/stores/usage','/stores/units','/stores/indications','/stores/drug-indications','/stores/manufacturers','/stores/scientific-groups','/stores/adjustments','/stores/adjustment-reasons','/stores/shortages','/stores/delete-items'],
+    id: 'stores', label: 'البيانات الأساسية',
+    ownerRoutes: ['/','/stores','/stores/items','/stores/alternatives','/stores/categories','/stores/nature','/stores/usage','/stores/units','/stores/indications','/stores/drug-indications','/stores/manufacturers','/stores/scientific-groups','/stores/adjustments','/stores/adjustment-reasons','/stores/shortages','/stores/delete-items'],
     items: [
+      { type: 'link', label: 'لوحة التحكم (الرئيسية)', href: '/',                 icon: Home,           roles: ['owner','admin','pharmacist'] },
+      { type: 'separator' },
       { type: 'link', label: 'المخازن',             href: '/stores',                     icon: Box,           roles: ['owner','admin'], permission: 'manage_inventory' },
       { type: 'link', label: 'الأصناف',             href: '/stores/items',               icon: Layers,        roles: ['owner','admin'] },
       { type: 'link', label: 'البدائل',             href: '/stores/alternatives',        icon: GitBranch,     roles: ['owner','admin'] },
@@ -108,7 +109,6 @@ const MENUS: Menu[] = [
       { type: 'link', label: 'أسباب التعديل',       href: '/stores/adjustment-reasons',  icon: FileText,      roles: ['owner','admin'] },
       { type: 'link', label: 'نقص المخزون',         href: '/stores/shortages',           icon: AlertTriangle, roles: ['owner','admin'] },
       { type: 'link', label: 'حذف الأصناف',         href: '/stores/delete-items',        icon: Trash2,        roles: ['owner','admin'] },
-      { type: 'link', label: 'الأرصدة الإفتتاحية', href: '/inventory/opening-balances',    icon: Database,      roles: ['owner','admin'] },
     ],
   },
   {
@@ -250,10 +250,18 @@ export default function TopMenuBar({ userRole, permissions }: Props) {
     if (!item.roles.includes(userRole)) return false
     if (item.permission) {
       if (userRole === 'owner' || userRole === 'admin') return true
-      if (Array.isArray(permissions)) {
-        return permissions.includes(item.permission)
+      
+      let perms = permissions;
+      let attempts = 0;
+      while (typeof perms === 'string' && attempts < 3) {
+        try { perms = JSON.parse(perms); } catch(e) { break; }
+        attempts++;
       }
-      return permissions ? !!permissions[item.permission] : false
+      
+      if (Array.isArray(perms)) {
+        return perms.includes(item.permission)
+      }
+      return perms ? (perms[item.permission] === true || perms[item.permission] === 'true' || perms[item.permission] == 1) : false
     }
     return true
   }, [userRole, permissions])

@@ -135,7 +135,7 @@ export function CustomerStatementContent({ patientId }: { patientId: string }) {
                 </tr>
                 {visibleMovements.map((mov: any, i: number) => (
                    <tr key={i} className="hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
-                      <td className="px-6 py-4 font-bold text-slate-500">{format(new Date(mov.date), 'yyyy/MM/dd HH:mm')}</td>
+                      <td className="px-6 py-4 font-bold text-slate-500">{mov.date ? format(new Date(mov.date), 'yyyy/MM/dd HH:mm') : '-'}</td>
                       <td className="px-6 py-4">
                          <div className="flex items-center gap-3">
                             <div className={cn(

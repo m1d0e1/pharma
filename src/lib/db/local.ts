@@ -309,6 +309,21 @@ export function initLocalDb() {
       if (!e.message.includes('duplicate column name')) throw e;
     }
   }
+  // Migration: Add strips_per_box to inventory if missing
+  if (!colInfo.some(c => c.name === 'strips_per_box')) {
+    try { db.exec('ALTER TABLE inventory ADD COLUMN strips_per_box INTEGER DEFAULT 1'); } catch (e: any) {
+      if (!e.message.includes('duplicate column name')) throw e;
+    }
+  }
+
+  // Migration: Add strips_per_box to purchase_invoice_items if missing
+  const piiColInfo = db.prepare("PRAGMA table_info(purchase_invoice_items)").all() as any[];
+  if (!piiColInfo.some(c => c.name === 'strips_per_box')) {
+    try { db.exec('ALTER TABLE purchase_invoice_items ADD COLUMN strips_per_box INTEGER DEFAULT 1'); } catch (e: any) {
+      if (!e.message.includes('duplicate column name')) throw e;
+    }
+  }
+
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS sales_invoices (
@@ -979,6 +994,29 @@ export function initLocalDb() {
     `);
   } catch (e) {
     console.warn('Failed to sync from master_drugs:', e);
+  }
+
+  // Seed units if empty
+  const unitsCount = db.prepare('SELECT COUNT(*) as count FROM units').get() as { count: number };
+  if (unitsCount.count === 0) {
+    const units = [
+      { ar: 'علبة', en: 'Box' },
+      { ar: 'شريط', en: 'Strip' },
+      { ar: 'قرص', en: 'Pill' },
+      { ar: 'كبسولة', en: 'Capsule' },
+      { ar: 'أمبول', en: 'Ampoule' },
+      { ar: 'فيال', en: 'Vial' },
+      { ar: 'زجاجة', en: 'Bottle' },
+      { ar: 'أنبوبة', en: 'Tube' },
+      { ar: 'كيس', en: 'Sachet' },
+      { ar: 'قطرة', en: 'Drops' },
+      { ar: 'حقنة', en: 'Syringe' }
+    ];
+    const insertUnit = db.prepare('INSERT INTO units (name_ar, name_en) VALUES (?, ?)');
+    const seedUnits = db.transaction((list: typeof units) => {
+      for (const u of list) insertUnit.run(u.ar, u.en);
+    });
+    seedUnits(units);
   }
 
   return db;

@@ -50,7 +50,11 @@ export default function SettlementClient({ initialItems }: { initialItems: Unset
 
   // Keep state synced if parent changes the items (e.g. initial load resolves)
   useEffect(() => {
-    setItems(initialItems)
+    if (initialItems.length > 0) {
+      setItems(initialItems)
+    } else {
+      loadLatest(false)
+    }
   }, [initialItems])
 
   const loadLatest = async (showToast = false) => {

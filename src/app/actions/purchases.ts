@@ -160,12 +160,13 @@ export async function addPurchaseInvoiceItemAction(invoiceId: string, item: {
   selling_price?: number,
   bonus_quantity?: number,
   tax_percent?: number,
-  discount_percent?: number
+  discount_percent?: number,
+  strips_per_box?: number
 }) {
   try {
     const stmt = db.prepare(`
-      INSERT INTO purchase_invoice_items (invoice_id, drug_id, quantity, unit_id, expiry_date, cost_price, selling_price, bonus_quantity, tax_percent, discount_percent)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO purchase_invoice_items (invoice_id, drug_id, quantity, unit_id, expiry_date, cost_price, selling_price, bonus_quantity, tax_percent, discount_percent, strips_per_box)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     
     await stmt.run(
@@ -178,7 +179,8 @@ export async function addPurchaseInvoiceItemAction(invoiceId: string, item: {
       item.selling_price || null,
       item.bonus_quantity || 0,
       item.tax_percent || 0,
-      item.discount_percent || 0
+      item.discount_percent || 0,
+      item.strips_per_box || 1
     );
 
     return { success: true };
@@ -209,11 +211,11 @@ export async function completePurchaseInvoiceAction(invoiceId: string) {
         
         totalAmount += itemTotal;
 
-        // 2. Add to inventory with batch number
+        // 2. Add to inventory with batch number and strips_per_box
         const invId = generateId();
         await db.prepare(`
-          INSERT INTO inventory (id, drug_id, pharmacy_id, quantity, local_selling_price, cost_price, expiry_date, batch_number)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO inventory (id, drug_id, pharmacy_id, quantity, local_selling_price, cost_price, expiry_date, batch_number, strips_per_box)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           invId, 
           item.drug_id, 
@@ -222,7 +224,8 @@ export async function completePurchaseInvoiceAction(invoiceId: string) {
           item.selling_price || 0, 
           item.cost_price, 
           item.expiry_date,
-          invoice.invoice_number || 'BATCH-' + invoiceId.substring(0, 8)
+          invoice.invoice_number || 'BATCH-' + invoiceId.substring(0, 8),
+          item.strips_per_box || 1
         );
 
         itemsAdded.push({ drug_id: Number(item.drug_id), invId });

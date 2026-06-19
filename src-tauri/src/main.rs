@@ -37,6 +37,8 @@ fn main() {
 
             // 2. البيانات الأساسية (Master Data)
             let master_data_menu = Submenu::with_items(app, "البيانات الأساسية", true, &[
+                &MenuItem::with_id(app, "dashboard", "لوحة التحكم (الرئيسية)", true, Some("CmdOrCtrl+D"))?,
+                &PredefinedMenuItem::separator(app)?,
                 &MenuItem::with_id(app, "stores_items", "الأصناف", true, None::<&str>)?,
                 &MenuItem::with_id(app, "stores_alternatives", "البدائل", true, None::<&str>)?,
                 &MenuItem::with_id(app, "stores_categories", "التصنيفات", true, None::<&str>)?,
@@ -64,7 +66,6 @@ fn main() {
 
             // 4. المبيعات (Sales)
             let sales_menu = Submenu::with_items(app, "المبيعات", true, &[
-                &MenuItem::with_id(app, "dashboard", "لوحة التحكم (الرئيسية)", true, None::<&str>)?,
                 &MenuItem::with_id(app, "receipts", "الفواتير", true, None::<&str>)?,
                 &MenuItem::with_id(app, "sales", "المبيعات والتحصيل", true, None::<&str>)?,
                 &MenuItem::with_id(app, "sales_delivery", "توصيل منزلي", true, None::<&str>)?,

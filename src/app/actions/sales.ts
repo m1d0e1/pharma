@@ -95,7 +95,8 @@ export async function searchDrugsAction(searchTerm: string, limit = 20) {
              COALESCE(SUM(quantity), 0) as total_stock,
              MIN(local_selling_price) as min_price,
              AVG(cost_price) as avg_cost_price,
-             MIN(expiry_date) as nearest_expiry
+             MIN(expiry_date) as nearest_expiry,
+             MAX(strips_per_box) as max_strips
       FROM inventory
       WHERE drug_id IN (${placeholders})
       GROUP BY drug_id
@@ -119,7 +120,7 @@ export async function searchDrugsAction(searchTerm: string, limit = 20) {
         large_unit: drug.large_unit,
         medium_unit: drug.medium_unit,
         small_unit: drug.small_unit,
-        large_to_medium: drug.large_to_medium || 1,
+        large_to_medium: inv.max_strips > 1 ? inv.max_strips : (drug.large_to_medium || 1),
         medium_to_small: drug.medium_to_small || 1,
         reorder_point: drug.reorder_point || 0,
         profit_margin: (inv.min_price && inv.avg_cost_price > 0)
@@ -128,9 +129,9 @@ export async function searchDrugsAction(searchTerm: string, limit = 20) {
         needs_reorder: drug.reorder_point ? (inv.total_stock || 0) <= drug.reorder_point : false,
         units: {
           large: drug.large_unit || 'علبة',
-          medium: drug.medium_unit,
+          medium: drug.medium_unit || 'شريط',
           small: drug.small_unit,
-          large_to_medium: drug.large_to_medium || 1,
+          large_to_medium: inv.max_strips > 1 ? inv.max_strips : (drug.large_to_medium || 1),
           medium_to_small: drug.medium_to_small || 1
         }
       };
@@ -340,9 +341,10 @@ export async function processCheckoutAction(data: any) {
     `);
 
     const getDrugInfoStmt = db.prepare(`
-      SELECT trade_name, large_to_medium, medium_to_small, has_expiry
-      FROM master_drugs
-      WHERE id = ?
+      SELECT m.trade_name, m.large_to_medium, m.medium_to_small, m.has_expiry,
+             COALESCE((SELECT MAX(strips_per_box) FROM inventory WHERE drug_id = m.id), 1) as max_strips
+      FROM master_drugs m
+      WHERE m.id = ?
     `);
 
     const insertSalesItemStmt = db.prepare(`
@@ -435,10 +437,12 @@ export async function processCheckoutAction(data: any) {
         const drugName = drugInfo?.trade_name || `Drug #${item.drug_id}`;
         
         let deductionQty = item.quantity_sold;
+        const actualLargeToMedium = drugInfo?.max_strips > 1 ? drugInfo.max_strips : (drugInfo?.large_to_medium || 1);
+        
         if (item.selected_unit === 'medium') {
-          deductionQty = item.quantity_sold / (drugInfo.large_to_medium || 1);
+          deductionQty = item.quantity_sold / actualLargeToMedium;
         } else if (item.selected_unit === 'small') {
-          deductionQty = item.quantity_sold / ((drugInfo.large_to_medium || 1) * (drugInfo.medium_to_small || 1));
+          deductionQty = item.quantity_sold / (actualLargeToMedium * (drugInfo?.medium_to_small || 1));
         }
 
         if (validatedData.status === 'completed') {

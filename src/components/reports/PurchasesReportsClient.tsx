@@ -175,10 +175,16 @@ export default function PurchasesReportsClient({ userRole }: { userRole?: string
           </Link>
         )}
         <Link 
+          href="/reports/sales" 
+          className="pb-4 border-b-2 border-transparent font-bold text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors flex items-center gap-2"
+        >
+          <span>🧾</span> تقرير فواتير المبيعات
+        </Link>
+        <Link 
           href="/reports/purchases" 
           className="pb-4 border-b-2 border-blue-600 font-black text-blue-600 dark:text-blue-400 flex items-center gap-2"
         >
-          <span>🧾</span> تقرير فواتير المشتريات
+          <span>🛒</span> تقارير المشتريات
         </Link>
         <Link 
           href="/reports/trial-balance" 

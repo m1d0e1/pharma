@@ -106,7 +106,7 @@ export default function CashTransactionsClient({
             ) : movements.map((m: any) => (
               <tr key={m.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
                 <td className="px-8 py-5 font-bold text-slate-500">
-                  {format(new Date(m.created_at), 'yyyy/MM/dd HH:mm')}
+                  {m.created_at ? format(new Date(m.created_at), 'yyyy/MM/dd HH:mm') : '-'}
                 </td>
                 <td className="px-8 py-5 text-center">
                   <span className={cn(

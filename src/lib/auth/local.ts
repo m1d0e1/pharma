@@ -252,12 +252,19 @@ export async function getPermissionValue(permissionKey: string, defaultValue: an
   if (!user) return defaultValue;
 
   if (user.permissions) {
-    try {
-      const perms = typeof user.permissions === 'string' ? JSON.parse(user.permissions) : user.permissions;
-      if (perms && perms[permissionKey] !== undefined) {
-        return perms[permissionKey];
+    let perms = user.permissions;
+    let attempts = 0;
+    while (typeof perms === 'string' && attempts < 3) {
+      try {
+        perms = JSON.parse(perms);
+      } catch (e) {
+        break;
       }
-    } catch (e) {}
+      attempts++;
+    }
+    if (perms && typeof perms === 'object' && perms[permissionKey] !== undefined) {
+      return perms[permissionKey];
+    }
   }
 
   if (user.role === 'owner' || user.role === 'admin') {
@@ -273,18 +280,24 @@ export async function hasPermission(permissionKey: string) {
   return !!(await getPermissionValue(permissionKey, false));
 }
 
-export function hasUserPermissionSync(user: any, permissionKey: string, defaultValue = false): boolean {
-  if (!user) return defaultValue;
-  if (user.permissions) {
-    try {
-      const perms = typeof user.permissions === 'string' ? JSON.parse(user.permissions) : user.permissions;
-      if (perms && perms[permissionKey] !== undefined) {
-        return !!perms[permissionKey];
-      }
-    } catch (e) {}
-  }
+export function hasUserPermissionSync(user: any, permissionKey: string): boolean {
+  if (!user) return false;
   if (user.role === 'owner' || user.role === 'admin') return true;
-  return defaultValue;
+  if (!user.permissions) return false;
+  
+  let perms = user.permissions;
+  let attempts = 0;
+  while (typeof perms === 'string' && attempts < 3) {
+    try {
+      perms = JSON.parse(perms);
+    } catch (e) {
+      break;
+    }
+    attempts++;
+  }
+  
+  if (!perms || typeof perms !== 'object') return false;
+  return perms[permissionKey] === true || perms[permissionKey] === 'true' || perms[permissionKey] == 1;
 }
 
 /**
