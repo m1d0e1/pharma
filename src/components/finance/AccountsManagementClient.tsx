@@ -105,8 +105,10 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
   const [hasOpenShift, setHasOpenShift] = useState(false);
   const [staffList, setStaffList] = useState<any[]>([]);
   const [userRole, setUserRole] = useState<string>('pharmacist');
+  const [isMounted, setIsMounted] = useState(false);
 
   useEffect(() => {
+     setIsMounted(true);
      loadTabData();
   }, [activeTab]);
 
@@ -230,6 +232,8 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
       'other': 'أخرى'
   };
   const largestCategoryLabel = categoryTranslations[largestCategory] || largestCategory;
+
+  if (!isMounted) return null;
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-8" dir="rtl">

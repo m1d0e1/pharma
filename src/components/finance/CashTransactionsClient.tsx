@@ -30,8 +30,10 @@ export default function CashTransactionsClient({
   const [movements, setMovements] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState<{ show: boolean, type: 'disbursement' | 'receipt' }>(initialShowForm || { show: false, type: 'disbursement' });
+  const [isMounted, setIsMounted] = useState(false);
 
   useEffect(() => {
+    setIsMounted(true);
     if (initialShowForm) {
       setShowForm(initialShowForm);
     }
@@ -47,6 +49,8 @@ export default function CashTransactionsClient({
     if (res.success) setMovements(res.data as any[]);
     setLoading(false);
   }
+
+  if (!isMounted) return null;
 
   return (
     <div className="space-y-8" dir="rtl">
