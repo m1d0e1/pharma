@@ -16,9 +16,8 @@ export function getSupabaseBrowserClient() {
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 
   if (!supabaseUrl || !supabaseAnonKey) {
-    throw new Error(
-      'Missing Supabase environment variables. Please check your NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY.'
-    )
+    console.warn('Missing Supabase environment variables.');
+    return null as any;
   }
 
   const isTauri = typeof window !== 'undefined' && (window as any).__TAURI__ !== undefined;
@@ -34,4 +33,4 @@ export function getSupabaseBrowserClient() {
 }
 
 // For backward compatibility
-export const supabase = getSupabaseBrowserClient()
+// export const supabase = getSupabaseBrowserClient() // Removed to avoid throw on module load

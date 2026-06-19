@@ -129,16 +129,16 @@ fn main() {
             ])?;
 
             let menu = Menu::with_items(app, &[
-                &file_menu,
-                &master_data_menu,
-                &inventory_ops_menu,
-                &sales_menu,
-                &purchases_menu,
-                &finance_menu,
-                &patients_menu,
-                &admin_menu,
-                &reports_menu,
                 &help_menu,
+                &reports_menu,
+                &admin_menu,
+                &patients_menu,
+                &finance_menu,
+                &purchases_menu,
+                &sales_menu,
+                &inventory_ops_menu,
+                &master_data_menu,
+                &file_menu,
             ])?;
             app.set_menu(menu)?;
 

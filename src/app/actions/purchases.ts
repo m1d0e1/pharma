@@ -318,3 +318,25 @@ export async function getDrugPurchaseHistoryAction(drugId: number) {
   }
 }
 
+export async function getPurchasesReportsAction(filters: any = {}) {
+  try {
+    let sql = 'SELECT i.*, s.name_ar as supplier_name, u.full_name as staff_name FROM purchase_invoices i LEFT JOIN suppliers s ON i.supplier_id = s.id LEFT JOIN users u ON i.user_id = u.id WHERE 1=1';
+    const params: any[] = [];
+    if (filters.startDate) { sql += ' AND date(i.created_at) >= ?'; params.push(filters.startDate); }
+    if (filters.endDate) { sql += ' AND date(i.created_at) <= ?'; params.push(filters.endDate); }
+    if (filters.userId) { sql += ' AND i.user_id = ?'; params.push(filters.userId); }
+    if (filters.paymentMethod) { sql += ' AND i.payment_method = ?'; params.push(filters.paymentMethod); }
+    if (filters.supplierId) { sql += ' AND i.supplier_id = ?'; params.push(filters.supplierId); }
+    if (filters.invoiceNumber) { sql += ' AND i.invoice_number LIKE ?'; params.push('%' + filters.invoiceNumber + '%'); }
+    sql += ' ORDER BY i.created_at DESC';
+    const items = await db.prepare(sql).all(...params) as any[];
+    const totalCost = items.reduce((sum, inv) => sum + (inv.total_amount || 0), 0);
+    return { success: true, data: items, totalCost, invoiceCount: items.length };
+  } catch (error: any) { return { success: false, error: error.message }; }
+}
+export async function getPurchaseInvoiceDetailsAction(invoiceId: string) {
+  try {
+    const items = await db.prepare('SELECT pii.*, d.trade_name, d.barcode FROM purchase_invoice_items pii JOIN master_drugs d ON pii.drug_id = d.id WHERE pii.invoice_id = ?').all(invoiceId);
+    return { success: true, data: items };
+  } catch (error: any) { return { success: false, error: error.message }; }
+}

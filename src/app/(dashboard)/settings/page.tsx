@@ -32,15 +32,17 @@ export default function SettingsPage() {
         if (isAllowed) {
           setAllowed(true);
           const supabase = getSupabaseBrowserClient();
-          const { data: authData } = await supabase.auth.getUser();
+          if (supabase) {
+            const { data: authData } = await supabase.auth.getUser();
 
-        if (authData?.user) {
-          const { data } = await supabase
-            .from('profiles')
-            .select('*, pharmacies(*)')
-            .eq('id', authData.user.id)
-            .single();
-          setCloudProfile(data);
+            if (authData?.user) {
+              const { data } = await supabase
+                .from('profiles')
+                .select('*, pharmacies(*)')
+                .eq('id', authData.user.id)
+                .single();
+              setCloudProfile(data);
+            }
           }
         }
       } catch (err) {
