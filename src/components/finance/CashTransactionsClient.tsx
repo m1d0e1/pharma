@@ -11,8 +11,14 @@ import {
   createCashMovementAction, 
   getCashMovementsAction 
 } from '@/app/actions/finance';
-import { format } from 'date-fns';
+import { format, isValid } from 'date-fns';
 import { toast } from 'react-hot-toast';
+
+const safeFormat = (dateStr: string | null | undefined, fmt: string) => {
+  if (!dateStr) return '-';
+  const d = new Date(dateStr);
+  return isValid(d) ? format(d, fmt) : '-';
+};
 
 export default function CashTransactionsClient({ 
   initialShowForm, 
@@ -106,7 +112,7 @@ export default function CashTransactionsClient({
             ) : movements.map((m: any) => (
               <tr key={m.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
                 <td className="px-8 py-5 font-bold text-slate-500">
-                  {m.created_at ? format(new Date(m.created_at), 'yyyy/MM/dd HH:mm') : '-'}
+                  {safeFormat(m.created_at, 'yyyy/MM/dd HH:mm')}
                 </td>
                 <td className="px-8 py-5 text-center">
                   <span className={cn(

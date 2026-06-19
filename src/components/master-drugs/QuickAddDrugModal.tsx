@@ -8,7 +8,7 @@ import { useHotkeys } from 'react-hotkeys-hook'
 
 interface Props {
   onClose: () => void
-  onSuccess: (drugId: number, tradeName: string) => void
+  onSuccess: (drugId: number, tradeName: string, large_to_medium?: number | null) => void
 }
 
 export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
@@ -22,7 +22,8 @@ export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
     official_price: '',
     manufacturer: '',
     unit: '',
-    category: 'Medicines'
+    category: 'Medicines',
+    large_to_medium: ''
   })
 
   useEffect(() => {
@@ -38,15 +39,17 @@ export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setIsSubmitting(true)
+    const largeToMediumVal = formData.large_to_medium ? parseInt(formData.large_to_medium) : null
     const res = await addMasterDrugAction({
       ...formData,
       official_price: parseFloat(formData.official_price) || 0,
+      large_to_medium: largeToMediumVal,
       is_medicine: 1
     })
     setIsSubmitting(false)
     if (res.success) {
       toast.success('تمت إضافة الصنف لقاعدة البيانات بنجاح')
-      onSuccess(res.id as number, formData.trade_name_en || formData.trade_name)
+      onSuccess(res.id as number, formData.trade_name_en || formData.trade_name, largeToMediumVal)
     } else {
       toast.error(res.error || 'فشل إضافة الصنف')
     }
@@ -151,17 +154,18 @@ export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
                   الوحدة (Unit)
                 </label>
                 <div className="relative">
-                  <select
+                  <input
+                    list="units-list"
                     value={formData.unit}
                     onChange={(e) => setFormData({ ...formData, unit: e.target.value })}
-                    className={inputClass + " cursor-pointer appearance-none pl-7"}
-                  >
-                    <option value="">اختر الوحدة</option>
+                    className={inputClass + " pr-4"}
+                    placeholder="اختر أو اكتب الوحدة"
+                  />
+                  <datalist id="units-list">
                     {unitsList.map((u, idx) => (
-                      <option key={idx} value={u.name_ar}>{u.name_ar}</option>
+                      <option key={idx} value={u.name_ar} />
                     ))}
-                  </select>
-                  <ChevronDown className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
+                  </datalist>
                 </div>
               </div>
 
@@ -198,6 +202,22 @@ export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
                   placeholder="اسم الشركة"
                 />
               </div>
+            </div>
+
+            {/* Row 4: Strips per Box */}
+            <div>
+              <label className={labelClass}>
+                <Pill className="w-3 h-3 text-indigo-500" />
+                عدد الشرائط بالعلبة (Strips per Box)
+              </label>
+              <input
+                type="number"
+                min="1"
+                value={formData.large_to_medium}
+                onChange={(e) => setFormData({ ...formData, large_to_medium: e.target.value })}
+                className={inputClass}
+                placeholder="مثال: 3 (اختياري)"
+              />
             </div>
 
           </div>

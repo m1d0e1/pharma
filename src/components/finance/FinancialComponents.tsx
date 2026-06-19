@@ -9,7 +9,13 @@ import { cn } from '@/lib/utils';
 import { getPatientStatementAction } from '@/app/actions/patients';
 import { addFinancialNoticeAction } from '@/app/actions/finance';
 import { toast } from 'react-hot-toast';
-import { format } from 'date-fns';
+import { format, isValid } from 'date-fns';
+
+const safeFormat = (dateStr: string | null | undefined, fmt: string) => {
+  if (!dateStr) return '-';
+  const d = new Date(dateStr);
+  return isValid(d) ? format(d, fmt) : '-';
+};
 import { ar } from 'date-fns/locale';
 
 export function CustomerStatementContent({ patientId }: { patientId: string }) {
@@ -135,7 +141,7 @@ export function CustomerStatementContent({ patientId }: { patientId: string }) {
                 </tr>
                 {visibleMovements.map((mov: any, i: number) => (
                    <tr key={i} className="hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
-                      <td className="px-6 py-4 font-bold text-slate-500">{mov.date ? format(new Date(mov.date), 'yyyy/MM/dd HH:mm') : '-'}</td>
+                      <td className="px-6 py-4 font-bold text-slate-500">{safeFormat(mov.date, 'yyyy/MM/dd HH:mm')}</td>
                       <td className="px-6 py-4">
                          <div className="flex items-center gap-3">
                             <div className={cn(

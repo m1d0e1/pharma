@@ -35,8 +35,14 @@ import {
   getFinancialNoticesAction,
   getActivityLogsAction
 } from '@/app/actions/finance';
-import { format } from 'date-fns';
+import { format, isValid } from 'date-fns';
 import { toast } from 'react-hot-toast';
+
+const safeFormat = (dateStr: string | null | undefined, fmt: string) => {
+  if (!dateStr) return '-';
+  const d = new Date(dateStr);
+  return isValid(d) ? format(d, fmt) : '-';
+};
 
 const ACCOUNT_TABS = [
   // 1. Core Financials
@@ -329,7 +335,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                             <tr><td colSpan={4} className="py-20 text-center text-slate-400 italic font-bold">لا توجد حركات نقدية مسجلة اليوم</td></tr>
                          ) : movements.slice(0, 15).map(m => (
                             <tr key={`treasury-mov-${m.id}`} className="hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors cursor-pointer">
-                               <td className="px-8 py-5 font-bold text-slate-500">{m.created_at || m.date ? format(new Date(m.created_at || m.date), 'yyyy/MM/dd HH:mm') : '-'}</td>
+                               <td className="px-8 py-5 font-bold text-slate-500">{safeFormat(m.created_at || m.date, 'yyyy/MM/dd HH:mm')}</td>
                                <td className="px-8 py-5 font-black text-slate-800 dark:text-white">{m.notes || (m.type === 'receipt' ? 'توريد نقدية' : 'صرف نقدية')}</td>
                                <td className={cn("px-8 py-5 font-black", m.type === 'receipt' ? "text-emerald-600" : "text-rose-600")}>
                                   {m.type === 'receipt' ? `+${m.amount.toLocaleString()}` : `-${m.amount.toLocaleString()}`} ج.م
@@ -460,7 +466,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                                <td className="px-8 py-6 font-mono font-black text-amber-600">{exp.code}</td>
                                <td className="px-8 py-6 font-black text-slate-800 dark:text-white group-hover:text-amber-600 transition-colors">{exp.name_ar}</td>
                                <td className="px-8 py-6 font-bold text-slate-400 italic">{exp.name_en}</td>
-                               <td className="px-8 py-6 font-bold text-slate-400">{exp.created_at ? format(new Date(exp.created_at), 'yyyy/MM/dd') : '-'}</td>
+                               <td className="px-8 py-6 font-bold text-slate-400">{safeFormat(exp.created_at, 'yyyy/MM/dd')}</td>
                                <td className="px-8 py-6">
                                   <div className="flex gap-2">
                                      <button 
@@ -512,7 +518,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                             <tr><td colSpan={7} className="py-20 text-center text-slate-400 italic font-bold">لا توجد إشعارات مسجلة</td></tr>
                          ) : noticesList.map(n => (
                             <tr key={`notice-${n.id}`} className="hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
-                               <td className="px-8 py-6 font-bold text-slate-500">{n.date || n.created_at ? format(new Date(n.date || n.created_at), 'yyyy/MM/dd') : '-'}</td>
+                               <td className="px-8 py-6 font-bold text-slate-500">{safeFormat(n.date || n.created_at, 'yyyy/MM/dd')}</td>
                                <td className="px-8 py-6">
                                   <span className={cn(
                                      "px-3 py-1 rounded-lg text-xs font-black",
@@ -630,7 +636,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                                   </span>
                                 </td>
                                <td className="px-8 py-6 font-black">{p.target_name}</td>
-                               <td className="px-8 py-6 font-bold text-rose-500">{p.due_date ? format(new Date(p.due_date), 'yyyy/MM/dd') : '-'}</td>
+                               <td className="px-8 py-6 font-bold text-rose-500">{safeFormat(p.due_date, 'yyyy/MM/dd')}</td>
                                <td className="px-8 py-6 text-center font-black text-lg">{p.amount.toLocaleString('en-US')} ج.م</td>
                                <td className="px-8 py-6">
                                   <span className="bg-amber-100 text-amber-600 px-4 py-1 rounded-full text-[10px] font-black uppercase">{p.status === 'pending' ? 'انتظار' : p.status}</span>
@@ -736,7 +742,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                             <tr><td colSpan={5} className="py-20 text-center text-slate-400 italic font-bold">لا توجد مصروفات مسجلة</td></tr>
                          ) : expensesList.map(exp => (
                             <tr key={`exp-list-${exp.id}`} className="hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
-                               <td className="px-8 py-6 font-bold text-slate-500">{exp.date ? format(new Date(exp.date), 'yyyy/MM/dd') : '-'}</td>
+                               <td className="px-8 py-6 font-bold text-slate-500">{safeFormat(exp.date, 'yyyy/MM/dd')}</td>
                                <td className="px-8 py-6 font-black text-slate-800 dark:text-white">
                                   <span className="bg-rose-50 text-rose-600 px-4 py-1.5 rounded-full text-xs font-black">
                                      {categoryTranslations[exp.category] || exp.category}
@@ -805,7 +811,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                             <tr><td colSpan={4} className="py-20 text-center text-slate-400 italic font-bold">السجل فارغ حالياً</td></tr>
                          ) : activityLogs.map(log => (
                             <tr key={`log-${log.id}`} className="hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
-                               <td className="px-8 py-6 font-bold text-slate-500">{log.created_at ? format(new Date(log.created_at), 'yyyy/MM/dd HH:mm:ss') : '-'}</td>
+                               <td className="px-8 py-6 font-bold text-slate-500">{safeFormat(log.created_at, 'yyyy/MM/dd HH:mm:ss')}</td>
                                <td className="px-8 py-6 font-mono">
                                   <span className="bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 px-3 py-1 rounded-lg text-xs font-black">
                                      {log.action}
@@ -969,7 +975,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                                 className="hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors cursor-pointer group"
                              >
                                 <td className="px-8 py-6 font-mono font-black text-slate-800 dark:text-white group-hover:text-blue-600">#{j.id.slice(0, 8)}</td>
-                                <td className="px-8 py-6 font-bold text-slate-500">{j.date ? format(new Date(j.date), 'yyyy/MM/dd') : '-'}</td>
+                                <td className="px-8 py-6 font-bold text-slate-500">{safeFormat(j.date, 'yyyy/MM/dd')}</td>
                                 <td className="px-8 py-6 font-black">{j.description}</td>
                                 <td className="px-8 py-6 font-black text-lg text-blue-600">{j.total_amount.toLocaleString()} ج.م</td>
                                 <td className="px-8 py-6">
@@ -1333,7 +1339,7 @@ if (journalId) {
                         </div>
                         <div className="text-left">
                            <p className="text-[10px] font-black text-slate-400 uppercase mb-1">تاريخ القيد</p>
-                           <p className="text-lg font-black text-slate-800 dark:text-white">{entries[0]?.date ? format(new Date(entries[0].date), 'yyyy/MM/dd HH:mm') : '-'}</p>
+                           <p className="text-lg font-black text-slate-800 dark:text-white">{safeFormat(entries[0]?.date, 'yyyy/MM/dd HH:mm')}</p>
                         </div>
                      </div>
 

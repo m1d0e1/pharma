@@ -15,6 +15,7 @@ interface MasterDrug {
   active_ingredient: string
   official_price: number
   large_unit?: string
+  large_to_medium?: number
 }
 
 interface AddInventoryModalProps {
@@ -38,6 +39,7 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
   const [expiryDate, setExpiryDate] = useState('')
   const [localPrice, setLocalPrice] = useState('')
   const [barcode, setBarcode] = useState('')
+  const [largeToMedium, setLargeToMedium] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [unitsList, setUnitsList] = useState<{name_ar: string}[]>([])
   const [selectedUnit, setSelectedUnit] = useState('')
@@ -74,6 +76,7 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
     setSelectedDrug(drug)
     setSelectedUnit(drug.large_unit || 'علبة')
     setLocalPrice(drug.official_price > 0 ? drug.official_price.toString() : '')
+    setLargeToMedium(drug.large_to_medium ? drug.large_to_medium.toString() : '')
     setStep(2)
   }
 
@@ -108,7 +111,8 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
       local_selling_price: price,
       expiry_date: expiryDate,
       barcode: barcode || null,
-      unit: selectedUnit
+      unit: selectedUnit,
+      large_to_medium: largeToMedium ? parseInt(largeToMedium) : null
     }
 
     console.log('[AddInventoryModal] Submitting formData:', JSON.stringify(formData))
@@ -228,21 +232,22 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
                  </div>
                </div>
                <div className="flex flex-col items-end bg-white dark:bg-slate-900 px-4 py-2 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm">
-                  <select
+                  <input
+                    list="inventory-units-list"
                     value={selectedUnit}
                     onChange={(e) => setSelectedUnit(e.target.value)}
-                    className="text-lg font-black text-blue-600 dark:text-blue-400 bg-slate-50 dark:bg-slate-800 outline-none cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg px-3 py-1 text-right w-full border border-blue-200 dark:border-blue-800 focus:ring-2 focus:ring-blue-500"
-                  >
+                    className="text-lg font-black text-blue-600 dark:text-blue-400 bg-slate-50 dark:bg-slate-800 outline-none hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg px-3 py-1 text-right w-full border border-blue-200 dark:border-blue-800 focus:ring-2 focus:ring-blue-500"
+                    placeholder="الوحدة"
+                  />
+                  <datalist id="inventory-units-list">
                     {unitsList.length > 0 ? (
                       unitsList.map((u, idx) => (
-                        <option key={idx} value={u.name_ar} className="text-slate-900 dark:text-white bg-white dark:bg-slate-900">
-                          {u.name_ar}
-                        </option>
+                        <option key={idx} value={u.name_ar} />
                       ))
                     ) : (
-                      <option value={selectedDrug.large_unit || 'علبة'}>{selectedDrug.large_unit || 'علبة'}</option>
+                      <option value={selectedDrug.large_unit || 'علبة'} />
                     )}
-                  </select>
+                  </datalist>
                   <span className="text-[10px] text-slate-400 font-bold px-2 mt-1">الوحدة الأساسية</span>
                </div>
             </div>
@@ -296,6 +301,23 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
               </div>
             </div>
 
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <label className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">عدد الشرائط بالعلبة (Strips per Box)</label>
+                <input
+                  type="number"
+                  min="1"
+                  value={largeToMedium}
+                  onChange={(e) => setLargeToMedium(e.target.value)}
+                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all font-bold"
+                  placeholder="مثال: 3 (اختياري)"
+                />
+              </div>
+              <div className="space-y-1.5 flex items-end">
+                {/* Empty spacer */}
+              </div>
+            </div>
+
             <div className="flex gap-4 pt-2">
               <button
                 type="submit"
@@ -332,8 +354,9 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
     {isQuickAddOpen && (
       <QuickAddDrugModal 
         onClose={() => setIsQuickAddOpen(false)}
-        onSuccess={(id, name) => {
-          setSelectedDrug({ id, trade_name: name, active_ingredient: '', official_price: 0 })
+        onSuccess={(id, name, large_to_medium) => {
+          setSelectedDrug({ id, trade_name: name, active_ingredient: '', official_price: 0, large_to_medium: large_to_medium || undefined })
+          setLargeToMedium(large_to_medium ? large_to_medium.toString() : '')
           setIsQuickAddOpen(false)
           setStep(2)
         }}

@@ -65,6 +65,7 @@ const addInventorySchema = z.object({
   expiry_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'صيغة التاريخ غير صحيحة (YYYY-MM-DD)'),
   barcode: z.string().optional().nullable(),
   unit: z.string().optional().nullable(),
+  large_to_medium: z.number().int().positive().optional().nullable(),
 });
 
 // Zod schema for updating inventory
@@ -114,7 +115,7 @@ export async function addInventoryAction(formData: AddInventoryInput) {
     }
     console.log('[addInventoryAction] Step 3 result: validation passed');
 
-    const { pharmacy_id, drug_id, quantity, local_selling_price, expiry_date, barcode, unit } = validationResult.data;
+    const { pharmacy_id, drug_id, quantity, local_selling_price, expiry_date, barcode, unit, large_to_medium } = validationResult.data;
 
     // Step 4: Generate ID
     console.log('[addInventoryAction] Step 4: Generating UUID...');
@@ -123,16 +124,20 @@ export async function addInventoryAction(formData: AddInventoryInput) {
 
     // Step 5: Insert
     console.log('[addInventoryAction] Step 5: Inserting into inventory...');
-    console.log('[addInventoryAction] Step 5 params:', { id, pharmacy_id: pharmacy_id || null, drug_id, quantity, local_selling_price, expiry_date, barcode: barcode || null, unit });
+    console.log('[addInventoryAction] Step 5 params:', { id, pharmacy_id: pharmacy_id || null, drug_id, quantity, local_selling_price, expiry_date, barcode: barcode || null, unit, large_to_medium });
     
     // Begin Transaction using single queries (or standard run)
     await db.prepare(`
-      INSERT INTO inventory (id, pharmacy_id, drug_id, quantity, local_selling_price, expiry_date, barcode)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(id, pharmacy_id || null, drug_id, quantity, local_selling_price, expiry_date, barcode || null);
+      INSERT INTO inventory (id, pharmacy_id, drug_id, quantity, local_selling_price, expiry_date, barcode, strips_per_box)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, pharmacy_id || null, drug_id, quantity, local_selling_price, expiry_date, barcode || null, large_to_medium || 1);
     
     if (unit) {
       await db.prepare('UPDATE master_drugs SET large_unit = ? WHERE id = ?').run(unit, drug_id);
+    }
+
+    if (large_to_medium !== undefined && large_to_medium !== null) {
+      await db.prepare('UPDATE master_drugs SET large_to_medium = ? WHERE id = ?').run(large_to_medium, drug_id);
     }
     
     console.log('[addInventoryAction] Step 5 result: INSERT successful');
