@@ -1,5 +1,6 @@
 'use server';
 
+
 import { dbSelect, dbExecute, dbGet, dbTransaction } from '@/lib/db/tauri';
 const logActivity = async (userId, action, details) => {
   try {
@@ -52,12 +53,12 @@ const db = {
 
 
 
-import { getLocalSession } from '@/lib/auth/local';
+import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 
 export async function addToShortagesAction(data: { drug_id: number | string; qty?: number; notes?: string }) {
   try {
     const user = await getLocalSession();
-    if (!user) return { success: false, error: 'غير مصرح' };
+    if (!user || !hasUserPermissionSync(user, 'can_view_restock')) return { success: false, error: 'غير مصرح' };
 
     await db.prepare(`
       INSERT INTO shortages (drug_id, requested_quantity)
@@ -74,7 +75,7 @@ export async function addToShortagesAction(data: { drug_id: number | string; qty
 export async function getSmartShortagesAction() {
   try {
     const user = await getLocalSession();
-    if (!user) return { success: false, error: 'غير مصرح' };
+    if (!user || !hasUserPermissionSync(user, 'can_view_restock')) return { success: false, error: 'غير مصرح' };
 
     // logic: Get all drugs, their current stock, and their sales in the last 30 days
     const results = await db.prepare(`
@@ -112,4 +113,3 @@ export async function getSmartShortagesAction() {
     return { success: false, error: error.message };
   }
 }
-

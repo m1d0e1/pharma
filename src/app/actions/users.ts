@@ -1,5 +1,6 @@
 'use server';
 
+
 import { dbSelect, dbExecute, dbGet, dbTransaction, generateId } from '@/lib/db/tauri';
 const logActivity = async (userId, action, details) => {
   try {
@@ -137,6 +138,10 @@ export async function updateUserPermissionsAction(userId: string, permissions: a
 
     let permissionsToSave = permissions;
     const targetUser = await db.prepare('SELECT username, role FROM users WHERE id = ?').get(userId) as { username: string; role: string };
+
+    if (targetUser?.role === 'owner' && localUser.role !== 'owner') {
+      return { success: false, error: 'لا يمكنك تعديل صلاحيات المالك' };
+    }
 
     const permissionsJson = JSON.stringify(permissionsToSave);
 
@@ -309,7 +314,11 @@ export async function deleteUserAction(userId: string) {
       return { success: false, error: 'لا يمكنك حذف حسابك الخاص' };
     }
 
-    const targetUser = await db.prepare('SELECT username FROM users WHERE id = ?').get(userId) as { username: string };
+    const targetUser = await db.prepare('SELECT username, role FROM users WHERE id = ?').get(userId) as { username: string; role: string };
+    
+    if (targetUser?.role === 'owner' && localUser.role !== 'owner') {
+      return { success: false, error: 'لا يمكنك حذف حساب المالك' };
+    }
     
     await db.prepare('DELETE FROM users WHERE id = ?').run(userId);
     
@@ -344,6 +353,11 @@ export async function updateUserAction(userId: string, data: {
 
     const { username, full_name, role, password, job_id, qualification, hire_date, shift, code } = data;
 
+    const targetUser = await db.prepare('SELECT role FROM users WHERE id = ?').get(userId) as { role: string };
+    if (targetUser?.role === 'owner' && localUser.role !== 'owner') {
+      return { success: false, error: 'لا يمكنك تعديل حساب المالك' };
+    }
+
     // Only update user profile fields here — permissions are saved separately by updateUserPermissionsAction
     if (password) {
       const bcrypt = {
@@ -374,6 +388,9 @@ export async function updateUserAction(userId: string, data: {
 
 export async function getStaffAction() {
   try {
+    const user = await getLocalSession();
+    if (!user || (user.role !== 'owner' && user.role !== 'admin')) return { success: false, error: 'Unauthorized' };
+
     const staff = await db.prepare(`
       SELECT 
         u.*, 
@@ -390,6 +407,9 @@ export async function getStaffAction() {
 
 export async function getJobsAction() {
   try {
+    const user = await getLocalSession();
+    if (!user || (user.role !== 'owner' && user.role !== 'admin')) return { success: false, error: 'Unauthorized' };
+
     const jobs = await db.prepare('SELECT * FROM employee_jobs').all() as any[];
     return { success: true, data: jobs };
   } catch (error) {
@@ -440,6 +460,11 @@ export async function resetUserPasswordAction(userId: string, newPassword: strin
       return { success: false, error: 'يجب أن تكون كلمة المرور 6 أحرف على الأقل' };
     }
 
+    const targetUser = await db.prepare('SELECT role, username FROM users WHERE id = ?').get(userId) as { role: string, username: string };
+    if (targetUser?.role === 'owner' && localUser.role !== 'owner') {
+      return { success: false, error: 'لا يمكنك إعادة تعيين كلمة مرور المالك' };
+    }
+
     const bcrypt = {
       hash: async (pw: any, ...args: any[]) => {
         const { hashPassword } = await import('@/lib/auth/local');
@@ -465,3 +490,4 @@ export async function resetUserPasswordAction(userId: string, newPassword: strin
 }
 
 
+export async function getStaffManagementDataAction() { return { success: false, data: {} }; }

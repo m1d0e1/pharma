@@ -4,6 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { getClientSession } from '@/lib/auth/local';
 import AccessDenied from '@/components/AccessDenied';
 import PurchaseReportsClient from '@/components/reports/PurchaseReportsClient';
+import { Printer } from 'lucide-react';
 
 export default function PurchaseReportsPage() {
   const [user, setUser] = useState<any>(null);
@@ -35,6 +36,10 @@ export default function PurchaseReportsPage() {
           <h1 className="text-3xl font-bold text-slate-900 dark:text-white">تقارير المشتريات</h1>
           <p className="text-slate-500 mt-1">تتبع فواتير ومصروفات المشتريات الخاصة بالصيدلية.</p>
         </div>
+        <button onClick={() => window.print()} className="flex items-center gap-2 px-6 py-3 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-xl font-bold border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 transition-all shadow-sm no-print">
+          <Printer className="w-5 h-5" />
+          طباعة التقارير
+        </button>
       </div>
 
       <PurchaseReportsClient />

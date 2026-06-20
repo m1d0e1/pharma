@@ -4,7 +4,7 @@ import React, { useEffect, useState } from 'react';
 import RestockHeader from '@/components/inventory/RestockHeader';
 import RestockClient from '@/components/inventory/RestockClient';
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
-import { dbSelect } from '@/lib/db/tauri';
+import { getRestockItemsAction } from '@/app/actions/inventory';
 import AccessDenied from '@/components/AccessDenied';
 
 export default function RestockPage() {
@@ -14,6 +14,7 @@ export default function RestockPage() {
   const [allowed, setAllowed] = useState(false);
 
   useEffect(() => {
+    let active = true;
     async function loadRestockData() {
       try {
         const userObj = await getClientSession();
@@ -24,52 +25,12 @@ export default function RestockPage() {
 
         if (isAllowed) {
           setAllowed(true);
-          const lowStockItems = await dbSelect(`
-          SELECT 
-            i.id,
-            i.quantity,
-            md.id as drug_id,
-            md.trade_name,
-            md.official_price,
-            md.category,
-            md.manufacturer,
-            COALESCE(
-              NULLIF(md.reorder_point, 0),
-              NULLIF((
-                SELECT SUM(si.quantity_sold)
-                FROM sales_items si
-                JOIN sales_invoices inv ON si.invoice_id = inv.id
-                WHERE si.drug_id = i.drug_id
-                  AND si.is_negative = 0
-                  AND inv.created_at >= datetime('now', '-30 days', 'localtime')
-              ), 0),
-              10
-            ) as computed_threshold
-          FROM inventory i
-          JOIN master_drugs md ON i.drug_id = md.id
-          WHERE i.quantity <= computed_threshold
-          ORDER BY i.quantity ASC
-        `);
-
-        const mapped = lowStockItems.map((item: any) => {
-          const threshold = item.computed_threshold || 10;
-          const suggestedOrder = Math.max(0, (threshold * 2) - item.quantity);
-          return {
-            id: item.id,
-            quantity: item.quantity,
-            min_stock_level: threshold,
-            suggested_order: suggestedOrder,
-            master_drugs: {
-              id: item.drug_id,
-              trade_name: item.trade_name,
-              official_price: item.official_price || 0,
-              category: item.category,
-              manufacturer: item.manufacturer
-            }
-          };
-        });
-
-        setAutomatedList(mapped);
+          const res = await getRestockItemsAction();
+          if (res.success) {
+            if (active) setAutomatedList(res.data || []);
+          } else {
+            console.error('Failed to load restock data:', res.error);
+          }
         }
       } catch (err) {
         console.error('Failed to load restock data:', err);
@@ -78,7 +39,6 @@ export default function RestockPage() {
       }
     }
 
-    let active = true;
     loadRestockData();
     return () => { active = false; };
   }, []);
@@ -129,7 +89,7 @@ export default function RestockPage() {
                <div className="pt-4 border-t">
                  <p className="text-xs text-slate-400 mb-2 font-bold uppercase">الميزانية التقديرية لإعادة الملء</p>
                  <h4 className="text-3xl font-black text-slate-900 dark:text-white">
-                   {automatedList.reduce((sum, item) => sum + (item.suggested_order * (item.master_drugs as any).official_price), 0).toLocaleString()} <span className="text-sm">ج.م</span>
+                   {automatedList.reduce((sum, item) => sum + (item.suggested_order * ((item.master_drugs as any)?.official_price || 0)), 0).toLocaleString()} <span className="text-sm">ج.م</span>
                  </h4>
                </div>
              </div>

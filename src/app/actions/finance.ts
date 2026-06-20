@@ -1,5 +1,6 @@
 'use server';
 
+
 import { dbSelect, dbExecute, dbGet, dbTransaction, generateId } from '@/lib/db/tauri';
 const logActivity = async (userId, action, details) => {
   try {
@@ -53,7 +54,7 @@ const db = {
 
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 
-import { getLocalSession } from '@/lib/auth/local';
+import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { format } from 'date-fns';
 import { z } from 'zod';
 
@@ -71,82 +72,62 @@ export async function addFinancialNoticeAction(rawData: z.infer<typeof noticeSch
   try {
     const data = noticeSchema.parse(rawData);
     const user = await getLocalSession();
-    if (!user) return { success: false, error: 'غير مصرح' };
+    if (!user || (user.role !== 'owner' && user.role !== 'admin')) {
+      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
+    }
+    if (!user || !hasUserPermissionSync(user, 'rep_can_view_financial')) return { success: false, error: 'غير مصرح' };
 
     const id = generateId();
+    
+    await db.prepare(`
+      INSERT INTO financial_notices (id, user_id, target_type, target_id, type, amount, reason, notes, date)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, user.id, data.target_type, data.target_id || null, data.type, data.amount, data.reason, data.notes || null, data.date);
+
+    // If it's a customer, also add to patient_transactions for statement visibility
+    if (data.target_type === 'customer' && data.target_id) {
+       const transId = generateId();
+       const sign = data.type === 'credit' ? -1 : 1;
+       await db.prepare(`
+         INSERT INTO patient_transactions (id, patient_id, user_id, type, amount, notes, date)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+       `).run(transId, data.target_id, user.id, 'adjustment', data.amount * sign, data.reason, data.date);
+    }
+
+    // Create journal entries for the financial notice to maintain trial balance
     const journalId = generateId();
+    await db.prepare(`
+      INSERT INTO daily_journals (id, date, description, created_by, total_amount)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(journalId, data.date, `إشعار ${data.type === 'credit' ? 'دائن' : 'مدين'}: ${data.reason}`, user.id, data.amount);
 
-    const transaction = db.transaction(async () => {
-      // 1. Insert notice
-      await db.prepare(`
-        INSERT INTO financial_notices (id, user_id, target_type, target_id, type, amount, reason, notes, date)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(id, user.id, data.target_type, data.target_id || null, data.type, data.amount, data.reason, data.notes || null, data.date);
+    const getAccount = async (cat: string) => {
+      const setting = await db.prepare('SELECT account_id FROM trial_balance_settings WHERE category = ?').get(cat) as any;
+      return setting?.account_id;
+    };
 
-      // 2. If it's a customer, also add to patient_transactions for statement visibility
-      if (data.target_type === 'customer' && data.target_id) {
-         const transId = generateId();
-         const sign = data.type === 'credit' ? 1 : -1;
-         await db.prepare(`
-           INSERT INTO patient_transactions (id, patient_id, user_id, type, amount, notes, date)
-           VALUES (?, ?, ?, ?, ?, ?, ?)
-         `).run(transId, data.target_id, user.id, 'adjustment', data.amount * sign, data.reason, data.date);
-      }
+    let targetAccountCategory = 'cash_drawer';
+    if (data.target_type === 'customer') targetAccountCategory = 'accounts_receivable';
+    else if (data.target_type === 'supplier') targetAccountCategory = 'accounts_payable';
 
-      // 3. Double-Entry Bookkeeping Posting
-      // Determine Accounts
-      const getAccount = async (cat: string) => {
-        const setting = await db.prepare('SELECT account_id FROM trial_balance_settings WHERE category = ?').get(cat) as any;
-        return setting?.account_id;
-      };
+    const targetAccountId = await getAccount(targetAccountCategory) || 11;
+    const expenseAccountId = await getAccount('inventory_adjustment') || 11; // Fallback account for adjustments
 
-      const receivableAccountId = await getAccount('accounts_receivable') || (await db.prepare("SELECT id FROM accounts WHERE code = '113'").get() as any)?.id || 9;
-      const salesAccountId = await getAccount('sales_revenue') || (await db.prepare("SELECT id FROM accounts WHERE code = '41'").get() as any)?.id || 16;
-      const payableAccountId = await getAccount('accounts_payable') || (await db.prepare("SELECT id FROM accounts WHERE code = '21'").get() as any)?.id || 15;
-      const cogsAccountId = await getAccount('cogs_expense') || (await db.prepare("SELECT id FROM accounts WHERE code = '52'").get() as any)?.id || 14;
-
-      if (data.target_type === 'customer') {
-        // Daily Journal
-        await db.prepare(`
-          INSERT INTO daily_journals (id, date, description, created_by, total_amount)
-          VALUES (?, ?, ?, ?, ?)
-        `).run(journalId, data.date, `إشعار عميل (${data.type === 'credit' ? 'خصم' : 'إضافة'}): ${data.reason}`, user.id, data.amount);
-
-        if (data.type === 'credit') {
-          // Debit Sales (Discount), Credit A/R
-          await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, salesAccountId, 'debit', data.amount);
-          await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, receivableAccountId, 'credit', data.amount);
-        } else {
-          // Debit A/R, Credit Sales
-          await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, receivableAccountId, 'debit', data.amount);
-          await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, salesAccountId, 'credit', data.amount);
-        }
-      } else if (data.target_type === 'supplier') {
-        // Daily Journal
-        await db.prepare(`
-          INSERT INTO daily_journals (id, date, description, created_by, total_amount)
-          VALUES (?, ?, ?, ?, ?)
-        `).run(journalId, data.date, `إشعار مورد (${data.type === 'credit' ? 'خصم' : 'إضافة'}): ${data.reason}`, user.id, data.amount);
-
-        if (data.type === 'credit') {
-          // Debit Accounts Payable, Credit COGS (Purchase Cost Discount)
-          await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, payableAccountId, 'debit', data.amount);
-          await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, cogsAccountId, 'credit', data.amount);
-        } else {
-          // Debit COGS, Credit Accounts Payable
-          await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, cogsAccountId, 'debit', data.amount);
-          await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, payableAccountId, 'credit', data.amount);
-        }
-      }
-    });
-
-    await transaction();
+    if (data.type === 'credit') {
+      // Credit Note: Debit Expense, Credit Target
+      await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, expenseAccountId, 'debit', data.amount);
+      await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, targetAccountId, 'credit', data.amount);
+    } else {
+      // Debit Note: Debit Target, Credit Income/Adjustment
+      await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, targetAccountId, 'debit', data.amount);
+      await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, expenseAccountId, 'credit', data.amount);
+    }
 
     revalidatePath('/patients');
     return { success: true };
   } catch (error) {
     console.error('Add notice error:', error);
-    return { success: false, error: 'فشل إضافة الإشعار وتحديث القيود المالية' };
+    return { success: false, error: 'فشل إضافة الإشعار' };
   }
 }
 
@@ -162,74 +143,33 @@ export async function addPatientPaymentAction(rawData: z.infer<typeof paymentSch
   try {
     const data = paymentSchema.parse(rawData);
     const user = await getLocalSession();
-    if (!user) return { success: false, error: 'غير مصرح' };
+    if (!user || (user.role !== 'owner' && user.role !== 'admin')) {
+      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
+    }
+    if (!user || !hasUserPermissionSync(user, 'rep_can_view_financial')) return { success: false, error: 'غير مصرح' };
 
     const id = generateId();
-    const cashMovementId = generateId();
-    const journalId = generateId();
+    
+    await db.prepare(`
+      INSERT INTO patient_transactions (id, patient_id, user_id, type, amount, payment_method, notes, date)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, data.patient_id, user.id, 'payment', data.amount, data.payment_method, data.notes || null, data.date);
 
-    const transaction = db.transaction(async () => {
-      // 1. Insert into patient_transactions
-      await db.prepare(`
-        INSERT INTO patient_transactions (id, patient_id, user_id, type, amount, payment_method, notes, date)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(id, data.patient_id, user.id, 'payment', data.amount, data.payment_method, data.notes || null, data.date);
-
-      // 2. Resolve Accounts
-      const getAccount = async (cat: string) => {
-        const setting = await db.prepare('SELECT account_id FROM trial_balance_settings WHERE category = ?').get(cat) as any;
-        return setting?.account_id;
-      };
-
-      const mainCashAccountId = await getAccount('cash_drawer') || (await db.prepare("SELECT id FROM accounts WHERE code = '111'").get() as any)?.id || 7;
-      const bankAccountId = await getAccount('bank') || (await db.prepare("SELECT id FROM accounts WHERE code = '112'").get() as any)?.id || 8;
-      const receivableAccountId = await getAccount('accounts_receivable') || (await db.prepare("SELECT id FROM accounts WHERE code = '113'").get() as any)?.id || 9;
-
-      const debitAccountId = (data.payment_method === 'cash') ? mainCashAccountId : bankAccountId;
-
-      // 3. Get active shift if any
-      const openShift = await db.prepare("SELECT id FROM shifts WHERE user_id = ? AND status = 'open'").get(user.id) as any;
-      const shiftId = openShift?.id || null;
-
-      // 4. Insert into cash_movements (Receipt)
-      await db.prepare(`
-        INSERT INTO cash_movements (
-          id, user_id, shift_id, type, category, amount, notes, date, actual_date
-        ) VALUES (?, ?, ?, 'receipt', 'patient_payment', ?, ?, ?, ?)
-      `).run(
-        cashMovementId, user.id, shiftId, data.amount, 
-        `دفعة من عميل: ${data.notes || ''}`, data.date, new Date().toISOString()
-      );
-
-      // 5. Insert into daily_journals
-      await db.prepare(`
-        INSERT INTO daily_journals (id, date, description, created_by, total_amount)
-        VALUES (?, ?, ?, ?, ?)
-      `).run(
-        journalId, data.date, 
-        `تحصيل من عميل: ${data.notes || ''}`, 
-        user.id, data.amount
-      );
-
-      // 6. Journal entries: Debit Cash/Bank, Credit A/R
-      await db.prepare(`
-        INSERT INTO journal_entries (journal_id, account_id, type, amount, notes)
-        VALUES (?, ?, 'debit', ?, ?)
-      `).run(journalId, debitAccountId, data.amount, data.notes || null);
-
-      await db.prepare(`
-        INSERT INTO journal_entries (journal_id, account_id, type, amount, notes)
-        VALUES (?, ?, 'credit', ?, ?)
-      `).run(journalId, receivableAccountId, data.amount, data.notes || null);
+    // Create Cash Movement for this patient payment to enforce Double Entry Accounting
+    await createCashMovementAction({
+      type: 'receipt',
+      category: 'accounts_receivable',
+      amount: data.amount,
+      target_name: data.patient_id,
+      notes: `دفعة من عميل: ${data.notes || ''}`,
+      date: data.date,
     });
-
-    await transaction();
 
     revalidatePath('/patients');
     return { success: true };
   } catch (error) {
     console.error('Add payment error:', error);
-    return { success: false, error: 'فشل إضافة الدفعة وتحديث القيود المالية' };
+    return { success: false, error: 'فشل إضافة الدفعة' };
   }
 }
 
@@ -250,9 +190,9 @@ export async function createCashMovementAction(rawData: z.infer<typeof cashMovem
   try {
     const data = cashMovementSchema.parse(rawData);
     const user = await getLocalSession();
-    if (!user) return { success: false, error: 'غير مصرح' };
+    if (!user || !hasUserPermissionSync(user, 'rep_can_view_financial')) return { success: false, error: 'غير مصرح' };
 
-    const movementId = generateId();
+    const cashMovementId = generateId();
     const transaction = db.transaction(async () => {
       await db.prepare(`
         INSERT INTO cash_movements (
@@ -260,7 +200,7 @@ export async function createCashMovementAction(rawData: z.infer<typeof cashMovem
           amount, source_type, target_name, notes, date, actual_date
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
-        movementId, user.id, data.shift_id || null, data.type, data.category, data.sub_category || null,
+        cashMovementId, user.id, data.shift_id || null, data.type, data.category, data.sub_category || null,
         data.amount, data.source_type || null, data.target_name || null, data.notes || null, 
         data.date, data.actual_date || null
       );
@@ -273,21 +213,9 @@ export async function createCashMovementAction(rawData: z.infer<typeof cashMovem
       `).run(journalId, data.date, `${data.type === 'receipt' ? 'قبض' : 'صرف'} نقدية: ${data.category} - ${data.notes || ''}`, user.id, data.amount);
 
       // Determine Accounts Dynamically
-      const getAccount = async (cat: string, targetName?: string, subCategory?: string) => {
-        // Handle Expense lookups
-        if ((cat === 'expenses' || cat === 'operating_expenses') && subCategory) {
-          const expDef = await db.prepare('SELECT id FROM expense_definitions WHERE name_ar = ?').get(subCategory) as any;
-          if (expDef) {
-            const setting = await db.prepare("SELECT account_id FROM trial_balance_settings WHERE category = 'expense' AND target_id = ?").get(expDef.id.toString()) as any;
-            if (setting?.account_id) return setting.account_id;
-          }
-        }
-
-        // Map form categories to trial_balance_settings categories
-        const mappedCat = (cat === 'operating_expenses' || cat === 'salaries' || cat === 'rent' || cat === 'electricity' || cat === 'personal') ? 'expense' : cat;
-
+      const getAccount = async (cat: string, targetName?: string) => {
         let sql = 'SELECT account_id FROM trial_balance_settings WHERE category = ?';
-        const params: any[] = [mappedCat];
+        const params = [cat];
         if (targetName) {
           sql += ' AND (target_name = ? OR target_type = ?)';
           params.push(targetName, targetName);
@@ -296,33 +224,33 @@ export async function createCashMovementAction(rawData: z.infer<typeof cashMovem
         return setting?.account_id;
       };
 
-      let mainCashAccountId = await getAccount('cash_drawer', 'Main Treasury') || (await db.prepare("SELECT id FROM accounts WHERE code = '111'").get() as any)?.id || 7; 
-      
-      if (data.source_type === 'pos') {
-        const setting = await db.prepare("SELECT account_id FROM trial_balance_settings WHERE category = 'cash' LIMIT 1").get() as any;
-        if (setting?.account_id) mainCashAccountId = setting.account_id;
-      } else if (data.source_type === 'main_safe') {
-        const setting = await db.prepare("SELECT account_id FROM trial_balance_settings WHERE category = 'cash_drawer' LIMIT 1").get() as any;
-        if (setting?.account_id) mainCashAccountId = setting.account_id;
+      const mainCashAccountId = await getAccount('cash_drawer', 'Main Treasury') || 6; 
+      const categoryAccountId = await getAccount(data.category, data.target_name) || 11;
+
+
+
+      const debitAccountId = data.type === 'receipt' ? mainCashAccountId : categoryAccountId;
+      const creditAccountId = data.type === 'receipt' ? categoryAccountId : mainCashAccountId;
+
+      try {
+        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, debitAccountId, 'debit', data.amount);
+      } catch (e) {
+        console.error("debit journal_entries INSERT failed for account:", debitAccountId, e);
+        throw e;
       }
 
-      let categoryAccountId = await getAccount(data.category, data.target_name, data.sub_category) || (await db.prepare("SELECT id FROM accounts WHERE code = '511'").get() as any)?.id || 11; 
-      
-      if (data.type === 'receipt') {
-        // Debit Cash, Credit Category
-        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, mainCashAccountId, 'debit', data.amount);
-        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, categoryAccountId, 'credit', data.amount);
-      } else {
-        // Debit Category, Credit Cash
-        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, categoryAccountId, 'debit', data.amount);
-        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, mainCashAccountId, 'credit', data.amount);
+      try {
+        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, creditAccountId, 'credit', data.amount);
+      } catch (e) {
+        console.error("credit journal_entries INSERT failed for account:", creditAccountId, e);
+        throw e;
       }
     });
 
     await transaction();
 
     revalidatePath('/finance');
-    return { success: true, id: movementId };
+    return { success: true, id: cashMovementId };
   } catch (error) {
     console.error('Create cash movement error:', error);
     return { success: false, error: 'فشل تنفيذ حركة النقدية' };
@@ -335,6 +263,9 @@ export async function getCashMovementsAction(filters?: {
   dateTo?: string;
 }) {
   try {
+    const user = await getLocalSession();
+    if (!user || !hasUserPermissionSync(user, 'rep_can_view_financial')) return { success: false, error: 'غير مصرح' };
+
     let query = `SELECT * FROM cash_movements WHERE 1=1`;
     const params: any[] = [];
 
@@ -362,20 +293,8 @@ export async function getCashMovementsAction(filters?: {
 
 export async function getPointsOfSaleAction() {
   try {
-    const results = await db.prepare(`
-      SELECT p.*, 
-        COALESCE((
-          SELECT COALESCE(SUM(CASE WHEN e.type = 'debit' THEN e.amount ELSE 0 END), 0) - COALESCE(SUM(CASE WHEN e.type = 'credit' THEN e.amount ELSE 0 END), 0)
-          FROM journal_entries e
-          JOIN trial_balance_settings tbs ON e.account_id = tbs.account_id
-          WHERE tbs.category = 'cash' AND tbs.target_id = CAST(p.id AS TEXT)
-        ), p.current_balance) as dynamic_balance
-      FROM points_of_sale p 
-      ORDER BY p.id ASC
-    `).all() as any[];
-
-    const mapped = results.map(p => ({...p, current_balance: p.dynamic_balance ?? p.current_balance}));
-    return { success: true, data: mapped };
+    const results = await db.prepare(`SELECT * FROM points_of_sale ORDER BY id ASC`).all();
+    return { success: true, data: results };
   } catch (error) {
     console.error('Get POS error:', error);
     return { success: false, error: 'فشل جلب نقاط البيع' };
@@ -394,20 +313,8 @@ export async function getExpenseDefinitionsAction() {
 
 export async function getBanksAction() {
   try {
-    const results = await db.prepare(`
-      SELECT b.*, 
-        COALESCE((
-          SELECT COALESCE(SUM(CASE WHEN e.type = 'debit' THEN e.amount ELSE 0 END), 0) - COALESCE(SUM(CASE WHEN e.type = 'credit' THEN e.amount ELSE 0 END), 0)
-          FROM journal_entries e
-          JOIN trial_balance_settings tbs ON e.account_id = tbs.account_id
-          WHERE tbs.category = 'bank' AND tbs.target_id = CAST(b.id AS TEXT)
-        ), b.current_balance) as dynamic_balance
-      FROM banks b 
-      ORDER BY b.name_ar ASC
-    `).all() as any[];
-    
-    const mapped = results.map(b => ({...b, current_balance: b.dynamic_balance ?? b.current_balance}));
-    return { success: true, data: mapped };
+    const results = await db.prepare(`SELECT * FROM banks ORDER BY name_ar ASC`).all();
+    return { success: true, data: results };
   } catch (error) {
     console.error('Get banks error:', error);
     return { success: false, error: 'فشل جلب البيانات البنكية' };
@@ -426,20 +333,8 @@ export async function getPapersAction() {
 
 export async function getCardsAction() {
   try {
-    const results = await db.prepare(`
-      SELECT c.*, 
-        COALESCE((
-          SELECT COALESCE(SUM(CASE WHEN e.type = 'debit' THEN e.amount ELSE 0 END), 0) - COALESCE(SUM(CASE WHEN e.type = 'credit' THEN e.amount ELSE 0 END), 0)
-          FROM journal_entries e
-          JOIN trial_balance_settings tbs ON e.account_id = tbs.account_id
-          WHERE tbs.category = 'card' AND tbs.target_id = CAST(c.id AS TEXT)
-        ), c.current_balance) as dynamic_balance
-      FROM credit_cards c 
-      ORDER BY c.name_ar ASC
-    `).all() as any[];
-
-    const mapped = results.map(c => ({...c, current_balance: c.dynamic_balance ?? c.current_balance}));
-    return { success: true, data: mapped };
+    const results = await db.prepare(`SELECT * FROM credit_cards ORDER BY name_ar ASC`).all();
+    return { success: true, data: results };
   } catch (error) {
     console.error('Get cards error:', error);
     return { success: false, error: 'فشل جلب بيانات البطاقات' };
@@ -448,6 +343,9 @@ export async function getCardsAction() {
 
 export async function getAccountsAction() {
   try {
+    const user = await getLocalSession();
+    if (!user || !hasUserPermissionSync(user, 'rep_can_view_financial')) return { success: false, error: 'غير مصرح' };
+
     const accounts = await db.prepare(`SELECT * FROM accounts ORDER BY code ASC`).all() as any[];
 
     // Fetch total debits and credits for each account from journal entries
@@ -509,6 +407,12 @@ const addAccountSchema = z.object({
 
 export async function addAccountAction(rawData: z.infer<typeof addAccountSchema>) {
   try {
+    const user = await getLocalSession();
+    if (!user || (user.role !== 'owner' && user.role !== 'admin')) {
+      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
+    }
+    if (!user || !hasUserPermissionSync(user, 'rep_can_view_financial')) return { success: false, error: 'غير مصرح' };
+
     const data = addAccountSchema.parse(rawData);
     const res = await db.prepare(`
       INSERT INTO accounts (code, name_ar, name_en, type, is_group, parent_id)
@@ -532,6 +436,12 @@ const updateAccountSchema = z.object({
 
 export async function updateAccountAction(id: number, rawData: z.infer<typeof updateAccountSchema>) {
   try {
+    const user = await getLocalSession();
+    if (!user || (user.role !== 'owner' && user.role !== 'admin')) {
+      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
+    }
+    if (!user || !hasUserPermissionSync(user, 'rep_can_view_financial')) return { success: false, error: 'غير مصرح' };
+
     const data = updateAccountSchema.parse(rawData);
     
     // Build SQL safely
@@ -782,7 +692,7 @@ export async function saveTrialBalanceSettingAction(data: {
 export async function getPatientStatementAction(patientId: string) {
   try {
     const user = await getLocalSession();
-    if (!user) return { success: false, error: 'غير مصرح' };
+    if (!user || !hasUserPermissionSync(user, 'rep_can_view_financial')) return { success: false, error: 'غير مصرح' };
 
     const transactions = await db.prepare(`
       SELECT 
@@ -826,7 +736,7 @@ export async function getPatientStatementAction(patientId: string) {
 export async function getTrialBalanceAction() {
   try {
     const user = await getLocalSession();
-    if (!user) return { success: false, error: 'غير مصرح' };
+    if (!user || !hasUserPermissionSync(user, 'rep_can_view_financial')) return { success: false, error: 'غير مصرح' };
 
     const balances = await db.prepare(`
       SELECT 
@@ -835,7 +745,6 @@ export async function getTrialBalanceAction() {
         a.name_ar,
         a.type,
         a.parent_id,
-        a.is_group,
         COALESCE(SUM(CASE WHEN je.type = 'debit' THEN je.amount ELSE 0 END), 0) as total_debit,
         COALESCE(SUM(CASE WHEN je.type = 'credit' THEN je.amount ELSE 0 END), 0) as total_credit
       FROM accounts a
@@ -887,4 +796,3 @@ export async function getActivityLogsAction() {
     return { success: false, error: 'فشل جلب سجل الرقابة' };
   }
 }
-

@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useState } from 'react'
-import { FileText, Search, Plus, Trash2, CheckCircle2, Clock, AlertCircle, Package } from 'lucide-react'
+import { FileText, Search, Plus, Trash2, CheckCircle2, Clock, AlertCircle, Package, Printer } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { dbSelect, dbExecute } from '@/lib/db/tauri'
 import { toast } from 'react-hot-toast'
@@ -47,7 +47,7 @@ export default function ShortagesClient({ initialData }: { initialData: any[] })
       </div>
 
       {/* Toolbar */}
-      <div className="flex flex-col md:flex-row gap-4 items-center justify-between">
+      <div className="flex flex-col md:flex-row gap-4 items-center justify-between no-print">
         <div className="relative w-full md:w-96">
           <Search className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 w-5 h-5" />
           <input 
@@ -119,6 +119,14 @@ export default function ShortagesClient({ initialData }: { initialData: any[] })
            </button>
 
            <button 
+             onClick={() => window.print()}
+             className="bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-100 dark:border-slate-800 hover:bg-slate-50 px-8 py-4 rounded-3xl font-black shadow-sm transition-all flex items-center gap-3 active:scale-95"
+           >
+             <Printer className="w-5 h-5" />
+             طباعة النواقص
+           </button>
+
+           <button 
              onClick={() => toast('يرجى إضافة النواقص من صفحة الأصناف مباشرة', { icon: 'ℹ️' })}
              className="bg-primary-600 hover:bg-primary-700 text-white px-8 py-4 rounded-3xl font-black shadow-lg shadow-primary-500/20 transition-all flex items-center gap-3 active:scale-95"
            >
@@ -162,7 +170,7 @@ export default function ShortagesClient({ initialData }: { initialData: any[] })
                 </div>
               </div>
 
-              <div className="flex gap-2 mt-2">
+              <div className="flex gap-2 mt-2 no-print">
                 {item.status === 'pending' && (
                   <button 
                     onClick={() => handleStatusUpdate(item.id, 'ordered')}
@@ -189,6 +197,17 @@ export default function ShortagesClient({ initialData }: { initialData: any[] })
           </div>
         )}
       </div>
+
+      {/* Print styles */}
+      <style jsx global>{`
+        @media print {
+          .no-print, nav, button, .flex-col-md-row { display: none !important; }
+          .bg-white { border: none !important; }
+          body { background: white !important; font-size: 12pt; }
+          .grid { display: block !important; }
+          .group { border: 1px solid #eee !important; margin-bottom: 10px !important; break-inside: avoid; }
+        }
+      `}</style>
     </div>
   )
 }

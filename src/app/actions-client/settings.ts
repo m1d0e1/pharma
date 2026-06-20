@@ -59,49 +59,51 @@ export async function updatePharmacyAction(formData: any) {
     if (!localUser || (localUser.role !== 'owner' && localUser.role !== 'admin')) {
       return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
     }
-    if (!localUser || !hasUserPermissionSync(localUser, 'can_manage_settings')) return { success: false, error: 'غير مصرح' };
+    if (!localUser || !hasUserPermissionSync(localUser, 'can_view_settings')) return { success: false, error: 'غير مصرح' };
 
     // 1. Update Cloud (Supabase)
     const supabase = await createClient();
 
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
-    if (authError || !user) {
-      return { success: false, error: 'Unauthorized' };
-    }
+    try {
+      const { data: { user }, error: authError } = await supabase.auth.getUser();
+      if (!authError && user) {
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('pharmacy_id')
+          .eq('id', user.id)
+          .single();
 
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('pharmacy_id')
-      .eq('id', user.id)
-      .single();
+        if (profile?.pharmacy_id) {
+          const { error: updateError } = await supabase
+            .from('pharmacies')
+            .update({
+              name: formData.name,
+              name_en: formData.name_en,
+              phone: formData.phone,
+              address: formData.address,
+              commercial_registry: formData.commercial_registry,
+              tax_card: formData.tax_card,
+              owner_name: formData.owner_name,
+              owner_address: formData.owner_address,
+              owner_phone: formData.owner_phone,
+              owner_mobile: formData.owner_mobile,
+              manager_name: formData.manager_name,
+              manager_address: formData.manager_address,
+              manager_phone: formData.manager_phone,
+              manager_mobile: formData.manager_mobile,
+            })
+            .eq('id', profile.pharmacy_id);
 
-    if (!profile?.pharmacy_id) {
-      return { success: false, error: 'Pharmacy not found' };
-    }
-
-    const { error: updateError } = await supabase
-      .from('pharmacies')
-      .update({
-        name: formData.name,
-        name_en: formData.name_en,
-        phone: formData.phone,
-        address: formData.address,
-        commercial_registry: formData.commercial_registry,
-        tax_card: formData.tax_card,
-        owner_name: formData.owner_name,
-        owner_address: formData.owner_address,
-        owner_phone: formData.owner_phone,
-        owner_mobile: formData.owner_mobile,
-        manager_name: formData.manager_name,
-        manager_address: formData.manager_address,
-        manager_phone: formData.manager_phone,
-        manager_mobile: formData.manager_mobile,
-      })
-      .eq('id', profile.pharmacy_id);
-
-    if (updateError) {
-      console.error('Update pharmacy error:', updateError);
-      // We still continue to update local even if cloud fails (for offline resiliency)
+          if (updateError) {
+            console.error('Update pharmacy error:', updateError);
+            // We still continue to update local even if cloud fails (for offline resiliency)
+          }
+        }
+      } else {
+        console.warn('Supabase auth failed, proceeding with local update only');
+      }
+    } catch (err) {
+      console.warn('Supabase client error, proceeding with local update only:', err);
     }
 
     // 2. Update Local Enforcer (SQLite)
@@ -131,7 +133,7 @@ export async function updatePharmacyAction(formData: any) {
 export async function runDatabaseMaintenanceAction() {
   try {
     const localUser = await getLocalSession();
-    if (!localUser || !hasUserPermissionSync(localUser, 'can_manage_settings')) return { success: false, error: 'غير مصرح' };
+    if (!localUser || !hasUserPermissionSync(localUser, 'can_view_settings')) return { success: false, error: 'غير مصرح' };
 
     await db.exec('VACUUM');
     await db.exec('ANALYZE');

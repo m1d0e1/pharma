@@ -4,7 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 import AccessDenied from '@/components/AccessDenied';
 import { Database, Plus, Search } from 'lucide-react';
-import { dbSelect } from '@/lib/db/tauri';
+import { getOpeningBalancesAction } from '@/app/actions/inventory';
 import Link from 'next/link';
 
 export default function OpeningBalancesPage() {
@@ -25,14 +25,12 @@ export default function OpeningBalancesPage() {
 
           if (isAllowed) {
             setAllowed(true);
-            const data = await dbSelect(`
-              SELECT i.*, m.trade_name, m.trade_name_en 
-              FROM inventory i
-              JOIN master_drugs m ON i.drug_id = m.id
-              WHERE i.barcode LIKE 'OPEN%' OR i.batch_number = 'OPENING'
-              LIMIT 50
-            `);
-            setItems(data || []);
+            const res = await getOpeningBalancesAction();
+            if (res.success) {
+              setItems(res.data || []);
+            } else {
+              console.error('Failed to load opening balances:', res.error);
+            }
           }
         }
       } catch (err) {

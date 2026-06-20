@@ -180,12 +180,12 @@ function CashMovementForm({ type, onClose }: { type: 'disbursement' | 'receipt',
      'إكراميات', 'انترنت', 'أتعاب مهنيين', 'أدوات مكتبية', 'إصلاح وصيانة', 'الرقم الموحد', 'إيجار وسائل نقل', 'تراخيص', 'تليفون وفاكس'
   ];
 
-  const handleSubmit = async () => {
-     
   useHotkeys('enter', (e) => { e.preventDefault(); handleSubmit(); }, { enableOnFormTags: ['input', 'select'] });
 
   useHotkeys('esc', () => { if(typeof onClose === 'function') onClose(); }, { enableOnFormTags: true });
-if (formData.amount <= 0) {
+
+  const handleSubmit = async () => {
+     if (formData.amount <= 0) {
         toast.error('يرجى إدخال قيمة صحيحة');
         return;
      }

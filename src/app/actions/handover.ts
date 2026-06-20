@@ -1,5 +1,6 @@
 'use server';
 
+
 import { dbSelect, dbExecute, dbGet, dbTransaction, generateId } from '@/lib/db/tauri';
 const logActivity = async (userId, action, details) => {
   try {
@@ -173,3 +174,4 @@ export async function processHandoverAction(data: {
   }
 }
 
+export async function getOpenShiftHandoverAction() { return { success: false, data: null }; }

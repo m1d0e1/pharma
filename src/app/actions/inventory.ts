@@ -61,13 +61,13 @@ import { secureCache } from '@/lib/cache/secure_cache';
 // Zod schema for adding inventory
 const addInventorySchema = z.object({
   pharmacy_id: z.string().optional().nullable(),
-  drug_id: z.number().int().positive('معرف الدواء يجب أن يكون رقم موجب'),
-  quantity: z.number().int().positive('الكمية يجب أن تكون رقم موجب'),
-  local_selling_price: z.number().nonnegative('السعر لا يمكن أن يكون سالباً'),
+  drug_id: z.coerce.number().int().positive('معرف الدواء يجب أن يكون رقم موجب'),
+  quantity: z.coerce.number().positive('الكمية يجب أن تكون رقم موجب'),
+  local_selling_price: z.coerce.number().nonnegative('السعر لا يمكن أن يكون سالباً'),
   expiry_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'صيغة التاريخ غير صحيحة (YYYY-MM-DD)'),
   barcode: z.string().optional().nullable(),
   unit: z.string().optional().nullable(),
-  large_to_medium: z.number().int().positive().optional().nullable(),
+  large_to_medium: z.coerce.number().int().positive().optional().nullable(),
 });
 
 // Zod schema for updating inventory
@@ -76,6 +76,8 @@ const updateInventorySchema = z.object({
   quantity: z.number().min(0, 'الكمية لا يمكن أن تكون سالبة'),
   local_selling_price: z.number().positive('السعر يجب أن يكون رقم موجب'),
   reason_id: z.number().optional().nullable(),
+  large_to_medium: z.coerce.number().int().positive().optional().nullable(),
+  expiry_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'صيغة التاريخ غير صحيحة (YYYY-MM-DD)').optional().nullable(),
 });
 
 // Zod schema for deleting inventory
@@ -91,32 +93,49 @@ export type DeleteInventoryInput = z.infer<typeof deleteInventorySchema>;
  * Server Action to add a new inventory item (Local Enforcer)
  */
 export async function addInventoryAction(formData: AddInventoryInput) {
+  console.log('[addInventoryAction] Starting with formData:', JSON.stringify(formData));
   try {
+    // Step 1: Auth check
+    console.log('[addInventoryAction] Step 1: Getting local session...');
     const localUser = await getLocalSession();
-    if (!localUser) return { success: false, error: 'غير مصرح' };
+    console.log('[addInventoryAction] Step 1 result: localUser=', localUser ? `id=${localUser.id}, role=${localUser.role}` : 'NULL');
+    if (!localUser) return { success: false, error: 'غير مصرح - لا يوجد جلسة' };
 
+    // Step 2: Permission check
+    console.log('[addInventoryAction] Step 2: Checking permission can_manage_inventory...');
     const { hasPermission } = await import('@/lib/auth/local');
-    if (!await hasPermission('can_manage_inventory')) {
+    const hasPerm = await hasPermission('can_manage_inventory');
+    console.log('[addInventoryAction] Step 2 result: hasPerm=', hasPerm);
+    if (!hasPerm) {
       return { success: false, error: 'ليس لديك صلاحية إضافة أصناف للمخزون' };
     }
 
+    // Step 3: Validation
+    console.log('[addInventoryAction] Step 3: Validating formData...');
     const validationResult = addInventorySchema.safeParse(formData);
     if (!validationResult.success) {
-      return { success: false, error: 'بيانات الإدخال غير صالحة.' };
+      console.error('[addInventoryAction] Step 3 FAILED: Validation errors:', JSON.stringify(validationResult.error.issues));
+      return { success: false, error: `بيانات الإدخال غير صالحة: ${validationResult.error.issues.map(i => i.message).join(', ')}` };
     }
+    console.log('[addInventoryAction] Step 3 result: validation passed');
 
     const { pharmacy_id, drug_id, quantity, local_selling_price, expiry_date, barcode, unit, large_to_medium } = validationResult.data;
 
-    await secureCache.load();
-    const tradeName = secureCache.getDisplayName(drug_id);
-
+    // Step 4: Generate ID
+    console.log('[addInventoryAction] Step 4: Generating UUID...');
     const id = generateId();
+    console.log('[addInventoryAction] Step 4 result: id=', id);
 
+    // Step 5: Insert
+    console.log('[addInventoryAction] Step 5: Inserting into inventory...');
+    console.log('[addInventoryAction] Step 5 params:', { id, pharmacy_id: pharmacy_id || null, drug_id, quantity, local_selling_price, expiry_date, barcode: barcode || null, unit, large_to_medium });
+    
+    // Begin Transaction using single queries (or standard run)
     await db.prepare(`
       INSERT INTO inventory (id, pharmacy_id, drug_id, quantity, local_selling_price, expiry_date, barcode, strips_per_box)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(id, pharmacy_id || null, drug_id, quantity, local_selling_price, expiry_date, barcode || null, large_to_medium || 1);
-
+    
     if (unit) {
       await db.prepare('UPDATE master_drugs SET large_unit = ? WHERE id = ?').run(unit, drug_id);
     }
@@ -124,16 +143,26 @@ export async function addInventoryAction(formData: AddInventoryInput) {
     if (large_to_medium !== undefined && large_to_medium !== null) {
       await db.prepare('UPDATE master_drugs SET large_to_medium = ? WHERE id = ?').run(large_to_medium, drug_id);
     }
+    
+    console.log('[addInventoryAction] Step 5 result: INSERT successful');
+
+    // Step 6: Get trade name for activity log via direct SQL (avoids loading full 191K cache)
+    let tradeName = `صنف #${drug_id}`;
+    try {
+      const drugRow = await db.prepare('SELECT trade_name, trade_name_en, active_ingredient FROM master_drugs WHERE id = ?').get(drug_id) as any;
+      if (drugRow) tradeName = drugRow.trade_name_en || drugRow.trade_name || drugRow.active_ingredient || tradeName;
+    } catch (_) {}
 
     logActivity(localUser.id, 'ADD_INVENTORY', `أضاف ${quantity} من ${tradeName}`);
+    console.log('[addInventoryAction] SUCCESS! Returning success.');
 
     revalidatePath('/inventory');
     revalidatePath('/');
 
     return { success: true };
   } catch (error: any) {
-    console.error('Local Inventory Error:', error);
-    return { success: false, error: 'فشل إضافة الصنف محلياً.' };
+    console.error('[addInventoryAction] CAUGHT ERROR:', error?.message || error, '\nStack:', error?.stack);
+    return { success: false, error: `فشل إضافة الصنف: ${error?.message || String(error)}` };
   }
 }
 
@@ -155,7 +184,7 @@ export async function updateInventoryAction(formData: UpdateInventoryInput) {
       return { success: false, error: 'بيانات التحديث غير صالحة.' };
     }
 
-    const { id, quantity, local_selling_price, reason_id } = validationResult.data;
+    const { id, quantity, local_selling_price, reason_id, large_to_medium, expiry_date } = validationResult.data;
 
     await secureCache.load();
     const transaction = db.transaction(async () => {
@@ -167,13 +196,29 @@ export async function updateInventoryAction(formData: UpdateInventoryInput) {
 
       if (!current) throw new Error('Inventory not found');
 
-      await db.prepare(`
+      let updateInvQuery = `
         UPDATE inventory 
         SET quantity = ?, local_selling_price = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-      `).run(quantity, local_selling_price, id);
+      `;
+      const invParams: any[] = [quantity, local_selling_price];
 
-      const tradeName = secureCache.getDisplayName(current.drug_id);
+      if (expiry_date) {
+        updateInvQuery += `, expiry_date = ?`;
+        invParams.push(expiry_date);
+      }
+
+      updateInvQuery += ` WHERE id = ?`;
+      invParams.push(id);
+
+      await db.prepare(updateInvQuery).run(...invParams);
+
+      if (large_to_medium !== undefined && large_to_medium !== null) {
+        await db.prepare('UPDATE master_drugs SET large_to_medium = ? WHERE id = ?').run(large_to_medium, current.drug_id);
+      }
+
+      // Direct SQL lookup for trade name (avoids loading full 191K cache for a log message)
+      const drugRow2 = await db.prepare('SELECT trade_name, trade_name_en, active_ingredient FROM master_drugs WHERE id = ?').get(current.drug_id) as any;
+      const tradeName = drugRow2?.trade_name_en || drugRow2?.trade_name || drugRow2?.active_ingredient || `صنف #${current.drug_id}`;
 
       if (reason_id && quantity !== current.quantity) {
         await db.prepare(`
@@ -249,8 +294,9 @@ export async function deleteInventoryAction(formData: DeleteInventoryInput) {
       WHERE i.id = ?
     `).get(validationResult.data.id) as { drug_id: number };
 
-    await secureCache.load();
-    const tradeName = secureCache.getDisplayName(current?.drug_id ?? 0);
+    // Direct SQL lookup for trade name (avoids loading full 191K cache for a log message)
+    const drug3Row = await db.prepare('SELECT trade_name, trade_name_en, active_ingredient FROM master_drugs WHERE id = ?').get(current?.drug_id ?? 0) as any;
+    const tradeName = drug3Row?.trade_name_en || drug3Row?.trade_name || drug3Row?.active_ingredient || `صنف #${current?.drug_id ?? '?'}`;
 
     await db.prepare('DELETE FROM inventory WHERE id = ?').run(validationResult.data.id);
 
@@ -431,30 +477,16 @@ export async function getLowStockAction(threshold: number = 10) {
     if (!user) return { success: false, error: 'غير مصرح' };
 
     const items = await db.prepare(`
-      SELECT i.id, i.drug_id, i.quantity, i.local_selling_price, i.expiry_date,
+      SELECT m.id as id, m.id as drug_id, SUM(i.quantity) as quantity, MIN(i.local_selling_price) as local_selling_price, MIN(i.expiry_date) as expiry_date,
              m.trade_name, m.active_ingredient, m.manufacturer, m.trade_name_en, m.official_price
-      FROM inventory i
-      JOIN master_drugs m ON i.drug_id = m.id
-      WHERE i.quantity <= COALESCE(
-        NULLIF(m.reorder_point, 0),
-        (
-          SELECT COALESCE(SUM(si.quantity_sold), 0)
-          FROM sales_items si
-          JOIN sales_invoices inv ON si.invoice_id = inv.id
-          WHERE si.drug_id = i.drug_id
-            AND si.is_negative = 0
-            AND inv.created_at >= datetime('now', '-30 days', 'localtime')
-        ),
-        ?
-      )
-      ORDER BY i.quantity ASC
+      FROM master_drugs m
+      JOIN inventory i ON m.id = i.drug_id
+      GROUP BY m.id
+      HAVING SUM(i.quantity) < ?
+      ORDER BY quantity ASC
     `).all(threshold) as any[];
 
-    const { secureCache } = require('@/lib/cache/secure_cache');
-    await secureCache.load();
-    const enriched = secureCache.enrich(items);
-
-    return { success: true, data: enriched };
+    return { success: true, data: items };
   } catch (error) {
     console.error('Get low stock error:', error);
     return { success: false, error: 'فشل جلب الأصناف منخفضة المخزون' };
@@ -472,7 +504,7 @@ export async function settleNegativeStockAction(drugId: number | string, newInve
     const transaction = db.transaction(async () => {
       // 1. Get negative sales for this drug
       const negativeSales = await db.prepare(`
-        SELECT si.id, si.invoice_id, si.quantity_sold, si.unit_price, si.unit, si.cost_price, si.created_at
+        SELECT si.id, si.invoice_id, si.quantity_sold
         FROM sales_items si
         WHERE si.drug_id = ? AND si.is_negative = 1
         ORDER BY si.created_at ASC
@@ -489,27 +521,29 @@ export async function settleNegativeStockAction(drugId: number | string, newInve
 
         const settleQty = Math.min(sale.quantity_sold, available);
 
-        if (settleQty < sale.quantity_sold) {
-          // Partial settlement: update the current sales_item to settleQty and remove negative flag
+        if (settleQty === sale.quantity_sold) {
+          // Fully settled this negative sale
+          await db.prepare(`
+            UPDATE sales_items 
+            SET inventory_id = ?, is_negative = 0 
+            WHERE id = ?
+          `).run(newInventoryId, sale.id);
+        } else {
+          // Partially settled
+          // 1. Update the original row to just the settled quantity, link to inventory, not negative
           await db.prepare(`
             UPDATE sales_items 
             SET inventory_id = ?, is_negative = 0, quantity_sold = ? 
             WHERE id = ?
           `).run(newInventoryId, settleQty, sale.id);
 
-          // Insert a new sales_item for the remaining negative quantity
-          const remainder = sale.quantity_sold - settleQty;
+          // 2. Insert a new row for the remaining negative quantity
+          const remainingQty = sale.quantity_sold - settleQty;
           await db.prepare(`
-            INSERT INTO sales_items (invoice_id, inventory_id, drug_id, quantity_sold, unit_price, unit, is_negative, cost_price, created_at)
-            VALUES (?, NULL, ?, ?, ?, ?, 1, ?, ?)
-          `).run(sale.invoice_id, drugId, remainder, sale.unit_price, sale.unit, sale.cost_price, sale.created_at);
-        } else {
-          // Full settlement
-          await db.prepare(`
-            UPDATE sales_items 
-            SET inventory_id = ?, is_negative = 0, quantity_sold = ? 
-            WHERE id = ?
-          `).run(newInventoryId, settleQty, sale.id);
+            INSERT INTO sales_items (invoice_id, inventory_id, drug_id, quantity_sold, unit_price, unit, is_negative, created_at)
+            SELECT invoice_id, NULL, drug_id, ?, unit_price, unit, 1, created_at
+            FROM sales_items WHERE id = ?
+          `).run(remainingQty, sale.id);
         }
 
         available -= settleQty;
@@ -529,22 +563,12 @@ export async function settleNegativeStockAction(drugId: number | string, newInve
 }
 // Pre-compiled prepared statements for alerts (cached at module level)
 const _lowStockStmt = db.prepare(`
-  SELECT i.id, i.drug_id, i.quantity, 'low_stock' as alert_type,
+  SELECT m.id as id, m.id as drug_id, SUM(i.quantity) as quantity, 'low_stock' as alert_type,
          m.trade_name, m.active_ingredient, m.manufacturer, m.trade_name_en
-  FROM inventory i
-  JOIN master_drugs m ON i.drug_id = m.id
-  WHERE i.quantity <= COALESCE(
-    NULLIF(m.reorder_point, 0),
-    (
-      SELECT COALESCE(SUM(si.quantity_sold), 0)
-      FROM sales_items si
-      JOIN sales_invoices inv ON si.invoice_id = inv.id
-      WHERE si.drug_id = i.drug_id
-        AND si.is_negative = 0
-        AND inv.created_at >= datetime('now', '-30 days', 'localtime')
-    ),
-    10
-  )
+  FROM master_drugs m
+  JOIN inventory i ON m.id = i.drug_id
+  GROUP BY m.id
+  HAVING SUM(i.quantity) <= 10
   LIMIT 10
 `);
 const _expiringStmt = db.prepare(`
@@ -552,7 +576,7 @@ const _expiringStmt = db.prepare(`
          m.trade_name, m.active_ingredient, m.manufacturer, m.trade_name_en
   FROM inventory i
   JOIN master_drugs m ON i.drug_id = m.id
-  WHERE i.expiry_date > ? AND i.expiry_date <= ?
+  WHERE i.expiry_date > ? AND i.expiry_date <= ? AND i.quantity > 0
   LIMIT 10
 `);
 const _expiredStmt = db.prepare(`
@@ -560,7 +584,7 @@ const _expiredStmt = db.prepare(`
          m.trade_name, m.active_ingredient, m.manufacturer, m.trade_name_en
   FROM inventory i
   JOIN master_drugs m ON i.drug_id = m.id
-  WHERE i.expiry_date <= ?
+  WHERE i.expiry_date <= ? AND i.quantity > 0
   LIMIT 10
 `);
 
@@ -590,22 +614,17 @@ export async function getInventoryAlertsAction() {
 
     const { lowStock, expiring, expired } = await _getAlertsData(today, threeMonthsStr);
 
-    const { secureCache } = require('@/lib/cache/secure_cache');
-    await secureCache.load();
-    const enrichedLowStock = secureCache.enrich(lowStock);
-    const enrichedExpiring = secureCache.enrich(expiring);
-    const enrichedExpired = secureCache.enrich(expired);
-
-    const allAlerts = [...enrichedExpired, ...enrichedExpiring, ...enrichedLowStock];
+    // Queries already JOIN master_drugs - no cache enrichment needed
+    const allAlerts = [...expired, ...expiring, ...lowStock];
 
     return { 
       success: true, 
       data: {
         alerts: allAlerts,
         counts: {
-          lowStock: enrichedLowStock.length,
-          expiring: enrichedExpiring.length,
-          expired: enrichedExpired.length,
+          lowStock: lowStock.length,
+          expiring: expiring.length,
+          expired: expired.length,
           total: allAlerts.length
         }
       }
@@ -626,7 +645,7 @@ export async function getDrugDetailsFullAction(drugId: number | string) {
 
     // Get basic drug info
     const drug = await db.prepare(`
-      SELECT * FROM master_drugs WHERE id = ?
+      SELECT *, official_price as min_price FROM master_drugs WHERE id = ?
     `).get(drugId) as any;
 
     if (!drug) {
@@ -725,19 +744,23 @@ export async function getDrugDetailsFullAction(drugId: number | string) {
     }
     drug.conflicts = conflicts;
 
-    // Get alternatives (same active ingredient)
+    // Get alternatives (same active ingredient + manually linked)
     const alternatives = await db.prepare(`
       SELECT md.id, md.trade_name, md.active_ingredient, md.official_price as min_price, md.manufacturer,
              (SELECT SUM(quantity) FROM inventory WHERE drug_id = md.id) as total_stock
       FROM master_drugs md
-      WHERE md.active_ingredient = ? 
-        AND md.active_ingredient IS NOT NULL 
-        AND md.active_ingredient != '' 
-        AND md.id != ?
-      LIMIT 10
-    `).all(drug.active_ingredient, drugId);
+      WHERE (md.active_ingredient = ? 
+             AND md.active_ingredient IS NOT NULL 
+             AND md.active_ingredient != '')
+         OR md.id IN (
+             SELECT alternative_id FROM drug_alternatives WHERE drug_id = ?
+             UNION
+             SELECT drug_id FROM drug_alternatives WHERE alternative_id = ?
+         )
+    `).all(drug.active_ingredient, drugId, drugId) as any[];
     
-    drug.alternatives = alternatives;
+    // Filter out the current drug itself
+    drug.alternatives = alternatives.filter(a => a.id !== drugId).slice(0, 10);
     
     // Get Supplier History
     const supplierHistory = await db.prepare(`
@@ -778,7 +801,8 @@ export async function getInventoryListAction(search?: string) {
         m.generic_name,
         m.active_ingredient,
         m.category,
-        m.manufacturer
+        m.manufacturer,
+        m.large_to_medium
       FROM inventory i
       JOIN master_drugs m ON i.drug_id = m.id
     `;
@@ -786,33 +810,33 @@ export async function getInventoryListAction(search?: string) {
 
     if (search && search.trim().length > 0) {
       queryStr += `
-        WHERE m.trade_name LIKE ? 
+        WHERE i.quantity > 0 AND (m.trade_name LIKE ? 
            OR m.trade_name_en LIKE ? 
            OR m.generic_name LIKE ? 
            OR m.active_ingredient LIKE ?
            OR m.category LIKE ?
-           OR m.manufacturer LIKE ?
+           OR m.manufacturer LIKE ?)
       `;
       const searchPattern = `%${search.trim()}%`;
       params.push(searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern);
+    } else {
+      queryStr += ` WHERE i.quantity > 0`;
     }
 
     queryStr += ` ORDER BY i.expiry_date ASC LIMIT 200`;
 
     const data = await db.prepare(queryStr).all(...params) as any[];
 
-    const { secureCache } = require('@/lib/cache/secure_cache');
-    await secureCache.load();
-    const enriched = secureCache.enrich(data);
-
-    const mapped = enriched.map((item: any) => ({
+    // Query already JOINs master_drugs - no cache enrichment needed
+    const mapped = data.map((item: any) => ({
       ...item,
       master_drugs: {
         trade_name: item.trade_name,
         trade_name_en: item.trade_name_en || item.trade_name || '',
         active_ingredient: item.active_ingredient || item.generic_name || '---',
-        category: item.category,
-        manufacturer: item.manufacturer
+        category: item.category || '',
+        manufacturer: item.manufacturer || '',
+        large_to_medium: item.large_to_medium || 1
       }
     }));
 
@@ -822,3 +846,11 @@ export async function getInventoryListAction(search?: string) {
     return { success: false, error: error.message };
   }
 }
+
+
+export async function getMovementsAction() { return { success: false, data: [] }; }
+export async function getOpeningBalancesAction() { return { success: false, data: [] }; }
+export async function getRestockItemsAction() { return { success: false, data: [] }; }
+export async function getAdjustmentsAction() { return { success: false, data: [] }; }
+export async function getUnusedDrugsAction() { return { success: false, data: [] }; }
+export async function deleteDrugAction(id) { return { success: false }; }

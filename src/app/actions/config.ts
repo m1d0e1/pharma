@@ -1,5 +1,6 @@
 'use server';
 
+
 import { dbSelect, dbExecute, dbGet, dbTransaction } from '@/lib/db/tauri';
 const logActivity = async (userId, action, details) => {
   try {
@@ -83,4 +84,3 @@ export async function updateConfigAction(key: string, value: string) {
     return { success: false, error: 'Failed to update config' };
   }
 }
-

@@ -477,3 +477,16 @@
   background-size: 1000px 100%;
   animation: shimmer 2s infinite;
 }
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  button {
+    display: none !important;
+  }
+  * {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+}

@@ -9,6 +9,7 @@ import {
 import Link from 'next/link';
 import { cn } from '@/lib/utils';
 import { getSalesDashboardStatsAction } from '@/app/actions/sales';
+import { getClientSession } from '@/lib/auth/local';
 
 const salesModules = [
   { 
@@ -90,16 +91,13 @@ export default function SalesDashboardPage() {
   const [loadingStats, setLoadingStats] = React.useState(true);
 
   React.useEffect(() => {
-    let role = document.cookie.split('; ').find(row => row.startsWith('userRole='))?.split('=')[1];
-    if (!role) {
-      try {
-        const session = localStorage.getItem('pharma_session_user');
-        if (session) {
-          role = JSON.parse(session).role;
-        }
-      } catch (e) {}
+    async function loadRole() {
+      const user = await getClientSession();
+      if (user && user.role) {
+        setUserRole(user.role);
+      }
     }
-    if (role) setUserRole(role);
+    loadRole();
   }, []);
 
   React.useEffect(() => {

@@ -124,41 +124,161 @@ export async function createPurchaseInvoiceAction(data: {
   discount_value?: number,
   discount_percent?: number,
   tax_percent?: number,
-  status?: string
+  status?: string,
+  cart?: any[],
+  id?: string
 }) {
   try {
     const session = await getLocalSession();
     if (!session || !hasUserPermissionSync(session, 'can_view_purchases')) return { success: false, error: 'Unauthorized' };
 
-    const id = generateId();
-    const stmt = await db.prepare(`
-      INSERT INTO purchase_invoices (
-        id, supplier_id, pharmacy_id, user_id, invoice_number, invoice_date, 
-        payment_method, notes, check_number, expenses, discount_value, 
-        discount_percent, tax_percent, status
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    
-    await stmt.run(
-      id, 
-      data.supplier_id, 
-      session.pharmacy_id, 
-      session.id, 
-      data.invoice_number || null, 
-      data.invoice_date || new Date().toISOString().split('T')[0],
-      data.payment_method || 'credit',
-      data.notes || null,
-      data.check_number || null,
-      data.expenses || 0,
-      data.discount_value || 0,
-      data.discount_percent || 0,
-      data.tax_percent || 0,
-      data.status || 'pending'
-    );
+    const transaction = db.transaction(async () => {
+      const id = data.id || generateId();
+      if (data.id) {
+        await db.prepare('DELETE FROM purchase_invoice_items WHERE invoice_id = ?').run(id);
+        await db.prepare('DELETE FROM purchase_invoices WHERE id = ?').run(id);
+      }
+      const finalStatus = data.status === 'draft' ? 'draft' : 'completed';
+
+      const stmt = await db.prepare(`
+        INSERT INTO purchase_invoices (
+          id, supplier_id, pharmacy_id, user_id, invoice_number, invoice_date, 
+          payment_method, notes, check_number, expenses, discount_value, 
+          discount_percent, tax_percent, status
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      
+      await stmt.run(
+        id, 
+        data.supplier_id, 
+        session.pharmacy_id, 
+        session.id, 
+        data.invoice_number || null, 
+        data.invoice_date || new Date().toISOString().split('T')[0],
+        data.payment_method || 'credit',
+        data.notes || null,
+        data.check_number || null,
+        data.expenses || 0,
+        data.discount_value || 0,
+        data.discount_percent || 0,
+        data.tax_percent || 0,
+        finalStatus
+      );
+
+      let totalAmount = 0;
+
+      if (data.cart && data.cart.length > 0) {
+        const itemStmt = await db.prepare(`
+          INSERT INTO purchase_invoice_items (invoice_id, drug_id, quantity, unit_id, expiry_date, cost_price, selling_price, bonus_quantity, tax_percent, discount_percent)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+        for (const item of data.cart) {
+          await itemStmt.run(
+            id,
+            item.id,
+            item.quantity,
+            item.unit_id || null,
+            item.expiry_date || null,
+            item.cost_price,
+            item.selling_price || null,
+            item.bonus_quantity || 0,
+            item.tax_percent || 0,
+            item.discount_percent || 0
+          );
+
+          if (finalStatus === 'completed') {
+            const itemSubtotal = (item.quantity * item.cost_price);
+            const itemTax = itemSubtotal * (item.tax_percent / 100);
+            const itemDiscount = (itemSubtotal + itemTax) * (item.discount_percent / 100);
+            const itemTotal = itemSubtotal + itemTax - itemDiscount;
+            
+            totalAmount += itemTotal;
+
+            const invId = generateId();
+            await db.prepare(`
+              INSERT INTO inventory (id, drug_id, pharmacy_id, quantity, local_selling_price, cost_price, expiry_date, batch_number)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            `).run(
+              invId, 
+              item.id, 
+              session.pharmacy_id, 
+              Number(item.quantity) + Number(item.bonus_quantity || 0), 
+              item.selling_price || 0, 
+              item.cost_price, 
+              item.expiry_date,
+              data.invoice_number || 'BATCH-' + id.substring(0, 8)
+            );
+          }
+        }
+      }
+
+      if (finalStatus === 'completed') {
+        const invoiceExpenses = data.expenses || 0;
+        const invoiceDiscountVal = data.discount_value || 0;
+        const invoiceDiscountPct = (totalAmount + invoiceExpenses - invoiceDiscountVal) * ((data.discount_percent || 0) / 100);
+        
+        const finalTotal = totalAmount + invoiceExpenses - invoiceDiscountVal - invoiceDiscountPct;
+
+        await db.prepare('UPDATE purchase_invoices SET total_amount = ? WHERE id = ?').run(finalTotal, id);
+
+        const journalId = generateId();
+        const purchaseDate = data.invoice_date || new Date().toISOString().split('T')[0];
+        
+        await db.prepare(`
+          INSERT INTO daily_journals (id, date, description, created_by, total_amount)
+          VALUES (?, ?, ?, ?, ?)
+        `).run(journalId, purchaseDate, `فاتورة شراء رقم ${data.invoice_number || id.slice(0, 8)}`, session.id, finalTotal);
+
+        const getAccountId = async (cat: string) => {
+          const s = await db.prepare('SELECT account_id FROM trial_balance_settings WHERE category = ?').get(cat) as any;
+          return s?.account_id;
+        };
+
+        const accounts = {
+          cash: await getAccountId('cash_drawer') || 6,
+          payable: await getAccountId('accounts_payable') || 7,
+          inventory: await getAccountId('inventory_asset') || 10
+        };
+
+        try {
+          await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, accounts.inventory, 'debit', finalTotal);
+        } catch (e) {
+          console.warn('Accounting missing: could not insert inventory journal entry', e);
+        }
+
+        if (data.payment_method === 'credit' || data.payment_method === 'check') {
+          await db.prepare('UPDATE suppliers SET balance = balance + ? WHERE id = ?').run(finalTotal, data.supplier_id);
+          
+          const typeLabel = data.payment_method === 'credit' ? 'آجل' : 'شيك';
+          await db.prepare('INSERT INTO supplier_transactions (supplier_id, type, amount, reference_id, notes) VALUES (?, ?, ?, ?, ?)').run(data.supplier_id, 'invoice', finalTotal, id, `فاتورة شراء (${typeLabel}) رقم ${data.invoice_number || id}`);
+
+          try {
+            if (accounts.payable) await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, accounts.payable, 'credit', finalTotal);
+          } catch (e) {
+            console.warn('Accounting missing: could not insert payable journal entry', e);
+          }
+        } else {
+          try {
+            if (accounts.cash) await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, accounts.cash, 'credit', finalTotal);
+          } catch (e) {
+            console.warn('Accounting missing: could not insert cash journal entry', e);
+          }
+        }
+
+        logActivity(session.id, 'COMPLETE_PURCHASE', `أكمل فاتورة شراء بقيمة: ${finalTotal.toFixed(2)}`);
+      }
+
+      return id;
+    });
+
+    const invoiceId = await transaction();
 
     revalidatePath('/purchases');
-    return { success: true, id };
+    revalidatePath('/inventory');
+    revalidatePath('/purchases/suppliers');
+    
+    return { success: true, id: invoiceId };
   } catch (error: any) {
     console.error('Create purchase invoice error:', error);
     return { success: false, error: error.message };

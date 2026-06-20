@@ -1,5 +1,6 @@
 'use server';
 
+
 import { dbSelect, dbExecute, dbGet, dbTransaction } from '@/lib/db/tauri';
 const logActivity = async (userId, action, details) => {
   try {
@@ -78,3 +79,4 @@ export async function clearAuditLogsAction() {
   }
 }
 
+export async function getAuditLogsAction() { return { success: false, data: { logs: [], todayCount: 0, userActivity: [], actionTypes: [] } }; }

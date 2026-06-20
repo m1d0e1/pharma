@@ -1,5 +1,6 @@
 'use server';
 
+
 import { dbSelect, dbExecute, dbGet, dbTransaction, generateId } from '@/lib/db/tauri';
 const logActivity = async (userId, action, details) => {
   try {
@@ -98,6 +99,9 @@ export async function addPatientAction(formData: AddPatientInput) {
 
     // 2. Check local session
     const localUser = await getLocalSession();
+    if (!localUser || (localUser.role !== 'owner' && localUser.role !== 'admin')) {
+      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
+    }
     if (!localUser) {
       return { success: false, error: 'غير مصرح. يرجى تسجيل الدخول محلياً.' };
     }
@@ -181,30 +185,20 @@ export async function getPatientProfileAction(patientId: string) {
 
     if (purchaseHistory.length > 0) {
       const invoiceIds = purchaseHistory.map(h => `'${h.invoice_id}'`).join(',');
+      // JOIN master_drugs directly to get trade names (avoids loading 191K cache)
       const items = await db.prepare(`
-        SELECT sit.invoice_id, sit.drug_id
+        SELECT sit.invoice_id, sit.drug_id,
+               m.trade_name_en, m.trade_name
         FROM sales_items sit
+        JOIN master_drugs m ON sit.drug_id = m.id
         WHERE sit.invoice_id IN (${invoiceIds})
       `).all() as any[];
 
-      await secureCache.load();
-      const enrichedItems = secureCache.enrich(items);
-
       purchaseHistory.forEach(inv => {
-        const invItems = enrichedItems.filter(item => item.invoice_id === inv.invoice_id);
+        const invItems = items.filter(item => item.invoice_id === inv.invoice_id);
         inv.drugs = invItems.map(item => item.trade_name_en || item.trade_name).filter(Boolean).join('، ');
       });
     }
-
-    // Query payments history of the patient
-    const payments = await db.prepare(`
-      SELECT pt.*, u.full_name as user_name
-      FROM patient_transactions pt
-      LEFT JOIN users u ON pt.user_id = u.id
-      WHERE pt.patient_id = ? AND pt.type = 'payment'
-      ORDER BY pt.date DESC, pt.created_at DESC
-      LIMIT 100
-    `).all(patientId) as any[];
 
     const totalSpent = await db.prepare(`
       SELECT COALESCE(SUM(total_amount), 0) as total 
@@ -218,13 +212,11 @@ export async function getPatientProfileAction(patientId: string) {
         allergies,
         conditions,
         purchaseHistory,
-        payments,
         totalSpent: totalSpent?.total || 0,
         visitCount: (purchaseHistory as any[]).length,
       }
     };
   } catch (error) {
-    console.error('getPatientProfileAction error:', error);
     return { success: false, error: 'فشل جلب ملف المريض' };
   }
 }
@@ -235,6 +227,9 @@ export async function getPatientProfileAction(patientId: string) {
 export async function addPatientAllergyAction(data: { patient_id: string; allergen: string; severity: string; notes?: string }) {
   try {
     const user = await getLocalSession();
+    if (!user || (user.role !== 'owner' && user.role !== 'admin')) {
+      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
+    }
     if (!user) return { success: false, error: 'غير مصرح' };
 
     await db.prepare('INSERT INTO patient_allergies (patient_id, allergen, severity, notes) VALUES (?, ?, ?, ?)').run(data.patient_id, data.allergen, data.severity, data.notes || null);
@@ -252,6 +247,9 @@ export async function addPatientAllergyAction(data: { patient_id: string; allerg
 export async function addPatientConditionAction(data: { patient_id: string; condition_name: string; medications?: string; notes?: string }) {
   try {
     const user = await getLocalSession();
+    if (!user || (user.role !== 'owner' && user.role !== 'admin')) {
+      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
+    }
     if (!user) return { success: false, error: 'غير مصرح' };
 
     await db.prepare('INSERT INTO patient_conditions (patient_id, condition_name, medications, notes) VALUES (?, ?, ?, ?)').run(data.patient_id, data.condition_name, data.medications || null, data.notes || null);
@@ -269,6 +267,9 @@ export async function addPatientConditionAction(data: { patient_id: string; cond
 export async function deletePatientAllergyAction(id: number) {
   try {
     const user = await getLocalSession();
+    if (!user || (user.role !== 'owner' && user.role !== 'admin')) {
+      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
+    }
     if (!user) return { success: false, error: 'غير مصرح' };
 
     await db.prepare('DELETE FROM patient_allergies WHERE id = ?').run(id);
@@ -294,6 +295,9 @@ export async function updatePatientAction(id: string, formData: AddPatientInput)
 
     // 2. Check local session
     const localUser = await getLocalSession();
+    if (!localUser || (localUser.role !== 'owner' && localUser.role !== 'admin')) {
+      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
+    }
     if (!localUser) {
       return { success: false, error: 'غير مصرح. يرجى تسجيل الدخول محلياً.' };
     }
@@ -397,24 +401,23 @@ export async function getPatientStatementAction(patientId: string) {
       ORDER BY date DESC
     `).all(patientId, patientId) as any[];
 
-    await secureCache.load();
-
-    // Enrich all items that have a drug_id
-    const drugItems = rawItems.filter((item: any) => item.drug_id);
-    const enrichedDrugs = secureCache.enrich(drugItems.map((r: any) => ({ ...r, id: r.drug_id })));
-    const enrichedMap = new Map<number, any>();
-    drugItems.forEach((item: any, idx: number) => {
-      enrichedMap.set(item.drug_id, enrichedDrugs[idx]);
-    });
+    // Use direct SQL JOIN to get drug names instead of loading full 191K cache
+    const drugIdList = rawItems.filter((item: any) => item.drug_id).map((item: any) => item.drug_id);
+    const drugNameMap = new Map<number, string>();
+    if (drugIdList.length > 0) {
+      const uniqueIds = [...new Set(drugIdList)];
+      const drugRows = await db.prepare(
+        `SELECT id, trade_name, trade_name_en FROM master_drugs WHERE id IN (${uniqueIds.map(() => '?').join(',')})`
+      ).all(...uniqueIds) as any[];
+      drugRows.forEach((r: any) => drugNameMap.set(r.id, r.trade_name_en || r.trade_name || `صنف #${r.id}`));
+    }
 
     const items = rawItems.map((item: any) => {
       if (item.drug_id) {
-        const enriched = enrichedMap.get(item.drug_id);
-        const name = enriched?.trade_name || `صنف #${item.drug_id}`;
         return {
           invoice_id: item.invoice_id,
           date: item.date,
-          trade_name: name,
+          trade_name: drugNameMap.get(item.drug_id) || `صنف #${item.drug_id}`,
           quantity_sold: item.quantity_sold,
           unit: item.unit,
           unit_price: item.unit_price,
@@ -434,20 +437,13 @@ export async function getPatientStatementAction(patientId: string) {
     });
 
     // 4. Calculate Current Balance (Opening + Sum of all movements)
-    // We treat 'فاتورة بيع' as positive (increase debt), 'مرتجع بيع' as negative, and transactions as already signed in the query.
-    // Outstanding balance calculations:
-    // - Credit Invoice increases outstanding balance (mov.payment_method === 'credit')
-    // - Account Return decreases outstanding balance (mov.payment_method === 'patient_account')
-    // - Payments / Adjustments decrease outstanding balance (always included)
+    // We treat 'فاتورة بيع' as positive (increase debt), 'مرتجع بيع' as negative, and transactions as already signed in the query
+    // Actually, it's easier to just sum the movements if we adjust signs
     const totalMovements = movements.reduce((acc, mov) => {
-      const isCreditInvoice = mov.type === 'فاتورة بيع' && mov.payment_method === 'credit';
-      const isAccountReturn = mov.type === 'مرتجع بيع' && mov.payment_method === 'patient_account';
-      const isPaymentOrAdjustment = mov.type === 'توريد نقدية' || mov.type === 'إشعار';
-      
-      if (isCreditInvoice || isAccountReturn || isPaymentOrAdjustment) {
-        return acc + mov.value;
-      }
-      return acc;
+      // For credit invoices, value is positive (debt)
+      // For payments, value is negative in the query above (reduces debt)
+      // For returns, value is negative (reduces debt)
+      return acc + (mov.payment_method === 'credit' || mov.type === 'توريد نقدية' || mov.type === 'إشعار' || mov.type === 'مرتجع بيع' ? mov.value : 0);
     }, 0);
     const currentBalance = (patient.opening_balance || 0) + totalMovements;
 
@@ -469,77 +465,34 @@ export async function getPatientStatementAction(patientId: string) {
 export async function updatePatientWalletAction(patientId: string, amount: number, notes?: string) {
   try {
     const user = await getLocalSession();
+    if (!user || (user.role !== 'owner' && user.role !== 'admin')) {
+      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
+    }
     if (!user) return { success: false, error: 'Unauthorized' };
 
-    const cashMovementId = generateId();
-    const journalId = generateId();
-    const today = new Date().toLocaleDateString('en-CA');
-
-    const transaction = db.transaction(async () => {
-      // 1. Update patient wallet balance in the patients table
-      await db.prepare('UPDATE patients SET wallet_balance = wallet_balance + ? WHERE id = ?').run(amount, patientId);
-
-      // 2. Resolve Accounts
-      const getAccount = async (cat: string) => {
-        const setting = await db.prepare('SELECT account_id FROM trial_balance_settings WHERE category = ?').get(cat) as any;
-        return setting?.account_id;
-      };
-
-      const mainCashAccountId = await getAccount('cash_drawer') || (await db.prepare("SELECT id FROM accounts WHERE code = '111'").get() as any)?.id || 7;
-      const receivableAccountId = await getAccount('accounts_receivable') || (await db.prepare("SELECT id FROM accounts WHERE code = '113'").get() as any)?.id || 9;
-
-      // 3. Get active shift if any
-      const openShift = await db.prepare("SELECT id FROM shifts WHERE user_id = ? AND status = 'open'").get(user.id) as any;
-      const shiftId = openShift?.id || null;
-
-      // 4. Insert into cash_movements (Receipt)
-      await db.prepare(`
-        INSERT INTO cash_movements (
-          id, user_id, shift_id, type, category, amount, notes, date, actual_date
-        ) VALUES (?, ?, ?, 'receipt', 'patient_wallet', ?, ?, ?, ?)
-      `).run(
-        cashMovementId, user.id, shiftId, amount, 
-        `شحن محفظة: ${notes || ''}`, today, new Date().toISOString()
-      );
-
-      // 5. Insert into daily_journals
-      await db.prepare(`
-        INSERT INTO daily_journals (id, date, description, created_by, total_amount)
-        VALUES (?, ?, ?, ?, ?)
-      `).run(
-        journalId, today, 
-        `شحن محفظة عميل: ${notes || ''}`, 
-        user.id, amount
-      );
-
-      // 6. Journal entries: Debit Cash, Credit A/R (reduces net customer debt)
-      await db.prepare(`
-        INSERT INTO journal_entries (journal_id, account_id, type, amount, notes)
-        VALUES (?, ?, 'debit', ?, ?)
-      `).run(journalId, mainCashAccountId, amount, `شحن محفظة عميل: ${notes || ''}`);
-
-      await db.prepare(`
-        INSERT INTO journal_entries (journal_id, account_id, type, amount, notes)
-        VALUES (?, ?, 'credit', ?, ?)
-      `).run(journalId, receivableAccountId, amount, `شحن محفظة عميل: ${notes || ''}`);
-    });
-
-    await transaction();
+    await db.prepare('UPDATE patients SET wallet_balance = wallet_balance + ? WHERE id = ?').run(amount, patientId);
+    
+    // Log as a transaction for statements
+    await db.prepare(`
+      INSERT INTO cash_movements (id, user_id, type, category, amount, notes, date)
+      VALUES (?, ?, 'receipt', 'patient_wallet', ?, ?, date('now'))
+    `).run(generateId(), user.id, Math.abs(amount), `شحن محفظة: ${notes || ''}`);
 
     revalidatePath('/patients');
     return { success: true };
   } catch (error: any) {
-    console.error('Wallet update error:', error);
-    return { success: false, error: error.message || 'فشل شحن محفظة المريض' };
+    return { success: false, error: error.message };
   }
 }
 
 export async function getPatientsAction() {
   try {
+    const localUser = await getLocalSession();
+    if (!localUser) return { success: false, error: 'غير مصرح' };
+
     const patients = await db.prepare('SELECT * FROM patients ORDER BY full_name ASC').all() as any[];
     return { success: true, data: patients };
   } catch (error) {
     return { success: false, error: 'فشل جلب قائمة المرضى' };
   }
 }
-

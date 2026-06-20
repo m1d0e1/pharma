@@ -17,7 +17,8 @@ import {
   AlertTriangle,
   X,
   ChevronDown,
-  ChevronLeft
+  ChevronLeft,
+  Printer
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { searchMasterDrugsAction } from '@/app/actions/master-drugs'
@@ -29,7 +30,7 @@ import {
   checkSupplierPendingInvoiceAction
 } from '@/app/actions/purchases'
 import { toast } from 'react-hot-toast'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { usePurchaseStore } from '@/store/usePurchaseStore'
 import { useHotkeys } from 'react-hotkeys-hook'
 import { Supplier, PurchaseItem } from '@/types/purchases'
@@ -40,7 +41,10 @@ const formatExpiryDate = (val: string) => {
   if (digits.length <= 2) {
     return digits;
   }
-  return `${digits.slice(0, 2)}/${digits.slice(2, 6)}`;
+  if (digits.length <= 4) {
+    return `${digits.slice(0, 2)}/${digits.slice(2, 4)}`;
+  }
+  return `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4, 8)}`;
 };
 
 const DrugDetailsModal = nextDynamic(() => import('@/components/pos/DrugDetailsModal'), { ssr: false });
@@ -90,8 +94,8 @@ export default function PurchaseInvoiceClient() {
   // Hotkeys
   useHotkeys('f2', (e) => { e.preventDefault(); handleNewInvoice(); }, { enableOnFormTags: true });
   useHotkeys('f4', (e) => { e.preventDefault(); document.querySelector<HTMLInputElement>('input[placeholder*="Search"]')?.focus(); }, { enableOnFormTags: true });
-  useHotkeys('f9', (e) => { e.preventDefault(); handleSubmit(false); }, { enableOnFormTags: true });
-  useHotkeys('f10', (e) => { e.preventDefault(); handleSubmit(true); }, { enableOnFormTags: true });
+  useHotkeys('f9', (e) => { e.preventDefault(); handleSubmit(false); }, { enableOnFormTags: true }, [cart, selectedSupplier, invoiceHeader]);
+  useHotkeys('f10', (e) => { e.preventDefault(); handleSubmit(true); }, { enableOnFormTags: true }, [cart, selectedSupplier, invoiceHeader]);
 
 
   const [hydrated, setHydrated] = useState(false)
@@ -115,12 +119,13 @@ export default function PurchaseInvoiceClient() {
     })
   }, [])
 
+  const searchParams = useSearchParams()
+
   // Handle drugId from URL once store is hydrated
   useEffect(() => {
     if (!hydrated) return
 
-    const params = new URLSearchParams(window.location.search)
-    const drugId = params.get('drugId')
+    const drugId = searchParams.get('drugId')
     if (drugId && handledDrugIdRef.current !== drugId) {
       handledDrugIdRef.current = drugId
       
@@ -137,7 +142,7 @@ export default function PurchaseInvoiceClient() {
         })
       })
     }
-  }, [hydrated])
+  }, [hydrated, searchParams])
 
   const handleDrugSearch = async (query: string) => {
     setSearchQuery(query)
@@ -235,10 +240,52 @@ export default function PurchaseInvoiceClient() {
             <div className="text-right">
               <p className="font-bold text-sm">تنبيه: توجد فاتورة غير مكتملة لهذا المورد</p>
               <p className="text-[10px] text-slate-500">رقم الفاتورة: {res.invoice.invoice_number || 'بدون رقم'}</p>
+              <button 
+                onClick={async () => {
+                  toast.dismiss(t.id);
+                  try {
+                    const itemsRes = await getPurchaseInvoiceDetailsAction(res.invoice.id);
+                    if (itemsRes.success) {
+                      setInvoiceHeader({
+                        id: res.invoice.id,
+                        invoice_number: res.invoice.invoice_number || '',
+                        invoice_date: res.invoice.invoice_date?.split('T')[0] || new Date().toISOString().split('T')[0],
+                        payment_method: res.invoice.payment_method || 'cash',
+                        notes: res.invoice.notes || '',
+                        discount_percent: res.invoice.discount_percent || 0,
+                        discount_value: res.invoice.discount_value || 0,
+                        expenses: res.invoice.expenses || 0,
+                        status: res.invoice.status || 'draft',
+                      });
+                      
+                      const formattedCart = itemsRes.data.map((i: any) => ({
+                        id: i.drug_id,
+                        name: i.trade_name,
+                        barcode: i.barcode,
+                        quantity: Number(i.quantity) || 1,
+                        bonus: Number(i.bonus) || 0,
+                        discount: Number(i.discount_percent) || 0,
+                        discount_value: Number(i.discount_value) || 0,
+                        tax_percent: Number(i.tax_percent) || 0,
+                        cost_price: Number(i.cost_price) || 0,
+                        selling_price: Number(i.selling_price) || 0,
+                        batch_number: i.batch_number || '',
+                        expiry_date: i.expiry_date || '',
+                        unit: 'علبة'
+                      }));
+                      setCart(formattedCart);
+                      toast.success('تم تحميل الفاتورة بنجاح');
+                    }
+                  } catch (e) {}
+                }}
+                className="mt-2 text-xs bg-amber-500 hover:bg-amber-600 text-white px-3 py-1.5 rounded-md transition-colors"
+              >
+                استكمال الفاتورة
+              </button>
             </div>
-            <button onClick={() => toast.dismiss(t.id)} className="text-slate-400 hover:text-slate-600 mr-auto"><X className="w-4 h-4" /></button>
+            <button onClick={() => toast.dismiss(t.id)} className="text-slate-400 hover:text-slate-600 mr-auto self-start"><X className="w-4 h-4" /></button>
           </div>
-        ), { duration: 5000, position: 'top-center' })
+        ), { duration: 10000, position: 'top-center' })
       }
     }
   }
@@ -261,7 +308,23 @@ export default function PurchaseInvoiceClient() {
 
     // Validation Warnings & Checks
     for (const item of cart) {
+      const quantityNum = Number(item.quantity) || 0;
+      if (quantityNum <= 0) {
+        toast.error(`يجب إدخال كمية صحيحة للصنف ${item.trade_name_en || item.trade_name}`);
+        return;
+      }
+
       const costPriceNum = Number(item.cost_price) || 0;
+      if (costPriceNum <= 0) {
+        toast.error(`يجب إدخال سعر شراء صحيح للصنف ${item.trade_name_en || item.trade_name}`);
+        return;
+      }
+
+      if (!item.expiry_date || item.expiry_date.trim() === '') {
+        toast.error(`يجب إدخال تاريخ الصلاحية للصنف ${item.trade_name_en || item.trade_name}`);
+        return;
+      }
+
       const officialPriceNum = Number(item.official_price) || 0;
       if (costPriceNum > officialPriceNum && officialPriceNum > 0) {
         if (!confirm(`تنبيه: سعر الشراء (${costPriceNum}) أكبر من السعر الرسمي (${officialPriceNum}) للصنف ${item.trade_name_en || item.trade_name}. هل تريد الاستمرار؟`)) {
@@ -271,94 +334,56 @@ export default function PurchaseInvoiceClient() {
       
       if (item.expiry_date) {
         const parts = item.expiry_date.split('/');
-        if (parts.length !== 2) {
-          toast.error(`صيغة تاريخ الصلاحية غير صحيحة للصنف ${item.trade_name_en || item.trade_name}. يجب أن تكون MM/YYYY`);
-          return;
-        }
-        const month = parseInt(parts[0], 10);
-        const year = parseInt(parts[1], 10);
-        if (isNaN(month) || month < 1 || month > 12) {
-          toast.error(`الشهر غير صحيح (${parts[0]}) في تاريخ الصلاحية للصنف ${item.trade_name_en || item.trade_name}`);
-          return;
-        }
-        const currentYear = new Date().getFullYear();
-        if (isNaN(year) || year < currentYear || year > currentYear + 20) {
-          toast.error(`السنة غير صحيحة (${parts[1]}) في تاريخ الصلاحية للصنف ${item.trade_name_en || item.trade_name}`);
-          return;
-        }
-
-        const expiry = new Date(year, month - 1);
-        const now = new Date();
-        const diffMonths = (expiry.getFullYear() - now.getFullYear()) * 12 + (expiry.getMonth() - now.getMonth());
-        if (diffMonths < 6) {
-          if (!confirm(`تنبيه: الصنف ${item.trade_name_en || item.trade_name} ستنتهي صلاحيته خلال ${diffMonths} شهر. هل تريد الاستمرار؟`)) {
-            return;
+        if (parts.length !== 3 || parts[0].length !== 2 || parts[1].length !== 2 || parts[2].length !== 4) {
+          toast.error(`صيغة تاريخ الصلاحية غير صحيحة للصنف ${item.trade_name_en || item.trade_name} (يجب أن تكون dd/mm/yyyy)`);
+          hasError = true;
+        } else {
+          const day = parseInt(parts[0], 10);
+          const month = parseInt(parts[1], 10);
+          const year = parseInt(parts[2], 10);
+          if (day < 1 || day > 31 || month < 1 || month > 12 || year < 2000) {
+            toast.error(`تاريخ الصلاحية غير صالح للصنف ${item.trade_name_en || item.trade_name}`);
+            hasError = true;
+          } else {
+            const now = new Date();
+            const expiry = new Date(year, month - 1, day);
+            const diffMonths = (expiry.getFullYear() - now.getFullYear()) * 12 + (expiry.getMonth() - now.getMonth());
+            
+            if (diffMonths < 0) {
+              toast.error(`الصنف ${item.trade_name_en || item.trade_name} منتهي الصلاحية!`);
+              hasError = true;
+            } else if (diffMonths < 6) {
+              if (!confirm(`تحذير: الصنف ${item.trade_name_en || item.trade_name} اقترب على انتهاء الصلاحية. هل تريد الاستمرار؟`)) {
+                hasError = true;
+              }
+            }
           }
         }
       }
     }
 
+    if (hasError) return;
 
     if (isDraft) setIsDrafting(true); else setIsSubmitting(true);
     
     try {
-      // 1. Create Invoice
       const res = await createPurchaseInvoiceAction({
+        ...invoiceHeader,
         supplier_id: (selectedSupplier as any).id,
-        invoice_number: invoiceHeader.invoice_number,
-        invoice_date: invoiceHeader.invoice_date,
-        payment_method: invoiceHeader.payment_method,
-        notes: invoiceHeader.notes,
-        check_number: invoiceHeader.check_number,
-        expenses: Number(invoiceHeader.expenses) || 0,
-        discount_value: Number(invoiceHeader.discount_value) || 0,
-        discount_percent: Number(invoiceHeader.discount_percent) || 0,
-        tax_percent: Number(invoiceHeader.tax_percent) || 0,
-        status: isDraft ? 'draft' : 'pending'
+        status: isDraft ? 'draft' : 'pending',
+        cart: cart,
+        id: invoiceHeader.id || undefined
       })
 
       if (!res.success) throw new Error(res.error)
 
-      const invoiceId = res.id as string
-
-      // 2. Add Items
-      for (const item of cart) {
-        let formattedExpiry = item.expiry_date;
-        if (formattedExpiry && formattedExpiry.includes('/')) {
-          const [month, year] = formattedExpiry.split('/');
-          formattedExpiry = `${year}-${month.padStart(2, '0')}-01`;
-        }
-        const itemRes = await addPurchaseInvoiceItemAction(invoiceId, {
-          drug_id: typeof item.id === 'string' ? item.id : Number(item.id),
-          quantity: Number(item.quantity) || 0,
-          cost_price: Number(item.cost_price) || 0,
-          selling_price: Number(item.selling_price) || 0,
-          bonus_quantity: Number(item.bonus_quantity) || 0,
-          tax_percent: Number(item.tax_percent) || 0,
-          discount_percent: Number(item.discount_percent) || 0,
-          expiry_date: formattedExpiry
-        })
-        if (!itemRes.success) {
-          toast.error(`فشل إضافة الصنف ${item.trade_name}: ${itemRes.error}`);
-          setIsSubmitting(false);
-          setIsDrafting(false);
-          return;
-        }
-      }
-
-      // 3. Complete Invoice if not draft
       if (!isDraft) {
-        const completeRes = await completePurchaseInvoiceAction(invoiceId)
-        if (completeRes.success) {
-          toast.success('تم تسجيل فاتورة الشراء بنجاح')
-          if (confirm('تم الحفظ بنجاح. هل تريد طباعة الباركود؟')) {
-             setShowBarcodePrinter(true)
-          } else {
-             resetPurchase();
-             router.push('/purchases')
-          }
+        toast.success('تم تسجيل فاتورة الشراء بنجاح')
+        if (confirm('تم الحفظ بنجاح. هل تريد طباعة الباركود؟')) {
+           setShowBarcodePrinter(true)
         } else {
-          throw new Error(completeRes.error)
+           resetPurchase();
+           router.push('/purchases')
         }
       } else {
         toast.success('تم حفظ الفاتورة كمسودة')
@@ -378,12 +403,16 @@ export default function PurchaseInvoiceClient() {
     <div className="space-y-8 animate-in slide-in-from-bottom duration-500 pb-20" dir="rtl">
       {/* Header Form */}
       <div className="bg-white dark:bg-slate-900 p-10 rounded-[45px] shadow-hard border border-slate-100 dark:border-slate-800">
-        <div className="flex items-center gap-4 mb-8">
-          <div>
-            <h1 className="text-3xl font-black text-slate-900 dark:text-white">فاتورة شراء جديدة</h1>
-            <p className="text-slate-500 font-bold">تسجيل توريدات جديدة وتحديث أرصدة الموردين</p>
+        <div className="flex justify-between items-start mb-8">
+          <div className="flex items-center gap-4">
+            <div>
+              <h1 className="text-3xl font-black text-slate-900 dark:text-white">فاتورة شراء جديدة</h1>
+              <p className="text-slate-500 font-bold">تسجيل توريدات جديدة وتحديث أرصدة الموردين</p>
+            </div>
           </div>
-
+          <button onClick={() => window.print()} className="p-3 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 transition-all rounded-xl no-print">
+            <Printer className="w-6 h-6 text-slate-600 dark:text-slate-300" />
+          </button>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
@@ -425,8 +454,7 @@ export default function PurchaseInvoiceClient() {
               placeholder="مثلاً: INV-2024-001"
               className="w-full p-4 bg-slate-50 dark:bg-slate-800 border-none rounded-2xl font-bold outline-none ring-2 ring-transparent focus:ring-primary-500/20 transition-all"
               value={invoiceHeader.invoice_number}
-              onChange={(e) => setInvoiceHeader({ invoice_number: e.target.value })}
-
+              onChange={(e) => setInvoiceHeader({ ...invoiceHeader, invoice_number: e.target.value })}
             />
           </div>
 
@@ -441,8 +469,7 @@ export default function PurchaseInvoiceClient() {
               type="date"
               className="w-full p-4 bg-slate-50 dark:bg-slate-800 border-none rounded-2xl font-bold outline-none ring-2 ring-transparent focus:ring-primary-500/20 transition-all"
               value={invoiceHeader.invoice_date}
-              onChange={(e) => setInvoiceHeader({ invoice_date: e.target.value })}
-
+              onChange={(e) => setInvoiceHeader({ ...invoiceHeader, invoice_date: e.target.value })}
             />
           </div>
 
@@ -455,7 +482,7 @@ export default function PurchaseInvoiceClient() {
 
             <div className="flex bg-slate-50 dark:bg-slate-800 rounded-2xl p-1 gap-1">
               <button 
-                onClick={() => setInvoiceHeader({ payment_method: 'cash' })}
+                onClick={() => setInvoiceHeader({ ...invoiceHeader, payment_method: 'cash' })}
                 className={cn(
                   "flex-1 py-3 px-2 rounded-xl font-black text-[10px] transition-all whitespace-nowrap",
                   invoiceHeader.payment_method === 'cash' ? "bg-white dark:bg-slate-700 shadow-sm text-emerald-600 border border-emerald-100" : "text-slate-400"
@@ -465,7 +492,7 @@ export default function PurchaseInvoiceClient() {
               </button>
 
               <button 
-                onClick={() => setInvoiceHeader({ payment_method: 'credit' })}
+                onClick={() => setInvoiceHeader({ ...invoiceHeader, payment_method: 'credit' })}
                 className={cn(
                   "flex-1 py-3 px-2 rounded-xl font-black text-[10px] transition-all whitespace-nowrap",
                   invoiceHeader.payment_method === 'credit' ? "bg-white dark:bg-slate-700 shadow-sm text-primary-600 border border-primary-100" : "text-slate-400"
@@ -475,7 +502,7 @@ export default function PurchaseInvoiceClient() {
               </button>
 
               <button 
-                onClick={() => setInvoiceHeader({ payment_method: 'check' })}
+                onClick={() => setInvoiceHeader({ ...invoiceHeader, payment_method: 'check' })}
                 className={cn(
                   "flex-1 py-3 px-2 rounded-xl font-black text-[10px] transition-all whitespace-nowrap",
                   invoiceHeader.payment_method === 'check' ? "bg-white dark:bg-slate-700 shadow-sm text-amber-600 border border-amber-100" : "text-slate-400"
@@ -491,8 +518,7 @@ export default function PurchaseInvoiceClient() {
                 placeholder="رقم الشيك..."
                 className="w-full p-3 mt-2 bg-slate-50 dark:bg-slate-800 border-none rounded-xl font-bold outline-none ring-2 ring-amber-500/10 focus:ring-amber-500/20 animate-in slide-in-from-top-2 duration-300"
                 value={invoiceHeader.check_number}
-                onChange={(e) => setInvoiceHeader({ check_number: e.target.value })}
-
+                onChange={(e) => setInvoiceHeader({ ...invoiceHeader, check_number: e.target.value })}
               />
             )}
           </div>
@@ -513,7 +539,7 @@ export default function PurchaseInvoiceClient() {
               value={invoiceHeader.expenses}
               onChange={(e) => {
                 const val = e.target.value.replace(/[^0-9.]/g, '');
-                setInvoiceHeader({ expenses: val });
+                setInvoiceHeader({ ...invoiceHeader, expenses: val });
               }}
             />
           </div>
@@ -531,7 +557,7 @@ export default function PurchaseInvoiceClient() {
               value={invoiceHeader.discount_value}
               onChange={(e) => {
                 const val = e.target.value.replace(/[^0-9.]/g, '');
-                setInvoiceHeader({ discount_value: val });
+                setInvoiceHeader({ ...invoiceHeader, discount_value: val });
               }}
             />
           </div>
@@ -549,7 +575,7 @@ export default function PurchaseInvoiceClient() {
               value={invoiceHeader.discount_percent}
               onChange={(e) => {
                 const val = e.target.value.replace(/[^0-9.]/g, '');
-                setInvoiceHeader({ discount_percent: val });
+                setInvoiceHeader({ ...invoiceHeader, discount_percent: val });
               }}
             />
           </div>
@@ -567,7 +593,7 @@ export default function PurchaseInvoiceClient() {
               value={invoiceHeader.tax_percent}
               onChange={(e) => {
                 const val = e.target.value.replace(/[^0-9.]/g, '');
-                setInvoiceHeader({ tax_percent: val });
+                setInvoiceHeader({ ...invoiceHeader, tax_percent: val });
               }}
             />
           </div>
@@ -738,7 +764,7 @@ export default function PurchaseInvoiceClient() {
                       <td className="px-2 py-3">
                         <input 
                           type="text"
-                          placeholder="MM/YYYY"
+                          placeholder="dd/mm/yyyy"
                           className="w-24 p-2.5 bg-slate-50 dark:bg-slate-800 border-none rounded-xl font-bold text-center outline-none focus:ring-2 focus:ring-primary-500/20 text-xs"
                           value={item.expiry_date}
                           onChange={(e) => updateCartItem(item.id, 'expiry_date', formatExpiryDate(e.target.value))}

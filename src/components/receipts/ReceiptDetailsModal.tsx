@@ -5,7 +5,7 @@ import { useHotkeys } from 'react-hotkeys-hook'
 import DOMPurify from 'dompurify'
 import { getConfigAction } from '@/app/actions/config'
 import toast from 'react-hot-toast'
-import { generateReceiptHtml, generateWhatsAppMessage } from '@/lib/utils/printing'
+import { generateReceiptHtml, generateWhatsAppMessage, printHtmlContent } from '@/lib/utils/printing'
 
 interface SaleItem {
   quantity_sold: number
@@ -95,12 +95,8 @@ export default function ReceiptDetailsModal({ invoice, onClose }: Props) {
   }
 
   const handlePrint = () => {
-    const printWindow = window.open('', '_blank');
-    if (!printWindow) return;
-
     const html = generateReceiptHtml(invoice, pharmacyInfo);
-    printWindow.document.write(html);
-    printWindow.document.close();
+    printHtmlContent(html);
   };
 
   const handleWhatsApp = () => {

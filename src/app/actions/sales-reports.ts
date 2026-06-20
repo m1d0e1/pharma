@@ -1,5 +1,6 @@
 'use server';
 
+
 import { dbSelect, dbExecute, dbGet, dbTransaction } from '@/lib/db/tauri';
 const logActivity = async (userId, action, details) => {
   try {
@@ -51,7 +52,7 @@ const db = {
 
 
 
-import { getLocalSession } from '@/lib/auth/local';
+import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 
 export async function getSalesReportsAction(filters: {
   startDate?: string;
@@ -65,7 +66,7 @@ export async function getSalesReportsAction(filters: {
 }) {
   try {
     const user = await getLocalSession();
-    if (!user) return { success: false, error: 'غير مصرح' };
+    if (!user || !hasUserPermissionSync(user, 'rep_can_view_sales')) return { success: false, error: 'غير مصرح' };
 
     let query = `
       SELECT 
@@ -120,6 +121,9 @@ export async function getSalesReportsAction(filters: {
 
 export async function getInvoiceDetailsAction(invoiceId: string) {
   try {
+    const user = await getLocalSession();
+    if (!user || !hasUserPermissionSync(user, 'rep_can_view_sales')) return { success: false, error: 'غير مصرح' };
+
     const items = await db.prepare(`
       SELECT 
         si.*, 
@@ -136,4 +140,3 @@ export async function getInvoiceDetailsAction(invoiceId: string) {
     return { success: false, error: 'فشل جلب تفاصيل الفاتورة' };
   }
 }
-

@@ -76,3 +76,5 @@ export async function clearAuditLogsAction() {
     return { success: false, error: 'حدث خطأ أثناء مسح السجلات' };
   }
 }
+
+export async function getAuditLogsAction() { return { success: false, data: { logs: [], todayCount: 0, userActivity: [], actionTypes: [] } }; }

@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, forwardRef, useImperativeHandle, useMemo, useCallback, memo } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useBarcodeScanner } from '@/hooks/useBarcodeScanner';
 import { toast, Toaster } from 'react-hot-toast';
 import { ShoppingCart, Search, User, X, Loader2, FileText, Clock, Plus, Printer, Trash2, Maximize2, Minimize2, Calculator, BarChart3, RotateCcw, PlusCircle, Settings, Save, Info } from 'lucide-react';
@@ -24,6 +24,8 @@ import {
 } from '@/app/actions/sales';
 import { ShieldAlert } from 'lucide-react';
 import { checkDrugInteractions } from '@/app/actions/interactions';
+import AccessDenied from '@/components/AccessDenied';
+import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 
 
 
@@ -190,6 +192,7 @@ POSSearchSidebar.displayName = 'POSSearchSidebar';
 
 export default function POSPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [cart, setCart] = useState<CartItem[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [alternatives, setAlternatives] = useState<DrugItem[]>([]);
@@ -203,6 +206,8 @@ export default function POSPage() {
   const [completedInvoice, setCompletedInvoice] = useState<any>(null);
   const [currentUserName, setCurrentUserName] = useState('صيدلي');
   const [currentUser, setCurrentUser] = useState<{ id: string; pharmacy_id: string } | null>(null);
+  const [isAllowed, setIsAllowed] = useState(false);
+  const [isUserLoading, setIsUserLoading] = useState(true);
   const [pendingInteractions, setPendingInteractions] = useState<any[]>([]);
   const [showInteractionModal, setShowInteractionModal] = useState(false);
   const [isCheckingInteractions, setIsCheckingInteractions] = useState(false);
@@ -227,6 +232,18 @@ export default function POSPage() {
   const [totalDiscount, setTotalDiscount] = useState(0);
   const [discountPercent, setDiscountPercent] = useState(0);
   const [additionalFees, setAdditionalFees] = useState(0);
+
+  // Dynamic Units
+  const [unitsList, setUnitsList] = useState<{name_ar: string}[]>([]);
+
+  useEffect(() => {
+    async function fetchUnits() {
+      const { getUnitsAction } = await import('@/app/actions/master-drugs');
+      const res = await getUnitsAction();
+      if (res.success && res.data) setUnitsList(res.data);
+    }
+    fetchUnits();
+  }, []);
 
   // Dynamic navigation sequence helper
   const getNavElements = useCallback(() => {
@@ -316,11 +333,21 @@ export default function POSPage() {
 
   useEffect(() => {
     async function loadUser() {
+      const userObj = await getClientSession();
+      if (!userObj) {
+        setIsUserLoading(false);
+        router.push('/login');
+        return;
+      }
+
+      setIsAllowed(hasUserPermissionSync(userObj, 'can_access_pos') || userObj.role === 'pharmacist' || userObj.role === 'owner' || userObj.role === 'admin');
+
       const res = await getCurrentUserAction();
       if (res.success && res.user) {
         setCurrentUserName(res.user.full_name);
         setCurrentUser({ id: res.user.id, pharmacy_id: res.user.pharmacy_id });
       }
+      setIsUserLoading(false);
     }
     loadUser();
 
@@ -328,16 +355,13 @@ export default function POSPage() {
     setTimeout(() => {
       searchSidebarRef.current?.focus();
     }, 150);
-  }, []);
+  }, [router]);
 
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const params = new URLSearchParams(window.location.search);
-      if (params.get('tab') === 'drafts') {
-        setShowDraftsModal(true);
-      }
+    if (searchParams.get('tab') === 'drafts') {
+      setShowDraftsModal(true);
     }
-  }, []);
+  }, [searchParams]);
 
   // Global Keydown for Delete
   useEffect(() => {
@@ -416,18 +440,18 @@ export default function POSPage() {
     });
   }, []);
 
-  const handleUnitChange = useCallback((drugId: string | number, unit: 'large' | 'medium' | 'small') => {
+  const handleUnitChange = useCallback((drugId: string | number, unit: string) => {
     setCart(prev => prev.map(item => {
       if (String(item.drug_id) !== String(drugId)) return item;
       
       let newPrice = item.basePrice;
-      if (unit === 'medium') {
+      if (unit === item.units.medium || unit === 'medium') {
         newPrice = item.basePrice / (item.units.large_to_medium || 1);
-      } else if (unit === 'small') {
+      } else if (unit === item.units.small || unit === 'small') {
         newPrice = item.basePrice / ((item.units.large_to_medium || 1) * (item.units.medium_to_small || 1));
       }
       
-      return { ...item, selectedUnit: unit, price: Number(newPrice.toFixed(2)) };
+      return { ...item, selectedUnit: unit as any, price: Number(newPrice.toFixed(2)) };
     }));
   }, []);
 
@@ -643,6 +667,18 @@ export default function POSPage() {
     return () => window.removeEventListener('click', handleClick);
   }, []);
 
+  if (isUserLoading) {
+    return (
+      <div className="flex justify-center items-center py-12">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+      </div>
+    );
+  }
+
+  if (!isAllowed) {
+    return <AccessDenied />;
+  }
+
   return (
     <div className="flex flex-1 min-h-0 gap-3 font-sans" dir="rtl">
       <Toaster position="top-center" />
@@ -825,12 +861,12 @@ export default function POSPage() {
                     <td className="px-1 py-2 text-center w-12">
                       <select 
                         value={item.selectedUnit}
-                        onChange={(e) => handleUnitChange(item.drug_id, e.target.value as any)}
+                        onChange={(e) => handleUnitChange(item.drug_id, e.target.value)}
                         data-nav={`unit-select-${index}`}
                         onKeyDown={handleInputKeyDown}
                         className="bg-transparent border-none text-[9px] font-black outline-none cursor-pointer text-blue-600 focus:ring-1 focus:ring-blue-500 rounded px-0.5"
                       >
-                        <option value="large">{item.units.large}</option>
+                        <option value="large">{item.units.large || 'علبة'}</option>
                         {item.units.medium && <option value="medium">{item.units.medium}</option>}
                         {item.units.small && <option value="small">{item.units.small}</option>}
                       </select>

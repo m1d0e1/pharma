@@ -4,7 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { getClientSession } from '@/lib/auth/local';
 import AccessDenied from '@/components/AccessDenied';
 import { Activity, Search, Filter } from 'lucide-react';
-import { dbSelect } from '@/lib/db/tauri';
+import { getMovementsAction } from '@/app/actions/inventory';
 import { cn } from '@/lib/utils';
 
 function extractDrugName(action: string, details: string): string {
@@ -41,15 +41,12 @@ export default function ItemMovementsPage() {
         const localUser = await getClientSession();
         if (localUser) {
           setUser(localUser);
-          const data = await dbSelect(`
-            SELECT l.*, u.full_name as user_name, u.username
-            FROM activity_log l
-            LEFT JOIN users u ON l.user_id = u.id
-            WHERE l.action IN ('ADD_INVENTORY', 'SALE', 'RETURN', 'ADJUST_STOCK')
-            ORDER BY l.created_at DESC
-            LIMIT 100
-          `);
-          setMovements(data || []);
+          const res = await getMovementsAction();
+          if (res.success) {
+            setMovements(res.data || []);
+          } else {
+            console.error('Failed to load item movements:', res.error);
+          }
         }
       } catch (err) {
         console.error('Failed to load item movements:', err);

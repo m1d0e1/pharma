@@ -1,5 +1,6 @@
 'use server';
 
+
 import { dbSelect, dbExecute, dbGet, dbTransaction, generateId } from '@/lib/db/tauri';
 const logActivity = async (userId, action, details) => {
   try {
@@ -52,7 +53,7 @@ const db = {
 
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 
-import { getLocalSession } from '@/lib/auth/local';
+import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 
 
 /**
@@ -178,7 +179,7 @@ export async function closeShiftAction(data: { shift_id?: string; ending_cash_am
 export async function getShiftsAction(filter: { status: string }) {
   try {
     const user = await getLocalSession();
-    if (!user) return { success: false, error: 'غير مصرح' };
+    if (!user || !hasUserPermissionSync(user, 'can_view_shifts')) return { success: false, error: 'غير مصرح' };
 
     const params: any[] = [];
     if (filter.status !== 'all') {
@@ -378,4 +379,3 @@ export async function forceCloseAllShiftsAction() {
     return { success: false, error: 'فشل الإغلاق الاضطراري' };
   }
 }
-

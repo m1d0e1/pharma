@@ -161,15 +161,37 @@ export const generateReceiptHtml = (invoice: any, pharmacyInfo: any) => {
           <p style="margin-top: 12px; font-weight: bold;">--- Powered by PharmaTech ---</p>
         </div>
         
-        <script>
-          window.onload = function() {
-            window.print();
-            setTimeout(() => window.close(), 500);
-          }
-        </script>
       </body>
     </html>
   `;
+};
+
+export const printHtmlContent = (html: string) => {
+  const iframe = document.createElement('iframe');
+  iframe.style.position = 'absolute';
+  iframe.style.width = '0px';
+  iframe.style.height = '0px';
+  iframe.style.border = 'none';
+  document.body.appendChild(iframe);
+  
+  const doc = iframe.contentWindow?.document || iframe.contentDocument;
+  if (!doc) return;
+  
+  doc.open();
+  doc.write(html);
+  doc.close();
+  
+  iframe.onload = () => {
+    setTimeout(() => {
+      iframe.contentWindow?.focus();
+      iframe.contentWindow?.print();
+      setTimeout(() => {
+        if (document.body.contains(iframe)) {
+          document.body.removeChild(iframe);
+        }
+      }, 1000);
+    }, 200);
+  };
 };
 
 export const generateWhatsAppMessage = (invoice: any, pharmacyInfo: any) => {

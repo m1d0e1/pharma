@@ -6,6 +6,7 @@ import dynamic from 'next/dynamic';
 import { subDays, format, parseISO } from 'date-fns';
 import { getClientSession } from '@/lib/auth/local';
 import { dbSelect } from '@/lib/db/tauri';
+import { getReportsDataAction } from '@/app/actions/reports';
 
 const ReportsClient = dynamic(() => import('@/components/dashboard/SalesCharts'));
 
@@ -30,16 +31,15 @@ export default function ReportsPage() {
           return;
         }
 
-        const thirtyDaysAgo = subDays(new Date(), 30).toISOString();
+        const res = await getReportsDataAction();
+        if (!res.success || !res.data) {
+          setLoading(false);
+          return;
+        }
 
-        // 1. Fetch sales history (Completed & Delivered only)
-        const salesHistoryRaw = await dbSelect(`
-          SELECT created_at, total_amount 
-          FROM sales_invoices 
-          WHERE created_at >= ? AND status IN ('completed', 'delivered')
-          ORDER BY created_at ASC
-        `, [thirtyDaysAgo]);
-        setSalesHistoryRawCount(salesHistoryRaw.length);
+        const { salesHistoryRaw = [], topDrugsRaw = [], categoryRaw = [] } = res.data;
+
+        setSalesHistoryRawCount((salesHistoryRaw || []).length);
 
         // Process sales history into daily buckets
         const dailySalesMap = new Map();
@@ -61,17 +61,6 @@ export default function ReportsPage() {
         }));
         setSalesHistory(salesHist);
 
-        // 2. Fetch top selling drugs (Direct Join to master_drugs, Finished Invoices only)
-        const topDrugsRaw = await dbSelect(`
-          SELECT 
-            si.quantity_sold,
-            CASE WHEN md.trade_name_en IS NOT NULL AND md.trade_name_en != '' THEN md.trade_name_en ELSE md.trade_name END as trade_name
-          FROM sales_items si
-          JOIN master_drugs md ON si.drug_id = md.id
-          JOIN sales_invoices sinv ON si.invoice_id = sinv.id
-          WHERE sinv.created_at >= ? AND sinv.status IN ('completed', 'delivered')
-        `, [thirtyDaysAgo]);
-
         setTotalUnitsSold(topDrugsRaw.reduce((sum: number, d: any) => sum + d.quantity_sold, 0));
 
         const drugSalesMap = new Map();
@@ -85,17 +74,6 @@ export default function ReportsPage() {
           .sort((a, b) => b.sales - a.sales)
           .slice(0, 5);
         setTopDrugs(drugs);
-
-        // 3. Fetch sales by category (Direct Join to master_drugs, Finished Invoices only)
-        const categoryRaw = await dbSelect(`
-          SELECT 
-            si.quantity_sold,
-            md.category
-          FROM sales_items si
-          JOIN master_drugs md ON si.drug_id = md.id
-          JOIN sales_invoices sinv ON si.invoice_id = sinv.id
-          WHERE sinv.created_at >= ? AND sinv.status IN ('completed', 'delivered')
-        `, [thirtyDaysAgo]);
 
         const categoryMap = new Map();
         categoryRaw.forEach((item: any) => {

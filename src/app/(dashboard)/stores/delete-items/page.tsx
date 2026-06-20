@@ -1,9 +1,9 @@
 'use client';
 
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { getClientSession } from '@/lib/auth/local'
-import { dbSelect, dbExecute } from '@/lib/db/tauri'
+import { getUnusedDrugsAction, deleteDrugAction } from '@/app/actions/inventory'
 import DeleteUnusedItemsClient from '@/components/inventory/DeleteUnusedItemsClient'
 
 export default function DeleteUnusedItemsPage() {
@@ -12,21 +12,20 @@ export default function DeleteUnusedItemsPage() {
   const [loading, setLoading] = useState(true);
   const [isAuthorized, setIsAuthorized] = useState(false);
 
-  async function loadData() {
+  const loadData = useCallback(async () => {
     try {
-      const data = await dbSelect(`
-        SELECT * FROM master_drugs 
-        WHERE id NOT IN (SELECT drug_id FROM inventory)
-        AND id NOT IN (SELECT drug_id FROM sales_items)
-        ORDER BY trade_name ASC
-      `);
-      setItems(data);
+      const res = await getUnusedDrugsAction();
+      if (res.success) {
+        setItems(res.data || []);
+      } else {
+        console.error('Failed to load unused items:', res.error);
+      }
     } catch (err) {
       console.error('Failed to load unused items:', err);
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
 
   useEffect(() => {
     async function checkAuthAndLoad() {
@@ -45,18 +44,16 @@ export default function DeleteUnusedItemsPage() {
       await loadData();
     }
     checkAuthAndLoad();
-  }, []);
+  }, [router, loadData]);
 
   const handleDelete = async (id: number) => {
     try {
-      const localUser = await getClientSession();
-      if (!localUser || (localUser.role !== 'owner' && localUser.role !== 'admin')) {
-        return { success: false, error: 'ليس لديك صلاحية الحذف' };
+      const res = await deleteDrugAction(id);
+      if (res.success) {
+        await loadData();
+        return { success: true };
       }
-
-      await dbExecute('DELETE FROM master_drugs WHERE id = ?', [id]);
-      await loadData();
-      return { success: true };
+      return res;
     } catch (error: any) {
       return { success: false, error: error.message };
     }

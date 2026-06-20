@@ -487,3 +487,5 @@ export async function resetUserPasswordAction(userId: string, newPassword: strin
   }
 }
 
+
+export async function getStaffManagementDataAction() { return { success: false, data: {} }; }

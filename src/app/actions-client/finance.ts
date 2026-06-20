@@ -92,6 +92,35 @@ export async function addFinancialNoticeAction(rawData: z.infer<typeof noticeSch
        `).run(transId, data.target_id, user.id, 'adjustment', data.amount * sign, data.reason, data.date);
     }
 
+    // Create journal entries for the financial notice to maintain trial balance
+    const journalId = generateId();
+    await db.prepare(`
+      INSERT INTO daily_journals (id, date, description, created_by, total_amount)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(journalId, data.date, `إشعار ${data.type === 'credit' ? 'دائن' : 'مدين'}: ${data.reason}`, user.id, data.amount);
+
+    const getAccount = async (cat: string) => {
+      const setting = await db.prepare('SELECT account_id FROM trial_balance_settings WHERE category = ?').get(cat) as any;
+      return setting?.account_id;
+    };
+
+    let targetAccountCategory = 'cash_drawer';
+    if (data.target_type === 'customer') targetAccountCategory = 'accounts_receivable';
+    else if (data.target_type === 'supplier') targetAccountCategory = 'accounts_payable';
+
+    const targetAccountId = await getAccount(targetAccountCategory) || 11;
+    const expenseAccountId = await getAccount('inventory_adjustment') || 11; // Fallback account for adjustments
+
+    if (data.type === 'credit') {
+      // Credit Note: Debit Expense, Credit Target
+      await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, expenseAccountId, 'debit', data.amount);
+      await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, targetAccountId, 'credit', data.amount);
+    } else {
+      // Debit Note: Debit Target, Credit Income/Adjustment
+      await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, targetAccountId, 'debit', data.amount);
+      await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, expenseAccountId, 'credit', data.amount);
+    }
+
     revalidatePath('/patients');
     return { success: true };
   } catch (error) {
@@ -124,6 +153,16 @@ export async function addPatientPaymentAction(rawData: z.infer<typeof paymentSch
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(id, data.patient_id, user.id, 'payment', data.amount, data.payment_method, data.notes || null, data.date);
 
+    // Create Cash Movement for this patient payment to enforce Double Entry Accounting
+    await createCashMovementAction({
+      type: 'receipt',
+      category: 'accounts_receivable',
+      amount: data.amount,
+      target_name: data.patient_id,
+      notes: `دفعة من عميل: ${data.notes || ''}`,
+      date: data.date,
+    });
+
     revalidatePath('/patients');
     return { success: true };
   } catch (error) {
@@ -151,7 +190,7 @@ export async function createCashMovementAction(rawData: z.infer<typeof cashMovem
     const user = await getLocalSession();
     if (!user || !hasUserPermissionSync(user, 'rep_can_view_financial')) return { success: false, error: 'غير مصرح' };
 
-    const movementId = generateId();
+    const cashMovementId = generateId();
     const transaction = db.transaction(async () => {
       await db.prepare(`
         INSERT INTO cash_movements (
@@ -159,7 +198,7 @@ export async function createCashMovementAction(rawData: z.infer<typeof cashMovem
           amount, source_type, target_name, notes, date, actual_date
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
-        movementId, user.id, data.shift_id || null, data.type, data.category, data.sub_category || null,
+        cashMovementId, user.id, data.shift_id || null, data.type, data.category, data.sub_category || null,
         data.amount, data.source_type || null, data.target_name || null, data.notes || null, 
         data.date, data.actual_date || null
       );
@@ -184,23 +223,32 @@ export async function createCashMovementAction(rawData: z.infer<typeof cashMovem
       };
 
       const mainCashAccountId = await getAccount('cash_drawer', 'Main Treasury') || 6; 
-      let categoryAccountId = await getAccount(data.category, data.target_name) || 11; 
-      
-      if (data.type === 'receipt') {
-        // Debit Cash, Credit Category
-        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, mainCashAccountId, 'debit', data.amount);
-        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, categoryAccountId, 'credit', data.amount);
-      } else {
-        // Debit Category, Credit Cash
-        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, categoryAccountId, 'debit', data.amount);
-        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, mainCashAccountId, 'credit', data.amount);
+      const categoryAccountId = await getAccount(data.category, data.target_name) || 11;
+
+
+
+      const debitAccountId = data.type === 'receipt' ? mainCashAccountId : categoryAccountId;
+      const creditAccountId = data.type === 'receipt' ? categoryAccountId : mainCashAccountId;
+
+      try {
+        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, debitAccountId, 'debit', data.amount);
+      } catch (e) {
+        console.error("debit journal_entries INSERT failed for account:", debitAccountId, e);
+        throw e;
+      }
+
+      try {
+        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, creditAccountId, 'credit', data.amount);
+      } catch (e) {
+        console.error("credit journal_entries INSERT failed for account:", creditAccountId, e);
+        throw e;
       }
     });
 
     await transaction();
 
     revalidatePath('/finance');
-    return { success: true, id: movementId };
+    return { success: true, id: cashMovementId };
   } catch (error) {
     console.error('Create cash movement error:', error);
     return { success: false, error: 'فشل تنفيذ حركة النقدية' };

@@ -1,5 +1,6 @@
 'use server';
 
+
 import { dbSelect, dbExecute, dbGet, dbTransaction } from '@/lib/db/tauri';
 const logActivity = async (userId, action, details) => {
   try {
@@ -136,4 +137,3 @@ export async function getPatientLoyaltyAction(patientId: string) {
     return { success: false, error: 'فشل جلب بيانات الولاء' };
   }
 }
-

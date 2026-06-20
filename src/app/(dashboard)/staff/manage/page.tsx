@@ -8,7 +8,8 @@ import {
   addUserAction, 
   deleteUserAction, 
   updateUserAction, 
-  resetUserPasswordAction 
+  resetUserPasswordAction,
+  getStaffManagementDataAction
 } from '@/app/actions/users';
 import Link from 'next/link';
 import { ArrowRight } from 'lucide-react';
@@ -103,15 +104,25 @@ export default function StaffManagePage() {
 
   async function loadData() {
     try {
-      const u = await dbSelect(`
-        SELECT u.*, ej.name_ar as job_name_ar 
-        FROM users u
-        LEFT JOIN employee_jobs ej ON u.job_id = ej.id
-      `);
-      setUsers(u || []);
+      if (isTauri) {
+        const u = await dbSelect(`
+          SELECT u.*, ej.name_ar as job_name_ar 
+          FROM users u
+          LEFT JOIN employee_jobs ej ON u.job_id = ej.id
+        `);
+        setUsers(u || []);
 
-      const j = await dbSelect('SELECT * FROM employee_jobs ORDER BY name_ar ASC');
-      setJobs(j || []);
+        const j = await dbSelect('SELECT * FROM employee_jobs ORDER BY name_ar ASC');
+        setJobs(j || []);
+      } else {
+        const res = await getStaffManagementDataAction();
+        if (res.success) {
+          setUsers(res.users || []);
+          setJobs(res.jobs || []);
+        } else {
+          console.error(res.error);
+        }
+      }
     } catch (err) {
       console.error('Failed to load users management data:', err);
     }

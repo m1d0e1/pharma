@@ -51,6 +51,7 @@ const db = {
 
 
 import { getLocalSession } from '@/lib/auth/local';
+import { createCashMovementAction } from './finance';
 
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 
@@ -77,6 +78,16 @@ export async function addExpenseAction(data: {
     `).run(id, user.id, data.category, data.amount, data.description, data.date);
 
     logActivity(user.id, 'ADD_EXPENSE', `${data.category}: ${data.amount} ج.م - ${data.description}`);
+
+    // Create a cash movement to ensure double-entry accounting updates
+    await createCashMovementAction({
+      type: 'disbursement',
+      category: 'operating_expenses',
+      sub_category: data.category,
+      amount: data.amount,
+      notes: data.description,
+      date: data.date,
+    });
 
     revalidatePath('/expenses');
     return { success: true, id };

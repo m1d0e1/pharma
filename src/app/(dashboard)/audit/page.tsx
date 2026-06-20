@@ -5,6 +5,7 @@ import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { dbSelect, dbGet } from '@/lib/db/tauri';
 import AuditLogClient from '@/components/admin/AuditLogClient';
 import AccessDenied from '@/components/AccessDenied';
+import { getAuditLogsAction } from '@/app/actions/audit';
 
 export default function AuditPage() {
   const [user, setUser] = useState<any>(null);
@@ -26,44 +27,13 @@ export default function AuditPage() {
       if (isAllowed) {
         setAllowed(true);
 
-      // Fetch logs
-      const logsData = await dbSelect(`
-        SELECT a.*, u.full_name, u.role 
-        FROM activity_log a
-        JOIN users u ON a.user_id = u.id
-        ORDER BY a.created_at DESC
-        LIMIT 500
-      `);
-      setLogs(logsData);
-
-      // Fetch today count
-      const todayCountRow = await dbGet(`
-        SELECT COUNT(*) as count FROM activity_log 
-        WHERE date(created_at) = date('now')
-      `);
-      setTodayCount(todayCountRow?.count || 0);
-
-      // Fetch user activity (7 days)
-      const activityData = await dbSelect(`
-        SELECT u.full_name, COUNT(*) as actions 
-        FROM activity_log a
-        JOIN users u ON a.user_id = u.id
-        WHERE date(a.created_at) >= date('now', '-7 days')
-        GROUP BY u.id
-        ORDER BY actions DESC
-      `);
-      setUserActivity(activityData);
-
-      // Fetch action types
-      const typesData = await dbSelect(`
-        SELECT action, COUNT(*) as count 
-        FROM activity_log
-        WHERE date(created_at) >= date('now', '-7 days')
-        GROUP BY action
-        ORDER BY count DESC
-        LIMIT 10
-      `);
-      setActionTypes(typesData);
+        const res = await getAuditLogsAction();
+        if (res.success && res.data) {
+          setLogs(res.data.logs || []);
+          setTodayCount(res.data.todayCount || 0);
+          setUserActivity(res.data.userActivity || []);
+          setActionTypes(res.data.actionTypes || []);
+        }
       }
     } catch (err) {
       console.error('Failed to load audit logs:', err);

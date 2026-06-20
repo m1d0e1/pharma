@@ -59,13 +59,13 @@ import { secureCache } from '@/lib/cache/secure_cache';
 // Zod schema for adding inventory
 const addInventorySchema = z.object({
   pharmacy_id: z.string().optional().nullable(),
-  drug_id: z.number().int().positive('معرف الدواء يجب أن يكون رقم موجب'),
-  quantity: z.number().int().positive('الكمية يجب أن تكون رقم موجب'),
-  local_selling_price: z.number().nonnegative('السعر لا يمكن أن يكون سالباً'),
+  drug_id: z.coerce.number().int().positive('معرف الدواء يجب أن يكون رقم موجب'),
+  quantity: z.coerce.number().positive('الكمية يجب أن تكون رقم موجب'),
+  local_selling_price: z.coerce.number().nonnegative('السعر لا يمكن أن يكون سالباً'),
   expiry_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'صيغة التاريخ غير صحيحة (YYYY-MM-DD)'),
   barcode: z.string().optional().nullable(),
   unit: z.string().optional().nullable(),
-  large_to_medium: z.number().int().positive().optional().nullable(),
+  large_to_medium: z.coerce.number().int().positive().optional().nullable(),
 });
 
 // Zod schema for updating inventory
@@ -74,6 +74,8 @@ const updateInventorySchema = z.object({
   quantity: z.number().min(0, 'الكمية لا يمكن أن تكون سالبة'),
   local_selling_price: z.number().positive('السعر يجب أن يكون رقم موجب'),
   reason_id: z.number().optional().nullable(),
+  large_to_medium: z.coerce.number().int().positive().optional().nullable(),
+  expiry_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'صيغة التاريخ غير صحيحة (YYYY-MM-DD)').optional().nullable(),
 });
 
 // Zod schema for deleting inventory
@@ -180,8 +182,9 @@ export async function updateInventoryAction(formData: UpdateInventoryInput) {
       return { success: false, error: 'بيانات التحديث غير صالحة.' };
     }
 
-    const { id, quantity, local_selling_price, reason_id } = validationResult.data;
+    const { id, quantity, local_selling_price, reason_id, large_to_medium, expiry_date } = validationResult.data;
 
+    await secureCache.load();
     const transaction = db.transaction(async () => {
       const current = await db.prepare(`
         SELECT i.quantity, i.drug_id
@@ -191,11 +194,25 @@ export async function updateInventoryAction(formData: UpdateInventoryInput) {
 
       if (!current) throw new Error('Inventory not found');
 
-      await db.prepare(`
+      let updateInvQuery = `
         UPDATE inventory 
         SET quantity = ?, local_selling_price = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-      `).run(quantity, local_selling_price, id);
+      `;
+      const invParams: any[] = [quantity, local_selling_price];
+
+      if (expiry_date) {
+        updateInvQuery += `, expiry_date = ?`;
+        invParams.push(expiry_date);
+      }
+
+      updateInvQuery += ` WHERE id = ?`;
+      invParams.push(id);
+
+      await db.prepare(updateInvQuery).run(...invParams);
+
+      if (large_to_medium !== undefined && large_to_medium !== null) {
+        await db.prepare('UPDATE master_drugs SET large_to_medium = ? WHERE id = ?').run(large_to_medium, current.drug_id);
+      }
 
       // Direct SQL lookup for trade name (avoids loading full 191K cache for a log message)
       const drugRow2 = await db.prepare('SELECT trade_name, trade_name_en, active_ingredient FROM master_drugs WHERE id = ?').get(current.drug_id) as any;
@@ -458,12 +475,13 @@ export async function getLowStockAction(threshold: number = 10) {
     if (!user) return { success: false, error: 'غير مصرح' };
 
     const items = await db.prepare(`
-      SELECT i.id, i.drug_id, i.quantity, i.local_selling_price, i.expiry_date,
+      SELECT m.id as id, m.id as drug_id, SUM(i.quantity) as quantity, MIN(i.local_selling_price) as local_selling_price, MIN(i.expiry_date) as expiry_date,
              m.trade_name, m.active_ingredient, m.manufacturer, m.trade_name_en, m.official_price
-      FROM inventory i
-      JOIN master_drugs m ON i.drug_id = m.id
-      WHERE i.quantity < ?
-      ORDER BY i.quantity ASC
+      FROM master_drugs m
+      JOIN inventory i ON m.id = i.drug_id
+      GROUP BY m.id
+      HAVING SUM(i.quantity) < ?
+      ORDER BY quantity ASC
     `).all(threshold) as any[];
 
     return { success: true, data: items };
@@ -543,11 +561,12 @@ export async function settleNegativeStockAction(drugId: number | string, newInve
 }
 // Pre-compiled prepared statements for alerts (cached at module level)
 const _lowStockStmt = db.prepare(`
-  SELECT i.id, i.drug_id, i.quantity, 'low_stock' as alert_type,
+  SELECT m.id as id, m.id as drug_id, SUM(i.quantity) as quantity, 'low_stock' as alert_type,
          m.trade_name, m.active_ingredient, m.manufacturer, m.trade_name_en
-  FROM inventory i
-  JOIN master_drugs m ON i.drug_id = m.id
-  WHERE i.quantity <= 10
+  FROM master_drugs m
+  JOIN inventory i ON m.id = i.drug_id
+  GROUP BY m.id
+  HAVING SUM(i.quantity) <= 10
   LIMIT 10
 `);
 const _expiringStmt = db.prepare(`
@@ -555,7 +574,7 @@ const _expiringStmt = db.prepare(`
          m.trade_name, m.active_ingredient, m.manufacturer, m.trade_name_en
   FROM inventory i
   JOIN master_drugs m ON i.drug_id = m.id
-  WHERE i.expiry_date > ? AND i.expiry_date <= ?
+  WHERE i.expiry_date > ? AND i.expiry_date <= ? AND i.quantity > 0
   LIMIT 10
 `);
 const _expiredStmt = db.prepare(`
@@ -563,7 +582,7 @@ const _expiredStmt = db.prepare(`
          m.trade_name, m.active_ingredient, m.manufacturer, m.trade_name_en
   FROM inventory i
   JOIN master_drugs m ON i.drug_id = m.id
-  WHERE i.expiry_date <= ?
+  WHERE i.expiry_date <= ? AND i.quantity > 0
   LIMIT 10
 `);
 
@@ -780,7 +799,8 @@ export async function getInventoryListAction(search?: string) {
         m.generic_name,
         m.active_ingredient,
         m.category,
-        m.manufacturer
+        m.manufacturer,
+        m.large_to_medium
       FROM inventory i
       JOIN master_drugs m ON i.drug_id = m.id
     `;
@@ -788,15 +808,17 @@ export async function getInventoryListAction(search?: string) {
 
     if (search && search.trim().length > 0) {
       queryStr += `
-        WHERE m.trade_name LIKE ? 
+        WHERE i.quantity > 0 AND (m.trade_name LIKE ? 
            OR m.trade_name_en LIKE ? 
            OR m.generic_name LIKE ? 
            OR m.active_ingredient LIKE ?
            OR m.category LIKE ?
-           OR m.manufacturer LIKE ?
+           OR m.manufacturer LIKE ?)
       `;
       const searchPattern = `%${search.trim()}%`;
       params.push(searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern);
+    } else {
+      queryStr += ` WHERE i.quantity > 0`;
     }
 
     queryStr += ` ORDER BY i.expiry_date ASC LIMIT 200`;
@@ -811,7 +833,8 @@ export async function getInventoryListAction(search?: string) {
         trade_name_en: item.trade_name_en || item.trade_name || '',
         active_ingredient: item.active_ingredient || item.generic_name || '---',
         category: item.category || '',
-        manufacturer: item.manufacturer || ''
+        manufacturer: item.manufacturer || '',
+        large_to_medium: item.large_to_medium || 1
       }
     }));
 
@@ -822,3 +845,10 @@ export async function getInventoryListAction(search?: string) {
   }
 }
 
+
+export async function getMovementsAction() { return { success: false, data: [] }; }
+export async function getOpeningBalancesAction() { return { success: false, data: [] }; }
+export async function getRestockItemsAction() { return { success: false, data: [] }; }
+export async function getAdjustmentsAction() { return { success: false, data: [] }; }
+export async function getUnusedDrugsAction() { return { success: false, data: [] }; }
+export async function deleteDrugAction(id) { return { success: false }; }

@@ -1,5 +1,7 @@
 'use server';
 
+// Client-side auth actions for Tauri/static mode (no 'use server')
+
 import { dbSelect, dbExecute, dbGet, dbTransaction } from '@/lib/db/tauri';
 const logActivity = async (userId, action, details) => {
   try {

@@ -23,6 +23,7 @@ export interface PurchaseItem {
 }
 
 export interface PurchaseInvoiceHeader {
+  id?: string;
   invoice_number: string;
   invoice_date: string;
   payment_method: 'cash' | 'credit' | 'check';

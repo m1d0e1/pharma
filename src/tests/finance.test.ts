@@ -23,6 +23,7 @@ jest.mock('@/lib/db/tauri', () => ({
 
 jest.mock('@/lib/auth/local', () => ({
   getLocalSession: jest.fn(),
+  hasUserPermissionSync: jest.fn(() => true),
 }));
 
 jest.mock('next/cache', () => ({
@@ -30,7 +31,7 @@ jest.mock('next/cache', () => ({
 }));
 
 describe('Finance Module Server Actions', () => {
-  const mockUser = { id: 'test-user-id', pharmacy_id: 'test-pharmacy-id' };
+  const mockUser = { id: 'test-user-id', pharmacy_id: 'test-pharmacy-id', role: 'owner' };
   
   beforeEach(() => {
     jest.clearAllMocks();

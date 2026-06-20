@@ -1,29 +1,12 @@
 'use server';
 
-import { query, execute } from '@/lib/db/client';
+// Client-side stub to satisfy Webpack static resolution during Tauri build.
+// These actions are not executed in the Tauri app, which uses direct SQLite IPC.
 
 export async function serverDbSelect(sql: string, params: any[] = []): Promise<{ success: boolean; data?: any[]; error?: string }> {
-  try {
-    const data = query(sql, params);
-    return { success: true, data };
-  } catch (error: any) {
-    console.error('serverDbSelect error:', error);
-    return { success: false, error: error.message || 'فشلت عملية الاستعلام من قاعدة البيانات' };
-  }
+  return { success: false, error: 'Database server action not supported in Tauri client.' };
 }
 
 export async function serverDbExecute(sql: string, params: any[] = []): Promise<{ success: boolean; data?: any; error?: string }> {
-  try {
-    const result = execute(sql, params);
-    return { 
-      success: true, 
-      data: { 
-        rowsAffected: result.changes, 
-        lastInsertId: Number(result.lastInsertRowid) 
-      } 
-    };
-  } catch (error: any) {
-    console.error('serverDbExecute error:', error);
-    return { success: false, error: error.message || 'فشلت عملية التنفيذ في قاعدة البيانات' };
-  }
+  return { success: false, error: 'Database server action not supported in Tauri client.' };
 }

@@ -1,5 +1,6 @@
 'use server';
 
+
 import { dbSelect, dbExecute, dbGet, dbTransaction } from '@/lib/db/tauri';
 const logActivity = async (userId, action, details) => {
   try {
@@ -51,13 +52,13 @@ const db = {
 
 
 
-import { getLocalSession } from '@/lib/auth/local';
+import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 
 export async function getShiftReportAction(shiftId: string) {
   try {
     const user = await getLocalSession();
-    if (!user) return { success: false, error: 'غير مصرح' };
+    if (!user || !hasUserPermissionSync(user, 'rep_can_view_shifts')) return { success: false, error: 'غير مصرح' };
 
     // 1. Shift Basic Info
     const shift = await db.prepare(`
@@ -170,19 +171,8 @@ const getShrinkageStmt = db.prepare(`
 const getStockAlertsStmt = db.prepare(`
   SELECT COUNT(*) as count
   FROM inventory i
-  JOIN master_drugs m ON i.drug_id = m.id
-  WHERE i.quantity <= COALESCE(
-    NULLIF(m.reorder_point, 0),
-    (
-      SELECT COALESCE(SUM(si.quantity_sold), 0)
-      FROM sales_items si
-      JOIN sales_invoices inv ON si.invoice_id = inv.id
-      WHERE si.drug_id = i.drug_id
-        AND si.is_negative = 0
-        AND inv.created_at >= datetime('now', '-30 days', 'localtime')
-    ),
-    10
-  )
+  LEFT JOIN master_drugs m ON i.drug_id = m.id
+  WHERE i.quantity <= COALESCE(m.reorder_point, 5)
 `);
 
 const getSalesTrendStmt = db.prepare(`
@@ -192,16 +182,27 @@ const getSalesTrendStmt = db.prepare(`
     SELECT date(date, '+1 day')
     FROM dates
     WHERE date < date('now', 'localtime')
+  ),
+  daily_sales AS (
+    SELECT date(created_at) as date, SUM(total_amount) as total
+    FROM sales_invoices
+    WHERE status = 'completed'
+    GROUP BY date(created_at)
+  ),
+  daily_returns AS (
+    SELECT date(created_at) as date, SUM(total_refund) as total
+    FROM returns
+    WHERE status = 'approved'
+    GROUP BY date(created_at)
   )
   SELECT 
     d.date,
-    COALESCE(SUM(si.total_amount), 0) as sales,
-    COALESCE(SUM(r.total_refund), 0) as returns,
-    (COALESCE(SUM(si.total_amount), 0) - COALESCE(SUM(r.total_refund), 0)) as net_sales
+    COALESCE(s.total, 0) as sales,
+    COALESCE(r.total, 0) as returns,
+    (COALESCE(s.total, 0) - COALESCE(r.total, 0)) as net_sales
   FROM dates d
-  LEFT JOIN sales_invoices si ON date(si.created_at) = d.date AND si.status = 'completed'
-  LEFT JOIN returns r ON date(r.created_at) = d.date AND r.status = 'approved'
-  GROUP BY d.date
+  LEFT JOIN daily_sales s ON s.date = d.date
+  LEFT JOIN daily_returns r ON r.date = d.date
   ORDER BY d.date ASC
 `);
 
@@ -241,7 +242,7 @@ const _getDashboardKPIs = unstable_cache(
 export async function getDashboardKPIsAction() {
   try {
     const user = await getLocalSession();
-    if (!user) return { success: false, error: 'غير مصرح' };
+    if (!user || !hasUserPermissionSync(user, 'rep_can_view_sales')) return { success: false, error: 'غير مصرح' };
 
     const today = new Date().toISOString().split('T')[0];
     const startOfDay = today + ' 00:00:00';
@@ -266,7 +267,7 @@ const _getSalesTrend = unstable_cache(
 export async function getSalesTrendAction(days: number = 30) {
   try {
     const user = await getLocalSession();
-    if (!user) return { success: false, error: 'غير مصرح' };
+    if (!user || !hasUserPermissionSync(user, 'rep_can_view_sales')) return { success: false, error: 'غير مصرح' };
 
     const results = await _getSalesTrend('-' + (days - 1) + ' days');
 
@@ -277,3 +278,4 @@ export async function getSalesTrendAction(days: number = 30) {
   }
 }
 
+export async function getReportsDataAction() { return { success: false, data: {} }; }

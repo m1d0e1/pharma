@@ -1,5 +1,6 @@
 'use server';
 
+
 import { dbSelect, dbExecute, dbGet, dbTransaction, generateId } from '@/lib/db/tauri';
 const logActivity = async (userId, action, details) => {
   try {
@@ -52,11 +53,14 @@ const db = {
 
 
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
-import { getLocalSession } from '@/lib/auth/local'
+import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local'
 import { secureCache } from '@/lib/cache/secure_cache';
 
 export async function getMasterDrugAction(id: number) {
   try {
+    const user = await getLocalSession();
+    if (!user || !hasUserPermissionSync(user, 'can_manage_inventory')) return { success: false, error: 'غير مصرح' };
+
     const item = await db.prepare('SELECT * FROM master_drugs WHERE id = ?').get(id) as any;
     return { success: true, data: item };
   } catch (error: any) {
@@ -67,7 +71,10 @@ export async function getMasterDrugAction(id: number) {
 export async function addMasterDrugAction(data: any) {
   try {
     const localUser = await getLocalSession();
-    if (!localUser) return { success: false, error: 'غير مصرح' };
+    if (!localUser || (localUser.role !== 'owner' && localUser.role !== 'admin')) {
+      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
+    }
+    if (!localUser || !hasUserPermissionSync(localUser, 'can_manage_inventory')) return { success: false, error: 'غير مصرح' };
 
     const stmt = db.prepare(`
       INSERT INTO master_drugs (
@@ -181,7 +188,10 @@ export async function searchInventoryAction(query: string) {
 export async function updateMasterDrugAction(id: number, data: any) {
   try {
     const localUser = await getLocalSession();
-    if (!localUser) return { success: false, error: 'غير مصرح' };
+    if (!localUser || (localUser.role !== 'owner' && localUser.role !== 'admin')) {
+      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
+    }
+    if (!localUser || !hasUserPermissionSync(localUser, 'can_manage_inventory')) return { success: false, error: 'غير مصرح' };
 
     const stmt = db.prepare(`
       UPDATE master_drugs SET
@@ -192,7 +202,7 @@ export async function updateMasterDrugAction(id: number, data: any) {
         min_limit = ?, max_limit = ?, reorder_point = ?, default_purchase_qty = ?, prevent_fractions = ?,
         tax_percent = ?, discount_percent = ?, stop_dealing = ?,
         code_2 = ?, item_nature = ?, scientific_group = ?, usage_method = ?,
-        active_ingredient_ratio = ?, is_table = ?
+        active_ingredient_ratio = ?, is_table = ?, indications = ?, side_effects = ?
       WHERE id = ?
     `);
 
@@ -232,6 +242,8 @@ export async function updateMasterDrugAction(id: number, data: any) {
       data.usage_method || null,
       data.active_ingredient_ratio || null,
       data.is_table ?? 0,
+      data.indications || null,
+      data.side_effects || null,
       id
     );
 
@@ -258,8 +270,13 @@ export async function searchMasterDrugsAction(queryOrOptions: string | {
     
     if (!query) return { success: true, data: [] };
 
-    await secureCache.load();
-    const allDrugs = secureCache.getAllDrugs();
+    let allDrugs: any[] = [];
+    try {
+      await secureCache.load();
+      allDrugs = secureCache.getAllDrugs();
+    } catch (cacheErr) {
+      console.warn('secureCache unavailable in searchMasterDrugsAction, searching DB only:', cacheErr);
+    }
     const searchLower = query.toLowerCase().trim();
 
     // 1. Search in secureCache (RAM)
@@ -399,9 +416,18 @@ export async function updateProductCategoryAction(id: number, data: { name_ar: s
 
 export async function deleteProductCategoryAction(id: number) {
   try {
+    const localUser = await getLocalSession();
+    if (!localUser || (localUser.role !== 'owner' && localUser.role !== 'admin')) {
+      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
+    }
+
     // Check if it has children
     const check = await db.prepare('SELECT COUNT(*) as count FROM product_categories WHERE parent_id = ?').get(id) as any;
     if (check.count > 0) return { success: false, error: 'لا يمكن حذف مجموعة تحتوي على مجموعات فرعية' };
+
+    // Check if it has items
+    const itemCheck = await db.prepare('SELECT id FROM master_drugs WHERE category_id = ? LIMIT 1').get(id) as any;
+    if (itemCheck) return { success: false, error: 'لا يمكن حذف مجموعة تحتوي على أصناف مسجلة' };
 
     await db.prepare('DELETE FROM product_categories WHERE id = ?').run(id);
     revalidatePath('/stores/categories');
@@ -730,6 +756,9 @@ export async function getUnusedItemsAction() {
 export async function deleteMasterDrugAction(id: number) {
   try {
     const localUser = await getLocalSession();
+    if (!localUser || (localUser.role !== 'owner' && localUser.role !== 'admin')) {
+      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
+    }
     if (!localUser) return { success: false, error: 'غير مصرح' };
 
     // Security check - Only owner/admin
@@ -806,6 +835,12 @@ export async function addManufacturerAction(data: { name_ar: string, name_en?: s
 // Opening Balances
 export async function getOpeningBalancesAction() {
   try {
+    const session = await getLocalSession();
+    if (!session || (session.role !== 'owner' && session.role !== 'admin')) {
+      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
+    }
+    if (!session || !hasUserPermissionSync(session, 'can_view_opening_balances')) return { success: false, error: 'Unauthorized' };
+
     const items = await db.prepare(`
       SELECT b.*, u.full_name as user_name 
       FROM opening_balances b
@@ -821,7 +856,7 @@ export async function getOpeningBalancesAction() {
 export async function createOpeningBalanceAction(notes?: string) {
   try {
     const session = await getLocalSession();
-    if (!session) return { success: false, error: 'Unauthorized' };
+    if (!session || !hasUserPermissionSync(session, 'can_view_opening_balances')) return { success: false, error: 'Unauthorized' };
     
     const id = generateId();
     await db.prepare('INSERT INTO opening_balances (id, user_id, notes) VALUES (?, ?, ?)').run(id, session.id, notes || null);
@@ -847,7 +882,10 @@ export async function addOpeningBalanceItemAction(obId: string, item: { drug_id:
 export async function completeOpeningBalanceAction(obId: string) {
   try {
     const session = await getLocalSession();
-    if (!session) return { success: false, error: 'Unauthorized' };
+    if (!session || (session.role !== 'owner' && session.role !== 'admin')) {
+      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
+    }
+    if (!session || !hasUserPermissionSync(session, 'can_view_opening_balances')) return { success: false, error: 'Unauthorized' };
 
     const transaction = db.transaction(async () => {
       // 1. Update status
@@ -915,6 +953,9 @@ export async function updateShortageStatusAction(id: number, status: string) {
 export async function createStockAdjustmentAction(inventoryId: string, data: { reason_id: number, old_quantity: number, new_quantity: number, notes?: string }) {
   try {
     const session = await getLocalSession();
+    if (!session || (session.role !== 'owner' && session.role !== 'admin')) {
+      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
+    }
     if (!session) return { success: false, error: 'Unauthorized' };
 
     const transaction = db.transaction(async () => {
@@ -936,3 +977,77 @@ export async function createStockAdjustmentAction(inventoryId: string, data: { r
   }
 }
 
+
+export async function addDrugAlternativeAction(drugId: number, alternativeId: number) {
+  try {
+    const localUser = await getLocalSession();
+    if (!localUser || (localUser.role !== 'owner' && localUser.role !== 'admin')) {
+      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
+    }
+    if (!localUser || !hasUserPermissionSync(localUser, 'can_manage_inventory')) return { success: false, error: 'غير مصرح' };
+
+    const existing = await db.prepare('SELECT id FROM drug_alternatives WHERE (drug_id = ? AND alternative_id = ?) OR (drug_id = ? AND alternative_id = ?)').get(drugId, alternativeId, alternativeId, drugId);
+    if (existing) return { success: true };
+
+    await db.prepare('INSERT INTO drug_alternatives (drug_id, alternative_id) VALUES (?, ?)').run(drugId, alternativeId);
+    
+    await logActivity(localUser.id, 'ADD_ALTERNATIVE', `تم ربط بديل للصنف ${drugId}`);
+    return { success: true };
+  } catch (error: any) {
+    console.error('Add alternative error:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+export async function removeDrugAlternativeAction(drugId: number, alternativeId: number) {
+  try {
+    const localUser = await getLocalSession();
+    if (!localUser || !hasUserPermissionSync(localUser, 'can_manage_inventory')) return { success: false, error: 'غير مصرح' };
+
+    await db.prepare('DELETE FROM drug_alternatives WHERE (drug_id = ? AND alternative_id = ?) OR (drug_id = ? AND alternative_id = ?)').run(drugId, alternativeId, alternativeId, drugId);
+    
+    await logActivity(localUser.id, 'REMOVE_ALTERNATIVE', `تم إزالة بديل للصنف ${drugId}`);
+    return { success: true };
+  } catch (error: any) {
+    console.error('Remove alternative error:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+export async function addDrugInteractionAction(ingredientA: string, ingredientB: string, severity: string = 'minor') {
+  try {
+    const localUser = await getLocalSession();
+    if (!localUser || (localUser.role !== 'owner' && localUser.role !== 'admin')) {
+      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
+    }
+    if (!localUser || !hasUserPermissionSync(localUser, 'can_manage_inventory')) return { success: false, error: 'غير مصرح' };
+
+    if (!ingredientA || !ingredientB) return { success: false, error: 'المادة الفعالة مطلوبة' };
+
+    const existing = await db.prepare('SELECT id FROM drug_interactions WHERE (ingredient_a = ? AND ingredient_b = ?) OR (ingredient_a = ? AND ingredient_b = ?)').get(ingredientA, ingredientB, ingredientB, ingredientA);
+    if (existing) return { success: true };
+
+    await db.prepare('INSERT INTO drug_interactions (ingredient_a, ingredient_b, severity) VALUES (?, ?, ?)').run(ingredientA, ingredientB, severity);
+    
+    await logActivity(localUser.id, 'ADD_INTERACTION', `إضافة تعارض بين ${ingredientA} و ${ingredientB}`);
+    return { success: true };
+  } catch (error: any) {
+    console.error('Add interaction error:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+export async function removeDrugInteractionAction(id: number) {
+  try {
+    const localUser = await getLocalSession();
+    if (!localUser || !hasUserPermissionSync(localUser, 'can_manage_inventory')) return { success: false, error: 'غير مصرح' };
+
+    await db.prepare('DELETE FROM drug_interactions WHERE id = ?').run(id);
+    
+    await logActivity(localUser.id, 'REMOVE_INTERACTION', `إزالة تعارض دوائي`);
+    return { success: true };
+  } catch (error: any) {
+    console.error('Remove interaction error:', error);
+    return { success: false, error: error.message };
+  }
+}

@@ -1,43 +1,86 @@
 'use server';
-import db from '@/lib/db/local';
-import { getLocalSession } from '@/lib/auth/local';
+
+
+import { dbSelect, dbExecute, dbGet, dbTransaction, generateId } from '@/lib/db/tauri';
+const logActivity = async (userId: string, action: string, details: string) => {
+  try {
+    await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [userId, action, details]);
+  } catch (e) {
+    console.error('Failed to log activity:', e);
+  }
+};
+
+const db = {
+  prepare: (sql: string) => ({
+    all: (...p: any[]) => {
+      const args = p.length === 1 && Array.isArray(p[0]) ? p[0] : p;
+      return dbSelect(sql, args);
+    },
+    get: (...p: any[]) => {
+      const args = p.length === 1 && Array.isArray(p[0]) ? p[0] : p;
+      return dbGet(sql, args);
+    },
+    run: async (...p: any[]) => {
+      const args = p.length === 1 && Array.isArray(p[0]) ? p[0] : p;
+      const res = await dbExecute(sql, args);
+      return {
+        changes: res.rowsAffected,
+        lastInsertRowid: res.lastInsertId,
+        rowsAffected: res.rowsAffected,
+        lastInsertId: res.lastInsertId
+      };
+    }
+  }),
+  transaction: (cb: (...args: any[]) => any) => {
+    return (...args: any[]) => dbTransaction(async () => await cb(...args));
+  },
+  exec: (sql: string) => {
+    return dbExecute(sql);
+  }
+};
+
+import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { z } from 'zod';
-import crypto from 'crypto';
 import { secureCache } from '@/lib/cache/secure_cache';
 
 const CheckoutItemSchema = z.object({
   drug_id: z.union([z.number(), z.string()]),
-  quantity_sold: z.number().positive(),
-  unit_price: z.number().nonnegative(),
-  selected_unit: z.enum(['large', 'medium', 'small']).default('large'),
-  is_negative: z.boolean().default(false),
+  quantity_sold: z.coerce.number().positive(),
+  unit_price: z.coerce.number().nonnegative(),
+  selected_unit: z.string().default('large').optional().nullable(),
+  is_negative: z.boolean().default(false).optional().nullable(),
 });
 
 const CheckoutRequestSchema = z.object({
   items: z.array(CheckoutItemSchema).min(1),
-  patient_id: z.string().optional(),
-  shift_id: z.string().optional(),
+  patient_id: z.union([z.string(), z.number(), z.null()]).optional().nullable(),
+  shift_id: z.union([z.string(), z.number(), z.null()]).optional().nullable(),
   payment_method: z.enum(['cash', 'credit', 'check', 'visa', 'delivery', 'wallet']).default('cash'),
-  check_number: z.string().optional(),
+  check_number: z.string().optional().nullable(),
   status: z.enum(['completed', 'draft']).default('completed'),
-  total_discount: z.number().nonnegative().optional().default(0),
-  additional_fees: z.number().nonnegative().optional().default(0),
+  total_discount: z.coerce.number().nonnegative().optional().default(0),
+  additional_fees: z.coerce.number().nonnegative().optional().default(0),
 });
 
 export async function searchDrugsAction(searchTerm: string, limit = 20) {
   try {
     const localUser = await getLocalSession();
-    if (!localUser) return { success: false, error: 'غير مصرح' };
+    if (!localUser || !hasUserPermissionSync(localUser, 'can_view_stock_sale')) return { success: false, error: 'غير مصرح' };
 
     if (!searchTerm || searchTerm.trim().length === 0) {
       return { success: true, data: [] };
     }
 
-    let exactMatch = null;
+    let exactMatch: any = null;
     const searchLower = searchTerm.toLowerCase().trim();
     
-    await secureCache.load();
-    const allDrugs = secureCache.getAllDrugs();
+    let allDrugs: any[] = [];
+    try {
+      await secureCache.load();
+      allDrugs = secureCache.getAllDrugs();
+    } catch (cacheErr) {
+      console.warn('secureCache unavailable in searchDrugsAction, searching DB only:', cacheErr);
+    }
     const cacheMatched = allDrugs.filter((d: any) => {
       const match = (d.trade_name && d.trade_name.toLowerCase().includes(searchLower)) || 
              (d.trade_name_en && d.trade_name_en.toLowerCase().includes(searchLower)) || 
@@ -105,7 +148,8 @@ export async function searchDrugsAction(searchTerm: string, limit = 20) {
     const today = new Date().toISOString().split('T')[0];
 
     const data = matchedDrugs.map((drug: any) => {
-      const inv = inventoryAgg.find((i: any) => i.drug_id === drug.id) || {};
+      const inv = (inventoryAgg as any[]).find((i: any) => i.drug_id === drug.id) || {};
+      const actualLargeToMedium = inv.max_strips > 1 ? inv.max_strips : (drug.large_to_medium || 1);
       return {
         id: drug.id,
         trade_name: drug.trade_name_en || drug.trade_name || 'بدون اسم تجاري',
@@ -120,7 +164,7 @@ export async function searchDrugsAction(searchTerm: string, limit = 20) {
         large_unit: drug.large_unit,
         medium_unit: drug.medium_unit,
         small_unit: drug.small_unit,
-        large_to_medium: inv.max_strips > 1 ? inv.max_strips : (drug.large_to_medium || 1),
+        large_to_medium: actualLargeToMedium,
         medium_to_small: drug.medium_to_small || 1,
         reorder_point: drug.reorder_point || 0,
         profit_margin: (inv.min_price && inv.avg_cost_price > 0)
@@ -129,9 +173,9 @@ export async function searchDrugsAction(searchTerm: string, limit = 20) {
         needs_reorder: drug.reorder_point ? (inv.total_stock || 0) <= drug.reorder_point : false,
         units: {
           large: drug.large_unit || 'علبة',
-          medium: drug.medium_unit || 'شريط',
+          medium: drug.medium_unit || (actualLargeToMedium > 1 ? 'شريط' : undefined),
           small: drug.small_unit,
-          large_to_medium: inv.max_strips > 1 ? inv.max_strips : (drug.large_to_medium || 1),
+          large_to_medium: actualLargeToMedium,
           medium_to_small: drug.medium_to_small || 1
         }
       };
@@ -146,14 +190,14 @@ export async function searchDrugsAction(searchTerm: string, limit = 20) {
 export async function searchPatientsAction(query: string) {
   try {
     const localUser = await getLocalSession();
-    if (!localUser) return { success: false, error: 'غير مصرح' };
+    if (!localUser || !hasUserPermissionSync(localUser, 'can_view_stock_sale')) return { success: false, error: 'غير مصرح' };
 
     if (!query || query.length < 2) {
       return { success: true, data: [] };
     }
 
     const searchPattern = `%${query}%`;
-    const patients = db.prepare(`
+    const patients = await db.prepare(`
       SELECT id, full_name, phone
       FROM patients
       WHERE (full_name LIKE ? OR phone LIKE ?)
@@ -170,13 +214,13 @@ export async function searchPatientsAction(query: string) {
 export async function barcodeLookupAction(barcode: string) {
   try {
     const localUser = await getLocalSession();
-    if (!localUser) return { success: false, error: 'غير مصرح' };
+    if (!localUser || !hasUserPermissionSync(localUser, 'can_view_stock_sale')) return { success: false, error: 'غير مصرح' };
 
     if (!barcode) {
       return { success: false, error: 'الباركود مطلوب' };
     }
 
-    const drug = db.prepare(`
+    const drug = await db.prepare(`
       SELECT
         md.id,
         md.trade_name,
@@ -244,12 +288,12 @@ export async function barcodeLookupAction(barcode: string) {
 export async function fetchDraftsAction() {
   try {
     const localUser = await getLocalSession();
-    if (!localUser) return { success: false, error: 'غير مصرح' };
+    if (!localUser || !hasUserPermissionSync(localUser, 'can_view_stock_sale')) return { success: false, error: 'غير مصرح' };
 
     const pharmacyId = localUser.pharmacy_id || 'local_default';
 
     // Fetch draft invoices with their items and patient info
-    const drafts = db.prepare(`
+    const drafts = await db.prepare(`
       SELECT 
         si.id,
         si.total_amount,
@@ -264,37 +308,32 @@ export async function fetchDraftsAction() {
       ORDER BY si.created_at DESC
     `).all(pharmacyId) as any[];
 
-    // Prepare item fetch query once
-    const getDraftItemsStmt = db.prepare(`
-      SELECT 
-        si.drug_id,
-        si.quantity_sold as qty,
-        si.unit_price as price,
-        si.unit as selectedUnit,
-        si.is_negative,
-        md.trade_name,
-        md.trade_name_en,
-        md.active_ingredient,
-        md.large_unit,
-        md.medium_unit,
-        md.small_unit,
-        md.large_to_medium,
-        md.medium_to_small,
-        md.official_price,
-        md.reorder_point,
-        IFNULL((SELECT SUM(quantity) FROM inventory WHERE drug_id = si.drug_id AND pharmacy_id = ?), 0) as total_stock
-      FROM sales_items si
-      LEFT JOIN master_drugs md ON si.drug_id = md.id
-      WHERE si.invoice_id = ?
-    `);
-
     // For each draft, fetch items
-    const draftsWithItems = await Promise.all(drafts.map(async draft => {
-      const items = getDraftItemsStmt.all(pharmacyId, draft.id) as any[];
+    const draftsWithItems = await Promise.all((drafts as any[]).map(async (draft: any) => {
+      const items = await db.prepare(`
+        SELECT 
+          si.drug_id,
+          si.quantity_sold as qty,
+          si.unit_price as price,
+          si.unit as selectedUnit,
+          si.is_negative,
+          md.trade_name,
+          md.trade_name_en,
+          md.active_ingredient,
+          md.large_unit,
+          md.medium_unit,
+          md.small_unit,
+          md.large_to_medium,
+          md.medium_to_small,
+          md.official_price
+        FROM sales_items si
+        LEFT JOIN master_drugs md ON si.drug_id = md.id
+        WHERE si.invoice_id = ?
+      `).all(draft.id) as any[];
 
       return {
         ...draft,
-        items: items.map(item => ({
+        items: (items as any[]).map((item: any) => ({
           ...item,
           trade_name: item.trade_name_en || item.trade_name,
           units: {
@@ -304,9 +343,7 @@ export async function fetchDraftsAction() {
             large_to_medium: item.large_to_medium || 1,
             medium_to_small: item.medium_to_small || 1
           },
-          basePrice: item.official_price,
-          total_stock: item.total_stock,
-          reorder_point: item.reorder_point || 0
+          basePrice: item.official_price
         }))
       };
     }));
@@ -321,96 +358,33 @@ export async function fetchDraftsAction() {
 export async function processCheckoutAction(data: any) {
   try {
     const localUser = await getLocalSession();
-    if (!localUser) return { success: false, error: 'غير مصرح' };
+    if (!localUser || !hasUserPermissionSync(localUser, 'can_view_stock_sale')) return { success: false, error: 'غير مصرح' };
 
     const pharmacyId = localUser.pharmacy_id || 'local_default';
     const userId = localUser.id;
 
     const validatedData = CheckoutRequestSchema.parse(data);
 
-    // Pre-compiled prepared statements for POS checkout performance
-    const getPatientStmt = db.prepare('SELECT credit_limit, wallet_balance, loyalty_level FROM patients WHERE id = ?');
-    
-    const getOutstandingBalanceStmt = db.prepare(`
-      SELECT (
-        (SELECT COALESCE(opening_balance, 0) FROM patients WHERE id = ?) +
-        (SELECT COALESCE(SUM(total_amount), 0) FROM sales_invoices WHERE patient_id = ? AND payment_method = 'credit' AND status = 'completed') -
-        (SELECT COALESCE(SUM(r.total_refund), 0) FROM returns r JOIN sales_invoices si ON r.invoice_id = si.id WHERE si.patient_id = ?) -
-        (SELECT COALESCE(SUM(amount), 0) FROM patient_transactions WHERE patient_id = ? AND type IN ('payment', 'adjustment'))
-      ) as outstanding_balance
-    `);
-
-    const getDrugInfoStmt = db.prepare(`
-      SELECT m.trade_name, m.large_to_medium, m.medium_to_small, m.has_expiry,
-             COALESCE((SELECT MAX(strips_per_box) FROM inventory WHERE drug_id = m.id), 1) as max_strips
-      FROM master_drugs m
-      WHERE m.id = ?
-    `);
-
-    const insertSalesItemStmt = db.prepare(`
-      INSERT INTO sales_items (invoice_id, inventory_id, drug_id, quantity_sold, unit_price, unit, is_negative, cost_price, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-    `);
-
-    const getValidStockStmt = db.prepare(`
-      SELECT COALESCE(SUM(quantity), 0) as total
-      FROM inventory
-      WHERE drug_id = ? AND (expiry_date IS NULL OR expiry_date >= ?)
-    `);
-
-    const getBatchesStmt = db.prepare(`
-      SELECT id, quantity, cost_price, expiry_date
-      FROM inventory
-      WHERE drug_id = ? AND quantity > 0 AND (expiry_date IS NULL OR expiry_date >= ?)
-      ORDER BY CASE WHEN expiry_date IS NULL THEN 1 ELSE 0 END, expiry_date ASC, created_at ASC
-    `);
-
-    const updateInventoryStockStmt = db.prepare(
-      'UPDATE inventory SET quantity = quantity - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
-    );
-
-    const insertInvoiceStmt = db.prepare(`
-      INSERT INTO sales_invoices (id, pharmacy_id, user_id, patient_id, shift_id, total_amount, payment_method, check_number, status, discount_amount, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-    `);
-
-    const insertDailyJournalStmt = db.prepare(`
-      INSERT INTO daily_journals (id, date, description, created_by, total_amount)
-      VALUES (?, ?, ?, ?, ?)
-    `);
-
-    const getAccountIdStmt = db.prepare('SELECT account_id FROM trial_balance_settings WHERE category = ?');
-
-    const insertJournalEntryStmt = db.prepare(
-      'INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)'
-    );
-
-    const updatePatientWalletStmt = db.prepare(
-      'UPDATE patients SET wallet_balance = wallet_balance - ? WHERE id = ?'
-    );
-
-    const insertRefillReminderStmt = db.prepare(`
-      INSERT INTO refill_reminders (id, patient_id, drug_id, last_sold_date, next_refill_date, created_at)
-      VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-    `);
-
-    const updatePatientPointsStmt = db.prepare(
-      'UPDATE patients SET points_balance = points_balance + ? WHERE id = ?'
-    );
-
     // Patient Financial Validation
     if (validatedData.patient_id && validatedData.status === 'completed') {
-      const patient = getPatientStmt.get(validatedData.patient_id) as any;
+      const patient = await db.prepare('SELECT credit_limit, wallet_balance, loyalty_level FROM patients WHERE id = ?').get(validatedData.patient_id) as any;
       if (patient) {
         const subTotal = validatedData.items.reduce((sum, item) => sum + (item.unit_price * item.quantity_sold), 0) - (validatedData.total_discount || 0);
 
         if (validatedData.payment_method === 'credit') {
-           const balanceRow = getOutstandingBalanceStmt.get(validatedData.patient_id, validatedData.patient_id, validatedData.patient_id, validatedData.patient_id) as any;
-           const currentDebt = balanceRow?.outstanding_balance || 0;
+          const balanceRow = await db.prepare(`
+            SELECT (
+              (SELECT COALESCE(opening_balance, 0) FROM patients WHERE id = ?) +
+              (SELECT COALESCE(SUM(total_amount), 0) FROM sales_invoices WHERE patient_id = ? AND payment_method = 'credit' AND status = 'completed') -
+              (SELECT COALESCE(SUM(r.total_refund), 0) FROM returns r JOIN sales_invoices si ON r.invoice_id = si.id WHERE si.patient_id = ?) -
+              (SELECT COALESCE(SUM(amount), 0) FROM patient_transactions WHERE patient_id = ? AND type IN ('payment', 'adjustment'))
+            ) as outstanding_balance
+          `).get(validatedData.patient_id, validatedData.patient_id, validatedData.patient_id, validatedData.patient_id) as any;
+          const currentDebt = balanceRow?.outstanding_balance || 0;
 
-           if ((currentDebt + subTotal) > (patient.credit_limit || 0)) {
-             return { success: false, error: `تجاوز العميل الحد الائتماني المسموح به (${patient.credit_limit} ج.م)` };
-           }
+          if ((currentDebt + subTotal) > (patient.credit_limit || 0)) {
+            return { success: false, error: `تجاوز العميل الحد الائتماني المسموح به (${patient.credit_limit} ج.م)` };
+          }
         }
 
         if (validatedData.payment_method === 'wallet') {
@@ -423,66 +397,20 @@ export async function processCheckoutAction(data: any) {
       return { success: false, error: 'يجب اختيار مريض للبيع بالأجل أو باستخدام المحفظة' };
     }
 
-    const saleId = crypto.randomUUID();
-    let totalAmount = 0;
+    const saleId = generateId();
+    const totalAmount = validatedData.items.reduce(
+      (sum, item) => sum + (item.unit_price * item.quantity_sold),
+      0
+    ) - (validatedData.total_discount || 0);
 
-    try {
-      db.exec('BEGIN TRANSACTION');
-
+    await dbTransaction(async () => {
       const today = new Date().toISOString().split('T')[0];
       let totalCogs = 0;
 
-      for (const item of validatedData.items) {
-        const drugInfo = getDrugInfoStmt.get(item.drug_id) as any;
-        const drugName = drugInfo?.trade_name || `Drug #${item.drug_id}`;
-        
-        let deductionQty = item.quantity_sold;
-        const actualLargeToMedium = drugInfo?.max_strips > 1 ? drugInfo.max_strips : (drugInfo?.large_to_medium || 1);
-        
-        if (item.selected_unit === 'medium') {
-          deductionQty = item.quantity_sold / actualLargeToMedium;
-        } else if (item.selected_unit === 'small') {
-          deductionQty = item.quantity_sold / (actualLargeToMedium * (drugInfo?.medium_to_small || 1));
-        }
-
-        if (validatedData.status === 'completed') {
-          if (item.is_negative) {
-             insertSalesItemStmt.run(saleId, null, item.drug_id, item.quantity_sold, item.unit_price, item.selected_unit, 1, 0);
-             continue;
-          }
-
-          const validStock = getValidStockStmt.get(item.drug_id, today) as any;
-          if (validStock.total < deductionQty) {
-            throw new Error(`الكمية غير كافية للصنف "${drugName}" (المتاح: ${validStock.total.toFixed(2)})`);
-          }
-
-          let remainingToDeduct = deductionQty;
-          const batches = getBatchesStmt.all(item.drug_id, today) as any[];
-
-          for (const batch of batches) {
-            if (remainingToDeduct <= 0) break;
-
-            const deductFromThisBatch = Math.min(batch.quantity, remainingToDeduct);
-            const batchProp = deductFromThisBatch / deductionQty;
-            const quantityInSelectedUnit = item.quantity_sold * batchProp;
-
-            updateInventoryStockStmt.run(deductFromThisBatch, batch.id);
-            insertSalesItemStmt.run(saleId, batch.id, item.drug_id, quantityInSelectedUnit, item.unit_price, item.selected_unit, 0, batch.cost_price || 0);
-
-            totalCogs += (batch.cost_price || 0) * deductFromThisBatch;
-            remainingToDeduct -= deductFromThisBatch;
-          }
-        } else {
-          insertSalesItemStmt.run(saleId, null, item.drug_id, item.quantity_sold, item.unit_price, item.selected_unit, item.is_negative ? 1 : 0, 0);
-        }
-      }
-
-      totalAmount = validatedData.items.reduce(
-        (sum, item) => sum + (item.unit_price * item.quantity_sold),
-        0
-      ) - (validatedData.total_discount || 0) + (validatedData.additional_fees || 0);
-
-      insertInvoiceStmt.run(
+      await db.prepare(`
+        INSERT INTO sales_invoices (id, pharmacy_id, user_id, patient_id, shift_id, total_amount, payment_method, check_number, status, discount_amount, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      `).run(
         saleId, pharmacyId, userId, 
         validatedData.patient_id || null, 
         validatedData.shift_id || null, 
@@ -493,75 +421,149 @@ export async function processCheckoutAction(data: any) {
         validatedData.total_discount || 0
       );
 
+      for (const item of validatedData.items) {
+        const drugInfo = await db.prepare(`
+          SELECT trade_name, large_to_medium, medium_to_small, has_expiry, medium_unit, small_unit,
+                 COALESCE((SELECT MAX(strips_per_box) FROM inventory WHERE drug_id = id), 1) as max_strips
+          FROM master_drugs
+          WHERE id = ?
+        `).get(item.drug_id) as any;
+        const drugName = drugInfo?.trade_name || `Drug #${item.drug_id}`;
+        
+        let deductionQty = item.quantity_sold;
+        const actualLargeToMedium = drugInfo?.max_strips > 1 ? drugInfo.max_strips : (drugInfo?.large_to_medium || 1);
+        
+        if (item.selected_unit === 'medium' || item.selected_unit === 'شريط' || item.selected_unit === drugInfo?.medium_unit) {
+          deductionQty = item.quantity_sold / actualLargeToMedium;
+        } else if (item.selected_unit === 'small' || item.selected_unit === drugInfo?.small_unit) {
+          deductionQty = item.quantity_sold / (actualLargeToMedium * (drugInfo?.medium_to_small || 1));
+        }
+
+        if (validatedData.status === 'completed') {
+          if (item.is_negative) {
+            await db.prepare(`
+              INSERT INTO sales_items (invoice_id, inventory_id, drug_id, quantity_sold, unit_price, unit, is_negative, cost_price, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            `).run(saleId, null, item.drug_id, item.quantity_sold, item.unit_price, item.selected_unit, 1, 0);
+            continue;
+          }
+
+          const validStock = await db.prepare(`
+            SELECT COALESCE(SUM(quantity), 0) as total
+            FROM inventory
+            WHERE drug_id = ? AND (expiry_date IS NULL OR expiry_date >= ?)
+          `).get(item.drug_id, today) as any;
+          
+          if ((validStock?.total || 0) < deductionQty) {
+            throw new Error(`الكمية غير كافية للصنف "${drugName}" (المتاح: ${(validStock?.total || 0).toFixed(2)})`);
+          }
+
+          let remainingToDeduct = deductionQty;
+          const batches = await db.prepare(`
+            SELECT id, quantity, cost_price, expiry_date
+            FROM inventory
+            WHERE drug_id = ? AND quantity > 0 AND (expiry_date IS NULL OR expiry_date >= ?)
+            ORDER BY CASE WHEN expiry_date IS NULL THEN 1 ELSE 0 END, expiry_date ASC, created_at ASC
+          `).all(item.drug_id, today) as any[];
+
+          for (const batch of batches) {
+            if (remainingToDeduct <= 0) break;
+
+            const deductFromThisBatch = Math.min(batch.quantity, remainingToDeduct);
+            const batchProp = deductFromThisBatch / deductionQty;
+            const quantityInSelectedUnit = item.quantity_sold * batchProp;
+
+            await db.prepare(
+              'UPDATE inventory SET quantity = quantity - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
+            ).run(deductFromThisBatch, batch.id);
+            
+            await db.prepare(`
+              INSERT INTO sales_items (invoice_id, inventory_id, drug_id, quantity_sold, unit_price, unit, is_negative, cost_price, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            `).run(saleId, batch.id, item.drug_id, quantityInSelectedUnit, item.unit_price, item.selected_unit, 0, batch.cost_price || 0);
+
+            totalCogs += (batch.cost_price || 0) * deductFromThisBatch;
+            remainingToDeduct -= deductFromThisBatch;
+          }
+        } else {
+          await db.prepare(`
+            INSERT INTO sales_items (invoice_id, inventory_id, drug_id, quantity_sold, unit_price, unit, is_negative, cost_price, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+          `).run(saleId, null, item.drug_id, item.quantity_sold, item.unit_price, item.selected_unit, item.is_negative ? 1 : 0, 0);
+        }
+      }
+
       if (validatedData.status === 'completed') {
-        const journalId = crypto.randomUUID();
+        const journalId = generateId();
         const saleDate = new Date().toISOString().split('T')[0];
         
-        insertDailyJournalStmt.run(journalId, saleDate, `فاتورة مبيعات رقم ${saleId.slice(0, 8)}`, userId, totalAmount + totalCogs);
+        await db.prepare(`
+          INSERT INTO daily_journals (id, date, description, created_by, total_amount)
+          VALUES (?, ?, ?, ?, ?)
+        `).run(journalId, saleDate, `فاتورة مبيعات رقم ${saleId.slice(0, 8)}`, userId, totalAmount + totalCogs);
 
-        const getAccountId = (cat: string) => {
-          const s = getAccountIdStmt.get(cat) as any;
+        const getAccountId = async (cat: string) => {
+          const s = await db.prepare('SELECT account_id FROM trial_balance_settings WHERE category = ?').get(cat) as any;
           return s?.account_id;
         };
 
         const accounts = {
-          cash: getAccountId('cash_drawer') || 6,
-          receivable: getAccountId('accounts_receivable') || 8,
-          sales: getAccountId('sales_revenue') || 9,
-          inventory: getAccountId('inventory_asset') || 10,
-          cogs: getAccountId('cogs_expense') || 11
+          cash: await getAccountId('cash_drawer') || 6,
+          receivable: await getAccountId('accounts_receivable') || 8,
+          sales: await getAccountId('sales_revenue') || 9,
+          inventory: await getAccountId('inventory_asset') || 10,
+          cogs: await getAccountId('cogs_expense') || 11
         };
 
         let debitAccount = accounts.cash;
         if (validatedData.payment_method === 'credit') debitAccount = accounts.receivable;
         if (validatedData.payment_method === 'wallet') debitAccount = accounts.receivable;
 
-        insertJournalEntryStmt.run(journalId, debitAccount, 'debit', totalAmount);
-        insertJournalEntryStmt.run(journalId, accounts.sales, 'credit', totalAmount);
+        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, debitAccount, 'debit', totalAmount);
+        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, accounts.sales, 'credit', totalAmount);
 
         if (validatedData.payment_method === 'wallet' && validatedData.patient_id) {
-          updatePatientWalletStmt.run(totalAmount, validatedData.patient_id);
+          await db.prepare('UPDATE patients SET wallet_balance = wallet_balance - ? WHERE id = ?').run(totalAmount, validatedData.patient_id);
         }
 
         if (totalCogs > 0) {
-          insertJournalEntryStmt.run(journalId, accounts.cogs, 'debit', totalCogs);
-          insertJournalEntryStmt.run(journalId, accounts.inventory, 'credit', totalCogs);
+          await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, accounts.cogs, 'debit', totalCogs);
+          await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, accounts.inventory, 'credit', totalCogs);
         }
       }
 
       if (validatedData.status === 'completed' && validatedData.patient_id) {
-        const patient = getPatientStmt.get(validatedData.patient_id) as any;
+        const patient = await db.prepare('SELECT credit_limit, wallet_balance, loyalty_level FROM patients WHERE id = ?').get(validatedData.patient_id) as any;
         const multiplier = patient?.loyalty_level === 'platinum' ? 2 : patient?.loyalty_level === 'gold' ? 1.5 : patient?.loyalty_level === 'silver' ? 1.2 : 1;
+        const today = new Date().toISOString().split('T')[0];
 
         for (const item of validatedData.items) {
-          const reminderId = crypto.randomUUID();
+          const reminderId = generateId();
           const nextRefillDate = new Date();
           const days = item.selected_unit === 'large' ? 30 : item.selected_unit === 'medium' ? 10 : 3;
           nextRefillDate.setDate(nextRefillDate.getDate() + (days * item.quantity_sold));
 
-          insertRefillReminderStmt.run(reminderId, validatedData.patient_id, item.drug_id, today, nextRefillDate.toISOString().split('T')[0]);
+          await db.prepare(`
+            INSERT INTO refill_reminders (id, patient_id, drug_id, last_sold_date, next_refill_date, created_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+          `).run(reminderId, validatedData.patient_id, item.drug_id, today, nextRefillDate.toISOString().split('T')[0]);
         }
 
         const pointsEarned = Math.floor(totalAmount * multiplier);
         if (pointsEarned > 0) {
-          updatePatientPointsStmt.run(pointsEarned, validatedData.patient_id);
+          await db.prepare('UPDATE patients SET points_balance = points_balance + ? WHERE id = ?').run(pointsEarned, validatedData.patient_id);
         }
       }
+    });
 
-      db.exec('COMMIT');
-
-      return {
-        success: true,
-        data: {
-          sale_id: saleId,
-          total_amount: totalAmount,
-          points_earned: validatedData.patient_id ? Math.floor(totalAmount) : 0
-        }
-      };
-    } catch (error) {
-      db.exec('ROLLBACK');
-      throw error;
-    }
+    return {
+      success: true,
+      data: {
+        sale_id: saleId,
+        total_amount: totalAmount,
+        points_earned: validatedData.patient_id ? Math.floor(totalAmount) : 0
+      }
+    };
   } catch (error: any) {
     console.error('Checkout error:', error);
     return { success: false, error: error.message || 'فشلت معالجة عملية البيع' };
@@ -571,10 +573,10 @@ export async function processCheckoutAction(data: any) {
 export async function getSalesDashboardStatsAction() {
   try {
     const localUser = await getLocalSession();
-    if (!localUser) return { success: false, error: 'غير مصرح' };
+    if (!localUser || !hasUserPermissionSync(localUser, 'rep_can_view_sales')) return { success: false, error: 'غير مصرح' };
 
     // Today's Sales
-    const todaySalesRow = db.prepare(`
+    const todaySalesRow = await db.prepare(`
       SELECT COALESCE(SUM(total_amount), 0) as total 
       FROM sales_invoices 
       WHERE DATE(created_at) = DATE('now', 'localtime') AND status IN ('completed', 'delivered')
@@ -582,7 +584,7 @@ export async function getSalesDashboardStatsAction() {
     const todaySales = todaySalesRow?.total || 0;
 
     // Yesterday's Sales
-    const yesterdaySalesRow = db.prepare(`
+    const yesterdaySalesRow = await db.prepare(`
       SELECT COALESCE(SUM(total_amount), 0) as total 
       FROM sales_invoices 
       WHERE DATE(created_at) = DATE('now', '-1 day', 'localtime') AND status IN ('completed', 'delivered')
@@ -602,14 +604,14 @@ export async function getSalesDashboardStatsAction() {
     }
 
     // Delivery Stats
-    const deliveryCountRow = db.prepare(`
+    const deliveryCountRow = await db.prepare(`
       SELECT COUNT(*) as total 
       FROM sales_invoices 
       WHERE payment_method = 'delivery' AND DATE(created_at) = DATE('now', 'localtime')
     `).get() as any;
     const deliveryCount = deliveryCountRow?.total || 0;
 
-    const pendingDeliveryRow = db.prepare(`
+    const pendingDeliveryRow = await db.prepare(`
       SELECT COUNT(*) as pending 
       FROM sales_invoices 
       WHERE payment_method = 'delivery' AND status = 'completed'
@@ -618,14 +620,14 @@ export async function getSalesDashboardStatsAction() {
     const pendingDeliveryCountText = `يوجد ${pendingDeliveryCount} طلبات قيد الانتظار`;
 
     // Average Invoice
-    const todayAvgInvoiceRow = db.prepare(`
+    const todayAvgInvoiceRow = await db.prepare(`
       SELECT COALESCE(AVG(total_amount), 0) as avg_val 
       FROM sales_invoices 
       WHERE DATE(created_at) = DATE('now', 'localtime') AND status IN ('completed', 'delivered')
     `).get() as any;
     const averageInvoice = Math.round(todayAvgInvoiceRow?.avg_val || 0);
 
-    const yesterdayAvgInvoiceRow = db.prepare(`
+    const yesterdayAvgInvoiceRow = await db.prepare(`
       SELECT COALESCE(AVG(total_amount), 0) as avg_val 
       FROM sales_invoices 
       WHERE DATE(created_at) = DATE('now', '-1 day', 'localtime') AND status IN ('completed', 'delivered')
@@ -658,5 +660,4 @@ export async function getSalesDashboardStatsAction() {
     return { success: false, error: error.message || 'فشل جلب إحصائيات المبيعات' };
   }
 }
-
 

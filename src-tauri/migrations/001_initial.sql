@@ -143,6 +143,7 @@ CREATE TABLE IF NOT EXISTS inventory (
   unit_price REAL DEFAULT 0,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  strips_per_box INTEGER DEFAULT 1,
   FOREIGN KEY (drug_id) REFERENCES master_drugs (id)
 );
 

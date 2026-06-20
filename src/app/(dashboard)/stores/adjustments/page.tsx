@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { dbSelect } from '@/lib/db/tauri';
+import { getAdjustmentsAction } from '@/app/actions/inventory';
 import AdjustmentsClient from "./AdjustmentsClient";
 
 export default function AdjustmentsPage() {
@@ -11,8 +11,12 @@ export default function AdjustmentsPage() {
   useEffect(() => {
     async function loadReasons() {
       try {
-        const data = await dbSelect('SELECT * FROM adjustment_reasons ORDER BY name_ar ASC');
-        setReasons(data);
+        const res = await getAdjustmentsAction();
+        if (res.success) {
+          setReasons(res.data || []);
+        } else {
+          console.error('Failed to load adjustment reasons:', res.error);
+        }
       } catch (err) {
         console.error('Failed to load adjustment reasons:', err);
       } finally {

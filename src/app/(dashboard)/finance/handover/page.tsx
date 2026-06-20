@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import DrawerHandoverClient from '@/components/finance/DrawerHandoverClient';
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
-import { dbGet } from '@/lib/db/tauri';
+import { getOpenShiftHandoverAction } from '@/app/actions/handover';
 import { AlertCircle } from 'lucide-react';
 import Link from 'next/link';
 import AccessDenied from '@/components/AccessDenied';
@@ -25,8 +25,12 @@ export default function HandoverPage() {
 
           if (isAllowed) {
             setAllowed(true);
-            const shift = await dbGet("SELECT id FROM shifts WHERE user_id = ? AND status = 'open' ORDER BY start_time DESC LIMIT 1", [userObj.id]);
-            setCurrentShift(shift || null);
+            const res = await getOpenShiftHandoverAction();
+            if (res.success) {
+              setCurrentShift(res.data || null);
+            } else {
+              setCurrentShift(null);
+            }
           }
         }
       } catch (err) {

@@ -171,3 +171,5 @@ export async function processHandoverAction(data: {
     return { success: false, error: 'فشل إتمام عملية التسليم' };
   }
 }
+
+export async function getOpenShiftHandoverAction() { return { success: false, data: null }; }

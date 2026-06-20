@@ -130,6 +130,7 @@ export default function DashboardLayout({
               <ul className="space-y-1 text-slate-600 dark:text-slate-300">
                 <li><kbd className="bg-slate-100 dark:bg-slate-800 px-1 rounded">Ctrl+P</kbd> شاشة الكاشير (POS)</li>
                 <li><kbd className="bg-slate-100 dark:bg-slate-800 px-1 rounded">Ctrl+I</kbd> المخزون</li>
+                <li><kbd className="bg-slate-100 dark:bg-slate-800 px-1 rounded">Ctrl+D</kbd> لوحة التحكم (الرئيسية)</li>
                 <li><kbd className="bg-slate-100 dark:bg-slate-800 px-1 rounded">Ctrl+N</kbd> فتح نافذة جديدة</li>
                 <li><kbd className="bg-slate-100 dark:bg-slate-800 px-1 rounded">F1</kbd> البحث السريع</li>
               </ul>
@@ -194,6 +195,11 @@ export default function DashboardLayout({
   useHotkeys('ctrl+i, meta+i', (e) => {
     e.preventDefault();
     router.push('/inventory');
+  }, { enableOnFormTags: true });
+
+  useHotkeys('ctrl+d, meta+d', (e) => {
+    e.preventDefault();
+    router.push('/');
   }, { enableOnFormTags: true });
 
   useHotkeys('ctrl+n, meta+n', (e) => {
@@ -353,33 +359,7 @@ export default function DashboardLayout({
             </div>
 
               <div className="flex flex-col gap-2">
-                <button
-                  onClick={async () => {
-                    toast('جاري البحث عن تحديثات...', { icon: '🔄' });
-                    try {
-                      const { check } = await import('@tauri-apps/plugin-updater');
-                      const { relaunch } = await import('@tauri-apps/plugin-process');
-                      const update = await check();
-                      if (update) {
-                        toast('تم العثور على تحديث! جاري التحميل...', { icon: '⬇️', duration: 4000 });
-                        await update.downloadAndInstall();
-                        toast.success('تم التحميل بنجاح. سيتم إعادة تشغيل البرنامج.');
-                        await relaunch();
-                      } else {
-                        toast.success('أنت تستخدم أحدث نسخة.');
-                      }
-                    } catch (err) {
-                      console.error('Update failed:', err);
-                      toast('أنت تستخدم أحدث إصدار من البرنامج أو تعذر الاتصال بخادم التحديثات.', { icon: 'ℹ️' });
-                    }
-                  }}
-                  className="flex items-center gap-4 w-full px-5 py-4 rounded-2xl text-sm font-bold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-                >
-                  <div className="w-8 h-8 rounded-lg bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 flex items-center justify-center">
-                    <Monitor className="w-4 h-4" />
-                  </div>
-                  تحديث البرنامج
-                </button>
+
               
                 <form onSubmit={handleLogout}>
                   <button

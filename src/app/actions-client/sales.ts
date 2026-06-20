@@ -45,7 +45,7 @@ const CheckoutItemSchema = z.object({
   drug_id: z.union([z.number(), z.string()]),
   quantity_sold: z.coerce.number().positive(),
   unit_price: z.coerce.number().nonnegative(),
-  selected_unit: z.enum(['large', 'medium', 'small']).default('large').optional().nullable(),
+  selected_unit: z.string().default('large').optional().nullable(),
   is_negative: z.boolean().default(false).optional().nullable(),
 });
 
@@ -136,7 +136,8 @@ export async function searchDrugsAction(searchTerm: string, limit = 20) {
              COALESCE(SUM(quantity), 0) as total_stock,
              MIN(local_selling_price) as min_price,
              AVG(cost_price) as avg_cost_price,
-             MIN(expiry_date) as nearest_expiry
+             MIN(expiry_date) as nearest_expiry,
+             MAX(strips_per_box) as max_strips
       FROM inventory
       WHERE drug_id IN (${placeholders})
       GROUP BY drug_id
@@ -146,6 +147,7 @@ export async function searchDrugsAction(searchTerm: string, limit = 20) {
 
     const data = matchedDrugs.map((drug: any) => {
       const inv = (inventoryAgg as any[]).find((i: any) => i.drug_id === drug.id) || {};
+      const actualLargeToMedium = inv.max_strips > 1 ? inv.max_strips : (drug.large_to_medium || 1);
       return {
         id: drug.id,
         trade_name: drug.trade_name_en || drug.trade_name || 'بدون اسم تجاري',
@@ -160,7 +162,7 @@ export async function searchDrugsAction(searchTerm: string, limit = 20) {
         large_unit: drug.large_unit,
         medium_unit: drug.medium_unit,
         small_unit: drug.small_unit,
-        large_to_medium: drug.large_to_medium || 1,
+        large_to_medium: actualLargeToMedium,
         medium_to_small: drug.medium_to_small || 1,
         reorder_point: drug.reorder_point || 0,
         profit_margin: (inv.min_price && inv.avg_cost_price > 0)
@@ -169,9 +171,9 @@ export async function searchDrugsAction(searchTerm: string, limit = 20) {
         needs_reorder: drug.reorder_point ? (inv.total_stock || 0) <= drug.reorder_point : false,
         units: {
           large: drug.large_unit || 'علبة',
-          medium: drug.medium_unit,
+          medium: drug.medium_unit || (actualLargeToMedium > 1 ? 'شريط' : undefined),
           small: drug.small_unit,
-          large_to_medium: drug.large_to_medium || 1,
+          large_to_medium: actualLargeToMedium,
           medium_to_small: drug.medium_to_small || 1
         }
       };
@@ -394,25 +396,45 @@ export async function processCheckoutAction(data: any) {
     }
 
     const saleId = generateId();
-    let totalAmount = 0;
+    const totalAmount = validatedData.items.reduce(
+      (sum, item) => sum + (item.unit_price * item.quantity_sold),
+      0
+    ) - (validatedData.total_discount || 0);
 
     await dbTransaction(async () => {
       const today = new Date().toISOString().split('T')[0];
       let totalCogs = 0;
 
+      await db.prepare(`
+        INSERT INTO sales_invoices (id, pharmacy_id, user_id, patient_id, shift_id, total_amount, payment_method, check_number, status, discount_amount, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      `).run(
+        saleId, pharmacyId, userId, 
+        validatedData.patient_id || null, 
+        validatedData.shift_id || null, 
+        totalAmount, 
+        validatedData.payment_method,
+        validatedData.check_number || null,
+        validatedData.status,
+        validatedData.total_discount || 0
+      );
+
       for (const item of validatedData.items) {
         const drugInfo = await db.prepare(`
-          SELECT trade_name, large_to_medium, medium_to_small, has_expiry
+          SELECT trade_name, large_to_medium, medium_to_small, has_expiry, medium_unit, small_unit,
+                 COALESCE((SELECT MAX(strips_per_box) FROM inventory WHERE drug_id = id), 1) as max_strips
           FROM master_drugs
           WHERE id = ?
         `).get(item.drug_id) as any;
         const drugName = drugInfo?.trade_name || `Drug #${item.drug_id}`;
         
         let deductionQty = item.quantity_sold;
-        if (item.selected_unit === 'medium') {
-          deductionQty = item.quantity_sold / (drugInfo?.large_to_medium || 1);
-        } else if (item.selected_unit === 'small') {
-          deductionQty = item.quantity_sold / ((drugInfo?.large_to_medium || 1) * (drugInfo?.medium_to_small || 1));
+        const actualLargeToMedium = drugInfo?.max_strips > 1 ? drugInfo.max_strips : (drugInfo?.large_to_medium || 1);
+        
+        if (item.selected_unit === 'medium' || item.selected_unit === 'شريط' || item.selected_unit === drugInfo?.medium_unit) {
+          deductionQty = item.quantity_sold / actualLargeToMedium;
+        } else if (item.selected_unit === 'small' || item.selected_unit === drugInfo?.small_unit) {
+          deductionQty = item.quantity_sold / (actualLargeToMedium * (drugInfo?.medium_to_small || 1));
         }
 
         if (validatedData.status === 'completed') {
@@ -468,25 +490,6 @@ export async function processCheckoutAction(data: any) {
           `).run(saleId, null, item.drug_id, item.quantity_sold, item.unit_price, item.selected_unit, item.is_negative ? 1 : 0, 0);
         }
       }
-
-      totalAmount = validatedData.items.reduce(
-        (sum, item) => sum + (item.unit_price * item.quantity_sold),
-        0
-      ) - (validatedData.total_discount || 0);
-
-      await db.prepare(`
-        INSERT INTO sales_invoices (id, pharmacy_id, user_id, patient_id, shift_id, total_amount, payment_method, check_number, status, discount_amount, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-      `).run(
-        saleId, pharmacyId, userId, 
-        validatedData.patient_id || null, 
-        validatedData.shift_id || null, 
-        totalAmount, 
-        validatedData.payment_method,
-        validatedData.check_number || null,
-        validatedData.status,
-        validatedData.total_discount || 0
-      );
 
       if (validatedData.status === 'completed') {
         const journalId = generateId();

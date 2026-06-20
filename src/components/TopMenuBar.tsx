@@ -202,7 +202,7 @@ function ShortcutsModal({ onClose }: { onClose: () => void }) {
           <button onClick={onClose} className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg"><X className="w-4 h-4" /></button>
         </div>
         <div className="space-y-1">
-          {([['Esc','إغلاق القوائم'],['Enter','تأكيد / حفظ'],['Alt+P','فتح الكاشير']] as const).map(([key, desc]) => (
+          {([['Esc','إغلاق القوائم'],['Enter','تأكيد / حفظ'],['Ctrl+D','لوحة التحكم'],['Alt+P','فتح الكاشير']] as const).map(([key, desc]) => (
             <div key={key} className="flex items-center justify-between py-2.5 border-b border-slate-100 dark:border-slate-800">
               <span className="text-sm text-slate-600 dark:text-slate-400">{desc}</span>
               <kbd className="px-2.5 py-1 bg-slate-100 dark:bg-slate-800 rounded font-mono text-xs font-bold text-slate-800 dark:text-white border border-slate-300 dark:border-slate-600">{key}</kbd>

@@ -86,7 +86,7 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
     if (!selectedDrug) return
 
     // Client-side validation
-    let qty = parseInt(quantity) || 0
+    let qty = parseFloat(quantity) || 0
     const strips = parseInt(stripsQuantity) || 0
     const conversion = largeToMedium ? parseInt(largeToMedium) : 1
     
@@ -240,22 +240,19 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
                  </div>
                </div>
                <div className="flex flex-col items-end bg-white dark:bg-slate-900 px-4 py-2 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm">
-                  <input
-                    list="inventory-units-list"
+                  <select
                     value={selectedUnit}
                     onChange={(e) => setSelectedUnit(e.target.value)}
-                    className="text-lg font-black text-blue-600 dark:text-blue-400 bg-slate-50 dark:bg-slate-800 outline-none hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg px-3 py-1 text-right w-full border border-blue-200 dark:border-blue-800 focus:ring-2 focus:ring-blue-500"
-                    placeholder="الوحدة"
-                  />
-                  <datalist id="inventory-units-list">
-                    {unitsList.length > 0 ? (
-                      unitsList.map((u, idx) => (
-                        <option key={idx} value={u.name_ar} />
-                      ))
-                    ) : (
-                      <option value={selectedDrug.large_unit || 'علبة'} />
+                    className="text-lg font-black text-blue-600 dark:text-blue-400 bg-slate-50 dark:bg-slate-800 outline-none hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg px-3 py-1 text-right w-full border border-blue-200 dark:border-blue-800 focus:ring-2 focus:ring-blue-500 appearance-none"
+                  >
+                    <option value="" disabled>اختر الوحدة</option>
+                    {unitsList.map((u, i) => (
+                      <option key={i} value={u.name_ar}>{u.name_ar}</option>
+                    ))}
+                    {selectedDrug.large_unit && !unitsList.some(u => u.name_ar === selectedDrug.large_unit) && (
+                      <option value={selectedDrug.large_unit}>{selectedDrug.large_unit}</option>
                     )}
-                  </datalist>
+                  </select>
                   <span className="text-[10px] text-slate-400 font-bold px-2 mt-1">الوحدة الأساسية</span>
                </div>
             </div>

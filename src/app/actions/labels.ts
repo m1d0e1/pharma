@@ -1,5 +1,6 @@
 'use server';
 
+
 import { dbSelect, dbExecute, dbGet, dbTransaction } from '@/lib/db/tauri';
 const logActivity = async (userId, action, details) => {
   try {
@@ -82,4 +83,3 @@ export async function saveLabelTemplateAction(data: { name: string, width: numbe
     return { success: false, error: error.message };
   }
 }
-

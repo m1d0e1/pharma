@@ -12,6 +12,7 @@ interface InventoryItem {
   expiry_date: string
   master_drugs: {
     trade_name: string
+    large_to_medium?: number
   }
 }
 
@@ -26,6 +27,8 @@ export default function EditInventoryModal({ item, onClose, onSuccess }: EditInv
 
   const [quantity, setQuantity] = useState(item.quantity.toString())
   const [localPrice, setLocalPrice] = useState(item.local_selling_price.toString())
+  const [expiryDate, setExpiryDate] = useState(item.expiry_date ? item.expiry_date.split('T')[0] : '')
+  const [largeToMedium, setLargeToMedium] = useState(item.master_drugs?.large_to_medium?.toString() || '1')
   const [reasonId, setReasonId] = useState<string>('')
   const [reasons, setReasons] = useState<any[]>([])
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -46,8 +49,10 @@ export default function EditInventoryModal({ item, onClose, onSuccess }: EditInv
     // Prepare form data for Server Action
     const formData = {
       id: item.id,
-      quantity: parseInt(quantity),
+      quantity: parseFloat(quantity),
       local_selling_price: parseFloat(localPrice),
+      expiry_date: expiryDate || undefined,
+      large_to_medium: largeToMedium ? parseInt(largeToMedium) : undefined,
       reason_id: reasonId ? parseInt(reasonId) : undefined
     }
 
@@ -78,28 +83,52 @@ export default function EditInventoryModal({ item, onClose, onSuccess }: EditInv
         </div>
 
         <form onSubmit={handleUpdate} className="p-8 space-y-6">
-          <div className="space-y-1.5">
-            <label className="text-xs font-black text-slate-500 mr-2">الكمية المتوفرة</label>
-            <input
-              type="number"
-              required
-              min="0"
-              value={quantity}
-              onChange={(e) => setQuantity(e.target.value)}
-              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none font-bold"
-            />
-          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <label className="text-xs font-black text-slate-500 mr-2">الكمية المتوفرة</label>
+              <input
+                type="number"
+                required
+                min="0"
+                step="any"
+                value={quantity}
+                onChange={(e) => setQuantity(e.target.value)}
+                className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none font-bold"
+              />
+            </div>
 
-          <div className="space-y-1.5">
-            <label className="text-xs font-black text-slate-500 mr-2">سعر البيع المحلي (ج.م)</label>
-            <input
-              type="number"
-              required
-              step="0.01"
-              value={localPrice}
-              onChange={(e) => setLocalPrice(e.target.value)}
-              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none font-bold"
-            />
+            <div className="space-y-1.5">
+              <label className="text-xs font-black text-slate-500 mr-2">سعر البيع للعلبة (ج.م)</label>
+              <input
+                type="number"
+                required
+                step="0.01"
+                value={localPrice}
+                onChange={(e) => setLocalPrice(e.target.value)}
+                className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none font-bold"
+              />
+            </div>
+            
+            <div className="space-y-1.5">
+              <label className="text-xs font-black text-slate-500 mr-2">تاريخ الصلاحية</label>
+              <input
+                type="date"
+                value={expiryDate}
+                onChange={(e) => setExpiryDate(e.target.value)}
+                className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none font-bold"
+              />
+            </div>
+            
+            <div className="space-y-1.5">
+              <label className="text-xs font-black text-slate-500 mr-2">عدد الشرائط بالعلبة</label>
+              <input
+                type="number"
+                min="1"
+                value={largeToMedium}
+                onChange={(e) => setLargeToMedium(e.target.value)}
+                className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none font-bold"
+              />
+            </div>
           </div>
 
           <div className="space-y-1.5">
@@ -107,29 +136,29 @@ export default function EditInventoryModal({ item, onClose, onSuccess }: EditInv
             <select
               value={reasonId}
               onChange={(e) => setReasonId(e.target.value)}
-              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none font-bold appearance-none"
+              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none font-bold text-slate-700 dark:text-slate-300"
             >
               <option value="">-- اختر سبب التعديل --</option>
               {reasons.map((r: any) => (
-                <option key={r.id} value={r.id}>{r.name_ar}</option>
+                <option key={r.id} value={r.id}>{r.name}</option>
               ))}
             </select>
           </div>
 
-          <div className="flex gap-4 pt-4">
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="flex-1 bg-blue-600 text-white py-4 rounded-2xl font-black hover:bg-blue-700 transition-all disabled:opacity-50 shadow-lg shadow-blue-500/20"
-            >
-              {isSubmitting ? 'جاري الحفظ...' : 'حفظ التغييرات'}
-            </button>
+          <div className="flex gap-3 pt-2">
             <button
               type="button"
               onClick={onClose}
-              className="flex-1 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 py-4 rounded-2xl font-black hover:bg-slate-200 dark:hover:bg-slate-700 transition-all"
+              className="flex-1 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 py-4 rounded-2xl font-bold transition-all"
             >
               إلغاء
+            </button>
+            <button
+              type="submit"
+              disabled={isSubmitting}
+              className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-4 rounded-2xl font-bold shadow-lg shadow-blue-500/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isSubmitting ? 'جاري الحفظ...' : 'حفظ التغييرات'}
             </button>
           </div>
         </form>

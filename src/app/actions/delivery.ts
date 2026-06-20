@@ -1,5 +1,6 @@
 'use server';
 
+
 import { dbSelect, dbExecute, dbGet, dbTransaction, generateId } from '@/lib/db/tauri';
 const logActivity = async (userId, action, details) => {
   try {
@@ -51,13 +52,13 @@ const db = {
 
 
 
-import { getLocalSession } from '@/lib/auth/local';
+import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 
 export async function getPendingDeliveriesAction() {
   try {
     const user = await getLocalSession();
-    if (!user) return { success: false, error: 'غير مصرح' };
+    if (!user || !hasUserPermissionSync(user, 'can_view_delivery')) return { success: false, error: 'غير مصرح' };
 
     const invoices = await db.prepare(`
       SELECT 
@@ -80,7 +81,7 @@ export async function getPendingDeliveriesAction() {
 export async function closeDeliveryInvoiceAction(invoiceId: string, deliveryFee: number) {
   try {
     const user = await getLocalSession();
-    if (!user) return { success: false, error: 'غير مصرح' };
+    if (!user || !hasUserPermissionSync(user, 'can_view_delivery')) return { success: false, error: 'غير مصرح' };
 
     const transaction = db.transaction(async () => {
       // 1. Fetch invoice info to get total
@@ -117,7 +118,7 @@ export async function closeDeliveryInvoiceAction(invoiceId: string, deliveryFee:
 export async function getRepresentativeCashStatementAction() {
   try {
     const user = await getLocalSession();
-    if (!user) return { success: false, error: 'غير مصرح' };
+    if (!user || !hasUserPermissionSync(user, 'can_view_delivery')) return { success: false, error: 'غير مصرح' };
 
     // Get all pending delivery invoices (completed but not yet handed over)
     const pending = await db.prepare(`
@@ -160,4 +161,3 @@ export async function getRepresentativeCashStatementAction() {
     return { success: false, error: 'فشل جلب كشف حساب المناديب' };
   }
 }
-

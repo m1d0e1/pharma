@@ -121,8 +121,8 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
               {paginatedItems.map((item) => {
                 const now = new Date().getTime();
                 const expiry = new Date(item.expiry_date).getTime();
-                const isExpired = expiry < now;
-                const isExpiringSoon = !isExpired && (expiry - now < 1000 * 60 * 60 * 24 * 90);
+                const isExpired = item.quantity > 0 && expiry < now;
+                const isExpiringSoon = item.quantity > 0 && !isExpired && (expiry - now < 1000 * 60 * 60 * 24 * 90);
                 const isLowStock = item.quantity < 10
 
                 return (

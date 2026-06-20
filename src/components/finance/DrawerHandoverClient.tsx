@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { 
   DollarSign, ArrowLeftRight, UserCheck, 
   FileText, ShieldCheck, AlertTriangle,
-  History, Landmark, Calculator
+  History, Landmark, Calculator, Printer
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { getHandoverDetailsAction, processHandoverAction } from '@/app/actions/handover';
@@ -96,11 +96,16 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
               <p className="text-white/40 text-xs font-bold">مراجعة وتحويل نقدية الوردية</p>
             </div>
           </div>
-          <div className="text-left">
-            <p className="text-[10px] font-black uppercase text-white/40 mb-1">الرصيد المتوقع في الدرج</p>
-            <p className="text-4xl font-black text-emerald-400">
-              {details?.expected_cash.toLocaleString('en-US')} <span className="text-sm">ج.م</span>
-            </p>
+          <div className="flex items-center gap-6">
+            <div className="text-left">
+              <p className="text-[10px] font-black uppercase text-white/40 mb-1">الرصيد المتوقع في الدرج</p>
+              <p className="text-4xl font-black text-emerald-400">
+                {details?.expected_cash?.toLocaleString('en-US') ?? '0'} <span className="text-sm">ج.م</span>
+              </p>
+            </div>
+            <button onClick={() => window.print()} className="p-3 bg-white/10 hover:bg-white/20 rounded-xl transition-all no-print" title="طباعة">
+              <Printer className="w-6 h-6 text-white" />
+            </button>
           </div>
         </div>
 

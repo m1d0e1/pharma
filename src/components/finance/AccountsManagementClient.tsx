@@ -18,7 +18,7 @@ import CashTransactionsClient from './CashTransactionsClient';
 import ShiftManagementClient from '../shifts/ShiftManagementClient';
 import { getExpensesAction } from '@/app/actions/expenses';
 import { getClientSession } from '@/lib/auth/local';
-import { dbSelect } from '@/lib/db/tauri';
+import { getStaffAction } from '@/app/actions/users';
 import { 
   createCashMovementAction, 
   getCashMovementsAction,
@@ -169,8 +169,10 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
            if (userObj) {
               setUserRole(userObj.role);
               if (userObj.role === 'admin' || userObj.role === 'owner') {
-                 const staff = await dbSelect('SELECT id, full_name, role FROM users ORDER BY full_name ASC');
-                 setStaffList(staff || []);
+                 const staffRes = await getStaffAction();
+                 if (staffRes.success) {
+                    setStaffList(staffRes.data || []);
+                 }
               }
            }
         }
@@ -299,15 +301,20 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                       <h2 className="text-2xl font-black text-slate-800 dark:text-white">سجل توريدات النقدية</h2>
                       <p className="text-slate-500 font-bold">متابعة جميع المبالغ الداخلة والخارجة من الخزينة</p>
                    </div>
-                   <button 
-                     onClick={() => {
-                        setActiveTab('cash_movement');
-                        setShowCashForm({ show: true, type: 'receipt' });
-                     }}
-                     className="px-10 py-5 bg-emerald-600 text-white rounded-[24px] font-black hover:bg-emerald-700 transition-all shadow-xl shadow-emerald-500/20 flex items-center gap-3"
-                   >
-                      <Plus className="w-6 h-6" /> إضافة توريد جديد
-                   </button>
+                   <div className="flex items-center gap-4">
+                     <button onClick={() => window.print()} className="p-4 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-[24px] hover:bg-slate-200 transition-all no-print">
+                       <Printer className="w-6 h-6" />
+                     </button>
+                     <button 
+                       onClick={() => {
+                          setActiveTab('cash_movement');
+                          setShowCashForm({ show: true, type: 'receipt' });
+                       }}
+                       className="px-10 py-5 bg-emerald-600 text-white rounded-[24px] font-black hover:bg-emerald-700 transition-all shadow-xl shadow-emerald-500/20 flex items-center gap-3"
+                     >
+                        <Plus className="w-6 h-6" /> إضافة توريد جديد
+                     </button>
+                   </div>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -373,12 +380,17 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                       <h2 className="text-2xl font-black">إدارة نقاط البيع</h2>
                       <p className="text-slate-500 font-bold">تعريف ومتابعة أرصدة نقاط البيع المختلفة</p>
                    </div>
-                   <button 
-                     onClick={() => toast.success('قريباً: إضافة نقطة بيع جديدة')}
-                     className="px-10 py-5 bg-purple-600 text-white rounded-[24px] font-black hover:bg-purple-700 transition-all shadow-xl shadow-purple-500/20 flex items-center gap-3"
-                   >
-                      <Plus className="w-6 h-6" /> إضافة نقطة بيع
-                   </button>
+                   <div className="flex items-center gap-4">
+                     <button onClick={() => window.print()} className="p-4 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-[24px] hover:bg-slate-200 transition-all no-print">
+                       <Printer className="w-6 h-6" />
+                     </button>
+                     <button 
+                       onClick={() => toast.success('قريباً: إضافة نقطة بيع جديدة')}
+                       className="px-10 py-5 bg-purple-600 text-white rounded-[24px] font-black hover:bg-purple-700 transition-all shadow-xl shadow-purple-500/20 flex items-center gap-3"
+                     >
+                        <Plus className="w-6 h-6" /> إضافة نقطة بيع
+                     </button>
+                   </div>
                 </div>
 
                 <div className="bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 overflow-hidden shadow-sm">
@@ -403,7 +415,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                                <td className="px-8 py-6 font-mono font-black text-blue-600">{pos.id}</td>
                                <td className="px-8 py-6 font-black">{pos.name_ar}</td>
                                <td className="px-8 py-6 font-bold text-slate-400 italic">{pos.name_en}</td>
-                               <td className="px-8 py-6 font-black text-lg text-emerald-600">{pos.current_balance.toLocaleString('en-US')} ج.م</td>
+                               <td className="px-8 py-6 font-black text-lg text-emerald-600">{pos.current_balance?.toLocaleString('en-US') ?? '0'} ج.م</td>
                                <td className="px-8 py-6 text-center">
                                   <div className="flex flex-col items-center">
                                      <span className="font-bold text-slate-700 dark:text-slate-300">{pos.location}</span>
@@ -555,12 +567,17 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                       <h2 className="text-2xl font-black text-slate-800 dark:text-white">الحسابات البنكية</h2>
                       <p className="text-slate-500 font-bold">متابعة أرصدة وحركات الحسابات البنكية</p>
                    </div>
-                   <button 
-                     onClick={() => toast.success('قريباً: إضافة حساب بنكي جديد')}
-                     className="px-10 py-5 bg-blue-600 text-white rounded-[24px] font-black hover:bg-blue-700 transition-all shadow-xl shadow-blue-500/20 flex items-center gap-3"
-                   >
-                      <Plus className="w-6 h-6" /> إضافة حساب بنكي
-                   </button>
+                   <div className="flex items-center gap-4">
+                     <button onClick={() => window.print()} className="p-4 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-[24px] hover:bg-slate-200 transition-all no-print">
+                       <Printer className="w-6 h-6" />
+                     </button>
+                     <button 
+                       onClick={() => toast.success('قريباً: إضافة حساب بنكي جديد')}
+                       className="px-10 py-5 bg-blue-600 text-white rounded-[24px] font-black hover:bg-blue-700 transition-all shadow-xl shadow-blue-500/20 flex items-center gap-3"
+                     >
+                        <Plus className="w-6 h-6" /> إضافة حساب بنكي
+                     </button>
+                   </div>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
@@ -576,7 +593,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                             </div>
                             <div className="text-left">
                                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">الرصيد الحالي</p>
-                               <p className="text-3xl font-black text-slate-900 dark:text-white">{bank.current_balance?.toLocaleString('en-US')} <span className="text-sm">ج.م</span></p>
+                               <p className="text-3xl font-black text-slate-900 dark:text-white">{bank.current_balance?.toLocaleString('en-US') ?? '0'} <span className="text-sm">ج.م</span></p>
                             </div>
                          </div>
                          <h4 className="text-xl font-black text-slate-800 dark:text-white mb-1">{bank.name_ar}</h4>
@@ -682,7 +699,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                          <div className="flex justify-between items-end">
                             <div>
                                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">الرصيد الحالي</p>
-                               <p className="text-2xl font-black text-indigo-600">{c.current_balance?.toLocaleString('en-US')} ج.م</p>
+                               <p className="text-2xl font-black text-indigo-600">{c.current_balance?.toLocaleString('en-US') ?? '0'} ج.م</p>
                             </div>
                             <div className="text-left">
                                <p className="text-[10px] font-black text-rose-500 uppercase tracking-widest">العمولة</p>
@@ -1295,10 +1312,10 @@ function JournalDetailsModal({ journalId, onClose }: { journalId: string | null,
    const [entries, setEntries] = useState<any[]>([]);
    const [loading, setLoading] = useState(false);
 
+   useHotkeys('esc', () => { if(typeof onClose === 'function') onClose(); }, { enableOnFormTags: true });
+
    useEffect(() => {
-      
-  useHotkeys('esc', () => { if(typeof onClose === 'function') onClose(); }, { enableOnFormTags: true });
-if (journalId) {
+      if (journalId) {
          setLoading(true);
          getJournalDetailsAction(journalId).then(res => {
             if (res.success) setEntries(res.data);

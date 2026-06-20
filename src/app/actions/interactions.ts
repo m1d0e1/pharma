@@ -1,5 +1,6 @@
 'use server';
 
+
 import { dbSelect, dbExecute, dbGet, dbTransaction } from '@/lib/db/tauri';
 const logActivity = async (userId, action, details) => {
   try {
@@ -52,20 +53,23 @@ const db = {
 
 
 import { getLocalSession } from '@/lib/auth/local';
-import { secureCache } from '@/lib/cache/secure_cache';
+
 
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 
-// Cache for distinct ingredients in drug_interactions table
+// Get distinct ingredients from the drug_interactions table in SQLite
 async function getDbIngredients() {
-  const interactions = secureCache.getAllInteractions();
+  const rows = await dbSelect<{ ingredient_a: string; ingredient_b: string }>(
+    'SELECT DISTINCT ingredient_a, ingredient_b FROM drug_interactions'
+  );
   const ingredients = new Set<string>();
-  for (const i of interactions) {
-    ingredients.add(i.ingredient_a.toLowerCase());
-    ingredients.add(i.ingredient_b.toLowerCase());
+  for (const r of rows) {
+    ingredients.add(r.ingredient_a.toLowerCase());
+    ingredients.add(r.ingredient_b.toLowerCase());
   }
   return Array.from(ingredients);
 }
+
 
 /**
  * Check for drug interactions between items in the cart and patient's history
@@ -95,13 +99,18 @@ export async function checkDrugInteractions(cartIngredients: string[], patientId
           AND inv.created_at >= datetime('now', '-90 days')
       `).all(patientId) as any[];
 
-      await secureCache.load();
-      pastSales.forEach(item => {
-        const secureDrug = secureCache.getDrug(item.drug_id);
-        if (secureDrug?.active_ingredient) {
-          parseIngredients(secureDrug.active_ingredient).forEach(ing => cartIngs.push(ing));
-        }
-      });
+      // Look up active ingredients from master_drugs via SQL JOIN
+      const pastDrugIds = pastSales.map((item: any) => item.drug_id).filter(Boolean);
+      if (pastDrugIds.length > 0) {
+        const placeholdersPast = pastDrugIds.map(() => '?').join(',');
+        const drugRows = await dbSelect<{ active_ingredient: string }>(
+          `SELECT active_ingredient FROM master_drugs WHERE id IN (${placeholdersPast}) AND active_ingredient IS NOT NULL AND active_ingredient != ''`,
+          pastDrugIds
+        );
+        drugRows.forEach(row => {
+          parseIngredients(row.active_ingredient).forEach(ing => cartIngs.push(ing));
+        });
+      }
     }
 
     // Check patient allergies
@@ -284,6 +293,9 @@ export async function addInteractionAction(data: {
 }) {
   try {
     const user = await getLocalSession();
+    if (!user || (user.role !== 'owner' && user.role !== 'admin')) {
+      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
+    }
     if (!user || user.role !== 'owner') return { success: false, error: 'غير مصرح' };
 
     await db.prepare(`
@@ -299,4 +311,3 @@ export async function addInteractionAction(data: {
     return { success: false, error: 'فشل إضافة التفاعل' };
   }
 }
-

@@ -16,6 +16,7 @@ export default function ReturnsPage() {
     async function checkAuth() {
       const userObj = await getClientSession();
       if (!userObj) {
+        setLoading(false);
         router.push('/login');
       } else {
         setUser(userObj);

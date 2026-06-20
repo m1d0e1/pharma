@@ -59,7 +59,7 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
                 </h3>
                 <p className="text-slate-500 font-bold mt-1">عرض جميع الحركات المالية والأصناف للعميل</p>
               </div>
-              <button onClick={onClose} className="p-3 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-2xl transition-all">
+              <button onClick={onClose} className="p-3 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-2xl transition-all no-print">
                  <X className="w-6 h-6" />
               </button>
            </div>
@@ -85,7 +85,7 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
         </div>
 
         {/* Tab Selection */}
-        <div className="flex bg-white dark:bg-slate-950 p-2 gap-2 border-b border-slate-200 dark:border-slate-800 shrink-0">
+        <div className="flex bg-white dark:bg-slate-950 p-2 gap-2 border-b border-slate-200 dark:border-slate-800 shrink-0 no-print">
            <TabButton active={activeTab === 'movements'} onClick={() => setActiveTab('movements')} icon={History} label="حركات" />
            <TabButton active={activeTab === 'items'} onClick={() => setActiveTab('items')} icon={Package} label="أصناف" />
            <TabButton active={activeTab === 'report'} onClick={() => setActiveTab('report')} icon={FileText} label="تقرير" />
@@ -241,7 +241,7 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
         </div>
 
         {/* Footer */}
-        <div className="p-8 bg-white dark:bg-slate-950 border-t border-slate-200 dark:border-slate-800 flex justify-between items-center shrink-0">
+        <div className="p-8 bg-white dark:bg-slate-950 border-t border-slate-200 dark:border-slate-800 flex justify-between items-center shrink-0 no-print">
            <div className="flex gap-4">
               <button 
                 onClick={() => window.print()}
@@ -268,6 +268,16 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
            </div>
         </div>
       </div>
+
+      <style jsx global>{`
+        @media print {
+          .no-print, button { display: none !important; }
+          .bg-slate-50, .dark\\:bg-slate-900 { background: white !important; border: none !important; box-shadow: none !important; }
+          body { background: white !important; overflow: auto !important; }
+          .fixed { position: absolute !important; }
+          #print-report { margin: 0 !important; max-width: 100% !important; border: none !important; box-shadow: none !important; padding: 0 !important; }
+        }
+      `}</style>
     </div>
   );
 }

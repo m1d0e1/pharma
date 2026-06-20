@@ -3,7 +3,7 @@
 import React, { useState } from 'react'
 import { toast } from 'react-hot-toast'
 import ReceiptDetailsModal from './ReceiptDetailsModal'
-import { generateReceiptHtml, generateWhatsAppMessage } from '@/lib/utils/printing'
+import { generateReceiptHtml, generateWhatsAppMessage, printHtmlContent } from '@/lib/utils/printing'
 import { getConfigAction } from '@/app/actions/config'
 
 interface SaleItem {
@@ -64,11 +64,8 @@ export default function ReceiptListClient({ initialInvoices }: Props) {
   }
 
   const handleDirectPrint = (inv: Invoice) => {
-    const printWindow = window.open('', '_blank');
-    if (!printWindow) return;
     const html = generateReceiptHtml(inv, pharmacyInfo);
-    printWindow.document.write(html);
-    printWindow.document.close();
+    printHtmlContent(html);
   };
 
   const handleDirectWhatsApp = (inv: Invoice) => {

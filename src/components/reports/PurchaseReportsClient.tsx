@@ -1,16 +1,18 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { getPurchaseInvoicesAction } from '@/app/actions-client/purchases';
+import { getPurchaseInvoicesAction, getPurchaseInvoiceDetailsAction } from '@/app/actions-client/purchases';
 import { format } from 'date-fns';
 import { ar } from 'date-fns/locale';
-import { Search, Filter, Receipt, FileText, ArrowUpRight, CheckCircle2, Clock } from 'lucide-react';
+import { Search, Filter, Receipt, FileText, ArrowUpRight, CheckCircle2, Clock, Printer } from 'lucide-react';
 import { toast } from 'react-hot-toast';
+import BarcodePrinter from '@/components/purchases/BarcodePrinter';
 
 export default function PurchaseReportsClient() {
   const [invoices, setInvoices] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const [selectedInvoiceForBarcode, setSelectedInvoiceForBarcode] = useState<any[] | null>(null);
 
   useEffect(() => {
     async function load() {
@@ -42,8 +44,32 @@ export default function PurchaseReportsClient() {
     );
   }
 
+  const handlePrintBarcode = async (invoiceId: string) => {
+    toast.loading('جاري تحميل بيانات الفاتورة...', { id: 'load-invoice' });
+    const res = await getPurchaseInvoiceDetailsAction(invoiceId);
+    toast.dismiss('load-invoice');
+    
+    if (res.success && res.data) {
+      // Mapping the data to match BarcodeItem interface
+      const items = res.data.map((item: any) => ({
+        id: item.drug_id,
+        trade_name: item.trade_name,
+        trade_name_en: item.trade_name,
+        barcode: item.barcode || '000000',
+        selling_price: item.selling_price || item.cost_price, // fallback if selling_price is not set
+        expiry_date: item.expiry_date
+      }));
+      setSelectedInvoiceForBarcode(items);
+    } else {
+      toast.error('فشل في تحميل تفاصيل الفاتورة للطباعة');
+    }
+  };
+
   return (
     <div className="space-y-6">
+      {selectedInvoiceForBarcode && (
+        <BarcodePrinter items={selectedInvoiceForBarcode} onClose={() => setSelectedInvoiceForBarcode(null)} />
+      )}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         <div className="bg-white dark:bg-slate-900 rounded-2xl p-6 border border-slate-100 dark:border-slate-800 flex items-center gap-4">
           <div className="w-14 h-14 bg-primary-100 dark:bg-primary-900/30 text-primary-600 rounded-2xl flex items-center justify-center shrink-0">
@@ -107,6 +133,7 @@ export default function PurchaseReportsClient() {
                 <th className="p-4 font-bold">طريقة الدفع</th>
                 <th className="p-4 font-bold">الحالة</th>
                 <th className="p-4 font-bold">الإجمالي</th>
+                <th className="p-4 font-bold text-center">إجراءات</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -136,11 +163,20 @@ export default function PurchaseReportsClient() {
                   <td className="p-4 font-bold text-lg">
                     {Number(inv.total_amount || 0).toFixed(2)}
                   </td>
+                  <td className="p-4 text-center">
+                    <button
+                      onClick={() => handlePrintBarcode(inv.id)}
+                      className="p-2 text-slate-400 hover:text-primary-600 hover:bg-primary-50 dark:hover:bg-primary-900/30 rounded-xl transition-all"
+                      title="طباعة ملصقات الباركود"
+                    >
+                      <Printer className="w-5 h-5" />
+                    </button>
+                  </td>
                 </tr>
               ))}
               {filteredInvoices.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="p-8 text-center text-slate-500">
+                  <td colSpan={7} className="p-8 text-center text-slate-500">
                     لا توجد فواتير مطابقة
                   </td>
                 </tr>
