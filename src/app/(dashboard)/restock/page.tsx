@@ -29,7 +29,7 @@ export default function RestockPage() {
           if (res.success) {
             if (active) setAutomatedList(res.data || []);
           } else {
-            console.error('Failed to load restock data:', res.error);
+            console.error('Failed to load restock data:', (res as any).error);
           }
         }
       } catch (err) {

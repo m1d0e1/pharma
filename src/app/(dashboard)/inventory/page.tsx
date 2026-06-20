@@ -30,7 +30,7 @@ function InventoryPageContent() {
         if (res.success && active) {
           setItems(res.data);
         } else if (!res.success && active) {
-          console.error('Failed to load inventory:', res.error);
+          console.error('Failed to load inventory:', (res as any).error);
         }
       } catch (err) {
         console.error('Failed to load inventory:', err);

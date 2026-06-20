@@ -117,10 +117,10 @@ export default function StaffManagePage() {
       } else {
         const res = await getStaffManagementDataAction();
         if (res.success) {
-          setUsers(res.users || []);
-          setJobs(res.jobs || []);
+          setUsers((res as any).users || []);
+          setJobs((res as any).jobs || []);
         } else {
-          console.error(res.error);
+          console.error((res as any).error);
         }
       }
     } catch (err) {

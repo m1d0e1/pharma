@@ -15,7 +15,7 @@ export default function AdjustmentsPage() {
         if (res.success) {
           setReasons(res.data || []);
         } else {
-          console.error('Failed to load adjustment reasons:', res.error);
+          console.error('Failed to load adjustment reasons:', (res as any).error);
         }
       } catch (err) {
         console.error('Failed to load adjustment reasons:', err);

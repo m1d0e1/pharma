@@ -37,7 +37,7 @@ export default function ReportsPage() {
           return;
         }
 
-        const { salesHistoryRaw = [], topDrugsRaw = [], categoryRaw = [] } = res.data;
+        const { salesHistoryRaw = [], topDrugsRaw = [], categoryRaw = [] } = res.data as any;
 
         setSalesHistoryRawCount((salesHistoryRaw || []).length);
 

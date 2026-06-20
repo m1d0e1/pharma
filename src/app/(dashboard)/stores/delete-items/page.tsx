@@ -18,7 +18,7 @@ export default function DeleteUnusedItemsPage() {
       if (res.success) {
         setItems(res.data || []);
       } else {
-        console.error('Failed to load unused items:', res.error);
+        console.error('Failed to load unused items:', (res as any).error);
       }
     } catch (err) {
       console.error('Failed to load unused items:', err);

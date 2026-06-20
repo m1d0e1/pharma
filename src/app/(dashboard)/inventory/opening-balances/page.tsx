@@ -29,7 +29,7 @@ export default function OpeningBalancesPage() {
             if (res.success) {
               setItems(res.data || []);
             } else {
-              console.error('Failed to load opening balances:', res.error);
+              console.error('Failed to load opening balances:', (res as any).error);
             }
           }
         }

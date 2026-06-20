@@ -45,7 +45,7 @@ export default function ItemMovementsPage() {
           if (res.success) {
             setMovements(res.data || []);
           } else {
-            console.error('Failed to load item movements:', res.error);
+            console.error('Failed to load item movements:', (res as any).error);
           }
         }
       } catch (err) {

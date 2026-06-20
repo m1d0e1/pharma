@@ -27,7 +27,8 @@ import {
   createPurchaseInvoiceAction, 
   addPurchaseInvoiceItemAction, 
   completePurchaseInvoiceAction,
-  checkSupplierPendingInvoiceAction
+  checkSupplierPendingInvoiceAction,
+  getPurchaseInvoiceDetailsAction
 } from '@/app/actions/purchases'
 import { toast } from 'react-hot-toast'
 import { useRouter, useSearchParams } from 'next/navigation'
@@ -255,23 +256,23 @@ export default function PurchaseInvoiceClient() {
                         discount_percent: res.invoice.discount_percent || 0,
                         discount_value: res.invoice.discount_value || 0,
                         expenses: res.invoice.expenses || 0,
-                        status: res.invoice.status || 'draft',
                       });
                       
-                      const formattedCart = itemsRes.data.map((i: any) => ({
+                      const formattedCart: PurchaseItem[] = itemsRes.data.map((i: any) => ({
                         id: i.drug_id,
-                        name: i.trade_name,
-                        barcode: i.barcode,
-                        quantity: Number(i.quantity) || 1,
-                        bonus: Number(i.bonus) || 0,
-                        discount: Number(i.discount_percent) || 0,
-                        discount_value: Number(i.discount_value) || 0,
-                        tax_percent: Number(i.tax_percent) || 0,
-                        cost_price: Number(i.cost_price) || 0,
-                        selling_price: Number(i.selling_price) || 0,
+                        trade_name: i.drug_name || '',
+                        barcode: i.barcode || '',
+                        quantity: i.quantity || 1,
+                        bonus_quantity: i.bonus_quantity || 0,
+                        discount_percent: i.discount_percent || 0,
+                        discount_value: i.discount_value || 0,
+                        tax_percent: i.tax_percent || 0,
+                        cost_price: i.cost_price || 0,
+                        selling_price: i.selling_price || 0,
+                        official_price: i.selling_price || 0,
                         batch_number: i.batch_number || '',
                         expiry_date: i.expiry_date || '',
-                        unit: 'علبة'
+                        strips_per_box: 1
                       }));
                       setCart(formattedCart);
                       toast.success('تم تحميل الفاتورة بنجاح');
@@ -336,14 +337,14 @@ export default function PurchaseInvoiceClient() {
         const parts = item.expiry_date.split('/');
         if (parts.length !== 3 || parts[0].length !== 2 || parts[1].length !== 2 || parts[2].length !== 4) {
           toast.error(`صيغة تاريخ الصلاحية غير صحيحة للصنف ${item.trade_name_en || item.trade_name} (يجب أن تكون dd/mm/yyyy)`);
-          hasError = true;
+          return;
         } else {
           const day = parseInt(parts[0], 10);
           const month = parseInt(parts[1], 10);
           const year = parseInt(parts[2], 10);
           if (day < 1 || day > 31 || month < 1 || month > 12 || year < 2000) {
             toast.error(`تاريخ الصلاحية غير صالح للصنف ${item.trade_name_en || item.trade_name}`);
-            hasError = true;
+            return;
           } else {
             const now = new Date();
             const expiry = new Date(year, month - 1, day);
@@ -351,10 +352,10 @@ export default function PurchaseInvoiceClient() {
             
             if (diffMonths < 0) {
               toast.error(`الصنف ${item.trade_name_en || item.trade_name} منتهي الصلاحية!`);
-              hasError = true;
+              return;
             } else if (diffMonths < 6) {
               if (!confirm(`تحذير: الصنف ${item.trade_name_en || item.trade_name} اقترب على انتهاء الصلاحية. هل تريد الاستمرار؟`)) {
-                hasError = true;
+                return;
               }
             }
           }
@@ -362,20 +363,22 @@ export default function PurchaseInvoiceClient() {
       }
     }
 
-    if (hasError) return;
-
     if (isDraft) setIsDrafting(true); else setIsSubmitting(true);
     
     try {
       const res = await createPurchaseInvoiceAction({
         ...invoiceHeader,
+        expenses: Number(invoiceHeader.expenses) || 0,
+        discount_value: Number(invoiceHeader.discount_value) || 0,
+        discount_percent: Number(invoiceHeader.discount_percent) || 0,
+        tax_percent: Number(invoiceHeader.tax_percent) || 0,
         supplier_id: (selectedSupplier as any).id,
         status: isDraft ? 'draft' : 'pending',
         cart: cart,
         id: invoiceHeader.id || undefined
       })
 
-      if (!res.success) throw new Error(res.error)
+      if (!res.success) throw new Error((res as any).error)
 
       if (!isDraft) {
         toast.success('تم تسجيل فاتورة الشراء بنجاح')

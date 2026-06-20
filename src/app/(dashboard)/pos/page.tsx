@@ -1091,7 +1091,7 @@ export default function POSPage() {
               onClick={async () => {
                 const res = await addToShortagesAction({ drug_id: contextMenu.drugId });
                 if (res.success) toast.success('تمت الإضافة إلى النواقص');
-                else toast.error(res.error);
+                else toast.error((res as any).error);
               }} 
             />
             <ContextMenuItem 
