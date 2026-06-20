@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook';
 import { createPurchaseOrderAction } from '@/app/actions-client/purchases';
 import { searchMasterDrugsAction } from '@/app/actions/master-drugs';
+import { getSuppliersAction } from '@/app/actions-client/purchases';
 import { toast } from 'react-hot-toast';
 import { X, Save, ShoppingCart, Plus, Trash2, Search, Loader2 } from 'lucide-react';
 
@@ -35,6 +36,15 @@ export default function PurchaseOrderModal({ initialItems, onClose }: Props) {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [searching, setSearching] = useState(false);
+  const [suppliers, setSuppliers] = useState<any[]>([]);
+
+  useEffect(() => {
+    getSuppliersAction().then(res => {
+      if (res.success && res.data) {
+        setSuppliers(res.data);
+      }
+    });
+  }, []);
 
   useEffect(() => {
     const delayDebounceFn = setTimeout(async () => {
@@ -137,14 +147,17 @@ export default function PurchaseOrderModal({ initialItems, onClose }: Props) {
             <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
               <div className="md:col-span-4 space-y-2">
                 <label className="text-xs font-black text-slate-400 uppercase tracking-widest mr-2">المورد / الشركة</label>
-                <input 
-                  type="text" 
+                <select 
                   required
                   value={supplier}
                   onChange={e => setSupplier(e.target.value)}
-                  placeholder="اسم المورد..."
                   className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-6 py-4 rounded-2xl font-bold outline-none focus:ring-2 focus:ring-blue-500 transition-all"
-                />
+                >
+                  <option value="">اختر المورد...</option>
+                  {suppliers.map(s => (
+                    <option key={s.id} value={s.name_ar}>{s.name_ar}</option>
+                  ))}
+                </select>
               </div>
               
               <div className="md:col-span-8 space-y-2 relative">

@@ -174,4 +174,12 @@ export async function processHandoverAction(data: {
   }
 }
 
-export async function getOpenShiftHandoverAction() { return { success: false, data: null }; }
+export async function getOpenShiftHandoverAction() {
+  try {
+    const shift = await db.prepare("SELECT * FROM shifts WHERE status = 'open' LIMIT 1").get() as any;
+    if (!shift) return { success: false, data: null };
+    return { success: true, data: shift };
+  } catch (error) {
+    return { success: false, error: 'Failed to fetch open shift' };
+  }
+}

@@ -21,7 +21,7 @@ import {
   Printer
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { searchMasterDrugsAction } from '@/app/actions/master-drugs'
+import { searchMasterDrugsAction } from '@/app/actions-client/master-drugs'
 import { 
   getSuppliersAction, 
   createPurchaseInvoiceAction, 
@@ -29,7 +29,7 @@ import {
   completePurchaseInvoiceAction,
   checkSupplierPendingInvoiceAction,
   getPurchaseInvoiceDetailsAction
-} from '@/app/actions/purchases'
+} from '@/app/actions-client/purchases'
 import { toast } from 'react-hot-toast'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { usePurchaseStore } from '@/store/usePurchaseStore'
@@ -122,7 +122,7 @@ export default function PurchaseInvoiceClient() {
 
   const searchParams = useSearchParams()
 
-  // Handle drugId from URL once store is hydrated
+  // Handle drugId and supplier_id from URL once store is hydrated
   useEffect(() => {
     if (!hydrated) return
 
@@ -143,7 +143,15 @@ export default function PurchaseInvoiceClient() {
         })
       })
     }
-  }, [hydrated, searchParams])
+
+    const supplierIdParam = searchParams.get('supplier_id')
+    if (supplierIdParam && suppliers.length > 0) {
+      handleSupplierChange(parseInt(supplierIdParam), suppliers, true)
+      
+      const newUrl = window.location.pathname
+      window.history.replaceState({}, '', newUrl)
+    }
+  }, [hydrated, searchParams, suppliers])
 
   const handleDrugSearch = async (query: string) => {
     setSearchQuery(query)
@@ -228,13 +236,54 @@ export default function PurchaseInvoiceClient() {
     return withDiscountPct;
   })()
 
-  const handleSupplierChange = async (supplierId: number) => {
-    const s = suppliers.find(sup => sup.id === supplierId)
+  const handleSupplierChange = async (supplierId: number, suppliersList?: any[], autoLoad: boolean = false) => {
+    const sList = suppliersList || suppliers;
+    const s = sList.find(sup => sup.id === supplierId)
     setSelectedSupplier(s || null)
     
     if (supplierId) {
       const res = await checkSupplierPendingInvoiceAction(supplierId)
       if (res.success && res.hasPending) {
+        if (autoLoad) {
+          try {
+            const itemsRes = await getPurchaseInvoiceDetailsAction(res.invoice.id);
+            if (itemsRes.success) {
+              setInvoiceHeader({
+                id: res.invoice.id,
+                invoice_number: res.invoice.invoice_number || '',
+                invoice_date: res.invoice.invoice_date?.split('T')[0] || new Date().toISOString().split('T')[0],
+                payment_method: res.invoice.payment_method || 'cash',
+                notes: res.invoice.notes || '',
+                discount_percent: res.invoice.discount_percent || 0,
+                discount_value: res.invoice.discount_value || 0,
+                expenses: res.invoice.expenses || 0,
+              });
+              
+              const formattedCart: PurchaseItem[] = itemsRes.data.map((i: any) => ({
+                id: i.drug_id,
+                trade_name: i.trade_name_en || i.trade_name || i.drug_name || '',
+                barcode: i.barcode || '',
+                quantity: i.quantity || 1,
+                bonus_quantity: i.bonus_quantity || 0,
+                discount_percent: i.discount_percent || 0,
+                discount_value: i.discount_value || 0,
+                tax_percent: i.tax_percent || 0,
+                cost_price: i.cost_price || 0,
+                selling_price: i.selling_price || 0,
+                official_price: i.selling_price || 0,
+                batch_number: i.batch_number || '',
+                expiry_date: i.expiry_date ? i.expiry_date.split('T')[0].split('-').reverse().join('/') : '',
+                strips_per_box: 1
+              }));
+              setCart(formattedCart);
+              toast.success('تم تحميل الفاتورة بنجاح');
+            }
+          } catch (error) {
+            console.error(error);
+          }
+          return;
+        }
+
         toast((t) => (
           <div className="flex items-center gap-3">
             <AlertTriangle className="text-amber-500 w-6 h-6" />
@@ -260,7 +309,7 @@ export default function PurchaseInvoiceClient() {
                       
                       const formattedCart: PurchaseItem[] = itemsRes.data.map((i: any) => ({
                         id: i.drug_id,
-                        trade_name: i.drug_name || '',
+                        trade_name: i.trade_name_en || i.trade_name || i.drug_name || '',
                         barcode: i.barcode || '',
                         quantity: i.quantity || 1,
                         bonus_quantity: i.bonus_quantity || 0,
@@ -271,13 +320,19 @@ export default function PurchaseInvoiceClient() {
                         selling_price: i.selling_price || 0,
                         official_price: i.selling_price || 0,
                         batch_number: i.batch_number || '',
-                        expiry_date: i.expiry_date || '',
+                        expiry_date: i.expiry_date ? i.expiry_date.split('T')[0].split('-').reverse().join('/') : '',
                         strips_per_box: 1
                       }));
                       setCart(formattedCart);
                       toast.success('تم تحميل الفاتورة بنجاح');
+                    } else {
+                      console.error('Failed to load pending invoice:', itemsRes.error);
+                      toast.error('فشل في تحميل الفاتورة: ' + itemsRes.error);
                     }
-                  } catch (e) {}
+                  } catch (e: any) {
+                    console.error('Crash loading pending invoice:', e);
+                    toast.error('حدث خطأ غير متوقع');
+                  }
                 }}
                 className="mt-2 text-xs bg-amber-500 hover:bg-amber-600 text-white px-3 py-1.5 rounded-md transition-colors"
               >
@@ -374,7 +429,14 @@ export default function PurchaseInvoiceClient() {
         tax_percent: Number(invoiceHeader.tax_percent) || 0,
         supplier_id: (selectedSupplier as any).id,
         status: isDraft ? 'draft' : 'pending',
-        cart: cart,
+        cart: cart.map(item => {
+          let formattedExpiry = item.expiry_date;
+          if (item.expiry_date && item.expiry_date.includes('/')) {
+            const parts = item.expiry_date.split('/');
+            if (parts.length === 3) formattedExpiry = `${parts[2]}-${parts[1]}-${parts[0]}`;
+          }
+          return { ...item, expiry_date: formattedExpiry };
+        }),
         id: invoiceHeader.id || undefined
       })
 

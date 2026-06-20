@@ -56,9 +56,13 @@ export default function ReceiptsPage() {
             si.invoice_id,
             si.quantity_sold,
             si.unit_price,
+            si.unit,
             si.drug_id,
             md.trade_name,
-            md.trade_name_en
+            md.trade_name_en,
+            md.large_unit,
+            md.medium_unit,
+            md.small_unit
           FROM sales_items si
           LEFT JOIN master_drugs md ON si.drug_id = md.id
           WHERE si.invoice_id IN (${invoiceIds})
@@ -76,6 +80,12 @@ export default function ReceiptsPage() {
             sales_items: items.map((item: any) => ({
               quantity_sold: item.quantity_sold,
               unit_price: item.unit_price,
+              unit: item.unit,
+              units: {
+                large: item.large_unit || 'علبة',
+                medium: item.medium_unit,
+                small: item.small_unit
+              },
               trade_name: item.trade_name,
               trade_name_en: item.trade_name_en,
               inventory: {

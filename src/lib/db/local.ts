@@ -1019,6 +1019,45 @@ export function initLocalDb() {
     seedUnits(units);
   }
 
+  // Fix malformed dates (DD/MM/YYYY to YYYY-MM-DD)
+  try {
+    const malformedDates = db.prepare("SELECT id, expiry_date FROM inventory WHERE expiry_date LIKE '%/%'").all();
+    if (malformedDates.length > 0) {
+      const updateStmt = db.prepare("UPDATE inventory SET expiry_date = ? WHERE id = ?");
+      const fixTransaction = db.transaction((rows: any[]) => {
+        for (const r of rows) {
+          if (r.expiry_date) {
+            const p = r.expiry_date.split('/');
+            if (p.length === 3) {
+              const nd = `${p[2]}-${p[1].padStart(2, '0')}-${p[0].padStart(2, '0')}`;
+              updateStmt.run(nd, r.id);
+            }
+          }
+        }
+      });
+      fixTransaction(malformedDates);
+    }
+
+    const malformedInvoiceDates = db.prepare("SELECT rowid, expiry_date FROM purchase_invoice_items WHERE expiry_date LIKE '%/%'").all();
+    if (malformedInvoiceDates.length > 0) {
+      const updateStmt = db.prepare("UPDATE purchase_invoice_items SET expiry_date = ? WHERE rowid = ?");
+      const fixTransaction = db.transaction((rows: any[]) => {
+        for (const r of rows) {
+          if (r.expiry_date) {
+            const p = r.expiry_date.split('/');
+            if (p.length === 3) {
+              const nd = `${p[2]}-${p[1].padStart(2, '0')}-${p[0].padStart(2, '0')}`;
+              updateStmt.run(nd, r.rowid);
+            }
+          }
+        }
+      });
+      fixTransaction(malformedInvoiceDates);
+    }
+  } catch (e) {
+    console.error("Failed to fix dates:", e);
+  }
+
   return db;
 }
 

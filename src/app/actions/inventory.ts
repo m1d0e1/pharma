@@ -55,7 +55,7 @@ import { z } from 'zod';
 
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 
-import { getLocalSession } from '@/lib/auth/local';
+import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { secureCache } from '@/lib/cache/secure_cache';
 
 // Zod schema for adding inventory
@@ -848,7 +848,25 @@ export async function getInventoryListAction(search?: string) {
 }
 
 
-export async function getMovementsAction() { return { success: false, data: [] }; }
+export async function getMovementsAction() {
+  try {
+    const localUser = await getLocalSession();
+    if (!localUser || !hasUserPermissionSync(localUser, 'can_view_stock_reports')) return { success: false, error: 'غير مصرح' };
+
+    const data = await db.prepare(`
+      SELECT a.*, u.full_name as user_name, u.username
+      FROM activity_log a
+      LEFT JOIN users u ON a.user_id = u.id
+      WHERE a.action IN ('ADD_INVENTORY', 'UPDATE_INVENTORY', 'DELETE_INVENTORY', 'ADJUST_STOCK', 'COMPLETE_PURCHASE', 'SALE', 'RETURN', 'بيع', 'مسودة بيع')
+      ORDER BY a.created_at DESC
+      LIMIT 200
+    `).all() as any[];
+
+    return { success: true, data };
+  } catch (error) {
+    return { success: false, error: 'Failed to fetch movements' };
+  }
+}
 export async function getOpeningBalancesAction() { return { success: false, data: [] }; }
 export async function getRestockItemsAction() { return { success: false, data: [] }; }
 export async function getAdjustmentsAction() { return { success: false, data: [] }; }

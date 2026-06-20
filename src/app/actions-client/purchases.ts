@@ -261,6 +261,12 @@ export async function createPurchaseInvoiceAction(data: {
         } else {
           try {
             if (accounts.cash) await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, accounts.cash, 'credit', finalTotal);
+            const openShift = await db.prepare("SELECT id FROM shifts WHERE user_id = ? AND status = 'open'").get(session.id) as any;
+            if (openShift) {
+              await db.prepare('INSERT INTO cash_movements (id, shift_id, type, amount, category, description, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+                generateId(), openShift.id, 'disbursement', finalTotal, 'purchases', `فاتورة شراء رقم ${data.invoice_number || id.slice(0, 8)}`, session.id
+              );
+            }
           } catch (e) {
             console.warn('Accounting missing: could not insert cash journal entry', e);
           }
@@ -484,7 +490,7 @@ export async function createPurchaseOrderAction(data: { supplier_name: string; n
 
 export async function getPurchaseOrdersAction() {
   try {
-    const orders = await db.prepare('SELECT po.*, u.full_name as creator_name, (SELECT COUNT(*) FROM purchase_order_items WHERE po_id = po.id) as item_count FROM purchase_orders po JOIN users u ON po.user_id = u.id ORDER BY po.created_at DESC').all();
+    const orders = await db.prepare('SELECT po.*, u.full_name as creator_name, (SELECT COUNT(*) FROM purchase_order_items WHERE po_id = po.id) as item_count FROM purchase_orders po LEFT JOIN users u ON po.user_id = u.id ORDER BY po.created_at DESC').all();
     return { success: true, data: orders };
   } catch (error) {
     return { success: false, error: 'Failed' };
@@ -521,7 +527,7 @@ export async function getPurchasesReportsAction(filters: any = {}) {
 
 export async function getPurchaseInvoiceDetailsAction(invoiceId: string) {
   try {
-    const items = await db.prepare('SELECT pii.*, d.trade_name, d.barcode FROM purchase_invoice_items pii JOIN master_drugs d ON pii.drug_id = d.id WHERE pii.invoice_id = ?').all(invoiceId);
+    const items = await db.prepare('SELECT pii.*, d.trade_name, d.trade_name_en, d.barcode FROM purchase_invoice_items pii JOIN master_drugs d ON pii.drug_id = d.id WHERE pii.invoice_id = ?').all(invoiceId);
     return { success: true, data: items };
   } catch (error: any) { return { success: false, error: error.message }; }
 }

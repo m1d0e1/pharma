@@ -13,6 +13,15 @@ export default function AppInitializer({ children }: { children: React.ReactNode
     if (isTauri) {
       secureCache.load().then(() => {
         console.log('SecureCache loaded on client');
+        
+        // Auto-fix bad dates (DD/MM/YYYY to YYYY-MM-DD)
+        import('@/lib/db/tauri').then(({ dbExecute }) => {
+          const sqlInv = `UPDATE inventory SET expiry_date = substr(expiry_date, 7, 4) || '-' || substr(expiry_date, 4, 2) || '-' || substr(expiry_date, 1, 2) WHERE expiry_date LIKE '__/__/____'`;
+          const sqlPur = `UPDATE purchase_invoice_items SET expiry_date = substr(expiry_date, 7, 4) || '-' || substr(expiry_date, 4, 2) || '-' || substr(expiry_date, 1, 2) WHERE expiry_date LIKE '__/__/____'`;
+          dbExecute(sqlInv).catch(() => {});
+          dbExecute(sqlPur).catch(() => {});
+        });
+
         setLoaded(true);
       }).catch(err => {
         console.error('Failed to load SecureCache on client', err);

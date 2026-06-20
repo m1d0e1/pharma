@@ -141,7 +141,7 @@ export async function searchDrugsAction(searchTerm: string, limit = 20) {
              MIN(expiry_date) as nearest_expiry,
              MAX(strips_per_box) as max_strips
       FROM inventory
-      WHERE drug_id IN (${placeholders})
+      WHERE drug_id IN (${placeholders}) AND quantity > 0
       GROUP BY drug_id
     `).all(...matchedIds) as any[];
 
@@ -242,7 +242,8 @@ export async function barcodeLookupAction(barcode: string) {
         i.id as inventory_id
       FROM master_drugs md
       INNER JOIN inventory i ON md.id = i.drug_id
-      WHERE i.barcode = ?
+      WHERE i.barcode = ? AND i.quantity > 0
+      ORDER BY CASE WHEN i.expiry_date IS NULL THEN 1 ELSE 0 END, i.expiry_date ASC
       LIMIT 1
     `).get(barcode) as any;
 
@@ -554,6 +555,12 @@ export async function processCheckoutAction(data: any) {
           await db.prepare('UPDATE patients SET points_balance = points_balance + ? WHERE id = ?').run(pointsEarned, validatedData.patient_id);
         }
       }
+
+      await db.prepare('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)').run(
+        userId, 
+        validatedData.status === 'completed' ? 'بيع' : 'مسودة بيع', 
+        `تم إضافة ${validatedData.status === 'completed' ? 'فاتورة بيع' : 'مسودة'} برقم ${saleId.slice(0, 8)} بمبلغ ${totalAmount}`
+      );
     });
 
     return {

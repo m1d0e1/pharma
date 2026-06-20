@@ -531,6 +531,8 @@ export default function POSPage() {
             sales_items: cart.map(item => ({
               quantity_sold: item.qty,
               unit_price: item.price,
+              unit: item.selectedUnit,
+              units: item.units,
               inventory: { master_drugs: { trade_name: item.trade_name, trade_name_en: item.trade_name_en } }
             }))
           };

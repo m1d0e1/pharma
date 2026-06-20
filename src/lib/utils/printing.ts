@@ -34,7 +34,7 @@ export const generateReceiptHtml = (invoice: any, pharmacyInfo: any) => {
 
   const itemsHtml = invoice.sales_items?.map((item: any) => {
     const safeTradeName = escapeHtml(item.inventory?.master_drugs?.trade_name_en || item.trade_name_en || item.inventory?.master_drugs?.trade_name || item.trade_name || 'Drug Item')
-    const safeQuantity = escapeHtml(item.quantity_sold.toString())
+    const safeQuantity = escapeHtml(item.quantity_sold.toString() + (item.unit ? ' ' + (item.units?.[item.unit] || (item.unit === 'large' ? 'علبة' : item.unit === 'medium' ? 'شريط' : 'وحدة')) : ''))
     const safeUnitPrice = escapeHtml(item.unit_price.toFixed(2))
     const safeTotal = escapeHtml((item.quantity_sold * item.unit_price).toFixed(2))
     

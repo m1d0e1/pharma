@@ -6,12 +6,14 @@ import { format } from 'date-fns';
 import { ar } from 'date-fns/locale';
 import { Search, Filter, Receipt, FileText, ArrowUpRight, CheckCircle2, Clock, Printer } from 'lucide-react';
 import { toast } from 'react-hot-toast';
+import Link from 'next/link';
 import BarcodePrinter from '@/components/purchases/BarcodePrinter';
 
 export default function PurchaseReportsClient() {
   const [invoices, setInvoices] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
   const [selectedInvoiceForBarcode, setSelectedInvoiceForBarcode] = useState<any[] | null>(null);
 
   useEffect(() => {
@@ -27,11 +29,15 @@ export default function PurchaseReportsClient() {
     load();
   }, []);
 
-  const filteredInvoices = invoices.filter(inv => 
-    inv.invoice_number?.includes(searchTerm) || 
-    inv.supplier_name?.includes(searchTerm) ||
-    inv.id?.includes(searchTerm)
-  );
+  const filteredInvoices = invoices.filter(inv => {
+    const matchesSearch = inv.invoice_number?.includes(searchTerm) || 
+                          inv.supplier_name?.includes(searchTerm) ||
+                          inv.id?.includes(searchTerm);
+    const matchesStatus = statusFilter === 'all' || 
+                          (statusFilter === 'completed' && inv.status === 'completed') ||
+                          (statusFilter === 'pending' && inv.status !== 'completed');
+    return matchesSearch && matchesStatus;
+  });
 
   const totalPurchases = invoices.reduce((sum, inv) => sum + (Number(inv.total_amount) || 0), 0);
   const completedPurchases = invoices.filter(i => i.status === 'completed').reduce((sum, inv) => sum + (Number(inv.total_amount) || 0), 0);
@@ -111,15 +117,26 @@ export default function PurchaseReportsClient() {
       <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-100 dark:border-slate-800 overflow-hidden">
         <div className="p-6 border-b border-slate-100 dark:border-slate-800 flex flex-wrap gap-4 items-center justify-between">
           <h2 className="text-xl font-bold">سجل الفواتير</h2>
-          <div className="relative w-full md:w-64">
-            <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
-            <input 
-              type="text"
-              placeholder="بحث في الفواتير..."
-              value={searchTerm}
-              onChange={e => setSearchTerm(e.target.value)}
-              className="w-full pr-10 pl-4 py-2.5 bg-slate-50 dark:bg-slate-800 border-none rounded-xl focus:ring-2 focus:ring-primary-500 transition-all"
-            />
+          <div className="flex items-center gap-4 w-full md:w-auto">
+            <select
+              value={statusFilter}
+              onChange={e => setStatusFilter(e.target.value)}
+              className="px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border-none rounded-xl focus:ring-2 focus:ring-primary-500 font-bold outline-none"
+            >
+              <option value="all">كل الفواتير</option>
+              <option value="completed">المكتملة فقط</option>
+              <option value="pending">المعلقة فقط</option>
+            </select>
+            <div className="relative flex-1 md:w-64">
+              <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
+              <input 
+                type="text"
+                placeholder="بحث في الفواتير..."
+                value={searchTerm}
+                onChange={e => setSearchTerm(e.target.value)}
+                className="w-full pr-10 pl-4 py-2.5 bg-slate-50 dark:bg-slate-800 border-none rounded-xl focus:ring-2 focus:ring-primary-500 transition-all"
+              />
+            </div>
           </div>
         </div>
 
@@ -163,7 +180,16 @@ export default function PurchaseReportsClient() {
                   <td className="p-4 font-bold text-lg">
                     {Number(inv.total_amount || 0).toFixed(2)}
                   </td>
-                  <td className="p-4 text-center">
+                  <td className="p-4 text-center flex items-center justify-center gap-2">
+                    {inv.status !== 'completed' && (
+                      <Link
+                        href={`/purchases/new?supplier_id=${inv.supplier_id}`}
+                        className="p-2 text-slate-400 hover:text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/30 rounded-xl transition-all"
+                        title="استكمال الفاتورة"
+                      >
+                        <ArrowUpRight className="w-5 h-5" />
+                      </Link>
+                    )}
                     <button
                       onClick={() => handlePrintBarcode(inv.id)}
                       className="p-2 text-slate-400 hover:text-primary-600 hover:bg-primary-50 dark:hover:bg-primary-900/30 rounded-xl transition-all"

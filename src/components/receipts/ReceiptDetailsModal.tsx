@@ -18,6 +18,8 @@ interface SaleItem {
   }
   trade_name?: string
   trade_name_en?: string
+  unit?: string
+  units?: any
 }
 
 interface Invoice {
@@ -186,7 +188,9 @@ export default function ReceiptDetailsModal({ invoice, onClose }: Props) {
                       <span className="text-[9px] text-slate-400 font-black uppercase tracking-widest mt-0.5">Item Ref: MD-{idx + 100}</span>
                     </div>
                   </div>
-                  <div className="col-span-2 text-center font-black text-slate-900 dark:text-white">{item.quantity_sold}</div>
+                  <div className="col-span-2 text-center font-black text-slate-900 dark:text-white">
+                    {item.quantity_sold} {item.unit ? (item.units?.[item.unit] || (item.unit === 'large' ? 'علبة' : item.unit === 'medium' ? 'شريط' : 'وحدة')) : ''}
+                  </div>
                   <div className="col-span-2 text-left font-bold text-slate-500">{item.unit_price.toFixed(2)}</div>
                   <div className="col-span-2 text-left font-black text-slate-900 dark:text-white">{(item.quantity_sold * item.unit_price).toFixed(2)}</div>
                 </div>

@@ -72,7 +72,7 @@ export default function OpeningBalancesPage() {
             <p className="text-slate-500 font-bold">إدخال ومراجعة أرصدة بداية المدة للأصناف.</p>
           </div>
         </div>
-        <Link href="/inventory/settlement" className="px-8 py-4 bg-blue-600 text-white rounded-[24px] font-black hover:bg-blue-700 transition-all shadow-xl flex items-center gap-3">
+        <Link href="/inventory/opening-balances/new" className="px-8 py-4 bg-blue-600 text-white rounded-[24px] font-black hover:bg-blue-700 transition-all shadow-xl flex items-center gap-3">
           <Plus className="w-5 h-5" /> إضافة رصيد إفتتاحي
         </Link>
       </div>
