@@ -5,7 +5,7 @@ import { cache } from 'react';
 const SESSION_COOKIE = 'pharma_session';
 
 export async function hashPassword(password: string): Promise<string> {
-  const isTauri = typeof window !== 'undefined' && (window as any).__TAURI__ !== undefined;
+  const isTauri = typeof window !== 'undefined' && ((window as any).__TAURI__ !== undefined || (window as any).__TAURI_INTERNALS__ !== undefined);
 
   if (isTauri) {
     const { invoke } = await import('@tauri-apps/api/core');
@@ -18,7 +18,7 @@ export async function hashPassword(password: string): Promise<string> {
 }
 
 export async function verifyPassword(password: string, hash: string): Promise<boolean> {
-  const isTauri = typeof window !== 'undefined' && (window as any).__TAURI__ !== undefined;
+  const isTauri = typeof window !== 'undefined' && ((window as any).__TAURI__ !== undefined || (window as any).__TAURI_INTERNALS__ !== undefined);
 
   if (isTauri) {
     const { invoke } = await import('@tauri-apps/api/core');
@@ -31,7 +31,7 @@ export async function verifyPassword(password: string, hash: string): Promise<bo
 }
 
 export async function loginLocal(username: string, password?: string) {
-  const isTauri = typeof window !== 'undefined' && (window as any).__TAURI__ !== undefined;
+  const isTauri = typeof window !== 'undefined' && ((window as any).__TAURI__ !== undefined || (window as any).__TAURI_INTERNALS__ !== undefined);
   const isClient = typeof window !== 'undefined';
 
   if (isTauri) {
@@ -160,7 +160,7 @@ export async function loginLocal(username: string, password?: string) {
 }
 
 export async function logoutLocal() {
-  const isTauri = typeof window !== 'undefined' && (window as any).__TAURI__ !== undefined;
+  const isTauri = typeof window !== 'undefined' && ((window as any).__TAURI__ !== undefined || (window as any).__TAURI_INTERNALS__ !== undefined);
   const isClient = typeof window !== 'undefined';
 
   if (isTauri || isClient) {
@@ -187,7 +187,7 @@ export const getLocalSession = cache(async () => {
   if (typeof globalThis !== 'undefined' && (globalThis as any).__MOCK_SESSION__) {
     return (globalThis as any).__MOCK_SESSION__;
   }
-  const isTauri = typeof window !== 'undefined' && (window as any).__TAURI__ !== undefined;
+  const isTauri = typeof window !== 'undefined' && ((window as any).__TAURI__ !== undefined || (window as any).__TAURI_INTERNALS__ !== undefined);
   const isClient = typeof window !== 'undefined';
 
   if (isTauri || isClient) {

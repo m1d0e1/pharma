@@ -1,7 +1,7 @@
 // Universal sync wrapper for hybrid environments
 
 export async function syncFromCloud() {
-  const isTauri = typeof window !== 'undefined' && (window as any).__TAURI__ !== undefined;
+  const isTauri = typeof window !== 'undefined' && ((window as any).__TAURI__ !== undefined || (window as any).__TAURI_INTERNALS__ !== undefined);
 
   if (isTauri) {
     console.log('Running cloud sync on Tauri...');

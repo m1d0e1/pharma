@@ -32,7 +32,7 @@ export default function DashboardLayout({
 
   useEffect(() => {
     // Detect Tauri once on mount
-    setIsTauri(typeof window !== 'undefined' && (window as any).__TAURI__ !== undefined);
+    setIsTauri(typeof window !== 'undefined' && ((window as any).__TAURI__ !== undefined || (window as any).__TAURI_INTERNALS__ !== undefined));
   }, []);
 
   useEffect(() => {
@@ -59,7 +59,7 @@ export default function DashboardLayout({
             console.error('Failed to fetch pharmacy name:', dbErr);
           }
         } else {
-          const _isTauri = typeof window !== 'undefined' && (window as any).__TAURI__ !== undefined;
+          const _isTauri = typeof window !== 'undefined' && ((window as any).__TAURI__ !== undefined || (window as any).__TAURI_INTERNALS__ !== undefined);
           if (!_isTauri) {
             try {
               const { getSupabaseBrowserClient } = await import('@/lib/supabase');
@@ -96,7 +96,7 @@ export default function DashboardLayout({
 
   // Handle native Tauri menu events
   useEffect(() => {
-    if (typeof window === 'undefined' || !(window as any).__TAURI__) return;
+    if (typeof window === 'undefined' || (!(window as any).__TAURI__ && !(window as any).__TAURI_INTERNALS__)) return;
     
     let unlistenNavigate: (() => void) | undefined;
     let unlistenAction: (() => void) | undefined;
@@ -205,7 +205,7 @@ export default function DashboardLayout({
   useHotkeys('ctrl+n, meta+n', (e) => {
     e.preventDefault();
     try {
-      if (typeof window !== 'undefined' && (window as any).__TAURI__) {
+      if (typeof window !== 'undefined' && ((window as any).__TAURI__ || (window as any).__TAURI_INTERNALS__)) {
         import('@tauri-apps/api/webviewWindow').then(({ WebviewWindow }) => {
           new WebviewWindow('window_' + Date.now(), { url: '/', title: 'Pharma Dashboard', width: 1280, height: 800, minWidth: 800, minHeight: 600 });
         }).catch(() => window.open('/', '_blank'));

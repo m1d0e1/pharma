@@ -20,7 +20,7 @@ export function getSupabaseBrowserClient() {
     return null as any;
   }
 
-  const isTauri = typeof window !== 'undefined' && (window as any).__TAURI__ !== undefined;
+  const isTauri = typeof window !== 'undefined' && ((window as any).__TAURI__ !== undefined || (window as any).__TAURI_INTERNALS__ !== undefined);
 
   supabaseInstance = createBrowserClient(supabaseUrl, supabaseAnonKey, {
     auth: {

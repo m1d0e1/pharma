@@ -39,7 +39,7 @@ export default function DashboardPage() {
   const [isTauri, setIsTauri] = useState(false);
 
   useEffect(() => {
-    setIsTauri(typeof window !== 'undefined' && (window as any).__TAURI__ !== undefined);
+    setIsTauri(typeof window !== 'undefined' && ((window as any).__TAURI__ !== undefined || (window as any).__TAURI_INTERNALS__ !== undefined));
     async function loadDashboardData() {
       try {
         const localUser = await getClientSession();

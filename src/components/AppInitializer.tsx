@@ -8,7 +8,7 @@ export default function AppInitializer({ children }: { children: React.ReactNode
 
   useEffect(() => {
     // Determine if we are in Tauri
-    const isTauri = typeof window !== 'undefined' && (window as any).__TAURI__;
+    const isTauri = typeof window !== 'undefined' && ((window as any).__TAURI__ || (window as any).__TAURI_INTERNALS__);
     
     if (isTauri) {
       secureCache.load().then(() => {

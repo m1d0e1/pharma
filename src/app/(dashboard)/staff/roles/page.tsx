@@ -14,7 +14,7 @@ export default function StaffRolesPage() {
   const [jobs, setJobs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const isTauri = typeof window !== 'undefined' && (window as any).__TAURI__ !== undefined;
+  const isTauri = typeof window !== 'undefined' && ((window as any).__TAURI__ !== undefined || (window as any).__TAURI_INTERNALS__ !== undefined);
 
   async function loadJobs() {
     try {

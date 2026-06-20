@@ -3,7 +3,7 @@ import { getSupabaseBrowserClient } from '@/lib/supabase';
 
 export async function updatePharmacyClient(formData: any) {
   try {
-    const isTauri = typeof window !== 'undefined' && (window as any).__TAURI__ !== undefined;
+    const isTauri = typeof window !== 'undefined' && ((window as any).__TAURI__ !== undefined || (window as any).__TAURI_INTERNALS__ !== undefined);
 
     // 1. Update Cloud (Supabase) if online
     const supabase = getSupabaseBrowserClient();
