@@ -152,15 +152,30 @@ export default function DashboardLayout({
             const { relaunch } = await import('@tauri-apps/plugin-process');
             
             const currentVersion = await getVersion();
-            const update = await check();
+            let update: Awaited<ReturnType<typeof check>> = null;
+            let latestVersion: string | null = null;
+
+            try {
+              update = await check();
+              if (update) latestVersion = update.version;
+            } catch {
+              // Tauri updater failed — try fetching latest.json directly for version info
+              try {
+                const res = await fetch('https://github.com/m1d0e1/pharma/releases/latest/download/latest.json');
+                if (res.ok) {
+                  const data = await res.json();
+                  latestVersion = data.version ?? null;
+                }
+              } catch { /* network down */ }
+            }
+
+            toast.dismiss(toastId);
+
             if (update) {
-              toast.dismiss(toastId);
-              const yes = await ask(`تم العثور على أحدث إصدار متاح عبر الإنترنت وهو (${update.version}) وأنت الآن تستخدم الإصدار (${currentVersion}).\nهل تريد التحديث الآن؟`, {
-                title: 'تحديث البرنامج',
-                kind: 'info',
-                okLabel: 'نعم، حدث الآن',
-                cancelLabel: 'لاحقاً'
-              });
+              const yes = await ask(
+                `الإصدار الحالي: ${currentVersion}\nأحدث إصدار: ${update.version}\n\nهل تريد التحديث الآن؟`,
+                { title: 'تحديث البرنامج', kind: 'info', okLabel: 'نعم، حدث الآن', cancelLabel: 'لاحقاً' }
+              );
               if (yes) {
                 toast.loading('جاري التحميل والتثبيت...', { id: toastId });
                 await update.downloadAndInstall();
@@ -168,15 +183,22 @@ export default function DashboardLayout({
                 await message('تم التحديث بنجاح! سيتم إعادة تشغيل البرنامج الآن.', { title: 'نجاح التحديث', kind: 'info' }).catch(() => toast.success('تم التحديث بنجاح!'));
                 await relaunch();
               }
+            } else if (latestVersion) {
+              // We know latest but Tauri says no update (same version, or signed check failed)
+              await message(
+                `الإصدار الحالي: ${currentVersion}\nأحدث إصدار متاح: ${latestVersion}\n\n${latestVersion === currentVersion ? 'أنت تستخدم أحدث إصدار.' : 'يرجى تثبيت الإصدار الجديد يدوياً من الموقع.'}`,
+                { title: 'معلومات الإصدار', kind: 'info' }
+              ).catch(() => toast.success(`الإصدار الحالي: ${currentVersion} | أحدث إصدار: ${latestVersion}`));
             } else {
-              toast.dismiss(toastId);
-              toast.success('لا توجد تحديثات جديدة. أنت تستخدم أحدث إصدار.');
-              await message('أنت تستخدم أحدث إصدار من البرنامج. لا توجد تحديثات جديدة.', { title: 'لا يوجد تحديث', kind: 'info' }).catch(() => {});
+              await message(
+                `الإصدار الحالي: ${currentVersion}\n\nتعذر الاتصال بالخادم للتحقق من التحديثات.\nتأكد من اتصالك بالإنترنت.`,
+                { title: 'تحقق من التحديثات', kind: 'warning' }
+              ).catch(() => toast.error(`الإصدار الحالي: ${currentVersion} — تعذر الاتصال`));
             }
           } catch (err) {
             console.error('Update failed:', err);
             toast.dismiss(toastId);
-            toast.error('لم يتم العثور على تحديثات أو تعذر الاتصال بالخادم.');
+            toast.error('تعذر التحقق من التحديثات. تأكد من اتصالك بالإنترنت.');
           }
         }
         if (action === 'logout') {
