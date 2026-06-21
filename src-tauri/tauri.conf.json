@@ -1,6 +1,6 @@
 {
   "productName": "Pharmacy Local Enforcer",
-  "version": "0.2.3",
+  "version": "0.2.6",
   "identifier": "com.pharma.system",
   "build": {
     "beforeDevCommand": "cross-env NEXT_PUBLIC_TAURI=1 next dev",
@@ -50,7 +50,7 @@
       "endpoints": [
         "https://github.com/m1d0e1/pharma/releases/latest/download/latest.json"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU5MTlBMjY3NUIxMTkwNkQKUldSdGtCRmJaNklaNllyck5WcGV3T3RDOERubVJUTFJvZTkybENOU2k2TFZUU0tNYnY5Sit6emwK"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhDRDkwRTVFRjI1QjcxQjYKUldTMmNWdnlYZzdaakFEKzN6VVFyMEFEWUZkQ2dkWEIrUnRXaTA5UnJ3YWJhL0c2ZEs4RlJwaU4K"
     }
   }
 }

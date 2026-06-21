@@ -29,6 +29,9 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      - name: Seed database
+        run: npm run seed:db
+
       - name: Build and publish Tauri release
         uses: tauri-apps/tauri-action@v0
         env:
