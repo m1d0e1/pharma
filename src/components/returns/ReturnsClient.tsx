@@ -4,8 +4,11 @@ import React, { useState } from 'react';
 import { Search, Plus, FileText, ArrowRightLeft, Clock } from 'lucide-react';
 import Link from 'next/link';
 
-export default function ReturnsClient({ title }: { title: string }) {
+export default function ReturnsClient({ title, type = 'sales' }: { title: string, type?: 'sales' | 'purchases' }) {
   const [searchTerm, setSearchTerm] = useState('');
+
+  const newReturnLink = type === 'sales' ? '/returns/new' : '/purchases/returns/new';
+  const placeholderText = type === 'sales' ? 'بحث برقم المرتجع أو الفاتورة...' : 'بحث برقم المرتجع أو المورد...';
 
   return (
     <div className="space-y-6">
@@ -15,7 +18,7 @@ export default function ReturnsClient({ title }: { title: string }) {
           <p className="text-slate-500 text-sm mt-1">سجل المرتجعات وإدارتها</p>
         </div>
         
-        <Link href="/purchases/returns/new" className="flex items-center gap-2 px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-xl transition-colors font-bold text-sm">
+        <Link href={newReturnLink} className="flex items-center gap-2 px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-xl transition-colors font-bold text-sm">
           <Plus className="w-4 h-4" />
           إضافة مرتجع
         </Link>
@@ -27,7 +30,7 @@ export default function ReturnsClient({ title }: { title: string }) {
             <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
             <input 
               type="text"
-              placeholder="بحث برقم المرتجع أو المورد..."
+              placeholder={placeholderText}
               value={searchTerm}
               onChange={e => setSearchTerm(e.target.value)}
               className="w-full pr-10 pl-4 py-2.5 bg-slate-50 dark:bg-slate-800 border-none rounded-xl focus:ring-2 focus:ring-primary-500 transition-all"

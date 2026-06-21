@@ -11,7 +11,7 @@ export async function syncFromCloud() {
     console.log('Running cloud sync via Server Action...');
     // We dynamically import the server action to avoid Webpack bundling issues in Tauri static builds
     try {
-      const { syncFromCloudAction } = await import('@/app/actions/sync');
+      const { syncFromCloudAction } = await import('@/app/actions-client/sync');
       return syncFromCloudAction();
     } catch (err) {
       console.error('Failed to import syncFromCloudAction, falling back to client-side sync:', err);

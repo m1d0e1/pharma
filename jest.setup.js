@@ -53,13 +53,13 @@ jest.mock('@/lib/supabase', () => ({
 
 // Mock server actions
 
-jest.mock('@/app/actions/inventory', () => ({
+jest.mock('@/app/actions-client/inventory', () => ({
   addInventoryAction: jest.fn(() => Promise.resolve({ success: true })),
   updateInventoryAction: jest.fn(() => Promise.resolve({ success: true })),
   deleteInventoryAction: jest.fn(() => Promise.resolve({ success: true })),
 }));
 
-jest.mock('@/app/actions/patients', () => ({
+jest.mock('@/app/actions-client/patients', () => ({
   addPatientAction: jest.fn(() => Promise.resolve({ success: true })),
 }));
 

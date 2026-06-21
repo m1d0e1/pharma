@@ -2,8 +2,8 @@
 import { useHotkeys } from 'react-hotkeys-hook';
 
 import { useState, useEffect } from 'react'
-import { addInventoryAction } from '@/app/actions/inventory'
-import { searchMasterDrugsAction, getUnitsAction } from '@/app/actions/master-drugs'
+import { addInventoryAction } from '@/app/actions-client/inventory'
+import { searchMasterDrugsAction, getUnitsAction } from '@/app/actions-client/master-drugs'
 import { toast } from 'react-hot-toast'
 import { Plus, Search, Sparkles } from 'lucide-react'
 import QuickAddDrugModal from './master-drugs/QuickAddDrugModal'

@@ -3,7 +3,7 @@
 import React, { useState } from 'react'
 import { Plus, Trash2, Save, X, Search, FlaskConical } from 'lucide-react'
 import { toast, Toaster } from 'react-hot-toast'
-import { addScientificGroupAction } from '@/app/actions/master-drugs'
+import { addScientificGroupAction } from '@/app/actions-client/master-drugs'
 
 interface ScientificGroup {
   id: number;

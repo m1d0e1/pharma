@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook';
 import { createPurchaseOrderAction } from '@/app/actions-client/purchases';
-import { searchMasterDrugsAction } from '@/app/actions/master-drugs';
+import { searchMasterDrugsAction } from '@/app/actions-client/master-drugs';
 import { getSuppliersAction } from '@/app/actions-client/purchases';
 import { toast } from 'react-hot-toast';
 import { X, Save, ShoppingCart, Plus, Trash2, Search, Loader2 } from 'lucide-react';

@@ -10,7 +10,7 @@ import { cn } from '@/lib/utils';
 import { 
   createCashMovementAction, 
   getCashMovementsAction 
-} from '@/app/actions/finance';
+} from '@/app/actions-client/finance';
 import { format, isValid } from 'date-fns';
 import { toast } from 'react-hot-toast';
 

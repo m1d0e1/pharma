@@ -4,7 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 import AccessDenied from '@/components/AccessDenied';
 import { Database, Plus, Search } from 'lucide-react';
-import { getOpeningBalancesAction } from '@/app/actions/inventory';
+import { getOpeningBalancesAction } from '@/app/actions-client/inventory';
 import Link from 'next/link';
 
 export default function OpeningBalancesPage() {

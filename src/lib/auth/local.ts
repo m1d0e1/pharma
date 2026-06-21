@@ -64,6 +64,15 @@ export async function loginLocal(username: string, password?: string) {
     };
 
     localStorage.setItem('pharma_session_user', JSON.stringify(sessionUser));
+    try {
+      await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [
+        user.id,
+        'LOGIN',
+        `تسجيل دخول للمستخدم: ${user.full_name || user.username}`
+      ]);
+    } catch (e) {
+      console.error('Failed to log login activity:', e);
+    }
     return { success: true, user: sessionUser };
   }
 
@@ -146,6 +155,16 @@ export async function loginLocal(username: string, password?: string) {
     maxAge: 60 * 60 * 8
   });
 
+  try {
+    await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [
+      user.id,
+      'LOGIN',
+      `تسجيل دخول للمستخدم: ${user.full_name || user.username}`
+    ]);
+  } catch (e) {
+    console.error('Failed to log login activity:', e);
+  }
+
   return {
     success: true,
     user: {
@@ -168,7 +187,7 @@ export async function logoutLocal() {
     
     if (isClient && !isTauri) {
       // Clear cookies by calling the Server Action
-      const { logoutLocalAction } = await import('@/app/actions/auth');
+      const { logoutLocalAction } = await import('@/app/actions-client/auth');
       await logoutLocalAction();
     }
     return;

@@ -4,7 +4,7 @@
 import React, { useState, useEffect } from 'react';
 import { Save, Layout, Maximize2, Type, Barcode, Trash2, CheckCircle2 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
-import { getLabelTemplatesAction, saveLabelTemplateAction } from '@/app/actions/labels';
+import { getLabelTemplatesAction, saveLabelTemplateAction } from '@/app/actions-client/labels';
 
 export default function LabelDesigner() {
   const [templates, setTemplates] = useState<any[]>([]);

@@ -76,7 +76,7 @@ fn main() {
 
             // 5. المشتريات (Purchases)
             let purchases_menu = Submenu::with_items(app, "المشتريات", true, &[
-                &MenuItem::with_id(app, "purchases", "المشتريات", true, None::<&str>)?,
+                &MenuItem::with_id(app, "purchases", "المشتريات", true, Some("CmdOrCtrl+O"))?,
                 &MenuItem::with_id(app, "purchase_orders", "أوامر الشراء", true, None::<&str>)?,
                 &MenuItem::with_id(app, "purchases_suppliers", "الموردون", true, None::<&str>)?,
                 &MenuItem::with_id(app, "purchases_returns", "مرتجعات للموردين", true, None::<&str>)?,
@@ -97,7 +97,7 @@ fn main() {
 
             // 7. التقارير (Reports)
             let reports_menu = Submenu::with_items(app, "التقارير", true, &[
-                &MenuItem::with_id(app, "reports", "التقارير", true, None::<&str>)?,
+                &MenuItem::with_id(app, "reports", "لوحة التقارير", true, None::<&str>)?,
                 &MenuItem::with_id(app, "reports_sales2", "تقارير المبيعات", true, None::<&str>)?,
                 &MenuItem::with_id(app, "reports_purchases", "تقارير المشتريات", true, None::<&str>)?,
                 &MenuItem::with_id(app, "reports_trial_balance", "ميزان المراجعة", true, None::<&str>)?,

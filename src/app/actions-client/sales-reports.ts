@@ -69,7 +69,7 @@ export async function getSalesReportsAction(filters: {
     let query = `
       SELECT 
         si.*, 
-        u.full_name as staff_name,
+        COALESCE(u.full_name, u.username, si.user_id, 'غير محدد') as staff_name,
         p.full_name as patient_name
       FROM sales_invoices si
       LEFT JOIN users u ON si.user_id = u.id

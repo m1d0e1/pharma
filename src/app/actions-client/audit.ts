@@ -50,7 +50,7 @@ const db = {
 
 
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
-import { getLocalSession } from '@/lib/auth/local'
+import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local'
 
 
 /**
@@ -77,4 +77,58 @@ export async function clearAuditLogsAction() {
   }
 }
 
-export async function getAuditLogsAction() { return { success: false, data: { logs: [], todayCount: 0, userActivity: [], actionTypes: [] } }; }
+export async function getAuditLogsAction() {
+  try {
+    const user = await getLocalSession();
+    if (!user || !hasUserPermissionSync(user, 'can_view_audit')) {
+      return { success: false, error: 'غير مصرح' };
+    }
+
+    const todayStart = new Date().toISOString().split('T')[0] + ' 00:00:00';
+    const sevenDaysAgoStart = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0] + ' 00:00:00';
+
+    const logs = await db.prepare(`
+      SELECT al.*, u.full_name as user_name 
+      FROM activity_log al 
+      LEFT JOIN users u ON al.user_id = u.id 
+      ORDER BY al.created_at DESC 
+      LIMIT 100
+    `).all() as any[];
+
+    const todayCountRes = await db.prepare(`
+      SELECT COUNT(*) as count FROM activity_log WHERE created_at >= ?
+    `).get(todayStart) as any;
+
+    const userActivity = await db.prepare(`
+      SELECT u.full_name, COUNT(al.id) as actions
+      FROM activity_log al
+      LEFT JOIN users u ON al.user_id = u.id
+      WHERE al.created_at >= ?
+      GROUP BY u.full_name
+      ORDER BY actions DESC
+      LIMIT 5
+    `).all(sevenDaysAgoStart) as any[];
+
+    const actionTypes = await db.prepare(`
+      SELECT action, COUNT(id) as count
+      FROM activity_log
+      WHERE created_at >= ?
+      GROUP BY action
+      ORDER BY count DESC
+      LIMIT 5
+    `).all(sevenDaysAgoStart) as any[];
+
+    return { 
+      success: true, 
+      data: { 
+        logs, 
+        todayCount: todayCountRes?.count || 0, 
+        userActivity, 
+        actionTypes 
+      } 
+    };
+  } catch (error) {
+    console.error('getAuditLogsAction error:', error);
+    return { success: false, error: 'Failed to get audit logs' };
+  }
+}

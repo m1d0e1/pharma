@@ -13,68 +13,82 @@ const DrugDetailsModal = nextDynamic(() => import('@/components/pos/DrugDetailsM
 const ReturnsClient = nextDynamic(() => import('@/components/returns/ReturnsClient'), { ssr: false });
 const DraftsModal = nextDynamic(() => import('@/components/pos/DraftsModal'), { ssr: false });
 const StockWarningModal = nextDynamic(() => import('@/components/pos/StockWarningModal'), { ssr: false });
-import { getCurrentUserAction } from '@/app/actions/auth';
-import { addToShortagesAction } from '@/app/actions/shortages';
+import { getCurrentUserAction } from '@/app/actions-client/auth';
+import { addToShortagesAction } from '@/app/actions-client/shortages';
 import { 
   searchDrugsAction, 
   searchPatientsAction, 
   barcodeLookupAction, 
   fetchDraftsAction, 
   processCheckoutAction 
-} from '@/app/actions/sales';
+} from '@/app/actions-client/sales';
 import { ShieldAlert } from 'lucide-react';
-import { checkDrugInteractions } from '@/app/actions/interactions';
+import { checkDrugInteractions } from '@/app/actions-client/interactions';
 import AccessDenied from '@/components/AccessDenied';
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 
 
 
-interface DrugItem {
-  id: number | string;
+export interface DrugItem {
+  id: string | number;
   trade_name: string;
   trade_name_en?: string;
-  active_ingredient: string;
-  category: string;
+  active_ingredient?: string;
+  category?: string;
   official_price: number;
   total_stock: number;
   min_price: number;
   cost_price: number;
-  profit_margin: number | null;
-  nearest_expiry: string | null;
+  nearest_expiry: string;
   is_expired: boolean;
-  reorder_point: number;
-  needs_reorder: boolean;
+  large_unit?: string;
+  medium_unit?: string;
+  small_unit?: string;
+  large_to_medium?: number;
+  medium_to_small?: number;
+  reorder_point?: number;
+  profit_margin?: number;
+  needs_reorder?: boolean;
   units: {
     large: string;
     medium?: string;
     small?: string;
-    large_to_medium: number;
-    medium_to_small: number;
+    large_to_medium?: number;
+    medium_to_small?: number;
   };
+  batches?: any[];
+}
+
+export interface CartItem {
+  drug_id: string | number;
+  trade_name: string;
+  trade_name_en?: string;
+  active_ingredient?: string;
+  qty: number;
+  price: number;
+  itemDiscountPercent: number;
+  basePrice: number;
+  selectedUnit: string;
+  units: {
+    large: string;
+    medium?: string;
+    small?: string;
+    large_to_medium?: number;
+    medium_to_small?: number;
+  };
+  total_stock: number;
+  reorder_point?: number;
+  nearest_expiry?: string;
+  needsRefill: boolean;
+  batches?: any[];
+  inventory_id?: string | null;
+  isNegative?: boolean;
 }
 
 interface Patient {
   id: string;
   full_name: string;
   phone: string;
-}
-
-interface CartItem {
-  drug_id: number | string;
-  trade_name: string;
-  trade_name_en?: string;
-  active_ingredient: string;
-  qty: number;
-  price: number;
-  itemDiscountPercent: number;
-  needsRefill: boolean;
-  selectedUnit: 'large' | 'medium' | 'small';
-  basePrice: number;
-  units: DrugItem['units'];
-  total_stock: number;
-  reorder_point: number;
-  nearest_expiry: string | null;
-  isNegative?: boolean;
 }
 
 export interface POSSearchSidebarRef {
@@ -238,7 +252,7 @@ export default function POSPage() {
 
   useEffect(() => {
     async function fetchUnits() {
-      const { getUnitsAction } = await import('@/app/actions/master-drugs');
+      const { getUnitsAction } = await import('@/app/actions-client/master-drugs');
       const res = await getUnitsAction();
       if (res.success && res.data) setUnitsList(res.data);
     }
@@ -435,6 +449,8 @@ export default function POSPage() {
         total_stock: drug.total_stock,
         reorder_point: drug.reorder_point,
         nearest_expiry: drug.nearest_expiry,
+        batches: drug.batches || [],
+        inventory_id: null,
         needsRefill: false 
       }];
     });
@@ -452,6 +468,31 @@ export default function POSPage() {
       }
       
       return { ...item, selectedUnit: unit as any, price: Number(newPrice.toFixed(2)) };
+    }));
+  }, []);
+
+  const handleBatchChange = useCallback((drugId: string | number, inventoryId: string) => {
+    setCart(prev => prev.map(item => {
+      if (String(item.drug_id) !== String(drugId)) return item;
+      
+      const batchId = inventoryId === 'auto' ? null : inventoryId;
+      let newPrice = item.price;
+      
+      if (batchId && item.batches) {
+        const batch = item.batches.find((b: any) => String(b.inventory_id) === String(batchId));
+        if (batch && batch.unit_price) {
+          // Calculate price based on selected unit
+          let basePrice = batch.unit_price;
+          if (item.selectedUnit === item.units.medium || item.selectedUnit === 'medium') {
+            basePrice = basePrice / (item.units.large_to_medium || 1);
+          } else if (item.selectedUnit === item.units.small || item.selectedUnit === 'small') {
+            basePrice = basePrice / ((item.units.large_to_medium || 1) * (item.units.medium_to_small || 1));
+          }
+          newPrice = basePrice;
+        }
+      }
+      
+      return { ...item, inventory_id: batchId, price: Number(newPrice.toFixed(2)) };
     }));
   }, []);
 
@@ -500,6 +541,7 @@ export default function POSPage() {
 
       const formattedCart = cart.map(item => ({
         drug_id: item.drug_id,
+        inventory_id: item.inventory_id || null,
         quantity_sold: item.qty,
         unit_price: item.price,
         selected_unit: item.selectedUnit,
@@ -539,7 +581,7 @@ export default function POSPage() {
           setCompletedInvoice(invoice);
 
           // Trigger financial snapshot update
-          import('@/app/actions/finance').then(mod => mod.generateDailySnapshotAction());
+          import('@/app/actions-client/finance').then(mod => mod.generateDailySnapshotAction());
         }
         
         setCart([]);
@@ -873,12 +915,27 @@ export default function POSPage() {
                         {item.units.small && <option value="small">{item.units.small}</option>}
                       </select>
                     </td>
-                    <td className="px-1 py-2 text-center w-16">
-                      <span className={`text-[8px] font-bold px-1 py-0.5 rounded-full ${
-                        item.nearest_expiry && new Date(item.nearest_expiry) < new Date() ? 'bg-red-100 text-red-600' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'
-                      }`}>
-                        {item.nearest_expiry || '---'}
-                      </span>
+                    <td className="px-1 py-2 text-center w-24">
+                      {item.batches && item.batches.length > 1 ? (
+                        <select
+                          value={item.inventory_id || 'auto'}
+                          onChange={(e) => handleBatchChange(item.drug_id, e.target.value)}
+                          className="w-full bg-slate-50 dark:bg-slate-800 border-none p-1 rounded text-[9px] font-bold focus:ring-1 focus:ring-blue-500"
+                        >
+                          <option value="auto">تلقائي ({item.nearest_expiry || '---'})</option>
+                          {item.batches.map((b: any) => (
+                            <option key={b.inventory_id} value={b.inventory_id}>
+                              {b.expiry_date || 'بدون'} (كمية: {b.quantity})
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <span className={`text-[8px] font-bold px-1 py-0.5 rounded-full ${
+                          item.nearest_expiry && new Date(item.nearest_expiry) < new Date() ? 'bg-red-100 text-red-600' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'
+                        }`}>
+                          {item.nearest_expiry || '---'}
+                        </span>
+                      )}
                     </td>
                     <td className="px-1 py-2 text-center w-20">
                       <div className="flex items-center justify-center gap-0.5 bg-slate-100 dark:bg-slate-800 rounded-lg p-0.5 w-20 mx-auto font-sans">

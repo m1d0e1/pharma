@@ -64,8 +64,10 @@ const navItems = [
   { category: 'المالية', href: '/accounts/settings/trial-balance', label: 'ميزان المراجعة', icon: Settings, roles: ['owner', 'admin'], permission: 'manage_settings' },
 
   // التقارير (Reports)
+  { category: 'التقارير', href: '/reports', label: 'لوحة التقارير', icon: BarChart3, roles: ['owner', 'admin'], permission: 'view_reports' },
   { category: 'التقارير', href: '/reports/sales', label: 'تقارير المبيعات', icon: BarChart3, roles: ['owner', 'admin'], permission: 'view_reports' },
   { category: 'التقارير', href: '/reports/purchases', label: 'تقارير المشتريات', icon: BarChart3, roles: ['owner', 'admin'], permission: 'view_reports' },
+  { category: 'التقارير', href: '/reports/trial-balance', label: 'ميزان المراجعة', icon: BarChart3, roles: ['owner', 'admin'], permission: 'view_reports' },
   { category: 'التقارير', href: '/expenses', label: 'المصروفات', icon: Receipt, roles: ['owner', 'admin'], permission: 'process_sales' },
   { category: 'التقارير', href: '/shifts', label: 'الشفتات النقدية', icon: Calendar, roles: ['owner', 'admin', 'pharmacist'], permission: 'manage_shifts' },
 

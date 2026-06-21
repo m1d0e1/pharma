@@ -36,17 +36,18 @@ import { usePurchaseStore } from '@/store/usePurchaseStore'
 import { useHotkeys } from 'react-hotkeys-hook'
 import { Supplier, PurchaseItem } from '@/types/purchases'
 import BarcodePrinter from '@/components/purchases/BarcodePrinter'
-
-const formatExpiryDate = (val: string) => {
-  const digits = val.replace(/\D/g, '');
-  if (digits.length <= 2) {
-    return digits;
-  }
-  if (digits.length <= 4) {
-    return `${digits.slice(0, 2)}/${digits.slice(2, 4)}`;
-  }
-  return `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4, 8)}`;
-};
+function normalizeDateToYMD(dateStr: string | null | undefined): string | null {
+  if (!dateStr) return null;
+  dateStr = dateStr.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return dateStr;
+  let match = dateStr.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  if (match) return `${match[3]}-${match[2].padStart(2, '0')}-${match[1].padStart(2, '0')}`;
+  match = dateStr.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/);
+  if (match) return `${match[1]}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')}`;
+  match = dateStr.match(/^(\d{1,2})[\/\-](\d{4})$/);
+  if (match) return `${match[2]}-${match[1].padStart(2, '0')}-01`;
+  return dateStr;
+}
 
 const DrugDetailsModal = nextDynamic(() => import('@/components/pos/DrugDetailsModal'), { ssr: false });
 
@@ -134,7 +135,7 @@ export default function PurchaseInvoiceClient() {
       const newUrl = window.location.pathname
       window.history.replaceState({}, '', newUrl)
 
-      import('@/app/actions/master-drugs').then(({ getMasterDrugAction }) => {
+      import('@/app/actions-client/master-drugs').then(({ getMasterDrugAction }) => {
         getMasterDrugAction(parseInt(drugId)).then(res => {
           if (res.success && res.data) {
             addToCart(res.data)
@@ -179,7 +180,8 @@ export default function PurchaseInvoiceClient() {
         selling_price: officialPrice,
         tax_percent: 0,
         discount_percent: 0,
-        expiry_date: ''
+        expiry_date: '',
+        strips_per_box: drug.strips_per_box || 1
       }]
     })
 
@@ -251,7 +253,7 @@ export default function PurchaseInvoiceClient() {
               setInvoiceHeader({
                 id: res.invoice.id,
                 invoice_number: res.invoice.invoice_number || '',
-                invoice_date: res.invoice.invoice_date?.split('T')[0] || new Date().toISOString().split('T')[0],
+                invoice_date: normalizeDateToYMD(res.invoice.invoice_date) || new Date().toISOString().split('T')[0],
                 payment_method: res.invoice.payment_method || 'cash',
                 notes: res.invoice.notes || '',
                 discount_percent: res.invoice.discount_percent || 0,
@@ -272,7 +274,7 @@ export default function PurchaseInvoiceClient() {
                 selling_price: i.selling_price || 0,
                 official_price: i.selling_price || 0,
                 batch_number: i.batch_number || '',
-                expiry_date: i.expiry_date ? i.expiry_date.split('T')[0].split('-').reverse().join('/') : '',
+                expiry_date: normalizeDateToYMD(i.expiry_date) || '',
                 strips_per_box: 1
               }));
               setCart(formattedCart);
@@ -299,7 +301,7 @@ export default function PurchaseInvoiceClient() {
                       setInvoiceHeader({
                         id: res.invoice.id,
                         invoice_number: res.invoice.invoice_number || '',
-                        invoice_date: res.invoice.invoice_date?.split('T')[0] || new Date().toISOString().split('T')[0],
+                        invoice_date: normalizeDateToYMD(res.invoice.invoice_date) || new Date().toISOString().split('T')[0],
                         payment_method: res.invoice.payment_method || 'cash',
                         notes: res.invoice.notes || '',
                         discount_percent: res.invoice.discount_percent || 0,
@@ -320,7 +322,7 @@ export default function PurchaseInvoiceClient() {
                         selling_price: i.selling_price || 0,
                         official_price: i.selling_price || 0,
                         batch_number: i.batch_number || '',
-                        expiry_date: i.expiry_date ? i.expiry_date.split('T')[0].split('-').reverse().join('/') : '',
+                        expiry_date: normalizeDateToYMD(i.expiry_date) || '',
                         strips_per_box: 1
                       }));
                       setCart(formattedCart);
@@ -362,8 +364,15 @@ export default function PurchaseInvoiceClient() {
       return
     }
 
+    // Normalize expiry dates
+    const normalizedCart = cart.map(item => ({
+      ...item,
+      expiry_date: normalizeDateToYMD(item.expiry_date) || ''
+    }));
+    setCart(normalizedCart);
+
     // Validation Warnings & Checks
-    for (const item of cart) {
+    for (const item of normalizedCart) {
       const quantityNum = Number(item.quantity) || 0;
       if (quantityNum <= 0) {
         toast.error(`يجب إدخال كمية صحيحة للصنف ${item.trade_name_en || item.trade_name}`);
@@ -389,14 +398,14 @@ export default function PurchaseInvoiceClient() {
       }
       
       if (item.expiry_date) {
-        const parts = item.expiry_date.split('/');
-        if (parts.length !== 3 || parts[0].length !== 2 || parts[1].length !== 2 || parts[2].length !== 4) {
-          toast.error(`صيغة تاريخ الصلاحية غير صحيحة للصنف ${item.trade_name_en || item.trade_name} (يجب أن تكون dd/mm/yyyy)`);
+        const parts = item.expiry_date.split('-');
+        if (parts.length !== 3 || parts[0].length !== 4 || parts[1].length !== 2 || parts[2].length !== 2) {
+          toast.error(`صيغة تاريخ الصلاحية غير صحيحة للصنف ${item.trade_name_en || item.trade_name}`);
           return;
         } else {
-          const day = parseInt(parts[0], 10);
+          const year = parseInt(parts[0], 10);
           const month = parseInt(parts[1], 10);
-          const year = parseInt(parts[2], 10);
+          const day = parseInt(parts[2], 10);
           if (day < 1 || day > 31 || month < 1 || month > 12 || year < 2000) {
             toast.error(`تاريخ الصلاحية غير صالح للصنف ${item.trade_name_en || item.trade_name}`);
             return;
@@ -429,13 +438,8 @@ export default function PurchaseInvoiceClient() {
         tax_percent: Number(invoiceHeader.tax_percent) || 0,
         supplier_id: (selectedSupplier as any).id,
         status: isDraft ? 'draft' : 'pending',
-        cart: cart.map(item => {
-          let formattedExpiry = item.expiry_date;
-          if (item.expiry_date && item.expiry_date.includes('/')) {
-            const parts = item.expiry_date.split('/');
-            if (parts.length === 3) formattedExpiry = `${parts[2]}-${parts[1]}-${parts[0]}`;
-          }
-          return { ...item, expiry_date: formattedExpiry };
+        cart: normalizedCart.map(item => {
+          return { ...item, expiry_date: item.expiry_date };
         }),
         id: invoiceHeader.id || undefined
       })
@@ -530,12 +534,17 @@ export default function PurchaseInvoiceClient() {
               تاريخ الفاتورة
             </label>
 
-            <input 
-              type="date"
-              className="w-full p-4 bg-slate-50 dark:bg-slate-800 border-none rounded-2xl font-bold outline-none ring-2 ring-transparent focus:ring-primary-500/20 transition-all"
-              value={invoiceHeader.invoice_date}
-              onChange={(e) => setInvoiceHeader({ ...invoiceHeader, invoice_date: e.target.value })}
-            />
+            <div className="relative flex items-center">
+              <Calendar className="absolute right-4 text-slate-400 w-5 h-5 pointer-events-none" />
+              <input 
+                type="date"
+                className="w-full pr-12 pl-12 py-4 bg-slate-50 dark:bg-slate-800 border-none rounded-2xl font-bold outline-none ring-2 ring-transparent focus:ring-primary-500/20 transition-all cursor-pointer"
+                value={invoiceHeader.invoice_date}
+                onChange={(e) => setInvoiceHeader({ ...invoiceHeader, invoice_date: e.target.value })}
+                onClick={(e) => { try { e.currentTarget.showPicker(); } catch (err) {} }}
+                onFocus={(e) => { try { e.currentTarget.showPicker(); } catch (err) {} }}
+              />
+            </div>
           </div>
 
           {/* Payment Method */}
@@ -827,13 +836,17 @@ export default function PurchaseInvoiceClient() {
                         />
                       </td>
                       <td className="px-2 py-3">
-                        <input 
-                          type="text"
-                          placeholder="dd/mm/yyyy"
-                          className="w-24 p-2.5 bg-slate-50 dark:bg-slate-800 border-none rounded-xl font-bold text-center outline-none focus:ring-2 focus:ring-primary-500/20 text-xs"
-                          value={item.expiry_date}
-                          onChange={(e) => updateCartItem(item.id, 'expiry_date', formatExpiryDate(e.target.value))}
-                        />
+                        <div className="relative flex items-center w-[145px]">
+                          <Calendar className="absolute right-2 text-slate-400 w-4 h-4 pointer-events-none" />
+                          <input 
+                            type="date"
+                            className="w-full pr-8 pl-8 py-2.5 bg-slate-50 dark:bg-slate-800 border-none rounded-xl font-bold text-center outline-none focus:ring-2 focus:ring-primary-500/20 text-xs cursor-pointer"
+                            value={item.expiry_date}
+                            onChange={(e) => updateCartItem(item.id, 'expiry_date', e.target.value)}
+                            onClick={(e) => { try { e.currentTarget.showPicker(); } catch (err) {} }}
+                            onFocus={(e) => { try { e.currentTarget.showPicker(); } catch (err) {} }}
+                          />
+                        </div>
                       </td>
                       <td className="px-2 py-3">
                         <input 

@@ -5,7 +5,7 @@ import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { dbSelect, dbGet } from '@/lib/db/tauri';
 import AuditLogClient from '@/components/admin/AuditLogClient';
 import AccessDenied from '@/components/AccessDenied';
-import { getAuditLogsAction } from '@/app/actions/audit';
+import { getAuditLogsAction } from '@/app/actions-client/audit';
 
 export default function AuditPage() {
   const [user, setUser] = useState<any>(null);

@@ -11,8 +11,8 @@ import {
   getPatientProfileAction, updatePatientAction, 
   addPatientAllergyAction, addPatientConditionAction,
   deletePatientAllergyAction
-} from '@/app/actions/patients'
-import { addPatientPaymentAction } from '@/app/actions/finance'
+} from '@/app/actions-client/patients'
+import { addPatientPaymentAction } from '@/app/actions-client/finance'
 import { format } from 'date-fns'
 import { ar } from 'date-fns/locale'
 import CustomerStatementModal from './CustomerStatementModal'
@@ -390,7 +390,7 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                         onClick={async () => {
                            const amt = (document.getElementById('topup-amount') as HTMLInputElement).value;
                            if (!amt || parseFloat(amt) <= 0) return toast.error('يرجى إدخال مبلغ صحيح');
-                           const { updatePatientWalletAction } = await import('@/app/actions/patients');
+                           const { updatePatientWalletAction } = await import('@/app/actions-client/patients');
                            const res = await updatePatientWalletAction(patientId, parseFloat(amt), 'شحن يدوي من الملف الشخصي');
                            if (res.success) {
                               toast.success('تم شحن المحفظة بنجاح');

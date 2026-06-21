@@ -2,7 +2,7 @@
 import { useHotkeys } from 'react-hotkeys-hook';
 
 import { useState, useEffect } from 'react'
-import { updateInventoryAction } from '@/app/actions/inventory'
+import { updateInventoryAction } from '@/app/actions-client/inventory'
 import { toast } from 'react-hot-toast'
 
 interface InventoryItem {
@@ -35,7 +35,7 @@ export default function EditInventoryModal({ item, onClose, onSuccess }: EditInv
 
   useEffect(() => {
     async function loadReasons() {
-      const { getAdjustmentReasonsAction } = await import('@/app/actions/master-drugs')
+      const { getAdjustmentReasonsAction } = await import('@/app/actions-client/master-drugs')
       const res = await getAdjustmentReasonsAction()
       if (res.success) setReasons(res.data || [])
     }

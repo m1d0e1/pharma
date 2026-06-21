@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { getTrialBalanceAction } from '@/app/actions/finance';
+import { getTrialBalanceAction } from '@/app/actions-client/finance';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Printer, RefreshCw, FileText, Download } from 'lucide-react';

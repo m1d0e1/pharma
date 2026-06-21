@@ -7,7 +7,7 @@ import {
   Search, Filter, Receipt
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { getPendingDeliveriesAction, closeDeliveryInvoiceAction } from '@/app/actions/delivery';
+import { getPendingDeliveriesAction, closeDeliveryInvoiceAction } from '@/app/actions-client/delivery';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 

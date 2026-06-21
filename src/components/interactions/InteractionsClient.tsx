@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { addInteractionAction, checkDrugInteractions, getInteractionsAction } from '@/app/actions/interactions';
+import { addInteractionAction, checkDrugInteractions, getInteractionsAction } from '@/app/actions-client/interactions';
 import { toast } from 'react-hot-toast';
 import { useRouter } from 'next/navigation';
 import { Plus, Search, AlertTriangle, XCircle, AlertCircle, Info, ChevronRight, ChevronLeft, Loader2 } from 'lucide-react';

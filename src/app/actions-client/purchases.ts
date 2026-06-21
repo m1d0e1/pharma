@@ -47,7 +47,18 @@ const db = {
   }
 };
 
-
+function normalizeDateToYMD(dateStr: string | null | undefined): string | null {
+  if (!dateStr) return null;
+  dateStr = dateStr.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return dateStr;
+  let match = dateStr.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  if (match) return `${match[3]}-${match[2].padStart(2, '0')}-${match[1].padStart(2, '0')}`;
+  match = dateStr.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/);
+  if (match) return `${match[1]}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')}`;
+  match = dateStr.match(/^(\d{1,2})[\/\-](\d{4})$/);
+  if (match) return `${match[2]}-${match[1].padStart(2, '0')}-01`;
+  return dateStr;
+}
 
 
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
@@ -106,7 +117,7 @@ export async function checkSupplierPendingInvoiceAction(supplierId: number) {
     const session = await getLocalSession();
     if (!session || !hasUserPermissionSync(session, 'can_view_purchases')) return { success: false, error: 'Unauthorized' };
 
-    const pending = await db.prepare('SELECT id, invoice_number FROM purchase_invoices WHERE supplier_id = ? AND status != ? LIMIT 1').get(supplierId, 'completed') as any;
+    const pending = await db.prepare('SELECT id, invoice_number, invoice_date, payment_method, notes, check_number, expenses, discount_value, discount_percent, tax_percent FROM purchase_invoices WHERE supplier_id = ? AND status != ? LIMIT 1').get(supplierId, 'completed') as any;
     return { success: true, hasPending: !!pending, invoice: pending };
   } catch (error: any) {
     return { success: false, error: error.message };
@@ -170,21 +181,23 @@ export async function createPurchaseInvoiceAction(data: {
 
       if (data.cart && data.cart.length > 0) {
         const itemStmt = await db.prepare(`
-          INSERT INTO purchase_invoice_items (invoice_id, drug_id, quantity, unit_id, expiry_date, cost_price, selling_price, bonus_quantity, tax_percent, discount_percent)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO purchase_invoice_items (invoice_id, drug_id, quantity, unit_id, expiry_date, cost_price, selling_price, bonus_quantity, tax_percent, discount_percent, strips_per_box)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
         for (const item of data.cart) {
+          const normExpiry = normalizeDateToYMD(item.expiry_date);
           await itemStmt.run(
             id,
             item.id,
             item.quantity,
             item.unit_id || null,
-            item.expiry_date || null,
+            normExpiry,
             item.cost_price,
             item.selling_price || null,
             item.bonus_quantity || 0,
             item.tax_percent || 0,
-            item.discount_percent || 0
+            item.discount_percent || 0,
+            item.strips_per_box || 1
           );
 
           if (finalStatus === 'completed') {
@@ -197,8 +210,8 @@ export async function createPurchaseInvoiceAction(data: {
 
             const invId = generateId();
             await db.prepare(`
-              INSERT INTO inventory (id, drug_id, pharmacy_id, quantity, local_selling_price, cost_price, expiry_date, batch_number)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+              INSERT INTO inventory (id, drug_id, pharmacy_id, quantity, local_selling_price, cost_price, expiry_date, batch_number, strips_per_box)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             `).run(
               invId, 
               item.id, 
@@ -206,8 +219,9 @@ export async function createPurchaseInvoiceAction(data: {
               Number(item.quantity) + Number(item.bonus_quantity || 0), 
               item.selling_price || 0, 
               item.cost_price, 
-              item.expiry_date,
-              data.invoice_number || 'BATCH-' + id.substring(0, 8)
+              normExpiry,
+              data.invoice_number || 'BATCH-' + id.substring(0, 8),
+              item.strips_per_box || 1
             );
           }
         }
@@ -300,28 +314,31 @@ export async function addPurchaseInvoiceItemAction(invoiceId: string, item: {
   selling_price?: number,
   bonus_quantity?: number,
   tax_percent?: number,
-  discount_percent?: number
+  discount_percent?: number,
+  strips_per_box?: number
 }) {
   try {
     const session = await getLocalSession();
     if (!session || !hasUserPermissionSync(session, 'can_view_purchases')) return { success: false, error: 'Unauthorized' };
 
     const stmt = await db.prepare(`
-      INSERT INTO purchase_invoice_items (invoice_id, drug_id, quantity, unit_id, expiry_date, cost_price, selling_price, bonus_quantity, tax_percent, discount_percent)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO purchase_invoice_items (invoice_id, drug_id, quantity, unit_id, expiry_date, cost_price, selling_price, bonus_quantity, tax_percent, discount_percent, strips_per_box)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     
+    const normExpiry = normalizeDateToYMD(item.expiry_date);
     await stmt.run(
       invoiceId,
       item.drug_id,
       item.quantity,
       item.unit_id || null,
-      item.expiry_date || null,
+      normExpiry,
       item.cost_price,
       item.selling_price || null,
       item.bonus_quantity || 0,
       item.tax_percent || 0,
-      item.discount_percent || 0
+      item.discount_percent || 0,
+      item.strips_per_box || 1
     );
 
     return { success: true };
@@ -353,8 +370,8 @@ export async function completePurchaseInvoiceAction(invoiceId: string) {
         // 2. Add to inventory with batch number
         const invId = generateId();
         await db.prepare(`
-          INSERT INTO inventory (id, drug_id, pharmacy_id, quantity, local_selling_price, cost_price, expiry_date, batch_number)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO inventory (id, drug_id, pharmacy_id, quantity, local_selling_price, cost_price, expiry_date, batch_number, strips_per_box)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           invId, 
           item.drug_id, 
@@ -363,7 +380,8 @@ export async function completePurchaseInvoiceAction(invoiceId: string) {
           item.selling_price || 0, 
           item.cost_price, 
           item.expiry_date,
-          invoice.invoice_number || 'BATCH-' + invoiceId.substring(0, 8)
+          invoice.invoice_number || 'BATCH-' + invoiceId.substring(0, 8),
+          item.strips_per_box || 1
         );
       }
 
@@ -476,7 +494,7 @@ export async function createPurchaseOrderAction(data: { supplier_name: string; n
     const transaction = db.transaction(async () => {
       await db.prepare('INSERT INTO purchase_orders (id, user_id, supplier_name, total_amount, notes) VALUES (?, ?, ?, ?, ?)').run(po_id, user.id, data.supplier_name, total_amount, data.notes || null);
       const itemStmt = await db.prepare('INSERT INTO purchase_order_items (po_id, drug_id, quantity, expected_price) VALUES (?, ?, ?, ?)');
-      for (const item of data.items) { itemStmt.run(po_id, item.drug_id, item.quantity, item.expected_price); }
+      for (const item of data.items) { await itemStmt.run(po_id, item.drug_id, item.quantity, item.expected_price); }
       await db.prepare('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)').run(user.id, 'Create PO', 'PO created ' + po_id);
     });
     await transaction();
@@ -490,10 +508,18 @@ export async function createPurchaseOrderAction(data: { supplier_name: string; n
 
 export async function getPurchaseOrdersAction() {
   try {
-    const orders = await db.prepare('SELECT po.*, u.full_name as creator_name, (SELECT COUNT(*) FROM purchase_order_items WHERE po_id = po.id) as item_count FROM purchase_orders po LEFT JOIN users u ON po.user_id = u.id ORDER BY po.created_at DESC').all();
+    const orders = await db.prepare(`
+      SELECT po.*, u.full_name as creator_name, COUNT(pii.id) as item_count 
+      FROM purchase_orders po 
+      LEFT JOIN users u ON po.user_id = u.id 
+      LEFT JOIN purchase_order_items pii ON pii.po_id = po.id 
+      GROUP BY po.id 
+      ORDER BY po.created_at DESC
+    `).all();
     return { success: true, data: orders };
-  } catch (error) {
-    return { success: false, error: 'Failed' };
+  } catch (error: any) {
+    console.error('getPurchaseOrdersAction error:', error);
+    return { success: false, error: error.message };
   }
 }
 
@@ -510,13 +536,13 @@ export async function updatePurchaseOrderStatusAction(poId: string, status: stri
 
 export async function getPurchasesReportsAction(filters: any = {}) {
   try {
-    let sql = 'SELECT i.*, s.name_ar as supplier_name, u.full_name as staff_name FROM purchase_invoices i LEFT JOIN suppliers s ON i.supplier_id = s.id LEFT JOIN users u ON i.user_id = u.id WHERE 1=1';
+    let sql = 'SELECT i.*, s.name_ar as supplier_name, COALESCE(u.full_name, u.username, i.user_id, \'غير محدد\') as staff_name FROM purchase_invoices i LEFT JOIN suppliers s ON i.supplier_id = s.id LEFT JOIN users u ON i.user_id = u.id WHERE 1=1';
     const params: any[] = [];
     if (filters.startDate) { sql += ' AND date(i.created_at) >= ?'; params.push(filters.startDate); }
     if (filters.endDate) { sql += ' AND date(i.created_at) <= ?'; params.push(filters.endDate); }
-    if (filters.userId) { sql += ' AND i.user_id = ?'; params.push(filters.userId); }
-    if (filters.paymentMethod) { sql += ' AND i.payment_method = ?'; params.push(filters.paymentMethod); }
-    if (filters.supplierId) { sql += ' AND i.supplier_id = ?'; params.push(filters.supplierId); }
+    if (filters.userId && filters.userId !== 'all') { sql += ' AND i.user_id = ?'; params.push(filters.userId); }
+    if (filters.paymentMethod && filters.paymentMethod !== 'all') { sql += ' AND i.payment_method = ?'; params.push(filters.paymentMethod); }
+    if (filters.supplierId && filters.supplierId !== 'all') { sql += ' AND i.supplier_id = ?'; params.push(filters.supplierId); }
     if (filters.invoiceNumber) { sql += ' AND i.invoice_number LIKE ?'; params.push('%' + filters.invoiceNumber + '%'); }
     sql += ' ORDER BY i.created_at DESC';
     const items = await db.prepare(sql).all(...params) as any[];
@@ -530,4 +556,125 @@ export async function getPurchaseInvoiceDetailsAction(invoiceId: string) {
     const items = await db.prepare('SELECT pii.*, d.trade_name, d.trade_name_en, d.barcode FROM purchase_invoice_items pii JOIN master_drugs d ON pii.drug_id = d.id WHERE pii.invoice_id = ?').all(invoiceId);
     return { success: true, data: items };
   } catch (error: any) { return { success: false, error: error.message }; }
+}
+
+export async function createPurchaseReturnAction(data: {
+  supplier_id: number;
+  reason: string;
+  items: {
+    inventory_id?: string;
+    drug_id: number;
+    drug_name: string;
+    quantity: number;
+    unit_price: number;
+    unit?: string;
+  }[];
+  refund_method: 'cash' | 'credit';
+}) {
+  try {
+    const session = await getLocalSession();
+    if (!session) return { success: false, error: 'Unauthorized' };
+
+    const transaction = db.transaction(async () => {
+      const returnId = generateId();
+      let totalAmount = 0;
+
+      for (const item of data.items) {
+        totalAmount += item.quantity * item.unit_price;
+      }
+
+      await db.prepare(`
+        INSERT INTO purchase_returns (id, supplier_id, user_id, reason, total_amount, refund_method, status)
+        VALUES (?, ?, ?, ?, ?, ?, 'completed')
+      `).run(returnId, data.supplier_id, session.id, data.reason || null, totalAmount, data.refund_method);
+
+      const itemStmt = await db.prepare(`
+        INSERT INTO purchase_return_items (purchase_return_id, inventory_id, drug_id, drug_name, quantity_returned, unit_price, total_price, reason)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      for (const item of data.items) {
+        const lineTotal = item.quantity * item.unit_price;
+        await itemStmt.run(returnId, item.inventory_id || null, item.drug_id, item.drug_name, item.quantity, item.unit_price, lineTotal, data.reason || null);
+
+        let deductQty = item.quantity;
+        const drugInfo = await db.prepare('SELECT large_to_medium, medium_to_small FROM master_drugs WHERE id = ?').get(item.drug_id) as any;
+        const returnUnit = item.unit || 'large';
+        if (returnUnit === 'medium') {
+          deductQty = item.quantity / (drugInfo?.large_to_medium || 1);
+        } else if (returnUnit === 'small') {
+          deductQty = item.quantity / ((drugInfo?.large_to_medium || 1) * (drugInfo?.medium_to_small || 1));
+        }
+
+        // Deduct from inventory safely
+        if (item.inventory_id) {
+          const inv = await db.prepare('SELECT quantity FROM inventory WHERE id = ?').get(item.inventory_id) as any;
+          if (inv && inv.quantity >= deductQty) {
+            await db.prepare('UPDATE inventory SET quantity = quantity - ? WHERE id = ?').run(deductQty, item.inventory_id);
+          } else {
+             // Fallback just reduce
+            await db.prepare('UPDATE inventory SET quantity = quantity - ? WHERE drug_id = ? AND quantity >= ? LIMIT 1').run(deductQty, item.drug_id, deductQty);
+          }
+        } else {
+           await db.prepare('UPDATE inventory SET quantity = quantity - ? WHERE drug_id = ? AND quantity >= ? LIMIT 1').run(deductQty, item.drug_id, deductQty);
+        }
+      }
+
+      // Financial impact
+      if (data.refund_method === 'credit') {
+        // We returned items, so our debt to supplier decreases
+        await db.prepare(`
+          INSERT INTO supplier_transactions (supplier_id, type, amount, reference_id, notes)
+          VALUES (?, 'return', ?, ?, ?)
+        `).run(data.supplier_id, totalAmount, returnId, data.reason || 'مرتجع مشتريات');
+        // Decrease supplier balance
+        await db.prepare('UPDATE suppliers SET balance = balance - ? WHERE id = ?').run(totalAmount, data.supplier_id);
+      } else if (data.refund_method === 'cash') {
+        // They paid us cash back. We don't decrease our debt, but our cash increases.
+        await db.prepare(`
+          INSERT INTO cash_movements (type, category, amount, description, user_id)
+          VALUES ('in', 'purchase_return', ?, ?, ?)
+        `).run(totalAmount, `مرتجع مشتريات نقدي للمورد رقم ${data.supplier_id}`, session.id);
+        
+        await db.prepare(`
+          INSERT INTO supplier_transactions (supplier_id, type, amount, reference_id, notes)
+          VALUES (?, 'return', ?, ?, ?)
+        `).run(data.supplier_id, totalAmount, returnId, data.reason || 'مرتجع نقدي');
+        
+        await db.prepare(`
+          INSERT INTO supplier_transactions (supplier_id, type, amount, reference_id, notes)
+          VALUES (?, 'payment', ?, ?, ?)
+        `).run(data.supplier_id, -totalAmount, returnId, 'استرداد نقدي للمرتجع');
+      }
+
+      await logActivity(session.id, 'create_purchase_return', `إضافة مرتجع مشتريات للمورد ${data.supplier_id} بقيمة ${totalAmount}`);
+      return returnId;
+    });
+
+    const result = await transaction();
+    return { success: true, id: result };
+  } catch (err: any) {
+    console.error('createPurchaseReturnAction error:', err);
+    return { success: false, error: err.message };
+  }
+}
+
+export async function getPurchaseReturnsAction() {
+  try {
+    const session = await getLocalSession();
+    if (!session) return { success: false, error: 'Unauthorized' };
+
+    const rows = await db.prepare(`
+      SELECT pr.*, s.name_ar as supplier_name, u.name as user_name,
+        (SELECT COUNT(*) FROM purchase_return_items pri WHERE pri.purchase_return_id = pr.id) as items_count
+      FROM purchase_returns pr
+      LEFT JOIN suppliers s ON s.id = pr.supplier_id
+      LEFT JOIN users u ON u.id = pr.user_id
+      ORDER BY pr.created_at DESC
+      LIMIT 100
+    `).all() as any[];
+    return { success: true, data: rows };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
 }

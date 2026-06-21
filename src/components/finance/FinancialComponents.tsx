@@ -6,8 +6,8 @@ import {
   Calendar, CreditCard, User, Box, AlertCircle, Save, X 
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { getPatientStatementAction } from '@/app/actions/patients';
-import { addFinancialNoticeAction } from '@/app/actions/finance';
+import { getPatientStatementAction } from '@/app/actions-client/patients';
+import { addFinancialNoticeAction } from '@/app/actions-client/finance';
 import { toast } from 'react-hot-toast';
 import { format, isValid } from 'date-fns';
 

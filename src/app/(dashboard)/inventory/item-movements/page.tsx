@@ -4,7 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { getClientSession } from '@/lib/auth/local';
 import AccessDenied from '@/components/AccessDenied';
 import { Activity, Search, Filter } from 'lucide-react';
-import { getMovementsAction } from '@/app/actions/inventory';
+import { getMovementsAction } from '@/app/actions-client/inventory';
 import { cn } from '@/lib/utils';
 
 function extractDrugName(action: string, details: string): string {

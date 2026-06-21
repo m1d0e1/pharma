@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 import Link from 'next/link';
 import { cn } from '@/lib/utils';
-import { getSalesDashboardStatsAction } from '@/app/actions/sales';
+import { getSalesDashboardStatsAction } from '@/app/actions-client/sales';
 import { getClientSession } from '@/lib/auth/local';
 
 const salesModules = [

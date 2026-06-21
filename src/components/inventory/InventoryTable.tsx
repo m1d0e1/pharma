@@ -6,7 +6,7 @@ import { toast } from 'react-hot-toast'
 import EditInventoryModal from '../EditInventoryModal'
 import DrugDetailsModal from '../pos/DrugDetailsModal'
 
-import { deleteInventoryAction } from '@/app/actions/inventory'
+import { deleteInventoryAction } from '@/app/actions-client/inventory'
 
 interface InventoryItem {
   id: string

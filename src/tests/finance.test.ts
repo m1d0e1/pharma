@@ -6,7 +6,7 @@ import {
   updateAccountAction,
   generateDailySnapshotAction,
   getTrialBalanceAction
-} from '@/app/actions/finance';
+} from '@/app/actions-client/finance';
 import { dbSelect, dbExecute, dbGet, dbTransaction } from '@/lib/db/tauri';
 import { getLocalSession } from '@/lib/auth/local';
 import { revalidatePath } from 'next/cache';

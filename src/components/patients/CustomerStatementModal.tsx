@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook';
 import { X, FileText, History, Package, Printer, Search, Loader2, ArrowUpRight, ArrowDownLeft, User } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { getPatientStatementAction } from '@/app/actions/patients';
+import { getPatientStatementAction } from '@/app/actions-client/patients';
 import { toast } from 'react-hot-toast';
 
 interface CustomerStatementModalProps {

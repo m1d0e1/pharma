@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { openShiftAction, closeShiftAction, getShiftsAction, forceCloseAllShiftsAction } from '@/app/actions/shifts';
+import { openShiftAction, closeShiftAction, getShiftsAction, forceCloseAllShiftsAction } from '@/app/actions-client/shifts';
 import { Button } from '@/components/ui/button';
 import { Calendar, Clock, DollarSign, User, AlertCircle, CheckCircle, XCircle, TrendingUp, TrendingDown } from 'lucide-react';
 

@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import { Search, Filter, Download, Trash2, Loader2, AlertCircle } from 'lucide-react';
-import { clearAuditLogsAction } from '@/app/actions/audit';
+import { clearAuditLogsAction } from '@/app/actions-client/audit';
 import { toast } from 'react-hot-toast';
 import { useRouter } from 'next/navigation';
 

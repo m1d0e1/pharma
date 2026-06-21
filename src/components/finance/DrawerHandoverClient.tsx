@@ -7,9 +7,9 @@ import {
   History, Landmark, Calculator, Printer
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { getHandoverDetailsAction, processHandoverAction } from '@/app/actions/handover';
-import { getBanksAction } from '@/app/actions/finance';
-import { getStaffAction } from '@/app/actions/users';
+import { getHandoverDetailsAction, processHandoverAction } from '@/app/actions-client/handover';
+import { getBanksAction } from '@/app/actions-client/finance';
+import { getStaffAction } from '@/app/actions-client/users';
 import { toast } from 'sonner';
 
 interface DrawerHandoverProps {

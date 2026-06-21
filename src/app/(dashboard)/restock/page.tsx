@@ -4,7 +4,7 @@ import React, { useEffect, useState } from 'react';
 import RestockHeader from '@/components/inventory/RestockHeader';
 import RestockClient from '@/components/inventory/RestockClient';
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
-import { getRestockItemsAction } from '@/app/actions/inventory';
+import { getRestockItemsAction } from '@/app/actions-client/inventory';
 import AccessDenied from '@/components/AccessDenied';
 
 export default function RestockPage() {

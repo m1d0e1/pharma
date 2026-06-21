@@ -6,7 +6,7 @@ import LogoutModal from '../auth/LogoutModal';
 import NetworkStatus from '../status/NetworkStatus';
 import SyncStatus from '../status/SyncStatus';
 import { getClientSession } from '@/lib/auth/local';
-import { getCurrentShiftAction } from '@/app/actions/shifts';
+import { getCurrentShiftAction } from '@/app/actions-client/shifts';
 
 export default function DashboardHeader() {
   const [user, setUser] = useState<any>(null);

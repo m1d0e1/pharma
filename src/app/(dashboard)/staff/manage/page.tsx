@@ -10,7 +10,7 @@ import {
   updateUserAction, 
   resetUserPasswordAction,
   getStaffManagementDataAction
-} from '@/app/actions/users';
+} from '@/app/actions-client/users';
 import Link from 'next/link';
 import { ArrowRight } from 'lucide-react';
 import AccessDenied from '@/components/AccessDenied';

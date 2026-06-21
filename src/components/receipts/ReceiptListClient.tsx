@@ -4,7 +4,7 @@ import React, { useState } from 'react'
 import { toast } from 'react-hot-toast'
 import ReceiptDetailsModal from './ReceiptDetailsModal'
 import { generateReceiptHtml, generateWhatsAppMessage, printHtmlContent } from '@/lib/utils/printing'
-import { getConfigAction } from '@/app/actions/config'
+import { getConfigAction } from '@/app/actions-client/config'
 
 interface SaleItem {
   quantity_sold: number

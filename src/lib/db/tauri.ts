@@ -34,7 +34,7 @@ export async function dbSelect<T = any>(sql: string, params: any[] = []): Promis
   }
 
   // Web client-side: call database server action
-  const { serverDbSelect } = await import('@/app/actions/db');
+  const { serverDbSelect } = await import('@/app/actions-client/db');
   const result = await serverDbSelect(sql, params);
   if (!result.success) throw new Error(result.error || 'Database query failed');
   return result.data || [];
@@ -69,7 +69,7 @@ export async function dbExecute(
   }
 
   // Web client-side: call database server action
-  const { serverDbExecute } = await import('@/app/actions/db');
+  const { serverDbExecute } = await import('@/app/actions-client/db');
   const result = await serverDbExecute(sql, params);
   if (!result.success) throw new Error(result.error || 'Database execution failed');
   return result.data;

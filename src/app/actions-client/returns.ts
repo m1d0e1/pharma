@@ -55,6 +55,24 @@ import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 
 /**
+ * Get sales invoices by date for return flow
+ */
+export async function getSalesInvoicesByDateAction(dateStr: string) {
+  try {
+    const invoices = await db.prepare(`
+      SELECT i.id, i.patient_id, i.total_amount, i.created_at, i.status, u.full_name as user_name
+      FROM sales_invoices i
+      LEFT JOIN users u ON i.user_id = u.id
+      WHERE date(i.created_at) = ? AND i.status = 'completed'
+      ORDER BY i.created_at DESC
+    `).all(dateStr);
+    return { success: true, data: invoices };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}
+
+/**
  * Create a return/refund request
  */
 export async function createReturnAction(data: {
@@ -62,7 +80,7 @@ export async function createReturnAction(data: {
   shift_id?: string;
   refund_method: 'cash' | 'patient_account' | 'coupon';
   reason: string;
-  items: { inventory_id: string; drug_name: string; quantity: number; unit_price: number }[];
+  items: { sale_item_id?: number; inventory_id: string; drug_name: string; quantity: number; unit_price: number; unit?: string }[];
 }) {
   try {
     const user = await getLocalSession();
@@ -70,6 +88,13 @@ export async function createReturnAction(data: {
       return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
     }
     if (!user || !hasUserPermissionSync(user, 'can_view_returns')) return { success: false, error: 'غير مصرح' };
+
+    try {
+      await db.exec('ALTER TABLE return_items ADD COLUMN sale_item_id INTEGER');
+    } catch(e) {}
+    try {
+      await db.exec('ALTER TABLE return_items ADD COLUMN unit TEXT');
+    } catch(e) {}
 
     const dbHeader = await db.prepare('SELECT * FROM sales_invoices WHERE id = ?').get(data.invoice_id) as any;
     if (!dbHeader) return { success: false, error: 'الفاتورة غير موجودة' };
@@ -80,8 +105,8 @@ export async function createReturnAction(data: {
         SELECT md.no_return, md.trade_name, si.drug_id
         FROM sales_items si
         LEFT JOIN master_drugs md ON si.drug_id = md.id
-        WHERE si.invoice_id = ? AND si.inventory_id = ?
-      `).get(data.invoice_id, item.inventory_id) as any;
+        WHERE si.id = ?
+      `).get(item.sale_item_id) as any;
       
       if (drugCheck?.no_return) {
         return { success: false, error: `الصنف "${drugCheck.trade_name}" غير قابل للارتجاع` };
@@ -91,18 +116,18 @@ export async function createReturnAction(data: {
     // 2. Validate: remaining quantity on invoice
     const invoiceItems = await db.prepare('SELECT * FROM sales_items WHERE invoice_id = ?').all(data.invoice_id) as any[];
     const alreadyReturned = await db.prepare(`
-      SELECT ri.inventory_id, SUM(ri.quantity_returned) as total
+      SELECT ri.sale_item_id, SUM(ri.quantity_returned) as total
       FROM return_items ri
       JOIN returns r ON ri.return_id = r.id
-      WHERE r.invoice_id = ? AND r.status = 'approved'
-      GROUP BY ri.inventory_id
+      WHERE r.invoice_id = ? AND r.status = 'approved' AND ri.sale_item_id IS NOT NULL
+      GROUP BY ri.sale_item_id
     `).all(data.invoice_id) as any[];
 
     for (const returnItem of data.items) {
-      const soldItem = invoiceItems.find(si => si.inventory_id === returnItem.inventory_id);
+      const soldItem = invoiceItems.find(si => si.id === returnItem.sale_item_id);
       if (!soldItem) continue;
 
-      const returned = alreadyReturned.find(ar => ar.inventory_id === returnItem.inventory_id)?.total || 0;
+      const returned = alreadyReturned.find(ar => ar.sale_item_id === returnItem.sale_item_id)?.total || 0;
       if (returnItem.quantity > (soldItem.quantity_sold - returned)) {
         return { success: false, error: `كمية المرتجع تتجاوز الكمية المتبقية للصنف "${returnItem.drug_name}"` };
       }
@@ -122,7 +147,7 @@ export async function createReturnAction(data: {
 
       // 4. Create return items and restock
       for (const item of data.items) {
-        const saleItem = invoiceItems.find(si => si.inventory_id === item.inventory_id);
+        const saleItem = invoiceItems.find(si => si.id === item.sale_item_id);
         let finalInventoryId = item.inventory_id;
         let drugId = saleItem ? saleItem.drug_id : null;
 
@@ -160,17 +185,18 @@ export async function createReturnAction(data: {
         }
 
         await db.prepare(`
-          INSERT INTO return_items (return_id, inventory_id, drug_name, quantity_returned, unit_price)
-          VALUES (?, ?, ?, ?, ?)
-        `).run(returnId, finalInventoryId, item.drug_name, item.quantity, item.unit_price);
+          INSERT INTO return_items (return_id, inventory_id, drug_name, quantity_returned, unit_price, sale_item_id, unit)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(returnId, finalInventoryId, item.drug_name, item.quantity, item.unit_price, item.sale_item_id || null, item.unit || 'large');
 
         if (saleItem && drugId) {
           const drugInfo = await db.prepare('SELECT large_to_medium, medium_to_small FROM master_drugs WHERE id = ?').get(drugId) as any;
           
           let restockQty = item.quantity;
-          if (saleItem.unit === 'medium') {
+          const returnUnit = item.unit || saleItem.unit || 'large';
+          if (returnUnit === 'medium') {
             restockQty = item.quantity / (drugInfo?.large_to_medium || 1);
-          } else if (saleItem.unit === 'small') {
+          } else if (returnUnit === 'small') {
             restockQty = item.quantity / ((drugInfo?.large_to_medium || 1) * (drugInfo?.medium_to_small || 1));
           }
 
@@ -330,9 +356,10 @@ export async function getInvoiceForReturnAction(invoiceId: string) {
     if (!user || !hasUserPermissionSync(user, 'can_view_returns')) return { success: false, error: 'غير مصرح' };
 
     const invoice = await db.prepare(`
-      SELECT si.*, p.full_name as patient_name
+      SELECT si.*, p.full_name as patient_name, u.full_name as user_name
       FROM sales_invoices si
       LEFT JOIN patients p ON si.patient_id = p.id
+      LEFT JOIN users u ON si.user_id = u.id
       WHERE si.id = ?
     `).get(invoiceId) as any;
 

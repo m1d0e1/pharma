@@ -1,8 +1,8 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { addExpenseAction, getExpensesAction, deleteExpenseAction, getExpenseSummaryAction } from '@/app/actions/expenses';
-import { getExpenseDefinitionsAction } from '@/app/actions/finance';
+import { addExpenseAction, getExpensesAction, deleteExpenseAction, getExpenseSummaryAction } from '@/app/actions-client/expenses';
+import { getExpenseDefinitionsAction } from '@/app/actions-client/finance';
 import { toast } from 'react-hot-toast';
 import { Trash2, Plus, Filter } from 'lucide-react';
 

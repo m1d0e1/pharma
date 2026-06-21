@@ -8,8 +8,8 @@ import {
   ArrowRight, CreditCard, DollarSign, Wallet
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { getPurchasesReportsAction, getPurchaseInvoiceDetailsAction, getSuppliersAction } from '@/app/actions/purchases';
-import { getStaffAction } from '@/app/actions/users';
+import { getPurchasesReportsAction, getPurchaseInvoiceDetailsAction, getSuppliersAction } from '@/app/actions-client/purchases';
+import { getStaffAction } from '@/app/actions-client/users';
 import { format } from 'date-fns';
 
 export default function PurchasesReportsClient({ userRole }: { userRole?: string }) {
@@ -238,7 +238,7 @@ export default function PurchasesReportsClient({ userRole }: { userRole?: string
                     </td>
                     <td className="px-8 py-6 font-bold text-slate-500">{format(new Date(inv.created_at), 'yyyy/MM/dd HH:mm')}</td>
                     <td className="px-8 py-6 font-black">{inv.supplier_name || '-'}</td>
-                    <td className="px-8 py-6 font-bold text-slate-400 italic">{inv.staff_name}</td>
+                    <td className="px-8 py-6 font-bold text-slate-400 italic">{inv.staff_name || 'غير محدد'}</td>
                     <td className="px-8 py-6 font-black">{inv.total_amount.toLocaleString()}</td>
                     <td className="px-8 py-6 font-black text-rose-500">{inv.discount_amount?.toLocaleString() || 0}</td>
                     <td className="px-8 py-6 font-black text-lg text-slate-900 dark:text-white">{(inv.total_amount - (inv.discount_amount || 0)).toLocaleString()}</td>
@@ -298,10 +298,10 @@ export default function PurchasesReportsClient({ userRole }: { userRole?: string
                       <td className="px-8 py-5 font-mono text-blue-400">{item.barcode}</td>
                       <td className="px-8 py-5 font-black">{item.trade_name}</td>
                       <td className="px-8 py-5 font-bold text-white/40 italic">2026/05/01</td>
-                      <td className="px-8 py-5 font-black text-lg">{item.quantity_sold}</td>
-                      <td className="px-8 py-5 text-white/60">{item.unit === 'large' ? 'علبة' : 'شريط'}</td>
-                      <td className="px-8 py-5 font-bold">{item.unit_price.toLocaleString()}</td>
-                      <td className="px-8 py-5 font-black text-emerald-400">{(item.unit_price * item.quantity_sold).toLocaleString()}</td>
+                      <td className="px-8 py-5 font-black text-lg">{item.quantity}</td>
+                      <td className="px-8 py-5 text-white/60">{item.unit_id === 1 ? 'شريط' : 'علبة'}</td>
+                      <td className="px-8 py-5 font-bold">{item.cost_price?.toLocaleString()}</td>
+                      <td className="px-8 py-5 font-black text-emerald-400">{((item.cost_price || 0) * (item.quantity || 0)).toLocaleString()}</td>
                     </tr>
                   ))}
                 </tbody>

@@ -276,4 +276,50 @@ export async function getSalesTrendAction(days: number = 30) {
   }
 }
 
-export async function getReportsDataAction() { return { success: false, data: {} }; }
+export async function getReportsDataAction() {
+  try {
+    const user = await getLocalSession();
+    if (!user || !hasUserPermissionSync(user, 'rep_can_view_sales')) return { success: false, error: 'غير مصرح' };
+
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    // Format to YYYY-MM-DD HH:MM:SS for SQLite string comparison
+    const dateStr = thirtyDaysAgo.toISOString().split('T')[0] + ' 00:00:00';
+
+    const salesHistoryRaw = await dbSelect(`
+      SELECT created_at, total_amount 
+      FROM sales_invoices 
+      WHERE created_at >= ?
+    `, [dateStr]) as any[];
+
+    const topDrugsRaw = await dbSelect(`
+      SELECT md.trade_name, SUM(si.quantity_sold) as quantity_sold 
+      FROM sales_items si
+      JOIN master_drugs md ON si.drug_id = md.id
+      GROUP BY md.trade_name 
+      ORDER BY quantity_sold DESC 
+      LIMIT 5
+    `) as any[];
+
+    const categoryRaw = await dbSelect(`
+      SELECT md.category, SUM(si.quantity_sold) as quantity_sold 
+      FROM sales_items si
+      JOIN master_drugs md ON si.drug_id = md.id
+      GROUP BY md.category 
+      ORDER BY quantity_sold DESC 
+      LIMIT 6
+    `) as any[];
+
+    return { 
+      success: true, 
+      data: {
+        salesHistoryRaw,
+        topDrugsRaw,
+        categoryRaw
+      } 
+    };
+  } catch (error) {
+    console.error('getReportsDataAction error:', error);
+    return { success: false, error: 'فشل جلب التقارير' };
+  }
+}

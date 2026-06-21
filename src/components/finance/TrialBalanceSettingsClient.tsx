@@ -13,7 +13,7 @@ import {
   getExpenseDefinitionsAction,
   getTrialBalanceSettingsAction,
   saveTrialBalanceSettingAction
-} from '@/app/actions/finance';
+} from '@/app/actions-client/finance';
 import { toast } from 'react-hot-toast';
 
 interface Account {

@@ -8,9 +8,9 @@ import {
   ArrowRight, CreditCard, DollarSign, Wallet
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { getSalesReportsAction, getInvoiceDetailsAction } from '@/app/actions/sales-reports';
-import { getStaffAction } from '@/app/actions/users';
-import { getPatientsAction } from '@/app/actions/patients';
+import { getSalesReportsAction, getInvoiceDetailsAction } from '@/app/actions-client/sales-reports';
+import { getStaffAction } from '@/app/actions-client/users';
+import { getPatientsAction } from '@/app/actions-client/patients';
 import { format } from 'date-fns';
 
 export default function SalesReportsClient({ userRole }: { userRole?: string }) {
@@ -239,7 +239,7 @@ export default function SalesReportsClient({ userRole }: { userRole?: string }) 
                     </td>
                     <td className="px-8 py-6 font-bold text-slate-500">{format(new Date(inv.created_at), 'yyyy/MM/dd HH:mm')}</td>
                     <td className="px-8 py-6 font-black">{inv.patient_name || '-'}</td>
-                    <td className="px-8 py-6 font-bold text-slate-400 italic">{inv.staff_name}</td>
+                    <td className="px-8 py-6 font-bold text-slate-400 italic">{inv.staff_name || 'غير محدد'}</td>
                     <td className="px-8 py-6 font-black">{inv.total_amount.toLocaleString()}</td>
                     <td className="px-8 py-6 font-black text-rose-500">{inv.discount_amount?.toLocaleString() || 0}</td>
                     <td className="px-8 py-6 font-black text-lg text-slate-900 dark:text-white">{(inv.total_amount - (inv.discount_amount || 0)).toLocaleString()}</td>

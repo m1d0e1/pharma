@@ -6,7 +6,7 @@ import dynamic from 'next/dynamic';
 import { subDays, format, parseISO } from 'date-fns';
 import { getClientSession } from '@/lib/auth/local';
 import { dbSelect } from '@/lib/db/tauri';
-import { getReportsDataAction } from '@/app/actions/reports';
+import { getReportsDataAction } from '@/app/actions-client/reports';
 
 const ReportsClient = dynamic(() => import('@/components/dashboard/SalesCharts'));
 
@@ -49,7 +49,7 @@ export default function ReportsPage() {
         }
 
         salesHistoryRaw.forEach((inv: any) => {
-          const d = format(parseISO(inv.created_at), 'yyyy-MM-dd');
+          const d = inv.created_at.includes('T') ? inv.created_at.split('T')[0] : inv.created_at.split(' ')[0];
           if (dailySalesMap.has(d)) {
             dailySalesMap.set(d, dailySalesMap.get(d) + Number(inv.total_amount));
           }

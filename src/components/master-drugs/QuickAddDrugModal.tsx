@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useState, useEffect } from 'react'
-import { addMasterDrugAction, getUnitsAction } from '@/app/actions/master-drugs'
+import { addMasterDrugAction, getUnitsAction } from '@/app/actions-client/master-drugs'
 import { toast } from 'react-hot-toast'
 import { Plus, X, Pill, BadgeDollarSign, Factory, Beaker, Box, ChevronDown } from 'lucide-react'
 import { useHotkeys } from 'react-hotkeys-hook'

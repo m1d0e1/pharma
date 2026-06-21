@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import DrawerHandoverClient from '@/components/finance/DrawerHandoverClient';
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
-import { getOpenShiftHandoverAction } from '@/app/actions/handover';
+import { getOpenShiftHandoverAction } from '@/app/actions-client/handover';
 import { AlertCircle } from 'lucide-react';
 import Link from 'next/link';
 import AccessDenied from '@/components/AccessDenied';

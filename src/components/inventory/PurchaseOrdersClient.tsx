@@ -23,8 +23,8 @@ export default function PurchaseOrdersClient({ initialOrders }: Props) {
   const [filter, setFilter] = useState('all');
 
   const filtered = orders.filter((o: any) => {
-    const matchSearch = o.id.toLowerCase().includes(search.toLowerCase()) || 
-                       o.supplier_name?.toLowerCase().includes(search.toLowerCase());
+    const matchSearch = String(o.id || '').toLowerCase().includes(search.toLowerCase()) || 
+                       String(o.supplier_name || '').toLowerCase().includes(search.toLowerCase());
     const matchStatus = filter === 'all' || o.status === filter;
     return matchSearch && matchStatus;
   });
@@ -105,7 +105,7 @@ export default function PurchaseOrdersClient({ initialOrders }: Props) {
                       {order.item_count}
                     </td>
                     <td className="px-6 py-4 text-center font-black">
-                      {order.total_amount.toLocaleString()} <span className="text-[10px]">ج.م</span>
+                      {(order.total_amount || 0).toLocaleString()} <span className="text-[10px]">ج.م</span>
                     </td>
                     <td className="px-6 py-4 text-center">
                       <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-black ${config.bg} ${config.color}`}>

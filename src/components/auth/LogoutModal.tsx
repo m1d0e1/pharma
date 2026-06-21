@@ -5,8 +5,8 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { LogOut, DollarSign, Clock, X, AlertTriangle } from 'lucide-react';
 import { toast } from 'react-hot-toast';
-import { logoutLocalAction } from '@/app/actions/auth';
-import { endShiftAction, getCurrentShiftAction } from '@/app/actions/shifts';
+import { logoutLocalAction } from '@/app/actions-client/auth';
+import { endShiftAction, getCurrentShiftAction } from '@/app/actions-client/shifts';
 
 interface LogoutModalProps {
   isOpen: boolean;

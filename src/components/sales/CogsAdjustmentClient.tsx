@@ -7,7 +7,7 @@ import {
   Save, AlertCircle
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { getSoldItemsForCogsAdjustmentAction, updateSoldItemCostAction } from '@/app/actions/cogs';
+import { getSoldItemsForCogsAdjustmentAction, updateSoldItemCostAction } from '@/app/actions-client/cogs';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 

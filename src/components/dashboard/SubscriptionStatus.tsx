@@ -6,7 +6,7 @@ import { toast } from 'react-hot-toast';
 
 // Simple server action mockup inside the component or I could create a real one.
 // I'll assume we can update a config key in the local DB.
-import { updateConfigAction, getConfigAction } from '@/app/actions/config';
+import { updateConfigAction, getConfigAction } from '@/app/actions-client/config';
 
 export default function SubscriptionStatus() {
   const [status, setStatus] = useState<'activated' | 'expired' | 'none'>('none');

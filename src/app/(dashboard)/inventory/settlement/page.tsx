@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { getUnsettledSalesAction } from '@/app/actions/settlement';
+import { getUnsettledSalesAction } from '@/app/actions-client/settlement';
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 import AccessDenied from '@/components/AccessDenied';
 import { PackageSearch } from 'lucide-react';

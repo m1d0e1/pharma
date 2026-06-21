@@ -743,6 +743,7 @@ export async function getTrialBalanceAction() {
         a.name_ar,
         a.type,
         a.parent_id,
+        a.is_group,
         COALESCE(SUM(CASE WHEN je.type = 'debit' THEN je.amount ELSE 0 END), 0) as total_debit,
         COALESCE(SUM(CASE WHEN je.type = 'credit' THEN je.amount ELSE 0 END), 0) as total_credit
       FROM accounts a

@@ -2,7 +2,7 @@
 import { useHotkeys } from 'react-hotkeys-hook';
 
 
-import { getShiftsAction, getCurrentShiftAction } from '@/app/actions/shifts';
+import { getShiftsAction, getCurrentShiftAction } from '@/app/actions-client/shifts';
 import React, { useState, useEffect } from 'react';
 import { 
   DollarSign, Landmark, Receipt, FileStack, AlertCircle, 
@@ -16,9 +16,9 @@ import { FinancialNoticeForm } from './FinancialComponents';
 import TrialBalanceSettingsClient from './TrialBalanceSettingsClient';
 import CashTransactionsClient from './CashTransactionsClient';
 import ShiftManagementClient from '../shifts/ShiftManagementClient';
-import { getExpensesAction } from '@/app/actions/expenses';
+import { getExpensesAction } from '@/app/actions-client/expenses';
 import { getClientSession } from '@/lib/auth/local';
-import { getStaffAction } from '@/app/actions/users';
+import { getStaffAction } from '@/app/actions-client/users';
 import { 
   createCashMovementAction, 
   getCashMovementsAction,
@@ -34,7 +34,7 @@ import {
   seedFinanceTestDataAction,
   getFinancialNoticesAction,
   getActivityLogsAction
-} from '@/app/actions/finance';
+} from '@/app/actions-client/finance';
 import { format, isValid } from 'date-fns';
 import { toast } from 'react-hot-toast';
 

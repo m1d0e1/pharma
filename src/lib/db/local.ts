@@ -628,6 +628,30 @@ export function initLocalDb() {
       FOREIGN KEY (drug_id) REFERENCES master_drugs (id)
     );
 
+    CREATE TABLE IF NOT EXISTS purchase_returns (
+      id TEXT PRIMARY KEY,
+      purchase_invoice_id TEXT,
+      supplier_id INTEGER NOT NULL,
+      user_id TEXT NOT NULL,
+      reason TEXT,
+      total_amount REAL,
+      refund_method TEXT DEFAULT 'credit',
+      status TEXT DEFAULT 'completed',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS purchase_return_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      purchase_return_id TEXT NOT NULL,
+      inventory_id TEXT,
+      drug_id INTEGER,
+      drug_name TEXT,
+      quantity_returned INTEGER,
+      unit_price REAL,
+      total_price REAL,
+      reason TEXT
+    );
+
     CREATE TABLE IF NOT EXISTS supplier_transactions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       supplier_id INTEGER NOT NULL,
@@ -952,6 +976,26 @@ export function initLocalDb() {
       );
     } catch (e) {
       console.warn('Failed to seed default admin user:', e);
+    }
+  }
+
+  // Seed default TEST_USER if not exists
+  const testUserExists = db.prepare("SELECT COUNT(*) as count FROM users WHERE id = 'TEST_USER'").get() as any;
+  if (testUserExists.count === 0) {
+    try {
+      db.prepare(`
+        INSERT INTO users (id, username, password_hash, role, full_name, permissions)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(
+        'TEST_USER',
+        'test_user',
+        null,
+        'pharmacist',
+        'مستخدم تجريبي',
+        '{"can_sell": true, "can_manage_inventory": false}'
+      );
+    } catch (e) {
+      console.warn('Failed to seed default test user:', e);
     }
   }
 

@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'react-hot-toast';
 import { Shield, Lock, User, Loader2, Globe, CheckCircle2 } from 'lucide-react';
-import { loginLocalAction } from '@/app/actions/auth';
+import { loginLocalAction } from '@/app/actions-client/auth';
 import { syncFromCloud } from '@/lib/sync/universal';
 
 export default function LoginPage() {

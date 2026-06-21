@@ -8,7 +8,7 @@ import {
   Receipt, ShoppingBag, RotateCcw
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { getShiftReportAction } from '@/app/actions/reports';
+import { getShiftReportAction } from '@/app/actions-client/reports';
 import { format } from 'date-fns';
 import { ar } from 'date-fns/locale';
 

@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react'
 import { AlertTriangle, CheckCircle2, Package, Search, Calendar, CreditCard, ChevronDown } from 'lucide-react'
 import { toast } from 'react-hot-toast'
-import { settleSaleItemAction, getDrugBatchesAction, getUnsettledSalesAction } from '@/app/actions/settlement'
+import { settleSaleItemAction, getDrugBatchesAction, getUnsettledSalesAction } from '@/app/actions-client/settlement'
 import { format } from 'date-fns'
 import { ar } from 'date-fns/locale'
 

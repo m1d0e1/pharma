@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 import JobsManagementClient from '@/components/admin/JobsManagementClient';
-import { addJobAction, deleteJobAction } from '@/app/actions/users';
+import { addJobAction, deleteJobAction } from '@/app/actions-client/users';
 import Link from 'next/link';
 import { ArrowRight } from 'lucide-react';
 import AccessDenied from '@/components/AccessDenied';

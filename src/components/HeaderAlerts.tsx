@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef } from 'react'
 import { Bell, AlertTriangle, Clock, Ban, ChevronLeft, Package, Check } from 'lucide-react'
-import { getInventoryAlertsAction } from '@/app/actions/inventory'
+import { getInventoryAlertsAction } from '@/app/actions-client/inventory'
 import { cn } from '@/lib/utils'
 import Link from 'next/link'
 

@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { getAdjustmentsAction } from '@/app/actions/inventory';
+import { getAdjustmentsAction } from '@/app/actions-client/inventory';
 import AdjustmentsClient from "./AdjustmentsClient";
 
 export default function AdjustmentsPage() {

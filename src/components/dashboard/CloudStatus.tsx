@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { Globe, ShieldCheck, ShieldAlert, Loader2, LogIn } from 'lucide-react';
-import { loginCloudAction } from '@/app/actions/auth';
+import { loginCloudAction } from '@/app/actions-client/auth';
 import { toast } from 'react-hot-toast';
 
 interface Props {

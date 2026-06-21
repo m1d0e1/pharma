@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { Clock, Play, StopCircle, DollarSign, Loader2, ArrowRightLeft, TrendingUp } from 'lucide-react';
 import { toast } from 'react-hot-toast';
-import { startShiftAction, getCurrentShiftAction, getCurrentShiftStatsAction, endShiftAction } from '@/app/actions/shifts';
+import { startShiftAction, getCurrentShiftAction, getCurrentShiftStatsAction, endShiftAction } from '@/app/actions-client/shifts';
 
 export default function ShiftManagement() {
   const [currentShift, setCurrentShift] = useState<any>(null);

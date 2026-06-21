@@ -131,6 +131,7 @@ export default function DashboardLayout({
                 <li><kbd className="bg-slate-100 dark:bg-slate-800 px-1 rounded">Ctrl+P</kbd> شاشة الكاشير (POS)</li>
                 <li><kbd className="bg-slate-100 dark:bg-slate-800 px-1 rounded">Ctrl+I</kbd> المخزون</li>
                 <li><kbd className="bg-slate-100 dark:bg-slate-800 px-1 rounded">Ctrl+D</kbd> لوحة التحكم (الرئيسية)</li>
+                <li><kbd className="bg-slate-100 dark:bg-slate-800 px-1 rounded">Ctrl+O</kbd> المشتريات</li>
                 <li><kbd className="bg-slate-100 dark:bg-slate-800 px-1 rounded">Ctrl+N</kbd> فتح نافذة جديدة</li>
                 <li><kbd className="bg-slate-100 dark:bg-slate-800 px-1 rounded">F1</kbd> البحث السريع</li>
               </ul>
@@ -195,6 +196,11 @@ export default function DashboardLayout({
   useHotkeys('ctrl+i, meta+i', (e) => {
     e.preventDefault();
     router.push('/inventory');
+  }, { enableOnFormTags: true });
+
+  useHotkeys('ctrl+o, meta+o', (e) => {
+    e.preventDefault();
+    router.push('/purchases');
   }, { enableOnFormTags: true });
 
   useHotkeys('ctrl+d, meta+d', (e) => {

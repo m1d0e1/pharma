@@ -3,7 +3,7 @@
 import React, { useEffect, useState, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { getClientSession } from '@/lib/auth/local'
-import { getUnusedDrugsAction, deleteDrugAction } from '@/app/actions/inventory'
+import { getUnusedDrugsAction, deleteDrugAction } from '@/app/actions-client/inventory'
 import DeleteUnusedItemsClient from '@/components/inventory/DeleteUnusedItemsClient'
 
 export default function DeleteUnusedItemsPage() {

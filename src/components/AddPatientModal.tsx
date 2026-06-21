@@ -2,7 +2,7 @@
 import { useHotkeys } from 'react-hotkeys-hook';
 
 import { useState } from 'react'
-import { addPatientAction } from '@/app/actions/patients'
+import { addPatientAction } from '@/app/actions-client/patients'
 import { toast } from 'react-hot-toast'
 import { User, Phone, MapPin, Calendar, CreditCard, HeartPulse, Save, X, Activity } from 'lucide-react'
 import { cn } from '@/lib/utils'

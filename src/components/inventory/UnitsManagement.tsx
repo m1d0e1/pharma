@@ -3,7 +3,7 @@
 import React, { useState } from 'react'
 import { Plus, Trash2, Save, X, Scale } from 'lucide-react'
 import { toast, Toaster } from 'react-hot-toast'
-import { addUnitAction } from '@/app/actions/master-drugs'
+import { addUnitAction } from '@/app/actions-client/master-drugs'
 
 interface Unit {
   id: number;

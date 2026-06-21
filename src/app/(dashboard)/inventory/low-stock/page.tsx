@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { getLowStockAction } from '@/app/actions/inventory';
+import { getLowStockAction } from '@/app/actions-client/inventory';
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 import AccessDenied from '@/components/AccessDenied';
 import { AlertTriangle, ShoppingCart, ArrowRight } from 'lucide-react';

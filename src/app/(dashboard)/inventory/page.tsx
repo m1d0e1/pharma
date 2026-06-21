@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState, Suspense } from 'react';
 import { getClientSession } from '@/lib/auth/local';
-import { getInventoryListAction } from '@/app/actions/inventory';
+import { getInventoryListAction } from '@/app/actions-client/inventory';
 import InventoryTable from '@/components/inventory/InventoryTable';
 import InventoryClientWrapper from '@/components/InventoryClientWrapper';
 import { useSearchParams } from 'next/navigation';

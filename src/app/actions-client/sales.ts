@@ -8,6 +8,19 @@ const logActivity = async (userId: string, action: string, details: string) => {
   }
 };
 
+function normalizeDateToYMD(dateStr: string | null | undefined): string | null {
+  if (!dateStr) return null;
+  dateStr = dateStr.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return dateStr;
+  let match = dateStr.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  if (match) return `${match[3]}-${match[2].padStart(2, '0')}-${match[1].padStart(2, '0')}`;
+  match = dateStr.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/);
+  if (match) return `${match[1]}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')}`;
+  match = dateStr.match(/^(\d{1,2})[\/\-](\d{4})$/);
+  if (match) return `${match[2]}-${match[1].padStart(2, '0')}-01`;
+  return dateStr;
+}
+
 const db = {
   prepare: (sql: string) => ({
     all: (...p: any[]) => {
@@ -42,11 +55,12 @@ import { z } from 'zod';
 import { secureCache } from '@/lib/cache/secure_cache';
 
 const CheckoutItemSchema = z.object({
-  drug_id: z.union([z.number(), z.string()]),
+  drug_id: z.coerce.number(),
+  inventory_id: z.string().optional().nullable(),
   quantity_sold: z.coerce.number().positive(),
   unit_price: z.coerce.number().nonnegative(),
-  selected_unit: z.string().default('large').optional().nullable(),
-  is_negative: z.boolean().default(false).optional().nullable(),
+  selected_unit: z.string().default('large'),
+  is_negative: z.boolean().optional().default(false)
 });
 
 const CheckoutRequestSchema = z.object({
@@ -139,15 +153,28 @@ export async function searchDrugsAction(searchTerm: string, limit = 20) {
              MIN(expiry_date) as nearest_expiry,
              MAX(strips_per_box) as max_strips
       FROM inventory
-      WHERE drug_id IN (${placeholders})
+      WHERE drug_id IN (${placeholders}) AND quantity > 0
       GROUP BY drug_id
     `).all(...matchedIds) as any[];
 
     const today = new Date().toISOString().split('T')[0];
 
+    const batchesData = await db.prepare(`
+      SELECT id as inventory_id, drug_id, quantity, expiry_date, local_selling_price, cost_price, strips_per_box
+      FROM inventory
+      WHERE drug_id IN (${placeholders}) AND quantity > 0
+      ORDER BY CASE WHEN expiry_date IS NULL THEN 1 ELSE 0 END, expiry_date ASC, created_at ASC
+    `).all(...matchedIds) as any[];
+
     const data = matchedDrugs.map((drug: any) => {
-      const inv = (inventoryAgg as any[]).find((i: any) => i.drug_id === drug.id) || {};
+      const inv = (inventoryAgg as any[]).find((i: any) => String(i.drug_id) === String(drug.id)) || {};
       const actualLargeToMedium = inv.max_strips > 1 ? inv.max_strips : (drug.large_to_medium || 1);
+      const drugBatches = batchesData.filter((b: any) => String(b.drug_id) === String(drug.id)).map((b: any) => ({
+        inventory_id: b.inventory_id,
+        quantity: b.quantity,
+        expiry_date: b.expiry_date ? normalizeDateToYMD(b.expiry_date) : null,
+        unit_price: b.local_selling_price || drug.official_price
+      }));
       return {
         id: drug.id,
         trade_name: drug.trade_name_en || drug.trade_name || 'بدون اسم تجاري',
@@ -158,7 +185,7 @@ export async function searchDrugsAction(searchTerm: string, limit = 20) {
         min_price: inv.min_price || drug.official_price,
         cost_price: inv.avg_cost_price || 0,
         nearest_expiry: inv.nearest_expiry,
-        is_expired: inv.nearest_expiry ? inv.nearest_expiry < today : false,
+        is_expired: inv.nearest_expiry ? (normalizeDateToYMD(inv.nearest_expiry) || '') < today : false,
         large_unit: drug.large_unit,
         medium_unit: drug.medium_unit,
         small_unit: drug.small_unit,
@@ -169,6 +196,7 @@ export async function searchDrugsAction(searchTerm: string, limit = 20) {
           ? Math.round(((inv.min_price - inv.avg_cost_price) / inv.min_price) * 100)
           : null,
         needs_reorder: drug.reorder_point ? (inv.total_stock || 0) <= drug.reorder_point : false,
+        batches: drugBatches,
         units: {
           large: drug.large_unit || 'علبة',
           medium: drug.medium_unit || (actualLargeToMedium > 1 ? 'شريط' : undefined),
@@ -237,6 +265,7 @@ export async function barcodeLookupAction(barcode: string) {
         i.cost_price as avg_cost_price,
         i.quantity,
         i.expiry_date as nearest_expiry,
+        i.strips_per_box,
         i.id as inventory_id
       FROM master_drugs md
       INNER JOIN inventory i ON md.id = i.drug_id
@@ -249,6 +278,14 @@ export async function barcodeLookupAction(barcode: string) {
     }
 
     const today = new Date().toISOString().split('T')[0];
+    const actualLargeToMedium = drug.strips_per_box > 1 ? drug.strips_per_box : (drug.large_to_medium || 1);
+
+    const drugBatches = await db.prepare(`
+      SELECT id as inventory_id, quantity, expiry_date, local_selling_price, cost_price
+      FROM inventory
+      WHERE drug_id = ? AND quantity > 0
+      ORDER BY CASE WHEN expiry_date IS NULL THEN 1 ELSE 0 END, expiry_date ASC, created_at ASC
+    `).all(drug.id) as any[];
 
     const data = {
       id: drug.id,
@@ -261,7 +298,7 @@ export async function barcodeLookupAction(barcode: string) {
       inventory_id: drug.inventory_id,
       cost_price: drug.avg_cost_price || 0,
       nearest_expiry: drug.nearest_expiry,
-      is_expired: drug.nearest_expiry ? drug.nearest_expiry < today : false,
+      is_expired: drug.nearest_expiry ? (normalizeDateToYMD(drug.nearest_expiry) || '') < today : false,
       reorder_point: drug.reorder_point || 0,
       needs_reorder: drug.reorder_point ? drug.quantity <= drug.reorder_point : false,
       profit_margin: drug.unit_price && drug.avg_cost_price > 0 
@@ -269,11 +306,17 @@ export async function barcodeLookupAction(barcode: string) {
         : null,
       units: {
         large: drug.large_unit || 'علبة',
-        medium: drug.medium_unit,
+        medium: drug.medium_unit || (actualLargeToMedium > 1 ? 'شريط' : undefined),
         small: drug.small_unit,
-        large_to_medium: drug.large_to_medium || 1,
+        large_to_medium: actualLargeToMedium,
         medium_to_small: drug.medium_to_small || 1
-      }
+      },
+      batches: drugBatches.map((b: any) => ({
+        inventory_id: b.inventory_id,
+        quantity: b.quantity,
+        expiry_date: b.expiry_date ? normalizeDateToYMD(b.expiry_date) : null,
+        unit_price: b.local_selling_price || drug.official_price
+      }))
     };
 
     return { success: true, data };
@@ -421,10 +464,12 @@ export async function processCheckoutAction(data: any) {
 
       for (const item of validatedData.items) {
         const drugInfo = await db.prepare(`
-          SELECT trade_name, large_to_medium, medium_to_small, has_expiry, medium_unit, small_unit,
-                 COALESCE((SELECT MAX(strips_per_box) FROM inventory WHERE drug_id = id), 1) as max_strips
-          FROM master_drugs
-          WHERE id = ?
+          SELECT md.trade_name, md.large_to_medium, md.medium_to_small, md.has_expiry, md.medium_unit, md.small_unit,
+                 COALESCE(MAX(i.strips_per_box), 1) as max_strips
+          FROM master_drugs md
+          LEFT JOIN inventory i ON i.drug_id = md.id
+          WHERE md.id = ?
+          GROUP BY md.id
         `).get(item.drug_id) as any;
         const drugName = drugInfo?.trade_name || `Drug #${item.drug_id}`;
         
@@ -446,23 +491,27 @@ export async function processCheckoutAction(data: any) {
             continue;
           }
 
-          const validStock = await db.prepare(`
-            SELECT COALESCE(SUM(quantity), 0) as total
-            FROM inventory
-            WHERE drug_id = ? AND (expiry_date IS NULL OR expiry_date >= ?)
-          `).get(item.drug_id, today) as any;
+          const validStock = item.inventory_id 
+            ? await db.prepare('SELECT COALESCE(SUM(quantity), 0) as total FROM inventory WHERE id = ?').get(item.inventory_id) as any
+            : await db.prepare(`
+                SELECT COALESCE(SUM(quantity), 0) as total
+                FROM inventory
+                WHERE drug_id = ? AND (expiry_date IS NULL OR expiry_date >= ?)
+              `).get(item.drug_id, today) as any;
           
           if ((validStock?.total || 0) < deductionQty) {
             throw new Error(`الكمية غير كافية للصنف "${drugName}" (المتاح: ${(validStock?.total || 0).toFixed(2)})`);
           }
 
           let remainingToDeduct = deductionQty;
-          const batches = await db.prepare(`
-            SELECT id, quantity, cost_price, expiry_date
-            FROM inventory
-            WHERE drug_id = ? AND quantity > 0 AND (expiry_date IS NULL OR expiry_date >= ?)
-            ORDER BY CASE WHEN expiry_date IS NULL THEN 1 ELSE 0 END, expiry_date ASC, created_at ASC
-          `).all(item.drug_id, today) as any[];
+          const batches = item.inventory_id 
+            ? await db.prepare('SELECT id, quantity, cost_price, expiry_date FROM inventory WHERE id = ?').all(item.inventory_id) as any[]
+            : await db.prepare(`
+                SELECT id, quantity, cost_price, expiry_date
+                FROM inventory
+                WHERE drug_id = ? AND quantity > 0 AND (expiry_date IS NULL OR expiry_date >= ?)
+                ORDER BY CASE WHEN expiry_date IS NULL THEN 1 ELSE 0 END, expiry_date ASC, created_at ASC
+              `).all(item.drug_id, today) as any[];
 
           for (const batch of batches) {
             if (remainingToDeduct <= 0) break;
