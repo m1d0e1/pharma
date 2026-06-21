@@ -98,47 +98,51 @@ export default function DashboardLayout({
   useEffect(() => {
     if (typeof window === 'undefined' || (!(window as any).__TAURI__ && !(window as any).__TAURI_INTERNALS__)) return;
     
+    let active = true;
     let unlistenNavigate: (() => void) | undefined;
     let unlistenAction: (() => void) | undefined;
 
-    import('@tauri-apps/api/event').then(({ listen }) => {
-      listen<string>('menu-navigate', (event) => {
-        router.push(event.payload);
-      }).then(unlisten => { unlistenNavigate = unlisten });
+    const setupListeners = async () => {
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        if (!active) return;
+        
+        unlistenNavigate = await listen<string>('menu-navigate', (event) => {
+          console.log('menu-navigate received:', event.payload);
+          router.push(event.payload);
+        });
 
-      listen<string>('menu-action', async (event) => {
-        const action = event.payload;
-        if (action === 'print') window.print();
-        if (action === 'about') {
-          try {
-            const { getVersion } = await import('@tauri-apps/api/app');
-            const version = await getVersion();
-            const { message } = await import('@tauri-apps/plugin-dialog');
-            await message(
-              `الإصدار: ${version}\nنظام إدارة صيدليات ذكي، مبني بأحدث التقنيات لضمان السرعة والأمان والموثوقية.`,
-              { title: 'نظام فارما تيك المتكامل', kind: 'info' }
-            ).catch(() => toast.success(`نظام فارما تيك المتكامل - الإصدار ${version}`));
-          } catch (e) {
-            console.error('Failed to show about dialog', e);
-            toast.success('نظام فارما تيك المتكامل - الإصدار 0.1.9');
+        unlistenAction = await listen<string>('menu-action', async (event) => {
+          const action = event.payload;
+          console.log('menu-action received:', action);
+          
+          if (action === 'print') window.print();
+          if (action === 'about') {
+            try {
+              const { getVersion } = await import('@tauri-apps/api/app');
+              const version = await getVersion();
+              const { message } = await import('@tauri-apps/plugin-dialog');
+              await message(
+                `الإصدار: ${version}\nنظام إدارة صيدليات ذكي، مبني بأحدث التقنيات لضمان السرعة والأمان والموثوقية.`,
+                { title: 'نظام فارما تيك المتكامل', kind: 'info' }
+              ).catch(() => toast.success(`نظام فارما تيك المتكامل - الإصدار ${version}`));
+            } catch (e) {
+              console.error('Failed to show about dialog', e);
+              toast.success('نظام فارما تيك المتكامل - الإصدار 0.1.9');
+            }
           }
-        }
-        if (action === 'shortcuts') {
-          toast(
-            <div dir="rtl" className="text-sm">
-              <h3 className="font-bold mb-2">اختصارات لوحة المفاتيح:</h3>
-              <ul className="space-y-1 text-slate-600 dark:text-slate-300">
-                <li><kbd className="bg-slate-100 dark:bg-slate-800 px-1 rounded">Ctrl+P</kbd> شاشة الكاشير (POS)</li>
-                <li><kbd className="bg-slate-100 dark:bg-slate-800 px-1 rounded">Ctrl+I</kbd> المخزون</li>
-                <li><kbd className="bg-slate-100 dark:bg-slate-800 px-1 rounded">Ctrl+D</kbd> لوحة التحكم (الرئيسية)</li>
-                <li><kbd className="bg-slate-100 dark:bg-slate-800 px-1 rounded">Ctrl+O</kbd> المشتريات</li>
-                <li><kbd className="bg-slate-100 dark:bg-slate-800 px-1 rounded">Ctrl+N</kbd> فتح نافذة جديدة</li>
-                <li><kbd className="bg-slate-100 dark:bg-slate-800 px-1 rounded">F1</kbd> البحث السريع</li>
-              </ul>
-            </div>, 
-            { icon: '⌨️', duration: 10000 }
-          );
-        }
+          if (action === 'shortcuts') {
+            toast.success(
+              'اختصارات لوحة المفاتيح:\n' +
+              'Ctrl+P: الكاشير\n' +
+              'Ctrl+I: المخزون\n' +
+              'Ctrl+D: الرئيسية\n' +
+              'Ctrl+O: المشتريات\n' +
+              'Ctrl+N: نافذة جديدة\n' +
+              'F1: البحث السريع',
+              { duration: 10000 }
+            );
+          }
         if (action === 'update') {
           const toastId = toast.loading('جاري البحث عن تحديثات...', { duration: 15000 });
           try {
@@ -178,10 +182,16 @@ export default function DashboardLayout({
           await logoutLocal();
           router.push('/login');
         }
-      }).then(unlisten => { unlistenAction = unlisten });
-    }).catch(err => console.error("Failed to load tauri event API", err));
+        });
+      } catch (err) {
+        console.error("Failed to load tauri event API", err);
+      }
+    };
+
+    setupListeners();
 
     return () => {
+      active = false;
       if (unlistenNavigate) unlistenNavigate();
       if (unlistenAction) unlistenAction();
     };

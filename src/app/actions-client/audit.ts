@@ -50,15 +50,14 @@ const db = {
 
 
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
-import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local'
-
+import { getLocalSession, getClientSession, hasUserPermissionSync } from '@/lib/auth/local'
 
 /**
  * Clear all activity logs (Owner only)
  */
 export async function clearAuditLogsAction() {
   try {
-    const user = await getLocalSession();
+    const user = await getClientSession();
     if (!user || user.role !== 'owner') {
       return { success: false, error: 'غير مصرح - للمالك فقط' };
     }
@@ -79,7 +78,7 @@ export async function clearAuditLogsAction() {
 
 export async function getAuditLogsAction() {
   try {
-    const user = await getLocalSession();
+    const user = await getClientSession();
     if (!user || !hasUserPermissionSync(user, 'can_view_audit')) {
       return { success: false, error: 'غير مصرح' };
     }
@@ -88,7 +87,7 @@ export async function getAuditLogsAction() {
     const sevenDaysAgoStart = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0] + ' 00:00:00';
 
     const logs = await db.prepare(`
-      SELECT al.*, u.full_name as user_name 
+      SELECT al.*, u.full_name, u.role
       FROM activity_log al 
       LEFT JOIN users u ON al.user_id = u.id 
       ORDER BY al.created_at DESC 

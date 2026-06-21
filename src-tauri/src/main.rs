@@ -172,9 +172,13 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
+        .setup(|app| {
+            let main_window = app.get_webview_window("main").unwrap();
+            main_window.maximize().unwrap();
+            Ok(())
+        })
         .on_menu_event(|app, event| {
             let id = event.id.as_ref();
-            
             let route = match id {
                 // Actions
                 "new_window" => {
