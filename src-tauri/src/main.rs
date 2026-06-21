@@ -156,28 +156,27 @@ fn main() {
                     .expect("failed to get resource dir")
                     .join("pharma_local.db");
                 
-                if resource_path.exists() {
-                    fs::copy(&resource_path, &db_path).expect("failed to copy seeded database");
-                    println!("Copied seeded database to {:?}", db_path);
+                    if resource_path.exists() {
+                        fs::copy(&resource_path, &db_path).expect("failed to copy seeded database");
+                        println!("Copied seeded database to {:?}", db_path);
+                    }
                 }
-            }
-            Ok(())
-        })
-        .plugin(
-            tauri_plugin_sql::Builder::default()
-                .add_migrations("sqlite:pharma_local.db", migrations)
-                .build()
-        )
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_shell::init())
-        .setup(|app| {
-            let main_window = app.get_webview_window("main").unwrap();
-            main_window.maximize().unwrap();
-            Ok(())
-        })
-        .on_menu_event(|app, event| {
+                
+                let main_window = app.get_webview_window("main").unwrap();
+                main_window.maximize().unwrap();
+                
+                Ok(())
+            })
+            .plugin(
+                tauri_plugin_sql::Builder::default()
+                    .add_migrations("sqlite:pharma_local.db", migrations)
+                    .build()
+            )
+            .plugin(tauri_plugin_dialog::init())
+            .plugin(tauri_plugin_updater::Builder::new().build())
+            .plugin(tauri_plugin_process::init())
+            .plugin(tauri_plugin_shell::init())
+            .on_menu_event(|app, event| {
             let id = event.id.as_ref();
             let route = match id {
                 // Actions

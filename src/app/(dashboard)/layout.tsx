@@ -147,18 +147,20 @@ export default function DashboardLayout({
           const toastId = toast.loading('جاري البحث عن تحديثات...', { duration: 15000 });
           try {
             const { check } = await import('@tauri-apps/plugin-updater');
+            const { getVersion } = await import('@tauri-apps/api/app');
             const { message, ask } = await import('@tauri-apps/plugin-dialog');
             const { relaunch } = await import('@tauri-apps/plugin-process');
             
+            const currentVersion = await getVersion();
             const update = await check();
             if (update) {
               toast.dismiss(toastId);
-              const yes = await ask(`تم العثور على الإصدار الجديد ${update.version}.\nهل تريد التحديث الآن؟`, {
+              const yes = await ask(`تم العثور على أحدث إصدار متاح عبر الإنترنت وهو (${update.version}) وأنت الآن تستخدم الإصدار (${currentVersion}).\nهل تريد التحديث الآن؟`, {
                 title: 'تحديث البرنامج',
                 kind: 'info',
                 okLabel: 'نعم، حدث الآن',
                 cancelLabel: 'لاحقاً'
-              }).catch(() => true); // If dialog fails, assume yes
+              });
               if (yes) {
                 toast.loading('جاري التحميل والتثبيت...', { id: toastId });
                 await update.downloadAndInstall();
