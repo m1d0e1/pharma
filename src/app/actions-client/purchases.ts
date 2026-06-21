@@ -630,11 +630,13 @@ export async function createPurchaseReturnAction(data: {
         // Decrease supplier balance
         await db.prepare('UPDATE suppliers SET balance = balance - ? WHERE id = ?').run(totalAmount, data.supplier_id);
       } else if (data.refund_method === 'cash') {
-        // They paid us cash back. We don't decrease our debt, but our cash increases.
-        await db.prepare(`
-          INSERT INTO cash_movements (type, category, amount, description, user_id)
-          VALUES ('in', 'purchase_return', ?, ?, ?)
-        `).run(totalAmount, `مرتجع مشتريات نقدي للمورد رقم ${data.supplier_id}`, session.id);
+        const openShift = await db.prepare("SELECT id FROM shifts WHERE user_id = ? AND status = 'open'").get(session.id) as any;
+        if (openShift) {
+          await db.prepare(`
+            INSERT INTO cash_movements (id, shift_id, type, category, amount, description, created_by)
+            VALUES (?, ?, 'in', 'purchase_return', ?, ?, ?)
+          `).run(generateId(), openShift.id, totalAmount, `مرتجع مشتريات نقدي للمورد رقم ${data.supplier_id}`, session.id);
+        }
         
         await db.prepare(`
           INSERT INTO supplier_transactions (supplier_id, type, amount, reference_id, notes)

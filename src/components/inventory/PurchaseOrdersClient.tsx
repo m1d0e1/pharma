@@ -136,9 +136,6 @@ export default function PurchaseOrdersClient({ initialOrders }: Props) {
                             </button>
                           </>
                         )}
-                        <button className="p-2 bg-slate-50 text-slate-600 rounded-lg hover:bg-slate-100">
-                          <Eye className="w-4 h-4" />
-                        </button>
                       </div>
                     </td>
                   </tr>

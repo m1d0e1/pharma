@@ -738,26 +738,11 @@ export default function PurchaseInvoiceClient() {
               </div>
 
               
-              <div className="grid grid-cols-2 gap-3">
-                <button 
-                  onClick={() => handleSubmit(true)}
-                  disabled={isSubmitting || isDrafting || cart.length === 0}
-                  className="bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 py-4 rounded-2xl font-black transition-all flex items-center justify-center gap-2 active:scale-95"
-                >
-                  {isDrafting ? (
-                    <div className="w-5 h-5 border-3 border-slate-300 border-t-slate-600 rounded-full animate-spin" />
-                  ) : (
-                    <>
-                      <FileText className="w-5 h-5" />
-                      حفظ مسودة
-                    </>
-
-                  )}
-                </button>
+              <div className="flex">
                 <button 
                   onClick={() => handleSubmit(false)}
-                  disabled={isSubmitting || isDrafting || cart.length === 0}
-                  className="bg-primary-600 hover:bg-primary-700 text-white py-4 rounded-2xl font-black shadow-lg shadow-primary-500/20 transition-all flex items-center justify-center gap-2 active:scale-95"
+                  disabled={isSubmitting || cart.length === 0}
+                  className="flex-1 py-4 bg-primary-600 hover:bg-primary-700 text-white rounded-2xl font-bold transition-all disabled:opacity-50 flex items-center justify-center gap-2"
                 >
                   {isSubmitting ? (
                     <div className="w-5 h-5 border-3 border-white/30 border-t-white rounded-full animate-spin" />
@@ -766,7 +751,6 @@ export default function PurchaseInvoiceClient() {
                       <CheckCircle2 className="w-5 h-5" />
                       حفظ نهائي
                     </>
-
                   )}
                 </button>
               </div>
