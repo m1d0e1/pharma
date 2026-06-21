@@ -1,6 +1,6 @@
 {
   "productName": "Pharmacy Local Enforcer",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "identifier": "com.pharma.system",
   "build": {
     "beforeDevCommand": "cross-env NEXT_PUBLIC_TAURI=1 next dev",
