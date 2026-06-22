@@ -158,8 +158,10 @@ export default function DashboardLayout({
             try {
               update = await check();
               if (update) latestVersion = update.version;
-            } catch {
-              // Tauri updater failed — try fetching latest.json directly for version info
+            } catch { /* Tauri updater threw — will fetch fallback below */ }
+
+            // Always fetch latest.json to know the remote version (for display)
+            if (!latestVersion) {
               try {
                 const res = await fetch('https://github.com/m1d0e1/pharma/releases/latest/download/latest.json');
                 if (res.ok) {
@@ -168,6 +170,7 @@ export default function DashboardLayout({
                 }
               } catch { /* network down */ }
             }
+
 
             toast.dismiss(toastId);
 

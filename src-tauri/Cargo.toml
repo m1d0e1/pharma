@@ -1,6 +1,6 @@
 [package]
 name = "pharma"
-version = "0.2.10"
+version = "0.2.11"
 description = "Pharmacy Local Enforcer"
 authors = ["Pharma Management Team"]
 edition = "2021"
@@ -22,3 +22,4 @@ tokio = { version = "1.35", features = ["full"] }
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"
 tauri-plugin-dialog = "2.7.1"
+
