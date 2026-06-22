@@ -160,13 +160,14 @@ export default function DashboardLayout({
               if (update) latestVersion = update.version;
             } catch { /* Tauri updater threw — will fetch fallback below */ }
 
-            // Always fetch latest.json to know the remote version (for display)
+            // Always fetch latest version for display (GitHub API has proper CORS headers)
             if (!latestVersion) {
               try {
-                const res = await fetch('https://github.com/m1d0e1/pharma/releases/latest/download/latest.json');
+                const res = await fetch('https://api.github.com/repos/m1d0e1/pharma/releases/latest');
                 if (res.ok) {
                   const data = await res.json();
-                  latestVersion = data.version ?? null;
+                  // tag_name is like "v0.2.11", strip the "v"
+                  latestVersion = (data.tag_name ?? '').replace(/^v/, '') || null;
                 }
               } catch { /* network down */ }
             }
