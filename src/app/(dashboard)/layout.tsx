@@ -123,7 +123,7 @@ export default function DashboardLayout({
               const version = await getVersion();
               const { message } = await import('@tauri-apps/plugin-dialog');
               await message(
-                `الإصدار: ${version}\nنظام إدارة صيدليات ذكي، مبني بأحدث التقنيات لضمان السرعة والأمان والموثوقية.`,
+                `الإصدار: ${version}\nنظام إدارة صيدليات ذكي، مبني بأحدث التقنيات لضمان السرعة والأمان والموثوقية.\n\nتم إنشاؤه بواسطة محمد شعبان بحب لمجتمع الصيادلة.\nللتواصل: m0hamed.essamit2000@gmail.com`,
                 { title: 'نظام فارما تيك المتكامل', kind: 'info' }
               ).catch(() => toast.success(`نظام فارما تيك المتكامل - الإصدار ${version}`));
             } catch (e) {
@@ -139,9 +139,18 @@ export default function DashboardLayout({
               'Ctrl+D: الرئيسية\n' +
               'Ctrl+O: المشتريات\n' +
               'Ctrl+N: نافذة جديدة\n' +
-              'F1: البحث السريع',
-              { duration: 10000 }
+              'F1: البحث السريع\n\n' +
+              '(اضغط ESC للإغلاق)',
+              { duration: 10000, id: 'shortcuts-toast' }
             );
+            const handleEsc = (e: KeyboardEvent) => {
+              if (e.key === 'Escape') {
+                toast.dismiss('shortcuts-toast');
+                window.removeEventListener('keydown', handleEsc);
+              }
+            };
+            window.addEventListener('keydown', handleEsc);
+            setTimeout(() => window.removeEventListener('keydown', handleEsc), 10000);
           }
         if (action === 'update') {
           const toastId = toast.loading('جاري البحث عن تحديثات...', { duration: 15000 });
