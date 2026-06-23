@@ -66,11 +66,11 @@ export async function middleware(request: NextRequest) {
   // CSP header (Content Security Policy)
   const csp = [
     "default-src 'self'",
-    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net",
+    "script-src 'self' 'unsafe-inline'",
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src 'self' https://fonts.gstatic.com",
     "img-src 'self' data: https:",
-    "connect-src 'self' https://*.supabase.co",
+    "connect-src 'self'",
     "frame-ancestors 'none'",
     "base-uri 'self'",
     "form-action 'self'",
@@ -78,18 +78,6 @@ export async function middleware(request: NextRequest) {
 
   headers.set('Content-Security-Policy', csp);
 
-  // Return response with updated headers
-  // We need to clone the response to update its headers if we're using the one from updateSession
-  const finalResponse = NextResponse.next({
-    request: {
-      headers: request.headers,
-    },
-  });
-  
-  // Actually, we should copy cookies from the session response to our final response
-  // or just apply headers to the session response and return it.
-  
-  // Apply headers to the session response
   headers.forEach((value, key) => {
     response.headers.set(key, value);
   });

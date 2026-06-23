@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { getNegativeStockInvoicesAction, settleNegativeStockAction } from '@/app/actions-client/settlement';
-import { toast } from 'sonner';
+import toast from 'react-hot-toast';
 import { format } from 'date-fns';
 
 export default function NegativeStockSettlementClient() {

@@ -129,18 +129,15 @@ export function query<T = any>(sql: string, params: any[] = []): T[] {
   const stmt = database.prepare(sql);
   const results = stmt.all(...params) as T[];
   
-  // Auto-enrich on the web server if master_drugs is queried
   if (results.length > 0 && sql.toLowerCase().includes('master_drugs')) {
     try {
       const { secureCache } = require('@/lib/cache/secure_cache');
-      console.log('Query enriching:', results.length, 'cache size:', secureCache.getAllDrugs().length);
       const enriched = secureCache.enrich(results);
       if (enriched.length > 0) {
-         console.log('First enriched item:', enriched[0].trade_name);
+        return enriched;
       }
-      return enriched;
     } catch(e) {
-      console.warn('Enrich failed:', e);
+      // cache not ready, return raw results
     }
   }
   return results;

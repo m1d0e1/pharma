@@ -442,12 +442,14 @@ export async function updateAccountAction(id: number, rawData: z.infer<typeof up
 
     const data = updateAccountSchema.parse(rawData);
     
-    // Build SQL safely
-    const keys = Object.keys(data) as Array<keyof typeof data>;
+    const ALLOWED_ACCOUNT_FIELDS: Record<string, true> = {
+      name_ar: true, name_en: true, type: true, is_group: true,
+    };
+    const keys = Object.keys(data).filter(k => ALLOWED_ACCOUNT_FIELDS[k]);
     if (keys.length === 0) return { success: true };
     
     const fields = keys.map(k => `${k} = ?`).join(', ');
-    const params = [...keys.map(k => data[k]), id];
+    const params = [...keys.map(k => data[k as keyof typeof data]), id];
     
     await db.prepare(`UPDATE accounts SET ${fields} WHERE id = ?`).run(...params);
     

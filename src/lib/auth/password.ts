@@ -1,5 +1,6 @@
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
+import crypto from 'crypto';
 
 // Password validation schema
 export const PasswordSchema = z
@@ -69,24 +70,24 @@ export function validatePassword(password: string): {
 export function generateRandomPassword(length: number = 16): string {
   const charset =
     'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*';
+  const getRandomInt = (max: number) => crypto.getRandomValues(new Uint32Array(1))[0] % max;
+
   let password = '';
+  password += charset[getRandomInt(26)]; // Uppercase
+  password += charset[26 + getRandomInt(26)]; // Lowercase
+  password += charset[52 + getRandomInt(10)]; // Number
+  password += charset[62 + getRandomInt(8)]; // Special
 
-  // Ensure at least one character from each required category
-  password += charset[Math.floor(Math.random() * 26)]; // Uppercase
-  password += charset[26 + Math.floor(Math.random() * 26)]; // Lowercase
-  password += charset[52 + Math.floor(Math.random() * 10)]; // Number
-  password += charset[62 + Math.floor(Math.random() * 8)]; // Special
-
-  // Fill the rest with random characters
   for (let i = password.length; i < length; i++) {
-    password += charset[Math.floor(Math.random() * charset.length)];
+    password += charset[getRandomInt(charset.length)];
   }
 
-  // Shuffle the password
-  return password
-    .split('')
-    .sort(() => Math.random() - 0.5)
-    .join('');
+  const arr = password.split('');
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = getRandomInt(i + 1);
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr.join('');
 }
 
 /**

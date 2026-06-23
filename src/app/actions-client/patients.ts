@@ -182,15 +182,15 @@ export async function getPatientProfileAction(patientId: string) {
     `).all(patientId) as any[];
 
     if (purchaseHistory.length > 0) {
-      const invoiceIds = purchaseHistory.map(h => `'${h.invoice_id}'`).join(',');
-      // JOIN master_drugs directly to get trade names (avoids loading 191K cache)
+      const placeholders = purchaseHistory.map(() => '?').join(',');
+      const invoiceIds = purchaseHistory.map(h => h.invoice_id);
       const items = await db.prepare(`
         SELECT sit.invoice_id, sit.drug_id,
                m.trade_name_en, m.trade_name
         FROM sales_items sit
         JOIN master_drugs m ON sit.drug_id = m.id
-        WHERE sit.invoice_id IN (${invoiceIds})
-      `).all() as any[];
+        WHERE sit.invoice_id IN (${placeholders})
+      `).all(...invoiceIds) as any[];
 
       purchaseHistory.forEach(inv => {
         const invItems = items.filter(item => item.invoice_id === inv.invoice_id);

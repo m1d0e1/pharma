@@ -1,29 +1,15 @@
 import jwt from 'jsonwebtoken';
 import { z } from 'zod';
 
-// JWT configuration
 const JWT_SECRET = process.env.JWT_SECRET;
-const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET;
+const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET;
 
-// Validate secrets in production
-if (process.env.NODE_ENV === 'production') {
-  if (!JWT_SECRET) {
-    throw new Error('JWT_SECRET environment variable is required in production');
-  }
-  if (JWT_SECRET.length < 32) {
-    throw new Error('JWT_SECRET must be at least 32 characters in production');
-  }
-  if (!JWT_REFRESH_SECRET) {
-    throw new Error('JWT_REFRESH_SECRET environment variable is required in production');
-  }
-  if (JWT_REFRESH_SECRET.length < 32) {
-    throw new Error('JWT_REFRESH_SECRET must be at least 32 characters in production');
-  }
+if (!JWT_SECRET) {
+  throw new Error('JWT_SECRET environment variable is required');
 }
 
-// Use defaults for development only
-const ACCESS_SECRET = JWT_SECRET || 'dev-access-secret-change-in-production';
-const REFRESH_SECRET = JWT_REFRESH_SECRET || 'dev-refresh-secret-change-in-production';
+const ACCESS_SECRET = JWT_SECRET;
+const REFRESH_SECRET = JWT_REFRESH_SECRET || JWT_SECRET;
 
 const JWT_ACCESS_TOKEN_EXPIRY = '15m'; // 15 minutes
 const JWT_REFRESH_TOKEN_EXPIRY = '7d'; // 7 days

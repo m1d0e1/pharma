@@ -1,54 +1,54 @@
 // Universal Authentication Helper for local operations
 import { dbGet, dbExecute } from '@/lib/db/tauri';
 import { cache } from 'react';
+import { isTauri, isClient } from '@/lib/env';
 
 const SESSION_COOKIE = 'pharma_session';
 
 export async function hashPassword(password: string): Promise<string> {
-  const isTauri = typeof window !== 'undefined' && ((window as any).__TAURI__ !== undefined || (window as any).__TAURI_INTERNALS__ !== undefined);
-
   if (isTauri) {
     const { invoke } = await import('@tauri-apps/api/core');
     return await invoke<string>('bcrypt_hash', { password });
   }
 
-  // Server-side or Node environment
   const bcrypt = await import('bcryptjs');
   return bcrypt.hash(password, 12);
 }
 
 export async function verifyPassword(password: string, hash: string): Promise<boolean> {
-  const isTauri = typeof window !== 'undefined' && ((window as any).__TAURI__ !== undefined || (window as any).__TAURI_INTERNALS__ !== undefined);
-
   if (isTauri) {
     const { invoke } = await import('@tauri-apps/api/core');
     return await invoke<boolean>('bcrypt_compare', { password, hash });
   }
 
-  // Server-side or Node environment
   const bcrypt = await import('bcryptjs');
   return bcrypt.compare(password, hash);
 }
 
 export async function loginLocal(username: string, password?: string) {
-  const isTauri = typeof window !== 'undefined' && ((window as any).__TAURI__ !== undefined || (window as any).__TAURI_INTERNALS__ !== undefined);
-  const isClient = typeof window !== 'undefined';
 
   if (isTauri) {
-    // Tauri Mode: local DB queries + Rust bcrypt commands
     const cleanUsername = username.trim();
     const user = await dbGet('SELECT * FROM users WHERE username = ?', [cleanUsername]);
 
     if (!user) {
+      await dbExecute("INSERT INTO activity_log (user_id, action, details) VALUES (?, 'LOGIN_FAILED', ?)", ['unknown', `محاولة دخول فاشلة: المستخدم ${cleanUsername} غير موجود`]);
       return { success: false, error: 'المستخدم غير موجود' };
+    }
+
+    if (!user.is_active) {
+      await dbExecute("INSERT INTO activity_log (user_id, action, details) VALUES (?, 'LOGIN_FAILED', ?)", [user.id, `محاولة دخول فاشلة: الحساب غير نشط`]);
+      return { success: false, error: 'الحساب غير نشط' };
     }
 
     if (password) {
       if (user.password_hash) {
         const valid = await verifyPassword(password, user.password_hash);
-        if (!valid) return { success: false, error: 'كلمة المرور غير صحيحة' };
+        if (!valid) {
+          await dbExecute("INSERT INTO activity_log (user_id, action, details) VALUES (?, 'LOGIN_FAILED', ?)", [user.id, 'محاولة دخول فاشلة: كلمة مرور خاطئة']);
+          return { success: false, error: 'كلمة المرور غير صحيحة' };
+        }
       } else {
-        // First login setup
         const hashed = await hashPassword(password);
         await dbExecute('UPDATE users SET password_hash = ? WHERE id = ?', [hashed, user.id]);
       }
@@ -65,9 +65,8 @@ export async function loginLocal(username: string, password?: string) {
 
     localStorage.setItem('pharma_session_user', JSON.stringify(sessionUser));
     try {
-      await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [
+      await dbExecute("INSERT INTO activity_log (user_id, action, details) VALUES (?, 'LOGIN', ?)", [
         user.id,
-        'LOGIN',
         `تسجيل دخول للمستخدم: ${user.full_name || user.username}`
       ]);
     } catch (e) {
@@ -106,13 +105,22 @@ export async function loginLocal(username: string, password?: string) {
   const user = await dbGet('SELECT * FROM users WHERE username = ?', [cleanUsername]);
 
   if (!user) {
+    await dbExecute("INSERT INTO activity_log (user_id, action, details) VALUES (?, 'LOGIN_FAILED', ?)", ['unknown', `محاولة دخول فاشلة: المستخدم ${cleanUsername} غير موجود`]);
     return { success: false, error: 'المستخدم غير موجود' };
+  }
+
+  if (!user.is_active) {
+    await dbExecute("INSERT INTO activity_log (user_id, action, details) VALUES (?, 'LOGIN_FAILED', ?)", [user.id, 'محاولة دخول فاشلة: الحساب غير نشط']);
+    return { success: false, error: 'الحساب غير نشط' };
   }
 
   if (password) {
     if (user.password_hash) {
       const valid = await verifyPassword(password, user.password_hash);
-      if (!valid) return { success: false, error: 'كلمة المرور غير صحيحة' };
+      if (!valid) {
+        await dbExecute("INSERT INTO activity_log (user_id, action, details) VALUES (?, 'LOGIN_FAILED', ?)", [user.id, 'محاولة دخول فاشلة: كلمة مرور خاطئة']);
+        return { success: false, error: 'كلمة المرور غير صحيحة' };
+      }
     } else {
       const hashed = await hashPassword(password);
       await dbExecute('UPDATE users SET password_hash = ? WHERE id = ?', [hashed, user.id]);
@@ -179,9 +187,6 @@ export async function loginLocal(username: string, password?: string) {
 }
 
 export async function logoutLocal() {
-  const isTauri = typeof window !== 'undefined' && ((window as any).__TAURI__ !== undefined || (window as any).__TAURI_INTERNALS__ !== undefined);
-  const isClient = typeof window !== 'undefined';
-
   if (isTauri || isClient) {
     localStorage.removeItem('pharma_session_user');
     
@@ -203,11 +208,9 @@ export async function logoutLocal() {
 }
 
 export const getLocalSession = cache(async () => {
-  if (typeof globalThis !== 'undefined' && (globalThis as any).__MOCK_SESSION__) {
+  if (process.env.NODE_ENV === 'test' && (globalThis as any).__MOCK_SESSION__) {
     return (globalThis as any).__MOCK_SESSION__;
   }
-  const isTauri = typeof window !== 'undefined' && ((window as any).__TAURI__ !== undefined || (window as any).__TAURI_INTERNALS__ !== undefined);
-  const isClient = typeof window !== 'undefined';
 
   if (isTauri || isClient) {
     const stored = localStorage.getItem('pharma_session_user');
@@ -228,14 +231,9 @@ export const getLocalSession = cache(async () => {
         localStorage.setItem('pharma_session_user', JSON.stringify(updatedUser));
         return updatedUser;
       }
-      return parsed;
+      return null;
     } catch (e) {
-      console.warn('Failed to fetch fresh session from DB, falling back to localStorage:', e);
-      try {
-        return JSON.parse(stored);
-      } catch (_) {
-        return null;
-      }
+      return null;
     }
   }
 
@@ -323,7 +321,6 @@ export function hasUserPermissionSync(user: any, permissionKey: string): boolean
  * Client-safe session reader — NO React cache() wrapper.
  * Use this in 'use client' components (especially in Tauri builds where
  * React's cache() is memoized at static render time and always returns null).
- * Falls back to raw localStorage value if the DB query fails.
  */
 export async function getClientSession() {
   if (typeof window === 'undefined') return null;
@@ -333,7 +330,6 @@ export async function getClientSession() {
 
   try {
     const parsed = JSON.parse(stored);
-    // Try to refresh from DB (works in both Tauri and web client modes)
     try {
       const dbUser = await dbGet(
         'SELECT id, username, role, full_name, pharmacy_id, permissions FROM users WHERE id = ?',
@@ -352,9 +348,9 @@ export async function getClientSession() {
         return updatedUser;
       }
     } catch (_) {
-      // DB not ready yet — fall back to stored value
+      return null;
     }
-    return parsed;
+    return null;
   } catch (_) {
     return null;
   }

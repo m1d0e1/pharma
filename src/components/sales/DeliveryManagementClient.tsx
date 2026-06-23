@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { getPendingDeliveriesAction, closeDeliveryInvoiceAction } from '@/app/actions-client/delivery';
-import { toast } from 'sonner';
+import toast from 'react-hot-toast';
 import { format } from 'date-fns';
 
 export default function DeliveryManagementClient() {

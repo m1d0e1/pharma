@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyAccessToken, extractToken } from './jwt';
-import { setCurrentUser, getCurrentUser } from './permissions';
 import { getDatabase, get } from '../db/client';
 import { TokenPayload } from './jwt';
 import { Permission } from './roles';
@@ -36,18 +35,6 @@ export async function withAuth(
         { status: 401 }
       );
     }
-
-    // Convert TokenPayload to User for setCurrentUser
-    const user = {
-      id: payload.userId,
-      username: payload.username,
-      pharmacyId: payload.pharmacyId,
-      role: payload.role,
-      permissions: payload.permissions as Permission[],
-    };
-
-    // Set current user context
-    setCurrentUser(user);
 
     // Call handler with user context
     return await handler(request, payload);

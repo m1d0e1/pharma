@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react'
 import { Plus, Trash2, Briefcase, DollarSign, Languages } from 'lucide-react'
-import { toast } from 'sonner'
+import toast from 'react-hot-toast'
 import { 
   Card, 
   CardContent, 

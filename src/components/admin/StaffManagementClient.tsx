@@ -22,7 +22,7 @@ import {
   Box,
   BarChart3
 } from 'lucide-react';
-import { toast } from 'sonner';
+import toast from 'react-hot-toast';
 import { cn } from '@/lib/utils';
 
 interface PermissionSet {

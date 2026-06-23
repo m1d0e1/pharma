@@ -678,9 +678,9 @@ export async function deleteAdjustmentReasonAction(id: number) {
 // Generic Delete/Update for other tables
 export async function updateGenericBilingualAction(table: string, id: number, data: { name_ar: string, name_en?: string }) {
   try {
-    const allowedTables = ['indications', 'item_natures', 'usage_methods', 'scientific_groups', 'units', 'manufacturers'];
-    if (!allowedTables.includes(table)) return { success: false, error: 'Table not allowed' };
-    
+    const ALLOWED = new Set(['indications', 'item_natures', 'usage_methods', 'scientific_groups', 'units', 'manufacturers']);
+    if (!ALLOWED.has(table)) return { success: false, error: 'Table not allowed' };
+
     await db.prepare(`UPDATE ${table} SET name_ar = ?, name_en = ? WHERE id = ?`).run(data.name_ar, data.name_en || null, id);
     revalidatePath(`/stores/${table.replace('_', '-')}`);
     return { success: true };
@@ -691,8 +691,8 @@ export async function updateGenericBilingualAction(table: string, id: number, da
 
 export async function deleteGenericBilingualAction(table: string, id: number) {
   try {
-    const allowedTables = ['indications', 'item_natures', 'usage_methods', 'scientific_groups', 'units', 'manufacturers'];
-    if (!allowedTables.includes(table)) return { success: false, error: 'Table not allowed' };
+    const ALLOWED = new Set(['indications', 'item_natures', 'usage_methods', 'scientific_groups', 'units', 'manufacturers']);
+    if (!ALLOWED.has(table)) return { success: false, error: 'Table not allowed' };
 
     await db.prepare(`DELETE FROM ${table} WHERE id = ?`).run(id);
     revalidatePath(`/stores/${table.replace('_', '-')}`);

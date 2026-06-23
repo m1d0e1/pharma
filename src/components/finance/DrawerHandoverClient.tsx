@@ -10,7 +10,7 @@ import { cn } from '@/lib/utils';
 import { getHandoverDetailsAction, processHandoverAction } from '@/app/actions-client/handover';
 import { getBanksAction } from '@/app/actions-client/finance';
 import { getStaffAction } from '@/app/actions-client/users';
-import { toast } from 'sonner';
+import toast from 'react-hot-toast';
 
 interface DrawerHandoverProps {
   shiftId: string;

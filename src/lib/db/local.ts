@@ -101,6 +101,7 @@ export function initLocalDb() {
       active_ingredient TEXT,
       barcode TEXT,
       official_price REAL DEFAULT 0,
+      base_price REAL DEFAULT 0,
       category TEXT,
       manufacturer TEXT,
       is_medicine INTEGER DEFAULT 1,
@@ -189,19 +190,19 @@ export function initLocalDb() {
 
       -- Triggers to keep FTS index in sync
       CREATE TRIGGER IF NOT EXISTS master_drugs_ai AFTER INSERT ON master_drugs BEGIN
-        INSERT INTO master_drugs_fts(id, trade_name, trade_name_en, generic_name, active_ingredient)
+        INSERT INTO master_drugs_fts(rowid, trade_name, trade_name_en, generic_name, active_ingredient)
         VALUES (new.id, new.trade_name, new.trade_name_en, new.generic_name, new.active_ingredient);
       END;
 
       CREATE TRIGGER IF NOT EXISTS master_drugs_ad AFTER DELETE ON master_drugs BEGIN
-        INSERT INTO master_drugs_fts(master_drugs_fts, id, trade_name, trade_name_en, generic_name, active_ingredient)
+        INSERT INTO master_drugs_fts(master_drugs_fts, rowid, trade_name, trade_name_en, generic_name, active_ingredient)
         VALUES('delete', old.id, old.trade_name, old.trade_name_en, old.generic_name, old.active_ingredient);
       END;
 
       CREATE TRIGGER IF NOT EXISTS master_drugs_au AFTER UPDATE ON master_drugs BEGIN
-        INSERT INTO master_drugs_fts(master_drugs_fts, id, trade_name, trade_name_en, generic_name, active_ingredient)
+        INSERT INTO master_drugs_fts(master_drugs_fts, rowid, trade_name, trade_name_en, generic_name, active_ingredient)
         VALUES('delete', old.id, old.trade_name, old.trade_name_en, old.generic_name, old.active_ingredient);
-        INSERT INTO master_drugs_fts(id, trade_name, trade_name_en, generic_name, active_ingredient)
+        INSERT INTO master_drugs_fts(rowid, trade_name, trade_name_en, generic_name, active_ingredient)
         VALUES (new.id, new.trade_name, new.trade_name_en, new.generic_name, new.active_ingredient);
       END;
     `);
@@ -210,8 +211,8 @@ export function initLocalDb() {
     const ftsCount = db.prepare("SELECT count(*) as count FROM master_drugs_fts").get() as any;
     if (ftsCount.count === 0) {
       db.exec(`
-        INSERT INTO master_drugs_fts(id, trade_name, trade_name_en, generic_name, active_ingredient)
-        SELECT id, trade_name, trade_name_en, generic_name, active_ingredient FROM master_drugs;
+      INSERT INTO master_drugs_fts(rowid, trade_name, trade_name_en, generic_name, active_ingredient)
+      SELECT id, trade_name, trade_name_en, generic_name, active_ingredient FROM master_drugs;
       `);
     }
   } catch (e) {
@@ -435,7 +436,7 @@ export function initLocalDb() {
     CREATE TABLE IF NOT EXISTS shortages (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       drug_id INTEGER NOT NULL,
-      requested_qty INTEGER DEFAULT 1,
+      requested_quantity INTEGER DEFAULT 1,
       status TEXT DEFAULT 'pending',
       priority TEXT DEFAULT 'normal',
       notes TEXT,
@@ -544,15 +545,6 @@ export function initLocalDb() {
       cost_price REAL,
       discount_pct REAL DEFAULT 0,
       FOREIGN KEY (ob_id) REFERENCES opening_balances (id),
-      FOREIGN KEY (drug_id) REFERENCES master_drugs (id)
-    );
-
-    CREATE TABLE IF NOT EXISTS shortages (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      drug_id INTEGER NOT NULL,
-      requested_quantity INTEGER DEFAULT 1,
-      status TEXT DEFAULT 'pending',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (drug_id) REFERENCES master_drugs (id)
     );
 
@@ -858,6 +850,8 @@ export function initLocalDb() {
   }
   
   const addColumnSafely = (table: string, col: string, type: string) => {
+    if (!/^[a-z_]+$/.test(col)) throw new Error(`Invalid column name: ${col}`);
+    if (!/^[a-z_ ()\d']+$/i.test(type)) throw new Error(`Invalid column type: ${type}`);
     try {
       db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
     } catch (e: any) {
@@ -927,25 +921,6 @@ export function initLocalDb() {
     `);
   }
 
-  // Migration: Add new columns to patients
-  colInfo = db.prepare("PRAGMA table_info(patients)").all() as any[];
-  const requiredPatientCols2 = [
-    { name: 'name_en', type: 'TEXT' },
-    { name: 'birth_date', type: 'TEXT' },
-    { name: 'gender', type: 'TEXT' },
-    { name: 'insurance_number', type: 'TEXT' },
-    { name: 'credit_limit', type: 'REAL DEFAULT 0' },
-    { name: 'points_balance', type: 'REAL DEFAULT 0' },
-    { name: 'customer_type', type: 'TEXT DEFAULT \'individual\'' },
-    { name: 'wallet_balance', type: 'REAL DEFAULT 0' }
-  ];
-
-  for (const col of requiredPatientCols2) {
-    if (!colInfo.some(c => c.name === col.name)) {
-      addColumnSafely('patients', col.name, col.type);
-    }
-  }
-
   // Seed drug interactions if table is empty or has very few records (missing CSV data)
   const interactionCount = db.prepare('SELECT COUNT(*) as count FROM drug_interactions').get() as any;
   if (interactionCount.count < 1000) {
@@ -984,12 +959,12 @@ export function initLocalDb() {
   if (testUserExists.count === 0) {
     try {
       db.prepare(`
-        INSERT INTO users (id, username, password_hash, role, full_name, permissions)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO users (id, username, password_hash, role, full_name, is_active, permissions)
+        VALUES (?, ?, ?, ?, ?, 0, ?)
       `).run(
         'TEST_USER',
         'test_user',
-        null,
+        '$2b$12$LJ3m4ys3Lk0TSwHnbfOMiOXPm1Qlq5Gz0mN0MxH3K9X5G8q2rK1uO',
         'pharmacist',
         'مستخدم تجريبي',
         '{"can_sell": true, "can_manage_inventory": false}'
@@ -1161,7 +1136,8 @@ export function logActivity(userId: string, action: string, details: string) {
 }
 
 /**
- * Clear activity logs (Owner only)
+ * Clear activity logs
+ * IMPORTANT: Caller must verify owner role before calling this
  */
 export function clearAuditLogs() {
   try {

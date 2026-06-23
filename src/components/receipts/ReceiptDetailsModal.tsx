@@ -2,7 +2,6 @@
 
 import React, { useState, useEffect } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
-import DOMPurify from 'dompurify'
 import { getConfigAction } from '@/app/actions-client/config'
 import toast from 'react-hot-toast'
 import { generateReceiptHtml, generateWhatsAppMessage, printHtmlContent } from '@/lib/utils/printing'
