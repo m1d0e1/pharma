@@ -10,8 +10,8 @@ import {
   ShoppingCart,
   DollarSign,
   Calendar,
-  ArrowUpRight,
-  ArrowDownRight,
+  ArrowUpLeft,
+  ArrowDownLeft,
 } from 'lucide-react';
 import { getClientSession } from '@/lib/auth/local';
 import { dbSelect, dbGet } from '@/lib/db/tauri';
@@ -227,11 +227,29 @@ export default function DashboardPage() {
 
   if (loading) {
     return (
-      <div className="flex justify-center items-center py-24" dir="rtl">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto"></div>
-          <p className="mt-4 text-slate-500 font-medium">جاري تحميل لوحة التحكم...</p>
+      <div className="space-y-12 md:space-y-14 animate-in slide-in-up" dir="rtl">
+        <div className="page-header">
+          <div className="h-9 w-64 bg-slate-200 dark:bg-slate-700 rounded-lg animate-pulse" />
+          <div className="h-5 w-96 mt-2 bg-slate-100 dark:bg-slate-800 rounded animate-pulse" />
         </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-7">
+          {[1,2,3,4].map(i => (
+            <div key={i} className="bg-slate-100 dark:bg-slate-800 p-6 rounded-3xl animate-pulse">
+              <div className="flex justify-between mb-4">
+                <div className="h-4 w-24 bg-slate-200 dark:bg-slate-700 rounded" />
+                <div className="h-12 w-12 bg-slate-200 dark:bg-slate-700 rounded-2xl" />
+              </div>
+              <div className="h-8 w-32 bg-slate-200 dark:bg-slate-700 rounded mt-2" />
+              <div className="h-4 w-20 bg-slate-200 dark:bg-slate-700 rounded mt-6" />
+            </div>
+          ))}
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-7">
+          {[1,2].map(i => (
+            <div key={i} className="bg-slate-100 dark:bg-slate-800 p-6 rounded-3xl animate-pulse h-48" />
+          ))}
+        </div>
+        <div className="bg-slate-100 dark:bg-slate-800 p-6 rounded-3xl animate-pulse h-24" />
       </div>
     );
   }
@@ -257,7 +275,7 @@ export default function DashboardPage() {
               }} 
               className="flex items-center gap-2 bg-indigo-600 text-white hover:bg-indigo-700 px-4 py-2.5 rounded-xl font-bold shadow-md transition-all active:scale-95"
             >
-              <ArrowUpRight className="w-4 h-4" />
+               <ArrowUpLeft className="w-4 h-4" />
               تحديث البرنامج
             </button>
           )}
@@ -308,16 +326,16 @@ export default function DashboardPage() {
                <div className={`absolute -right-4 -top-4 w-24 h-24 rounded-full blur-2xl opacity-50 ${bgIconColor}`} />
                <div className="relative flex items-start justify-between z-10">
                 <div className="flex-1 col-span-3">
-                  <div className="flex items-center justify-between mb-4">
-                    <p className="text-sm font-bold text-slate-600 dark:text-slate-300">{stat.title}</p>
+                  <div className="flex items-center justify-between mb-1">
                     <div className={`p-3 rounded-2xl ${bgIconColor} group-hover:scale-110 group-hover:rotate-3 transition-transform duration-300 shadow-sm`}>
                       <Icon className={`w-5 h-5 ${textIconColor}`} />
                     </div>
                   </div>
-                  <p className="text-3xl font-black tracking-tight text-slate-900 dark:text-white drop-shadow-sm">{stat.value}</p>
-                  <div className="flex items-center gap-3 mt-6">
-                    <div className={`flex items-center gap-1.5 px-2 py-1 rounded-lg \${stat.trend === 'up' ? 'text-emerald-700 bg-emerald-100 dark:bg-emerald-500/20 dark:text-emerald-400' : 'text-rose-700 bg-rose-100 dark:bg-rose-500/20 dark:text-rose-400'}`}>
-                      {stat.trend === 'up' ? <ArrowUpRight className="w-4 h-4" /> : <ArrowDownRight className="w-4 h-4" />}
+                  <p className="text-3xl font-black tracking-tight text-slate-900 dark:text-white drop-shadow-sm mt-1">{stat.value}</p>
+                  <p className="text-sm font-bold text-slate-500 dark:text-slate-400 mt-1">{stat.title}</p>
+                  <div className="flex items-center gap-3 mt-3">
+                    <div className={`flex items-center gap-1.5 px-2 py-1 rounded-lg ${stat.trend === 'up' ? 'text-emerald-700 bg-emerald-100 dark:bg-emerald-500/20 dark:text-emerald-400' : 'text-rose-700 bg-rose-100 dark:bg-rose-500/20 dark:text-rose-400'}`}>
+                      {stat.trend === 'up' ? <ArrowUpLeft className="w-4 h-4" /> : <ArrowDownLeft className="w-4 h-4" />}
                       <span className="text-xs font-bold">{stat.change >= 0 ? '+' : ''}{stat.change.toFixed(1)}%</span>
                     </div>
                     <span className="text-xs font-medium text-slate-400">من الأمس</span>
@@ -356,7 +374,7 @@ export default function DashboardPage() {
 
       {/* Quick Actions */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <Link href="/pos" className="flex items-center gap-4 p-5 bg-white dark:bg-slate-800 rounded-[2rem] shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all border border-slate-100 dark:border-slate-800 group">
+        <Link href="/pos" className="flex items-center gap-4 p-5 bg-white dark:bg-slate-800 rounded-[2rem] shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all border border-blue-200/50 dark:border-blue-800/30 hover:border-blue-300/80 dark:hover:border-blue-600/50 group">
           <div className="w-12 h-12 bg-blue-100 dark:bg-blue-900/30 rounded-2xl flex items-center justify-center text-blue-600 group-hover:scale-110 transition-transform">
             <ShoppingCart className="w-6 h-6" />
           </div>
@@ -366,7 +384,7 @@ export default function DashboardPage() {
           </div>
         </Link>
 
-        <Link href="/inventory" className="flex items-center gap-4 p-5 bg-white dark:bg-slate-800 rounded-[2rem] shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all border border-slate-100 dark:border-slate-800 group">
+        <Link href="/inventory" className="flex items-center gap-4 p-5 bg-white dark:bg-slate-800 rounded-[2rem] shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all border border-teal-200/50 dark:border-teal-800/30 hover:border-teal-300/80 dark:hover:border-teal-600/50 group">
           <div className="w-12 h-12 bg-emerald-100 dark:bg-emerald-900/30 rounded-2xl flex items-center justify-center text-emerald-600 group-hover:scale-110 transition-transform">
             <Package className="w-6 h-6" />
           </div>
@@ -376,7 +394,7 @@ export default function DashboardPage() {
           </div>
         </Link>
 
-        <Link href="/patients" className="flex items-center gap-4 p-5 bg-white dark:bg-slate-800 rounded-[2rem] shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all border border-slate-100 dark:border-slate-800 group">
+        <Link href="/patients" className="flex items-center gap-4 p-5 bg-white dark:bg-slate-800 rounded-[2rem] shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all border border-purple-200/50 dark:border-purple-800/30 hover:border-purple-300/80 dark:hover:border-purple-600/50 group">
           <div className="w-12 h-12 bg-purple-100 dark:bg-purple-900/30 rounded-2xl flex items-center justify-center text-purple-600 group-hover:scale-110 transition-transform">
             <Users className="w-6 h-6" />
           </div>
@@ -386,9 +404,9 @@ export default function DashboardPage() {
           </div>
         </Link>
 
-        <Link href="/reports" className="flex items-center gap-4 p-5 bg-white dark:bg-slate-800 rounded-[2rem] shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all border border-slate-100 dark:border-slate-800 group">
+        <Link href="/reports" className="flex items-center gap-4 p-5 bg-white dark:bg-slate-800 rounded-[2rem] shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all border border-amber-200/50 dark:border-amber-800/30 hover:border-amber-300/80 dark:hover:border-amber-600/50 group">
           <div className="w-12 h-12 bg-orange-100 dark:bg-orange-900/30 rounded-2xl flex items-center justify-center text-orange-600 group-hover:scale-110 transition-transform">
-            <ArrowUpRight className="w-6 h-6" />
+            <ArrowUpLeft className="w-6 h-6" />
           </div>
           <div>
             <p className="font-black text-slate-900 dark:text-white">التقارير</p>

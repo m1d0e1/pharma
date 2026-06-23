@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { LogOut, User, Clock, DollarSign, Menu, X, ShieldCheck } from 'lucide-react';
+import { LogOut, User, Clock, DollarSign, Menu, X, ShieldCheck, ArrowUpLeft, ArrowDownLeft } from 'lucide-react';
 import LogoutModal from '../auth/LogoutModal';
 import NetworkStatus from '../status/NetworkStatus';
 import SyncStatus from '../status/SyncStatus';
@@ -60,7 +60,8 @@ export default function DashboardHeader() {
           <div className="flex items-center gap-4">
             <button
               onClick={() => setShowMobileMenu(!showMobileMenu)}
-              className="lg:hidden p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg"
+              className="lg:hidden p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-slate-800"
+              aria-label={showMobileMenu ? 'إغلاق القائمة' : 'فتح القائمة'}
             >
               {showMobileMenu ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
             </button>
@@ -100,7 +101,7 @@ export default function DashboardHeader() {
                <SyncStatus />
             </div>
 
-            <div className="flex items-center gap-3 pl-3 border-l border-slate-200 dark:border-slate-700">
+             <div className="flex items-center gap-3 pr-3 border-r border-slate-200 dark:border-slate-700">
               <div className="hidden sm:block text-right">
                 <p className="text-sm font-black text-slate-900 dark:text-white">
                   {user?.full_name || user?.username}
@@ -118,8 +119,8 @@ export default function DashboardHeader() {
 
               <button
                 onClick={() => setShowLogoutModal(true)}
-                className="p-2.5 bg-red-50 dark:bg-red-900/10 hover:bg-red-100 dark:hover:bg-red-900/20 rounded-xl transition-all group"
-                title="تسجيل الخروج"
+                className="p-2.5 bg-red-50 dark:bg-red-900/10 hover:bg-red-100 dark:hover:bg-red-900/20 rounded-xl transition-all group focus:ring-2 focus:ring-red-500 focus:ring-offset-2 focus:ring-offset-white dark:focus:ring-offset-slate-900"
+                aria-label="تسجيل الخروج"
               >
                 <LogOut className="w-5 h-5 text-red-600 group-hover:scale-110 transition-transform" />
               </button>

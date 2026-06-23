@@ -1,8 +1,9 @@
 'use client'
 
-import React from 'react'
+import React, { useEffect, useState } from 'react'
 import { ShieldAlert, ArrowRight, Home, Lock } from 'lucide-react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { cn } from '@/lib/utils'
 
 interface Props {
@@ -18,6 +19,16 @@ export default function AccessDenied({
   actionText = "العودة للرئيسية",
   actionHref = "/"
 }: Props) {
+  const router = useRouter()
+  const [countdown, setCountdown] = useState(3)
+
+  useEffect(() => {
+    if (actionHref) {
+      const timer = setInterval(() => setCountdown(c => c - 1), 1000)
+      const redirect = setTimeout(() => router.push(actionHref), 3000)
+      return () => { clearInterval(timer); clearTimeout(redirect) }
+    }
+  }, [actionHref, router])
   return (
     <div className="min-h-[60vh] flex items-center justify-center p-6" dir="rtl">
       <div className="max-w-2xl w-full bg-white dark:bg-slate-900 rounded-[45px] p-12 shadow-hard border border-slate-100 dark:border-slate-800 relative overflow-hidden text-center">
@@ -57,6 +68,9 @@ export default function AccessDenied({
               الرجوع للخلف
             </button>
           </div>
+          <p className="text-xs text-slate-400 mt-2">
+            سيتم توجيهك إلى الرئيسية خلال {countdown} ثوان...
+          </p>
           
           <div className="pt-12 border-t border-slate-50 dark:border-slate-800">
             <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center justify-center gap-2">

@@ -69,17 +69,21 @@ export default function ExpiryWidget() {
         ) : (
           items.map(item => {
             const daysLeft = Math.ceil(item.days_left);
+            const urgencyClass = daysLeft <= 0 ? 'bg-red-100 dark:bg-red-900/30 border-red-200 dark:border-red-800 text-red-600 dark:text-red-400'
+              : daysLeft <= 7 ? 'bg-red-50 dark:bg-red-900/20 border-red-100 dark:border-red-800/50 text-red-600 dark:text-red-400'
+              : daysLeft <= 14 ? 'bg-amber-50 dark:bg-amber-900/20 border-amber-100 dark:border-amber-800/50 text-amber-700 dark:text-amber-400'
+              : 'bg-yellow-50 dark:bg-yellow-900/10 border-yellow-100 dark:border-yellow-800/30 text-yellow-700 dark:text-yellow-400';
             return (
-              <div key={item.id} className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border border-slate-100 dark:border-slate-700">
+              <div key={item.id} className={`flex items-center justify-between p-4 rounded-2xl border ${urgencyClass}`}>
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 bg-white dark:bg-slate-800 rounded-xl flex items-center justify-center shadow-sm">💊</div>
                   <div>
                     <p className="font-bold text-slate-900 dark:text-white text-sm">{item.drug_name}</p>
-                    <p className="text-[10px] text-slate-400">{item.expiry_date}</p>
+                    <p className="text-[10px] text-slate-500">{item.expiry_date}</p>
                   </div>
                 </div>
-                <div className={`px-3 py-1 rounded-lg text-xs font-black ${daysLeft <= 7 ? 'bg-red-100 text-red-600' : 'bg-amber-100 text-amber-600'}`}>
-                {daysLeft <= 0 ? '!منتهية' : `${Math.abs(daysLeft)} يوم متبقي`}
+                <div className={`px-3 py-1 rounded-lg text-xs font-black ${daysLeft <= 0 ? 'bg-red-100 text-red-700' : daysLeft <= 7 ? 'bg-red-100 text-red-600' : daysLeft <= 14 ? 'bg-amber-100 text-amber-700' : 'bg-yellow-100 text-yellow-700'}`}>
+                {daysLeft <= 0 ? '!منتهية' : `${Math.abs(daysLeft)} يوم`}
                 </div>
               </div>
             );

@@ -1,3 +1,12 @@
+// Legacy Permission type — used by service.ts and users/service.ts
+export type Permission = string;
+
+export interface RolePermissions {
+  role: string;
+  permissions: string[];
+  description: string;
+}
+
 export type PagePermission = keyof typeof PAGE_PERMISSIONS;
 
 export const PAGE_PERMISSIONS = {
@@ -110,10 +119,12 @@ export const ACTION_PERMISSIONS: Record<string, string> = {
 // Maps roles to page-level view permissions
 const ALL_PAGE_PERMS = Object.keys(PAGE_PERMISSIONS);
 
-export const ROLE_PERMISSIONS: Record<string, string[]> = {
-  owner: [...ALL_PAGE_PERMS],
-  admin: [...ALL_PAGE_PERMS],
-  manager: [
+const buildRole = (role: string, perms: string[], desc: string): RolePermissions => ({ role, permissions: perms, description: desc });
+
+export const ROLE_PERMISSIONS: Record<string, RolePermissions> = {
+  owner: buildRole('owner', [...ALL_PAGE_PERMS], 'Full access to all features'),
+  admin: buildRole('admin', [...ALL_PAGE_PERMS], 'Full access to all features'),
+  manager: buildRole('manager', [
     'can_view_stores', 'can_view_patients', 'can_view_delivery',
     'can_view_cogs', 'can_view_receipts', 'can_view_returns',
     'can_view_purchases', 'can_view_shifts', 'can_view_restock',
@@ -127,17 +138,17 @@ export const ROLE_PERMISSIONS: Record<string, string[]> = {
     'can_view_categories', 'can_view_usage', 'can_view_units',
     'can_view_indications', 'can_view_manufacturers',
     'can_view_interactions',
-  ],
-  pharmacist: [
+  ], 'Can manage inventory, staff, and view reports'),
+  pharmacist: buildRole('pharmacist', [
     'can_view_patients', 'can_view_receipts', 'can_view_returns',
     'can_view_shifts', 'can_view_restock', 'can_view_delivery',
     'can_view_low_stock', 'can_view_shortages',
     'can_view_inventory', 'can_view_sales',
     'can_view_interactions', 'can_view_staff_performance',
-  ],
-  cashier: [
+  ], 'Can process sales and manage patients'),
+  cashier: buildRole('cashier', [
     'can_view_receipts', 'can_view_returns',
     'can_view_shifts', 'can_view_delivery',
     'can_view_sales',
-  ],
+  ], 'Limited to sales operations'),
 };

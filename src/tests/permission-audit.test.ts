@@ -59,8 +59,8 @@ describe('Permission-Route Mapping Audit', () => {
 
   it('all defined permissions exist in ROLE_PERMISSIONS for every role', () => {
     const allDefined = new Set<string>();
-    for (const perms of Object.values(ROLE_PERMISSIONS)) {
-      perms.forEach(p => allDefined.add(p));
+    for (const roleConfig of Object.values(ROLE_PERMISSIONS)) {
+      roleConfig.permissions.forEach(p => allDefined.add(p));
     }
     const allPermitted = new Set(Object.keys(PAGE_PERMISSIONS));
     // Every PAGE_PERMISSION should be assigned to at least one role
@@ -73,7 +73,7 @@ describe('Permission-Route Mapping Audit', () => {
   it('owner role includes all page permissions', () => {
     const pagePerms = Object.keys(PAGE_PERMISSIONS);
     for (const p of pagePerms) {
-      expect(ROLE_PERMISSIONS.owner).toContain(p);
+      expect(ROLE_PERMISSIONS.owner.permissions).toContain(p);
     }
   });
 

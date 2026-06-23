@@ -26,71 +26,77 @@ import {
   Landmark,
   CreditCard,
   Monitor,
+  TrendingUp,
+  ScrollText,
+  FileText,
+  UserCheck,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const navItems = [
-  // المبيعات (Sales)
+  // Sales
   { category: 'المبيعات', href: '/', label: 'لوحة التحكم', icon: Home, roles: ['owner', 'admin', 'pharmacist'] },
-  { category: 'المبيعات', href: '/receipts', label: 'الفواتير', icon: Receipt, roles: ['owner', 'admin', 'pharmacist'], permission: 'view_all_sales' },
+  { category: 'المبيعات', href: '/receipts', label: 'الفواتير', icon: FileText, roles: ['owner', 'admin', 'pharmacist'], permission: 'can_view_receipts' },
   { category: 'المبيعات', href: '/sales', label: 'المبيعات والتحصيل', icon: ShoppingCart, roles: ['owner', 'admin', 'pharmacist'] },
-  { category: 'المبيعات', href: '/sales/delivery', label: 'توصيل منزلي', icon: Bike, roles: ['owner', 'admin', 'pharmacist'], permission: 'process_sales' },
-  { category: 'المبيعات', href: '/sales/cogs', label: 'تعديل التكلفة', icon: Edit3, roles: ['owner', 'admin'], permission: 'manage_settings' },
-  { category: 'المبيعات', href: '/sales/settlement', label: 'تسوية المبيعات', icon: ArrowLeftRight, roles: ['owner', 'admin', 'pharmacist'], permission: 'manage_inventory' },
-  { category: 'المبيعات', href: '/returns', label: 'مرتجعات العملاء', icon: RotateCcw, roles: ['owner', 'admin', 'pharmacist'], permission: 'process_sales' },
+  { category: 'المبيعات', href: '/sales/delivery', label: 'توصيل منزلي', icon: Bike, roles: ['owner', 'admin', 'pharmacist'], permission: 'can_view_delivery' },
+  { category: 'المبيعات', href: '/sales/cogs', label: 'تعديل التكلفة', icon: Edit3, roles: ['owner', 'admin'], permission: 'can_view_cogs' },
+  { category: 'المبيعات', href: '/sales/settlement', label: 'تسوية المبيعات', icon: ArrowLeftRight, roles: ['owner', 'admin', 'pharmacist'], permission: 'can_view_settlement' },
+  { category: 'المبيعات', href: '/returns', label: 'مرتجعات العملاء', icon: RotateCcw, roles: ['owner', 'admin', 'pharmacist'], permission: 'can_view_returns' },
 
-  // العمليات المخزنية (Inventory Ops)
+  // Inventory Ops
   { category: 'العمليات المخزنية', href: '/inventory', label: 'المخزون', icon: Package, roles: ['owner', 'admin', 'pharmacist'] },
-  { category: 'العمليات المخزنية', href: '/stores/shortages', label: 'كشكول النواقص', icon: AlertTriangle, roles: ['owner', 'admin', 'pharmacist'], permission: 'manage_inventory' },
+  { category: 'العمليات المخزنية', href: '/stores/shortages', label: 'كشكول النواقص', icon: AlertTriangle, roles: ['owner', 'admin', 'pharmacist'], permission: 'can_view_shortages' },
   { category: 'العمليات المخزنية', href: '/inventory/item-movements', label: 'حركات الأصناف', icon: Activity, roles: ['owner', 'admin', 'pharmacist'], permission: 'manage_inventory' },
-  { category: 'العمليات المخزنية', href: '/restock', label: 'إعادة التموين', icon: Package, roles: ['owner', 'admin'], permission: 'manage_inventory' },
-  { category: 'العمليات المخزنية', href: '/inventory/opening-balances', label: 'الأرصدة الإفتتاحية', icon: Database, roles: ['owner', 'admin'], permission: 'manage_inventory' },
-  { category: 'العمليات المخزنية', href: '/inventory/settlement', label: 'تسوية المخزون', icon: ArrowLeftRight, roles: ['owner', 'admin', 'pharmacist'], permission: 'manage_inventory' },
+  { category: 'العمليات المخزنية', href: '/restock', label: 'إعادة التموين', icon: Package, roles: ['owner', 'admin'], permission: 'can_view_restock' },
+  { category: 'العمليات المخزنية', href: '/inventory/opening-balances', label: 'الأرصدة الإفتتاحية', icon: Database, roles: ['owner', 'admin'], permission: 'can_view_opening_balances' },
+  { category: 'العمليات المخزنية', href: '/inventory/settlement', label: 'تسوية المخزون', icon: ArrowLeftRight, roles: ['owner', 'admin', 'pharmacist'], permission: 'can_view_settlement' },
 
-  // المشتريات (Purchases)
-  { category: 'المشتريات', href: '/purchases', label: 'المشتريات', icon: ShoppingCart, roles: ['owner', 'admin'], permission: 'manage_inventory' },
-  
-  // البيانات الأساسية (Master Data)
-  { category: 'البيانات الأساسية', href: '/stores', label: 'إدارة المخازن', icon: Box, roles: ['owner', 'admin'], permission: 'manage_inventory' },
+  // Purchases
+  { category: 'المشتريات', href: '/purchases', label: 'المشتريات', icon: ShoppingCart, roles: ['owner', 'admin'], permission: 'can_view_purchases' },
 
-  // المالية (Finance)
-  { category: 'المالية', href: '/accounts', label: 'الحسابات والمالية', icon: Wallet, roles: ['owner', 'admin'], permission: 'view_dashboard' },
-  { category: 'المالية', href: '/accounts/cash-transactions', label: 'حركة النقدية', icon: ArrowLeftRight, roles: ['owner', 'admin', 'pharmacist'], permission: 'process_sales' },
-  { category: 'المالية', href: '/finance/handover', label: 'تسليم الدرج', icon: ArrowLeftRight, roles: ['owner', 'admin', 'pharmacist'], permission: 'manage_shifts' },
-  { category: 'المالية', href: '/finance/banks', label: 'البنوك', icon: Landmark, roles: ['owner', 'admin'], permission: 'manage_settings' },
-  { category: 'المالية', href: '/finance/cards', label: 'البطاقات', icon: CreditCard, roles: ['owner', 'admin'], permission: 'process_sales' },
-  { category: 'المالية', href: '/finance/pos-management', label: 'نقاط البيع', icon: Monitor, roles: ['owner', 'admin'], permission: 'process_sales' },
-  { category: 'المالية', href: '/finance/accounts', label: 'شجرة الحسابات', icon: Database, roles: ['owner', 'admin'], permission: 'manage_settings' },
-  { category: 'المالية', href: '/accounts/settings/trial-balance', label: 'ميزان المراجعة', icon: Settings, roles: ['owner', 'admin'], permission: 'manage_settings' },
+  // Master Data
+  { category: 'البيانات الأساسية', href: '/stores/items', label: 'إدارة المخازن', icon: Box, roles: ['owner', 'admin'], permission: 'can_manage_inventory' },
 
-  // التقارير (Reports)
-  { category: 'التقارير', href: '/reports', label: 'لوحة التقارير', icon: BarChart3, roles: ['owner', 'admin'], permission: 'view_reports' },
-  { category: 'التقارير', href: '/reports/sales', label: 'تقارير المبيعات', icon: BarChart3, roles: ['owner', 'admin'], permission: 'view_reports' },
-  { category: 'التقارير', href: '/reports/purchases', label: 'تقارير المشتريات', icon: BarChart3, roles: ['owner', 'admin'], permission: 'view_reports' },
-  { category: 'التقارير', href: '/reports/trial-balance', label: 'ميزان المراجعة', icon: BarChart3, roles: ['owner', 'admin'], permission: 'view_reports' },
-  { category: 'التقارير', href: '/expenses', label: 'المصروفات', icon: Receipt, roles: ['owner', 'admin'], permission: 'process_sales' },
-  { category: 'التقارير', href: '/shifts', label: 'الشفتات النقدية', icon: Calendar, roles: ['owner', 'admin', 'pharmacist'], permission: 'manage_shifts' },
+  // Finance
+  { category: 'المالية', href: '/accounts', label: 'الحسابات والمالية', icon: Wallet, roles: ['owner', 'admin'], permission: 'rep_can_view_financial' },
+  { category: 'المالية', href: '/accounts/cash-transactions', label: 'حركة النقدية', icon: ArrowLeftRight, roles: ['owner', 'admin', 'pharmacist'], permission: 'can_view_cash_transactions' },
+  { category: 'المالية', href: '/finance/handover', label: 'تسليم الدرج', icon: ArrowLeftRight, roles: ['owner', 'admin', 'pharmacist'], permission: 'acc_can_view_handover' },
+  { category: 'المالية', href: '/finance/banks', label: 'البنوك', icon: Landmark, roles: ['owner', 'admin'], permission: 'can_view_banks' },
+  { category: 'المالية', href: '/finance/cards', label: 'البطاقات', icon: CreditCard, roles: ['owner', 'admin'], permission: 'can_view_cards' },
+  { category: 'المالية', href: '/finance/pos-management', label: 'نقاط البيع', icon: Monitor, roles: ['owner', 'admin'], permission: 'can_view_pos_management' },
+  { category: 'المالية', href: '/finance/accounts', label: 'شجرة الحسابات', icon: Database, roles: ['owner', 'admin'], permission: 'can_view_accounts_tree' },
+  { category: 'المالية', href: '/accounts/settings/trial-balance', label: 'ميزان المراجعة', icon: Settings, roles: ['owner', 'admin'], permission: 'can_view_trial_balance' },
 
-  // المرضى والطبية (Patients)
-  { category: 'المرضى والطبية', href: '/patients', label: 'المرضى', icon: Users, roles: ['owner', 'admin', 'pharmacist'], permission: 'manage_patients' },
+  // Reports
+  { category: 'التقارير', href: '/reports', label: 'لوحة التقارير', icon: BarChart3, roles: ['owner', 'admin'], permission: 'can_view_reports_dashboard' },
+  { category: 'التقارير', href: '/reports/sales', label: 'تقارير المبيعات', icon: TrendingUp, roles: ['owner', 'admin'], permission: 'rep_can_view_sales' },
+  { category: 'التقارير', href: '/reports/purchases', label: 'تقارير المشتريات', icon: ScrollText, roles: ['owner', 'admin'], permission: 'can_view_purchase_reports' },
+  { category: 'التقارير', href: '/reports/trial-balance', label: 'ميزان المراجعة', icon: Database, roles: ['owner', 'admin'], permission: 'can_view_trial_balance_report' },
+  { category: 'التقارير', href: '/expenses', label: 'المصروفات', icon: Receipt, roles: ['owner', 'admin'], permission: 'can_view_expenses' },
+  { category: 'التقارير', href: '/shifts', label: 'الشفتات النقدية', icon: Calendar, roles: ['owner', 'admin', 'pharmacist'], permission: 'can_view_shifts' },
 
-  // الإدارة (Administration)
-  { category: 'الإدارة', href: '/staff', label: 'أداء الموظفين', icon: BarChart3, roles: ['owner', 'admin'], permission: 'manage_staff' },
-  { category: 'الإدارة', href: '/staff/manage', label: 'إدارة الموظفين', icon: UserCog, roles: ['owner', 'admin'] },
-  { category: 'الإدارة', href: '/staff/roles', label: 'الوظائف والرواتب', icon: Briefcase, roles: ['owner', 'admin'] },
-  { category: 'الإدارة', href: '/audit', label: 'سجل المراقبة', icon: Shield, roles: ['owner'], permission: 'view_audit_logs' },
-  { category: 'الإدارة', href: '/settings', label: 'الإعدادات', icon: Settings, roles: ['owner', 'admin'], permission: 'manage_settings' },
+  // Patients
+  { category: 'المرضى والطبية', href: '/patients', label: 'المرضى', icon: Users, roles: ['owner', 'admin', 'pharmacist'], permission: 'can_view_patients' },
+
+  // Administration
+  { category: 'الإدارة', href: '/staff', label: 'أداء الموظفين', icon: UserCheck, roles: ['owner', 'admin'], permission: 'can_view_staff_performance' },
+  { category: 'الإدارة', href: '/staff/manage', label: 'إدارة الموظفين', icon: UserCog, roles: ['owner', 'admin'], permission: 'can_view_staff_manage' },
+  { category: 'الإدارة', href: '/staff/roles', label: 'الوظائف والرواتب', icon: Briefcase, roles: ['owner', 'admin'], permission: 'can_view_staff_roles' },
+  { category: 'الإدارة', href: '/audit', label: 'سجل المراقبة', icon: Shield, roles: ['owner'], permission: 'can_view_audit' },
+  { category: 'الإدارة', href: '/settings', label: 'الإعدادات', icon: Settings, roles: ['owner', 'admin'], permission: 'can_view_settings' },
 ]
 
 const highPriorityRoutes = new Set(['/', '/inventory', '/sales', '/accounts', '/pos']);
 
 interface Props {
   userRole: string
+  userPermissions?: any
 }
 
 import { useState, useEffect } from 'react'
+import { hasUserPermissionSync } from '@/lib/auth/local'
 
-export default function SidebarNav({ userRole }: Props) {
+export default function SidebarNav({ userRole, userPermissions }: Props) {
   const pathname = usePathname()
   const router = useRouter()
   const [mounted, setMounted] = useState(false)
@@ -110,24 +116,19 @@ export default function SidebarNav({ userRole }: Props) {
         console.error('Failed to dynamic check session in sidebar:', e)
       }
     }
-    refreshPermissions()
-  }, [pathname])
+    if (!userPermissions) refreshPermissions()
+  }, [pathname, userPermissions])
+
+  const userObj = { role: userRole, permissions: userPermissions ? JSON.stringify(userPermissions) : '{}' }
 
   const filteredItems = navItems.filter(item => {
-    // Role check first
     if (!item.roles.includes(userRole)) return false;
-
-    // If it requires a specific permission, and we are mounted with permissions loaded, check it
     if (item.permission) {
-      if (userRole === 'owner' || userRole === 'admin') return true
-      if (Array.isArray(permissions)) {
-        return permissions.includes(item.permission)
-      }
-      return permissions ? !!permissions[item.permission] : false
+      if (userRole === 'owner' || userRole === 'admin') return true;
+      return hasUserPermissionSync(userObj, item.permission);
     }
-
     return true;
-  })
+  });
 
   return (
     <>
@@ -155,8 +156,9 @@ export default function SidebarNav({ userRole }: Props) {
                   <Link
                     key={item.href}
                     href={item.href}
-                    prefetch={isHighPriority ? true : false}
+                    prefetch={isHighPriority ? true : undefined}
                     onMouseEnter={!isHighPriority ? () => router.prefetch(item.href) : undefined}
+                    aria-label={item.label}
                     className={cn(
                       "flex items-center gap-4 px-5 py-4 rounded-2xl transition-all duration-300 group border border-transparent",
                       isActive 
@@ -211,8 +213,9 @@ export default function SidebarNav({ userRole }: Props) {
                 <Link
                   key={item.href}
                   href={item.href}
-                  prefetch={isHighPriority ? true : false}
+                  prefetch={isHighPriority ? true : undefined}
                   onMouseEnter={!isHighPriority ? () => router.prefetch(item.href) : undefined}
+                  aria-label={item.label}
                   className={cn(
                     "flex flex-col items-center p-3 rounded-2xl transition-all duration-300 active:scale-95 group",
                     isActive ? "text-primary-600 dark:text-primary-400" : "text-slate-600 dark:text-slate-400"
@@ -231,6 +234,18 @@ export default function SidebarNav({ userRole }: Props) {
               )
             })
           })()}
+          {filteredItems.length > 5 && (
+            <button
+              onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+              className="flex flex-col items-center p-3 rounded-2xl text-slate-600 dark:text-slate-400"
+              aria-label="المزيد من الخيارات"
+            >
+              <div className="w-10 h-10 rounded-xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center">
+                <span className="text-xs font-black">+{filteredItems.length - 5}</span>
+              </div>
+              <span className="text-[10px] mt-1.5 font-bold">المزيد</span>
+            </button>
+          )}
         </div>
       </div>
     </>
