@@ -15,7 +15,7 @@
 
 process.env.JWT_SECRET = 'test-jwt-secret-at-least-32-chars-long-for-hs256';
 process.env.JWT_REFRESH_SECRET = 'test-refresh-secret-at-least-32-chars-long-hs256';
-process.env.NODE_ENV = 'test';
+(process.env as Record<string, string>).NODE_ENV = 'test';
 
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
@@ -242,11 +242,15 @@ describe('1–13: Login Scenarios — Web (JWT)', () => {
   beforeEach(() => {
     jest.resetModules();
     storeUsers = [
-      { id: ADMIN_ID, username: 'admin', password_hash: ADMIN_HASH, role: 'owner',
+      {
+        id: ADMIN_ID, username: 'admin', password_hash: ADMIN_HASH, role: 'owner',
         pharmacy_id: PHARMACY_ID, full_name: 'Admin',
-        permissions: '["manage_inventory","manage_staff","process_sales"]', is_active: 1 },
-      { id: 'disabled-uuid', username: 'disabled', password_hash: ADMIN_HASH, role: 'pharmacist',
-        pharmacy_id: PHARMACY_ID, full_name: 'Disabled', permissions: '["process_sales"]', is_active: 0 },
+        permissions: '["manage_inventory","manage_staff","process_sales"]', is_active: 1
+      },
+      {
+        id: 'disabled-uuid', username: 'disabled', password_hash: ADMIN_HASH, role: 'pharmacist',
+        pharmacy_id: PHARMACY_ID, full_name: 'Disabled', permissions: '["process_sales"]', is_active: 0
+      },
     ];
     storeSessions = [];
 
