@@ -744,3 +744,14 @@ VALUES (
   'System Administrator',
   '["view_dashboard","view_reports","manage_inventory","manage_staff","process_sales","manage_patients","view_all_sales","manage_settings","void_transactions","manage_shifts","manage_pharmacy","export_data","import_data","view_audit_logs"]'
 );
+
+-- 15. Seed Default Item Natures
+INSERT OR IGNORE INTO item_natures (id, name_ar, name_en) VALUES
+  (1, 'أدوية', 'Drugs'),
+  (2, 'مستلزمات طبية', 'Medical Supplies'),
+  (3, 'مستحضرات تجميل', 'Cosmetics'),
+  (4, 'أجهزة طبية', 'Medical Devices'),
+  (5, 'مكملات غذائية', 'Nutritional Supplements'),
+  (6, 'مواد تعقيم', 'Disinfectants'),
+  (7, 'حفاضات ومستلزمات الأطفال', 'Baby Products'),
+  (8, 'منتجات الأم والطفل', 'Mother & Baby Care');

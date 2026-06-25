@@ -37,7 +37,6 @@ export interface DrugInteraction {
 class SecureCache {
   private drugs: Map<number, MasterDrug> = new Map();
   private drugsList: MasterDrug[] = [];
-  private interactions: DrugInteraction[] = [];
   private loaded: boolean = false;
   private loadingPromise: Promise<void> | null = null;
 
@@ -62,15 +61,14 @@ class SecureCache {
           FROM master_drugs
         `);
         
-        // Fetch interactions (just in case any file still relies on getAllInteractions)
-        this.interactions = await dbSelect<DrugInteraction>('SELECT * FROM drug_interactions');
+        // ponytail: skip loading 191K interactions into memory — queried per-drug on demand
         
         for (const drug of this.drugsList) {
           this.drugs.set(drug.id, drug);
         }
 
         this.loaded = true;
-        console.log(`Loaded ${this.drugsList.length} drugs and ${this.interactions.length} interactions into memory cache.`);
+        console.log(`Loaded ${this.drugsList.length} drugs into memory cache.`);
       } catch (error) {
         console.error('Failed to load drugs payload from SQLite:', error);
         this.loadingPromise = null; // Allow retry on failure
@@ -101,7 +99,8 @@ class SecureCache {
   }
 
   getAllInteractions(): DrugInteraction[] {
-    return this.interactions;
+    // ponytail: interactions not cached anymore — always query on demand
+    return [];
   }
 
   enrich(items: any[]) {

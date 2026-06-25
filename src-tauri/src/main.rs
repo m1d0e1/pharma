@@ -48,6 +48,7 @@ fn main() {
                 &MenuItem::with_id(app, "stores_drug_indications", "الاصناف ودواعي الاستخدام", true, None::<&str>)?,
                 &MenuItem::with_id(app, "stores_manufacturers", "الشركات المنتجة", true, None::<&str>)?,
                 &MenuItem::with_id(app, "stores_scientific_groups", "المجموعات العلمية", true, None::<&str>)?,
+                &MenuItem::with_id(app, "stores_categories", "التصنيفات", true, None::<&str>)?,
             ])?;
 
             // 3. العمليات المخزنية (Inventory Ops)
@@ -180,7 +181,7 @@ fn main() {
                 // Actions
                 "new_window" => {
                     let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis().to_string();
-                    let _ = tauri::WebviewWindowBuilder::new(
+                    if let Ok(w) = tauri::WebviewWindowBuilder::new(
                         app,
                         format!("window_{}", timestamp),
                         tauri::WebviewUrl::App("/".into())
@@ -188,7 +189,10 @@ fn main() {
                     .title("Pharma Dashboard")
                     .inner_size(1280.0, 800.0)
                     .min_inner_size(800.0, 600.0)
-                    .build();
+                    .menu(app.menu().unwrap())
+                    .build() {
+                        let _ = w.maximize();
+                    }
                     return;
                 }
                 "print" => {
@@ -271,8 +275,16 @@ fn main() {
                 _ => return,
             };
 
-            // Emit an event to the frontend to handle navigation in the same window
-            let _ = app.emit("menu-navigate", route);
+            // Emit to the focused window; fall back to 'main' (menu clicks defocus windows on Windows)
+            let windows = app.webview_windows();
+            let target = windows.values()
+                .find(|w| w.is_focused().unwrap_or(false))
+                .or_else(|| windows.get("main"));
+            if let Some(window) = target {
+                let _ = window.emit("menu-navigate", route);
+            } else {
+                let _ = app.emit("menu-navigate", route);
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::auth::bcrypt_hash,
