@@ -24,17 +24,25 @@ const SubscriptionStatus = dynamic(() => import('@/components/dashboard/Subscrip
 const DrugSyncButton = dynamic(() => import('@/components/dashboard/DrugSyncButton'));
 const CloudStatus = dynamic(() => import('@/components/dashboard/CloudStatus'));
 const DashboardCharts = dynamic(() => import('@/components/dashboard/DashboardCharts').then(mod => mod.DashboardCharts));
+const ReceiptDetailsModal = dynamic(() => import('@/components/receipts/ReceiptDetailsModal'), { ssr: false });
+
+import { getInvoiceDetailsAction } from '@/app/actions-client/sales-reports';
 
 export default function DashboardPage() {
   const [user, setUser] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
-  const [masterDrugCount, setMasterDrugCount] = useState(0);
-  const [stats, setStats] = useState<any[]>([]);
+  const [stats, setStats] = useState<any>(null);
+  const [kpiData, setKpiData] = useState<any[]>([]);
   const [trendData, setTrendData] = useState<any[]>([]);
   const [topItemsData, setTopItemsData] = useState<any[]>([]);
   const [recentTransactions, setRecentTransactions] = useState<any[]>([]);
   const [activityLogs, setActivityLogs] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [masterDrugCount, setMasterDrugCount] = useState(0);
   const [isOwner, setIsOwner] = useState(false);
+  
+  const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(null);
+  const [invoiceItems, setInvoiceItems] = useState<any[]>([]);
+  const [loadingReceipt, setLoadingReceipt] = useState(false);
   const [isPharmacist, setIsPharmacist] = useState(false);
   const [isTauri, setIsTauri] = useState(false);
 
@@ -170,7 +178,11 @@ export default function DashboardPage() {
             d.date,
             (SELECT COALESCE(SUM(total_amount), 0) FROM sales_invoices WHERE date(created_at) = d.date AND status = 'completed') as sales,
             (SELECT COALESCE(SUM(total_refund), 0) FROM returns WHERE date(created_at) = d.date AND status = 'approved') as returns,
-            (SELECT COALESCE(SUM(quantity_sold * cost_price), 0) FROM sales_items WHERE invoice_id IN (SELECT id FROM sales_invoices WHERE date(created_at) = d.date AND status = 'completed')) as cogs
+            (SELECT COALESCE(SUM(si.quantity_sold * COALESCE(NULLIF(si.cost_price, 0), i.cost_price, m.base_price, 0)), 0) 
+             FROM sales_items si 
+             LEFT JOIN inventory i ON si.inventory_id = i.id
+             LEFT JOIN master_drugs m ON i.drug_id = m.id
+             WHERE si.invoice_id IN (SELECT id FROM sales_invoices WHERE date(created_at) = d.date AND status = 'completed')) as cogs
           FROM dates d
           ORDER BY d.date ASC
         `);
@@ -179,7 +191,7 @@ export default function DashboardPage() {
         // 3.5 Fetch Top Selling Items (Past 30 days)
         const topItems = await dbSelect(`
           SELECT 
-            m.trade_name_en as name,
+            COALESCE(NULLIF(m.trade_name_en, ''), m.trade_name, 'بدون اسم') as name,
             SUM(si.quantity_sold) as quantity,
             SUM(si.quantity_sold * si.unit_price) as revenue
           FROM sales_items si
@@ -188,7 +200,7 @@ export default function DashboardPage() {
           JOIN master_drugs m ON i.drug_id = m.id
           WHERE s.created_at >= date('now', '-30 days', 'localtime')
             AND s.status = 'completed'
-          GROUP BY i.drug_id, m.trade_name_en
+          GROUP BY i.drug_id, name
           ORDER BY quantity DESC
           LIMIT 5
         `);
@@ -428,7 +440,17 @@ export default function DashboardPage() {
           <h2 className="text-lg font-bold text-slate-900 dark:text-white mb-4">أحدث المعاملات المحلية</h2>
           <div className="space-y-4">
             {recentTransactions.length > 0 ? recentTransactions.map((transaction) => (
-              <div key={transaction.id} className="flex items-center justify-between p-4 rounded-xl border border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/30">
+              <div 
+                key={transaction.id} 
+                onClick={async () => {
+                  setSelectedInvoiceId(transaction.id);
+                  setLoadingReceipt(true);
+                  const res = await getInvoiceDetailsAction(transaction.id);
+                  if (res.success) setInvoiceItems(res.data || []);
+                  setLoadingReceipt(false);
+                }}
+                className="flex items-center justify-between p-4 rounded-xl border border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/30 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+              >
                 <div>
                   <p className="font-bold text-sm">{transaction.patient_name || 'زائر'}</p>
                   <p className="text-xs text-slate-500">{new Date(transaction.created_at).toLocaleTimeString('ar-EG')}</p>
@@ -458,6 +480,30 @@ export default function DashboardPage() {
           )}
         </div>
       </div>
+
+      {selectedInvoiceId && !loadingReceipt && (
+        <ReceiptDetailsModal 
+          invoice={{
+            id: selectedInvoiceId,
+            total_amount: recentTransactions.find(t => t.id === selectedInvoiceId)?.total_amount || 0,
+            created_at: recentTransactions.find(t => t.id === selectedInvoiceId)?.created_at || new Date().toISOString(),
+            payment_method: recentTransactions.find(t => t.id === selectedInvoiceId)?.payment_method || 'cash',
+            profiles: { full_name: 'Cashier' }, // Adjust if you have actual staff names
+            patients: recentTransactions.find(t => t.id === selectedInvoiceId)?.patient_name 
+              ? { full_name: recentTransactions.find(t => t.id === selectedInvoiceId)?.patient_name, phone: '' } 
+              : null,
+            sales_items: invoiceItems.map((item: any) => ({
+              quantity_sold: item.quantity_sold,
+              unit_price: item.unit_price,
+              inventory: { master_drugs: { trade_name: item.trade_name, trade_name_en: item.trade_name } },
+              trade_name: item.trade_name,
+              trade_name_en: item.trade_name,
+              unit: item.unit,
+            }))
+          } as any}
+          onClose={() => setSelectedInvoiceId(null)}
+        />
+      )}
     </div>
   );
 }

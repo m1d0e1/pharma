@@ -277,8 +277,8 @@ export async function createPurchaseInvoiceAction(data: {
             if (accounts.cash) await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, accounts.cash, 'credit', finalTotal);
             const openShift = await db.prepare("SELECT id FROM shifts WHERE user_id = ? AND status = 'open'").get(session.id) as any;
             if (openShift) {
-              await db.prepare('INSERT INTO cash_movements (id, shift_id, type, amount, category, description, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
-                generateId(), openShift.id, 'disbursement', finalTotal, 'purchases', `فاتورة شراء رقم ${data.invoice_number || id.slice(0, 8)}`, session.id
+              await db.prepare("INSERT INTO cash_movements (id, user_id, shift_id, type, amount, category, notes, date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(
+                generateId(), session.id, openShift.id, 'disbursement', finalTotal, 'purchases', `فاتورة شراء رقم ${data.invoice_number || id.slice(0, 8)}`, new Date().toISOString().split('T')[0]
               );
             }
           } catch (e) {
@@ -300,8 +300,8 @@ export async function createPurchaseInvoiceAction(data: {
     
     return { success: true, id: invoiceId };
   } catch (error: any) {
-    console.error('Create purchase invoice error:', error);
-    return { success: false, error: error.message };
+    console.error('createPurchaseInvoiceAction error:', error?.message || error);
+    return { success: false, error: error?.message || String(error) || 'فشل تسجيل الفاتورة' };
   }
 }
 
@@ -553,7 +553,7 @@ export async function getPurchasesReportsAction(filters: any = {}) {
 
 export async function getPurchaseInvoiceDetailsAction(invoiceId: string) {
   try {
-    const items = await db.prepare('SELECT pii.*, d.trade_name, d.trade_name_en, d.barcode FROM purchase_invoice_items pii JOIN master_drugs d ON pii.drug_id = d.id WHERE pii.invoice_id = ?').all(invoiceId);
+    const items = await db.prepare('SELECT pii.*, d.trade_name, d.trade_name_en, d.barcode, d.large_to_medium, d.medium_to_small, d.base_price, u.name_en as unit FROM purchase_invoice_items pii JOIN master_drugs d ON pii.drug_id = d.id LEFT JOIN units u ON pii.unit_id = u.id WHERE pii.invoice_id = ?').all(invoiceId);
     return { success: true, data: items };
   } catch (error: any) { return { success: false, error: error.message }; }
 }
@@ -613,10 +613,10 @@ export async function createPurchaseReturnAction(data: {
             await db.prepare('UPDATE inventory SET quantity = quantity - ? WHERE id = ?').run(deductQty, item.inventory_id);
           } else {
              // Fallback just reduce
-            await db.prepare('UPDATE inventory SET quantity = quantity - ? WHERE drug_id = ? AND quantity >= ? LIMIT 1').run(deductQty, item.drug_id, deductQty);
+            await db.prepare('UPDATE inventory SET quantity = quantity - ? WHERE id = (SELECT id FROM inventory WHERE drug_id = ? AND quantity >= ? LIMIT 1)').run(deductQty, item.drug_id, deductQty);
           }
         } else {
-           await db.prepare('UPDATE inventory SET quantity = quantity - ? WHERE drug_id = ? AND quantity >= ? LIMIT 1').run(deductQty, item.drug_id, deductQty);
+           await db.prepare('UPDATE inventory SET quantity = quantity - ? WHERE id = (SELECT id FROM inventory WHERE drug_id = ? AND quantity >= ? LIMIT 1)').run(deductQty, item.drug_id, deductQty);
         }
       }
 
@@ -633,9 +633,9 @@ export async function createPurchaseReturnAction(data: {
         const openShift = await db.prepare("SELECT id FROM shifts WHERE user_id = ? AND status = 'open'").get(session.id) as any;
         if (openShift) {
           await db.prepare(`
-            INSERT INTO cash_movements (id, shift_id, type, category, amount, description, created_by)
-            VALUES (?, ?, 'in', 'purchase_return', ?, ?, ?)
-          `).run(generateId(), openShift.id, totalAmount, `مرتجع مشتريات نقدي للمورد رقم ${data.supplier_id}`, session.id);
+            INSERT INTO cash_movements (id, user_id, shift_id, type, category, amount, notes, date)
+            VALUES (?, ?, ?, 'in', 'purchase_return', ?, ?, ?)
+          `).run(generateId(), session.id, openShift.id, totalAmount, `مرتجع مشتريات نقدي للمورد رقم ${data.supplier_id}`, new Date().toISOString().split('T')[0]);
         }
         
         await db.prepare(`
@@ -657,7 +657,7 @@ export async function createPurchaseReturnAction(data: {
     return { success: true, id: result };
   } catch (err: any) {
     console.error('createPurchaseReturnAction error:', err);
-    return { success: false, error: err.message };
+    return { success: false, error: err.message || (typeof err === 'string' ? err : 'Unknown error') };
   }
 }
 
@@ -667,7 +667,7 @@ export async function getPurchaseReturnsAction() {
     if (!session) return { success: false, error: 'Unauthorized' };
 
     const rows = await db.prepare(`
-      SELECT pr.*, s.name_ar as supplier_name, u.name as user_name,
+      SELECT pr.*, s.name_ar as supplier_name, u.full_name as user_name,
         (SELECT COUNT(*) FROM purchase_return_items pri WHERE pri.purchase_return_id = pr.id) as items_count
       FROM purchase_returns pr
       LEFT JOIN suppliers s ON s.id = pr.supplier_id

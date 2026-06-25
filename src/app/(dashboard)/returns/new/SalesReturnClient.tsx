@@ -47,7 +47,9 @@ export default function SalesReturnClient() {
       // Initialize return items with 0 quantity
       setItemsToReturn(res.data.items.map((item: any) => ({
         ...item,
-        return_quantity: 0
+        return_quantity: 0,
+        original_unit: item.unit,
+        base_price: item.unit_price // Treat the initial price as base_price to calculate upon
       })));
     } else {
       toast.error(res.error || 'فاتورة غير موجودة');
@@ -181,7 +183,7 @@ export default function SalesReturnClient() {
                       <tr key={idx} className="group">
                         <td className="p-3 font-medium text-slate-800 dark:text-slate-200">{item.drug_name}</td>
                         <td className="p-3 text-center text-slate-600 dark:text-slate-400">
-                          {item.quantity_sold} {item.unit === 'large' ? 'علبة' : item.unit === 'medium' ? 'شريط' : 'وحدة'}
+                          {item.quantity_sold} {item.original_unit === 'large' ? 'علبة' : item.original_unit === 'medium' ? 'شريط' : 'وحدة'}
                         </td>
                         <td className="p-3 text-center text-slate-600 dark:text-slate-400">{item.unit_price.toFixed(2)} ج.م</td>
                         <td className="p-3 text-center flex items-center justify-center gap-2">
@@ -197,10 +199,23 @@ export default function SalesReturnClient() {
                             value={item.unit}
                             onChange={(e) => {
                               const newItems = [...itemsToReturn];
-                              newItems[idx].unit = e.target.value;
-                              // Approximate unit price adjustment (simplified for UI display)
-                              // In a real scenario, fetch exact price for the unit. 
-                              // Here we just let the backend handle the proper inventory deduction by unit.
+                              const oldUnit = newItems[idx].unit;
+                              const newUnit = e.target.value;
+                              const l2m = newItems[idx].large_to_medium || 1;
+                              const m2s = newItems[idx].medium_to_small || 1;
+                              
+                              // Convert old unit price to base price (large)
+                              let basePrice = newItems[idx].unit_price;
+                              if (oldUnit === 'medium') basePrice = basePrice * l2m;
+                              if (oldUnit === 'small') basePrice = basePrice * l2m * m2s;
+
+                              // Now convert base price to new unit price
+                              let newPrice = basePrice;
+                              if (newUnit === 'medium') newPrice = basePrice / l2m;
+                              if (newUnit === 'small') newPrice = basePrice / (l2m * m2s);
+
+                              newItems[idx].unit = newUnit;
+                              newItems[idx].unit_price = newPrice;
                               setItemsToReturn(newItems);
                             }}
                           >

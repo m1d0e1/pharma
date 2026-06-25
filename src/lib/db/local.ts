@@ -276,6 +276,9 @@ export function initLocalDb() {
       cost_price REAL DEFAULT 0,
       expiry_date TEXT,
       barcode TEXT,
+      batch_number TEXT,
+      min_stock_level INTEGER DEFAULT 10,
+      strips_per_box INTEGER DEFAULT 1,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
@@ -346,6 +349,7 @@ export function initLocalDb() {
       unit_price REAL,
       unit TEXT,
       is_negative INTEGER DEFAULT 0,
+      cost_price REAL DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -512,6 +516,8 @@ export function initLocalDb() {
       name_en TEXT
     );
 
+
+
     CREATE TABLE IF NOT EXISTS product_categories (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       parent_id INTEGER,
@@ -600,6 +606,11 @@ export function initLocalDb() {
       payment_method TEXT DEFAULT 'credit', -- cash, credit
       status TEXT DEFAULT 'pending', -- pending, completed
       notes TEXT,
+      check_number TEXT,
+      expenses REAL DEFAULT 0,
+      discount_value REAL DEFAULT 0,
+      discount_percent REAL DEFAULT 0,
+      tax_percent REAL DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (supplier_id) REFERENCES suppliers (id)
     );
@@ -616,6 +627,7 @@ export function initLocalDb() {
       bonus_quantity INTEGER DEFAULT 0,
       tax_percent REAL DEFAULT 0,
       discount_percent REAL DEFAULT 0,
+      strips_per_box INTEGER DEFAULT 1,
       FOREIGN KEY (invoice_id) REFERENCES purchase_invoices (id),
       FOREIGN KEY (drug_id) REFERENCES master_drugs (id)
     );
@@ -859,6 +871,9 @@ export function initLocalDb() {
     }
   };
 
+  addColumnSafely('master_drugs', 'has_expiry', 'INTEGER DEFAULT 1');
+  addColumnSafely('sales_items', 'cost_price', 'REAL DEFAULT 0');
+
   // Migration: Add shift_id to sales_invoices if missing
   const salesColumns = db.prepare("PRAGMA table_info(sales_invoices)").all() as any[];
   if (!salesColumns.some(c => c.name === 'shift_id')) {
@@ -974,6 +989,49 @@ export function initLocalDb() {
     }
   }
 
+  // Seed default accounts if empty
+  const accountsCount = db.prepare('SELECT COUNT(*) as count FROM accounts').get() as { count: number };
+  if (accountsCount.count === 0) {
+    try {
+      const insertAccount = db.prepare('INSERT OR IGNORE INTO accounts (id, code, name_ar, name_en, type, is_group) VALUES (?, ?, ?, ?, ?, ?)');
+      const defaultAccounts = [
+        [1, '1', 'الأصول', 'Assets', 'asset', 1],
+        [2, '1.1', 'الأصول المتداولة', 'Current Assets', 'asset', 1],
+        [3, '2', 'الخصوم', 'Liabilities', 'liability', 1],
+        [4, '3', 'الإيرادات', 'Revenue', 'revenue', 1],
+        [5, '4', 'المصروفات', 'Expenses', 'expense', 1],
+        [6, '1.1.1', 'الصندوق', 'Cash Drawer', 'asset', 0],
+        [7, '2.1', 'دائنون', 'Accounts Payable', 'liability', 0],
+        [8, '1.1.2', 'حسابات العملاء', 'Accounts Receivable', 'asset', 0],
+        [9, '3.1', 'إيرادات المبيعات', 'Sales Revenue', 'revenue', 0],
+        [10, '1.1.3', 'المخزون السلعي', 'Inventory Asset', 'asset', 0],
+        [11, '4.1', 'تكلفة البضاعة المباعة', 'Cost of Goods Sold', 'expense', 0],
+      ];
+      const seedAccounts = db.transaction((list: typeof defaultAccounts) => {
+        for (const a of list) insertAccount.run(a[0], a[1], a[2], a[3], a[4], a[5]);
+      });
+      seedAccounts(defaultAccounts);
+    } catch (e) {
+      console.warn('Failed to seed accounts:', e);
+    }
+  }
+
+  // Seed trial_balance_settings if empty
+  const tbsCount = db.prepare('SELECT COUNT(*) as count FROM trial_balance_settings').get() as { count: number };
+  if (tbsCount.count === 0) {
+    try {
+      const tbs = db.prepare('INSERT OR IGNORE INTO trial_balance_settings (category, target_type, account_id) VALUES (?, ?, ?)');
+      tbs.run('cash_drawer', 'account', 6);
+      tbs.run('accounts_payable', 'account', 7);
+      tbs.run('accounts_receivable', 'account', 8);
+      tbs.run('sales_revenue', 'account', 9);
+      tbs.run('inventory_asset', 'account', 10);
+      tbs.run('cogs_expense', 'account', 11);
+    } catch (e) {
+      console.warn('Failed to seed trial_balance_settings:', e);
+    }
+  }
+
   // Apply performance indexes
   try {
     applyIndexes();
@@ -981,38 +1039,27 @@ export function initLocalDb() {
     console.warn('Failed to apply database indexes:', e);
   }
 
-  // One-time sync: populate categories, scientific groups & manufacturers from master_drugs
+  // Removed auto-sync for scientific groups, and manufacturers due to messy data.
+  // Users will define these manually.
+
   try {
-    db.exec(`
-      INSERT INTO product_categories (name_ar)
-      SELECT DISTINCT 
-        UPPER(SUBSTR(TRIM(category), 1, 1)) || LOWER(SUBSTR(TRIM(category), 2))
-      FROM master_drugs 
-      WHERE category IS NOT NULL 
-        AND TRIM(category) != '' 
-        AND LENGTH(TRIM(category)) > 2
-        AND UPPER(SUBSTR(TRIM(category), 1, 1)) || LOWER(SUBSTR(TRIM(category), 2)) NOT IN (SELECT name_ar FROM product_categories);
-      
-      INSERT INTO scientific_groups (name_ar)
-      SELECT DISTINCT 
-        UPPER(SUBSTR(TRIM(category), 1, 1)) || LOWER(SUBSTR(TRIM(category), 2))
-      FROM master_drugs 
-      WHERE category IS NOT NULL 
-        AND TRIM(category) != '' 
-        AND LENGTH(TRIM(category)) > 2
-        AND UPPER(SUBSTR(TRIM(category), 1, 1)) || LOWER(SUBSTR(TRIM(category), 2)) NOT IN (SELECT name_ar FROM scientific_groups);
-      
-      INSERT INTO manufacturers (name_ar)
-      SELECT DISTINCT 
-        UPPER(SUBSTR(TRIM(manufacturer), 1, 1)) || LOWER(SUBSTR(TRIM(manufacturer), 2))
-      FROM master_drugs 
-      WHERE manufacturer IS NOT NULL 
-        AND TRIM(manufacturer) != '' 
-        AND LENGTH(TRIM(manufacturer)) > 2
-        AND UPPER(SUBSTR(TRIM(manufacturer), 1, 1)) || LOWER(SUBSTR(TRIM(manufacturer), 2)) NOT IN (SELECT name_ar FROM manufacturers);
-    `);
-  } catch (e) {
-    console.warn('Failed to sync from master_drugs:', e);
+    db.exec('DELETE FROM product_categories;');
+  } catch (e) {}
+
+  // Seed item natures if empty
+  const naturesCount = db.prepare('SELECT COUNT(*) as count FROM item_natures').get() as { count: number };
+  if (naturesCount.count === 0) {
+    const natures = [
+      { ar: 'أدوية', en: 'Drugs' },
+      { ar: 'مستلزمات طبية', en: 'Medical Supplies' },
+      { ar: 'مستحضرات تجميل', en: 'Cosmetics' },
+      { ar: 'أجهزة طبية', en: 'Medical Devices' }
+    ];
+    const insertNature = db.prepare('INSERT INTO item_natures (name_ar, name_en) VALUES (?, ?)');
+    const seedNatures = db.transaction((list: typeof natures) => {
+      for (const n of list) insertNature.run(n.ar, n.en);
+    });
+    seedNatures(natures);
   }
 
   // Seed units if empty

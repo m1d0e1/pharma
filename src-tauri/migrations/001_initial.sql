@@ -321,6 +321,7 @@ CREATE TABLE IF NOT EXISTS purchase_invoice_items (
   bonus_quantity INTEGER DEFAULT 0,
   tax_percent REAL DEFAULT 0,
   discount_percent REAL DEFAULT 0,
+  strips_per_box INTEGER DEFAULT 1,
   FOREIGN KEY (invoice_id) REFERENCES purchase_invoices (id),
   FOREIGN KEY (drug_id) REFERENCES master_drugs (id)
 );
@@ -359,6 +360,31 @@ CREATE TABLE IF NOT EXISTS purchase_order_items (
   FOREIGN KEY (drug_id) REFERENCES master_drugs (id)
 );
 
+CREATE TABLE IF NOT EXISTS purchase_returns (
+  id TEXT PRIMARY KEY,
+  supplier_id INTEGER NOT NULL,
+  user_id TEXT NOT NULL,
+  reason TEXT,
+  total_amount REAL,
+  refund_method TEXT DEFAULT 'credit',
+  status TEXT DEFAULT 'completed',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (supplier_id) REFERENCES suppliers (id)
+);
+
+CREATE TABLE IF NOT EXISTS purchase_return_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  purchase_return_id TEXT NOT NULL,
+  inventory_id TEXT,
+  drug_id INTEGER,
+  drug_name TEXT,
+  quantity_returned INTEGER,
+  unit_price REAL,
+  total_price REAL,
+  reason TEXT,
+  FOREIGN KEY (purchase_return_id) REFERENCES purchase_returns (id)
+);
+
 -- 10. Financial System
 CREATE TABLE IF NOT EXISTS banks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -382,6 +408,20 @@ CREATE TABLE IF NOT EXISTS accounts (
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (parent_id) REFERENCES accounts (id)
 );
+
+-- Seed default accounts used by POS and Purchase accounting
+INSERT OR IGNORE INTO accounts (id, code, name_ar, name_en, type, is_group) VALUES
+  (1, '1', 'الأصول', 'Assets', 'asset', 1),
+  (2, '1.1', 'الأصول المتداولة', 'Current Assets', 'asset', 1),
+  (3, '2', 'الخصوم', 'Liabilities', 'liability', 1),
+  (4, '3', 'الإيرادات', 'Revenue', 'revenue', 1),
+  (5, '4', 'المصروفات', 'Expenses', 'expense', 1),
+  (6, '1.1.1', 'الصندوق', 'Cash Drawer', 'asset', 0),
+  (7, '2.1', 'دائنون', 'Accounts Payable', 'liability', 0),
+  (8, '1.1.2', 'حسابات العملاء', 'Accounts Receivable', 'asset', 0),
+  (9, '3.1', 'إيرادات المبيعات', 'Sales Revenue', 'revenue', 0),
+  (10, '1.1.3', 'المخزون السلعي', 'Inventory Asset', 'asset', 0),
+  (11, '4.1', 'تكلفة البضاعة المباعة', 'Cost of Goods Sold', 'expense', 0);
 
 CREATE TABLE IF NOT EXISTS daily_journals (
   id TEXT PRIMARY KEY,
@@ -413,6 +453,15 @@ CREATE TABLE IF NOT EXISTS trial_balance_settings (
   account_id INTEGER,
   FOREIGN KEY (account_id) REFERENCES accounts (id)
 );
+
+-- Seed default trial balance mappings for POS and Purchase accounting
+INSERT OR IGNORE INTO trial_balance_settings (category, target_type, account_id) VALUES
+  ('cash_drawer', 'account', 6),
+  ('accounts_payable', 'account', 7),
+  ('accounts_receivable', 'account', 8),
+  ('sales_revenue', 'account', 9),
+  ('inventory_asset', 'account', 10),
+  ('cogs_expense', 'account', 11);
 
 CREATE TABLE IF NOT EXISTS patient_transactions (
   id TEXT PRIMARY KEY,
@@ -524,6 +573,19 @@ CREATE TABLE IF NOT EXISTS units (
   name_ar TEXT NOT NULL,
   name_en TEXT
 );
+
+INSERT OR IGNORE INTO units (id, name_ar, name_en) VALUES
+  (1, 'علبة', 'Box'),
+  (2, 'شريط', 'Strip'),
+  (3, 'قرص', 'Pill'),
+  (4, 'كبسولة', 'Capsule'),
+  (5, 'أمبول', 'Ampoule'),
+  (6, 'فيال', 'Vial'),
+  (7, 'زجاجة', 'Bottle'),
+  (8, 'أنبوبة', 'Tube'),
+  (9, 'كيس', 'Sachet'),
+  (10, 'قطرة', 'Drops'),
+  (11, 'حقنة', 'Syringe');
 
 CREATE TABLE IF NOT EXISTS scientific_groups (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

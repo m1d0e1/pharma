@@ -262,50 +262,52 @@ export default function PurchasesReportsClient({ userRole }: { userRole?: string
           </div>
         </div>
 
-        {/* Invoice Items Table (Lower half of Image 4) */}
+        {/* Invoice Items Modal */}
         {selectedInvoice && (
-          <div className="bg-slate-900 text-white rounded-[40px] p-1 shadow-2xl animate-in slide-in-from-bottom-8">
-            <div className="p-8 border-b border-white/10 flex justify-between items-center">
-              <div>
-                <h4 className="text-xl font-black">أصناف الفاتورة #{selectedInvoice.slice(0, 8)}</h4>
-                <p className="text-white/40 text-xs font-bold">تفاصيل المواد المباعة والكميات</p>
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-slate-900/50 backdrop-blur-sm animate-in fade-in">
+            <div className="w-full max-w-4xl bg-white dark:bg-slate-900 text-slate-900 dark:text-white rounded-[40px] shadow-2xl animate-in zoom-in-95 border border-slate-100 dark:border-slate-800 flex flex-col max-h-[90vh] overflow-hidden">
+              <div className="p-8 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center shrink-0">
+                <div>
+                  <h4 className="text-xl font-black">أصناف الفاتورة #{selectedInvoice.slice(0, 8)}</h4>
+                  <p className="text-slate-500 dark:text-slate-400 text-xs font-bold">تفاصيل المشتريات والكميات</p>
+                </div>
+                <button 
+                  onClick={() => setSelectedInvoice(null)}
+                  className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-2xl transition-all"
+                >
+                  <ArrowRight className="w-5 h-5 rotate-180" />
+                </button>
               </div>
-              <button 
-                onClick={() => setSelectedInvoice(null)}
-                className="p-3 bg-white/10 rounded-2xl hover:bg-white/20 transition-all"
-              >
-                <ArrowRight className="w-5 h-5 rotate-180" />
-              </button>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-right">
-                <thead className="bg-white/5">
-                  <tr className="text-white/40 text-[10px] font-black uppercase tracking-widest">
-                    <th className="px-8 py-5">كود الصنف</th>
-                    <th className="px-8 py-5">إسم الصنف</th>
-                    <th className="px-8 py-5">ت. الصلاحية</th>
-                    <th className="px-8 py-5">الكمية</th>
-                    <th className="px-8 py-5">الوحدة</th>
-                    <th className="px-8 py-5">سعر البيع</th>
-                    <th className="px-8 py-5">الإجمالي</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-white/5">
-                  {loadingItems ? (
-                    <tr><td colSpan={7} className="py-10 text-center animate-pulse">جاري جلب الأصناف...</td></tr>
-                  ) : invoiceItems.map((item) => (
-                    <tr key={item.id} className="hover:bg-white/5 transition-colors">
-                      <td className="px-8 py-5 font-mono text-blue-400">{item.barcode}</td>
-                      <td className="px-8 py-5 font-black">{item.trade_name}</td>
-                      <td className="px-8 py-5 font-bold text-white/40 italic">2026/05/01</td>
-                      <td className="px-8 py-5 font-black text-lg">{item.quantity}</td>
-                      <td className="px-8 py-5 text-white/60">{item.unit_id === 1 ? 'شريط' : 'علبة'}</td>
-                      <td className="px-8 py-5 font-bold">{item.cost_price?.toLocaleString()}</td>
-                      <td className="px-8 py-5 font-black text-emerald-400">{((item.cost_price || 0) * (item.quantity || 0)).toLocaleString()}</td>
+              <div className="overflow-y-auto flex-1 p-2">
+                <table className="w-full text-right border-separate border-spacing-y-2 px-6">
+                  <thead className="bg-slate-50 dark:bg-slate-800/50 sticky top-0 z-10">
+                    <tr className="text-slate-400 text-[10px] font-black uppercase tracking-widest">
+                      <th className="px-6 py-5 rounded-r-2xl">كود الصنف</th>
+                      <th className="px-6 py-5">إسم الصنف</th>
+                      <th className="px-6 py-5">ت. الصلاحية</th>
+                      <th className="px-6 py-5">الكمية</th>
+                      <th className="px-6 py-5">الوحدة</th>
+                      <th className="px-6 py-5">سعر الشراء</th>
+                      <th className="px-6 py-5 rounded-l-2xl">الإجمالي</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="divide-y divide-transparent">
+                    {loadingItems ? (
+                      <tr><td colSpan={7} className="py-10 text-center animate-pulse text-slate-400 font-bold">جاري جلب الأصناف...</td></tr>
+                    ) : invoiceItems.map((item) => (
+                      <tr key={item.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors group">
+                        <td className="px-6 py-5 font-mono text-blue-500 rounded-r-2xl bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{item.barcode}</td>
+                        <td className="px-6 py-5 font-black bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{item.trade_name}</td>
+                        <td className="px-6 py-5 font-bold text-slate-400 italic bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{item.expiry_date ? format(new Date(item.expiry_date), 'yyyy/MM/dd') : '-'}</td>
+                        <td className="px-6 py-5 font-black text-lg bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{item.quantity}</td>
+                        <td className="px-6 py-5 text-slate-500 bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{item.unit_id === 1 ? 'شريط' : 'علبة'}</td>
+                        <td className="px-6 py-5 font-bold bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{item.cost_price?.toLocaleString()}</td>
+                        <td className="px-6 py-5 font-black text-emerald-500 rounded-l-2xl bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{((item.cost_price || 0) * (item.quantity || 0)).toLocaleString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         )}

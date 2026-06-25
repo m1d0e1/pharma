@@ -191,10 +191,14 @@ export default function DashboardLayout({
               );
               if (yes) {
                 toast.loading('جاري التحميل والتثبيت...', { id: toastId });
-                await update.downloadAndInstall();
-                toast.dismiss(toastId);
-                await message('تم التحديث بنجاح! سيتم إعادة تشغيل البرنامج الآن.', { title: 'نجاح التحديث', kind: 'info' }).catch(() => toast.success('تم التحديث بنجاح!'));
-                await relaunch();
+                try {
+                  await update.downloadAndInstall();
+                  toast.dismiss(toastId);
+                  await message('تم التحديث بنجاح! سيتم إعادة تشغيل البرنامج الآن.', { title: 'نجاح التحديث', kind: 'info' }).catch(() => toast.success('تم التحديث بنجاح!'));
+                  await relaunch();
+                } catch (installErr) {
+                  toast.error('فشل التثبيت. تأكد من إغلاق الملفات وحاول مرة أخرى.', { id: toastId });
+                }
               }
             } else if (latestVersion) {
               // We know latest but Tauri says no update (same version, or signed check failed)

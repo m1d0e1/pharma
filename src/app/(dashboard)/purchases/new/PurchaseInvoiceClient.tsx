@@ -392,9 +392,7 @@ export default function PurchaseInvoiceClient() {
 
       const officialPriceNum = Number(item.official_price) || 0;
       if (costPriceNum > officialPriceNum && officialPriceNum > 0) {
-        if (!confirm(`تنبيه: سعر الشراء (${costPriceNum}) أكبر من السعر الرسمي (${officialPriceNum}) للصنف ${item.trade_name_en || item.trade_name}. هل تريد الاستمرار؟`)) {
-          return;
-        }
+        toast.error(`سعر الشراء (${costPriceNum}) أكبر من السعر الرسمي (${officialPriceNum}) للصنف ${item.trade_name_en || item.trade_name}. تم الحفظ مع التنبيه`, { duration: 4000 });
       }
       
       if (item.expiry_date) {
@@ -418,9 +416,7 @@ export default function PurchaseInvoiceClient() {
               toast.error(`الصنف ${item.trade_name_en || item.trade_name} منتهي الصلاحية!`);
               return;
             } else if (diffMonths < 6) {
-              if (!confirm(`تحذير: الصنف ${item.trade_name_en || item.trade_name} اقترب على انتهاء الصلاحية. هل تريد الاستمرار؟`)) {
-                return;
-              }
+              toast.error(`تحذير: الصنف ${item.trade_name_en || item.trade_name} اقترب على انتهاء الصلاحية. تم الحفظ مع التنبيه`, { duration: 4000 });
             }
           }
         }
@@ -444,7 +440,11 @@ export default function PurchaseInvoiceClient() {
         id: invoiceHeader.id || undefined
       })
 
-      if (!res.success) throw new Error((res as any).error)
+      if (!res.success) {
+        const errMsg = (res as any).error || 'فشل في تسجيل الفاتورة';
+        console.error('createPurchaseInvoiceAction failed:', (res as any).error);
+        throw new Error(errMsg);
+      }
 
       if (!isDraft) {
         toast.success('تم تسجيل فاتورة الشراء بنجاح')

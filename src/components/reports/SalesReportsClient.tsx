@@ -12,6 +12,9 @@ import { getSalesReportsAction, getInvoiceDetailsAction } from '@/app/actions-cl
 import { getStaffAction } from '@/app/actions-client/users';
 import { getPatientsAction } from '@/app/actions-client/patients';
 import { format } from 'date-fns';
+import dynamic from 'next/dynamic';
+
+const ReceiptDetailsModal = dynamic(() => import('@/components/receipts/ReceiptDetailsModal'), { ssr: false });
 
 export default function SalesReportsClient({ userRole }: { userRole?: string }) {
   const [invoices, setInvoices] = useState<any[]>([]);
@@ -262,53 +265,26 @@ export default function SalesReportsClient({ userRole }: { userRole?: string }) 
             </table>
           </div>
         </div>
-
-        {/* Invoice Items Table (Lower half of Image 4) */}
-        {selectedInvoice && (
-          <div className="bg-slate-900 text-white rounded-[40px] p-1 shadow-2xl animate-in slide-in-from-bottom-8">
-            <div className="p-8 border-b border-white/10 flex justify-between items-center">
-              <div>
-                <h4 className="text-xl font-black">أصناف الفاتورة #{selectedInvoice.slice(0, 8)}</h4>
-                <p className="text-white/40 text-xs font-bold">تفاصيل المواد المباعة والكميات</p>
-              </div>
-              <button 
-                onClick={() => setSelectedInvoice(null)}
-                className="p-3 bg-white/10 rounded-2xl hover:bg-white/20 transition-all"
-              >
-                <ArrowRight className="w-5 h-5 rotate-180" />
-              </button>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-right">
-                <thead className="bg-white/5">
-                  <tr className="text-white/40 text-[10px] font-black uppercase tracking-widest">
-                    <th className="px-8 py-5">كود الصنف</th>
-                    <th className="px-8 py-5">إسم الصنف</th>
-                    <th className="px-8 py-5">ت. الصلاحية</th>
-                    <th className="px-8 py-5">الكمية</th>
-                    <th className="px-8 py-5">الوحدة</th>
-                    <th className="px-8 py-5">سعر البيع</th>
-                    <th className="px-8 py-5">الإجمالي</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-white/5">
-                  {loadingItems ? (
-                    <tr><td colSpan={7} className="py-10 text-center animate-pulse">جاري جلب الأصناف...</td></tr>
-                  ) : invoiceItems.map((item) => (
-                    <tr key={item.id} className="hover:bg-white/5 transition-colors">
-                      <td className="px-8 py-5 font-mono text-blue-400">{item.barcode}</td>
-                      <td className="px-8 py-5 font-black">{item.trade_name}</td>
-                      <td className="px-8 py-5 font-bold text-white/40 italic">2026/05/01</td>
-                      <td className="px-8 py-5 font-black text-lg">{item.quantity_sold}</td>
-                      <td className="px-8 py-5 text-white/60">{item.unit === 'large' ? 'علبة' : 'شريط'}</td>
-                      <td className="px-8 py-5 font-bold">{item.unit_price.toLocaleString()}</td>
-                      <td className="px-8 py-5 font-black text-emerald-400">{(item.unit_price * item.quantity_sold).toLocaleString()}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
+        {selectedInvoice && !loadingItems && (
+          <ReceiptDetailsModal 
+            invoice={{
+              id: selectedInvoice,
+              total_amount: invoices.find(i => i.id === selectedInvoice)?.total_amount || 0,
+              created_at: invoices.find(i => i.id === selectedInvoice)?.created_at || new Date().toISOString(),
+              payment_method: invoices.find(i => i.id === selectedInvoice)?.payment_method || 'cash',
+              profiles: { full_name: invoices.find(i => i.id === selectedInvoice)?.staff_name || 'System' },
+              patients: invoices.find(i => i.id === selectedInvoice)?.patient_name ? { full_name: invoices.find(i => i.id === selectedInvoice)?.patient_name, phone: '' } : null,
+              sales_items: invoiceItems.map((item: any) => ({
+                quantity_sold: item.quantity_sold,
+                unit_price: item.unit_price,
+                inventory: { master_drugs: { trade_name: item.trade_name, trade_name_en: item.trade_name } },
+                trade_name: item.trade_name,
+                trade_name_en: item.trade_name,
+                unit: item.unit,
+              }))
+            } as any}
+            onClose={() => setSelectedInvoice(null)}
+          />
         )}
       </div>
     </div>

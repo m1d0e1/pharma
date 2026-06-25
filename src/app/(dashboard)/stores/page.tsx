@@ -14,7 +14,9 @@ import {
   FileText, 
   Activity, 
   ClipboardList,
-  ChevronLeft
+  ChevronLeft,
+  Repeat,
+  Info
 } from 'lucide-react'
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local'
 import AccessDenied from '@/components/AccessDenied'
@@ -42,8 +44,10 @@ const inventoryActions = [
     items: [
       { href: '/stores/items', label: 'الأصناف', icon: Box, description: 'تعريف وتعديل بيانات الأدوية والمنتجات' },
       { href: '/stores/manufacturers', label: 'الشركات المنتجة', icon: FlaskConical, description: 'إدارة شركات تصنيع الأدوية' },
-      { href: '/stores/categories', label: 'المجموعات', icon: Tags, description: 'تصنيف الأصناف لمجموعات تجارية' },
       { href: '/stores/scientific-groups', label: 'المجموعات العلمية', icon: FlaskConical, description: 'التصنيف العلمي للأدوية' },
+      { href: '/stores/categories', label: 'المجموعات', icon: Tags, description: 'تصنيف الأصناف لمجموعات تجارية' },
+      { href: '/stores/alternatives', label: 'البدائل', icon: Repeat, description: 'إدارة بدائل الأدوية ومثائلها' },
+      { href: '/stores/nature', label: 'النوع (Nature)', icon: Info, description: 'تحديد أنواع المنتجات الدوائية' },
     ]
   },
   {

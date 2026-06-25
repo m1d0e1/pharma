@@ -53,7 +53,7 @@ import { z } from 'zod';
 
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 
-import { getLocalSession } from '@/lib/auth/local';
+import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { secureCache } from '@/lib/cache/secure_cache';
 
 // Zod schema for adding inventory
@@ -698,11 +698,17 @@ export async function getDrugDetailsFullAction(drugId: number | string) {
       const conflictingMap = new Map();
 
       for (const ingredient of ingredientParts) {
+        const searchBase = ingredient.replace(/e$/i, '');
+        const searchE = searchBase + 'e';
+
         const interactions = await db.prepare(`
           SELECT id, ingredient_a, ingredient_b, severity, description_ar, description_en
           FROM drug_interactions
-          WHERE UPPER(ingredient_a) = UPPER(?) OR UPPER(ingredient_b) = UPPER(?)
-        `).all(ingredient, ingredient) as any[];
+          WHERE UPPER(ingredient_a) IN (UPPER(?), UPPER(?), UPPER(?)) 
+             OR UPPER(ingredient_b) IN (UPPER(?), UPPER(?), UPPER(?))
+             OR UPPER(ingredient_a) LIKE '%' || UPPER(?) || '%'
+             OR UPPER(ingredient_b) LIKE '%' || UPPER(?) || '%'
+        `).all(ingredient, searchBase, searchE, ingredient, searchBase, searchE, searchBase, searchBase) as any[];
 
         const conflictItems = interactions
           .filter((i: any) => i.severity !== 'food')
@@ -847,7 +853,50 @@ export async function getInventoryListAction(search?: string) {
 
 
 export async function getMovementsAction() { return { success: false, data: [] }; }
-export async function getOpeningBalancesAction() { return { success: false, data: [] }; }
+export async function getOpeningBalancesAction() {
+  try {
+    const data = await db.prepare(`
+      SELECT i.*, md.trade_name, md.trade_name_en
+      FROM inventory i
+      JOIN master_drugs md ON i.drug_id = md.id
+      WHERE i.batch_number LIKE 'OPEN-%'
+      ORDER BY i.created_at DESC
+      LIMIT 100
+    `).all() as any[];
+    return { success: true, data };
+  } catch (err: any) {
+    return { success: false, error: err.message || (typeof err === 'string' ? err : 'Error fetching balances') };
+  }
+}
+
+export async function addOpeningBalanceAction(data: {
+  drug_id: number;
+  quantity: number;
+  cost_price: number;
+  unit_price: number;
+  expiry_date: string;
+}) {
+  try {
+    const session = await getLocalSession();
+    if (!session || !hasUserPermissionSync(session, 'can_edit_inventory')) {
+      return { success: false, error: 'Unauthorized' };
+    }
+
+    const batchNumber = 'OPEN-' + generateId().substring(0, 8);
+    
+    await db.prepare(`
+      INSERT INTO inventory (id, pharmacy_id, drug_id, batch_number, expiry_date, quantity, unit_price, cost_price)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(generateId(), session.pharmacy_id || 'local_default', data.drug_id, batchNumber, data.expiry_date, data.quantity, data.unit_price, data.cost_price);
+
+    revalidatePath('/inventory');
+    revalidatePath('/inventory/opening-balances');
+    return { success: true };
+  } catch (err: any) {
+    console.error('addOpeningBalance error:', err);
+    return { success: false, error: err.message || (typeof err === 'string' ? err : 'Error saving balance') };
+  }
+}
 export async function getRestockItemsAction() { return { success: false, data: [] }; }
 export async function getAdjustmentsAction() { return { success: false, data: [] }; }
 export async function getUnusedDrugsAction() { return { success: false, data: [] }; }

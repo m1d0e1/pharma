@@ -88,7 +88,7 @@ const MENUS: Menu[] = [
   },
   {
     id: 'stores', label: 'البيانات الأساسية',
-    ownerRoutes: ['/','/stores','/stores/items','/stores/alternatives','/stores/categories','/stores/nature','/stores/usage','/stores/units','/stores/indications','/stores/drug-indications','/stores/manufacturers','/stores/scientific-groups','/stores/adjustments','/stores/adjustment-reasons','/stores/shortages','/stores/delete-items'],
+    ownerRoutes: ['/','/stores','/stores/items','/stores/alternatives','/stores/nature','/stores/usage','/stores/units','/stores/indications','/stores/drug-indications','/stores/manufacturers','/stores/scientific-groups','/stores/adjustments','/stores/adjustment-reasons','/stores/shortages','/stores/delete-items'],
     items: [
       { type: 'link', label: 'لوحة التحكم (الرئيسية)', href: '/',                 icon: Home,           roles: ['owner','admin','pharmacist'] },
       { type: 'separator' },
@@ -154,7 +154,7 @@ const MENUS: Menu[] = [
   },
   {
     id: 'reports', label: 'التقارير',
-    ownerRoutes: ['/reports','/reports/sales','/reports/trial-balance','/expenses','/shifts','/shifts/report'],
+    ownerRoutes: ['/reports','/reports/sales','/reports/trial-balance','/expenses','/shifts'],
     items: [
       { type: 'link', label: 'التقارير',          href: '/reports',               icon: BarChart3,  roles: ['owner','admin'] },
       { type: 'link', label: 'تقارير المبيعات',  href: '/reports/sales',         icon: TrendingUp, roles: ['owner','admin'], permission: 'view_reports' },
@@ -309,7 +309,7 @@ export default function TopMenuBar({ userRole, permissions }: Props) {
           compact height, dropdowns styled like OS context menus.            */}
       <nav
         ref={barRef}
-        className="flex items-stretch h-full gap-0 relative select-none"
+        className="flex items-stretch h-full gap-0 relative select-none me-auto"
         dir="rtl"
       >
         {MENUS.map(menu => {
@@ -345,7 +345,7 @@ export default function TopMenuBar({ userRole, permissions }: Props) {
               {isOpen && (
                 <div
                   className={cn(
-                    'absolute top-full right-0 z-[200]',
+                    'absolute top-full left-0 z-[200]',
                     'min-w-[200px] w-max',
                     // OS-style: white background, thin 1px border, tiny radius, crisp shadow
                     'bg-white dark:bg-[#1e1e2e]',

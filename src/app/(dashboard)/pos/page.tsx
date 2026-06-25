@@ -1066,7 +1066,8 @@ export default function POSPage() {
         onClose={() => setShowStockWarning(null)}
         drug={showStockWarning}
         onNewPurchaseOrder={(drugId) => {
-          toast.success('جاري الانتقال لإنشاء فاتورة شراء...');
+          toast.dismiss(); // dismiss any existing toasts so they don't pile up
+          toast('جاري الانتقال لإنشاء فاتورة شراء...', { duration: 1500, icon: '🔄' });
           setShowStockWarning(null);
           router.push(`/purchases/new?drugId=${drugId}`);
         }}

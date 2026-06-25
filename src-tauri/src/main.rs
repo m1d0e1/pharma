@@ -41,12 +41,11 @@ fn main() {
                 &PredefinedMenuItem::separator(app)?,
                 &MenuItem::with_id(app, "stores_items", "الأصناف", true, None::<&str>)?,
                 &MenuItem::with_id(app, "stores_alternatives", "البدائل", true, None::<&str>)?,
-                &MenuItem::with_id(app, "stores_categories", "التصنيفات", true, None::<&str>)?,
                 &MenuItem::with_id(app, "stores_nature", "النوع", true, None::<&str>)?,
                 &MenuItem::with_id(app, "stores_usage", "الاستخدام", true, None::<&str>)?,
                 &MenuItem::with_id(app, "stores_units", "الوحدات", true, None::<&str>)?,
-                &MenuItem::with_id(app, "stores_indications", "الإشارات", true, None::<&str>)?,
-                &MenuItem::with_id(app, "stores_drug_indications", "الأدوية والإشارات", true, None::<&str>)?,
+                &MenuItem::with_id(app, "stores_indications", "دواعي الاستعمال", true, None::<&str>)?,
+                &MenuItem::with_id(app, "stores_drug_indications", "الاصناف ودواعي الاستخدام", true, None::<&str>)?,
                 &MenuItem::with_id(app, "stores_manufacturers", "الشركات المنتجة", true, None::<&str>)?,
                 &MenuItem::with_id(app, "stores_scientific_groups", "المجموعات العلمية", true, None::<&str>)?,
             ])?;
@@ -103,7 +102,6 @@ fn main() {
                 &MenuItem::with_id(app, "reports_trial_balance", "ميزان المراجعة", true, None::<&str>)?,
                 &MenuItem::with_id(app, "expenses", "المصروفات", true, None::<&str>)?,
                 &MenuItem::with_id(app, "shifts", "الشفتات النقدية", true, None::<&str>)?,
-                &MenuItem::with_id(app, "shifts_report", "تقرير الشفتة", true, None::<&str>)?,
             ])?;
 
             // 8. المرضى والطبية (Patients)
@@ -263,7 +261,6 @@ fn main() {
                 "reports_purchases" => "/reports/purchases",
                 "expenses" => "/expenses",
                 "shifts" => "/shifts",
-                "shifts_report" => "/shifts/report",
                 "patients" => "/patients",
                 "interactions" => "/interactions",
                 "staff" => "/staff",

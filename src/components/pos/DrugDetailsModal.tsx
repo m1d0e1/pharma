@@ -34,6 +34,7 @@ export default function DrugDetailsModal({ drugId, onClose }: DrugDetailsModalPr
   const [conflictIngredientA, setConflictIngredientA] = useState('');
   const [conflictIngredientB, setConflictIngredientB] = useState('');
   const [conflictSeverity, setConflictSeverity] = useState('minor');
+  const [expandedConflicts, setExpandedConflicts] = useState<number[]>([]);
 
   React.useEffect(() => {
     setCurrentId(drugId);
@@ -594,31 +595,47 @@ export default function DrugDetailsModal({ drugId, onClose }: DrugDetailsModalPr
                          </button>
                       </div>
                     )}
-                    {drugData?.conflicts?.length > 0 ? drugData.conflicts.map((conf: any, idx: number) => (
-                      <div key={idx} className="bg-rose-50 dark:bg-rose-900/10 p-5 rounded-2xl border border-rose-100 dark:border-rose-900/20 flex gap-4 items-start justify-between">
-                         <div className="flex gap-4">
-                            <div className="p-3 bg-rose-100 dark:bg-rose-900/30 rounded-xl text-rose-600">
+                    {drugData?.conflicts?.length > 0 ? drugData.conflicts.map((conf: any, idx: number) => {
+                      const isExpanded = expandedConflicts.includes(idx);
+                      return (
+                      <div key={idx} className="bg-rose-50 dark:bg-rose-900/10 p-5 rounded-2xl border border-rose-100 dark:border-rose-900/20 flex gap-4 items-start justify-between cursor-pointer transition-all hover:bg-rose-100 dark:hover:bg-rose-900/20" onClick={() => {
+                        if (isExpanded) {
+                          setExpandedConflicts(prev => prev.filter(i => i !== idx));
+                        } else {
+                          setExpandedConflicts(prev => [...prev, idx]);
+                        }
+                      }}>
+                         <div className="flex gap-4 w-full">
+                            <div className="p-3 bg-rose-100 dark:bg-rose-900/30 rounded-xl text-rose-600 shrink-0 h-fit">
                                <AlertTriangle className="w-5 h-5" />
                             </div>
-                            <div>
-                               <p className="font-black text-rose-800 dark:text-rose-300 mb-1">{conf.trade_name}</p>
-                               <p className="text-xs font-bold text-rose-600/70 mb-2">تداخل بسبب: {conf.conflicting_ingredient}</p>
-                               {conf.description && <p className="text-sm font-bold text-slate-600 dark:text-slate-400 leading-relaxed">{conf.description}</p>}
-                               <div className="mt-3 px-3 py-1 bg-white dark:bg-slate-800 rounded-lg w-fit text-[10px] font-black text-rose-500 uppercase tracking-widest border border-rose-100 dark:border-rose-900/30">
-                                  درجة الخطورة: {conf.severity}
+                            <div className="w-full">
+                               <div className="flex justify-between items-center w-full">
+                                 <div>
+                                   <p className="font-black text-rose-800 dark:text-rose-300 mb-1">{conf.trade_name}</p>
+                                   <p className="text-xs font-bold text-rose-600/70 mb-2">تداخل بسبب: {conf.conflicting_ingredient}</p>
+                                 </div>
+                                 <div className="px-3 py-1 bg-white dark:bg-slate-800 rounded-lg w-fit text-[10px] font-black text-rose-500 uppercase tracking-widest border border-rose-100 dark:border-rose-900/30">
+                                    درجة الخطورة: {conf.severity}
+                                 </div>
                                </div>
+                               {isExpanded && conf.description && (
+                                 <div className="mt-3 p-3 bg-white dark:bg-slate-800/50 rounded-xl border border-rose-100 dark:border-rose-900/30 animate-in fade-in slide-in-from-top-2">
+                                   <p className="text-sm font-bold text-slate-600 dark:text-slate-400 leading-relaxed">{conf.description}</p>
+                                 </div>
+                               )}
                             </div>
                          </div>
                          {isEditing && (
                             <button 
-                              onClick={() => handleRemoveConflict(conf.interaction_id)}
-                              className="text-rose-500 hover:text-rose-700 p-2 bg-white dark:bg-slate-800 rounded-lg border border-rose-100 dark:border-rose-900/30"
+                              onClick={(e) => { e.stopPropagation(); handleRemoveConflict(conf.interaction_id); }}
+                              className="text-rose-500 hover:text-rose-700 p-2 bg-white dark:bg-slate-800 rounded-lg border border-rose-100 dark:border-rose-900/30 shrink-0"
                             >
                                <X className="w-4 h-4" />
                             </button>
                          )}
                       </div>
-                    )) : (
+                    )}) : (
                       <NoData icon={AlertTriangle} message="لا يوجد تفاعلات دوائية مسجلة معروفة لهذا الصنف" />
                     )}
                  </div>

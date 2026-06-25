@@ -22,20 +22,21 @@ async function getTauriDb() {
 }
 
 export async function dbSelect<T = any>(sql: string, params: any[] = []): Promise<T[]> {
+  const safeParams = params.map(p => p === undefined ? null : p);
   if (isServer) {
     // Server-side: import and query better-sqlite3 directly (web dev mode)
     const { query } = require('./client');
-    return query(sql, params);
+    return query(sql, safeParams);
   }
 
   if (isTauriEnv()) {
     const db = await getTauriDb();
-    return db.select(sql, params);
+    return db.select(sql, safeParams);
   }
 
   // Web client-side: call database server action
   const { serverDbSelect } = await import('@/app/actions-client/db');
-  const result = await serverDbSelect(sql, params);
+  const result = await serverDbSelect(sql, safeParams);
   if (!result.success) throw new Error(result.error || 'Database query failed');
   return result.data || [];
 }
@@ -49,10 +50,12 @@ export async function dbExecute(
   sql: string,
   params: any[] = []
 ): Promise<{ rowsAffected: number; lastInsertId?: number }> {
+  // Map undefined to null to prevent serialization errors in Tauri IPC
+  const safeParams = params.map(p => p === undefined ? null : p);
   if (isServer) {
     // Server-side: import and execute better-sqlite3 directly (web dev mode)
     const { execute } = require('./client');
-    const result = execute(sql, params);
+    const result = execute(sql, safeParams);
     return {
       rowsAffected: result.changes,
       lastInsertId: Number(result.lastInsertRowid),
@@ -61,7 +64,7 @@ export async function dbExecute(
 
   if (isTauriEnv()) {
     const db = await getTauriDb();
-    const result = await db.execute(sql, params);
+    const result = await db.execute(sql, safeParams);
     return {
       rowsAffected: result.rowsAffected,
       lastInsertId: result.lastInsertId,
@@ -70,7 +73,7 @@ export async function dbExecute(
 
   // Web client-side: call database server action
   const { serverDbExecute } = await import('@/app/actions-client/db');
-  const result = await serverDbExecute(sql, params);
+  const result = await serverDbExecute(sql, safeParams);
   if (!result.success) throw new Error(result.error || 'Database execution failed');
   return result.data;
 }

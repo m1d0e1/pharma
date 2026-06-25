@@ -68,6 +68,11 @@ export default function PurchaseReturnClient() {
         quantity: 0, // This is the return quantity
         max_quantity: item.quantity, // Max allowed to return
         unit_price: item.cost_price || 0,
+        original_unit: item.unit || 'large',
+        unit: item.unit || 'large',
+        base_price: item.cost_price || 0, // Store original base cost price
+        large_to_medium: item.large_to_medium || 1,
+        medium_to_small: item.medium_to_small || 1,
       })));
     } else {
       toast.error('لم يتم العثور على تفاصيل الفاتورة');
@@ -83,6 +88,29 @@ export default function PurchaseReturnClient() {
         if (value > max) value = max;
         if (value < 0) value = 0;
       }
+      
+      if (field === 'unit') {
+        // Recalculate price based on unit change, from original base cost price
+        const item = newItems[index];
+        const oldUnit = item.unit;
+        let originalBasePrice = item.base_price;
+        
+        // If the original invoice unit was 'medium', the cost_price we have is already medium. Let's find true 'large' base price:
+        if (item.original_unit === 'medium') {
+            originalBasePrice = item.base_price * item.large_to_medium;
+        } else if (item.original_unit === 'small') {
+            originalBasePrice = item.base_price * item.large_to_medium * item.medium_to_small;
+        }
+
+        if (value === 'large') {
+          newItems[index].unit_price = originalBasePrice;
+        } else if (value === 'medium') {
+          newItems[index].unit_price = originalBasePrice / item.large_to_medium;
+        } else if (value === 'small') {
+          newItems[index].unit_price = originalBasePrice / (item.large_to_medium * item.medium_to_small);
+        }
+      }
+
       newItems[index] = { ...newItems[index], [field]: value };
       return newItems;
     });
@@ -202,7 +230,7 @@ export default function PurchaseReturnClient() {
                     <tr key={idx} className="group">
                       <td className="p-3 font-medium text-slate-800 dark:text-slate-200">{item.drug_name}</td>
                       <td className="p-3 text-slate-500">
-                        {item.max_quantity} {item.unit === 'large' ? 'علبة' : item.unit === 'medium' ? 'شريط' : 'وحدة'}
+                        {item.max_quantity} {item.original_unit === 'large' ? 'علبة' : item.original_unit === 'medium' ? 'شريط' : 'وحدة'}
                       </td>
                       <td className="p-3 flex items-center justify-center gap-2">
                         <input
