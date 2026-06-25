@@ -164,6 +164,11 @@ fn main() {
                 let main_window = app.get_webview_window("main").unwrap();
                 main_window.maximize().unwrap();
                 
+                // Attach window-specific menu handler
+                main_window.on_menu_event(|window, event| {
+                    handle_menu_event(window, event.id().as_ref());
+                });
+                
                 Ok(())
             })
             .plugin(
@@ -175,121 +180,119 @@ fn main() {
             .plugin(tauri_plugin_updater::Builder::new().build())
             .plugin(tauri_plugin_process::init())
             .plugin(tauri_plugin_shell::init())
-            .on_menu_event(|app, event| {
-            let id = event.id.as_ref();
-            let route = match id {
-                // Actions
-                "new_window" => {
-                    let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis().to_string();
-                    if let Ok(w) = tauri::WebviewWindowBuilder::new(
-                        app,
-                        format!("window_{}", timestamp),
-                        tauri::WebviewUrl::App("/".into())
-                    )
-                    .title("Pharma Dashboard")
-                    .inner_size(1280.0, 800.0)
-                    .min_inner_size(800.0, 600.0)
-                    .menu(app.menu().unwrap())
-                    .build() {
-                        let _ = w.maximize();
-                    }
-                    return;
-                }
-                "print" => {
-                    let _ = app.emit("menu-action", "print");
-                    return;
-                }
-                "logout" => {
-                    let _ = app.emit("menu-action", "logout");
-                    return;
-                }
-                "update_program" => {
-                    let _ = app.emit("menu-action", "update");
-                    return;
-                }
-                "help_shortcuts" => {
-                    let _ = app.emit("menu-action", "shortcuts");
-                    return;
-                }
-                "help_about" => {
-                    let _ = app.emit("menu-action", "about");
-                    return;
-                }
-                
-                // Routes
-                "pos" => "/pos",
-                "purchases_new" | "purchases_new2" => "/purchases/new",
-                "dashboard" => "/",
-                "receipts" => "/receipts",
-                "sales" => "/sales",
-                "reports_sales" | "reports_sales2" => "/reports/sales",
-                "sales_delivery" => "/sales/delivery",
-                "sales_cogs" => "/sales/cogs",
-                "sales_settlement" => "/sales/settlement",
-                "inventory" => "/inventory",
-                "inventory_low_stock" => "/inventory/low-stock",
-                "stores_shortages" => "/stores/shortages",
-                "inventory_item_movements" => "/inventory/item-movements",
-                "restock" => "/restock",
-                "inventory_settlement" => "/inventory/settlement",
-                "inventory_opening_balances" => "/inventory/opening-balances",
-                "purchases" => "/purchases",
-                "purchase_orders" => "/purchase-orders",
-                "purchases_suppliers" => "/purchases/suppliers",
-                "purchases_returns" => "/purchases/returns",
-                "purchases_general_returns" => "/purchases/general-returns",
-                "returns" => "/returns",
-                "stores_items" => "/stores/items",
-                "stores_alternatives" => "/stores/alternatives",
-                "stores_categories" => "/stores/categories",
-                "stores_nature" => "/stores/nature",
-                "stores_usage" => "/stores/usage",
-                "stores_units" => "/stores/units",
-                "stores_indications" => "/stores/indications",
-                "stores_drug_indications" => "/stores/drug-indications",
-                "stores_manufacturers" => "/stores/manufacturers",
-                "stores_scientific_groups" => "/stores/scientific-groups",
-                "stores_adjustments" => "/stores/adjustments",
-                "stores_adjustment_reasons" => "/stores/adjustment-reasons",
-                "stores_delete_items" => "/stores/delete-items",
-                "accounts" => "/accounts",
-                "accounts_cash_transactions" => "/accounts/cash-transactions",
-                "finance_handover" => "/finance/handover",
-                "finance_banks" => "/finance/banks",
-                "finance_cards" => "/finance/cards",
-                "finance_pos_management" => "/finance/pos-management",
-                "finance_accounts" => "/finance/accounts",
-                "accounts_settings_trial_balance" => "/accounts/settings/trial-balance",
-                "reports" => "/reports",
-                "reports_trial_balance" => "/reports/trial-balance",
-                "reports_purchases" => "/reports/purchases",
-                "expenses" => "/expenses",
-                "shifts" => "/shifts",
-                "patients" => "/patients",
-                "interactions" => "/interactions",
-                "staff" => "/staff",
-                "staff_manage" => "/staff/manage",
-                "staff_roles" => "/staff/roles",
-                "audit" => "/audit",
-                "settings" => "/settings",
-                _ => return,
-            };
+            .invoke_handler(tauri::generate_handler![
+                commands::auth::bcrypt_hash,
+                commands::auth::bcrypt_compare,
+            ])
+            .run(tauri::generate_context!())
+            .expect("error while running tauri application");
+}
 
-            // Emit to the focused window; fall back to 'main' (menu clicks defocus windows on Windows)
-            let windows = app.webview_windows();
-            let target = windows.values()
-                .find(|w| w.is_focused().unwrap_or(false))
-                .or_else(|| windows.get("main"));
-            if let Some(window) = target {
-                let _ = window.emit("menu-navigate", route);
-            } else {
-                let _ = app.emit("menu-navigate", route);
+fn handle_menu_event(window: &tauri::Window, id: &str) {
+    let route = match id {
+        // Actions
+        "new_window" => {
+            let app = window.app_handle();
+            let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis().to_string();
+            if let Ok(w) = tauri::WebviewWindowBuilder::new(
+                app,
+                format!("window_{}", timestamp),
+                tauri::WebviewUrl::App("/".into())
+            )
+            .title("Pharma Dashboard")
+            .inner_size(1280.0, 800.0)
+            .min_inner_size(800.0, 600.0)
+            .build() {
+                if let Some(menu) = app.menu() {
+                    let _ = w.set_menu(menu);
+                }
+                let _ = w.maximize();
+                w.on_menu_event(|win, event| {
+                    handle_menu_event(win, event.id().as_ref());
+                });
             }
-        })
-        .invoke_handler(tauri::generate_handler![
-            commands::auth::bcrypt_hash,
-            commands::auth::bcrypt_compare,
-        ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+            return;
+        }
+        "print" => {
+            let _ = window.emit("menu-action", "print");
+            return;
+        }
+        "logout" => {
+            let _ = window.emit("menu-action", "logout");
+            return;
+        }
+        "update_program" => {
+            let _ = window.emit("menu-action", "update");
+            return;
+        }
+        "help_shortcuts" => {
+            let _ = window.emit("menu-action", "shortcuts");
+            return;
+        }
+        "help_about" => {
+            let _ = window.emit("menu-action", "about");
+            return;
+        }
+        
+        // Routes
+        "pos" => "/pos",
+        "purchases_new" | "purchases_new2" => "/purchases/new",
+        "dashboard" => "/",
+        "receipts" => "/receipts",
+        "sales" => "/sales",
+        "reports_sales" | "reports_sales2" => "/reports/sales",
+        "sales_delivery" => "/sales/delivery",
+        "sales_cogs" => "/sales/cogs",
+        "sales_settlement" => "/sales/settlement",
+        "inventory" => "/inventory",
+        "inventory_low_stock" => "/inventory/low-stock",
+        "stores_shortages" => "/stores/shortages",
+        "inventory_item_movements" => "/inventory/item-movements",
+        "restock" => "/restock",
+        "inventory_settlement" => "/inventory/settlement",
+        "inventory_opening_balances" => "/inventory/opening-balances",
+        "purchases" => "/purchases",
+        "purchase_orders" => "/purchase-orders",
+        "purchases_suppliers" => "/purchases/suppliers",
+        "purchases_returns" => "/purchases/returns",
+        "purchases_general_returns" => "/purchases/general-returns",
+        "returns" => "/returns",
+        "stores_items" => "/stores/items",
+        "stores_alternatives" => "/stores/alternatives",
+        "stores_categories" => "/stores/categories",
+        "stores_nature" => "/stores/nature",
+        "stores_usage" => "/stores/usage",
+        "stores_units" => "/stores/units",
+        "stores_indications" => "/stores/indications",
+        "stores_drug_indications" => "/stores/drug-indications",
+        "stores_manufacturers" => "/stores/manufacturers",
+        "stores_scientific_groups" => "/stores/scientific-groups",
+        "stores_adjustments" => "/stores/adjustments",
+        "stores_adjustment_reasons" => "/stores/adjustment-reasons",
+        "stores_delete_items" => "/stores/delete-items",
+        "accounts" => "/accounts",
+        "accounts_cash_transactions" => "/accounts/cash-transactions",
+        "finance_handover" => "/finance/handover",
+        "finance_banks" => "/finance/banks",
+        "finance_cards" => "/finance/cards",
+        "finance_pos_management" => "/finance/pos-management",
+        "finance_accounts" => "/finance/accounts",
+        "accounts_settings_trial_balance" => "/accounts/settings/trial-balance",
+        "reports" => "/reports",
+        "reports_trial_balance" => "/reports/trial-balance",
+        "reports_purchases" => "/reports/purchases",
+        "expenses" => "/expenses",
+        "shifts" => "/shifts",
+        "patients" => "/patients",
+        "interactions" => "/interactions",
+        "staff" => "/staff",
+        "staff_manage" => "/staff/manage",
+        "staff_roles" => "/staff/roles",
+        "audit" => "/audit",
+        "settings" => "/settings",
+        _ => return,
+    };
+
+    // Emit only to THIS window
+    let _ = window.emit("menu-navigate", route);
 }

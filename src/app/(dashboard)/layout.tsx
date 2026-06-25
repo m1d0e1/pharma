@@ -104,15 +104,17 @@ export default function DashboardLayout({
 
     const setupListeners = async () => {
       try {
-        const { listen } = await import('@tauri-apps/api/event');
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
         if (!active) return;
         
-        unlistenNavigate = await listen<string>('menu-navigate', (event) => {
+        const currentWindow = getCurrentWindow();
+        
+        unlistenNavigate = await currentWindow.listen<string>('menu-navigate', (event) => {
           console.log('menu-navigate received:', event.payload);
           router.push(event.payload);
         });
 
-        unlistenAction = await listen<string>('menu-action', async (event) => {
+        unlistenAction = await currentWindow.listen<string>('menu-action', async (event) => {
           const action = event.payload;
           console.log('menu-action received:', action);
           
