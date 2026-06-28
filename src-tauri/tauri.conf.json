@@ -1,6 +1,6 @@
 {
     "productName": "Pharmacy Local Enforcer",
-    "version": "0.2.15",
+    "version": "0.2.20",
     "identifier": "com.pharma.system",
     "build": {
         "beforeDevCommand": "cross-env NEXT_PUBLIC_TAURI=1 next dev",
@@ -21,7 +21,7 @@
             }
         ],
         "security": {
-            "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+            "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'self' https://api.github.com https://github.com https://*.github.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
         },
         "withGlobalTauri": true
     },
