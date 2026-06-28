@@ -279,8 +279,8 @@ export default function DashboardPage() {
             <button 
               onClick={async () => {
                 try {
-                  const { emit } = await import('@tauri-apps/api/event');
-                  await emit('menu-action', 'update');
+                  const { getCurrentWindow } = await import('@tauri-apps/api/window');
+                  await getCurrentWindow().emit('menu-action', 'update');
                 } catch (e) {
                   console.error(e);
                 }
