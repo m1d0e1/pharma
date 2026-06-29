@@ -16,6 +16,12 @@ fn main() {
             description: "initial_schema",
             sql: include_str!("../migrations/001_initial.sql"),
             kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 2,
+            description: "performance_tuning",
+            sql: include_str!("../migrations/002_performance.sql"),
+            kind: MigrationKind::Up,
         }
     ];
 
