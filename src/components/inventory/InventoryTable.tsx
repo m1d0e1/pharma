@@ -131,7 +131,15 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
                     className="group hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors cursor-context-menu relative"
                     onContextMenu={(e) => {
                       e.preventDefault();
-                      setContextMenu({ x: e.clientX, y: e.clientY, item });
+                      const menuWidth = 192;
+                      const menuHeight = 220;
+                      let x = e.clientX;
+                      let y = e.clientY;
+                      if (x + menuWidth > window.innerWidth) x = window.innerWidth - menuWidth - 12;
+                      if (y + menuHeight > window.innerHeight) y = window.innerHeight - menuHeight - 12;
+                      if (x < 12) x = 12;
+                      if (y < 12) y = 12;
+                      setContextMenu({ x, y, item });
                     }}
                   >
                     <td className="px-8 py-5">

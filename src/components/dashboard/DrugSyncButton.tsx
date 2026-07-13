@@ -5,6 +5,7 @@ import { RefreshCw, CheckCircle2 } from 'lucide-react';
 import { syncFromCloud } from '@/lib/sync/universal';
 import { toast } from 'react-hot-toast';
 import { useRouter } from 'next/navigation';
+import { secureCache } from '@/lib/cache/secure_cache';
 
 export default function DrugSyncButton() {
   const router = useRouter();
@@ -18,6 +19,10 @@ export default function DrugSyncButton() {
       console.log('DrugSyncButton: Sync result received:', result);
       if (result.success) {
         toast.success(result.message || 'تم تحديث قائمة الأدوية بنجاح');
+        
+        // Reload cache in background so UI picks up new drugs
+        secureCache.reload().catch(e => console.error('Cache reload failed:', e));
+        
         // Wait a bit so the user can see the success message
         setTimeout(() => {
           router.refresh();

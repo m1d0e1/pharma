@@ -12,6 +12,7 @@ import {
   ShoppingCart,
   UserCog,
   Calendar,
+  PlusCircle,
   RotateCcw,
   Wallet,
   AlertTriangle,
@@ -35,6 +36,7 @@ import { cn } from '@/lib/utils'
 
 const navItems = [
   // Sales
+  { category: 'المبيعات', href: '/pos', label: 'فاتورة مبيعات جديدة', icon: PlusCircle, roles: ['owner', 'admin', 'pharmacist'] },
   { category: 'المبيعات', href: '/', label: 'لوحة التحكم', icon: Home, roles: ['owner', 'admin', 'pharmacist'] },
   { category: 'المبيعات', href: '/receipts', label: 'الفواتير', icon: FileText, roles: ['owner', 'admin', 'pharmacist'], permission: 'can_view_receipts' },
   { category: 'المبيعات', href: '/sales', label: 'المبيعات والتحصيل', icon: ShoppingCart, roles: ['owner', 'admin', 'pharmacist'] },
@@ -148,8 +150,7 @@ export default function SidebarNav({ userRole, userPermissions }: Props) {
               {items.map((item) => {
                 const Icon = item.icon
                 const isActive = pathname === item.href || 
-                                 (item.href !== '/' && pathname?.startsWith(item.href)) ||
-                                 (item.href === '/sales' && pathname?.startsWith('/pos'))
+                                 (item.href !== '/' && pathname?.startsWith(item.href))
                 const isHighPriority = highPriorityRoutes.has(item.href)
                 
                 return (
@@ -206,8 +207,7 @@ export default function SidebarNav({ userRole, userPermissions }: Props) {
             return mobileNavItems.map((item) => {
               const Icon = item.icon
               const isActive = pathname === item.href || 
-                               (item.href !== '/' && pathname?.startsWith(item.href)) ||
-                               (item.href === '/sales' && pathname?.startsWith('/pos'))
+                               (item.href !== '/' && pathname?.startsWith(item.href))
               const isHighPriority = highPriorityRoutes.has(item.href)
               return (
                 <Link

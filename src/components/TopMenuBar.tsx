@@ -48,8 +48,9 @@ const MENUS: Menu[] = [
   },
   {
     id: 'sales', label: 'المبيعات',
-    ownerRoutes: ['/receipts', '/sales', '/reports/sales', '/sales/delivery', '/sales/cogs', '/sales/settlement'],
+    ownerRoutes: ['/pos', '/receipts', '/sales', '/reports/sales', '/sales/delivery', '/sales/cogs', '/sales/settlement'],
     items: [
+      { type: 'link', label: 'فاتورة مبيعات جديدة', href: '/pos',            icon: PlusCircle,     roles: ['owner','admin','pharmacist'] },
       { type: 'link', label: 'الفواتير',          href: '/receipts',         icon: Receipt,        roles: ['owner','admin','pharmacist'], permission: 'view_all_sales' },
       { type: 'link', label: 'المبيعات والتحصيل', href: '/sales',            icon: ShoppingCart,   roles: ['owner','admin','pharmacist'] },
       { type: 'separator' },

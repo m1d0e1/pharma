@@ -311,6 +311,15 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
                   value={barcode}
                   placeholder="اختياري"
                   onChange={(e) => setBarcode(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      const form = e.currentTarget.form;
+                      setTimeout(() => {
+                        form?.requestSubmit();
+                      }, 50);
+                    }
+                  }}
                   className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all font-bold"
                 />
               </div>
@@ -369,9 +378,19 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
     {isQuickAddOpen && (
       <QuickAddDrugModal 
         onClose={() => setIsQuickAddOpen(false)}
-        onSuccess={(id, name, large_to_medium) => {
-          setSelectedDrug({ id, trade_name: name, active_ingredient: '', official_price: 0, large_to_medium: large_to_medium || undefined })
+        onSuccess={(id, name, unit, officialPrice, large_to_medium, barcodeVal) => {
+          setSelectedDrug({ 
+            id, 
+            trade_name: name, 
+            active_ingredient: '', 
+            official_price: officialPrice, 
+            large_unit: unit || undefined, 
+            large_to_medium: large_to_medium || undefined 
+          })
+          setSelectedUnit(unit || 'علبة')
           setLargeToMedium(large_to_medium ? large_to_medium.toString() : '')
+          setBarcode(barcodeVal || '')
+          setLocalPrice(officialPrice > 0 ? officialPrice.toString() : '')
           setIsQuickAddOpen(false)
           setStep(2)
         }}

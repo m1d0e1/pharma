@@ -8,7 +8,7 @@ import { useHotkeys } from 'react-hotkeys-hook'
 
 interface Props {
   onClose: () => void
-  onSuccess: (drugId: number, tradeName: string, large_to_medium?: number | null) => void
+  onSuccess: (drugId: number, tradeName: string, large_unit: string, official_price: number, large_to_medium?: number | null, barcode?: string) => void
 }
 
 export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
@@ -23,7 +23,8 @@ export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
     manufacturer: '',
     unit: '',
     category: 'Medicines',
-    large_to_medium: ''
+    large_to_medium: '',
+    barcode: ''
   })
 
   useEffect(() => {
@@ -40,16 +41,18 @@ export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
     e.preventDefault()
     setIsSubmitting(true)
     const largeToMediumVal = formData.large_to_medium ? parseInt(formData.large_to_medium) : null
+    const officialPriceVal = parseFloat(formData.official_price) || 0
     const res = await addMasterDrugAction({
       ...formData,
-      official_price: parseFloat(formData.official_price) || 0,
+      large_unit: formData.unit,
+      official_price: officialPriceVal,
       large_to_medium: largeToMediumVal,
       is_medicine: 1
     })
     setIsSubmitting(false)
     if (res.success) {
       toast.success('تمت إضافة الصنف لقاعدة البيانات بنجاح')
-      onSuccess(res.id as number, formData.trade_name_en || formData.trade_name, largeToMediumVal)
+      onSuccess(res.id as number, formData.trade_name_en || formData.trade_name, formData.unit, officialPriceVal, largeToMediumVal, formData.barcode)
     } else {
       toast.error(res.error || 'فشل إضافة الصنف')
     }
@@ -204,20 +207,44 @@ export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
               </div>
             </div>
 
-            {/* Row 4: Strips per Box */}
-            <div>
-              <label className={labelClass}>
-                <Pill className="w-3 h-3 text-indigo-500" />
-                عدد الشرائط بالعلبة (Strips per Box)
-              </label>
-              <input
-                type="number"
-                min="1"
-                value={formData.large_to_medium}
-                onChange={(e) => setFormData({ ...formData, large_to_medium: e.target.value })}
-                className={inputClass}
-                placeholder="مثال: 3 (اختياري)"
-              />
+            {/* Row 4: Barcode + Strips per Box */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className={labelClass}>
+                  <Box className="w-3 h-3 text-slate-500" />
+                  الباركود (Barcode)
+                </label>
+                <input
+                  type="text"
+                  value={formData.barcode}
+                  onChange={(e) => setFormData({ ...formData, barcode: e.target.value })}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      const form = e.currentTarget.form;
+                      setTimeout(() => {
+                        form?.requestSubmit();
+                      }, 50);
+                    }
+                  }}
+                  className={inputClass}
+                  placeholder="رقم الباركود (اختياري)"
+                />
+              </div>
+              <div>
+                <label className={labelClass}>
+                  <Pill className="w-3 h-3 text-indigo-500" />
+                  عدد الشرائط بالعلبة
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  value={formData.large_to_medium}
+                  onChange={(e) => setFormData({ ...formData, large_to_medium: e.target.value })}
+                  className={inputClass}
+                  placeholder="مثال: 3 (اختياري)"
+                />
+              </div>
             </div>
 
           </div>

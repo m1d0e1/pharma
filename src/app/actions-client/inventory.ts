@@ -141,6 +141,10 @@ export async function addInventoryAction(formData: AddInventoryInput) {
     if (large_to_medium !== undefined && large_to_medium !== null) {
       await db.prepare('UPDATE master_drugs SET large_to_medium = ? WHERE id = ?').run(large_to_medium, drug_id);
     }
+
+    if (barcode) {
+      await db.prepare('UPDATE master_drugs SET barcode = ? WHERE id = ? AND (barcode IS NULL OR barcode = "")').run(barcode, drug_id);
+    }
     
     console.log('[addInventoryAction] Step 5 result: INSERT successful');
 
@@ -643,12 +647,23 @@ export async function getDrugDetailsFullAction(drugId: number | string) {
 
     // Get basic drug info
     const drug = await db.prepare(`
-      SELECT *, official_price as min_price FROM master_drugs WHERE id = ?
+      SELECT * FROM master_drugs WHERE id = ?
     `).get(drugId) as any;
 
     if (!drug) {
       return { success: false, error: 'Drug not found' };
     }
+
+    // Get min local selling price from active inventory batches
+    const minPriceRow = await db.prepare(`
+      SELECT MIN(local_selling_price) as local_price 
+      FROM inventory 
+      WHERE drug_id = ? AND quantity > 0
+    `).get(drugId) as { local_price: number | null };
+
+    drug.min_price = minPriceRow?.local_price !== null && minPriceRow?.local_price !== undefined
+      ? minPriceRow.local_price 
+      : drug.official_price;
 
     // Parse units
     try {

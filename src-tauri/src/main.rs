@@ -22,6 +22,12 @@ fn main() {
             description: "performance_tuning",
             sql: include_str!("../migrations/002_performance.sql"),
             kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 3,
+            description: "sync_metadata",
+            sql: include_str!("../migrations/003_sync_metadata.sql"),
+            kind: MigrationKind::Up,
         }
     ];
 
@@ -72,6 +78,7 @@ fn main() {
 
             // 4. المبيعات (Sales)
             let sales_menu = Submenu::with_items(app, "المبيعات", true, &[
+                &MenuItem::with_id(app, "pos", "فاتورة مبيعات جديدة", true, None::<&str>)?,
                 &MenuItem::with_id(app, "receipts", "الفواتير", true, None::<&str>)?,
                 &MenuItem::with_id(app, "sales", "المبيعات والتحصيل", true, None::<&str>)?,
                 &MenuItem::with_id(app, "sales_delivery", "توصيل منزلي", true, None::<&str>)?,

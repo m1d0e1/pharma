@@ -269,9 +269,9 @@ export async function barcodeLookupAction(barcode: string) {
         i.id as inventory_id
       FROM master_drugs md
       INNER JOIN inventory i ON md.id = i.drug_id
-      WHERE i.barcode = ?
+      WHERE (i.barcode = ? OR md.barcode = ?)
       LIMIT 1
-    `).get(barcode) as any;
+    `).get(barcode, barcode) as any;
 
     if (!drug) {
       return { success: true, data: null };

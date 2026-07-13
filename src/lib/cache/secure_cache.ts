@@ -8,7 +8,7 @@ export interface MasterDrug {
   unit: string;
   category: string;
   manufacturer: string;
-  base_price: number;
+  base_price: number; // alias of official_price
   active_ingredient: string;
   official_price: number;
   trade_name_en: string;
@@ -57,7 +57,7 @@ class SecureCache {
         this.drugsList = await dbSelect<MasterDrug>(`
           SELECT id, trade_name, trade_name_en, generic_name, active_ingredient,
                  barcode, manufacturer, is_medicine, is_service, stop_dealing,
-                 official_price, base_price
+                 official_price, official_price AS base_price
           FROM master_drugs
         `);
         
@@ -76,6 +76,14 @@ class SecureCache {
     })();
 
     return this.loadingPromise;
+  }
+
+  async reload() {
+    this.loaded = false;
+    this.loadingPromise = null;
+    this.drugs.clear();
+    this.drugsList = [];
+    await this.load();
   }
 
   getDrug(id: number): MasterDrug | undefined {

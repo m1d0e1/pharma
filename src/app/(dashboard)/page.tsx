@@ -12,6 +12,7 @@ import {
   Calendar,
   ArrowUpLeft,
   ArrowDownLeft,
+  Megaphone,
 } from 'lucide-react';
 import { getClientSession } from '@/lib/auth/local';
 import { dbSelect, dbGet } from '@/lib/db/tauri';
@@ -22,7 +23,9 @@ const ReorderAlerts = dynamic(() => import('@/components/dashboard/ReorderAlerts
 const ShiftManagement = dynamic(() => import('@/components/dashboard/ShiftManagement'));
 const SubscriptionStatus = dynamic(() => import('@/components/dashboard/SubscriptionStatus'));
 const DrugSyncButton = dynamic(() => import('@/components/dashboard/DrugSyncButton'));
+const InteractionsSyncButton = dynamic(() => import('@/components/dashboard/InteractionsSyncButton'));
 const CloudStatus = dynamic(() => import('@/components/dashboard/CloudStatus'));
+const NewsBar = dynamic(() => import('@/components/dashboard/NewsBar'), { ssr: false });
 const DashboardCharts = dynamic(() => import('@/components/dashboard/DashboardCharts').then(mod => mod.DashboardCharts));
 const ReceiptDetailsModal = dynamic(() => import('@/components/receipts/ReceiptDetailsModal'), { ssr: false });
 
@@ -45,6 +48,31 @@ export default function DashboardPage() {
   const [loadingReceipt, setLoadingReceipt] = useState(false);
   const [isPharmacist, setIsPharmacist] = useState(false);
   const [isTauri, setIsTauri] = useState(false);
+  const [newsBarEnabled, setNewsBarEnabled] = useState(true);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      setNewsBarEnabled(localStorage.getItem('news_bar_enabled') !== 'false');
+      
+      const handleStateChange = () => {
+        setNewsBarEnabled(localStorage.getItem('news_bar_enabled') !== 'false');
+      };
+      window.addEventListener('news-bar-state-changed', handleStateChange);
+      return () => {
+        window.removeEventListener('news-bar-state-changed', handleStateChange);
+      };
+    }
+  }, []);
+
+  const toggleNewsBar = () => {
+    const nextState = !newsBarEnabled;
+    localStorage.setItem('news_bar_enabled', nextState.toString());
+    if (nextState) {
+      localStorage.removeItem('news_dismissed_id');
+    }
+    setNewsBarEnabled(nextState);
+    window.dispatchEvent(new Event('news-bar-toggle'));
+  };
 
   useEffect(() => {
     setIsTauri(typeof window !== 'undefined' && ((window as any).__TAURI__ !== undefined || (window as any).__TAURI_INTERNALS__ !== undefined));
@@ -268,6 +296,7 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-12 md:space-y-14 animate-in slide-in-up" dir="rtl">
+      <NewsBar />
       {/* Page Header */}
       <div className="page-header flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
@@ -299,6 +328,19 @@ export default function DashboardPage() {
             </p>
           </div>
           <DrugSyncButton />
+          <InteractionsSyncButton />
+          <button
+            onClick={toggleNewsBar}
+            className={`
+              flex items-center gap-2 px-4 py-2.5 rounded-xl font-bold shadow-md transition-all active:scale-95 border text-sm
+              ${newsBarEnabled 
+                ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800 hover:bg-amber-200' 
+                : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-800 hover:bg-slate-200'}
+            `}
+          >
+            <Megaphone className="w-4 h-4" />
+            {newsBarEnabled ? 'إخفاء الأخبار' : 'عرض الأخبار'}
+          </button>
           <div className="px-5 py-3 bg-gradient-to-r from-primary-500/10 to-primary-600/10 dark:from-primary-900/30 dark:to-primary-800/30 rounded-xl border border-primary-200/50 dark:border-primary-800/50 backdrop-blur-sm w-full sm:w-auto">
             <p className="text-sm md:text-base font-medium text-primary-700 dark:text-primary-300 flex items-center justify-center sm:justify-start">
               <Calendar className="inline w-4 h-4 ml-2" />

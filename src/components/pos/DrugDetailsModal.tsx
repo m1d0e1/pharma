@@ -245,7 +245,14 @@ export default function DrugDetailsModal({ drugId, onClose }: DrugDetailsModalPr
               <InfoItem label="طبيعة الصنف" value={isEditing ? formData?.item_nature : drugData?.item_nature || '---'} isEditing={isEditing} onChange={(val: string) => setFormData({...formData, item_nature: val})} />
               <InfoItem label="طريقة الاستخدام" value={isEditing ? formData?.usage_method : drugData?.usage_method || '---'} isEditing={isEditing} onChange={(val: string) => setFormData({...formData, usage_method: val})} />
               <InfoItem label="المنشأ" value={isEditing ? formData?.origin : drugData?.origin || 'محلل'} isEditing={isEditing} onChange={(val: string) => setFormData({...formData, origin: val})} />
-              <InfoItem label="السعر الرسمي" value={isEditing ? formData?.official_price : `${drugData?.official_price} ج.م`} type="number" isEditing={isEditing} onChange={(val: string) => setFormData({...formData, official_price: Number(val)})} color="text-emerald-600" />
+              <InfoItem label="السعر الرسمي" value={isEditing ? formData?.official_price : `${drugData?.official_price} ج.م`} type="number" isEditing={isEditing} onChange={(val: string) => {
+                const newPrice = Number(val);
+                const updates: any = { official_price: newPrice };
+                if (!drugData?.total_stock || drugData?.min_price === drugData?.official_price) {
+                  updates.min_price = newPrice;
+                }
+                setFormData({...formData, ...updates});
+              }} color="text-emerald-600" />
               <InfoItem label="سعر البيع" value={isEditing ? formData?.min_price : `${drugData?.min_price} ج.م`} isEditing={false} color="text-blue-600" />
               
               <div className="col-span-full grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">

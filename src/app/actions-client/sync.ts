@@ -61,31 +61,50 @@ export async function syncFromCloudAction() {
     // 2. Get Supabase Client (The Cloud Admin)
     const supabase = await createClient();
 
-    // 3. Verify Subscription (First check Cloud)
-    console.log('Verifying cloud subscription...');
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
-    if (authError || !user) {
-      console.warn('Sync failed: User not logged in to cloud');
-      return { success: false, error: 'يجب تسجيل الدخول للسحابة للتحقق من الاشتراك' };
+    // 3. Check Cloud User (Optional for public data sync)
+    console.log('Checking cloud auth...');
+    const { data, error: authError } = await supabase.auth.getUser();
+    const user = data?.user;
+    const isLoggedIn = !!user && !authError;
+
+    let profile: any = null;
+    if (isLoggedIn && user) {
+      const { data: p } = await supabase
+        .from('profiles')
+        .select('*, pharmacies(*)')
+        .eq('id', user.id)
+        .single();
+      profile = p;
+
+      if (profile?.pharmacy_id) {
+        // Save Pharmacy Config Locally
+        const configStmt = db.prepare('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)');
+        await configStmt.run('pharmacy_id', profile.pharmacy_id);
+        await configStmt.run('pharmacy_name', profile.pharmacies?.name || '');
+      }
     }
 
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('*, pharmacies(*)')
-      .eq('id', user.id)
-      .single();
+    // --- INCREMENTAL SYNC LOGIC ---
+    
+    // Ensure table exists (self-healing if migrations haven't run/restarted yet)
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS sync_metadata (
+        table_name TEXT PRIMARY KEY,
+        last_synced_at TEXT
+      )
+    `);
+    
+    // Get last sync timestamps
+    const drugsSyncRow = db.prepare('SELECT last_synced_at FROM sync_metadata WHERE table_name = ?').get('cloud_drugs') as any;
+    const intSyncRow = db.prepare('SELECT last_synced_at FROM sync_metadata WHERE table_name = ?').get('cloud_drug_interactions') as any;
+    
+    const lastDrugsSync = drugsSyncRow?.last_synced_at || '1970-01-01T00:00:00Z';
+    const lastIntSync = intSyncRow?.last_synced_at || '1970-01-01T00:00:00Z';
+    
+    const nowSyncTime = new Date().toISOString();
 
-    if (!profile?.pharmacy_id) {
-      return { success: false, error: 'لم يتم العثور على صيدلية مرتبطة بهذا الحساب' };
-    }
-
-    // 4. Save Pharmacy Config Locally
-    const configStmt = db.prepare('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)');
-    await configStmt.run('pharmacy_id', profile.pharmacy_id);
-    await configStmt.run('pharmacy_name', profile.pharmacies?.name || '');
-
-    // 5. Fetch and Sync Master Drugs (The Brain) - Dynamic Batching
-    console.log('Fetching master drugs from cloud...');
+    // 5. Fetch and Sync Master Drugs (Incremental)
+    console.log(`Fetching master drugs updated after ${lastDrugsSync}...`);
     let allDrugs: any[] = [];
     let from = 0;
     const batchSize = 1000;
@@ -93,8 +112,10 @@ export async function syncFromCloudAction() {
 
     while (hasMore) {
       const { data: batch, error: drugsError } = await supabase
-        .from('master_drugs')
+        .from('cloud_drugs')
         .select('*')
+        .gt('updated_at', lastDrugsSync)
+        .order('id', { ascending: true })
         .range(from, from + batchSize - 1);
 
       if (drugsError) {
@@ -111,13 +132,21 @@ export async function syncFromCloudAction() {
       }
     }
 
-    console.log(`Total drugs fetched: ${allDrugs.length}`);
+    console.log(`Fetched ${allDrugs.length} new/updated drugs.`);
 
     if (allDrugs.length > 0) {
       const insertDrug = db.prepare(`
-        INSERT OR REPLACE INTO master_drugs 
-        (id, trade_name, trade_name_en, generic_name, active_ingredient, strength, unit, category, manufacturer, base_price, official_price) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO master_drugs 
+        (id, trade_name, trade_name_en, generic_name, active_ingredient, category, manufacturer, official_price) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          trade_name = excluded.trade_name,
+          trade_name_en = excluded.trade_name_en,
+          generic_name = excluded.generic_name,
+          active_ingredient = excluded.active_ingredient,
+          category = excluded.category,
+          manufacturer = excluded.manufacturer,
+          official_price = excluded.official_price
       `);
 
       const transaction = db.transaction(async (drugList) => {
@@ -125,15 +154,12 @@ export async function syncFromCloudAction() {
           await insertDrug.run(
             drug.id,
             drug.trade_name || '',
-            drug.trade_name_en || null,
-            drug.generic_name || null,
-            drug.active_ingredient || drug.generic_name || null,
-            drug.strength || null,
-            drug.unit || null,
+            null, // trade_name_en not in csv
+            null, // generic_name not in csv
+            drug.active_ingredient || null,
             drug.category || null,
             drug.manufacturer || null,
-            drug.base_price || drug.official_price || 0,
-            drug.official_price || 0
+            drug.price || 0
           );
         }
       });
@@ -141,57 +167,120 @@ export async function syncFromCloudAction() {
       await transaction(allDrugs);
     }
 
-    // 6. Fetch all Pharmacists for this Pharmacy
-    const { data: staffMembers } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('pharmacy_id', profile.pharmacy_id);
+    // Update last sync time for drugs
+    const updateSyncMeta = db.prepare('INSERT OR REPLACE INTO sync_metadata (table_name, last_synced_at) VALUES (?, ?)');
+    await updateSyncMeta.run('cloud_drugs', nowSyncTime);
 
-    const syncedUsernames: string[] = [];
+    // 5b. Fetch and Sync Drug Interactions (Incremental)
+    console.log(`Fetching interactions updated after ${lastIntSync}...`);
+    let allInteractions: any[] = [];
+    let intFrom = 0;
+    let intHasMore = true;
 
-    // Clear existing users to ensure a clean sync of current cloud profiles
-    await db.prepare('DELETE FROM users').run();
+    while (intHasMore) {
+      const { data: intBatch, error: intError } = await supabase
+        .from('cloud_drug_interactions')
+        .select('*')
+        .gt('updated_at', lastIntSync)
+        .order('id', { ascending: true })
+        .range(intFrom, intFrom + batchSize - 1);
 
-    if (staffMembers) {
-      const insertUser = db.prepare(`
-        INSERT OR REPLACE INTO users (id, username, role, full_name, pharmacy_id) 
-        VALUES (?, ?, ?, ?, ?)
+      if (intError) {
+        console.error('Interactions fetch error:', intError);
+        return { success: false, error: 'فشل في جلب تداخلات الأدوية من السحابة' };
+      }
+
+      if (intBatch && intBatch.length > 0) {
+        allInteractions = [...allInteractions, ...intBatch];
+        intFrom += batchSize;
+        if (intBatch.length < batchSize) intHasMore = false;
+      } else {
+        intHasMore = false;
+      }
+    }
+
+    console.log(`Fetched ${allInteractions.length} new/updated interactions.`);
+
+    if (allInteractions.length > 0) {
+      const insertInter = db.prepare(`
+        INSERT INTO drug_interactions 
+        (ingredient_a, ingredient_b, description_en) 
+        VALUES (?, ?, ?)
+        ON CONFLICT(ingredient_a, ingredient_b) DO UPDATE SET
+          description_en = excluded.description_en
       `);
 
-      const userTransaction = db.transaction(async (staff) => {
-        for (const member of staff) {
-          let username = member.email || member.username;
-          
-          if (member.id === user.id) {
-            username = user.email || username;
-          }
-
-          if (!username) {
-            username = `user_${member.id.substring(0, 8)}`;
-          }
-
-          syncedUsernames.push(username);
-
-          await insertUser.run(
-            member.id,
-            username,
-            member.role || 'pharmacist',
-            member.full_name || 'Pharmacist',
-            member.pharmacy_id
+      const intTransaction = db.transaction(async (intList) => {
+        for (const inter of intList) {
+          await insertInter.run(
+            inter.drug_1,
+            inter.drug_2,
+            inter.interaction_description
           );
         }
       });
-      await userTransaction(staffMembers);
+
+      await intTransaction(allInteractions);
     }
 
-    console.log(`Sync completed successfully. Synced ${allDrugs.length} drugs and ${staffMembers?.length || 0} users.`);
+    // Update last sync time for interactions
+    await updateSyncMeta.run('cloud_drug_interactions', nowSyncTime);
+
+    // 6. Fetch all Pharmacists for this Pharmacy (only if logged in)
+    let staffMembers: any[] | null = null;
+    const syncedUsernames: string[] = [];
+    
+    if (profile?.pharmacy_id) {
+      const { data: staff } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('pharmacy_id', profile.pharmacy_id);
+      staffMembers = staff;
+
+      // Clear existing users to ensure a clean sync of current cloud profiles
+      await db.prepare('DELETE FROM users').run();
+
+      if (staffMembers) {
+        const insertUser = db.prepare(`
+          INSERT OR REPLACE INTO users (id, username, role, full_name, pharmacy_id) 
+          VALUES (?, ?, ?, ?, ?)
+        `);
+
+        const userTransaction = db.transaction(async (staffList) => {
+          for (const member of staffList) {
+            let username = member.email || member.username;
+            
+            if (member.id === user.id) {
+              username = user.email || username;
+            }
+
+            if (!username) {
+              username = `user_${member.id.substring(0, 8)}`;
+            }
+
+            syncedUsernames.push(username);
+
+            await insertUser.run(
+              member.id,
+              username,
+              member.role || 'pharmacist',
+              member.full_name || 'Pharmacist',
+              member.pharmacy_id
+            );
+          }
+        });
+        await userTransaction(staffMembers);
+      }
+    }
+
+    console.log(`Sync completed successfully. Synced ${allDrugs.length} drugs.`);
     console.log('Synced Usernames:', syncedUsernames);
     
     revalidatePath('/');
 
     return { 
       success: true, 
-      message: `تمت المزامنة بنجاح. تم تحميل ${allDrugs.length} صنفاً.`,
+      message: `تمت المزامنة بنجاح. تم تحميل ${allDrugs.length} صنفاً جديداً/محدثاً.`,
       syncedUsernames: Array.from(new Set(syncedUsernames)) // Deduplicate just in case
     };
 

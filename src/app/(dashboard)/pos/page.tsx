@@ -157,11 +157,51 @@ const POSSearchSidebar = memo(forwardRef<POSSearchSidebarRef, POSSearchSidebarPr
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             data-nav="search-input"
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && searchResults.length > 0) {
-                addToCart(searchResults[0]);
-                setSearchTerm('');
-                setSearchResults([]);
+            onKeyDown={async (e) => {
+              if (e.key === 'Enter') {
+                const currentTerm = searchTerm.trim();
+                if (currentTerm.length > 0) {
+                  e.preventDefault();
+                  try {
+                    const res = await barcodeLookupAction(currentTerm);
+                    if (res.success && res.data) {
+                      const drug = res.data;
+                      addToCart({
+                        ...drug,
+                        reorder_point: drug.reorder_point || 0,
+                        nearest_expiry: drug.nearest_expiry || null,
+                        total_stock: drug.quantity || 0,
+                        min_price: drug.unit_price || drug.official_price,
+                        is_expired: drug.is_expired
+                      });
+                      setSearchTerm('');
+                      setSearchResults([]);
+                      toast.success(`تمت إضافة ${drug.trade_name} مباشرة`);
+                      return;
+                    }
+                  } catch (err) {
+                    console.error('Direct barcode lookup error:', err);
+                  }
+
+                  if (searchResults.length > 0) {
+                    addToCart(searchResults[0]);
+                    setSearchTerm('');
+                    setSearchResults([]);
+                  } else {
+                    try {
+                      const searchRes = await searchDrugsAction(currentTerm);
+                      if (searchRes.success && searchRes.data && searchRes.data.length > 0) {
+                        addToCart(searchRes.data[0]);
+                        setSearchTerm('');
+                        setSearchResults([]);
+                      } else {
+                        toast.error('المنتج غير موجود');
+                      }
+                    } catch (searchErr) {
+                      toast.error('المنتج غير موجود');
+                    }
+                  }
+                }
               } else if (onKeyDown) {
                 onKeyDown(e);
               }
@@ -683,7 +723,15 @@ export default function POSPage() {
 
   const handleContextMenu = (e: React.MouseEvent, drugId: string | number) => {
     e.preventDefault();
-    setContextMenu({ x: e.clientX, y: e.clientY, drugId });
+    const menuWidth = 192;
+    const menuHeight = 220;
+    let x = e.clientX;
+    let y = e.clientY;
+    if (x + menuWidth > window.innerWidth) x = window.innerWidth - menuWidth - 12;
+    if (y + menuHeight > window.innerHeight) y = window.innerHeight - menuHeight - 12;
+    if (x < 12) x = 12;
+    if (y < 12) y = 12;
+    setContextMenu({ x, y, drugId });
   };
 
   const closeContextMenu = () => setContextMenu(null);
