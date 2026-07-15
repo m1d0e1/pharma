@@ -223,7 +223,9 @@ const POSSearchSidebar = memo(forwardRef<POSSearchSidebarRef, POSSearchSidebarPr
                 setSearchResults([]);
               }} 
               className={`w-full flex justify-between items-center p-3 rounded-2xl border text-right transition-all hover:scale-[1.02] active:scale-95 ${
-                drug.is_expired ? 'bg-red-50 dark:bg-red-900/10 border-red-100 opacity-60' : 'bg-white dark:bg-slate-800 border-slate-100 dark:border-slate-700'
+                drug.is_expired ? 'bg-red-50 dark:bg-red-900/10 border-red-100 opacity-60' :
+                drug.total_stock === 0 ? 'bg-slate-50 dark:bg-slate-900/40 border-slate-100 dark:border-slate-800 opacity-40' :
+                'bg-white dark:bg-slate-800 border-slate-100 dark:border-slate-700'
               }`}
             >
               <div className="min-w-0 flex-1">

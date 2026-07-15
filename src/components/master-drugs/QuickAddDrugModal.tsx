@@ -234,15 +234,16 @@ export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
               <div>
                 <label className={labelClass}>
                   <Pill className="w-3 h-3 text-indigo-500" />
-                  عدد الشرائط بالعلبة
+                  عدد الشرائط بالعلبة *
                 </label>
                 <input
                   type="number"
                   min="1"
+                  required
                   value={formData.large_to_medium}
                   onChange={(e) => setFormData({ ...formData, large_to_medium: e.target.value })}
                   className={inputClass}
-                  placeholder="مثال: 3 (اختياري)"
+                  placeholder="مثال: 3 (مطلوب)"
                 />
               </div>
             </div>

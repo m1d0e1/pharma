@@ -141,13 +141,19 @@ export async function searchInventoryAction(query: string) {
 
     const searchLower = query.toLowerCase().trim();
     
-    // Find matching drugs from RAM cache
-    const matchedDrugs = secureCache.getAllDrugs().filter((d: any) => 
+    // Find matching drugs from RAM cache and sort by relevance score
+    const matchedDrugsRaw = secureCache.getAllDrugs().filter((d: any) => 
       (d.trade_name && d.trade_name.toLowerCase().includes(searchLower)) ||
       (d.trade_name_en && d.trade_name_en.toLowerCase().includes(searchLower)) ||
       d.barcode === searchLower ||
       d.id.toString() === searchLower
-    ).slice(0, 100);
+    );
+
+    const matchedDrugs = matchedDrugsRaw
+      .map(drug => ({ drug, score: getRelevanceScore(drug, searchLower) }))
+      .sort((a, b) => b.score - a.score)
+      .map(item => item.drug)
+      .slice(0, 100);
 
     if (matchedDrugs.length === 0) return { success: true, data: [] };
 
@@ -340,7 +346,11 @@ export async function searchMasterDrugsAction(queryOrOptions: string | {
       }
     }
 
-    const merged = Array.from(combinedMap.values()).slice(0, 100);
+    const merged = Array.from(combinedMap.values())
+      .map(drug => ({ drug, score: getRelevanceScore(drug, searchLower) }))
+      .sort((a, b) => b.score - a.score)
+      .map(item => item.drug)
+      .slice(0, 100);
 
     return { success: true, data: merged };
   } catch (error: any) {
@@ -1048,4 +1058,51 @@ export async function removeDrugInteractionAction(id: number) {
     console.error('Remove interaction error:', error);
     return { success: false, error: error.message };
   }
+}
+
+export function getRelevanceScore(drug: any, searchLower: string): number {
+  const tradeEn = (drug.trade_name_en || '').toLowerCase().trim();
+  const tradeAr = (drug.trade_name || '').toLowerCase().trim();
+  const active = (drug.active_ingredient || drug.generic_name || '').toLowerCase().trim();
+  const barcode = (drug.barcode || '').toLowerCase().trim();
+
+  // 1. Exact matches on trade name or barcode
+  if (tradeEn === searchLower || tradeAr === searchLower || barcode === searchLower || String(drug.id) === searchLower) {
+    return 100;
+  }
+
+  // 2. Starts-with match on trade name (initial letters)
+  if (tradeEn.startsWith(searchLower) || tradeAr.startsWith(searchLower)) {
+    return 80;
+  }
+
+  // 3. Starts-with match on any word of trade name
+  const tradeEnWords = tradeEn.split(/[\s\-]+/);
+  const tradeArWords = tradeAr.split(/[\s\-]+/);
+  if (tradeEnWords.some((w: string) => w.startsWith(searchLower)) || tradeArWords.some((w: string) => w.startsWith(searchLower))) {
+    return 70;
+  }
+
+  // 4. Contains match on trade name
+  if (tradeEn.includes(searchLower) || tradeAr.includes(searchLower)) {
+    return 60;
+  }
+
+  // 5. Starts-with match on active ingredient (initial letters)
+  if (active.startsWith(searchLower)) {
+    return 50;
+  }
+
+  // 6. Starts-with match on any word of active ingredient
+  const activeWords = active.split(/[\s\-\+]+/);
+  if (activeWords.some((w: string) => w.startsWith(searchLower))) {
+    return 40;
+  }
+
+  // 7. Contains match on active ingredient
+  if (active.includes(searchLower)) {
+    return 30;
+  }
+
+  return 0;
 }

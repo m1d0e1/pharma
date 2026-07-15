@@ -327,14 +327,15 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
 
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1.5">
-                <label className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">عدد الشرائط بالعلبة (Strips per Box)</label>
+                <label className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">عدد الشرائط بالعلبة (Strips per Box) *</label>
                 <input
                   type="number"
                   min="1"
+                  required
                   value={largeToMedium}
                   onChange={(e) => setLargeToMedium(e.target.value)}
                   className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all font-bold"
-                  placeholder="مثال: 3 (اختياري)"
+                  placeholder="مثال: 3 (مطلوب)"
                 />
               </div>
               <div className="space-y-1.5 flex items-end">

@@ -74,6 +74,10 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
     setCurrentPage(1);
   }, [searchTerm]);
 
+  const totalQuantity = filteredItems.reduce((acc, item) => acc + (item.quantity || 0), 0);
+  const totalValue = filteredItems.reduce((acc, item) => acc + ((item.quantity || 0) * (item.local_selling_price || 0)), 0);
+  const uniqueDrugsCount = new Set(filteredItems.map(item => item.drug_id)).size;
+
   const totalPages = Math.ceil(filteredItems.length / itemsPerPage);
   const paginatedItems = filteredItems.slice(
     (currentPage - 1) * itemsPerPage,
@@ -101,6 +105,39 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
         <div className="flex gap-2">
            <button onClick={() => toast.success('سيتم تفعيل ميزة التصدير قريباً')} className="px-4 py-2 bg-slate-100 dark:bg-slate-800 rounded-xl text-xs font-bold hover:bg-slate-200 transition-all">تصدير Excel</button>
            <button onClick={() => toast.success('سيتم تفعيل الطباعة قريباً')} className="px-4 py-2 bg-slate-100 dark:bg-slate-800 rounded-xl text-xs font-bold hover:bg-slate-200 transition-all">طباعة النواقص</button>
+        </div>
+      </div>
+
+      {/* Stats Summary Card Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="bg-gradient-to-r from-blue-500/10 to-indigo-500/10 dark:from-blue-500/20 dark:to-indigo-500/20 border border-blue-100 dark:border-blue-900/50 p-6 rounded-3xl flex justify-between items-center shadow-sm">
+          <div>
+            <p className="text-xs font-black text-blue-600 dark:text-blue-400 uppercase tracking-widest">إجمالي كمية الأدوية المتوفرة</p>
+            <p className="text-3xl font-black text-slate-900 dark:text-white mt-2">
+              {totalQuantity.toLocaleString('ar-EG')} <span className="text-sm font-bold text-slate-500">وحدة</span>
+            </p>
+          </div>
+          <div className="text-4xl bg-blue-500/15 dark:bg-blue-500/30 p-4 rounded-2xl">📦</div>
+        </div>
+
+        <div className="bg-gradient-to-r from-purple-500/10 to-pink-500/10 dark:from-purple-500/20 dark:to-pink-500/20 border border-purple-100 dark:border-purple-900/50 p-6 rounded-3xl flex justify-between items-center shadow-sm">
+          <div>
+            <p className="text-xs font-black text-purple-600 dark:text-purple-400 uppercase tracking-widest">إجمالي الأصناف المتوفرة</p>
+            <p className="text-3xl font-black text-slate-900 dark:text-white mt-2">
+              {uniqueDrugsCount.toLocaleString('ar-EG')} <span className="text-sm font-bold text-slate-500">صنف</span>
+            </p>
+          </div>
+          <div className="text-4xl bg-purple-500/15 dark:bg-purple-500/30 p-4 rounded-2xl">🧪</div>
+        </div>
+
+        <div className="bg-gradient-to-r from-emerald-500/10 to-teal-500/10 dark:from-emerald-500/20 dark:to-teal-500/20 border border-emerald-100 dark:border-emerald-900/50 p-6 rounded-3xl flex justify-between items-center shadow-sm">
+          <div>
+            <p className="text-xs font-black text-emerald-600 dark:text-emerald-400 uppercase tracking-widest">إجمالي قيمة المخزون الحالي</p>
+            <p className="text-3xl font-black text-emerald-600 dark:text-emerald-400 mt-2">
+              {totalValue.toLocaleString('ar-EG')} <span className="text-sm font-bold">ج.م</span>
+            </p>
+          </div>
+          <div className="text-4xl bg-emerald-500/15 dark:bg-emerald-500/30 p-4 rounded-2xl">💰</div>
         </div>
       </div>
 
@@ -223,26 +260,91 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
           </table>
         </div>
 
-        {/* Pagination Controls */}
+        {/* Improved Pagination Controls */}
         {totalPages > 1 && (
-          <div className="p-6 border-t border-slate-100 dark:border-slate-800 flex justify-between items-center bg-slate-50/30 dark:bg-slate-800/30">
-            <button 
-              disabled={currentPage === 1}
-              onClick={() => setCurrentPage(prev => prev - 1)}
-              className="px-4 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl text-sm font-bold disabled:opacity-50 hover:bg-slate-50 transition-all"
-            >
-              السابق
-            </button>
-            <div className="text-sm font-bold text-slate-500">
-              صفحة {currentPage} من {totalPages}
+          <div className="p-6 border-t border-slate-100 dark:border-slate-800 flex flex-col md:flex-row gap-4 justify-between items-center bg-slate-50/30 dark:bg-slate-800/30">
+            {/* Quick jump & Jump actions */}
+            <div className="flex items-center gap-2">
+              <button 
+                type="button"
+                disabled={currentPage === 1}
+                onClick={() => setCurrentPage(1)}
+                className="px-3 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-bold disabled:opacity-50 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all"
+                title="الصفحة الأولى"
+              >
+                ⏮️ الأولى
+              </button>
+              <button 
+                type="button"
+                disabled={currentPage <= 5}
+                onClick={() => setCurrentPage(prev => Math.max(1, prev - 5))}
+                className="px-3 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-bold disabled:opacity-50 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all"
+                title="رجوع ٥ صفحات"
+              >
+                -٥
+              </button>
+              <button 
+                type="button"
+                disabled={currentPage === 1}
+                onClick={() => setCurrentPage(prev => prev - 1)}
+                className="px-4 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl text-sm font-bold disabled:opacity-50 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all"
+              >
+                السابق
+              </button>
             </div>
-            <button 
-              disabled={currentPage === totalPages}
-              onClick={() => setCurrentPage(prev => prev + 1)}
-              className="px-4 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl text-sm font-bold disabled:opacity-50 hover:bg-slate-50 transition-all"
-            >
-              التالي
-            </button>
+
+            {/* Current Info & Direct input */}
+            <div className="flex items-center gap-4">
+              <div className="text-sm font-bold text-slate-500">
+                صفحة {currentPage} من {totalPages}
+              </div>
+              <div className="flex items-center gap-2 border-r border-slate-200 dark:border-slate-700 pr-4">
+                <span className="text-xs text-slate-400 font-bold">الانتقال إلى:</span>
+                <input 
+                  type="number"
+                  min="1"
+                  max={totalPages}
+                  value={currentPage}
+                  onChange={(e) => {
+                    const p = parseInt(e.target.value);
+                    if (p >= 1 && p <= totalPages) {
+                      setCurrentPage(p);
+                    }
+                  }}
+                  className="w-16 px-2 py-1 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-center text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500 dark:text-white"
+                />
+              </div>
+            </div>
+
+            {/* Next actions & Last page */}
+            <div className="flex items-center gap-2">
+              <button 
+                type="button"
+                disabled={currentPage === totalPages}
+                onClick={() => setCurrentPage(prev => prev + 1)}
+                className="px-4 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl text-sm font-bold disabled:opacity-50 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all"
+              >
+                التالي
+              </button>
+              <button 
+                type="button"
+                disabled={currentPage >= totalPages - 4}
+                onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 5))}
+                className="px-3 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-bold disabled:opacity-50 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all"
+                title="تقدم ٥ صفحات"
+              >
+                +٥
+              </button>
+              <button 
+                type="button"
+                disabled={currentPage === totalPages}
+                onClick={() => setCurrentPage(totalPages)}
+                className="px-3 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-bold disabled:opacity-50 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all"
+                title="الصفحة الأخيرة"
+              >
+                الأخيرة ⏭️
+              </button>
+            </div>
           </div>
         )}
       </div>

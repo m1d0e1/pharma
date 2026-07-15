@@ -138,12 +138,13 @@ export async function searchDrugsAction(searchTerm: string, limit = 20) {
       }
     }
 
-    const matchedDrugs = Array.from(combinedMap.values()).slice(0, limit);
+    const rawMatchedDrugs = Array.from(combinedMap.values());
+    if (rawMatchedDrugs.length === 0) return { success: true, data: [] };
 
-    if (matchedDrugs.length === 0) return { success: true, data: [] };
-
-    const matchedIds = matchedDrugs.map((d: any) => d.id);
-    const placeholders = matchedIds.map(() => '?').join(',');
+    // Fetch inventory aggregates for candidates to check stock (limit to 500 to avoid SQL variable limit)
+    const candidates = rawMatchedDrugs.slice(0, 500);
+    const candidateIds = candidates.map((d: any) => d.id);
+    const placeholders = candidateIds.map(() => '?').join(',');
 
     const inventoryAgg = await db.prepare(`
       SELECT drug_id, 
@@ -155,19 +156,37 @@ export async function searchDrugsAction(searchTerm: string, limit = 20) {
       FROM inventory
       WHERE drug_id IN (${placeholders}) AND quantity > 0
       GROUP BY drug_id
-    `).all(...matchedIds) as any[];
+    `).all(...candidateIds) as any[];
+
+    // Calculate score for each candidate (add +1000 if it has stock in inventory)
+    const scoredCandidates = candidates.map((drug: any) => {
+      const inv = (inventoryAgg as any[]).find((i: any) => String(i.drug_id) === String(drug.id)) || {};
+      const hasStock = (inv.total_stock || 0) > 0;
+      let score = getRelevanceScore(drug, searchLower);
+      if (hasStock) {
+        score += 1000;
+      }
+      return { drug, score, inv };
+    });
+
+    // Sort by score and slice to final limit
+    scoredCandidates.sort((a, b) => b.score - a.score);
+    const finalSelection = scoredCandidates.slice(0, limit);
+
+    const matchedIds = finalSelection.map((item) => item.drug.id);
+    const matchedPlaceholders = matchedIds.map(() => '?').join(',');
 
     const today = new Date().toISOString().split('T')[0];
-
-    const batchesData = await db.prepare(`
+    const batchesData = matchedIds.length > 0 ? await db.prepare(`
       SELECT id as inventory_id, drug_id, quantity, expiry_date, local_selling_price, cost_price, strips_per_box
       FROM inventory
-      WHERE drug_id IN (${placeholders}) AND quantity > 0
+      WHERE drug_id IN (${matchedPlaceholders}) AND quantity > 0
       ORDER BY CASE WHEN expiry_date IS NULL THEN 1 ELSE 0 END, expiry_date ASC, created_at ASC
-    `).all(...matchedIds) as any[];
+    `).all(...matchedIds) as any[] : [];
 
-    const data = matchedDrugs.map((drug: any) => {
-      const inv = (inventoryAgg as any[]).find((i: any) => String(i.drug_id) === String(drug.id)) || {};
+    const data = finalSelection.map((item: any) => {
+      const drug = item.drug;
+      const inv = item.inv;
       const actualLargeToMedium = inv.max_strips > 1 ? inv.max_strips : (drug.large_to_medium || 1);
       const drugBatches = batchesData.filter((b: any) => String(b.drug_id) === String(drug.id)).map((b: any) => ({
         inventory_id: b.inventory_id,
@@ -706,5 +725,52 @@ export async function getSalesDashboardStatsAction() {
     console.error('Error fetching sales stats:', error);
     return { success: false, error: error.message || 'فشل جلب إحصائيات المبيعات' };
   }
+}
+
+export function getRelevanceScore(drug: any, searchLower: string): number {
+  const tradeEn = (drug.trade_name_en || '').toLowerCase().trim();
+  const tradeAr = (drug.trade_name || '').toLowerCase().trim();
+  const active = (drug.active_ingredient || drug.generic_name || '').toLowerCase().trim();
+  const barcode = (drug.barcode || '').toLowerCase().trim();
+
+  // 1. Exact matches on trade name or barcode
+  if (tradeEn === searchLower || tradeAr === searchLower || barcode === searchLower || String(drug.id) === searchLower) {
+    return 100;
+  }
+
+  // 2. Starts-with match on trade name (initial letters)
+  if (tradeEn.startsWith(searchLower) || tradeAr.startsWith(searchLower)) {
+    return 80;
+  }
+
+  // 3. Starts-with match on any word of trade name
+  const tradeEnWords = tradeEn.split(/[\s\-]+/);
+  const tradeArWords = tradeAr.split(/[\s\-]+/);
+  if (tradeEnWords.some((w: string) => w.startsWith(searchLower)) || tradeArWords.some((w: string) => w.startsWith(searchLower))) {
+    return 70;
+  }
+
+  // 4. Contains match on trade name
+  if (tradeEn.includes(searchLower) || tradeAr.includes(searchLower)) {
+    return 60;
+  }
+
+  // 5. Starts-with match on active ingredient (initial letters)
+  if (active.startsWith(searchLower)) {
+    return 50;
+  }
+
+  // 6. Starts-with match on any word of active ingredient
+  const activeWords = active.split(/[\s\-\+]+/);
+  if (activeWords.some((w: string) => w.startsWith(searchLower))) {
+    return 40;
+  }
+
+  // 7. Contains match on active ingredient
+  if (active.includes(searchLower)) {
+    return 30;
+  }
+
+  return 0;
 }
 
