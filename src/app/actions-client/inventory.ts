@@ -842,7 +842,7 @@ export async function getInventoryListAction(search?: string) {
       queryStr += ` WHERE i.quantity > 0`;
     }
 
-    queryStr += ` ORDER BY i.expiry_date ASC LIMIT 200`;
+    queryStr += ` ORDER BY i.expiry_date ASC`;
 
     const data = await db.prepare(queryStr).all(...params) as any[];
 

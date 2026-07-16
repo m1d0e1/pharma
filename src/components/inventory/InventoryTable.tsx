@@ -134,7 +134,7 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
           <div>
             <p className="text-xs font-black text-emerald-600 dark:text-emerald-400 uppercase tracking-widest">إجمالي قيمة المخزون الحالي</p>
             <p className="text-3xl font-black text-emerald-600 dark:text-emerald-400 mt-2">
-              {totalValue.toLocaleString('ar-EG')} <span className="text-sm font-bold">ج.م</span>
+              {totalValue.toLocaleString('ar-EG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <span className="text-sm font-bold">ج.م</span>
             </p>
           </div>
           <div className="text-4xl bg-emerald-500/15 dark:bg-emerald-500/30 p-4 rounded-2xl">💰</div>
