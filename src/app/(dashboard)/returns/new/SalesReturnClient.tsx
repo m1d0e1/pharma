@@ -18,6 +18,19 @@ export default function SalesReturnClient() {
   const [refundMethod, setRefundMethod] = useState<'cash' | 'patient_account'>('cash');
   const [isSearching, setIsSearching] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [patients, setPatients] = useState<any[]>([]);
+  const [selectedPatientId, setSelectedPatientId] = useState<string>('');
+
+  // Fetch patients on mount
+  React.useEffect(() => {
+    import('@/app/actions-client/patients').then(({ getPatientsAction }) => {
+      getPatientsAction().then(res => {
+        if (res.success) {
+          setPatients(res.data || []);
+        }
+      });
+    });
+  }, []);
 
   // Fetch invoices when date changes
   React.useEffect(() => {
@@ -79,12 +92,17 @@ export default function SalesReturnClient() {
       return toast.error('يرجى تحديد كمية لمرتجع واحد على الأقل');
     }
 
+    if (refundMethod === 'patient_account' && !invoice.patient_id && !selectedPatientId) {
+      return toast.error('يرجى اختيار المريض أولاً لتسجيل الحساب الآجل');
+    }
+
     setIsSubmitting(true);
     const payload = {
       invoice_id: invoice.id,
       shift_id: invoice.shift_id,
       refund_method: refundMethod,
       reason,
+      patient_id: refundMethod === 'patient_account' ? (invoice.patient_id || selectedPatientId) : undefined,
       items: activeReturns.map(i => ({
         sale_item_id: i.id,
         inventory_id: i.inventory_id,
@@ -249,11 +267,25 @@ export default function SalesReturnClient() {
                 onChange={(e) => setRefundMethod(e.target.value as any)}
               >
                 <option value="cash">استرداد نقدي (كاش)</option>
-                {invoice?.patient_id && (
-                  <option value="patient_account">إضافة لرصيد المريض (آجل)</option>
-                )}
+                <option value="patient_account">إضافة لرصيد المريض (آجل)</option>
               </select>
             </div>
+
+            {refundMethod === 'patient_account' && !invoice?.patient_id && (
+              <div className="animate-in fade-in slide-in-from-top-1 duration-200">
+                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">اختيار المريض لتسجيل الحساب الآجل *</label>
+                <select
+                  className="w-full p-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-blue-500"
+                  value={selectedPatientId}
+                  onChange={(e) => setSelectedPatientId(e.target.value)}
+                >
+                  <option value="">-- اختر المريض --</option>
+                  {patients.map(p => (
+                    <option key={p.id} value={p.id}>{p.full_name} ({p.phone || 'بدون هاتف'})</option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             <div>
               <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">سبب المرتجع / ملاحظات</label>

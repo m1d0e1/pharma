@@ -188,8 +188,10 @@ export default function PurchaseInvoiceClient() {
         selling_price: officialPrice,
         tax_percent: 0,
         discount_percent: 0,
-        expiry_date: '',
-        strips_per_box: drug.strips_per_box || 1
+        large_unit: drug.large_unit,
+        medium_unit: drug.medium_unit,
+        small_unit: drug.small_unit,
+        strips_per_box: drug.large_to_medium || drug.strips_per_box || ''
       }]
     })
 
@@ -283,7 +285,7 @@ export default function PurchaseInvoiceClient() {
                 official_price: i.selling_price || 0,
                 batch_number: i.batch_number || '',
                 expiry_date: normalizeDateToYMD(i.expiry_date) || '',
-                strips_per_box: 1
+                strips_per_box: i.strips_per_box || i.large_to_medium || ''
               }));
               setCart(formattedCart);
               toast.success('تم تحميل الفاتورة بنجاح');
@@ -331,7 +333,7 @@ export default function PurchaseInvoiceClient() {
                         official_price: i.selling_price || 0,
                         batch_number: i.batch_number || '',
                         expiry_date: normalizeDateToYMD(i.expiry_date) || '',
-                        strips_per_box: 1
+                        strips_per_box: i.strips_per_box || i.large_to_medium || ''
                       }));
                       setCart(formattedCart);
                       toast.success('تم تحميل الفاتورة بنجاح');
@@ -844,10 +846,10 @@ export default function PurchaseInvoiceClient() {
                         <input 
                           type="text"
                           className="w-12 p-2.5 bg-slate-50 dark:bg-slate-800 border-none rounded-xl font-bold text-center outline-none focus:ring-2 focus:ring-primary-500/20 text-xs"
-                          value={item.strips_per_box || 1}
+                          value={item.strips_per_box === undefined || item.strips_per_box === null ? '' : item.strips_per_box}
                           onChange={(e) => {
                             const val = e.target.value.replace(/[^0-9]/g, '');
-                            updateCartItem(item.id, 'strips_per_box', val);
+                            updateCartItem(item.id, 'strips_per_box', val ? parseInt(val) : '');
                           }}
                         />
                       </td>

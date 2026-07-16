@@ -306,7 +306,7 @@ export default function DashboardLayout({
     return (
       <AuthGuard>
         <div
-          className={`flex flex-col ${isPos ? 'h-screen overflow-hidden' : 'min-h-screen'} bg-gradient-to-br from-slate-50 to-blue-50 dark:from-slate-950 dark:to-slate-900 font-sans`}
+          className="flex flex-col h-screen overflow-hidden bg-gradient-to-br from-slate-50 to-blue-50 dark:from-slate-950 dark:to-slate-900 font-sans"
           dir="rtl"
         >
           {/* 1. Main Toolbar/Header */}
@@ -372,7 +372,7 @@ export default function DashboardLayout({
   // ══════════════════════════════════════════════════════════════════════════
   return (
     <AuthGuard>
-      <div className={`flex ${isPos ? 'h-screen overflow-hidden' : 'min-h-screen'} bg-gradient-to-br from-slate-50 to-blue-50 dark:from-slate-950 dark:to-slate-900 font-sans`} dir="rtl">
+      <div className="flex h-screen overflow-hidden bg-gradient-to-br from-slate-50 to-blue-50 dark:from-slate-950 dark:to-slate-900 font-sans" dir="rtl">
         
         {/* Sidebar */}
         <aside className="hidden lg:flex w-80 flex-col border-l border-slate-200/60 dark:border-slate-800/60 bg-gradient-glass dark:bg-gradient-glass-dark backdrop-blur-xl shadow-hard z-30">

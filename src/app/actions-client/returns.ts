@@ -80,6 +80,7 @@ export async function createReturnAction(data: {
   shift_id?: string;
   refund_method: 'cash' | 'patient_account' | 'coupon';
   reason: string;
+  patient_id?: string | number;
   items: { sale_item_id?: number; inventory_id: string; drug_name: string; quantity: number; unit_price: number; unit?: string }[];
 }) {
   try {
@@ -178,8 +179,7 @@ export async function createReturnAction(data: {
             await db.prepare(`
               INSERT INTO inventory (id, pharmacy_id, drug_id, batch_number, expiry_date, quantity, unit_price, cost_price)
               VALUES (?, ?, ?, ?, ?, 0, ?, 0)
-            `).run(newInvId, user?.pharmacy_id || 'local_default', drugId, batchNum, expiryStr, item.unit_price);
-            
+            `).run(newInvId, user.pharmacy_id, drugId, batchNum, expiryStr, item.unit_price);
             finalInventoryId = newInvId;
           }
         }
@@ -189,27 +189,24 @@ export async function createReturnAction(data: {
           VALUES (?, ?, ?, ?, ?, ?, ?)
         `).run(returnId, finalInventoryId, item.drug_name, item.quantity, item.unit_price, item.sale_item_id || null, item.unit || 'large');
 
-        if (saleItem && drugId) {
-          const drugInfo = await db.prepare('SELECT large_to_medium, medium_to_small FROM master_drugs WHERE id = ?').get(drugId) as any;
-          
-          let restockQty = item.quantity;
-          const returnUnit = item.unit || saleItem.unit || 'large';
-          if (returnUnit === 'medium') {
-            restockQty = item.quantity / (drugInfo?.large_to_medium || 1);
-          } else if (returnUnit === 'small') {
-            restockQty = item.quantity / ((drugInfo?.large_to_medium || 1) * (drugInfo?.medium_to_small || 1));
-          }
-
-          await db.prepare('UPDATE inventory SET quantity = quantity + ? WHERE id = ?').run(restockQty, finalInventoryId);
-          
-          // Calculate COGS reversal based on original cost
-          totalCogsReversal += (saleItem.cost_price || 0) * restockQty;
+        const drugInfo = await db.prepare('SELECT large_to_medium, medium_to_small FROM master_drugs WHERE id = ?').get(drugId) as any;
+        let restockQty = item.quantity;
+        if (item.unit === 'medium') {
+          restockQty = item.quantity / (drugInfo?.large_to_medium || 1);
+        } else if (item.unit === 'small') {
+          restockQty = item.quantity / ((drugInfo?.large_to_medium || 1) * (drugInfo?.medium_to_small || 1));
         }
+
+        await db.prepare('UPDATE inventory SET quantity = quantity + ? WHERE id = ?').run(restockQty, finalInventoryId);
+        
+        // Calculate COGS reversal based on original cost
+        totalCogsReversal += (saleItem.cost_price || 0) * restockQty;
       }
 
       // 5. Update patient wallet/balance if applicable
-      if (data.refund_method === 'patient_account' && dbHeader.patient_id) {
-        await db.prepare('UPDATE patients SET wallet_balance = wallet_balance + ? WHERE id = ?').run(totalRefund, dbHeader.patient_id);
+      const targetPatientId = data.patient_id || dbHeader.patient_id;
+      if (data.refund_method === 'patient_account' && targetPatientId) {
+        await db.prepare('UPDATE patients SET wallet_balance = wallet_balance + ? WHERE id = ?').run(totalRefund, targetPatientId);
       }
 
       // 6. Accounting Journal Entry

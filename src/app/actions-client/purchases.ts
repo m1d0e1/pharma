@@ -200,6 +200,10 @@ export async function createPurchaseInvoiceAction(data: {
             item.strips_per_box || 1
           );
 
+          if (item.strips_per_box) {
+            await db.prepare('UPDATE master_drugs SET large_to_medium = ? WHERE id = ?').run(item.strips_per_box, item.id);
+          }
+
           if (finalStatus === 'completed') {
             const itemSubtotal = (item.quantity * item.cost_price);
             const itemTax = itemSubtotal * (item.tax_percent / 100);
@@ -341,6 +345,10 @@ export async function addPurchaseInvoiceItemAction(invoiceId: string, item: {
       item.strips_per_box || 1
     );
 
+    if (item.strips_per_box) {
+      await db.prepare('UPDATE master_drugs SET large_to_medium = ? WHERE id = ?').run(item.strips_per_box, item.drug_id);
+    }
+
     return { success: true };
   } catch (error: any) {
     return { success: false, error: error.message };
@@ -383,6 +391,10 @@ export async function completePurchaseInvoiceAction(invoiceId: string) {
           invoice.invoice_number || 'BATCH-' + invoiceId.substring(0, 8),
           item.strips_per_box || 1
         );
+
+        if (item.strips_per_box) {
+          await db.prepare('UPDATE master_drugs SET large_to_medium = ? WHERE id = ?').run(item.strips_per_box, item.drug_id);
+        }
       }
 
       // 3. Apply global invoice discounts and expenses

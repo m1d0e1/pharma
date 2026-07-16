@@ -29,8 +29,8 @@
     @apply border-slate-200 dark:border-slate-800;
   }
   
-  html {
-    @apply scroll-smooth;
+  html, body {
+    @apply scroll-smooth overflow-x-hidden max-w-full;
   }
   
   body {
