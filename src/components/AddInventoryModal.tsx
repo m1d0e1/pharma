@@ -73,11 +73,24 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
     return () => clearTimeout(delayDebounceFn)
   }, [searchTerm])
 
+  // ponytail: default strips per box to 1 for single-unit dosage forms
+  const getDefaultStripsPerBox = (largeUnit?: string, largeToMediumValue?: number) => {
+    const u = (largeUnit || '').trim().toLowerCase();
+    const singleUnits = [
+      'زجاج', 'زجاجة', 'كريم', 'مرهم', 'شراب', 'امبول', 'أمبول', 'حقنة', 'حقن', 
+      'قطرة', 'بخاخ', 'دش', 'جيل', 'جل', 'بودرة', 'بودر', 'معجون', 'شامبو', 
+      'صابون', 'لوشن', 'كيس', 'أكياس', 'لبوس', 'فيال', 'سيروم'
+    ];
+    const isSingle = singleUnits.some(su => u.includes(su));
+    if (isSingle) return '1';
+    return largeToMediumValue ? largeToMediumValue.toString() : '';
+  };
+
   const handleSelectDrug = (drug: MasterDrug) => {
     setSelectedDrug(drug)
     setSelectedUnit(drug.large_unit || 'علبة')
     setLocalPrice(drug.official_price > 0 ? drug.official_price.toString() : '')
-    setLargeToMedium(drug.large_to_medium ? drug.large_to_medium.toString() : '')
+    setLargeToMedium(getDefaultStripsPerBox(drug.large_unit, drug.large_to_medium))
     setStep(2)
   }
 
@@ -389,7 +402,7 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
             large_to_medium: large_to_medium || undefined 
           })
           setSelectedUnit(unit || 'علبة')
-          setLargeToMedium(large_to_medium ? large_to_medium.toString() : '')
+          setLargeToMedium(getDefaultStripsPerBox(unit || undefined, large_to_medium || undefined))
           setBarcode(barcodeVal || '')
           setLocalPrice(officialPrice > 0 ? officialPrice.toString() : '')
           setIsQuickAddOpen(false)
