@@ -18,14 +18,15 @@ export default function NewOpeningBalanceClient() {
   const [costPrice, setCostPrice] = useState(0);
   const [unitPrice, setUnitPrice] = useState(0);
   const [expiryDate, setExpiryDate] = useState('');
+  const [searchByActive, setSearchByActive] = useState(false);
   
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleSearch = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleSearch = async (e: React.ChangeEvent<HTMLInputElement>, byActive = searchByActive) => {
     const val = e.target.value;
     setSearchTerm(val);
     if (val.length > 2) {
-      const res = await searchDrugsAction(val);
+      const res = await searchDrugsAction(val, 20, byActive);
       if (res.success) setSearchResults(res.data || []);
     } else {
       setSearchResults([]);
@@ -90,6 +91,21 @@ export default function NewOpeningBalanceClient() {
                   className="w-full pl-4 pr-12 py-3 bg-slate-50 dark:bg-slate-800 rounded-xl outline-none focus:ring-2 focus:ring-blue-500"
                   placeholder="ادخل اسم الدواء بالعربية أو الإنجليزية..."
                 />
+              </div>
+              
+              <div className="flex items-center gap-2 mt-2 px-1">
+                <label className="flex items-center gap-2 text-xs font-bold text-slate-600 dark:text-slate-400 cursor-pointer">
+                  <input 
+                    type="checkbox" 
+                    checked={searchByActive} 
+                    onChange={(e) => {
+                      setSearchByActive(e.target.checked);
+                      handleSearch({ target: { value: searchTerm } } as any, e.target.checked);
+                    }}
+                    className="rounded text-blue-600 focus:ring-blue-500 border-slate-300 w-4 h-4"
+                  />
+                  <span>البحث بالمادة الفعالة</span>
+                </label>
               </div>
               {searchResults.length > 0 && (
                 <div className="absolute z-10 w-full mt-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-lg max-h-60 overflow-y-auto">

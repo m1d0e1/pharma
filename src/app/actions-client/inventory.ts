@@ -1,4 +1,4 @@
-
+import { secureCache } from '@/lib/cache/secure_cache';
 import { dbSelect, dbExecute, dbGet, dbTransaction, generateId } from '@/lib/db/tauri';
 const logActivity = async (userId, action, details) => {
   try {
@@ -54,7 +54,6 @@ import { z } from 'zod';
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 
 import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
-import { secureCache } from '@/lib/cache/secure_cache';
 
 // Zod schema for adding inventory
 const addInventorySchema = z.object({
@@ -143,7 +142,15 @@ export async function addInventoryAction(formData: AddInventoryInput) {
     }
 
     if (barcode) {
-      await db.prepare('UPDATE master_drugs SET barcode = ? WHERE id = ? AND (barcode IS NULL OR barcode = "")').run(barcode, drug_id);
+      await db.prepare("UPDATE master_drugs SET barcode = ? WHERE id = ? AND (barcode IS NULL OR barcode = '')").run(barcode, drug_id);
+    }
+
+    if (unit || (large_to_medium !== undefined && large_to_medium !== null) || barcode) {
+      secureCache.updateDrug(drug_id, {
+        ...(unit ? { large_unit: unit } : {}),
+        ...(large_to_medium !== undefined && large_to_medium !== null ? { large_to_medium } : {}),
+        ...(barcode ? { barcode } : {})
+      });
     }
     
     console.log('[addInventoryAction] Step 5 result: INSERT successful');
@@ -216,6 +223,7 @@ export async function updateInventoryAction(formData: UpdateInventoryInput) {
 
       if (large_to_medium !== undefined && large_to_medium !== null) {
         await db.prepare('UPDATE master_drugs SET large_to_medium = ? WHERE id = ?').run(large_to_medium, current.drug_id);
+        secureCache.updateDrug(current.drug_id, { large_to_medium });
       }
 
       // Direct SQL lookup for trade name (avoids loading full 191K cache for a log message)

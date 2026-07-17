@@ -1,4 +1,4 @@
-
+import { secureCache } from '@/lib/cache/secure_cache';
 import { dbSelect, dbExecute, dbGet, dbTransaction, generateId } from '@/lib/db/tauri';
 const logActivity = async (userId, action, details) => {
   try {
@@ -202,6 +202,7 @@ export async function createPurchaseInvoiceAction(data: {
 
           if (item.strips_per_box) {
             await db.prepare('UPDATE master_drugs SET large_to_medium = ? WHERE id = ?').run(item.strips_per_box, item.id);
+            secureCache.updateDrug(Number(item.id), { large_to_medium: item.strips_per_box });
           }
 
           if (finalStatus === 'completed') {
@@ -212,6 +213,9 @@ export async function createPurchaseInvoiceAction(data: {
             
             totalAmount += itemTotal;
 
+            const totalReceivedQty = Number(item.quantity) + Number(item.bonus_quantity || 0);
+            const netUnitCost = totalReceivedQty > 0 ? (itemTotal / totalReceivedQty) : item.cost_price;
+
             const invId = generateId();
             await db.prepare(`
               INSERT INTO inventory (id, drug_id, pharmacy_id, quantity, local_selling_price, cost_price, expiry_date, batch_number, strips_per_box)
@@ -220,9 +224,9 @@ export async function createPurchaseInvoiceAction(data: {
               invId, 
               item.id, 
               session.pharmacy_id, 
-              Number(item.quantity) + Number(item.bonus_quantity || 0), 
+              totalReceivedQty, 
               item.selling_price || 0, 
-              item.cost_price, 
+              netUnitCost, 
               normExpiry,
               data.invoice_number || 'BATCH-' + id.substring(0, 8),
               item.strips_per_box || 1
@@ -347,6 +351,7 @@ export async function addPurchaseInvoiceItemAction(invoiceId: string, item: {
 
     if (item.strips_per_box) {
       await db.prepare('UPDATE master_drugs SET large_to_medium = ? WHERE id = ?').run(item.strips_per_box, item.drug_id);
+      secureCache.updateDrug(Number(item.drug_id), { large_to_medium: item.strips_per_box });
     }
 
     return { success: true };
@@ -394,6 +399,7 @@ export async function completePurchaseInvoiceAction(invoiceId: string) {
 
         if (item.strips_per_box) {
           await db.prepare('UPDATE master_drugs SET large_to_medium = ? WHERE id = ?').run(item.strips_per_box, item.drug_id);
+          secureCache.updateDrug(Number(item.drug_id), { large_to_medium: item.strips_per_box });
         }
       }
 
@@ -690,5 +696,35 @@ export async function getPurchaseReturnsAction() {
     return { success: true, data: rows };
   } catch (err: any) {
     return { success: false, error: err.message };
+  }
+}
+
+export async function getPurchaseInvoiceAction(invoiceId: string) {
+  try {
+    const session = await getLocalSession();
+    if (!session || !hasUserPermissionSync(session, 'can_view_purchases')) return { success: false, error: 'Unauthorized' };
+
+    const invoice = await db.prepare('SELECT * FROM purchase_invoices WHERE id = ?').get(invoiceId) as any;
+    return { success: true, data: invoice };
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+}
+
+export async function getDraftPurchaseInvoicesAction() {
+  try {
+    const session = await getLocalSession();
+    if (!session || !hasUserPermissionSync(session, 'can_view_purchases')) return { success: false, error: 'Unauthorized' };
+
+    const drafts = await db.prepare(`
+      SELECT pi.id, pi.invoice_number, pi.invoice_date, pi.supplier_id, s.name_ar as supplier_name, pi.total_amount
+      FROM purchase_invoices pi
+      JOIN suppliers s ON pi.supplier_id = s.id
+      WHERE pi.status = 'draft'
+      ORDER BY pi.created_at DESC
+    `).all() as any[];
+    return { success: true, data: drafts };
+  } catch (error: any) {
+    return { success: false, error: error.message };
   }
 }

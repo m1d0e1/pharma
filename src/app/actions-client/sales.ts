@@ -74,7 +74,7 @@ const CheckoutRequestSchema = z.object({
   additional_fees: z.coerce.number().nonnegative().optional().default(0),
 });
 
-export async function searchDrugsAction(searchTerm: string, limit = 20) {
+export async function searchDrugsAction(searchTerm: string, limit = 20, searchByActiveIngredient = false) {
   try {
     const localUser = await getLocalSession();
     if (!localUser || !hasUserPermissionSync(localUser, 'can_view_stock_sale')) return { success: false, error: 'غير مصرح' };
@@ -94,12 +94,13 @@ export async function searchDrugsAction(searchTerm: string, limit = 20) {
       console.warn('secureCache unavailable in searchDrugsAction, searching DB only:', cacheErr);
     }
     const cacheMatched = allDrugs.filter((d: any) => {
-      const match = (d.trade_name && d.trade_name.toLowerCase().includes(searchLower)) || 
-             (d.trade_name_en && d.trade_name_en.toLowerCase().includes(searchLower)) || 
-             (d.generic_name && d.generic_name.toLowerCase().includes(searchLower)) ||
-             (d.active_ingredient && d.active_ingredient.toLowerCase().includes(searchLower)) ||
-             d.barcode === searchLower || 
-             d.id.toString() === searchLower;
+      const match = searchByActiveIngredient
+        ? (d.generic_name && d.generic_name.toLowerCase().includes(searchLower)) ||
+          (d.active_ingredient && d.active_ingredient.toLowerCase().includes(searchLower))
+        : (d.trade_name && d.trade_name.toLowerCase().includes(searchLower)) || 
+          (d.trade_name_en && d.trade_name_en.toLowerCase().includes(searchLower)) || 
+          d.barcode === searchLower || 
+          d.id.toString() === searchLower;
              
       if (d.barcode === searchLower || d.id.toString() === searchLower) exactMatch = d;
       return match;
@@ -107,12 +108,21 @@ export async function searchDrugsAction(searchTerm: string, limit = 20) {
 
     // Search custom drugs in SQLite db
     const likePattern = `%${searchLower}%`;
-    const dbMatched = await db.prepare(`
-      SELECT * FROM master_drugs 
-      WHERE (trade_name LIKE ? OR trade_name_en LIKE ? OR active_ingredient LIKE ? OR barcode = ?)
-        AND (trade_name IS NULL OR trade_name != 'SECURE')
-        AND (trade_name_en IS NULL OR trade_name_en != 'SECURE')
-    `).all(likePattern, likePattern, likePattern, searchLower) as any[];
+    const dbQuery = searchByActiveIngredient
+      ? `SELECT * FROM master_drugs 
+         WHERE (active_ingredient LIKE ? OR generic_name LIKE ?)
+           AND (trade_name IS NULL OR trade_name != 'SECURE')
+           AND (trade_name_en IS NULL OR trade_name_en != 'SECURE')`
+      : `SELECT * FROM master_drugs 
+         WHERE (trade_name LIKE ? OR trade_name_en LIKE ? OR barcode = ?)
+           AND (trade_name IS NULL OR trade_name != 'SECURE')
+           AND (trade_name_en IS NULL OR trade_name_en != 'SECURE')`;
+
+    const dbParams = searchByActiveIngredient 
+      ? [likePattern, likePattern] 
+      : [likePattern, likePattern, searchLower];
+
+    const dbMatched = await db.prepare(dbQuery).all(...dbParams) as any[];
 
     // Combine both and remove duplicates
     const combinedMap = new Map<string, any>();

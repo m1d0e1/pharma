@@ -11,7 +11,10 @@ export default function AppInitializer({ children }: { children: React.ReactNode
     const isTauri = typeof window !== 'undefined' && ((window as any).__TAURI__ || (window as any).__TAURI_INTERNALS__);
     
     if (isTauri) {
+      const log = (m: string) => (window as any).__TAURI_INTERNALS__?.invoke('log_frontend_error', { message: m });
+      log('APPINIT: starting secureCache.load()');
       secureCache.load().then(() => {
+        log('APPINIT: secureCache loaded OK');
         console.log('SecureCache loaded on client');
         
         // Auto-fix bad dates (DD/MM/YYYY to YYYY-MM-DD)

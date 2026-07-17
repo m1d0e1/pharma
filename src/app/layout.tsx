@@ -37,6 +37,21 @@ export default function RootLayout({
 }) {
   return (
     <html lang="ar" dir="rtl" className={`scroll-smooth ${cairo.variable} ${inter.variable}`} suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: `
+          (function() {
+            if (typeof window !== 'undefined' && window.location.pathname.endsWith('.html')) {
+              var cleanPath = window.location.pathname;
+              if (cleanPath.endsWith('/index.html')) {
+                cleanPath = cleanPath.slice(0, -11) || '/';
+              } else {
+                cleanPath = cleanPath.slice(0, -5);
+              }
+              window.history.replaceState(null, '', cleanPath);
+            }
+          })();
+        ` }} />
+      </head>
       <body className="antialiased" suppressHydrationWarning>
         <AppInitializer>
           {children}

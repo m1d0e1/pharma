@@ -104,6 +104,7 @@ interface POSSearchSidebarProps {
 const POSSearchSidebar = memo(forwardRef<POSSearchSidebarRef, POSSearchSidebarProps>(
   ({ addToCart, onKeyDown }, ref) => {
     const [searchTerm, setSearchTerm] = useState('');
+    const [searchByActive, setSearchByActive] = useState(false);
     const [searchResults, setSearchResults] = useState<DrugItem[]>([]);
     const [isLoading, setIsLoading] = useState(false);
     const inputRef = useRef<HTMLInputElement>(null);
@@ -127,7 +128,7 @@ const POSSearchSidebar = memo(forwardRef<POSSearchSidebarRef, POSSearchSidebarPr
 
         setIsLoading(true);
         try {
-          const res = await searchDrugsAction(searchTerm);
+          const res = await searchDrugsAction(searchTerm, 20, searchByActive);
           if (res.success) {
             setSearchResults(res.data || []);
           } else {
@@ -145,11 +146,11 @@ const POSSearchSidebar = memo(forwardRef<POSSearchSidebarRef, POSSearchSidebarPr
       return () => {
         clearTimeout(timer);
       };
-    }, [searchTerm]);
+    }, [searchTerm, searchByActive]);
 
     return (
       <div className="bg-white dark:bg-slate-900 p-5 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-xl flex flex-col min-h-0 flex-1">
-        <div className="relative mb-4">
+        <div className="relative mb-2">
           <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
           <input
             ref={inputRef}
@@ -189,7 +190,7 @@ const POSSearchSidebar = memo(forwardRef<POSSearchSidebarRef, POSSearchSidebarPr
                     setSearchResults([]);
                   } else {
                     try {
-                      const searchRes = await searchDrugsAction(currentTerm);
+                      const searchRes = await searchDrugsAction(currentTerm, 20, searchByActive);
                       if (searchRes.success && searchRes.data && searchRes.data.length > 0) {
                         addToCart(searchRes.data[0]);
                         setSearchTerm('');
@@ -209,6 +210,18 @@ const POSSearchSidebar = memo(forwardRef<POSSearchSidebarRef, POSSearchSidebarPr
             placeholder="بحث (اسم أو كود)..."
             className="w-full pr-10 pl-4 py-3 bg-slate-50 dark:bg-slate-800 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 font-bold text-sm"
           />
+        </div>
+
+        <div className="flex items-center gap-2 mb-4 px-1">
+          <label className="flex items-center gap-2 text-xs font-bold text-slate-600 dark:text-slate-400 cursor-pointer">
+            <input 
+              type="checkbox" 
+              checked={searchByActive} 
+              onChange={(e) => setSearchByActive(e.target.checked)}
+              className="rounded text-blue-600 focus:ring-blue-500 border-slate-300 w-4 h-4"
+            />
+            <span>البحث بالمادة الفعالة</span>
+          </label>
         </div>
         
         <div className="flex-1 overflow-auto space-y-2">
@@ -230,7 +243,10 @@ const POSSearchSidebar = memo(forwardRef<POSSearchSidebarRef, POSSearchSidebarPr
             >
               <div className="min-w-0 flex-1">
                 <p className="font-bold text-xs truncate text-slate-900 dark:text-white">{drug.trade_name}</p>
-                <div className="flex items-center gap-2">
+                {searchByActive && drug.active_ingredient && (
+                  <p className="text-[9px] text-blue-600 dark:text-blue-400 font-semibold truncate">{drug.active_ingredient}</p>
+                )}
+                <div className="flex items-center gap-2 mt-0.5">
                   <p className="text-[9px] text-slate-400 font-black">{drug.total_stock} متاح | {drug.min_price} ج.م</p>
                   {drug.category && <span className="text-[8px] bg-slate-100 dark:bg-slate-700 px-1 rounded text-slate-500">{drug.category}</span>}
                 </div>
@@ -585,7 +601,7 @@ export default function POSPage() {
         drug_id: item.drug_id,
         inventory_id: item.inventory_id || null,
         quantity_sold: item.qty,
-        unit_price: item.price,
+        unit_price: item.price * (1 - (item.itemDiscountPercent || 0) / 100),
         selected_unit: item.selectedUnit,
         is_negative: item.isNegative || false
       }));

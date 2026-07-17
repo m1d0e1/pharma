@@ -46,11 +46,13 @@ export default function PurchaseOrderModal({ initialItems, onClose }: Props) {
     });
   }, []);
 
+  const [searchByActive, setSearchByActive] = useState(false);
+
   useEffect(() => {
     const delayDebounceFn = setTimeout(async () => {
       if (searchQuery.length >= 2) {
         setSearching(true);
-        const result = await searchMasterDrugsAction({ query: searchQuery });
+        const result = await searchMasterDrugsAction({ query: searchQuery, searchByActiveIngredient: searchByActive });
         if (result.success) {
           setSearchResults(result.data || []);
         }
@@ -61,7 +63,7 @@ export default function PurchaseOrderModal({ initialItems, onClose }: Props) {
     }, 300);
 
     return () => clearTimeout(delayDebounceFn);
-  }, [searchQuery]);
+  }, [searchQuery, searchByActive]);
 
   const addDrugToOrder = (drug: any) => {
     if (items.find(i => i.drug_id === drug.id)) {
@@ -162,7 +164,7 @@ export default function PurchaseOrderModal({ initialItems, onClose }: Props) {
               
               <div className="md:col-span-8 space-y-2 relative">
                 <label className="text-xs font-black text-slate-400 uppercase tracking-widest mr-2">إضافة صنف جديد للطلب</label>
-                <div className="relative">
+                <div className="relative mb-2">
                   <Search className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
                   <input 
                     type="text" 
@@ -172,6 +174,18 @@ export default function PurchaseOrderModal({ initialItems, onClose }: Props) {
                     className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 pr-12 pl-6 py-4 rounded-2xl font-bold outline-none focus:ring-2 focus:ring-emerald-500 transition-all"
                   />
                   {searching && <Loader2 className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-emerald-500 animate-spin" />}
+                </div>
+
+                <div className="flex items-center gap-2 px-1">
+                  <label className="flex items-center gap-2 text-xs font-bold text-slate-600 dark:text-slate-400 cursor-pointer">
+                    <input 
+                      type="checkbox" 
+                      checked={searchByActive} 
+                      onChange={(e) => setSearchByActive(e.target.checked)}
+                      className="rounded text-emerald-600 focus:ring-emerald-500 border-slate-300 w-4 h-4"
+                    />
+                    <span>البحث بالمادة الفعالة</span>
+                  </label>
                 </div>
 
                 {/* Search Results Dropdown */}

@@ -7,6 +7,8 @@ import EditInventoryModal from '../EditInventoryModal'
 import DrugDetailsModal from '../pos/DrugDetailsModal'
 
 import { deleteInventoryAction } from '@/app/actions-client/inventory'
+import { dbSelect, dbExecute, generateId } from '@/lib/db/tauri'
+import { Download, Upload } from 'lucide-react'
 
 interface InventoryItem {
   id: string
@@ -88,6 +90,118 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
     onRefresh()
   }
 
+  const handleExportAll = async () => {
+    try {
+      const toastId = toast.loading('جاري تصدير المخزون الحالي...');
+      const all = await dbSelect(`
+        SELECT i.id, i.drug_id, md.trade_name, md.trade_name_en, i.quantity, i.expiry_date, 
+               i.local_selling_price, i.cost_price, i.batch_number, i.supplier, i.min_stock_level,
+               i.barcode, i.strips_per_box
+        FROM inventory i
+        JOIN master_drugs md ON i.drug_id = md.id
+      `);
+      
+      const { save } = await import('@tauri-apps/plugin-dialog');
+      const filePath = await save({
+        filters: [{ name: 'Excel', extensions: ['xlsx'] }],
+        defaultPath: 'inventory_export.xlsx'
+      });
+
+      if (!filePath) {
+        toast.dismiss(toastId);
+        return;
+      }
+
+      const XLSX = await import('xlsx');
+      const worksheet = XLSX.utils.json_to_sheet(all);
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'Inventory');
+      
+      const fileBytes = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('write_binary_file', { path: filePath, data: Array.from(new Uint8Array(fileBytes)) });
+
+      toast.success('تم التصدير بنجاح!', { id: toastId });
+    } catch (err: any) {
+      console.error(err);
+      toast.error(`فشل التصدير: ${err.message || String(err)}`);
+    }
+  };
+
+  const handleImportAll = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    const toastId = toast.loading('جاري قراءة ملف المخزون...');
+    try {
+      const reader = new FileReader();
+      reader.onload = async (evt) => {
+        try {
+          const bstr = evt.target?.result;
+          const XLSX = await import('xlsx');
+          const wb = XLSX.read(bstr, { type: 'binary' });
+          const wsname = wb.SheetNames[0];
+          const ws = wb.Sheets[wsname];
+          const data: any[] = XLSX.utils.sheet_to_json(ws);
+          
+          if (data.length === 0) {
+            toast.error('الملف فارغ أو غير صالح', { id: toastId });
+            return;
+          }
+
+          toast.loading(`جاري استيراد ${data.length} صنف للمخزون...`, { id: toastId });
+
+          let inserted = 0;
+          for (const row of data) {
+            const id = row.id || generateId();
+            const drug_id = Number(row.drug_id);
+            const quantity = Number(row.quantity) || 0;
+            const expiry_date = row.expiry_date || null;
+            const local_selling_price = Number(row.local_selling_price) || 0;
+            const cost_price = Number(row.cost_price) || 0;
+            const batch_number = row.batch_number || null;
+            const supplier = row.supplier || null;
+            const min_stock_level = Number(row.min_stock_level) || 10;
+            const barcode = row.barcode || null;
+            const strips_per_box = Number(row.strips_per_box) || 1;
+
+            if (!drug_id) continue;
+
+            await dbExecute(`
+              INSERT INTO inventory (id, pharmacy_id, drug_id, quantity, expiry_date, local_selling_price, cost_price, batch_number, supplier, min_stock_level, barcode, strips_per_box)
+              VALUES (?, 'local_default', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              ON CONFLICT(id) DO UPDATE SET
+                drug_id=excluded.drug_id,
+                quantity=excluded.quantity,
+                expiry_date=excluded.expiry_date,
+                local_selling_price=excluded.local_selling_price,
+                cost_price=excluded.cost_price,
+                batch_number=excluded.batch_number,
+                supplier=excluded.supplier,
+                min_stock_level=excluded.min_stock_level,
+                barcode=excluded.barcode,
+                strips_per_box=excluded.strips_per_box
+            `, [id, drug_id, quantity, expiry_date, local_selling_price, cost_price, batch_number, supplier, min_stock_level, barcode, strips_per_box]);
+            inserted++;
+          }
+
+          const { secureCache } = await import('@/lib/cache/secure_cache');
+          await secureCache.reload();
+
+          toast.success(`تم استيراد ${inserted} صنف للمخزون بنجاح!`, { id: toastId });
+          onRefresh();
+        } catch (err: any) {
+          console.error(err);
+          toast.error(`فشل معالجة البيانات: ${err.message || String(err)}`, { id: toastId });
+        }
+      };
+      reader.readAsBinaryString(file);
+    } catch (err: any) {
+      console.error(err);
+      toast.error(`فشل قراءة الملف: ${err.message || String(err)}`, { id: toastId });
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Search Bar */}
@@ -103,7 +217,27 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
           />
         </div>
         <div className="flex gap-2">
-           <button onClick={() => toast.success('سيتم تفعيل ميزة التصدير قريباً')} className="px-4 py-2 bg-slate-100 dark:bg-slate-800 rounded-xl text-xs font-bold hover:bg-slate-200 transition-all">تصدير Excel</button>
+           <button 
+             onClick={handleExportAll} 
+             className="px-4 py-2 bg-slate-100 dark:bg-slate-800 rounded-xl text-xs font-bold hover:bg-slate-200 transition-all flex items-center gap-1"
+           >
+             <Download className="w-3.5 h-3.5" />
+             تصدير Excel
+           </button>
+           
+           <label 
+             className="px-4 py-2 bg-slate-100 dark:bg-slate-800 rounded-xl text-xs font-bold hover:bg-slate-200 transition-all flex items-center gap-1 cursor-pointer"
+           >
+             <Upload className="w-3.5 h-3.5" />
+             استيراد Excel
+             <input 
+               type="file" 
+               accept=".xlsx, .xls" 
+               onChange={handleImportAll} 
+               className="hidden" 
+             />
+           </label>
+
            <button onClick={() => toast.success('سيتم تفعيل الطباعة قريباً')} className="px-4 py-2 bg-slate-100 dark:bg-slate-800 rounded-xl text-xs font-bold hover:bg-slate-200 transition-all">طباعة النواقص</button>
         </div>
       </div>

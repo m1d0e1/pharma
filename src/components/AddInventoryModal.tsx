@@ -1,7 +1,7 @@
 'use client'
 import { useHotkeys } from 'react-hotkeys-hook';
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { addInventoryAction } from '@/app/actions-client/inventory'
 import { searchMasterDrugsAction, getUnitsAction } from '@/app/actions-client/master-drugs'
 import { toast } from 'react-hot-toast'
@@ -44,6 +44,8 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [unitsList, setUnitsList] = useState<{name_ar: string}[]>([])
   const [selectedUnit, setSelectedUnit] = useState('')
+  const [searchByActive, setSearchByActive] = useState(false)
+  const [errors, setErrors] = useState<Record<string, boolean>>({})
 
   useEffect(() => {
     async function fetchUnits() {
@@ -57,7 +59,7 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
     const delayDebounceFn = setTimeout(async () => {
       if (searchTerm.length >= 2) {
         setIsSearching(true)
-        const result = await searchMasterDrugsAction(searchTerm)
+        const result = await searchMasterDrugsAction({ query: searchTerm, searchByActiveIngredient: searchByActive })
         
         if (result.success && result.data) {
           setSearchResults(result.data)
@@ -71,7 +73,7 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
     }, 300)
 
     return () => clearTimeout(delayDebounceFn)
-  }, [searchTerm])
+  }, [searchTerm, searchByActive])
 
   // ponytail: default strips per box to 1 for single-unit dosage forms
   const getDefaultStripsPerBox = (largeUnit?: string, largeToMediumValue?: number) => {
@@ -94,31 +96,80 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
     setStep(2)
   }
 
+  const showStripsFields = useMemo(() => {
+    const u = (selectedUnit || '').trim().toLowerCase();
+    const singleUnits = [
+      'زجاج', 'زجاجة', 'كريم', 'مرهم', 'شراب', 'امبول', 'أمبول', 'حقنة', 'حقن', 
+      'قطرة', 'بخاخ', 'دش', 'جيل', 'جل', 'بودرة', 'بودر', 'معجون', 'شامبو', 
+      'صابون', 'لوشن', 'كيس', 'أكياس', 'لبوس', 'فيال', 'سيروم'
+    ];
+    return !singleUnits.some(su => u.includes(su));
+  }, [selectedUnit]);
+
+  useEffect(() => {
+    if (selectedUnit) {
+      const u = selectedUnit.trim().toLowerCase();
+      const singleUnits = [
+        'زجاج', 'زجاجة', 'كريم', 'مرهم', 'شراب', 'امبول', 'أمبول', 'حقنة', 'حقن', 
+        'قطرة', 'بخاخ', 'دش', 'جيل', 'جل', 'بودرة', 'بودر', 'معجون', 'شامبو', 
+        'صابون', 'لوشن', 'كيس', 'أكياس', 'لبوس', 'فيال', 'سيروم'
+      ];
+      const isSingle = singleUnits.some(su => u.includes(su));
+      if (isSingle) {
+        setLargeToMedium('1');
+        setStripsQuantity('');
+      } else {
+        if (selectedDrug && selectedDrug.large_unit === selectedUnit) {
+          setLargeToMedium(selectedDrug.large_to_medium ? selectedDrug.large_to_medium.toString() : '');
+        }
+      }
+    }
+  }, [selectedUnit, selectedDrug]);
+
   const handleSaveToInventory = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!selectedDrug) return
 
     // Client-side validation
     let qty = parseFloat(quantity) || 0
-    const strips = parseInt(stripsQuantity) || 0
-    const conversion = largeToMedium ? parseInt(largeToMedium) : 1
+    const strips = showStripsFields ? (parseInt(stripsQuantity) || 0) : 0
+    const conversion = showStripsFields ? (largeToMedium ? parseInt(largeToMedium) : 1) : 1
     
     if (strips > 0) {
       qty += strips / (conversion || 1)
     }
 
     const price = parseFloat(localPrice)
-    
+    const validationErrors: Record<string, boolean> = {}
+
     if (qty <= 0) {
-      toast.error('يجب إدخال كمية صحيحة (علب أو شرائط)')
-      return
+      validationErrors.quantity = true
+      if (showStripsFields && stripsQuantity) {
+        validationErrors.stripsQuantity = true
+      }
     }
     if (isNaN(price) || price < 0) {
-      toast.error('سعر البيع يجب أن يكون رقماً صحيحاً (0 أو أكثر)')
-      return
+      validationErrors.localPrice = true
     }
     if (!expiryDate || !/^\d{4}-\d{2}-\d{2}$/.test(expiryDate)) {
-      toast.error('يجب إدخال تاريخ صلاحية صحيح (YYYY-MM-DD)')
+      validationErrors.expiryDate = true
+    }
+    if (showStripsFields && (strips > 0 || qty > 0) && (!largeToMedium || isNaN(parseInt(largeToMedium)) || parseInt(largeToMedium) <= 0)) {
+      validationErrors.largeToMedium = true
+    }
+
+    setErrors(validationErrors)
+
+    if (Object.keys(validationErrors).length > 0) {
+      if (validationErrors.quantity) {
+        toast.error('يجب إدخال كمية صحيحة (علب أو شرائط)')
+      } else if (validationErrors.localPrice) {
+        toast.error('سعر البيع يجب أن يكون رقماً صحيحاً (0 أو أكثر)')
+      } else if (validationErrors.expiryDate) {
+        toast.error('يجب إدخال تاريخ صلاحية صحيح (YYYY-MM-DD)')
+      } else if (validationErrors.largeToMedium) {
+        toast.error('يجب إدخال عدد الشرائط بالعلبة')
+      }
       return
     }
 
@@ -193,6 +244,18 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
                 onChange={(e) => setSearchTerm(e.target.value)}
                 autoFocus
               />
+            </div>
+
+            <div className="flex items-center gap-2 px-1">
+              <label className="flex items-center gap-2 text-xs font-bold text-slate-600 dark:text-slate-400 cursor-pointer">
+                <input 
+                  type="checkbox" 
+                  checked={searchByActive} 
+                  onChange={(e) => setSearchByActive(e.target.checked)}
+                  className="rounded text-blue-600 focus:ring-blue-500 border-slate-300 w-4 h-4"
+                />
+                <span>البحث بالمادة الفعالة</span>
+              </label>
             </div>
 
             {isSearching && (
@@ -270,29 +333,35 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
                </div>
             </div>
 
-            <div className="grid grid-cols-3 gap-4">
+            <div className={showStripsFields ? "grid grid-cols-3 gap-4" : "grid grid-cols-2 gap-4"}>
               <div className="space-y-1.5">
-                <label className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">الكمية ({selectedDrug.large_unit || 'علبة'})</label>
+                <label className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">الكمية ({selectedUnit || 'علبة'})</label>
                 <input
                   type="number"
                   min="0"
                   value={quantity}
                   onChange={(e) => setQuantity(e.target.value)}
-                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all font-bold"
+                  className={`w-full bg-slate-50 dark:bg-slate-800 border p-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all font-bold ${
+                    errors.quantity ? 'border-red-500 ring-2 ring-red-500/20' : 'border-slate-200 dark:border-slate-700'
+                  }`}
                   placeholder="مثلاً: 20"
                 />
               </div>
-              <div className="space-y-1.5">
-                <label className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">الكمية (شريط)</label>
-                <input
-                  type="number"
-                  min="0"
-                  value={stripsQuantity}
-                  onChange={(e) => setStripsQuantity(e.target.value)}
-                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all font-bold"
-                  placeholder="اختياري"
-                />
-              </div>
+              {showStripsFields && (
+                <div className="space-y-1.5">
+                  <label className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">الكمية (شريط)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={stripsQuantity}
+                    onChange={(e) => setStripsQuantity(e.target.value)}
+                    className={`w-full bg-slate-50 dark:bg-slate-800 border p-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all font-bold ${
+                      errors.stripsQuantity ? 'border-red-500 ring-2 ring-red-500/20' : 'border-slate-200 dark:border-slate-700'
+                    }`}
+                    placeholder="اختياري"
+                  />
+                </div>
+              )}
               <div className="space-y-1.5">
                 <label className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">تاريخ الصلاحية</label>
                 <input
@@ -300,7 +369,9 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
                   required
                   value={expiryDate}
                   onChange={(e) => setExpiryDate(e.target.value)}
-                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all font-bold"
+                  className={`w-full bg-slate-50 dark:bg-slate-800 border p-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all font-bold ${
+                    errors.expiryDate ? 'border-red-500 ring-2 ring-red-500/20' : 'border-slate-200 dark:border-slate-700'
+                  }`}
                 />
               </div>
             </div>
@@ -314,7 +385,9 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
                   step="0.01"
                   value={localPrice}
                   onChange={(e) => setLocalPrice(e.target.value)}
-                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all font-bold"
+                  className={`w-full bg-slate-50 dark:bg-slate-800 border p-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all font-bold ${
+                    errors.localPrice ? 'border-red-500 ring-2 ring-red-500/20' : 'border-slate-200 dark:border-slate-700'
+                  }`}
                 />
               </div>
               <div className="space-y-1.5">
@@ -338,23 +411,27 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-1.5">
-                <label className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">عدد الشرائط بالعلبة (Strips per Box) *</label>
-                <input
-                  type="number"
-                  min="1"
-                  required
-                  value={largeToMedium}
-                  onChange={(e) => setLargeToMedium(e.target.value)}
-                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all font-bold"
-                  placeholder="مثال: 3 (مطلوب)"
-                />
+            {showStripsFields && (
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">عدد الشرائط بالعلبة (Strips per Box) *</label>
+                  <input
+                    type="number"
+                    min="1"
+                    required
+                    value={largeToMedium}
+                    onChange={(e) => setLargeToMedium(e.target.value)}
+                    className={`w-full bg-slate-50 dark:bg-slate-800 border p-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all font-bold ${
+                      errors.largeToMedium ? 'border-red-500 ring-2 ring-red-500/20' : 'border-slate-200 dark:border-slate-700'
+                    }`}
+                    placeholder="مثال: 3 (مطلوب)"
+                  />
+                </div>
+                <div className="space-y-1.5 flex items-end">
+                  {/* Empty spacer */}
+                </div>
               </div>
-              <div className="space-y-1.5 flex items-end">
-                {/* Empty spacer */}
-              </div>
-            </div>
+            )}
 
             <div className="flex gap-4 pt-2">
               <button

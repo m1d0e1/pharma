@@ -25,7 +25,9 @@ import {
    Settings,
    History,
    Eye,
-   Trash2
+   Trash2,
+   Download,
+   Upload
 } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
@@ -283,6 +285,7 @@ export default function ItemsManagementClient({ initialItems }: Props) {
    const searchParams = useSearchParams();
    const [items, setItems] = useState<MasterDrug[]>(initialItems);
    const [searchTerm, setSearchTerm] = useState('');
+   const [searchByActive, setSearchByActive] = useState(false);
    const [filterType, setFilterType] = useState<FilterType>('all');
    const [filterStatus, setFilterStatus] = useState<FilterStatus>('all');
    const [minPrice, setMinPrice] = useState<string>('');
@@ -361,6 +364,134 @@ export default function ItemsManagementClient({ initialItems }: Props) {
       }
    };
 
+    const handleExportAll = async () => {
+       try {
+          const toastId = toast.loading('جاري تصدير جميع الأصناف...');
+          const all = await dbSelect(`
+             SELECT id, trade_name, trade_name_en, generic_name, active_ingredient, 
+                    barcode, official_price, large_unit, medium_unit, small_unit, 
+                    large_to_medium, medium_to_small, category, manufacturer, stop_dealing
+             FROM master_drugs
+          `);
+          
+          const { save } = await import('@tauri-apps/plugin-dialog');
+          const filePath = await save({
+            filters: [{ name: 'Excel', extensions: ['xlsx'] }],
+            defaultPath: 'master_drugs_export.xlsx'
+          });
+
+          if (!filePath) {
+            toast.dismiss(toastId);
+            return;
+          }
+
+          const XLSX = await import('xlsx');
+          const worksheet = XLSX.utils.json_to_sheet(all);
+          const workbook = XLSX.utils.book_new();
+          XLSX.utils.book_append_sheet(workbook, worksheet, 'Drugs');
+          
+          const fileBytes = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+          const { invoke } = await import('@tauri-apps/api/core');
+          await invoke('write_binary_file', { path: filePath, data: Array.from(new Uint8Array(fileBytes)) });
+
+          toast.success('تم التصدير بنجاح!', { id: toastId });
+       } catch (err: any) {
+          console.error(err);
+          toast.error(`فشل التصدير: ${err.message || String(err)}`);
+       }
+    };
+
+   const handleImportAll = async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      
+      const toastId = toast.loading('جاري قراءة الملف...');
+      try {
+         const reader = new FileReader();
+         reader.onload = async (evt) => {
+            try {
+               const bstr = evt.target?.result;
+               const XLSX = await import('xlsx');
+               const wb = XLSX.read(bstr, { type: 'binary' });
+               const wsname = wb.SheetNames[0];
+               const ws = wb.Sheets[wsname];
+               const data: any[] = XLSX.utils.sheet_to_json(ws);
+               
+               if (data.length === 0) {
+                  toast.error('الملف فارغ أو غير صالح', { id: toastId });
+                  return;
+               }
+
+               toast.loading(`جاري استيراد ${data.length} صنف...`, { id: toastId });
+
+               let inserted = 0;
+               for (const row of data) {
+                  const id = row.id ? Number(row.id) : null;
+                  const trade_name = row.trade_name || row.trade_name_ar || null;
+                  const trade_name_en = row.trade_name_en || null;
+                  const generic_name = row.generic_name || null;
+                  const active_ingredient = row.active_ingredient || null;
+                  const barcode = row.barcode || null;
+                  const official_price = Number(row.official_price) || 0;
+                  const large_unit = row.large_unit || null;
+                  const medium_unit = row.medium_unit || null;
+                  const small_unit = row.small_unit || null;
+                  const large_to_medium = row.large_to_medium ? Number(row.large_to_medium) : null;
+                  const medium_to_small = row.medium_to_small ? Number(row.medium_to_small) : null;
+                  const category = row.category || null;
+                  const manufacturer = row.manufacturer || null;
+                  const stop_dealing = row.stop_dealing ? Number(row.stop_dealing) : 0;
+
+                  if (id) {
+                     await dbExecute(`
+                        INSERT INTO master_drugs (id, trade_name, trade_name_en, generic_name, active_ingredient, barcode, official_price, large_unit, medium_unit, small_unit, large_to_medium, medium_to_small, category, manufacturer, stop_dealing)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(id) DO UPDATE SET
+                          trade_name=excluded.trade_name,
+                          trade_name_en=excluded.trade_name_en,
+                          generic_name=excluded.generic_name,
+                          active_ingredient=excluded.active_ingredient,
+                          barcode=excluded.barcode,
+                          official_price=excluded.official_price,
+                          large_unit=excluded.large_unit,
+                          medium_unit=excluded.medium_unit,
+                          small_unit=excluded.small_unit,
+                          large_to_medium=excluded.large_to_medium,
+                          medium_to_small=excluded.medium_to_small,
+                          category=excluded.category,
+                          manufacturer=excluded.manufacturer,
+                          stop_dealing=excluded.stop_dealing
+                     `, [id, trade_name, trade_name_en, generic_name, active_ingredient, barcode, official_price, large_unit, medium_unit, small_unit, large_to_medium, medium_to_small, category, manufacturer, stop_dealing]);
+                  } else {
+                     await dbExecute(`
+                        INSERT INTO master_drugs (trade_name, trade_name_en, generic_name, active_ingredient, barcode, official_price, large_unit, medium_unit, small_unit, large_to_medium, medium_to_small, category, manufacturer, stop_dealing)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     `, [trade_name, trade_name_en, generic_name, active_ingredient, barcode, official_price, large_unit, medium_unit, small_unit, large_to_medium, medium_to_small, category, manufacturer, stop_dealing]);
+                  }
+                  inserted++;
+               }
+
+               const { secureCache } = await import('@/lib/cache/secure_cache');
+               await secureCache.reload();
+
+               toast.success(`تم استيراد ${inserted} صنف بنجاح!`, { id: toastId });
+               
+               const searchRes = await searchMasterDrugsAction({ query: searchTerm, searchByActiveIngredient: searchByActive });
+               if (searchRes.success && searchRes.data) {
+                  setItems(searchRes.data);
+               }
+            } catch (err: any) {
+               console.error(err);
+               toast.error(`فشل معالجة البيانات: ${err.message || String(err)}`, { id: toastId });
+            }
+         };
+         reader.readAsBinaryString(file);
+      } catch (err: any) {
+         console.error(err);
+         toast.error(`فشل قراءة الملف: ${err.message || String(err)}`, { id: toastId });
+      }
+   };
+
    // Advanced search effect
    useEffect(() => {
       const delayDebounceFn = setTimeout(async () => {
@@ -369,7 +500,8 @@ export default function ItemsManagementClient({ initialItems }: Props) {
             type: filterType,
             status: filterStatus,
             minPrice: minPrice ? parseFloat(minPrice) : undefined,
-            maxPrice: maxPrice ? parseFloat(maxPrice) : undefined
+            maxPrice: maxPrice ? parseFloat(maxPrice) : undefined,
+            searchByActiveIngredient: searchByActive
          };
 
          const res = await searchMasterDrugsAction(options);
@@ -379,7 +511,7 @@ export default function ItemsManagementClient({ initialItems }: Props) {
       }, 400);
 
       return () => clearTimeout(delayDebounceFn);
-   }, [searchTerm, filterType, filterStatus, minPrice, maxPrice]);
+   }, [searchTerm, filterType, filterStatus, minPrice, maxPrice, searchByActive]);
 
    const openAddModal = () => {
       setEditingItem({
@@ -440,7 +572,8 @@ export default function ItemsManagementClient({ initialItems }: Props) {
             type: filterType,
             status: filterStatus,
             minPrice: minPrice ? parseFloat(minPrice) : undefined,
-            maxPrice: maxPrice ? parseFloat(maxPrice) : undefined
+            maxPrice: maxPrice ? parseFloat(maxPrice) : undefined,
+            searchByActiveIngredient: searchByActive
          };
          const refreshRes = await searchMasterDrugsAction(searchOptions);
          if (refreshRes.success && refreshRes.data) {
@@ -477,28 +610,65 @@ export default function ItemsManagementClient({ initialItems }: Props) {
                   </div>
                </div>
 
-               <button
-                  onClick={openAddModal}
-                  className="px-12 py-5 bg-primary-600 text-white rounded-[24px] font-black shadow-2xl shadow-primary-500/30 hover:bg-primary-700 hover:-translate-y-1 active:scale-95 transition-all flex items-center gap-3 group"
-               >
-                  <Plus className="w-6 h-6 group-hover:rotate-90 transition-transform" />
-                  إضافة صنف جديد
-               </button>
+                <div className="flex flex-wrap gap-3">
+                   <button
+                      onClick={handleExportAll}
+                      className="px-6 py-5 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-[24px] font-black hover:bg-slate-200 transition-all flex items-center gap-2"
+                   >
+                      <Download className="w-5 h-5" />
+                      تصدير الكل
+                   </button>
+                   
+                   <label
+                      className="px-6 py-5 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-[24px] font-black hover:bg-slate-200 transition-all flex items-center gap-2 cursor-pointer"
+                   >
+                      <Upload className="w-5 h-5" />
+                      استيراد الكل
+                      <input 
+                         type="file" 
+                         accept=".xlsx, .xls" 
+                         onChange={handleImportAll} 
+                         className="hidden" 
+                      />
+                   </label>
+
+                   <button
+                      onClick={openAddModal}
+                      className="px-12 py-5 bg-primary-600 text-white rounded-[24px] font-black shadow-2xl shadow-primary-500/30 hover:bg-primary-700 hover:-translate-y-1 active:scale-95 transition-all flex items-center gap-3 group"
+                   >
+                      <Plus className="w-6 h-6 group-hover:rotate-90 transition-transform" />
+                      إضافة صنف جديد
+                   </button>
+                </div>
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 pt-10 border-t border-slate-200/60 dark:border-slate-800/60 relative z-10">
                {/* Search Box */}
-               <div className="lg:col-span-5 relative group">
-                  <div className="absolute inset-y-0 right-0 pr-5 flex items-center pointer-events-none">
-                     <Search className="w-5 h-5 text-slate-400 group-focus-within:text-primary-500 transition-colors" />
+               <div className="lg:col-span-5 flex flex-col gap-2">
+                  <div className="relative group w-full">
+                     <div className="absolute inset-y-0 right-0 pr-5 flex items-center pointer-events-none">
+                        <Search className="w-5 h-5 text-slate-400 group-focus-within:text-primary-500 transition-colors" />
+                     </div>
+                     <input
+                        type="text"
+                        placeholder="Search by English Trade Name, Active Ingredient, or Barcode..."
+                        className="w-full pr-14 pl-6 py-5 bg-white dark:bg-slate-800/50 rounded-3xl outline-none border-2 border-transparent focus:border-primary-500/20 shadow-inner-lg font-bold dark:text-white transition-all text-lg"
+                        value={searchTerm}
+                        onChange={(e) => setSearchTerm(e.target.value)}
+                     />
                   </div>
-                  <input
-                     type="text"
-                     placeholder="Search by English Trade Name, Active Ingredient, or Barcode..."
-                     className="w-full pr-14 pl-6 py-5 bg-white dark:bg-slate-800/50 rounded-3xl outline-none border-2 border-transparent focus:border-primary-500/20 shadow-inner-lg font-bold dark:text-white transition-all text-lg"
-                     value={searchTerm}
-                     onChange={(e) => setSearchTerm(e.target.value)}
-                  />
+                  
+                  <div className="flex items-center gap-2 px-1">
+                     <label className="flex items-center gap-2 text-xs font-bold text-slate-600 dark:text-slate-400 cursor-pointer">
+                        <input 
+                           type="checkbox" 
+                           checked={searchByActive} 
+                           onChange={(e) => setSearchByActive(e.target.checked)}
+                           className="rounded text-primary-600 focus:ring-primary-500 border-slate-300 w-4 h-4"
+                        />
+                        <span>البحث بالمادة الفعالة</span>
+                     </label>
+                  </div>
                </div>
 
                {/* Type Select */}

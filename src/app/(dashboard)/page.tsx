@@ -75,10 +75,14 @@ export default function DashboardPage() {
   };
 
   useEffect(() => {
+    const log = (m: string) => typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__?.invoke('log_frontend_error', { message: m });
+    log('PAGE: mount');
     setIsTauri(typeof window !== 'undefined' && ((window as any).__TAURI__ !== undefined || (window as any).__TAURI_INTERNALS__ !== undefined));
     async function loadDashboardData() {
       try {
+        log('PAGE: loadDashboardData start');
         const localUser = await getClientSession();
+        log('PAGE: loadDashboardData user=' + (localUser ? localUser.username : 'NULL'));
         if (!localUser) return;
 
         setUser(localUser);
@@ -255,9 +259,11 @@ export default function DashboardPage() {
           `);
           setActivityLogs(logs || []);
         }
-      } catch (err) {
+      } catch (err: any) {
+        log('PAGE: loadDashboardData error=' + err.message + ' stack=' + err.stack);
         console.error('Failed to load dashboard data:', err);
       } finally {
+        log('PAGE: loadDashboardData finally');
         setLoading(false);
       }
     }

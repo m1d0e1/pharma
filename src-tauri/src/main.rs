@@ -1,5 +1,4 @@
-// Prevents additional console window on Windows in release
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
 
@@ -7,6 +6,46 @@ use tauri::{Manager, Emitter};
 use tauri::menu::{Menu, Submenu, MenuItem, PredefinedMenuItem};
 use tauri_plugin_sql::{Migration, MigrationKind};
 use std::fs;
+
+
+#[tauri::command]
+fn log_frontend_error(message: String) {
+    println!("FE: {}", message);
+}
+
+#[tauri::command]
+async fn open_new_window<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<(), String> {
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
+        .to_string();
+    
+    let url = match &app.config().build.dev_url {
+        Some(dev_url) => tauri::WebviewUrl::External(dev_url.clone()),
+        None => tauri::WebviewUrl::App("index.html".into()),
+    };
+
+    if let Ok(w) = tauri::WebviewWindowBuilder::new(
+        &app,
+        format!("window_{}", timestamp),
+        url
+    )
+    .title("Pharma Dashboard")
+    .inner_size(1280.0, 800.0)
+    .min_inner_size(800.0, 600.0)
+    .build() {
+        w.on_menu_event(move |win, event| {
+            handle_menu_event(win, event.id().as_ref());
+        });
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn write_binary_file(path: String, data: Vec<u8>) -> Result<(), String> {
+    std::fs::write(&path, data).map_err(|e| e.to_string())
+}
 
 fn main() {
     // Ported SQL migrations matching Next.js SQLite schema
@@ -181,8 +220,8 @@ fn main() {
                 main_window.on_menu_event(|window, event| {
                     handle_menu_event(window, event.id().as_ref());
                 });
-                
-                Ok(())
+
+                 Ok(())
             })
             .plugin(
                 tauri_plugin_sql::Builder::default()
@@ -196,30 +235,33 @@ fn main() {
             .invoke_handler(tauri::generate_handler![
                 commands::auth::bcrypt_hash,
                 commands::auth::bcrypt_compare,
+                open_new_window,
+                log_frontend_error,
+                write_binary_file,
             ])
             .run(tauri::generate_context!())
             .expect("error while running tauri application");
 }
 
-fn handle_menu_event(window: &tauri::Window, id: &str) {
+fn handle_menu_event<R: tauri::Runtime>(window: &tauri::Window<R>, id: &str) {
     let route = match id {
         // Actions
         "new_window" => {
             let app = window.app_handle();
             let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis().to_string();
+            let url = match &app.config().build.dev_url {
+                Some(dev_url) => tauri::WebviewUrl::External(dev_url.clone()),
+                None => tauri::WebviewUrl::App("index.html".into()),
+            };
             if let Ok(w) = tauri::WebviewWindowBuilder::new(
                 app,
                 format!("window_{}", timestamp),
-                tauri::WebviewUrl::App("/".into())
+                url
             )
             .title("Pharma Dashboard")
             .inner_size(1280.0, 800.0)
             .min_inner_size(800.0, 600.0)
             .build() {
-                if let Some(menu) = app.menu() {
-                    let _ = w.set_menu(menu);
-                }
-                let _ = w.maximize();
                 w.on_menu_event(|win, event| {
                     handle_menu_event(win, event.id().as_ref());
                 });
@@ -227,23 +269,23 @@ fn handle_menu_event(window: &tauri::Window, id: &str) {
             return;
         }
         "print" => {
-            let _ = window.emit("menu-action", "print");
+            let _ = window.emit_to(window.label(), "menu-action", "print");
             return;
         }
         "logout" => {
-            let _ = window.emit("menu-action", "logout");
+            let _ = window.emit_to(window.label(), "menu-action", "logout");
             return;
         }
         "update_program" => {
-            let _ = window.emit("menu-action", "update");
+            let _ = window.emit_to(window.label(), "menu-action", "update");
             return;
         }
         "help_shortcuts" => {
-            let _ = window.emit("menu-action", "shortcuts");
+            let _ = window.emit_to(window.label(), "menu-action", "shortcuts");
             return;
         }
         "help_about" => {
-            let _ = window.emit("menu-action", "about");
+            let _ = window.emit_to(window.label(), "menu-action", "about");
             return;
         }
         
@@ -307,5 +349,7 @@ fn handle_menu_event(window: &tauri::Window, id: &str) {
     };
 
     // Emit only to THIS window
-    let _ = window.emit("menu-navigate", route);
+    let _ = window.emit_to(window.label(), "menu-navigate", route);
 }
+
+

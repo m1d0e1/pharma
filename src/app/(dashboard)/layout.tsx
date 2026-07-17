@@ -30,15 +30,21 @@ export default function DashboardLayout({
   const [loading, setLoading] = useState(true);
   const [isTauri, setIsTauri] = useState(false);
 
+  const log = (m: string) => typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__?.invoke('log_frontend_error', { message: m });
+
   useEffect(() => {
     // Detect Tauri once on mount
-    setIsTauri(typeof window !== 'undefined' && ((window as any).__TAURI__ !== undefined || (window as any).__TAURI_INTERNALS__ !== undefined));
+    const hasTauri = typeof window !== 'undefined' && ((window as any).__TAURI__ !== undefined || (window as any).__TAURI_INTERNALS__ !== undefined);
+    log('LAYOUT: mount isTauri=' + hasTauri);
+    setIsTauri(hasTauri);
   }, []);
 
   useEffect(() => {
     async function loadSessionAndConfig() {
       try {
+        log('LAYOUT: loadSessionAndConfig start');
         const localUser = await getClientSession();
+        log('LAYOUT: loadSessionAndConfig user=' + (localUser ? localUser.username : 'NULL'));
         
         if (localUser) {
           setUser({ email: localUser.username, id: localUser.id });
@@ -84,9 +90,11 @@ export default function DashboardLayout({
             }
           }
         }
-      } catch (err) {
+      } catch (err: any) {
+        log('LAYOUT: loadSessionAndConfig error=' + err.message);
         console.error('Failed to load session:', err);
       } finally {
+        log('LAYOUT: loadSessionAndConfig finally');
         setLoading(false);
       }
     }
@@ -110,13 +118,14 @@ export default function DashboardLayout({
         const currentWindow = getCurrentWindow();
         
         unlistenNavigate = await currentWindow.listen<string>('menu-navigate', (event) => {
-          console.log('menu-navigate received:', event.payload);
-          router.push(event.payload);
+          if (typeof document !== 'undefined' && document.hasFocus()) {
+            router.push(event.payload);
+          }
         });
 
         unlistenAction = await currentWindow.listen<string>('menu-action', async (event) => {
+          if (typeof document !== 'undefined' && !document.hasFocus()) return;
           const action = event.payload;
-          console.log('menu-action received:', action);
           
           if (action === 'print') window.print();
           if (action === 'about') {
@@ -265,8 +274,8 @@ export default function DashboardLayout({
     e.preventDefault();
     try {
       if (typeof window !== 'undefined' && ((window as any).__TAURI__ || (window as any).__TAURI_INTERNALS__)) {
-        import('@tauri-apps/api/webviewWindow').then(({ WebviewWindow }) => {
-          new WebviewWindow('window_' + Date.now(), { url: '/', title: 'Pharma Dashboard', width: 1280, height: 800, minWidth: 800, minHeight: 600 });
+        import('@tauri-apps/api/core').then(({ invoke }) => {
+          invoke('open_new_window').catch(() => window.open('/', '_blank'));
         }).catch(() => window.open('/', '_blank'));
       } else {
         window.open('/', '_blank');

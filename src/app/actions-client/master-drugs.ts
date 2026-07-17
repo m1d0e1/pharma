@@ -251,6 +251,22 @@ export async function updateMasterDrugAction(id: number, data: any) {
       id
     );
 
+    secureCache.updateDrug(id, {
+      trade_name: data.trade_name,
+      trade_name_en: data.trade_name_en,
+      generic_name: data.generic_name,
+      active_ingredient: data.active_ingredient,
+      barcode: data.barcode,
+      official_price: data.official_price || 0,
+      base_price: data.official_price || 0,
+      large_unit: data.large_unit,
+      medium_unit: data.medium_unit,
+      small_unit: data.small_unit,
+      large_to_medium: data.large_to_medium ? parseInt(data.large_to_medium) : undefined,
+      medium_to_small: data.medium_to_small ? parseInt(data.medium_to_small) : undefined,
+      stop_dealing: data.stop_dealing ?? 0
+    });
+
     logActivity(localUser.id, 'UPDATE_MASTER_DRUG', `عدل الصنف: ${data.trade_name}`);
     revalidatePath('/stores/items');
 
@@ -266,11 +282,12 @@ export async function searchMasterDrugsAction(queryOrOptions: string | {
   type?: 'medicine' | 'non-medicine' | 'service' | 'all',
   status?: 'stopped' | 'active' | 'all',
   minPrice?: number,
-  maxPrice?: number
+  maxPrice?: number,
+  searchByActiveIngredient?: boolean
 }): Promise<{ success: boolean; data?: any[]; error?: string }> {
   try {
     const options = typeof queryOrOptions === 'string' ? { query: queryOrOptions } : queryOrOptions;
-    const { query, type = 'all', status = 'all', minPrice, maxPrice } = options;
+    const { query, type = 'all', status = 'all', minPrice, maxPrice, searchByActiveIngredient = false } = options;
     
     if (!query) return { success: true, data: [] };
 
@@ -285,11 +302,14 @@ export async function searchMasterDrugsAction(queryOrOptions: string | {
 
     // 1. Search in secureCache (RAM)
     const cacheMatched = allDrugs.filter((m: any) => {
-      // Name/Barcode Match
-      const matchesText = (m.trade_name && m.trade_name.toLowerCase().includes(searchLower)) ||
-                          (m.trade_name_en && m.trade_name_en.toLowerCase().includes(searchLower)) ||
-                          (m.active_ingredient && m.active_ingredient.toLowerCase().includes(searchLower)) ||
-                          m.barcode === searchLower;
+      // Name/Barcode/Active Ingredient Match
+      const matchesText = searchByActiveIngredient
+        ? (m.active_ingredient && m.active_ingredient.toLowerCase().includes(searchLower)) ||
+          (m.generic_name && m.generic_name.toLowerCase().includes(searchLower))
+        : (m.trade_name && m.trade_name.toLowerCase().includes(searchLower)) ||
+          (m.trade_name_en && m.trade_name_en.toLowerCase().includes(searchLower)) ||
+          m.barcode === searchLower ||
+          m.id?.toString() === searchLower;
       if (!matchesText) return false;
 
       // Type Filter
@@ -310,12 +330,21 @@ export async function searchMasterDrugsAction(queryOrOptions: string | {
 
     // 2. Search in local SQLite database (for custom added drugs)
     const likePattern = `%${searchLower}%`;
-    const dbMatched = await db.prepare(`
-      SELECT * FROM master_drugs 
-      WHERE (trade_name LIKE ? OR trade_name_en LIKE ? OR active_ingredient LIKE ? OR barcode = ?)
-        AND (trade_name IS NULL OR trade_name != 'SECURE')
-        AND (trade_name_en IS NULL OR trade_name_en != 'SECURE')
-    `).all(likePattern, likePattern, likePattern, searchLower) as any[];
+    const dbQuery = searchByActiveIngredient
+      ? `SELECT * FROM master_drugs 
+         WHERE (active_ingredient LIKE ? OR generic_name LIKE ?)
+           AND (trade_name IS NULL OR trade_name != 'SECURE')
+           AND (trade_name_en IS NULL OR trade_name_en != 'SECURE')`
+      : `SELECT * FROM master_drugs 
+         WHERE (trade_name LIKE ? OR trade_name_en LIKE ? OR barcode = ?)
+           AND (trade_name IS NULL OR trade_name != 'SECURE')
+           AND (trade_name_en IS NULL OR trade_name_en != 'SECURE')`;
+
+    const dbParams = searchByActiveIngredient 
+      ? [likePattern, likePattern] 
+      : [likePattern, likePattern, searchLower];
+
+    const dbMatched = await db.prepare(dbQuery).all(...dbParams) as any[];
 
     const dbFiltered = dbMatched.filter((m: any) => {
       if (type === 'medicine' && (!m.is_medicine || m.is_service)) return false;

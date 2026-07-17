@@ -64,6 +64,19 @@ export async function getSalesInvoicesByDateAction(dateStr: string) {
       FROM sales_invoices i
       LEFT JOIN users u ON i.user_id = u.id
       WHERE date(i.created_at) = ? AND i.status = 'completed'
+        AND EXISTS (
+          SELECT 1
+          FROM sales_items si
+          LEFT JOIN (
+            SELECT sale_item_id, SUM(quantity_returned) as returned
+            FROM return_items ri
+            JOIN returns r ON ri.return_id = r.id
+            WHERE r.status = 'approved'
+            GROUP BY sale_item_id
+          ) ret ON si.id = ret.sale_item_id
+          WHERE si.invoice_id = i.id 
+            AND si.quantity_sold > COALESCE(ret.returned, 0)
+        )
       ORDER BY i.created_at DESC
     `).all(dateStr);
     return { success: true, data: invoices };
@@ -370,12 +383,18 @@ export async function getInvoiceForReturnAction(invoiceId: string) {
         md.id as drug_id,
         md.large_to_medium,
         md.medium_to_small,
-        i.expiry_date
+        i.expiry_date,
+        COALESCE((
+          SELECT SUM(ri.quantity_returned)
+          FROM return_items ri
+          JOIN returns r ON ri.return_id = r.id
+          WHERE r.invoice_id = ? AND r.status = 'approved' AND ri.sale_item_id = sit.id
+        ), 0) as returned_quantity
       FROM sales_items sit
       LEFT JOIN inventory i ON sit.inventory_id = i.id
       LEFT JOIN master_drugs md ON sit.drug_id = md.id
       WHERE sit.invoice_id = ?
-    `).all(invoiceId) as any[];
+    `).all(invoiceId, invoiceId) as any[];
 
     return {
       success: true,
@@ -388,6 +407,7 @@ export async function getInvoiceForReturnAction(invoiceId: string) {
           drug_name: i.trade_name,
           drug_name_en: i.trade_name_en,
           quantity_sold: i.quantity_sold,
+          returned_quantity: i.returned_quantity,
           unit_price: i.unit_price,
           unit: i.unit,
           expiry_date: i.expiry_date,

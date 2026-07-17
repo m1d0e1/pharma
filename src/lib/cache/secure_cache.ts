@@ -57,7 +57,8 @@ class SecureCache {
         this.drugsList = await dbSelect<MasterDrug>(`
           SELECT id, trade_name, trade_name_en, generic_name, active_ingredient,
                  barcode, manufacturer, is_medicine, is_service, stop_dealing,
-                 official_price, official_price AS base_price
+                 official_price, official_price AS base_price,
+                 large_unit, medium_unit, small_unit, large_to_medium, medium_to_small
           FROM master_drugs
         `);
         
@@ -84,6 +85,13 @@ class SecureCache {
     this.drugs.clear();
     this.drugsList = [];
     await this.load();
+  }
+
+  updateDrug(id: number, fields: Partial<MasterDrug>) {
+    const drug = this.drugs.get(id);
+    if (drug) {
+      Object.assign(drug, fields);
+    }
   }
 
   getDrug(id: number): MasterDrug | undefined {

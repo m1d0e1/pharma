@@ -16,13 +16,17 @@ export default function AuthGuard({ children, requiredRole }: AuthGuardProps) {
   const pathname = usePathname();
 
   useEffect(() => {
+    const log = (m: string) => typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__?.invoke('log_frontend_error', { message: m });
     async function checkAuth() {
       try {
+        log('AUTHGUARD: checking session...');
         const user = await getClientSession();
+        log('AUTHGUARD: user=' + (user ? user.username : 'NULL'));
         
         if (!user) {
           // Prevent infinite redirect loops if already on login page
           if (pathname !== '/login') {
+            log('AUTHGUARD: redirecting to /login');
             router.push('/login');
           }
           return;

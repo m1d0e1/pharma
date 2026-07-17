@@ -75,9 +75,10 @@ export default function SalesReturnClient() {
     setItemsToReturn(prev => {
       const newItems = [...prev];
       const item = newItems[index];
-      // Ensure quantity does not exceed sold quantity
+      // Ensure quantity does not exceed remaining quantity
+      const remainingQty = item.quantity_sold - (item.returned_quantity || 0);
       if (quantity < 0) quantity = 0;
-      if (quantity > item.quantity_sold) quantity = item.quantity_sold;
+      if (quantity > remainingQty) quantity = remainingQty;
       newItems[index] = { ...item, return_quantity: quantity };
       return newItems;
     });
@@ -191,6 +192,8 @@ export default function SalesReturnClient() {
                     <tr className="bg-slate-50 dark:bg-slate-900 text-slate-500 dark:text-slate-400">
                       <th className="p-3 font-medium">الصنف</th>
                       <th className="p-3 font-medium text-center">الكمية المباعة</th>
+                      <th className="p-3 font-medium text-center">المرتجع سابقاً</th>
+                      <th className="p-3 font-medium text-center">الكمية المتبقية</th>
                       <th className="p-3 font-medium text-center">سعر الوحدة</th>
                       <th className="p-3 font-medium text-center">كمية المرتجع</th>
                       <th className="p-3 font-medium text-center">قيمة المرتجع</th>
@@ -202,6 +205,12 @@ export default function SalesReturnClient() {
                         <td className="p-3 font-medium text-slate-800 dark:text-slate-200">{item.drug_name}</td>
                         <td className="p-3 text-center text-slate-600 dark:text-slate-400">
                           {item.quantity_sold} {item.original_unit === 'large' ? 'علبة' : item.original_unit === 'medium' ? 'شريط' : 'وحدة'}
+                        </td>
+                        <td className="p-3 text-center text-amber-600 dark:text-amber-500 font-bold">
+                          {item.returned_quantity || 0} {item.original_unit === 'large' ? 'علبة' : item.original_unit === 'medium' ? 'شريط' : 'وحدة'}
+                        </td>
+                        <td className="p-3 text-center text-emerald-600 dark:text-emerald-500 font-bold">
+                          {item.quantity_sold - (item.returned_quantity || 0)} {item.original_unit === 'large' ? 'علبة' : item.original_unit === 'medium' ? 'شريط' : 'وحدة'}
                         </td>
                         <td className="p-3 text-center text-slate-600 dark:text-slate-400">{item.unit_price.toFixed(2)} ج.م</td>
                         <td className="p-3 text-center flex items-center justify-center gap-2">
