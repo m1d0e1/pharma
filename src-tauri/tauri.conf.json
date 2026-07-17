@@ -1,10 +1,11 @@
 {
     "productName": "Pharmacy Local Enforcer",
-    "version": "0.2.24",
+    "version": "0.2.25",
     "identifier": "com.pharma.system",
     "build": {
-        "beforeDevCommand": "",
+        "beforeDevCommand": "cross-env NEXT_PUBLIC_TAURI=1 next dev",
         "beforeBuildCommand": "npm run seed:db && npm run build:tauri",
+        "devUrl": "http://localhost:3000",
         "frontendDist": "../out"
     },
     "app": {
