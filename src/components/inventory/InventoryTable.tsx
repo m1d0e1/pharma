@@ -1,10 +1,11 @@
 'use client'
 
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'react-hot-toast'
 import EditInventoryModal from '../EditInventoryModal'
 import DrugDetailsModal from '../pos/DrugDetailsModal'
+import { useReactToPrint } from 'react-to-print'
 
 import { deleteInventoryAction } from '@/app/actions-client/inventory'
 import { dbSelect, dbExecute, generateId } from '@/lib/db/tauri'
@@ -39,6 +40,12 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
 
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 50;
+  
+  const printRef = useRef<HTMLDivElement>(null);
+  const handlePrint = useReactToPrint({
+    contentRef: printRef,
+    documentTitle: 'تقرير النواقص',
+  });
 
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number, item: InventoryItem | null } | null>(null);
 
@@ -238,7 +245,7 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
              />
            </label>
 
-           <button onClick={() => toast.success('سيتم تفعيل الطباعة قريباً')} className="px-4 py-2 bg-slate-100 dark:bg-slate-800 rounded-xl text-xs font-bold hover:bg-slate-200 transition-all">طباعة النواقص</button>
+           <button onClick={() => handlePrint()} className="px-4 py-2 bg-slate-100 dark:bg-slate-800 rounded-xl text-xs font-bold hover:bg-slate-200 transition-all">طباعة النواقص</button>
         </div>
       </div>
 
@@ -497,6 +504,38 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
           onClose={() => setDetailsDrugId(null)} 
         />
       )}
+
+      {/* Hidden Printable Section */}
+      <div style={{ display: 'none' }}>
+        <div ref={printRef} className="p-8 font-sans" dir="rtl">
+          <div className="text-center mb-8">
+            <h2 className="text-3xl font-black mb-2">تقرير النواقص (Low Stock)</h2>
+            <p className="text-gray-500">تاريخ الطباعة: {new Date().toLocaleDateString('ar-EG')}</p>
+          </div>
+          <table className="w-full text-right border-collapse border border-gray-300">
+            <thead>
+              <tr className="bg-gray-100">
+                <th className="border border-gray-300 p-3 font-bold">اسم الدواء</th>
+                <th className="border border-gray-300 p-3 font-bold">التصنيف</th>
+                <th className="border border-gray-300 p-3 font-bold">الكمية المتبقية</th>
+                <th className="border border-gray-300 p-3 font-bold">المورد (إن وجد)</th>
+                <th className="border border-gray-300 p-3 font-bold">السعر</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredItems.filter(item => item.quantity < 10).map((item, idx) => (
+                <tr key={idx} className="border-b border-gray-200">
+                  <td className="border border-gray-300 p-2 font-bold text-gray-800">{item.master_drugs?.trade_name_en || item.master_drugs?.trade_name}</td>
+                  <td className="border border-gray-300 p-2 text-gray-600">{item.master_drugs?.category || '-'}</td>
+                  <td className="border border-gray-300 p-2 font-black text-red-600">{item.quantity}</td>
+                  <td className="border border-gray-300 p-2 text-gray-600">{(item as any).supplier || '-'}</td>
+                  <td className="border border-gray-300 p-2 text-gray-800">{item.local_selling_price} ج.م</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
 
       {contextMenu && (
         <div 
