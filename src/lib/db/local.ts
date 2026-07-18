@@ -433,7 +433,9 @@ export function initLocalDb() {
       inventory_id TEXT,
       drug_name TEXT,
       quantity_returned INTEGER,
-      unit_price REAL
+      unit_price REAL,
+      sale_item_id INTEGER,
+      unit TEXT
     );
 
     -- Shortages & Reordering
@@ -1123,6 +1125,14 @@ export function initLocalDb() {
   } catch (e) {
     console.error("Failed to fix dates:", e);
   }
+
+  // Migrate return_items to add missing columns (sale_item_id, unit) if they don't exist
+  try {
+    db.exec('ALTER TABLE return_items ADD COLUMN sale_item_id INTEGER;');
+  } catch (e) {}
+  try {
+    db.exec('ALTER TABLE return_items ADD COLUMN unit TEXT;');
+  } catch (e) {}
 
   return db;
 }
