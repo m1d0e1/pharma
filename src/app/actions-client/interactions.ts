@@ -86,6 +86,8 @@ export async function checkDrugInteractions(cartIngredients: string[], patientId
       parseIngredients(i).forEach(ing => cartIngs.push(ing));
     });
 
+    const pastIngs: string[] = [];
+
     // If patient is linked, also get their past purchase ingredients
     if (patientId) {
       const pastSales = await db.prepare(`
@@ -106,12 +108,12 @@ export async function checkDrugInteractions(cartIngredients: string[], patientId
           pastDrugIds
         );
         drugRows.forEach(row => {
-          parseIngredients(row.active_ingredient).forEach(ing => cartIngs.push(ing));
+          parseIngredients(row.active_ingredient).forEach(ing => pastIngs.push(ing));
         });
       }
     }
 
-    // Check patient allergies
+    // Check patient allergies (only against current cart ingredients)
     const allergies: any[] = [];
     if (patientId) {
       const patientAllergies = await db.prepare('SELECT * FROM patient_allergies WHERE patient_id = ?').all(patientId) as any[];
@@ -132,13 +134,17 @@ export async function checkDrugInteractions(cartIngredients: string[], patientId
       }
     }
 
+    // Combine all ingredients for the database lookup
+    const allIngs = [...cartIngs, ...pastIngs];
+
     // Check drug-drug interactions
-    if (cartIngs.length < 2) {
+    if (allIngs.length < 2) {
       return { success: true, data: { interactions: [], allergies, hasCritical: allergies.length > 0, hasMajor: false } };
     }
 
     const dbIngredients = await getDbIngredients();
     const matched = new Set<string>();
+    const matchedFromCart = new Set<string>();
 
     const cleanStr = (s: string) => {
       let cleaned = s
@@ -180,6 +186,15 @@ export async function checkDrugInteractions(cartIngredients: string[], patientId
       for (const dbIng of dbIngredients) {
         if (matchIngredients(cartIng, dbIng)) {
           matched.add(dbIng);
+          matchedFromCart.add(dbIng);
+        }
+      }
+    }
+
+    for (const pastIng of pastIngs) {
+      for (const dbIng of dbIngredients) {
+        if (matchIngredients(pastIng, dbIng)) {
+          matched.add(dbIng);
         }
       }
     }
@@ -210,6 +225,11 @@ export async function checkDrugInteractions(cartIngredients: string[], patientId
     const results: any[] = [];
 
     for (const p of pairs) {
+      // Only include interactions if at least one ingredient is from the current cart
+      if (!matchedFromCart.has(p.ingredient_a) && !matchedFromCart.has(p.ingredient_b)) {
+        continue;
+      }
+      
       const key = `${p.ingredient_a}_${p.ingredient_b}`;
       if (!interactionsFound.has(key)) {
         interactionsFound.add(key);

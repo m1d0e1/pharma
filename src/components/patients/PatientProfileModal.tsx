@@ -367,9 +367,9 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
             <div className="space-y-12 animate-in fade-in slide-in-from-bottom-4">
                <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
                   <FinanceStatCard icon={Award} label="نقاط الولاء" value={formData.points_balance} unit="نقطة" color="from-emerald-500 to-teal-600" />
-                  <FinanceStatCard icon={CreditCard} label="رصيد المحفظة" value={data.patient.wallet_balance || 0} unit="ج.م" color="from-purple-500 to-indigo-600" />
+                  <FinanceStatCard icon={CreditCard} label="رصيد المحفظة" value={data?.wallet_balance || 0} unit="ج.م" color="from-purple-500 to-indigo-600" />
                   <FinanceStatCard icon={ShieldCheck} label="حد الائتمان" value={formData.credit_limit} unit="ج.م" color="from-blue-500 to-indigo-600" />
-                  <FinanceStatCard icon={History} label="الرصيد الحالي" value={data.currentBalance} unit="ج.م" color="from-slate-700 to-slate-900" />
+                  <FinanceStatCard icon={History} label="الرصيد الحالي" value={data?.current_balance || 0} unit="ج.م" color="from-slate-700 to-slate-900" />
                </div>
 
                <div className="bg-white dark:bg-slate-900 p-10 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-sm space-y-8">
