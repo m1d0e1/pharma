@@ -146,7 +146,7 @@ export async function searchPatientsAction(query: string) {
     
     const searchPattern = `%${query}%`;
     const patients = await db.prepare(`
-      SELECT id, full_name, phone
+      SELECT id, full_name, phone, credit_limit, wallet_balance, opening_balance
       FROM patients
       WHERE (full_name LIKE ? OR phone LIKE ?)
       LIMIT 5

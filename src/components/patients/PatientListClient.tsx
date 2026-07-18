@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import AddPatientModal from '../AddPatientModal'
 import PatientProfileModal from './PatientProfileModal'
@@ -28,9 +28,28 @@ export default function PatientListClient({ initialPatients, pharmacyId }: Props
   const [searchTerm, setSearchTerm] = useState('')
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null)
+  const [patients, setPatients] = useState<Patient[]>(initialPatients)
   const router = useRouter()
 
-  const filteredPatients = initialPatients.filter(p => 
+  useEffect(() => {
+    setPatients(initialPatients)
+  }, [initialPatients])
+
+  const fetchPatients = async () => {
+    try {
+      const { dbSelect } = await import('@/lib/db/tauri')
+      const data = await dbSelect(`
+        SELECT * FROM patients
+        ORDER BY created_at DESC
+        LIMIT 200
+      `)
+      setPatients(data as Patient[])
+    } catch (err) {
+      console.error('Failed to load patients:', err)
+    }
+  }
+
+  const filteredPatients = patients.filter(p => 
     p.full_name.includes(searchTerm) || 
     p.phone.includes(searchTerm) || 
     (p.name_en && p.name_en.toLowerCase().includes(searchTerm.toLowerCase()))
@@ -113,7 +132,7 @@ export default function PatientListClient({ initialPatients, pharmacyId }: Props
         <AddPatientModal 
           pharmacyId={pharmacyId} 
           onClose={() => setIsModalOpen(false)} 
-          onSuccess={() => router.refresh()} 
+          onSuccess={() => { fetchPatients(); router.refresh(); }} 
         />
       )}
 
@@ -121,7 +140,7 @@ export default function PatientListClient({ initialPatients, pharmacyId }: Props
         <PatientProfileModal
           patientId={selectedPatientId}
           onClose={() => setSelectedPatientId(null)}
-          onSuccess={() => router.refresh()}
+          onSuccess={() => { fetchPatients(); router.refresh(); }}
         />
       )}
     </div>

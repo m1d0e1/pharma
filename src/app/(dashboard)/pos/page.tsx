@@ -89,6 +89,9 @@ interface Patient {
   id: string;
   full_name: string;
   phone: string;
+  credit_limit?: number;
+  wallet_balance?: number;
+  opening_balance?: number;
 }
 
 export interface POSSearchSidebarRef {
@@ -475,6 +478,18 @@ export default function POSPage() {
     return () => clearTimeout(timer);
   }, [patientSearch]);
 
+  // Fetch full patient info when selectedPatient changes and has missing fields (like credit_limit)
+  useEffect(() => {
+    if (selectedPatient && selectedPatient.credit_limit === undefined) {
+      import('@/app/actions-client/patients').then(async (mod) => {
+        const res = await mod.getPatientProfileAction(selectedPatient.id);
+        if (res.success && res.data) {
+          setSelectedPatient(prev => prev && prev.id === res.data.id ? { ...prev, ...res.data } : prev);
+        }
+      });
+    }
+  }, [selectedPatient]);
+
   const addToCart = useCallback((drug: DrugItem) => {
     if (drug.is_expired) {
       toast.error(`⛔ الصنف "${drug.trade_name_en || drug.trade_name}" منتهي الصلاحية ولا يمكن بيعه`);
@@ -854,9 +869,19 @@ export default function POSPage() {
           <div className="col-span-1 space-y-1">
             <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider">بيانات العميل</label>
             {selectedPatient ? (
-              <div className="flex items-center justify-between bg-purple-50 dark:bg-purple-900/20 p-2 rounded-xl border border-purple-100 dark:border-purple-800">
-                <span className="font-bold text-xs text-purple-700 dark:text-purple-300 truncate">👤 {selectedPatient.full_name}</span>
-                <button onClick={() => setSelectedPatient(null)} className="text-purple-400 hover:text-purple-900">×</button>
+              <div className="space-y-1">
+                <div className="flex items-center justify-between bg-purple-50 dark:bg-purple-900/20 p-2 rounded-xl border border-purple-100 dark:border-purple-800">
+                  <span className="font-bold text-xs text-purple-700 dark:text-purple-300 truncate">👤 {selectedPatient.full_name}</span>
+                  <button onClick={() => setSelectedPatient(null)} className="text-purple-400 hover:text-purple-900">×</button>
+                </div>
+                {paymentMethod === 'credit' && (
+                  <div className="text-[10px] font-black px-1 flex justify-between">
+                    <span className="text-slate-400">الائتمان المتبقي:</span>
+                    <span className={((selectedPatient.credit_limit || 0) - ((selectedPatient.opening_balance || 0) - (selectedPatient.wallet_balance || 0))) < total ? "text-rose-500 font-bold" : "text-emerald-600 font-bold"}>
+                      {((selectedPatient.credit_limit || 0) - ((selectedPatient.opening_balance || 0) - (selectedPatient.wallet_balance || 0))).toFixed(2)} ج.م
+                    </span>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="relative">

@@ -450,10 +450,14 @@ export async function processCheckoutAction(data: any) {
               (SELECT COALESCE(SUM(amount), 0) FROM patient_transactions WHERE patient_id = ? AND type IN ('payment', 'adjustment'))
             ) as outstanding_balance
           `).get(validatedData.patient_id, validatedData.patient_id, validatedData.patient_id, validatedData.patient_id) as any;
-          const currentDebt = balanceRow?.outstanding_balance || 0;
+           const currentDebt = balanceRow?.outstanding_balance || 0;
+          const creditLeft = (patient.credit_limit || 0) - currentDebt;
 
           if ((currentDebt + subTotal) > (patient.credit_limit || 0)) {
-            return { success: false, error: `تجاوز العميل الحد الائتماني المسموح به (${patient.credit_limit} ج.م)` };
+            return { 
+              success: false, 
+              error: `تجاوز العميل الحد الائتماني المسموح به. الائتمان المتبقي الحالي: ${creditLeft.toFixed(2)} ج.م (قيمة الفاتورة: ${subTotal.toFixed(2)} ج.م، الحد الأقصى: ${patient.credit_limit} ج.م)` 
+            };
           }
         }
 
