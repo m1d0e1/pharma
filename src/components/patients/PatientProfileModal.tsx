@@ -113,8 +113,8 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
     setLoading(false)
   }
 
-  const handleUpdate = async (e: React.FormEvent) => {
-    e.preventDefault()
+  const handleUpdate = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault()
     setIsSubmitting(true)
     const res = await updatePatientAction(patientId, formData as any)
     setIsSubmitting(false)
@@ -408,7 +408,7 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                   <h3 className="text-xl font-black text-slate-800 dark:text-white flex items-center gap-3">
                      <ShieldCheck className="w-8 h-8 text-blue-500" /> إعدادات التعاقد والتحصيل
                   </h3>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
                      <div className="space-y-2">
                         <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-2">طريقة الدفع الافتراضية</label>
                         <select
@@ -420,6 +420,15 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                            <option value="credit">آجل (Credit)</option>
                            <option value="visa">فيزا (Visa)</option>
                         </select>
+                     </div>
+                     <div className="space-y-2">
+                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-2">الحد الأقصى للرصيد (الحد الائتماني)</label>
+                        <input
+                          type="number"
+                          value={formData.credit_limit}
+                          onChange={(e) => setFormData({...formData, credit_limit: parseFloat(e.target.value) || 0})}
+                          className="w-full bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-blue-500 p-4 rounded-2xl outline-none font-bold transition-all"
+                        />
                      </div>
                      <div className="space-y-2">
                         <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-2">رقم التأمين الصحي</label>
