@@ -67,6 +67,12 @@ fn main() {
             description: "sync_metadata",
             sql: include_str!("../migrations/003_sync_metadata.sql"),
             kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 4,
+            description: "return_items_patch",
+            sql: include_str!("../migrations/004_return_items_patch.sql"),
+            kind: MigrationKind::Up,
         }
     ];
 
