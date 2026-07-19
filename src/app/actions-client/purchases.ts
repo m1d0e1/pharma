@@ -728,3 +728,346 @@ export async function getDraftPurchaseInvoicesAction() {
     return { success: false, error: error.message };
   }
 }
+
+export async function updateCompletedPurchaseInvoiceAction(data: {
+  id: string,
+  supplier_id: number,
+  invoice_number?: string,
+  invoice_date?: string,
+  payment_method?: string,
+  notes?: string,
+  check_number?: string,
+  expenses?: number,
+  discount_value?: number,
+  discount_percent?: number,
+  tax_percent?: number,
+  cart: any[]
+}) {
+  try {
+    const session = await getLocalSession();
+    if (!session || !hasUserPermissionSync(session, 'can_view_purchases')) {
+      return { success: false, error: 'Unauthorized' };
+    }
+
+    const transaction = db.transaction(async () => {
+      // 1. Get existing completed invoice and items
+      const invoice = await db.prepare('SELECT * FROM purchase_invoices WHERE id = ?').get(data.id) as any;
+      if (!invoice) throw new Error('فاتورة الشراء غير موجودة');
+      if (invoice.status !== 'completed') throw new Error('هذه الفاتورة ليست مكتملة');
+
+      const oldItems = await db.prepare('SELECT * FROM purchase_invoice_items WHERE invoice_id = ?').all(data.id) as any[];
+
+      // 2. Fetch all inventory records associated with the old invoice number / batch
+      const oldBatchNumber = invoice.invoice_number || 'BATCH-' + data.id.substring(0, 8);
+      const oldInvItems = await db.prepare('SELECT * FROM inventory WHERE batch_number = ?').all(oldBatchNumber) as any[];
+
+      // 3. Validation: check if any reduction in quantity is safe (not sold yet)
+      for (const oldItem of oldItems) {
+        const inv = oldInvItems.find((i: any) => String(i.drug_id) === String(oldItem.drug_id));
+        const oldQty = Number(oldItem.quantity) + (Number(oldItem.bonus_quantity) || 0);
+
+        const newItem = data.cart.find((c: any) => String(c.id) === String(oldItem.drug_id));
+        
+        if (!newItem) {
+          // Item was removed from the cart
+          if (inv && inv.quantity < oldQty) {
+            const soldAmount = oldQty - inv.quantity;
+            const drugInfo = await db.prepare('SELECT trade_name FROM master_drugs WHERE id = ?').get(oldItem.drug_id) as any;
+            throw new Error(`لا يمكن حذف الصنف "${drugInfo?.trade_name || oldItem.drug_id}" لأنه تم بيع جزء منه (الكمية المباعة: ${soldAmount.toFixed(2)})`);
+          }
+        } else {
+          // Item exists in the new cart, check if quantity decreased
+          const newQty = Number(newItem.quantity) + (Number(newItem.bonus_quantity) || 0);
+          if (newQty < oldQty) {
+            const reduction = oldQty - newQty;
+            if (!inv || inv.quantity < reduction) {
+              const soldAmount = oldQty - (inv ? inv.quantity : 0);
+              const drugInfo = await db.prepare('SELECT trade_name FROM master_drugs WHERE id = ?').get(oldItem.drug_id) as any;
+              throw new Error(`الكمية المتاحة في المخزن للصنف "${drugInfo?.trade_name || oldItem.drug_id}" غير كافية لتقليل الكمية (الكمية المباعة: ${soldAmount.toFixed(2)})`);
+            }
+          }
+        }
+      }
+
+      // 4. Verification passed! Let's update inventory and invoice items.
+      const newBatchNumber = data.invoice_number || 'BATCH-' + data.id.substring(0, 8);
+      
+      // We will first handle updates/deletions of old items
+      for (const oldItem of oldItems) {
+        const inv = oldInvItems.find((i: any) => String(i.drug_id) === String(oldItem.drug_id));
+        const oldQty = Number(oldItem.quantity) + (Number(oldItem.bonus_quantity) || 0);
+        
+        const newItem = data.cart.find((c: any) => String(c.id) === String(oldItem.drug_id));
+
+        if (!newItem) {
+          // Item removed
+          if (inv) {
+            await db.prepare('DELETE FROM inventory WHERE id = ?').run(inv.id);
+          }
+        } else {
+          // Item updated
+          const newQty = Number(newItem.quantity) + (Number(newItem.bonus_quantity) || 0);
+          
+          // Calculate item subtotal, tax, discount for unit cost
+          const itemSubtotal = (newItem.quantity * newItem.cost_price);
+          const itemTax = itemSubtotal * (newItem.tax_percent / 100);
+          const itemDiscount = (itemSubtotal + itemTax) * (newItem.discount_percent / 100);
+          const itemTotal = itemSubtotal + itemTax - itemDiscount;
+          const netUnitCost = newQty > 0 ? (itemTotal / newQty) : newItem.cost_price;
+
+          if (inv) {
+            const newInvQty = inv.quantity - (oldQty - newQty);
+            await db.prepare(`
+              UPDATE inventory 
+              SET quantity = ?, 
+                  local_selling_price = ?, 
+                  cost_price = ?, 
+                  expiry_date = ?, 
+                  batch_number = ?, 
+                  strips_per_box = ?, 
+                  updated_at = CURRENT_TIMESTAMP 
+              WHERE id = ?
+            `).run(
+              newInvQty,
+              newItem.selling_price || 0,
+              netUnitCost,
+              normalizeDateToYMD(newItem.expiry_date),
+              newBatchNumber,
+              newItem.strips_per_box || 1,
+              inv.id
+            );
+          } else {
+            // Inventory record got deleted/missing somehow, let's recreate it
+            const invId = generateId();
+            await db.prepare(`
+              INSERT INTO inventory (id, drug_id, pharmacy_id, quantity, local_selling_price, cost_price, expiry_date, batch_number, strips_per_box)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `).run(
+              invId,
+              newItem.id,
+              session.pharmacy_id,
+              newQty,
+              newItem.selling_price || 0,
+              netUnitCost,
+              normalizeDateToYMD(newItem.expiry_date),
+              newBatchNumber,
+              newItem.strips_per_box || 1
+            );
+          }
+        }
+      }
+
+      // Add entirely new items (that weren't in old items)
+      for (const newItem of data.cart) {
+        const isNew = !oldItems.some((o: any) => String(o.drug_id) === String(newItem.id));
+        if (isNew) {
+          const newQty = Number(newItem.quantity) + (Number(newItem.bonus_quantity) || 0);
+          const itemSubtotal = (newItem.quantity * newItem.cost_price);
+          const itemTax = itemSubtotal * (newItem.tax_percent / 100);
+          const itemDiscount = (itemSubtotal + itemTax) * (newItem.discount_percent / 100);
+          const itemTotal = itemSubtotal + itemTax - itemDiscount;
+          const netUnitCost = newQty > 0 ? (itemTotal / newQty) : newItem.cost_price;
+
+          const invId = generateId();
+          await db.prepare(`
+            INSERT INTO inventory (id, drug_id, pharmacy_id, quantity, local_selling_price, cost_price, expiry_date, batch_number, strips_per_box)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(
+            invId,
+            newItem.id,
+            session.pharmacy_id,
+            newQty,
+            newItem.selling_price || 0,
+            netUnitCost,
+            normalizeDateToYMD(newItem.expiry_date),
+            newBatchNumber,
+            newItem.strips_per_box || 1
+          );
+        }
+      }
+
+      // Now clear old items and insert all new ones from data.cart into purchase_invoice_items
+      await db.prepare('DELETE FROM purchase_invoice_items WHERE invoice_id = ?').run(data.id);
+      
+      let totalAmount = 0;
+      const itemStmt = await db.prepare(`
+        INSERT INTO purchase_invoice_items (invoice_id, drug_id, quantity, unit_id, expiry_date, cost_price, selling_price, bonus_quantity, tax_percent, discount_percent, strips_per_box)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      
+      for (const item of data.cart) {
+        const normExpiry = normalizeDateToYMD(item.expiry_date);
+        await itemStmt.run(
+          data.id,
+          item.id,
+          item.quantity,
+          item.unit_id || null,
+          normExpiry,
+          item.cost_price,
+          item.selling_price || null,
+          item.bonus_quantity || 0,
+          item.tax_percent || 0,
+          item.discount_percent || 0,
+          item.strips_per_box || 1
+        );
+
+        if (item.strips_per_box) {
+          await db.prepare('UPDATE master_drugs SET large_to_medium = ? WHERE id = ?').run(item.strips_per_box, item.id);
+          secureCache.updateDrug(Number(item.id), { large_to_medium: item.strips_per_box });
+        }
+
+        const itemSubtotal = (item.quantity * item.cost_price);
+        const itemTax = itemSubtotal * (item.tax_percent / 100);
+        const itemDiscount = (itemSubtotal + itemTax) * (item.discount_percent / 100);
+        const itemTotal = itemSubtotal + itemTax - itemDiscount;
+        totalAmount += itemTotal;
+      }
+
+      // Calculate new invoice total
+      const invoiceExpenses = data.expenses || 0;
+      const invoiceDiscountVal = data.discount_value || 0;
+      const invoiceDiscountPct = (totalAmount + invoiceExpenses - invoiceDiscountVal) * ((data.discount_percent || 0) / 100);
+      const newTotal = totalAmount + invoiceExpenses - invoiceDiscountVal - invoiceDiscountPct;
+
+      const oldTotal = invoice.total_amount || 0;
+      const diff = newTotal - oldTotal;
+
+      // Update invoice total_amount
+      await db.prepare(`
+        UPDATE purchase_invoices 
+        SET supplier_id = ?, 
+            invoice_number = ?, 
+            invoice_date = ?, 
+            payment_method = ?, 
+            notes = ?, 
+            check_number = ?, 
+            expenses = ?, 
+            discount_value = ?, 
+            discount_percent = ?, 
+            tax_percent = ?, 
+            total_amount = ?, 
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(
+        data.supplier_id,
+        data.invoice_number || null,
+        data.invoice_date || new Date().toISOString().split('T')[0],
+        data.payment_method || 'credit',
+        data.notes || null,
+        data.check_number || null,
+        data.expenses || 0,
+        data.discount_value || 0,
+        data.discount_percent || 0,
+        data.tax_percent || 0,
+        newTotal,
+        data.id
+      );
+
+      // Adjust supplier balance and supplier transaction
+      await db.prepare('DELETE FROM supplier_transactions WHERE reference_id = ?').run(data.id);
+
+      // If supplier changed
+      if (invoice.supplier_id !== data.supplier_id) {
+        // Old supplier refund
+        if (invoice.payment_method === 'credit' || invoice.payment_method === 'check') {
+          await db.prepare('UPDATE suppliers SET balance = balance - ? WHERE id = ?').run(oldTotal, invoice.supplier_id);
+        }
+        // New supplier charge
+        if (data.payment_method === 'credit' || data.payment_method === 'check') {
+          await db.prepare('UPDATE suppliers SET balance = balance + ? WHERE id = ?').run(newTotal, data.supplier_id);
+          const typeLabel = data.payment_method === 'credit' ? 'آجل' : 'شيك';
+          await db.prepare('INSERT INTO supplier_transactions (supplier_id, type, amount, reference_id, notes) VALUES (?, ?, ?, ?, ?)').run(
+            data.supplier_id,
+            'invoice',
+            newTotal,
+            data.id,
+            `فاتورة شراء معدلة (${typeLabel}) رقم ${data.invoice_number || data.id}`
+          );
+        }
+      } else {
+        // Supplier is the same, just adjust by the diff
+        if (data.payment_method === 'credit' || data.payment_method === 'check') {
+          await db.prepare('UPDATE suppliers SET balance = balance + ? WHERE id = ?').run(diff, data.supplier_id);
+          const typeLabel = data.payment_method === 'credit' ? 'آجل' : 'شيك';
+          await db.prepare('INSERT INTO supplier_transactions (supplier_id, type, amount, reference_id, notes) VALUES (?, ?, ?, ?, ?)').run(
+            data.supplier_id,
+            'invoice',
+            newTotal,
+            data.id,
+            `فاتورة شراء معدلة (${typeLabel}) رقم ${data.invoice_number || data.id}`
+          );
+        }
+      }
+
+      // Cash Drawer / Movements Adjustment
+      if (data.payment_method === 'cash') {
+        const openShift = await db.prepare("SELECT id FROM shifts WHERE user_id = ? AND status = 'open'").get(session.id) as any;
+        if (openShift && diff !== 0) {
+          const type = diff > 0 ? 'disbursement' : 'receipt';
+          await db.prepare("INSERT INTO cash_movements (id, user_id, shift_id, type, amount, category, notes, date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(
+            generateId(), session.id, openShift.id, type, Math.abs(diff), 'purchases', `تعديل فاتورة شراء رقم ${data.invoice_number || data.id.slice(0, 8)}`, new Date().toISOString().split('T')[0]
+          );
+        }
+      }
+
+      // Accounting / Journal Entries update
+      const oldJournals = await db.prepare("SELECT id FROM daily_journals WHERE description LIKE ?").all(`%فاتورة شراء%${invoice.invoice_number || invoice.id.slice(0, 8)}%`) as any[];
+      for (const j of oldJournals) {
+        await db.prepare('DELETE FROM journal_entries WHERE journal_id = ?').run(j.id);
+        await db.prepare('DELETE FROM daily_journals WHERE id = ?').run(j.id);
+      }
+
+      const journalId = generateId();
+      const purchaseDate = data.invoice_date || new Date().toISOString().split('T')[0];
+      await db.prepare(`
+        INSERT INTO daily_journals (id, date, description, created_by, total_amount)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(journalId, purchaseDate, `فاتورة شراء رقم ${data.invoice_number || data.id.slice(0, 8)}`, session.id, newTotal);
+
+      const getAccountId = async (cat: string) => {
+        const s = await db.prepare('SELECT account_id FROM trial_balance_settings WHERE category = ?').get(cat) as any;
+        return s?.account_id;
+      };
+
+      const accounts = {
+        cash: await getAccountId('cash_drawer') || 6,
+        payable: await getAccountId('accounts_payable') || 7,
+        inventory: await getAccountId('inventory_asset') || 10
+      };
+
+      try {
+        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, accounts.inventory, 'debit', newTotal);
+      } catch (e) {
+        console.warn('Accounting missing: could not insert inventory journal entry', e);
+      }
+
+      if (data.payment_method === 'credit' || data.payment_method === 'check') {
+        try {
+          if (accounts.payable) await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, accounts.payable, 'credit', newTotal);
+        } catch (e) {
+          console.warn('Accounting missing: could not insert payable journal entry', e);
+        }
+      } else {
+        try {
+          if (accounts.cash) await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, accounts.cash, 'credit', newTotal);
+        } catch (e) {
+          console.warn('Accounting missing: could not insert cash journal entry', e);
+        }
+      }
+
+      logActivity(session.id, 'EDIT_COMPLETED_PURCHASE', `تعديل فاتورة شراء مكتملة بقيمة جديدة: ${newTotal.toFixed(2)}`);
+      return data.id;
+    });
+
+    await transaction();
+
+    revalidatePath('/purchases');
+    revalidatePath('/inventory');
+    revalidatePath('/purchases/suppliers');
+    
+    return { success: true };
+  } catch (error: any) {
+    console.error('updateCompletedPurchaseInvoiceAction error:', error?.message || error);
+    return { success: false, error: error?.message || String(error) || 'فشل تعديل الفاتورة' };
+  }
+}

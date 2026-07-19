@@ -29,7 +29,9 @@ import {
   addPurchaseInvoiceItemAction, 
   completePurchaseInvoiceAction,
   checkSupplierPendingInvoiceAction,
-  getPurchaseInvoiceDetailsAction
+  getPurchaseInvoiceDetailsAction,
+  getPurchaseInvoiceAction,
+  updateCompletedPurchaseInvoiceAction
 } from '@/app/actions-client/purchases'
 import { toast } from 'react-hot-toast'
 import { useRouter, useSearchParams } from 'next/navigation'
@@ -106,6 +108,7 @@ export default function PurchaseInvoiceClient() {
   const [itemErrors, setItemErrors] = useState<Record<string, Record<string, boolean>>>({})
   const [drafts, setDrafts] = useState<any[]>([])
   const [showDraftsModal, setShowDraftsModal] = useState(false)
+  const [isEditingCompleted, setIsEditingCompleted] = useState(false)
 
   const loadDrafts = async () => {
     const { getDraftPurchaseInvoicesAction } = await import('@/app/actions-client/purchases');
@@ -222,6 +225,65 @@ export default function PurchaseInvoiceClient() {
       
       const newUrl = window.location.pathname
       window.history.replaceState({}, '', newUrl)
+    }
+
+    const editInvoiceId = searchParams.get('edit_invoice_id')
+    if (editInvoiceId && handledDrugIdRef.current !== editInvoiceId && suppliers.length > 0) {
+      handledDrugIdRef.current = editInvoiceId
+      
+      const newUrl = window.location.pathname
+      window.history.replaceState({}, '', newUrl)
+      
+      toast.loading('جاري تحميل الفاتورة للتعديل...', { id: 'loading-edit' })
+      Promise.all([
+        getPurchaseInvoiceAction(editInvoiceId),
+        getPurchaseInvoiceDetailsAction(editInvoiceId)
+      ]).then(([invoiceRes, itemsRes]) => {
+        toast.dismiss('loading-edit')
+        if (invoiceRes.success && itemsRes.success && invoiceRes.data) {
+          const invoice = invoiceRes.data
+          setIsEditingCompleted(invoice.status === 'completed')
+          
+          const s = suppliers.find(sup => sup.id === invoice.supplier_id)
+          setSelectedSupplier(s || null)
+          
+          setInvoiceHeader({
+            id: invoice.id,
+            invoice_number: invoice.invoice_number || '',
+            invoice_date: normalizeDateToYMD(invoice.invoice_date) || new Date().toISOString().split('T')[0],
+            payment_method: invoice.payment_method || 'cash',
+            notes: invoice.notes || '',
+            discount_percent: invoice.discount_percent || 0,
+            discount_value: invoice.discount_value || 0,
+            expenses: invoice.expenses || 0,
+          })
+          
+          const formattedCart: PurchaseItem[] = itemsRes.data.map((i: any) => ({
+            id: i.drug_id,
+            trade_name: i.trade_name_en || i.trade_name || i.drug_name || '',
+            barcode: i.barcode || '',
+            quantity: i.quantity || 1,
+            bonus_quantity: i.bonus_quantity || 0,
+            discount_percent: i.discount_percent || 0,
+            discount_value: i.discount_value || 0,
+            tax_percent: i.tax_percent || 0,
+            cost_price: i.cost_price || 0,
+            selling_price: i.selling_price || 0,
+            official_price: i.selling_price || 0,
+            batch_number: i.batch_number || '',
+            expiry_date: normalizeDateToYMD(i.expiry_date) || '',
+            strips_per_box: i.strips_per_box || i.large_to_medium || ''
+          }))
+          setCart(formattedCart)
+          toast.success('تم تحميل الفاتورة للتعديل بنجاح')
+        } else {
+          toast.error('فشل في تحميل الفاتورة للتعديل')
+        }
+      }).catch(err => {
+        toast.dismiss('loading-edit')
+        console.error(err)
+        toast.error('حدث خطأ أثناء تحميل الفاتورة')
+      })
     }
   }, [hydrated, searchParams, suppliers])
 
@@ -558,27 +620,53 @@ export default function PurchaseInvoiceClient() {
     if (isDraft) setIsDrafting(true); else setIsSubmitting(true);
     
     try {
-      const res = await createPurchaseInvoiceAction({
-        ...invoiceHeader,
-        expenses: Number(invoiceHeader.expenses) || 0,
-        discount_value: Number(invoiceHeader.discount_value) || 0,
-        discount_percent: Number(invoiceHeader.discount_percent) || 0,
-        tax_percent: Number(invoiceHeader.tax_percent) || 0,
-        supplier_id: (selectedSupplier as any).id,
-        status: isDraft ? 'draft' : 'pending',
-        cart: normalizedCart.map(item => {
-          return { ...item, expiry_date: item.expiry_date };
-        }),
-        id: invoiceHeader.id || undefined
-      })
+      let res;
+      if (isEditingCompleted) {
+        res = await updateCompletedPurchaseInvoiceAction({
+          id: invoiceHeader.id!,
+          supplier_id: (selectedSupplier as any).id,
+          invoice_number: invoiceHeader.invoice_number || undefined,
+          invoice_date: invoiceHeader.invoice_date || undefined,
+          payment_method: invoiceHeader.payment_method || 'credit',
+          notes: invoiceHeader.notes || undefined,
+          check_number: invoiceHeader.check_number || undefined,
+          expenses: Number(invoiceHeader.expenses) || 0,
+          discount_value: Number(invoiceHeader.discount_value) || 0,
+          discount_percent: Number(invoiceHeader.discount_percent) || 0,
+          tax_percent: Number(invoiceHeader.tax_percent) || 0,
+          cart: normalizedCart
+        });
+      } else {
+        res = await createPurchaseInvoiceAction({
+          ...invoiceHeader,
+          expenses: Number(invoiceHeader.expenses) || 0,
+          discount_value: Number(invoiceHeader.discount_value) || 0,
+          discount_percent: Number(invoiceHeader.discount_percent) || 0,
+          tax_percent: Number(invoiceHeader.tax_percent) || 0,
+          supplier_id: (selectedSupplier as any).id,
+          status: isDraft ? 'draft' : 'pending',
+          cart: normalizedCart.map(item => {
+            return { ...item, expiry_date: item.expiry_date };
+          }),
+          id: invoiceHeader.id || undefined
+        });
+      }
 
       if (!res.success) {
         const errMsg = (res as any).error || 'فشل في تسجيل الفاتورة';
-        console.error('createPurchaseInvoiceAction failed:', (res as any).error);
+        console.error('Save purchase invoice failed:', (res as any).error);
         throw new Error(errMsg);
       }
 
-      if (!isDraft) {
+      if (isEditingCompleted) {
+        toast.success('تم تعديل فاتورة الشراء المكتملة بنجاح')
+        if (confirm('تم تعديل الفاتورة بنجاح. هل تريد طباعة الباركود؟')) {
+           setShowBarcodePrinter(true)
+        } else {
+           resetPurchase();
+           router.push('/purchases')
+        }
+      } else if (!isDraft) {
         toast.success('تم تسجيل فاتورة الشراء بنجاح')
         if (confirm('تم الحفظ بنجاح. هل تريد طباعة الباركود؟')) {
            setShowBarcodePrinter(true)
@@ -607,21 +695,27 @@ export default function PurchaseInvoiceClient() {
         <div className="flex justify-between items-start mb-8">
           <div className="flex items-center gap-4">
             <div>
-              <h1 className="text-3xl font-black text-slate-900 dark:text-white">فاتورة شراء جديدة</h1>
-              <p className="text-slate-500 font-bold">تسجيل توريدات جديدة وتحديث أرصدة الموردين</p>
+              <h1 className="text-3xl font-black text-slate-900 dark:text-white">
+                {isEditingCompleted ? 'تعديل فاتورة شراء مكتملة' : 'فاتورة شراء جديدة'}
+              </h1>
+              <p className="text-slate-500 font-bold">
+                {isEditingCompleted ? 'تعديل أصناف الفاتورة، وتعديل كميات وأسعار المخزون المرتبط تلقائياً' : 'تسجيل توريدات جديدة وتحديث أرصدة الموردين'}
+              </p>
             </div>
           </div>
           <div className="flex items-center gap-3 no-print">
-            <button 
-              onClick={async () => {
-                await loadDrafts();
-                setShowDraftsModal(true);
-              }}
-              className="p-3 bg-primary-50 dark:bg-primary-950/20 hover:bg-primary-100 dark:hover:bg-primary-900/30 transition-all rounded-xl text-primary-600 dark:text-primary-400 font-bold text-xs flex items-center gap-2"
-            >
-              <FileText className="w-5 h-5" />
-              <span>استرجاع المسودات</span>
-            </button>
+            {!isEditingCompleted && (
+              <button 
+                onClick={async () => {
+                  await loadDrafts();
+                  setShowDraftsModal(true);
+                }}
+                className="p-3 bg-primary-50 dark:bg-primary-950/20 hover:bg-primary-100 dark:hover:bg-primary-900/30 transition-all rounded-xl text-primary-600 dark:text-primary-400 font-bold text-xs flex items-center gap-2"
+              >
+                <FileText className="w-5 h-5" />
+                <span>استرجاع المسودات</span>
+              </button>
+            )}
             <button onClick={() => window.print()} className="p-3 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 transition-all rounded-xl">
               <Printer className="w-6 h-6 text-slate-600 dark:text-slate-300" />
             </button>
@@ -912,38 +1006,47 @@ export default function PurchaseInvoiceClient() {
                   ) : (
                     <>
                       <CheckCircle2 className="w-5 h-5" />
-                      حفظ نهائي (F9)
+                      {isEditingCompleted ? 'حفظ التعديلات (F9)' : 'حفظ نهائي (F9)'}
                     </>
                   )}
                 </button>
 
                 <div className="flex gap-2">
-                  <button 
-                    onClick={() => handleSubmit(true)}
-                    disabled={isSubmitting || isDrafting || cart.length === 0}
-                    className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-xl font-bold transition-all disabled:opacity-50 flex items-center justify-center gap-2 text-sm"
-                  >
-                    {isDrafting ? (
-                      <div className="w-4 h-4 border-2 border-slate-500/30 border-t-slate-500 rounded-full animate-spin" />
-                    ) : (
-                      <>
-                        <Save className="w-4 h-4" />
-                        حفظ كمسودة (F10)
-                      </>
-                    )}
-                  </button>
+                  {!isEditingCompleted ? (
+                    <button 
+                      onClick={() => handleSubmit(true)}
+                      disabled={isSubmitting || isDrafting || cart.length === 0}
+                      className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-xl font-bold transition-all disabled:opacity-50 flex items-center justify-center gap-2 text-sm"
+                    >
+                      {isDrafting ? (
+                        <div className="w-4 h-4 border-2 border-slate-500/30 border-t-slate-500 rounded-full animate-spin" />
+                      ) : (
+                        <>
+                          <Save className="w-4 h-4" />
+                          حفظ كمسودة (F10)
+                        </>
+                      )}
+                    </button>
+                  ) : null}
 
                   <button 
                     onClick={() => {
-                      if (confirm('هل أنت متأكد من إلغاء وحذف الفاتورة الحالية بالكامل؟')) {
-                        resetPurchase();
-                        toast.success('تم إلغاء الفاتورة بنجاح');
+                      if (isEditingCompleted) {
+                        if (confirm('هل أنت متأكد من إلغاء التعديلات والعودة للفواتير؟')) {
+                          resetPurchase();
+                          router.push('/purchases');
+                        }
+                      } else {
+                        if (confirm('هل أنت متأكد من إلغاء وحذف الفاتورة الحالية بالكامل؟')) {
+                          resetPurchase();
+                          toast.success('تم إلغاء الفاتورة بنجاح');
+                        }
                       }
                     }}
                     className="flex-1 py-3 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/20 dark:hover:bg-rose-950/40 text-rose-600 rounded-xl font-bold transition-all flex items-center justify-center gap-2 text-sm"
                   >
                     <Trash2 className="w-4 h-4" />
-                    إلغاء الفاتورة
+                    {isEditingCompleted ? 'إلغاء التعديل' : 'إلغاء الفاتورة'}
                   </button>
                 </div>
               </div>

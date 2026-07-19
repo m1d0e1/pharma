@@ -60,9 +60,11 @@ const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, 
 export async function getSalesInvoicesByDateAction(dateStr: string) {
   try {
     const invoices = await db.prepare(`
-      SELECT i.id, i.patient_id, i.total_amount, i.created_at, i.status, u.full_name as user_name
+       SELECT i.id, i.patient_id, i.total_amount, i.created_at, i.status, u.full_name as user_name,
+             p.full_name as patient_name, i.payment_method
       FROM sales_invoices i
       LEFT JOIN users u ON i.user_id = u.id
+      LEFT JOIN patients p ON i.patient_id = p.id
       WHERE date(i.created_at) = ? AND i.status = 'completed'
         AND EXISTS (
           SELECT 1
