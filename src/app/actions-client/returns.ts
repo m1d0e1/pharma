@@ -1,5 +1,6 @@
 
 import { dbSelect, dbExecute, dbGet, dbTransaction, generateId } from '@/lib/db/tauri';
+import { isTauri } from '@/lib/env';
 const logActivity = async (userId, action, details) => {
   try {
     await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [userId, action, details]);
@@ -104,6 +105,27 @@ export async function createReturnAction(data: {
       return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
     }
     if (!user || !hasUserPermissionSync(user, 'can_view_returns')) return { success: false, error: 'غير مصرح' };
+
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const result = await invoke('create_return_critical', {
+        payload: {
+          ...data,
+          user_id: user.id,
+          pharmacy_id: user.pharmacy_id || null,
+          patient_id: data.patient_id ? String(data.patient_id) : null,
+          items: data.items.map(item => ({
+            ...item,
+            inventory_id: item.inventory_id || null,
+            sale_item_id: item.sale_item_id || null,
+            unit: item.unit || 'large',
+          })),
+        }
+      }) as any;
+      revalidatePath('/returns');
+      revalidatePath('/inventory');
+      return { success: true, returnId: result.return_id, totalRefund: result.total_refund };
+    }
 
     try {
       await db.exec('ALTER TABLE return_items ADD COLUMN sale_item_id INTEGER');

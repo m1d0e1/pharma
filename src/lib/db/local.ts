@@ -910,6 +910,27 @@ export function initLocalDb() {
     addColumnSafely('returns', 'refund_method', "TEXT DEFAULT 'cash'");
   }
 
+  // Migration: Add sale_item_id and unit to return_items if missing
+  const returnItemColumns = db.prepare("PRAGMA table_info(return_items)").all() as any[];
+  if (!returnItemColumns.some(c => c.name === 'sale_item_id')) {
+    addColumnSafely('return_items', 'sale_item_id', 'INTEGER');
+  }
+  if (!returnItemColumns.some(c => c.name === 'unit')) {
+    addColumnSafely('return_items', 'unit', 'TEXT');
+  }
+
+  const purchaseReturnColumns = db.prepare("PRAGMA table_info(purchase_returns)").all() as any[];
+  if (!purchaseReturnColumns.some(c => c.name === 'purchase_invoice_id')) {
+    addColumnSafely('purchase_returns', 'purchase_invoice_id', 'TEXT');
+  }
+  const purchaseReturnItemColumns = db.prepare("PRAGMA table_info(purchase_return_items)").all() as any[];
+  if (!purchaseReturnItemColumns.some(c => c.name === 'purchase_invoice_item_id')) {
+    addColumnSafely('purchase_return_items', 'purchase_invoice_item_id', 'INTEGER');
+  }
+  if (!purchaseReturnItemColumns.some(c => c.name === 'unit')) {
+    addColumnSafely('purchase_return_items', 'unit', 'TEXT');
+  }
+
   // Migration: Add created_by to daily_journals if missing
   const journalColumns = db.prepare("PRAGMA table_info(daily_journals)").all() as any[];
   if (!journalColumns.some(c => c.name === 'created_by')) {

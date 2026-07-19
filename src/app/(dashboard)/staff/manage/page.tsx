@@ -16,6 +16,7 @@ import { ArrowRight } from 'lucide-react';
 import AccessDenied from '@/components/AccessDenied';
 import { dbSelect, dbExecute } from '@/lib/db/tauri';
 import { hasUserPermissionSync } from '@/lib/auth/local';
+import { isTauri } from '@/lib/env';
 
 const defaultOwnerPerms = {
   national_id: '', address: '', birth_date: '', qualification: '', mobile: '', gender: 'ذكر', social_status: 'أعزب', is_delivery_rep: false,
@@ -99,8 +100,6 @@ export default function StaffManagePage() {
   const [users, setUsers] = useState<any[]>([]);
   const [jobs, setJobs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-
-  const isTauri = typeof window !== 'undefined' && ((window as any).__TAURI__ !== undefined || (window as any).__TAURI_INTERNALS__ !== undefined);
 
   async function loadData() {
     try {

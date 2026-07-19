@@ -26,6 +26,9 @@ export async function verifyPassword(password: string, hash: string): Promise<bo
 }
 
 export async function loginLocal(username: string, password?: string) {
+  if (!password || password.trim().length === 0) {
+    return { success: false, error: 'ÙƒÙ„Ù…Ø© Ø§Ù„Ù…Ø±ÙˆØ± Ù…Ø·Ù„ÙˆØ¨Ø©' };
+  }
 
   if (isTauri) {
     const cleanUsername = username.trim();
@@ -297,9 +300,13 @@ export async function hasPermission(permissionKey: string) {
   return !!(await getPermissionValue(permissionKey, false));
 }
 
+export function isOwnerOrAdmin(user: any): boolean {
+  return user?.role === 'owner' || user?.role === 'admin';
+}
+
 export function hasUserPermissionSync(user: any, permissionKey: string): boolean {
   if (!user) return false;
-  if (user.role === 'owner' || user.role === 'admin') return true;
+  if (isOwnerOrAdmin(user)) return true;
   if (!user.permissions) return false;
   
   let perms = user.permissions;

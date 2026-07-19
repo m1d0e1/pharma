@@ -7,13 +7,6 @@ const isTauriContext = isTauri || process.env.NEXT_PUBLIC_TAURI === '1';
 const nextConfig = {
   output: isTauri ? 'export' : 'standalone',
 
-  typescript: {
-    ignoreBuildErrors: isTauri,
-  },
-  eslint: {
-    ignoreDuringBuilds: isTauri,
-  },
-
   serverExternalPackages: ['better-sqlite3', 'bcryptjs'],
 
   experimental: {
@@ -56,5 +49,4 @@ const nextConfig = {
 };
 
 module.exports = nextConfig;
-
 

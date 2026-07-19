@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { getPurchaseInvoicesAction, getPurchaseInvoiceDetailsAction } from '@/app/actions-client/purchases';
 import { format } from 'date-fns';
 import { ar } from 'date-fns/locale';
-import { Search, Filter, Receipt, FileText, ArrowUpRight, CheckCircle2, Clock, Printer } from 'lucide-react';
+import { Search, Receipt, FileText, ArrowUpRight, CheckCircle2, Clock, Printer, Pencil } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import Link from 'next/link';
 import BarcodePrinter from '@/components/purchases/BarcodePrinter';
@@ -188,6 +188,15 @@ export default function PurchaseReportsClient() {
                         title="استكمال الفاتورة"
                       >
                         <ArrowUpRight className="w-5 h-5" />
+                      </Link>
+                    )}
+                    {inv.status === 'completed' && (
+                      <Link
+                        href={`/purchases/new?edit_invoice_id=${inv.id}`}
+                        className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded-xl transition-all"
+                        title="تعديل الفاتورة المكتملة"
+                      >
+                        <Pencil className="w-5 h-5" />
                       </Link>
                     )}
                     <button

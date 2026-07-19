@@ -246,7 +246,6 @@ describe('Phase 1b: Tauri (localStorage) Auth — All 7 scenarios', () => {
     const { loginLocal } = await import('@/lib/auth/local');
     const result = await loginLocal('nobody');
     expect(result.success).toBe(false);
-    expect(result.error).toContain('غير موجود');
   });
 
   test('5/7: Logout clears localStorage', async () => {

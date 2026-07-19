@@ -1,7 +1,7 @@
 'use client'
 import { useHotkeys } from 'react-hotkeys-hook';
 
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { addInventoryAction } from '@/app/actions-client/inventory'
 import { searchMasterDrugsAction, getUnitsAction } from '@/app/actions-client/master-drugs'
 import { toast } from 'react-hot-toast'
@@ -46,6 +46,11 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
   const [selectedUnit, setSelectedUnit] = useState('')
   const [searchByActive, setSearchByActive] = useState(false)
   const [errors, setErrors] = useState<Record<string, boolean>>({})
+  const barcodeRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (step === 2) setTimeout(() => barcodeRef.current?.focus(), 0)
+  }, [step])
 
   useEffect(() => {
     async function fetchUnits() {
@@ -393,18 +398,13 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
               <div className="space-y-1.5">
                 <label className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">الباركود</label>
                 <input
+                  ref={barcodeRef}
                   type="text"
                   value={barcode}
                   placeholder="اختياري"
                   onChange={(e) => setBarcode(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      const form = e.currentTarget.form;
-                      setTimeout(() => {
-                        form?.requestSubmit();
-                      }, 50);
-                    }
+                    if (e.key === 'Enter') e.preventDefault();
                   }}
                   className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all font-bold"
                 />

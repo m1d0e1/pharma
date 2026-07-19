@@ -1,17 +1,24 @@
 // Database Abstraction Layer for Tauri and Web
 import { v4 as uuidv4 } from 'uuid';
+import { isTauri as isTauriEnv } from '@/lib/env';
 
 export function generateId(): string {
   return uuidv4();
 }
 
-const isTauriEnv = () => typeof window !== 'undefined' && (
-  (window as any).__TAURI__ !== undefined || 
-  (window as any).__TAURI_INTERNALS__ !== undefined
-);
 const isServer = typeof window === 'undefined' || process.env.JEST_WORKER_ID !== undefined;
 
 let tauriDb: any = null;
+let tauriTransactionQueue: Promise<unknown> = Promise.resolve();
+let activeTauriTransactionId: string | null = null;
+
+async function executeTauri(
+  sql: string,
+  params: any[] = []
+): Promise<{ rowsAffected: number; lastInsertId?: number }> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke('db_execute_guarded', { sql, params, txId: activeTauriTransactionId });
+}
 
 async function getTauriDb() {
   if (!tauriDb) {
@@ -29,7 +36,7 @@ export async function dbSelect<T = any>(sql: string, params: any[] = []): Promis
     return query(sql, safeParams);
   }
 
-  if (isTauriEnv()) {
+  if (isTauriEnv) {
     const db = await getTauriDb();
     return db.select(sql, safeParams);
   }
@@ -62,13 +69,8 @@ export async function dbExecute(
     };
   }
 
-  if (isTauriEnv()) {
-    const db = await getTauriDb();
-    const result = await db.execute(sql, safeParams);
-    return {
-      rowsAffected: result.rowsAffected,
-      lastInsertId: result.lastInsertId,
-    };
+  if (isTauriEnv) {
+    return executeTauri(sql, safeParams);
   }
 
   // Web client-side: call database server action
@@ -86,13 +88,41 @@ export async function dbTransaction<T>(callback: () => Promise<T>): Promise<T> {
     });
   }
 
-  if (isTauriEnv()) {
-    // Tauri's plugin-sql connection pool distributes queries across connections.
-    // Manual transaction commands (BEGIN/COMMIT) cause pool deadlocks/database locks.
-    // We execute the operations directly as atomic statements.
-    return await callback();
+  if (isTauriEnv) {
+    return runTauriTransaction(await getTauriDb(), callback);
   }
 
   // Web client-side: execute the callback directly to run queries sequentially.
   return await callback();
+}
+
+export async function runTauriTransaction<T>(_db: any, callback: () => Promise<T>): Promise<T> {
+  if (activeTauriTransactionId) {
+    return callback();
+  }
+
+  // ponytail: global queue; replace with Rust-side per-workflow transactions if plugin pooling still misbehaves.
+  const run = async () => {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const txId = await invoke<string>('db_transaction_begin');
+    activeTauriTransactionId = txId;
+    try {
+      const result = await callback();
+      activeTauriTransactionId = null;
+      await invoke('db_transaction_finish', { txId, commit: true });
+      return result;
+    } catch (error) {
+      activeTauriTransactionId = null;
+      try {
+        await invoke('db_transaction_finish', { txId, commit: false });
+      } catch (rollbackError) {
+        console.error('Failed to rollback Tauri transaction:', rollbackError);
+      }
+      throw error;
+    }
+  };
+
+  const next = tauriTransactionQueue.then(run, run);
+  tauriTransactionQueue = next.catch(() => undefined);
+  return next;
 }

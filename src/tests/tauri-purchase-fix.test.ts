@@ -11,6 +11,7 @@ function migrate(db: Database.Database) {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.exec(sql);
+  db.exec(require('fs').readFileSync('src-tauri/migrations/005_purchase_return_details.sql', 'utf8'));
   // Seed test data
   const hash = bcrypt.hashSync('admin', 4);
   db.prepare("UPDATE users SET pharmacy_id = 'ph-001', permissions = '{}' WHERE id = 'admin'").run();
@@ -77,6 +78,28 @@ describe('Tauri Purchase Flow Fix — Verify createPurchaseInvoiceAction SQL', (
     expect(ri.total_price).toBe(200);
   });
 
+  it('links a purchase return to its invoice, item, and expiry batch', () => {
+    const invoiceId = genId();
+    const inventoryId = genId();
+    const returnId = genId();
+    db.prepare("INSERT INTO purchase_invoices (id, supplier_id, user_id, invoice_number, invoice_date, total_amount, status) VALUES (?, 1, 'admin', 'SUP-42', '2026-07-19', 300, 'completed')").run(invoiceId);
+    const purchaseItem = db.prepare("INSERT INTO purchase_invoice_items (invoice_id, drug_id, quantity, expiry_date, cost_price) VALUES (?, 1, 10, '2027-08-13', 30)").run(invoiceId);
+    db.prepare("INSERT INTO inventory (id, drug_id, quantity, expiry_date, batch_number) VALUES (?, 1, 8, '2027-08-13', 'B-42')").run(inventoryId);
+    db.prepare("INSERT INTO purchase_returns (id, purchase_invoice_id, supplier_id, user_id, total_amount) VALUES (?, ?, 1, 'admin', 60)").run(returnId, invoiceId);
+    db.prepare("INSERT INTO purchase_return_items (purchase_return_id, purchase_invoice_item_id, inventory_id, drug_id, quantity_returned, unit_price, total_price, unit) VALUES (?, ?, ?, 1, 2, 30, 60, 'large')").run(returnId, Number(purchaseItem.lastInsertRowid), inventoryId);
+
+    const detail = db.prepare(`
+      SELECT pr.purchase_invoice_id, pi.invoice_number, pri.purchase_invoice_item_id,
+             pri.quantity_returned, pri.unit, i.expiry_date, i.batch_number
+      FROM purchase_returns pr
+      JOIN purchase_invoices pi ON pi.id = pr.purchase_invoice_id
+      JOIN purchase_return_items pri ON pri.purchase_return_id = pr.id
+      JOIN inventory i ON i.id = pri.inventory_id
+      WHERE pr.id = ?
+    `).get(returnId) as any;
+    expect(detail).toMatchObject({ invoice_number: 'SUP-42', quantity_returned: 2, unit: 'large', expiry_date: '2027-08-13', batch_number: 'B-42' });
+  });
+
   it('inserts cash_movements with correct column names', () => {
     expect(() => {
       db.prepare(`
@@ -86,13 +109,36 @@ describe('Tauri Purchase Flow Fix — Verify createPurchaseInvoiceAction SQL', (
     }).not.toThrow();
   });
 
-  it('inserts into inventory with strips_per_box', () => {
-    expect(() => {
-      db.prepare(`
-        INSERT INTO inventory (id, drug_id, pharmacy_id, quantity, local_selling_price, cost_price, expiry_date, batch_number, strips_per_box)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(genId(), 1, 'ph-001', 105, 15, 10, '2027-12-31', 'BATCH-001', 1);
-    }).not.toThrow();
+  it('adds purchase quantity to the existing inventory row', () => {
+    const existingId = genId();
+    db.prepare(`
+      INSERT INTO inventory (id, drug_id, pharmacy_id, quantity, local_selling_price, cost_price, expiry_date, batch_number, strips_per_box)
+      VALUES (?, 1, 'ph-001', 10, 15, 10, '2027-01-01', 'OLD', 1)
+    `).run(existingId);
+
+    const existing = db.prepare(`
+      SELECT id
+      FROM inventory
+      WHERE drug_id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? IS NULL))
+      ORDER BY created_at ASC
+      LIMIT 1
+    `).get(1, 'ph-001', 'ph-001') as any;
+
+    db.prepare(`
+      UPDATE inventory
+      SET quantity = quantity + ?,
+          local_selling_price = ?,
+          cost_price = ?,
+          expiry_date = ?,
+          batch_number = ?,
+          strips_per_box = ?,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(105, 15, 10, '2027-12-31', 'BATCH-001', 1, existing.id);
+
+    const rows = db.prepare('SELECT quantity FROM inventory WHERE drug_id = 1 AND pharmacy_id = ?').all('ph-001') as any[];
+    expect(rows).toHaveLength(1);
+    expect(rows[0].quantity).toBe(115);
   });
 });
 
@@ -113,6 +159,10 @@ describe('Tauri Purchase Flow — Schema Integrity', () => {
     const names = tables.map(t => t.name);
     expect(names).toContain('purchase_returns');
     expect(names).toContain('purchase_return_items');
+    const returnColumns = db.prepare("PRAGMA table_info(purchase_returns)").all() as any[];
+    const itemColumns = db.prepare("PRAGMA table_info(purchase_return_items)").all() as any[];
+    expect(returnColumns.map(c => c.name)).toContain('purchase_invoice_id');
+    expect(itemColumns.map(c => c.name)).toEqual(expect.arrayContaining(['purchase_invoice_item_id', 'unit']));
   });
 
   it('cash_movements has notes, user_id, date columns', () => {

@@ -2,11 +2,11 @@
 
 mod commands;
 
-use tauri::{Manager, Emitter};
-use tauri::menu::{Menu, Submenu, MenuItem, PredefinedMenuItem};
-use tauri_plugin_sql::{Migration, MigrationKind};
 use std::fs;
-
+use std::path::Path;
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::{Emitter, Manager};
+use tauri_plugin_sql::{Migration, MigrationKind};
 
 #[tauri::command]
 fn log_frontend_error(message: String) {
@@ -15,36 +15,92 @@ fn log_frontend_error(message: String) {
 
 #[tauri::command]
 async fn open_new_window<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<(), String> {
+    open_new_window_for_app(&app)
+}
+
+fn open_new_window_for_app<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_millis()
         .to_string();
-    
-    let url = match &app.config().build.dev_url {
-        Some(dev_url) => tauri::WebviewUrl::External(dev_url.clone()),
-        None => tauri::WebviewUrl::App("index.html".into()),
-    };
 
-    if let Ok(w) = tauri::WebviewWindowBuilder::new(
-        &app,
-        format!("window_{}", timestamp),
-        url
-    )
-    .title("Pharma Dashboard")
-    .inner_size(1280.0, 800.0)
-    .min_inner_size(800.0, 600.0)
-    .build() {
-        w.on_menu_event(move |win, event| {
-            handle_menu_event(win, event.id().as_ref());
-        });
-    }
+    let url = new_window_url(app);
+
+    let w = tauri::WebviewWindowBuilder::new(app, format!("window_{}", timestamp), url)
+        .title("Pharma Dashboard")
+        .inner_size(1280.0, 800.0)
+        .min_inner_size(800.0, 600.0)
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    w.on_menu_event(move |win, event| {
+        handle_menu_event(win, event.id().as_ref());
+    });
+
     Ok(())
+}
+
+fn new_window_url<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::WebviewUrl {
+    #[cfg(not(debug_assertions))]
+    let _ = app;
+
+    #[cfg(debug_assertions)]
+    {
+        if let Some(dev_url) = &app.config().build.dev_url {
+            return tauri::WebviewUrl::External(dev_url.clone());
+        }
+    }
+
+    tauri::WebviewUrl::App("index.html".into())
 }
 
 #[tauri::command]
 async fn write_binary_file(path: String, data: Vec<u8>) -> Result<(), String> {
+    validate_export_file(&path, &data)?;
     std::fs::write(&path, data).map_err(|e| e.to_string())
+}
+
+fn validate_export_file(path: &str, data: &[u8]) -> Result<(), String> {
+    let path = Path::new(path);
+    if path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("xlsx"))
+        != Some(true)
+    {
+        return Err("Only .xlsx exports are allowed".into());
+    }
+    if !data.starts_with(b"PK") {
+        return Err("Invalid .xlsx export data".into());
+    }
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        if !parent.is_dir() {
+            return Err("Export directory does not exist".into());
+        }
+    }
+    if path.exists()
+        && path
+            .symlink_metadata()
+            .map_err(|e| e.to_string())?
+            .file_type()
+            .is_symlink()
+    {
+        return Err("Refusing to overwrite a symlink".into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_export_file;
+
+    #[test]
+    fn validates_xlsx_exports_only() {
+        assert!(validate_export_file("inventory.xlsx", b"PK\x03\x04").is_ok());
+        assert!(validate_export_file("inventory.txt", b"PK\x03\x04").is_err());
+        assert!(validate_export_file("inventory.xlsx", b"not xlsx").is_err());
+    }
 }
 
 fn main() {
@@ -73,180 +129,418 @@ fn main() {
             description: "return_items_patch",
             sql: include_str!("../migrations/004_return_items_patch.sql"),
             kind: MigrationKind::Up,
-        }
+        },
+        Migration {
+            version: 5,
+            description: "purchase_return_details",
+            sql: include_str!("../migrations/005_purchase_return_details.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()
+        .manage(commands::critical::DbTransactions::default())
         .setup(|app| {
             // 1. ملف (File)
-            let file_menu = Submenu::with_items(app, "ملف", true, &[
-                &MenuItem::with_id(app, "pos", "فاتورة مبيعات جديدة", true, Some("CmdOrCtrl+P"))?,
-                &MenuItem::with_id(app, "purchases_new", "فاتورة مشتريات جديدة", true, None::<&str>)?,
-                &PredefinedMenuItem::separator(app)?,
-                &MenuItem::with_id(app, "new_window", "نافذة جديدة", true, Some("CmdOrCtrl+N"))?,
-                &PredefinedMenuItem::separator(app)?,
-                &MenuItem::with_id(app, "print", "طباعة", true, Some("CmdOrCtrl+Shift+P"))?,
-                &PredefinedMenuItem::separator(app)?,
-                &MenuItem::with_id(app, "logout", "تسجيل الخروج", true, None::<&str>)?,
-                &PredefinedMenuItem::separator(app)?,
-                &PredefinedMenuItem::quit(app, None)?,
-            ])?;
+            let file_menu = Submenu::with_items(
+                app,
+                "ملف",
+                true,
+                &[
+                    &MenuItem::with_id(
+                        app,
+                        "pos",
+                        "فاتورة مبيعات جديدة",
+                        true,
+                        Some("CmdOrCtrl+P"),
+                    )?,
+                    &MenuItem::with_id(
+                        app,
+                        "purchases_new",
+                        "فاتورة مشتريات جديدة",
+                        true,
+                        None::<&str>,
+                    )?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &MenuItem::with_id(
+                        app,
+                        "new_window",
+                        "نافذة جديدة",
+                        true,
+                        Some("CmdOrCtrl+N"),
+                    )?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &MenuItem::with_id(app, "print", "طباعة", true, Some("CmdOrCtrl+Shift+P"))?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &MenuItem::with_id(app, "logout", "تسجيل الخروج", true, None::<&str>)?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &PredefinedMenuItem::quit(app, None)?,
+                ],
+            )?;
 
             // 2. البيانات الأساسية (Master Data)
-            let master_data_menu = Submenu::with_items(app, "البيانات الأساسية", true, &[
-                &MenuItem::with_id(app, "dashboard", "لوحة التحكم (الرئيسية)", true, Some("CmdOrCtrl+D"))?,
-                &PredefinedMenuItem::separator(app)?,
-                &MenuItem::with_id(app, "stores_items", "الأصناف", true, None::<&str>)?,
-                &MenuItem::with_id(app, "stores_alternatives", "البدائل", true, None::<&str>)?,
-                &MenuItem::with_id(app, "stores_nature", "النوع", true, None::<&str>)?,
-                &MenuItem::with_id(app, "stores_usage", "الاستخدام", true, None::<&str>)?,
-                &MenuItem::with_id(app, "stores_units", "الوحدات", true, None::<&str>)?,
-                &MenuItem::with_id(app, "stores_indications", "دواعي الاستعمال", true, None::<&str>)?,
-                &MenuItem::with_id(app, "stores_drug_indications", "الاصناف ودواعي الاستخدام", true, None::<&str>)?,
-                &MenuItem::with_id(app, "stores_manufacturers", "الشركات المنتجة", true, None::<&str>)?,
-                &MenuItem::with_id(app, "stores_scientific_groups", "المجموعات العلمية", true, None::<&str>)?,
-                &MenuItem::with_id(app, "stores_categories", "التصنيفات", true, None::<&str>)?,
-            ])?;
+            let master_data_menu = Submenu::with_items(
+                app,
+                "البيانات الأساسية",
+                true,
+                &[
+                    &MenuItem::with_id(
+                        app,
+                        "dashboard",
+                        "لوحة التحكم (الرئيسية)",
+                        true,
+                        Some("CmdOrCtrl+D"),
+                    )?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &MenuItem::with_id(app, "stores_items", "الأصناف", true, None::<&str>)?,
+                    &MenuItem::with_id(app, "stores_alternatives", "البدائل", true, None::<&str>)?,
+                    &MenuItem::with_id(app, "stores_nature", "النوع", true, None::<&str>)?,
+                    &MenuItem::with_id(app, "stores_usage", "الاستخدام", true, None::<&str>)?,
+                    &MenuItem::with_id(app, "stores_units", "الوحدات", true, None::<&str>)?,
+                    &MenuItem::with_id(
+                        app,
+                        "stores_indications",
+                        "دواعي الاستعمال",
+                        true,
+                        None::<&str>,
+                    )?,
+                    &MenuItem::with_id(
+                        app,
+                        "stores_drug_indications",
+                        "الاصناف ودواعي الاستخدام",
+                        true,
+                        None::<&str>,
+                    )?,
+                    &MenuItem::with_id(
+                        app,
+                        "stores_manufacturers",
+                        "الشركات المنتجة",
+                        true,
+                        None::<&str>,
+                    )?,
+                    &MenuItem::with_id(
+                        app,
+                        "stores_scientific_groups",
+                        "المجموعات العلمية",
+                        true,
+                        None::<&str>,
+                    )?,
+                    &MenuItem::with_id(app, "stores_categories", "التصنيفات", true, None::<&str>)?,
+                ],
+            )?;
 
             // 3. العمليات المخزنية (Inventory Ops)
-            let inventory_ops_menu = Submenu::with_items(app, "العمليات المخزنية", true, &[
-                &MenuItem::with_id(app, "inventory", "المخزون", true, Some("CmdOrCtrl+I"))?,
-                &MenuItem::with_id(app, "stores_shortages", "كشكول النواقص", true, None::<&str>)?,
-                &MenuItem::with_id(app, "inventory_item_movements", "حركات الأصناف", true, None::<&str>)?,
-                &MenuItem::with_id(app, "restock", "إعادة التموين", true, None::<&str>)?,
-                &MenuItem::with_id(app, "inventory_opening_balances", "الأرصدة الإفتتاحية", true, None::<&str>)?,
-                &MenuItem::with_id(app, "stores_adjustments", "التعديلات", true, None::<&str>)?,
-                &MenuItem::with_id(app, "stores_adjustment_reasons", "أسباب التعديل", true, None::<&str>)?,
-                &MenuItem::with_id(app, "inventory_settlement", "تسوية المخزون", true, None::<&str>)?,
-                &MenuItem::with_id(app, "stores_delete_items", "حذف الأصناف", true, None::<&str>)?,
-            ])?;
+            let inventory_ops_menu = Submenu::with_items(
+                app,
+                "العمليات المخزنية",
+                true,
+                &[
+                    &MenuItem::with_id(app, "inventory", "المخزون", true, Some("CmdOrCtrl+I"))?,
+                    &MenuItem::with_id(
+                        app,
+                        "stores_shortages",
+                        "كشكول النواقص",
+                        true,
+                        None::<&str>,
+                    )?,
+                    &MenuItem::with_id(
+                        app,
+                        "inventory_item_movements",
+                        "حركات الأصناف",
+                        true,
+                        None::<&str>,
+                    )?,
+                    &MenuItem::with_id(app, "restock", "إعادة التموين", true, None::<&str>)?,
+                    &MenuItem::with_id(
+                        app,
+                        "inventory_opening_balances",
+                        "الأرصدة الإفتتاحية",
+                        true,
+                        None::<&str>,
+                    )?,
+                    &MenuItem::with_id(app, "stores_adjustments", "التعديلات", true, None::<&str>)?,
+                    &MenuItem::with_id(
+                        app,
+                        "stores_adjustment_reasons",
+                        "أسباب التعديل",
+                        true,
+                        None::<&str>,
+                    )?,
+                    &MenuItem::with_id(
+                        app,
+                        "inventory_settlement",
+                        "تسوية المخزون",
+                        true,
+                        None::<&str>,
+                    )?,
+                    &MenuItem::with_id(
+                        app,
+                        "stores_delete_items",
+                        "حذف الأصناف",
+                        true,
+                        None::<&str>,
+                    )?,
+                ],
+            )?;
 
             // 4. المبيعات (Sales)
-            let sales_menu = Submenu::with_items(app, "المبيعات", true, &[
-                &MenuItem::with_id(app, "pos", "فاتورة مبيعات جديدة", true, None::<&str>)?,
-                &MenuItem::with_id(app, "receipts", "الفواتير", true, None::<&str>)?,
-                &MenuItem::with_id(app, "sales", "المبيعات والتحصيل", true, None::<&str>)?,
-                &MenuItem::with_id(app, "sales_delivery", "توصيل منزلي", true, None::<&str>)?,
-                &MenuItem::with_id(app, "sales_cogs", "تعديل التكلفة", true, None::<&str>)?,
-                &MenuItem::with_id(app, "sales_settlement", "تسوية المبيعات", true, None::<&str>)?,
-                &MenuItem::with_id(app, "returns", "مرتجعات العملاء", true, None::<&str>)?,
-            ])?;
+            let sales_menu = Submenu::with_items(
+                app,
+                "المبيعات",
+                true,
+                &[
+                    &MenuItem::with_id(app, "pos", "فاتورة مبيعات جديدة", true, None::<&str>)?,
+                    &MenuItem::with_id(app, "receipts", "الفواتير", true, None::<&str>)?,
+                    &MenuItem::with_id(app, "sales", "المبيعات والتحصيل", true, None::<&str>)?,
+                    &MenuItem::with_id(app, "sales_delivery", "توصيل منزلي", true, None::<&str>)?,
+                    &MenuItem::with_id(app, "sales_cogs", "تعديل التكلفة", true, None::<&str>)?,
+                    &MenuItem::with_id(
+                        app,
+                        "sales_settlement",
+                        "تسوية المبيعات",
+                        true,
+                        None::<&str>,
+                    )?,
+                    &MenuItem::with_id(app, "returns", "مرتجعات العملاء", true, None::<&str>)?,
+                ],
+            )?;
 
             // 5. المشتريات (Purchases)
-            let purchases_menu = Submenu::with_items(app, "المشتريات", true, &[
-                &MenuItem::with_id(app, "purchases", "المشتريات", true, Some("CmdOrCtrl+O"))?,
-                &MenuItem::with_id(app, "purchase_orders", "أوامر الشراء", true, None::<&str>)?,
-                &MenuItem::with_id(app, "purchases_suppliers", "الموردون", true, None::<&str>)?,
-                &MenuItem::with_id(app, "purchases_returns", "مرتجعات للموردين", true, None::<&str>)?,
-                &MenuItem::with_id(app, "purchases_general_returns", "مرتجعات عامة", true, None::<&str>)?,
-            ])?;
+            let purchases_menu = Submenu::with_items(
+                app,
+                "المشتريات",
+                true,
+                &[
+                    &MenuItem::with_id(app, "purchases", "المشتريات", true, Some("CmdOrCtrl+O"))?,
+                    &MenuItem::with_id(app, "purchase_orders", "أوامر الشراء", true, None::<&str>)?,
+                    &MenuItem::with_id(app, "purchases_suppliers", "الموردون", true, None::<&str>)?,
+                    &MenuItem::with_id(
+                        app,
+                        "purchases_returns",
+                        "مرتجعات للموردين",
+                        true,
+                        None::<&str>,
+                    )?,
+                    &MenuItem::with_id(
+                        app,
+                        "purchases_general_returns",
+                        "مرتجعات عامة",
+                        true,
+                        None::<&str>,
+                    )?,
+                ],
+            )?;
 
             // 6. المالية (Finance)
-            let finance_menu = Submenu::with_items(app, "المالية", true, &[
-                &MenuItem::with_id(app, "accounts", "الحسابات والمالية", true, None::<&str>)?,
-                &MenuItem::with_id(app, "accounts_cash_transactions", "حركة النقدية", true, None::<&str>)?,
-                &MenuItem::with_id(app, "finance_handover", "تسليم الدرج", true, None::<&str>)?,
-                &MenuItem::with_id(app, "finance_banks", "البنوك", true, None::<&str>)?,
-                &MenuItem::with_id(app, "finance_cards", "البطاقات والماكينات", true, None::<&str>)?,
-                &MenuItem::with_id(app, "finance_pos_management", "إدارة نقاط البيع", true, None::<&str>)?,
-                &MenuItem::with_id(app, "finance_accounts", "شجرة الحسابات", true, None::<&str>)?,
-                &MenuItem::with_id(app, "accounts_settings_trial_balance", "إعدادات ميزان المراجعة", true, None::<&str>)?,
-            ])?;
+            let finance_menu = Submenu::with_items(
+                app,
+                "المالية",
+                true,
+                &[
+                    &MenuItem::with_id(app, "accounts", "الحسابات والمالية", true, None::<&str>)?,
+                    &MenuItem::with_id(
+                        app,
+                        "accounts_cash_transactions",
+                        "حركة النقدية",
+                        true,
+                        None::<&str>,
+                    )?,
+                    &MenuItem::with_id(app, "finance_handover", "تسليم الدرج", true, None::<&str>)?,
+                    &MenuItem::with_id(app, "finance_banks", "البنوك", true, None::<&str>)?,
+                    &MenuItem::with_id(
+                        app,
+                        "finance_cards",
+                        "البطاقات والماكينات",
+                        true,
+                        None::<&str>,
+                    )?,
+                    &MenuItem::with_id(
+                        app,
+                        "finance_pos_management",
+                        "إدارة نقاط البيع",
+                        true,
+                        None::<&str>,
+                    )?,
+                    &MenuItem::with_id(
+                        app,
+                        "finance_accounts",
+                        "شجرة الحسابات",
+                        true,
+                        None::<&str>,
+                    )?,
+                    &MenuItem::with_id(
+                        app,
+                        "accounts_settings_trial_balance",
+                        "إعدادات ميزان المراجعة",
+                        true,
+                        None::<&str>,
+                    )?,
+                ],
+            )?;
 
             // 7. التقارير (Reports)
-            let reports_menu = Submenu::with_items(app, "التقارير", true, &[
-                &MenuItem::with_id(app, "reports", "لوحة التقارير", true, None::<&str>)?,
-                &MenuItem::with_id(app, "reports_sales2", "تقارير المبيعات", true, None::<&str>)?,
-                &MenuItem::with_id(app, "reports_purchases", "تقارير المشتريات", true, None::<&str>)?,
-                &MenuItem::with_id(app, "reports_trial_balance", "ميزان المراجعة", true, None::<&str>)?,
-                &MenuItem::with_id(app, "expenses", "المصروفات", true, None::<&str>)?,
-                &MenuItem::with_id(app, "shifts", "الشفتات النقدية", true, None::<&str>)?,
-            ])?;
+            let reports_menu = Submenu::with_items(
+                app,
+                "التقارير",
+                true,
+                &[
+                    &MenuItem::with_id(app, "reports", "لوحة التقارير", true, None::<&str>)?,
+                    &MenuItem::with_id(
+                        app,
+                        "reports_sales2",
+                        "تقارير المبيعات",
+                        true,
+                        None::<&str>,
+                    )?,
+                    &MenuItem::with_id(
+                        app,
+                        "reports_purchases",
+                        "تقارير المشتريات",
+                        true,
+                        None::<&str>,
+                    )?,
+                    &MenuItem::with_id(
+                        app,
+                        "reports_trial_balance",
+                        "ميزان المراجعة",
+                        true,
+                        None::<&str>,
+                    )?,
+                    &MenuItem::with_id(app, "expenses", "المصروفات", true, None::<&str>)?,
+                    &MenuItem::with_id(app, "shifts", "الشفتات النقدية", true, None::<&str>)?,
+                ],
+            )?;
 
             // 8. المرضى والطبية (Patients)
-            let patients_menu = Submenu::with_items(app, "المرضى والطبية", true, &[
-                &MenuItem::with_id(app, "patients", "المرضى", true, None::<&str>)?,
-                &MenuItem::with_id(app, "interactions", "التفاعلات الدوائية", true, None::<&str>)?,
-            ])?;
+            let patients_menu = Submenu::with_items(
+                app,
+                "المرضى والطبية",
+                true,
+                &[
+                    &MenuItem::with_id(app, "patients", "المرضى", true, None::<&str>)?,
+                    &MenuItem::with_id(
+                        app,
+                        "interactions",
+                        "التفاعلات الدوائية",
+                        true,
+                        None::<&str>,
+                    )?,
+                ],
+            )?;
 
             // 9. الإدارة (Administration)
-            let admin_menu = Submenu::with_items(app, "الإدارة", true, &[
-                &MenuItem::with_id(app, "staff", "أداء الموظفين", true, None::<&str>)?,
-                &MenuItem::with_id(app, "staff_manage", "إدارة الموظفين", true, None::<&str>)?,
-                &MenuItem::with_id(app, "staff_roles", "الوظائف والرواتب", true, None::<&str>)?,
-                &MenuItem::with_id(app, "audit", "سجل المراقبة", true, None::<&str>)?,
-                &MenuItem::with_id(app, "settings", "الإعدادات", true, None::<&str>)?,
-            ])?;
+            let admin_menu = Submenu::with_items(
+                app,
+                "الإدارة",
+                true,
+                &[
+                    &MenuItem::with_id(app, "staff", "أداء الموظفين", true, None::<&str>)?,
+                    &MenuItem::with_id(app, "staff_manage", "إدارة الموظفين", true, None::<&str>)?,
+                    &MenuItem::with_id(app, "staff_roles", "الوظائف والرواتب", true, None::<&str>)?,
+                    &MenuItem::with_id(app, "audit", "سجل المراقبة", true, None::<&str>)?,
+                    &MenuItem::with_id(app, "settings", "الإعدادات", true, None::<&str>)?,
+                ],
+            )?;
 
             // 10. مساعدة (Help)
-            let help_menu = Submenu::with_items(app, "مساعدة", true, &[
-                &MenuItem::with_id(app, "update_program", "تحديث البرنامج", true, None::<&str>)?,
-                &PredefinedMenuItem::separator(app)?,
-                &MenuItem::with_id(app, "help_shortcuts", "اختصارات لوحة المفاتيح", true, None::<&str>)?,
-                &MenuItem::with_id(app, "help_about", "عن النظام", true, None::<&str>)?,
-            ])?;
+            let help_menu = Submenu::with_items(
+                app,
+                "مساعدة",
+                true,
+                &[
+                    &MenuItem::with_id(
+                        app,
+                        "update_program",
+                        "تحديث البرنامج",
+                        true,
+                        None::<&str>,
+                    )?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &MenuItem::with_id(
+                        app,
+                        "help_shortcuts",
+                        "اختصارات لوحة المفاتيح",
+                        true,
+                        None::<&str>,
+                    )?,
+                    &MenuItem::with_id(app, "help_about", "عن النظام", true, None::<&str>)?,
+                ],
+            )?;
 
-            let menu = Menu::with_items(app, &[
-                &help_menu,
-                &reports_menu,
-                &admin_menu,
-                &patients_menu,
-                &finance_menu,
-                &purchases_menu,
-                &sales_menu,
-                &inventory_ops_menu,
-                &master_data_menu,
-                &file_menu,
-            ])?;
+            let menu = Menu::with_items(
+                app,
+                &[
+                    &help_menu,
+                    &reports_menu,
+                    &admin_menu,
+                    &patients_menu,
+                    &finance_menu,
+                    &purchases_menu,
+                    &sales_menu,
+                    &inventory_ops_menu,
+                    &master_data_menu,
+                    &file_menu,
+                ],
+            )?;
             app.set_menu(menu)?;
 
             // Extract the seeded database from resources on first run
-            let app_data_dir = app.path().app_data_dir().expect("failed to get app data dir");
-            
+            let app_data_dir = app
+                .path()
+                .app_data_dir()
+                .expect("failed to get app data dir");
+
             fs::create_dir_all(&app_data_dir).expect("failed to create app data dir");
-            
+
             let db_path = app_data_dir.join("pharma_local.db");
-            
+
             if !db_path.exists() {
-                let resource_path = app.path()
+                let resource_path = app
+                    .path()
                     .resource_dir()
                     .expect("failed to get resource dir")
                     .join("pharma_local.db");
-                
-                    if resource_path.exists() {
-                        fs::copy(&resource_path, &db_path).expect("failed to copy seeded database");
-                        println!("Copied seeded database to {:?}", db_path);
-                    }
-                }
-                
-                let main_window = app.get_webview_window("main").unwrap();
-                main_window.maximize().unwrap();
-                
-                // Attach window-specific menu handler
-                main_window.on_menu_event(|window, event| {
-                    handle_menu_event(window, event.id().as_ref());
-                });
 
-                 Ok(())
-            })
-            .plugin(
-                tauri_plugin_sql::Builder::default()
-                    .add_migrations("sqlite:pharma_local.db", migrations)
-                    .build()
-            )
-            .plugin(tauri_plugin_dialog::init())
-            .plugin(tauri_plugin_updater::Builder::new().build())
-            .plugin(tauri_plugin_process::init())
-            .plugin(tauri_plugin_shell::init())
-            .invoke_handler(tauri::generate_handler![
-                commands::auth::bcrypt_hash,
-                commands::auth::bcrypt_compare,
-                open_new_window,
-                log_frontend_error,
-                write_binary_file,
-            ])
-            .run(tauri::generate_context!())
-            .expect("error while running tauri application");
+                if resource_path.exists() {
+                    fs::copy(&resource_path, &db_path).expect("failed to copy seeded database");
+                    println!("Copied seeded database to {:?}", db_path);
+                }
+            }
+
+            let main_window = app.get_webview_window("main").unwrap();
+            main_window.maximize().unwrap();
+
+            // Attach window-specific menu handler
+            main_window.on_menu_event(|window, event| {
+                handle_menu_event(window, event.id().as_ref());
+            });
+
+            Ok(())
+        })
+        .plugin(
+            tauri_plugin_sql::Builder::default()
+                .add_migrations("sqlite:pharma_local.db", migrations)
+                .build(),
+        )
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_shell::init())
+        .invoke_handler(tauri::generate_handler![
+            commands::auth::bcrypt_hash,
+            commands::auth::bcrypt_compare,
+            commands::critical::db_execute_guarded,
+            commands::critical::db_transaction_begin,
+            commands::critical::db_transaction_finish,
+            commands::critical::process_checkout_critical,
+            commands::critical::save_purchase_invoice_critical,
+            commands::critical::create_return_critical,
+            open_new_window,
+            log_frontend_error,
+            write_binary_file,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
 }
 
 fn handle_menu_event<R: tauri::Runtime>(window: &tauri::Window<R>, id: &str) {
@@ -254,23 +548,8 @@ fn handle_menu_event<R: tauri::Runtime>(window: &tauri::Window<R>, id: &str) {
         // Actions
         "new_window" => {
             let app = window.app_handle();
-            let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis().to_string();
-            let url = match &app.config().build.dev_url {
-                Some(dev_url) => tauri::WebviewUrl::External(dev_url.clone()),
-                None => tauri::WebviewUrl::App("index.html".into()),
-            };
-            if let Ok(w) = tauri::WebviewWindowBuilder::new(
-                app,
-                format!("window_{}", timestamp),
-                url
-            )
-            .title("Pharma Dashboard")
-            .inner_size(1280.0, 800.0)
-            .min_inner_size(800.0, 600.0)
-            .build() {
-                w.on_menu_event(|win, event| {
-                    handle_menu_event(win, event.id().as_ref());
-                });
+            if let Err(err) = open_new_window_for_app(&app) {
+                eprintln!("failed to open new window: {}", err);
             }
             return;
         }
@@ -294,7 +573,7 @@ fn handle_menu_event<R: tauri::Runtime>(window: &tauri::Window<R>, id: &str) {
             let _ = window.emit_to(window.label(), "menu-action", "about");
             return;
         }
-        
+
         // Routes
         "pos" => "/pos",
         "purchases_new" | "purchases_new2" => "/purchases/new",
@@ -357,5 +636,3 @@ fn handle_menu_event<R: tauri::Runtime>(window: &tauri::Window<R>, id: &str) {
     // Emit only to THIS window
     let _ = window.emit_to(window.label(), "menu-navigate", route);
 }
-
-

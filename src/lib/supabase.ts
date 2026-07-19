@@ -1,4 +1,5 @@
 import { createBrowserClient } from '@supabase/ssr'
+import { isTauri } from '@/lib/env'
 
 // Singleton pattern for Supabase browser client
 let supabaseInstance: ReturnType<typeof createBrowserClient> | null = null
@@ -19,8 +20,6 @@ export function getSupabaseBrowserClient() {
     console.warn('Missing Supabase environment variables.');
     return null as any;
   }
-
-  const isTauri = typeof window !== 'undefined' && ((window as any).__TAURI__ !== undefined || (window as any).__TAURI_INTERNALS__ !== undefined);
 
   supabaseInstance = createBrowserClient(supabaseUrl, supabaseAnonKey, {
     auth: {

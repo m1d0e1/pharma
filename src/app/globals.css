@@ -9,8 +9,8 @@
   --radius: 0.75rem;
   --radius-lg: 1rem;
   --radius-xl: 1.5rem;
-  --font-sans: var(--font-inter), 'system-ui', 'sans-serif';
-  --font-arabic: var(--font-cairo), 'Tahoma', 'sans-serif';
+  --font-sans: system-ui, sans-serif;
+  --font-arabic: Tahoma, Arial, sans-serif;
   --line-height-tight: 1.25;
   --line-height-normal: 1.5;
   --line-height-relaxed: 1.75;
@@ -508,4 +508,3 @@ input[type="date"]::-webkit-calendar-picker-indicator {
   opacity: 0;
   cursor: pointer;
 }
-

@@ -13,6 +13,7 @@ import { dbGet } from '@/lib/db/tauri';
 import { Monitor, Bell, LogOut, Menu } from 'lucide-react';
 import HeaderAlerts from '@/components/HeaderAlerts';
 import AuthGuard from '@/components/AuthGuard';
+import { isTauri as isTauriRuntime } from '@/lib/env';
 
 export default function DashboardLayout({
   children,
@@ -34,9 +35,8 @@ export default function DashboardLayout({
 
   useEffect(() => {
     // Detect Tauri once on mount
-    const hasTauri = typeof window !== 'undefined' && ((window as any).__TAURI__ !== undefined || (window as any).__TAURI_INTERNALS__ !== undefined);
-    log('LAYOUT: mount isTauri=' + hasTauri);
-    setIsTauri(hasTauri);
+    log('LAYOUT: mount isTauri=' + isTauriRuntime);
+    setIsTauri(isTauriRuntime);
   }, []);
 
   useEffect(() => {
@@ -65,8 +65,7 @@ export default function DashboardLayout({
             console.error('Failed to fetch pharmacy name:', dbErr);
           }
         } else {
-          const _isTauri = typeof window !== 'undefined' && ((window as any).__TAURI__ !== undefined || (window as any).__TAURI_INTERNALS__ !== undefined);
-          if (!_isTauri) {
+          if (!isTauriRuntime) {
             try {
               const { getSupabaseBrowserClient } = await import('@/lib/supabase');
               const supabase = getSupabaseBrowserClient();
@@ -104,7 +103,7 @@ export default function DashboardLayout({
 
   // Handle native Tauri menu events
   useEffect(() => {
-    if (typeof window === 'undefined' || (!(window as any).__TAURI__ && !(window as any).__TAURI_INTERNALS__)) return;
+    if (!isTauriRuntime) return;
     
     let active = true;
     let unlistenNavigate: (() => void) | undefined;
@@ -272,17 +271,9 @@ export default function DashboardLayout({
 
   useHotkeys('ctrl+n, meta+n', (e) => {
     e.preventDefault();
-    try {
-      if (typeof window !== 'undefined' && ((window as any).__TAURI__ || (window as any).__TAURI_INTERNALS__)) {
-        import('@tauri-apps/api/core').then(({ invoke }) => {
-          invoke('open_new_window').catch(() => window.open('/', '_blank'));
-        }).catch(() => window.open('/', '_blank'));
-      } else {
-        window.open('/', '_blank');
-      }
-    } catch {
-      window.open('/', '_blank');
-    }
+    import('@tauri-apps/api/core')
+      .then(({ invoke }) => invoke('open_new_window'))
+      .catch(() => window.open('/', '_blank'));
   }, { enableOnFormTags: true });
 
   useHotkeys('f1', (e) => {

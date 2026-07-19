@@ -59,7 +59,10 @@ import { secureCache } from '@/lib/cache/secure_cache';
 const patientSchema = z.object({
   full_name: z.string().min(3, 'الاسم يجب أن يكون 3 أحرف على الأقل'),
   name_en: z.string().optional().nullable(),
-  phone: z.string().regex(/^01[0-9]{9}$/, 'رقم الهاتف يجب أن يكون رقم مصري صحيح (01xxxxxxxxx)'),
+  phone: z.preprocess(
+    value => typeof value === 'string' && value.trim() === '' ? null : value,
+    z.string().regex(/^01[0-9]{9}$/, 'رقم الهاتف يجب أن يكون رقم مصري صحيح (01xxxxxxxxx)').optional().nullable()
+  ),
   mobile: z.string().optional().nullable(),
   address: z.string().optional().nullable(),
   area: z.string().optional().nullable(),
@@ -116,7 +119,7 @@ export async function addPatientAction(formData: AddPatientInput) {
       )
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      id, data.full_name, data.name_en || null, data.phone, data.mobile || null,
+      id, data.full_name, data.name_en || null, data.phone || null, data.mobile || null,
       data.address || null, data.area || null, data.birth_date || null,
       data.gender || null, data.insurance_number || null, data.car_number || null,
       data.credit_limit, data.opening_balance, data.points_balance,
@@ -318,7 +321,7 @@ export async function updatePatientAction(id: string, formData: AddPatientInput)
         customer_type = ?, notes = ?
       WHERE id = ?
     `).run(
-      full_name, name_en || null, phone, address || null, 
+      full_name, name_en || null, phone || null, address || null,
       birth_date || null, gender || null, insurance_number || null, 
       credit_limit, points_balance, 
       wallet_balance, loyalty_level,
@@ -492,5 +495,37 @@ export async function getPatientsAction() {
     return { success: true, data: patients };
   } catch (error) {
     return { success: false, error: 'فشل جلب قائمة المرضى' };
+  }
+}
+
+export async function deletePatientAction(patientId: string) {
+  try {
+    const user = await getLocalSession();
+    if (!user || (user.role !== 'owner' && user.role !== 'admin')) {
+      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
+    }
+
+    const linked = await db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM sales_invoices WHERE patient_id = ?) +
+        (SELECT COUNT(*) FROM patient_transactions WHERE patient_id = ?) +
+        (SELECT COUNT(*) FROM refill_reminders WHERE patient_id = ?) as count
+    `).get(patientId, patientId, patientId) as any;
+
+    if ((Number(linked?.count) || 0) > 0) {
+      return { success: false, error: 'لا يمكن حذف مريض له فواتير أو معاملات مرتبطة' };
+    }
+
+    await dbTransaction(async () => {
+      await db.prepare('DELETE FROM patient_allergies WHERE patient_id = ?').run(patientId);
+      await db.prepare('DELETE FROM patient_conditions WHERE patient_id = ?').run(patientId);
+      await db.prepare('DELETE FROM patients WHERE id = ?').run(patientId);
+    });
+
+    revalidatePath('/patients');
+    revalidatePath('/pos');
+    return { success: true };
+  } catch (error: any) {
+    return { success: false, error: error?.message || 'فشل حذف المريض' };
   }
 }

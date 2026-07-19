@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { getClientSession } from '@/lib/auth/local';
 import { dbSelect, dbGet } from '@/lib/db/tauri';
+import { isTauri as isTauriRuntime } from '@/lib/env';
 
 const ExpiryWidget = dynamic(() => import('@/components/dashboard/ExpiryWidget'));
 const DeadStockWidget = dynamic(() => import('@/components/dashboard/DeadStockWidget'));
@@ -77,7 +78,7 @@ export default function DashboardPage() {
   useEffect(() => {
     const log = (m: string) => typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__?.invoke('log_frontend_error', { message: m });
     log('PAGE: mount');
-    setIsTauri(typeof window !== 'undefined' && ((window as any).__TAURI__ !== undefined || (window as any).__TAURI_INTERNALS__ !== undefined));
+    setIsTauri(isTauriRuntime);
     async function loadDashboardData() {
       try {
         log('PAGE: loadDashboardData start');

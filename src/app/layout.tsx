@@ -14,21 +14,7 @@ export const viewport: Viewport = {
   initialScale: 1,
 }
 
-
-import { Cairo, Inter } from 'next/font/google'
 import AppInitializer from '@/components/AppInitializer'
-
-const cairo = Cairo({
-  subsets: ['arabic'],
-  weight: ['300', '400', '500', '600', '700', '800'],
-  variable: '--font-cairo',
-})
-
-const inter = Inter({
-  subsets: ['latin'],
-  weight: ['300', '400', '500', '600', '700', '800'],
-  variable: '--font-inter',
-})
 
 export default function RootLayout({
   children,
@@ -36,7 +22,7 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <html lang="ar" dir="rtl" className={`scroll-smooth ${cairo.variable} ${inter.variable}`} suppressHydrationWarning>
+    <html lang="ar" dir="rtl" className="scroll-smooth" suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: `
           (function() {

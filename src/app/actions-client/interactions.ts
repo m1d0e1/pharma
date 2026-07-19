@@ -62,8 +62,8 @@ async function getDbIngredients() {
   );
   const ingredients = new Set<string>();
   for (const r of rows) {
-    ingredients.add(r.ingredient_a.toLowerCase());
-    ingredients.add(r.ingredient_b.toLowerCase());
+    if (r.ingredient_a) ingredients.add(r.ingredient_a);
+    if (r.ingredient_b) ingredients.add(r.ingredient_b);
   }
   return Array.from(ingredients);
 }

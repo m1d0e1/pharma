@@ -5,13 +5,13 @@ import { useRouter } from 'next/navigation'
 import AddPatientModal from '../AddPatientModal'
 import PatientProfileModal from './PatientProfileModal'
 import { toast } from 'react-hot-toast'
-import { User, Phone, MapPin, HeartPulse, CreditCard, ChevronLeft } from 'lucide-react'
+import { User, Phone, MapPin, CreditCard, ChevronLeft, Trash2 } from 'lucide-react'
 
 interface Patient {
   id: string
   full_name: string
   name_en?: string
-  phone: string
+  phone?: string | null
   address: string
   notes: string
   points_balance: number
@@ -51,9 +51,22 @@ export default function PatientListClient({ initialPatients, pharmacyId }: Props
 
   const filteredPatients = patients.filter(p => 
     p.full_name.includes(searchTerm) || 
-    p.phone.includes(searchTerm) || 
+    (p.phone || '').includes(searchTerm) ||
     (p.name_en && p.name_en.toLowerCase().includes(searchTerm.toLowerCase()))
   )
+
+  const handleDeletePatient = async (patient: Patient) => {
+    if (!confirm(`هل أنت متأكد من حذف المريض "${patient.full_name}"؟`)) return;
+    const { deletePatientAction } = await import('@/app/actions-client/patients');
+    const res = await deletePatientAction(patient.id);
+    if (res.success) {
+      toast.success('تم حذف المريض');
+      await fetchPatients();
+      router.refresh();
+    } else {
+      toast.error(res.error || 'فشل حذف المريض');
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -102,7 +115,7 @@ export default function PatientListClient({ initialPatients, pharmacyId }: Props
             <div className="space-y-4">
               <div className="flex items-center gap-3 text-blue-600 dark:text-blue-400 font-black">
                 <Phone className="w-4 h-4" />
-                <span>{patient.phone}</span>
+                <span>{patient.phone || 'بدون هاتف'}</span>
               </div>
               
               <div className="flex items-start gap-3 text-sm text-slate-500 font-bold">
@@ -112,8 +125,18 @@ export default function PatientListClient({ initialPatients, pharmacyId }: Props
 
               <div className="pt-6 border-t border-slate-50 dark:border-slate-800 flex justify-between items-center group-hover:translate-x-[-4px] transition-transform">
                  <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{patient.customer_type === 'individual' ? 'فردي' : 'متعاقد'}</span>
-                 <div className="flex items-center gap-1 text-purple-600 font-black text-sm">
-                    عرض الملف الكامل <ChevronLeft className="w-4 h-4" />
+                 <div className="flex items-center gap-2">
+                   <button
+                     type="button"
+                     onClick={(e) => { e.stopPropagation(); handleDeletePatient(patient); }}
+                     className="p-2 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-xl transition-all"
+                     title="حذف المريض"
+                   >
+                     <Trash2 className="w-4 h-4" />
+                   </button>
+                   <div className="flex items-center gap-1 text-purple-600 font-black text-sm">
+                      عرض الملف الكامل <ChevronLeft className="w-4 h-4" />
+                   </div>
                  </div>
               </div>
             </div>

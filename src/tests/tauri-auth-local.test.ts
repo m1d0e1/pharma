@@ -25,6 +25,7 @@ describe('Tauri Auth — Environment Detection', () => {
     jest.resetModules();
     delete (window as any).__TAURI__;
     delete (window as any).__TAURI_INTERNALS__;
+    delete (globalThis as any).isTauri;
     mockStorage.clear();
   });
 
@@ -41,6 +42,11 @@ describe('Tauri Auth — Environment Detection', () => {
     (window as any).__TAURI__ = true;
     expect(require('@/lib/env').isTauri).toBe(true);
   });
+
+  it('isTauri is true when runtime marker exists without window.__TAURI__', () => {
+    (globalThis as any).isTauri = true;
+    expect(require('@/lib/env').isTauri).toBe(true);
+  });
 });
 
 describe('Tauri Auth — loginLocal Tauri path', () => {
@@ -54,7 +60,7 @@ describe('Tauri Auth — loginLocal Tauri path', () => {
     const { dbGet } = require('@/lib/db/tauri');
     dbGet.mockResolvedValue(null);
     const { loginLocal } = await import('@/lib/auth/local');
-    const result = await loginLocal('nobody');
+    const result = await loginLocal('nobody', 'password');
     expect(result.success).toBe(false);
     expect(result.error).toContain('غير موجود');
   });
@@ -63,7 +69,7 @@ describe('Tauri Auth — loginLocal Tauri path', () => {
     const { dbGet } = require('@/lib/db/tauri');
     dbGet.mockResolvedValue({ id: 'u1', is_active: 0, password_hash: null });
     const { loginLocal } = await import('@/lib/auth/local');
-    const result = await loginLocal('disabled_user');
+    const result = await loginLocal('disabled_user', 'password');
     expect(result.success).toBe(false);
     expect(result.error).toContain('غير نشط');
   });
@@ -98,6 +104,14 @@ describe('Tauri Auth — hasUserPermissionSync', () => {
   it('admin has all permissions', () => {
     const { hasUserPermissionSync } = require('@/lib/auth/local');
     expect(hasUserPermissionSync({ role: 'admin', permissions: '{}' }, 'anything')).toBe(true);
+  });
+
+  it('identifies owner/admin roles', () => {
+    const { isOwnerOrAdmin } = require('@/lib/auth/local');
+    expect(isOwnerOrAdmin({ role: 'owner' })).toBe(true);
+    expect(isOwnerOrAdmin({ role: 'admin' })).toBe(true);
+    expect(isOwnerOrAdmin({ role: 'pharmacist' })).toBe(false);
+    expect(isOwnerOrAdmin(null)).toBe(false);
   });
 
   it('returns false for user with no permissions', () => {

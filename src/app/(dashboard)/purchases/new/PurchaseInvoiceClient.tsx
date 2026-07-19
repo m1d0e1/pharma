@@ -376,8 +376,14 @@ export default function PurchaseInvoiceClient() {
 
   const calculateItemTotal = (item: any) => {
     const sub = Number(item.quantity || 0) * Number(item.cost_price || 0);
-    const tax = sub * (Number(item.tax_percent || 0) / 100);
-    return sub + tax;
+    return sub
+      * (1 + Number(item.tax_percent || 0) / 100)
+      * (1 + Number(invoiceHeader.tax_percent || 0) / 100);
+  }
+
+  const calculateTaxedUnitCost = (item: any) => {
+    const received = Number(item.quantity || 0) + Number(item.bonus_quantity || 0);
+    return received > 0 ? calculateItemTotal(item) / received : Number(item.cost_price || 0);
   }
 
   const subTotal = cart.reduce((sum, item) => sum + calculateItemTotal(item), 0)
@@ -1182,6 +1188,9 @@ export default function PurchaseInvoiceClient() {
                             updateCartItem(item.id, 'cost_price', val);
                           }}
                         />
+                        <div className="mt-1 text-[9px] font-bold text-emerald-600 text-center">
+                          {calculateTaxedUnitCost(item).toFixed(2)} {'شامل الضريبة'}
+                        </div>
                       </td>
                       <td className="px-2 py-3 font-black text-slate-900 dark:text-white text-sm">
                         {calculateItemTotal(item).toFixed(2)}

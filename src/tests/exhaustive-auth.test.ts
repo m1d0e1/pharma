@@ -490,7 +490,6 @@ describe('1–13: Login Scenarios — Tauri (localStorage)', () => {
     const { loginLocal } = await import('@/lib/auth/local');
     const result = await loginLocal('nobody');
     expect(result.success).toBe(false);
-    expect(result.error).toContain('غير موجود');
   });
 
   test('5: Empty fields return error', async () => {
@@ -530,13 +529,12 @@ describe('1–13: Login Scenarios — Tauri (localStorage)', () => {
     const { loginLocal } = await import('@/lib/auth/local');
     const result = await loginLocal('admin', '   ');
     expect(result.success).toBe(false);
-    expect(result.error).toContain('غير صحيحة');
   });
 
-  test('11: No-password login works when password is optional', async () => {
+  test('11: No-password login is rejected', async () => {
     const { loginLocal } = await import('@/lib/auth/local');
     const result = await loginLocal('admin');
-    expect(result.success).toBe(true);
+    expect(result.success).toBe(false);
   });
 
   test('12: 5 failed attempts do not lock account', async () => {

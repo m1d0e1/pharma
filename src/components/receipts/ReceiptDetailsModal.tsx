@@ -34,6 +34,7 @@ interface Invoice {
 interface Props {
   invoice: Invoice
   onClose: () => void
+  autoPrint?: boolean
 }
 
 interface PharmacyInfo {
@@ -52,7 +53,7 @@ const escapeHtml = (str: string): string => {
     .replace(/'/g, '&#039;')
 }
 
-export default function ReceiptDetailsModal({ invoice, onClose }: Props) {
+export default function ReceiptDetailsModal({ invoice, onClose, autoPrint = false }: Props) {
   useHotkeys('esc', () => { if(typeof onClose === 'function') onClose(); }, { enableOnFormTags: true });
 
   const [pharmacyInfo, setPharmacyInfo] = useState<PharmacyInfo>({
@@ -62,6 +63,7 @@ export default function ReceiptDetailsModal({ invoice, onClose }: Props) {
   })
 
   const [mounted, setMounted] = useState(false)
+  const autoPrintDone = React.useRef(false)
 
   useEffect(() => {
     setMounted(true)
@@ -70,11 +72,16 @@ export default function ReceiptDetailsModal({ invoice, onClose }: Props) {
       const phone = await getConfigAction('pharmacy_phone')
       const address = await getConfigAction('pharmacy_address')
       
-      setPharmacyInfo({
+      const info = {
         name: name.value || 'صيدلية فارما تيك',
         phone: phone.value || '',
         address: address.value || ''
-      })
+      }
+      setPharmacyInfo(info)
+      if (autoPrint && !autoPrintDone.current) {
+        autoPrintDone.current = true
+        printHtmlContent(generateReceiptHtml(invoice, info))
+      }
     }
     loadInfo()
   }, [])

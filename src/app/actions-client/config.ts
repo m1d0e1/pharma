@@ -1,5 +1,6 @@
 
 import { dbSelect, dbExecute, dbGet, dbTransaction } from '@/lib/db/tauri';
+import { getLocalSession, isOwnerOrAdmin } from '@/lib/auth/local';
 const logActivity = async (userId, action, details) => {
   try {
     await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [userId, action, details]);
@@ -69,6 +70,9 @@ export async function getConfigAction(key: string) {
  */
 export async function updateConfigAction(key: string, value: string) {
   try {
+    const localUser = await getLocalSession();
+    if (!isOwnerOrAdmin(localUser)) return { success: false, error: 'غير مصرح' };
+
     await db.prepare(`
       INSERT INTO config (key, value) 
       VALUES (?, ?) 

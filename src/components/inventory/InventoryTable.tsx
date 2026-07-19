@@ -39,6 +39,7 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
   const router = useRouter()
 
   const [currentPage, setCurrentPage] = useState(1);
+  const [sort, setSort] = useState<{ key: string; dir: 'asc' | 'desc' } | null>(null);
   const itemsPerPage = 50;
   
   const printRef = useRef<HTMLDivElement>(null);
@@ -77,6 +78,35 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
 
   // Items are pre-filtered on the database side
   const filteredItems = items;
+  const sortedItems = [...filteredItems].sort((a: any, b: any) => {
+    if (!sort) return 0;
+    const value = (item: any) => {
+      if (sort.key === 'name') return item.master_drugs.trade_name_en || item.master_drugs.trade_name || '';
+      if (sort.key === 'category') return item.master_drugs.category || '';
+      if (sort.key === 'quantity') return item.quantity || 0;
+      if (sort.key === 'expiry') return item.expiry_date || '';
+      if (sort.key === 'price') return item.local_selling_price || 0;
+      return '';
+    };
+    const av = value(a);
+    const bv = value(b);
+    const result = typeof av === 'number' && typeof bv === 'number'
+      ? av - bv
+      : String(av).localeCompare(String(bv), 'ar');
+    return sort.dir === 'asc' ? result : -result;
+  });
+  const sortBy = (key: string) => {
+    setSort(prev => prev?.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' });
+    setCurrentPage(1);
+  };
+  const SortTh = ({ sortKey, children, className = '' }: { sortKey: string; children: React.ReactNode; className?: string }) => (
+    <th className={`px-8 py-5 text-sm font-bold text-slate-500 dark:text-slate-400 ${className}`}>
+      <button type="button" onClick={() => sortBy(sortKey)} className="inline-flex items-center gap-1 hover:text-blue-600">
+        {children}
+        <span className="text-[10px]">{sort?.key === sortKey ? (sort.dir === 'asc' ? '▲' : '▼') : '↕'}</span>
+      </button>
+    </th>
+  );
 
   // Reset to first page when search term changes
   useEffect(() => {
@@ -88,7 +118,7 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
   const uniqueDrugsCount = new Set(filteredItems.map(item => item.drug_id)).size;
 
   const totalPages = Math.ceil(filteredItems.length / itemsPerPage);
-  const paginatedItems = filteredItems.slice(
+  const paginatedItems = sortedItems.slice(
     (currentPage - 1) * itemsPerPage,
     currentPage * itemsPerPage
   );
@@ -287,6 +317,14 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
           <table className="w-full text-right border-collapse">
             <thead>
               <tr className="bg-slate-50/50 dark:bg-slate-800/50 border-b border-slate-100 dark:border-slate-800">
+                <SortTh sortKey="name">{'\u0627\u0633\u0645 \u0627\u0644\u062f\u0648\u0627\u0621'}</SortTh>
+                <SortTh sortKey="category">{'\u0627\u0644\u062a\u0635\u0646\u064a\u0641'}</SortTh>
+                <SortTh sortKey="quantity" className="text-center">{'\u0627\u0644\u0643\u0645\u064a\u0629'}</SortTh>
+                <SortTh sortKey="expiry">{'\u062a\u0627\u0631\u064a\u062e \u0627\u0644\u0635\u0644\u0627\u062d\u064a\u0629'}</SortTh>
+                <SortTh sortKey="price">{'\u0627\u0644\u0633\u0639\u0631'}</SortTh>
+                <th className="px-8 py-5 text-sm font-bold text-slate-500 dark:text-slate-400">{'\u0625\u062c\u0631\u0627\u0621\u0627\u062a'}</th>
+              </tr>
+              <tr className="hidden">
                 <th className="px-8 py-5 text-sm font-bold text-slate-500 dark:text-slate-400">اسم الدواء</th>
                 <th className="px-8 py-5 text-sm font-bold text-slate-500 dark:text-slate-400">التصنيف</th>
                 <th className="px-8 py-5 text-sm font-bold text-slate-500 dark:text-slate-400 text-center">الكمية</th>

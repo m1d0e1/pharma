@@ -227,7 +227,7 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                 {formData.full_name}
               </h2>
               <div className="flex gap-4 mt-2 opacity-70 font-bold text-sm uppercase tracking-widest">
-                 <span className="flex items-center gap-1"><Phone className="w-4 h-4" /> {formData.phone}</span>
+                 <span className="flex items-center gap-1"><Phone className="w-4 h-4" /> {formData.phone || 'بدون هاتف'}</span>
                  <span className="flex items-center gap-1"><Award className="w-4 h-4" /> {formData.points_balance} نقطة</span>
                  <span className="bg-white/10 px-3 py-1 rounded-full">{formData.customer_type}</span>
               </div>
@@ -292,7 +292,7 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                     />
                   </div>
                   <div className="space-y-2">
-                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-2">رقم الهاتف</label>
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-2">رقم الهاتف (اختياري)</label>
                     <input
                       type="text"
                       value={formData.phone}

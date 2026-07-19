@@ -6,6 +6,7 @@ import { useBarcodeScanner } from '@/hooks/useBarcodeScanner';
 import { toast, Toaster } from 'react-hot-toast';
 import { ShoppingCart, Search, User, X, Loader2, FileText, Clock, Plus, Printer, Trash2, Maximize2, Minimize2, Calculator, BarChart3, RotateCcw, PlusCircle, Settings, Save, Info } from 'lucide-react';
 import nextDynamic from 'next/dynamic';
+import { useHotkeys } from 'react-hotkeys-hook';
 
 const ReceiptDetailsModal = nextDynamic(() => import('@/components/receipts/ReceiptDetailsModal'), { ssr: false });
 const DrugInteractionModal = nextDynamic(() => import('@/components/pos/DrugInteractionModal'), { ssr: false });
@@ -88,10 +89,11 @@ export interface CartItem {
 interface Patient {
   id: string;
   full_name: string;
-  phone: string;
+  phone?: string | null;
   credit_limit?: number;
   wallet_balance?: number;
   opening_balance?: number;
+  outstanding_balance?: number;
 }
 
 export interface POSSearchSidebarRef {
@@ -279,6 +281,7 @@ export default function POSPage() {
   const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null);
 
   const [completedInvoice, setCompletedInvoice] = useState<any>(null);
+  const [autoPrintReceipt, setAutoPrintReceipt] = useState(false);
   const [currentUserName, setCurrentUserName] = useState('صيدلي');
   const [currentUser, setCurrentUser] = useState<{ id: string; pharmacy_id: string } | null>(null);
   const [isAllowed, setIsAllowed] = useState(false);
@@ -569,6 +572,14 @@ export default function POSPage() {
     }));
   }, []);
 
+  const stockInSelectedUnit = (item: CartItem) => {
+    const l2m = item.units.large_to_medium || 1;
+    const m2s = item.units.medium_to_small || 1;
+    if (item.selectedUnit === item.units.medium || item.selectedUnit === 'medium') return item.total_stock * l2m;
+    if (item.selectedUnit === item.units.small || item.selectedUnit === 'small') return item.total_stock * l2m * m2s;
+    return item.total_stock;
+  };
+
   const resetCart = useCallback(() => {
     if (cart.length > 0 && !confirm('هل أنت متأكد من مسح السلة وبدء فاتورة جديدة؟')) return;
     setCart([]);
@@ -665,15 +676,24 @@ export default function POSPage() {
         setDiscountPercent(0);
         setAdditionalFees(0);
       } else {
+        setAutoPrintReceipt(false);
         toast.error(result.error || 'فشلت العملية');
       }
     } catch (error) {
+      setAutoPrintReceipt(false);
       console.error('Checkout error:', error);
       toast.error('فشلت العملية');
     } finally {
       setIsProcessing(false);
     }
   };
+
+  useHotkeys('ctrl+s', event => {
+    event.preventDefault();
+    if (cart.length === 0 || isProcessing) return;
+    setAutoPrintReceipt(true);
+    handleCheckout('completed');
+  }, { enableOnFormTags: true }, [cart.length, isProcessing, handleCheckout]);
 
   const fetchDrafts = async () => {
     setIsLoadingDrafts(true);
@@ -877,8 +897,8 @@ export default function POSPage() {
                 {paymentMethod === 'credit' && (
                   <div className="text-[10px] font-black px-1 flex justify-between">
                     <span className="text-slate-400">الائتمان المتبقي:</span>
-                    <span className={((selectedPatient.credit_limit || 0) - ((selectedPatient.opening_balance || 0) - (selectedPatient.wallet_balance || 0))) < total ? "text-rose-500 font-bold" : "text-emerald-600 font-bold"}>
-                      {((selectedPatient.credit_limit || 0) - ((selectedPatient.opening_balance || 0) - (selectedPatient.wallet_balance || 0))).toFixed(2)} ج.م
+                    <span className={((selectedPatient.credit_limit || 0) - (selectedPatient.outstanding_balance || 0)) < total ? "text-rose-500 font-bold" : "text-emerald-600 font-bold"}>
+                      {((selectedPatient.credit_limit || 0) - (selectedPatient.outstanding_balance || 0)).toFixed(2)} ج.م
                     </span>
                   </div>
                 )}
@@ -902,7 +922,12 @@ export default function POSPage() {
                         onClick={() => { setSelectedPatient(p); setPatientResults([]); setPatientSearch(''); }}
                         className="w-full text-right p-3 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-xl text-xs font-bold"
                       >
-                        {p.full_name} ({p.phone})
+                        <span className="flex items-center justify-between gap-2">
+                          <span className="truncate">{p.full_name} ({p.phone || 'بدون هاتف'})</span>
+                          <span className={`shrink-0 ${Number(p.outstanding_balance || 0) > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
+                            مديونية: {Math.max(0, Number(p.outstanding_balance || 0)).toFixed(2)} ج.م
+                          </span>
+                        </span>
                       </button>
                     ))}
                   </div>
@@ -1049,7 +1074,7 @@ export default function POSPage() {
                     <td className="px-1 py-2 text-center font-black text-[11px] w-12">{item.price}</td>
                     <td className="px-1 py-2 text-center w-10">
                        <span className={`text-[9px] font-black ${item.total_stock <= (item.reorder_point || 0) ? 'text-red-500' : 'text-slate-400'}`}>
-                        {item.total_stock}
+                        {Number(stockInSelectedUnit(item).toFixed(2))}
                        </span>
                     </td>
                     <td className="px-1 py-2 text-center text-[9px] font-bold text-slate-400 w-10">{item.reorder_point || 0}</td>
@@ -1130,13 +1155,14 @@ export default function POSPage() {
       {completedInvoice && (
         <ReceiptDetailsModal 
           invoice={completedInvoice} 
-          onClose={() => setCompletedInvoice(null)} 
+          autoPrint={autoPrintReceipt}
+          onClose={() => { setCompletedInvoice(null); setAutoPrintReceipt(false); }}
         />
       )}
       {showInteractionModal && (
         <DrugInteractionModal 
           alerts={pendingInteractions}
-          onClose={() => setShowInteractionModal(false)}
+          onClose={() => { setShowInteractionModal(false); setAutoPrintReceipt(false); }}
           onConfirm={() => {
             setShowInteractionModal(false);
             handleCheckout('completed', true);

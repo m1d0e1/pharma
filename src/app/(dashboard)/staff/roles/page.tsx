@@ -8,13 +8,12 @@ import Link from 'next/link';
 import { ArrowRight } from 'lucide-react';
 import AccessDenied from '@/components/AccessDenied';
 import { dbSelect, dbExecute } from '@/lib/db/tauri';
+import { isTauri } from '@/lib/env';
 
 export default function StaffRolesPage() {
   const [user, setUser] = useState<any>(null);
   const [jobs, setJobs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-
-  const isTauri = typeof window !== 'undefined' && ((window as any).__TAURI__ !== undefined || (window as any).__TAURI_INTERNALS__ !== undefined);
 
   async function loadJobs() {
     try {

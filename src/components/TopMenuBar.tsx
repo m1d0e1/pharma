@@ -48,11 +48,12 @@ const MENUS: Menu[] = [
   },
   {
     id: 'sales', label: 'المبيعات',
-    ownerRoutes: ['/pos', '/receipts', '/sales', '/reports/sales', '/sales/delivery', '/sales/cogs', '/sales/settlement'],
+    ownerRoutes: ['/pos', '/receipts', '/sales', '/returns', '/reports/sales', '/sales/delivery', '/sales/cogs', '/sales/settlement'],
     items: [
       { type: 'link', label: 'فاتورة مبيعات جديدة', href: '/pos',            icon: PlusCircle,     roles: ['owner','admin','pharmacist'] },
       { type: 'link', label: 'الفواتير',          href: '/receipts',         icon: Receipt,        roles: ['owner','admin','pharmacist'], permission: 'view_all_sales' },
       { type: 'link', label: 'المبيعات والتحصيل', href: '/sales',            icon: ShoppingCart,   roles: ['owner','admin','pharmacist'] },
+      { type: 'link', label: '\u0645\u0631\u062a\u062c\u0639\u0627\u062a \u0627\u0644\u0639\u0645\u0644\u0627\u0621', href: '/returns',          icon: RotateCcw,      roles: ['owner','admin','pharmacist'], permission: 'process_sales' },
       { type: 'separator' },
       { type: 'link', label: 'تقارير المبيعات',   href: '/reports/sales',    icon: BarChart3,      roles: ['owner','admin'], permission: 'view_reports' },
       { type: 'link', label: 'توصيل منزلي',       href: '/sales/delivery',   icon: Bike,           roles: ['owner','admin','pharmacist'], permission: 'process_sales' },
@@ -75,7 +76,7 @@ const MENUS: Menu[] = [
   },
   {
     id: 'purchases', label: 'المشتريات',
-    ownerRoutes: ['/purchases','/purchases/new','/purchase-orders','/purchases/suppliers','/purchases/returns','/purchases/general-returns','/returns'],
+    ownerRoutes: ['/purchases','/purchases/new','/purchase-orders','/purchases/suppliers','/purchases/returns','/purchases/general-returns'],
     items: [
       { type: 'link', label: 'المشتريات',              href: '/purchases',                 icon: ShoppingCart,  roles: ['owner','admin'], permission: 'manage_inventory' },
       { type: 'link', label: 'فاتورة مشتريات جديدة',  href: '/purchases/new',             icon: PlusCircle,    roles: ['owner','admin'], permission: 'manage_inventory' },
@@ -84,7 +85,6 @@ const MENUS: Menu[] = [
       { type: 'separator' },
       { type: 'link', label: 'مرتجعات للموردين',      href: '/purchases/returns',         icon: RotateCcw,     roles: ['owner','admin'], permission: 'process_sales' },
       { type: 'link', label: 'مرتجعات عامة',          href: '/purchases/general-returns', icon: RotateCcw,     roles: ['owner','admin'], permission: 'process_sales' },
-      { type: 'link', label: 'مرتجعات العملاء',       href: '/returns',                   icon: RotateCcw,     roles: ['owner','admin','pharmacist'], permission: 'process_sales' },
     ],
   },
   {

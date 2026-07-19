@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook';
-import { createPurchaseOrderAction } from '@/app/actions-client/purchases';
+import { createPurchaseOrderAction, getDrugInventoryQuantityAction } from '@/app/actions-client/purchases';
 import { searchMasterDrugsAction } from '@/app/actions-client/master-drugs';
 import { getSuppliersAction } from '@/app/actions-client/purchases';
 import { toast } from 'react-hot-toast';
@@ -29,6 +29,7 @@ export default function PurchaseOrderModal({ initialItems, onClose }: Props) {
         trade_name: item.master_drugs.trade_name_en || item.master_drugs.trade_name,
         quantity: item.suggested_order !== undefined ? item.suggested_order : Math.max(0, (item.min_stock_level * 2) - item.quantity),
         expected_price: item.master_drugs.official_price || 0,
+        available_quantity: Number(item.quantity || 0),
       }))
   );
 
@@ -65,16 +66,18 @@ export default function PurchaseOrderModal({ initialItems, onClose }: Props) {
     return () => clearTimeout(delayDebounceFn);
   }, [searchQuery, searchByActive]);
 
-  const addDrugToOrder = (drug: any) => {
+  const addDrugToOrder = async (drug: any) => {
     if (items.find(i => i.drug_id === drug.id)) {
       toast.error('هذا الصنف موجود بالفعل في الطلب');
       return;
     }
-    setItems([...items, {
+    const stock = await getDrugInventoryQuantityAction(Number(drug.id));
+    setItems(prev => [...prev, {
       drug_id: drug.id,
       trade_name: drug.trade_name_en || drug.trade_name,
       quantity: 1,
-      expected_price: drug.official_price || 0
+      expected_price: drug.official_price || 0,
+      available_quantity: stock.success ? stock.data : 0,
     }]);
     setSearchQuery('');
     setSearchResults([]);
@@ -232,6 +235,7 @@ export default function PurchaseOrderModal({ initialItems, onClose }: Props) {
                 <thead>
                   <tr className="bg-slate-50 dark:bg-slate-800/50">
                     <th className="px-6 py-4 text-xs font-black text-slate-400">الصنف</th>
+                    <th className="px-6 py-4 text-xs font-black text-slate-400 text-center">المتاح بالمخزون</th>
                     <th className="px-6 py-4 text-xs font-black text-slate-400 text-center">الكمية المطلوبة</th>
                     <th className="px-6 py-4 text-xs font-black text-slate-400 text-center">السعر التقديري</th>
                     <th className="px-6 py-4 text-xs font-black text-slate-400 text-center">الإجمالي</th>
@@ -244,6 +248,7 @@ export default function PurchaseOrderModal({ initialItems, onClose }: Props) {
                       <td className="px-6 py-4">
                         <span className="font-bold text-slate-900 dark:text-white">{item.trade_name}</span>
                       </td>
+                      <td className="px-6 py-4 text-center font-black text-emerald-600">{Number(item.available_quantity || 0).toFixed(2)}</td>
                       <td className="px-6 py-4 text-center">
                         <input 
                           type="number" 

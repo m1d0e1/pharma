@@ -2,14 +2,12 @@
 
 import { useEffect, useState } from 'react';
 import { secureCache } from '@/lib/cache/secure_cache';
+import { isTauri } from '@/lib/env';
 
 export default function AppInitializer({ children }: { children: React.ReactNode }) {
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    // Determine if we are in Tauri
-    const isTauri = typeof window !== 'undefined' && ((window as any).__TAURI__ || (window as any).__TAURI_INTERNALS__);
-    
     if (isTauri) {
       const log = (m: string) => (window as any).__TAURI_INTERNALS__?.invoke('log_frontend_error', { message: m });
       log('APPINIT: starting secureCache.load()');

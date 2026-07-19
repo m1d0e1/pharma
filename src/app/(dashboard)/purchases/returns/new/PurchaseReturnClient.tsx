@@ -114,6 +114,8 @@ export default function PurchaseReturnClient() {
     if (res.success && res.data) {
       // Map to return items format with 0 quantity returned by default
       setItems(res.data.map((item: any) => ({
+        purchase_invoice_item_id: item.id,
+        inventory_id: item.inventory_id,
         drug_id: item.drug_id,
         drug_name: item.trade_name,
         quantity: 0, // This is the return quantity
@@ -124,6 +126,8 @@ export default function PurchaseReturnClient() {
         base_price: item.cost_price || 0, // Store original base cost price
         large_to_medium: item.large_to_medium || 1,
         medium_to_small: item.medium_to_small || 1,
+        expiry_date: item.inventory_expiry_date || item.expiry_date,
+        batch_number: item.batch_number,
       })));
     } else {
       toast.error('لم يتم العثور على تفاصيل الفاتورة');
@@ -187,6 +191,7 @@ export default function PurchaseReturnClient() {
 
     setIsSubmitting(true);
     const res = await createPurchaseReturnAction({
+      purchase_invoice_id: selectedInvoiceId,
       supplier_id: Number(selectedSupplierId),
       reason,
       refund_method: refundMethod,
@@ -195,7 +200,7 @@ export default function PurchaseReturnClient() {
 
     if (res.success) {
       toast.success('تم إنشاء مرتجع المشتريات بنجاح');
-      router.push('/purchases');
+      router.push('/purchases/returns');
     } else {
       toast.error('حدث خطأ: ' + res.error);
       setIsSubmitting(false);

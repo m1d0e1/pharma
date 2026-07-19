@@ -123,12 +123,34 @@ export default function SalesReturnClient() {
     }
   };
 
+  const toLargeQty = (item: any, quantity: number, unit: string) => {
+    const l2m = item.large_to_medium || 1;
+    const m2s = item.medium_to_small || 1;
+    if (unit === 'medium') return quantity / l2m;
+    if (unit === 'small') return quantity / (l2m * m2s);
+    return quantity;
+  };
+
+  const fromLargeQty = (item: any, quantity: number, unit: string) => {
+    const l2m = item.large_to_medium || 1;
+    const m2s = item.medium_to_small || 1;
+    if (unit === 'medium') return quantity * l2m;
+    if (unit === 'small') return quantity * l2m * m2s;
+    return quantity;
+  };
+
+  const remainingInSelectedUnit = (item: any) => {
+    const sold = toLargeQty(item, item.quantity_sold || 0, item.original_unit || 'large');
+    const returned = toLargeQty(item, item.returned_quantity || 0, item.original_unit || 'large');
+    return fromLargeQty(item, Math.max(0, sold - returned), item.unit || 'large');
+  };
+
   const updateQuantity = (index: number, quantity: number) => {
     setItemsToReturn(prev => {
       const newItems = [...prev];
       const item = newItems[index];
       // Ensure quantity does not exceed remaining quantity
-      const remainingQty = item.quantity_sold - (item.returned_quantity || 0);
+      const remainingQty = remainingInSelectedUnit(item);
       if (quantity < 0) quantity = 0;
       if (quantity > remainingQty) quantity = remainingQty;
       newItems[index] = { ...item, return_quantity: quantity };
@@ -287,6 +309,9 @@ export default function SalesReturnClient() {
                             {item.returned_quantity || 0} {item.original_unit === 'large' ? 'علبة' : item.original_unit === 'medium' ? 'شريط' : 'وحدة'}
                           </td>
                           <td className="p-3 text-center text-emerald-600 dark:text-emerald-500 font-bold">
+                            {remainingInSelectedUnit(item).toFixed(2)} {item.unit === 'large' ? '\u0639\u0644\u0628\u0629' : item.unit === 'medium' ? '\u0634\u0631\u064a\u0637' : '\u0648\u062d\u062f\u0629'}
+                          </td>
+                          <td className="hidden">
                             {item.quantity_sold - (item.returned_quantity || 0)} {item.original_unit === 'large' ? 'علبة' : item.original_unit === 'medium' ? 'شريط' : 'وحدة'}
                           </td>
                           <td className="p-3 text-center text-slate-600 dark:text-slate-400">{item.unit_price.toFixed(2)} ج.م</td>
@@ -320,6 +345,7 @@ export default function SalesReturnClient() {
 
                                 newItems[idx].unit = newUnit;
                                 newItems[idx].unit_price = newPrice;
+                                newItems[idx].return_quantity = Math.min(newItems[idx].return_quantity || 0, remainingInSelectedUnit(newItems[idx]));
                                 setItemsToReturn(newItems);
                               }}
                             >

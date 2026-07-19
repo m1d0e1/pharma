@@ -53,6 +53,8 @@ const db = {
 import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { z } from 'zod';
 import { secureCache } from '@/lib/cache/secure_cache';
+import { calculateCheckoutTotal, calculateLoyaltyPoints } from '@/lib/pos/checkout-calculation';
+import { isTauri } from '@/lib/env';
 
 const CheckoutItemSchema = z.object({
   drug_id: z.coerce.number(),
@@ -73,6 +75,12 @@ const CheckoutRequestSchema = z.object({
   total_discount: z.coerce.number().nonnegative().optional().default(0),
   additional_fees: z.coerce.number().nonnegative().optional().default(0),
 });
+
+function saleStockQty(quantity: number, unit: string, largeToMedium: number, mediumToSmall: number, mediumUnit?: string, smallUnit?: string) {
+  if (unit === 'medium' || unit === 'strip' || unit === 'شريط' || unit === mediumUnit) return quantity / largeToMedium;
+  if (unit === 'small' || unit === smallUnit) return quantity / (largeToMedium * mediumToSmall);
+  return quantity;
+}
 
 export async function searchDrugsAction(searchTerm: string, limit = 20, searchByActiveIngredient = false) {
   try {
@@ -253,9 +261,31 @@ export async function searchPatientsAction(query: string) {
 
     const searchPattern = `%${query}%`;
     const patients = await db.prepare(`
-      SELECT id, full_name, phone
-      FROM patients
-      WHERE (full_name LIKE ? OR phone LIKE ?)
+      SELECT
+        p.id,
+        p.full_name,
+        p.phone,
+        p.credit_limit,
+        p.wallet_balance,
+        p.opening_balance,
+        (
+          COALESCE(p.opening_balance, 0) +
+          (SELECT COALESCE(SUM(si.total_amount), 0)
+             FROM sales_invoices si
+            WHERE si.patient_id = p.id
+              AND si.payment_method = 'credit'
+              AND si.status = 'completed') -
+          (SELECT COALESCE(SUM(r.total_refund), 0)
+             FROM returns r
+             JOIN sales_invoices si ON r.invoice_id = si.id
+            WHERE si.patient_id = p.id) -
+          (SELECT COALESCE(SUM(pt.amount), 0)
+             FROM patient_transactions pt
+            WHERE pt.patient_id = p.id
+              AND pt.type IN ('payment', 'adjustment'))
+        ) AS outstanding_balance
+      FROM patients p
+      WHERE (p.full_name LIKE ? OR p.phone LIKE ?)
       LIMIT 5
     `).all(searchPattern, searchPattern) as any[];
 
@@ -275,6 +305,7 @@ export async function barcodeLookupAction(barcode: string) {
       return { success: false, error: 'الباركود مطلوب' };
     }
 
+    const today = new Date().toISOString().split('T')[0];
     const drug = await db.prepare(`
       SELECT
         md.id,
@@ -298,23 +329,32 @@ export async function barcodeLookupAction(barcode: string) {
         i.id as inventory_id
       FROM master_drugs md
       INNER JOIN inventory i ON md.id = i.drug_id
-      WHERE (i.barcode = ? OR md.barcode = ?)
+      WHERE md.id = (
+        SELECT md2.id
+        FROM master_drugs md2
+        LEFT JOIN inventory scanned ON scanned.drug_id = md2.id
+        WHERE scanned.barcode = ? OR md2.barcode = ?
+        LIMIT 1
+      )
+        AND i.quantity > 0
+        AND (i.expiry_date IS NULL OR i.expiry_date >= ?)
+      ORDER BY CASE WHEN i.expiry_date IS NULL THEN 1 ELSE 0 END, i.expiry_date ASC, i.created_at ASC
       LIMIT 1
-    `).get(barcode, barcode) as any;
+    `).get(barcode, barcode, today) as any;
 
     if (!drug) {
       return { success: true, data: null };
     }
 
-    const today = new Date().toISOString().split('T')[0];
     const actualLargeToMedium = drug.strips_per_box > 1 ? drug.strips_per_box : (drug.large_to_medium || 1);
 
     const drugBatches = await db.prepare(`
       SELECT id as inventory_id, quantity, expiry_date, local_selling_price, cost_price
       FROM inventory
-      WHERE drug_id = ? AND quantity > 0
+      WHERE drug_id = ? AND quantity > 0 AND (expiry_date IS NULL OR expiry_date >= ?)
       ORDER BY CASE WHEN expiry_date IS NULL THEN 1 ELSE 0 END, expiry_date ASC, created_at ASC
-    `).all(drug.id) as any[];
+    `).all(drug.id, today) as any[];
+    const totalStock = drugBatches.reduce((sum: number, batch: any) => sum + Number(batch.quantity || 0), 0);
 
     const data = {
       id: drug.id,
@@ -323,13 +363,13 @@ export async function barcodeLookupAction(barcode: string) {
       category: drug.category,
       official_price: drug.official_price,
       unit_price: drug.unit_price,
-      quantity: drug.quantity,
+      quantity: totalStock,
       inventory_id: drug.inventory_id,
       cost_price: drug.avg_cost_price || 0,
       nearest_expiry: drug.nearest_expiry,
       is_expired: drug.nearest_expiry ? (normalizeDateToYMD(drug.nearest_expiry) || '') < today : false,
       reorder_point: drug.reorder_point || 0,
-      needs_reorder: drug.reorder_point ? drug.quantity <= drug.reorder_point : false,
+      needs_reorder: drug.reorder_point ? totalStock <= drug.reorder_point : false,
       profit_margin: drug.unit_price && drug.avg_cost_price > 0 
         ? Math.round(((drug.unit_price - drug.avg_cost_price) / drug.unit_price) * 100) 
         : null,
@@ -435,11 +475,40 @@ export async function processCheckoutAction(data: any) {
 
     const validatedData = CheckoutRequestSchema.parse(data);
 
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const result = await invoke('process_checkout_critical', {
+        payload: {
+          pharmacy_id: pharmacyId,
+          user_id: userId,
+          items: validatedData.items,
+          patient_id: validatedData.patient_id ? String(validatedData.patient_id) : null,
+          shift_id: validatedData.shift_id ? String(validatedData.shift_id) : null,
+          payment_method: validatedData.payment_method,
+          check_number: validatedData.check_number || null,
+          status: validatedData.status,
+          total_discount: validatedData.total_discount || 0,
+          additional_fees: validatedData.additional_fees || 0,
+        }
+      }) as any;
+
+      return {
+        success: true,
+        data: {
+          sale_id: result.sale_id,
+          total_amount: result.total_amount,
+          points_earned: result.points_earned,
+        }
+      };
+    }
+
     // Patient Financial Validation
+    let patientLoyaltyLevel: string | null = null;
     if (validatedData.patient_id && validatedData.status === 'completed') {
       const patient = await db.prepare('SELECT credit_limit, wallet_balance, loyalty_level FROM patients WHERE id = ?').get(validatedData.patient_id) as any;
       if (patient) {
-        const subTotal = validatedData.items.reduce((sum, item) => sum + (item.unit_price * item.quantity_sold), 0) - (validatedData.total_discount || 0);
+        patientLoyaltyLevel = patient.loyalty_level || null;
+        const subTotal = calculateCheckoutTotal(validatedData.items, validatedData.total_discount || 0, validatedData.additional_fees || 0);
 
         if (validatedData.payment_method === 'credit') {
           const balanceRow = await db.prepare(`
@@ -472,10 +541,8 @@ export async function processCheckoutAction(data: any) {
     }
 
     const saleId = generateId();
-    const totalAmount = validatedData.items.reduce(
-      (sum, item) => sum + (item.unit_price * item.quantity_sold),
-      0
-    ) - (validatedData.total_discount || 0);
+    const totalAmount = calculateCheckoutTotal(validatedData.items, validatedData.total_discount || 0, validatedData.additional_fees || 0);
+    let pointsEarned = 0;
 
     await dbTransaction(async () => {
       const today = new Date().toISOString().split('T')[0];
@@ -506,14 +573,8 @@ export async function processCheckoutAction(data: any) {
         `).get(item.drug_id) as any;
         const drugName = drugInfo?.trade_name || `Drug #${item.drug_id}`;
         
-        let deductionQty = item.quantity_sold;
         const actualLargeToMedium = drugInfo?.max_strips > 1 ? drugInfo.max_strips : (drugInfo?.large_to_medium || 1);
-        
-        if (item.selected_unit === 'medium' || item.selected_unit === 'شريط' || item.selected_unit === drugInfo?.medium_unit) {
-          deductionQty = item.quantity_sold / actualLargeToMedium;
-        } else if (item.selected_unit === 'small' || item.selected_unit === drugInfo?.small_unit) {
-          deductionQty = item.quantity_sold / (actualLargeToMedium * (drugInfo?.medium_to_small || 1));
-        }
+        const deductionQty = saleStockQty(item.quantity_sold, item.selected_unit, actualLargeToMedium, drugInfo?.medium_to_small || 1, drugInfo?.medium_unit, drugInfo?.small_unit);
 
         if (validatedData.status === 'completed') {
           if (item.is_negative) {
@@ -614,7 +675,6 @@ export async function processCheckoutAction(data: any) {
 
       if (validatedData.status === 'completed' && validatedData.patient_id) {
         const patient = await db.prepare('SELECT credit_limit, wallet_balance, loyalty_level FROM patients WHERE id = ?').get(validatedData.patient_id) as any;
-        const multiplier = patient?.loyalty_level === 'platinum' ? 2 : patient?.loyalty_level === 'gold' ? 1.5 : patient?.loyalty_level === 'silver' ? 1.2 : 1;
         const today = new Date().toISOString().split('T')[0];
 
         for (const item of validatedData.items) {
@@ -629,7 +689,7 @@ export async function processCheckoutAction(data: any) {
           `).run(reminderId, validatedData.patient_id, item.drug_id, today, nextRefillDate.toISOString().split('T')[0]);
         }
 
-        const pointsEarned = Math.floor(totalAmount * multiplier);
+        pointsEarned = calculateLoyaltyPoints(totalAmount, patient?.loyalty_level || patientLoyaltyLevel);
         if (pointsEarned > 0) {
           await db.prepare('UPDATE patients SET points_balance = points_balance + ? WHERE id = ?').run(pointsEarned, validatedData.patient_id);
         }
@@ -641,12 +701,12 @@ export async function processCheckoutAction(data: any) {
       data: {
         sale_id: saleId,
         total_amount: totalAmount,
-        points_earned: validatedData.patient_id ? Math.floor(totalAmount) : 0
+        points_earned: pointsEarned
       }
     };
   } catch (error: any) {
     console.error('Checkout error:', error);
-    return { success: false, error: error.message || 'فشلت معالجة عملية البيع' };
+    return { success: false, error: (typeof error === 'string' ? error : error?.message) || '\u0641\u0634\u0644\u062a \u0645\u0639\u0627\u0644\u062c\u0629 \u0639\u0645\u0644\u064a\u0629 \u0627\u0644\u0628\u064a\u0639' };
   }
 }
 
@@ -737,7 +797,7 @@ export async function getSalesDashboardStatsAction() {
     };
   } catch (error: any) {
     console.error('Error fetching sales stats:', error);
-    return { success: false, error: error.message || 'فشل جلب إحصائيات المبيعات' };
+    return { success: false, error: error.message || '\u0641\u0634\u0644 \u062c\u0644\u0628 \u0625\u062d\u0635\u0627\u0626\u064a\u0627\u062a \u0627\u0644\u0645\u0628\u064a\u0639\u0627\u062a' };
   }
 }
 
@@ -787,4 +847,3 @@ export function getRelevanceScore(drug: any, searchLower: string): number {
 
   return 0;
 }
-

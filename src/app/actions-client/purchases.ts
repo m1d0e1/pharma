@@ -1,5 +1,6 @@
 import { secureCache } from '@/lib/cache/secure_cache';
 import { dbSelect, dbExecute, dbGet, dbTransaction, generateId } from '@/lib/db/tauri';
+import { isTauri } from '@/lib/env';
 const logActivity = async (userId, action, details) => {
   try {
     await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [userId, action, details]);
@@ -58,6 +59,63 @@ function normalizeDateToYMD(dateStr: string | null | undefined): string | null {
   match = dateStr.match(/^(\d{1,2})[\/\-](\d{4})$/);
   if (match) return `${match[2]}-${match[1].padStart(2, '0')}-01`;
   return dateStr;
+}
+
+async function addToInventory(data: {
+  drugId: number | string;
+  pharmacyId: string | null | undefined;
+  quantity: number;
+  sellingPrice: number;
+  costPrice: number;
+  expiryDate: string | null;
+  batchNumber: string;
+  stripsPerBox: number;
+}) {
+  const existing = await db.prepare(`
+    SELECT id
+    FROM inventory
+    WHERE drug_id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? IS NULL))
+    ORDER BY created_at ASC
+    LIMIT 1
+  `).get(data.drugId, data.pharmacyId || null, data.pharmacyId || null) as any;
+
+  if (existing) {
+    await db.prepare(`
+      UPDATE inventory
+      SET quantity = quantity + ?,
+          local_selling_price = ?,
+          cost_price = ?,
+          expiry_date = ?,
+          batch_number = ?,
+          strips_per_box = ?,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(
+      data.quantity,
+      data.sellingPrice,
+      data.costPrice,
+      data.expiryDate,
+      data.batchNumber,
+      data.stripsPerBox,
+      existing.id
+    );
+    return;
+  }
+
+  await db.prepare(`
+    INSERT INTO inventory (id, drug_id, pharmacy_id, quantity, local_selling_price, cost_price, expiry_date, batch_number, strips_per_box)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    generateId(),
+    data.drugId,
+    data.pharmacyId || null,
+    data.quantity,
+    data.sellingPrice,
+    data.costPrice,
+    data.expiryDate,
+    data.batchNumber,
+    data.stripsPerBox
+  );
 }
 
 
@@ -143,6 +201,23 @@ export async function createPurchaseInvoiceAction(data: {
     const session = await getLocalSession();
     if (!session || !hasUserPermissionSync(session, 'can_view_purchases')) return { success: false, error: 'Unauthorized' };
 
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const result = await invoke('save_purchase_invoice_critical', {
+        payload: {
+          ...data,
+          pharmacy_id: session.pharmacy_id || null,
+          user_id: session.id,
+          status: data.status || 'completed',
+          cart: data.cart || [],
+        }
+      }) as any;
+      revalidatePath('/purchases');
+      revalidatePath('/inventory');
+      revalidatePath('/purchases/suppliers');
+      return { success: true, id: result.id };
+    }
+
     const transaction = db.transaction(async () => {
       const id = data.id || generateId();
       if (data.id) {
@@ -215,21 +290,16 @@ export async function createPurchaseInvoiceAction(data: {
             const totalReceivedQty = Number(item.quantity) + Number(item.bonus_quantity || 0);
             const netUnitCost = totalReceivedQty > 0 ? (itemTotal / totalReceivedQty) : item.cost_price;
 
-            const invId = generateId();
-            await db.prepare(`
-              INSERT INTO inventory (id, drug_id, pharmacy_id, quantity, local_selling_price, cost_price, expiry_date, batch_number, strips_per_box)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `).run(
-              invId, 
-              item.id, 
-              session.pharmacy_id, 
-              totalReceivedQty, 
-              item.selling_price || 0, 
-              netUnitCost, 
-              normExpiry,
-              data.invoice_number || 'BATCH-' + id.substring(0, 8),
-              item.strips_per_box || 1
-            );
+            await addToInventory({
+              drugId: item.id,
+              pharmacyId: session.pharmacy_id,
+              quantity: totalReceivedQty,
+              sellingPrice: item.selling_price || 0,
+              costPrice: netUnitCost,
+              expiryDate: normExpiry,
+              batchNumber: data.invoice_number || 'BATCH-' + id.substring(0, 8),
+              stripsPerBox: item.strips_per_box || 1,
+            });
           }
         }
       }
@@ -381,22 +451,16 @@ export async function completePurchaseInvoiceAction(invoiceId: string) {
         const totalReceivedQty = Number(item.quantity) + Number(item.bonus_quantity || 0);
         const netUnitCost = totalReceivedQty > 0 ? (itemTotal / totalReceivedQty) : item.cost_price;
 
-        // 2. Add to inventory with batch number
-        const invId = generateId();
-        await db.prepare(`
-          INSERT INTO inventory (id, drug_id, pharmacy_id, quantity, local_selling_price, cost_price, expiry_date, batch_number, strips_per_box)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          invId, 
-          item.drug_id, 
-          session.pharmacy_id, 
-          totalReceivedQty, 
-          item.selling_price || 0, 
-          netUnitCost, 
-          item.expiry_date,
-          invoice.invoice_number || 'BATCH-' + invoiceId.substring(0, 8),
-          item.strips_per_box || 1
-        );
+        await addToInventory({
+          drugId: item.drug_id,
+          pharmacyId: session.pharmacy_id,
+          quantity: totalReceivedQty,
+          sellingPrice: item.selling_price || 0,
+          costPrice: netUnitCost,
+          expiryDate: item.expiry_date,
+          batchNumber: invoice.invoice_number || 'BATCH-' + invoiceId.substring(0, 8),
+          stripsPerBox: item.strips_per_box || 1,
+        });
 
         if (item.strips_per_box) {
           await db.prepare('UPDATE master_drugs SET large_to_medium = ? WHERE id = ?').run(item.strips_per_box, item.drug_id);
@@ -572,16 +636,32 @@ export async function getPurchasesReportsAction(filters: any = {}) {
 
 export async function getPurchaseInvoiceDetailsAction(invoiceId: string) {
   try {
-    const items = await db.prepare('SELECT pii.*, d.trade_name, d.trade_name_en, d.barcode, d.large_to_medium, d.medium_to_small, d.base_price, u.name_en as unit FROM purchase_invoice_items pii JOIN master_drugs d ON pii.drug_id = d.id LEFT JOIN units u ON pii.unit_id = u.id WHERE pii.invoice_id = ?').all(invoiceId);
+    const items = await db.prepare(`
+      SELECT pii.*, d.trade_name, d.trade_name_en, d.barcode, d.large_to_medium,
+             d.medium_to_small, d.base_price, u.name_en as unit,
+             i.id as inventory_id, i.batch_number, i.expiry_date as inventory_expiry_date
+      FROM purchase_invoice_items pii
+      JOIN master_drugs d ON pii.drug_id = d.id
+      LEFT JOIN units u ON pii.unit_id = u.id
+      LEFT JOIN inventory i ON i.id = (
+        SELECT ii.id FROM inventory ii
+        WHERE ii.drug_id = pii.drug_id
+          AND (ii.expiry_date = pii.expiry_date OR (ii.expiry_date IS NULL AND pii.expiry_date IS NULL))
+        ORDER BY ii.quantity DESC, ii.created_at ASC LIMIT 1
+      )
+      WHERE pii.invoice_id = ?
+    `).all(invoiceId);
     return { success: true, data: items };
   } catch (error: any) { return { success: false, error: error.message }; }
 }
 
 export async function createPurchaseReturnAction(data: {
+  purchase_invoice_id: string;
   supplier_id: number;
   reason: string;
   items: {
     inventory_id?: string;
+    purchase_invoice_item_id?: number;
     drug_id: number;
     drug_name: string;
     quantity: number;
@@ -593,6 +673,9 @@ export async function createPurchaseReturnAction(data: {
   try {
     const session = await getLocalSession();
     if (!session) return { success: false, error: 'Unauthorized' };
+    if (!data.purchase_invoice_id || !data.items?.length || data.items.some(item => item.quantity <= 0)) {
+      return { success: false, error: 'Invalid purchase return data' };
+    }
 
     const transaction = db.transaction(async () => {
       const returnId = generateId();
@@ -603,19 +686,17 @@ export async function createPurchaseReturnAction(data: {
       }
 
       await db.prepare(`
-        INSERT INTO purchase_returns (id, supplier_id, user_id, reason, total_amount, refund_method, status)
-        VALUES (?, ?, ?, ?, ?, ?, 'completed')
-      `).run(returnId, data.supplier_id, session.id, data.reason || null, totalAmount, data.refund_method);
+        INSERT INTO purchase_returns (id, purchase_invoice_id, supplier_id, user_id, reason, total_amount, refund_method, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'completed')
+      `).run(returnId, data.purchase_invoice_id, data.supplier_id, session.id, data.reason || null, totalAmount, data.refund_method);
 
       const itemStmt = await db.prepare(`
-        INSERT INTO purchase_return_items (purchase_return_id, inventory_id, drug_id, drug_name, quantity_returned, unit_price, total_price, reason)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO purchase_return_items (purchase_return_id, purchase_invoice_item_id, inventory_id, drug_id, drug_name, quantity_returned, unit_price, total_price, unit, reason)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       for (const item of data.items) {
         const lineTotal = item.quantity * item.unit_price;
-        await itemStmt.run(returnId, item.inventory_id || null, item.drug_id, item.drug_name, item.quantity, item.unit_price, lineTotal, data.reason || null);
-
         let deductQty = item.quantity;
         const drugInfo = await db.prepare('SELECT large_to_medium, medium_to_small FROM master_drugs WHERE id = ?').get(item.drug_id) as any;
         const returnUnit = item.unit || 'large';
@@ -625,18 +706,14 @@ export async function createPurchaseReturnAction(data: {
           deductQty = item.quantity / ((drugInfo?.large_to_medium || 1) * (drugInfo?.medium_to_small || 1));
         }
 
-        // Deduct from inventory safely
-        if (item.inventory_id) {
-          const inv = await db.prepare('SELECT quantity FROM inventory WHERE id = ?').get(item.inventory_id) as any;
-          if (inv && inv.quantity >= deductQty) {
-            await db.prepare('UPDATE inventory SET quantity = quantity - ? WHERE id = ?').run(deductQty, item.inventory_id);
-          } else {
-             // Fallback just reduce
-            await db.prepare('UPDATE inventory SET quantity = quantity - ? WHERE id = (SELECT id FROM inventory WHERE drug_id = ? AND quantity >= ? LIMIT 1)').run(deductQty, item.drug_id, deductQty);
-          }
-        } else {
-           await db.prepare('UPDATE inventory SET quantity = quantity - ? WHERE id = (SELECT id FROM inventory WHERE drug_id = ? AND quantity >= ? LIMIT 1)').run(deductQty, item.drug_id, deductQty);
+        const inventory = item.inventory_id
+          ? await db.prepare('SELECT id, drug_id, quantity FROM inventory WHERE id = ?').get(item.inventory_id) as any
+          : await db.prepare('SELECT id, drug_id, quantity FROM inventory WHERE drug_id = ? AND quantity >= ? ORDER BY expiry_date ASC LIMIT 1').get(item.drug_id, deductQty) as any;
+        if (!inventory || Number(inventory.drug_id) !== Number(item.drug_id) || Number(inventory.quantity) < deductQty) {
+          throw new Error(`Insufficient inventory for ${item.drug_name}`);
         }
+        await itemStmt.run(returnId, item.purchase_invoice_item_id || null, inventory.id, item.drug_id, item.drug_name, item.quantity, item.unit_price, lineTotal, returnUnit, data.reason || null);
+        await db.prepare('UPDATE inventory SET quantity = quantity - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(deductQty, inventory.id);
       }
 
       // Financial impact
@@ -687,14 +764,55 @@ export async function getPurchaseReturnsAction() {
 
     const rows = await db.prepare(`
       SELECT pr.*, s.name_ar as supplier_name, u.full_name as user_name,
+        pi.invoice_number, pi.invoice_date,
         (SELECT COUNT(*) FROM purchase_return_items pri WHERE pri.purchase_return_id = pr.id) as items_count
       FROM purchase_returns pr
       LEFT JOIN suppliers s ON s.id = pr.supplier_id
       LEFT JOIN users u ON u.id = pr.user_id
+      LEFT JOIN purchase_invoices pi ON pi.id = pr.purchase_invoice_id
       ORDER BY pr.created_at DESC
       LIMIT 100
     `).all() as any[];
     return { success: true, data: rows };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}
+
+export async function getDrugInventoryQuantityAction(drugId: number) {
+  const user = await getLocalSession();
+  if (!user) return { success: false, error: 'Unauthorized' };
+  const row = await db.prepare('SELECT COALESCE(SUM(quantity), 0) as quantity FROM inventory WHERE drug_id = ?').get(drugId) as any;
+  return { success: true, data: Number(row?.quantity || 0) };
+}
+
+export async function getPurchaseReturnDetailsAction(returnId: string) {
+  try {
+    const session = await getLocalSession();
+    if (!session) return { success: false, error: 'Unauthorized' };
+
+    const header = await db.prepare(`
+      SELECT pr.*, s.name_ar as supplier_name, s.phone as supplier_phone,
+             u.full_name as user_name, pi.invoice_number, pi.invoice_date,
+             pi.total_amount as invoice_total, pi.payment_method as invoice_payment_method
+      FROM purchase_returns pr
+      LEFT JOIN suppliers s ON s.id = pr.supplier_id
+      LEFT JOIN users u ON u.id = pr.user_id
+      LEFT JOIN purchase_invoices pi ON pi.id = pr.purchase_invoice_id
+      WHERE pr.id = ?
+    `).get(returnId) as any;
+    if (!header) return { success: false, error: 'Purchase return not found' };
+
+    const items = await db.prepare(`
+      SELECT pri.*, COALESCE(pri.drug_name, md.trade_name) as drug_name,
+             md.trade_name_en, i.batch_number, i.expiry_date
+      FROM purchase_return_items pri
+      LEFT JOIN master_drugs md ON md.id = pri.drug_id
+      LEFT JOIN inventory i ON i.id = pri.inventory_id
+      WHERE pri.purchase_return_id = ?
+      ORDER BY pri.id
+    `).all(returnId) as any[];
+    return { success: true, data: { ...header, items } };
   } catch (err: any) {
     return { success: false, error: err.message };
   }
@@ -750,6 +868,23 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
       return { success: false, error: 'Unauthorized' };
     }
 
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('save_purchase_invoice_critical', {
+        payload: {
+          ...data,
+          pharmacy_id: session.pharmacy_id || null,
+          user_id: session.id,
+          status: 'completed',
+          cart: data.cart || [],
+        }
+      });
+      revalidatePath('/purchases');
+      revalidatePath('/inventory');
+      revalidatePath('/purchases/suppliers');
+      return { success: true };
+    }
+
     const transaction = db.transaction(async () => {
       // 1. Get existing completed invoice and items
       const invoice = await db.prepare('SELECT * FROM purchase_invoices WHERE id = ?').get(data.id) as any;
@@ -758,9 +893,16 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
 
       const oldItems = await db.prepare('SELECT * FROM purchase_invoice_items WHERE invoice_id = ?').all(data.id) as any[];
 
-      // 2. Fetch all inventory records associated with the old invoice number / batch
-      const oldBatchNumber = invoice.invoice_number || 'BATCH-' + data.id.substring(0, 8);
-      const oldInvItems = await db.prepare('SELECT * FROM inventory WHERE batch_number = ?').all(oldBatchNumber) as any[];
+      // 2. Fetch current inventory rows for the old invoice drugs
+      const oldDrugIds = [...new Set(oldItems.map((item: any) => item.drug_id))];
+      const oldInvItems = oldDrugIds.length
+        ? await db.prepare(`
+            SELECT *
+            FROM inventory
+            WHERE drug_id IN (${oldDrugIds.map(() => '?').join(',')})
+              AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? IS NULL))
+          `).all(...oldDrugIds, session.pharmacy_id || null, session.pharmacy_id || null) as any[]
+        : [];
 
       // 3. Validation: check if any reduction in quantity is safe (not sold yet)
       for (const oldItem of oldItems) {
@@ -803,7 +945,7 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
         if (!newItem) {
           // Item removed
           if (inv) {
-            await db.prepare('DELETE FROM inventory WHERE id = ?').run(inv.id);
+            await db.prepare('UPDATE inventory SET quantity = quantity - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(oldQty, inv.id);
           }
         } else {
           // Item updated
@@ -837,22 +979,16 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
               inv.id
             );
           } else {
-            // Inventory record got deleted/missing somehow, let's recreate it
-            const invId = generateId();
-            await db.prepare(`
-              INSERT INTO inventory (id, drug_id, pharmacy_id, quantity, local_selling_price, cost_price, expiry_date, batch_number, strips_per_box)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `).run(
-              invId,
-              newItem.id,
-              session.pharmacy_id,
-              newQty,
-              newItem.selling_price || 0,
-              netUnitCost,
-              normalizeDateToYMD(newItem.expiry_date),
-              newBatchNumber,
-              newItem.strips_per_box || 1
-            );
+            await addToInventory({
+              drugId: newItem.id,
+              pharmacyId: session.pharmacy_id,
+              quantity: newQty,
+              sellingPrice: newItem.selling_price || 0,
+              costPrice: netUnitCost,
+              expiryDate: normalizeDateToYMD(newItem.expiry_date),
+              batchNumber: newBatchNumber,
+              stripsPerBox: newItem.strips_per_box || 1,
+            });
           }
         }
       }
@@ -867,21 +1003,16 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
           const itemTotal = itemSubtotal + itemTax;
           const netUnitCost = newQty > 0 ? (itemTotal / newQty) : newItem.cost_price;
 
-          const invId = generateId();
-          await db.prepare(`
-            INSERT INTO inventory (id, drug_id, pharmacy_id, quantity, local_selling_price, cost_price, expiry_date, batch_number, strips_per_box)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `).run(
-            invId,
-            newItem.id,
-            session.pharmacy_id,
-            newQty,
-            newItem.selling_price || 0,
-            netUnitCost,
-            normalizeDateToYMD(newItem.expiry_date),
-            newBatchNumber,
-            newItem.strips_per_box || 1
-          );
+          await addToInventory({
+            drugId: newItem.id,
+            pharmacyId: session.pharmacy_id,
+            quantity: newQty,
+            sellingPrice: newItem.selling_price || 0,
+            costPrice: netUnitCost,
+            expiryDate: normalizeDateToYMD(newItem.expiry_date),
+            batchNumber: newBatchNumber,
+            stripsPerBox: newItem.strips_per_box || 1,
+          });
         }
       }
 

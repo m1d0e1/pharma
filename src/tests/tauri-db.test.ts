@@ -67,4 +67,41 @@ describe('Tauri DB — Server branch (isServer = true)', () => {
     const row = await dbGet('SELECT * FROM users WHERE 0=1');
     expect(row).toBeNull();
   });
+
+  it('runTauriTransaction commits successful work', async () => {
+    const calls: string[] = [];
+    jest.doMock('@tauri-apps/api/core', () => ({
+      invoke: jest.fn((command: string, args?: any) => {
+        calls.push(command === 'db_transaction_finish' ? `${command}:${args.commit}` : command);
+        return Promise.resolve(command === 'db_transaction_begin' ? 'tx-1' : {});
+      }),
+    }));
+    const { runTauriTransaction } = await import('@/lib/db/tauri');
+
+    const result = await runTauriTransaction(null, async () => {
+      calls.push('WORK');
+      return 'ok';
+    });
+
+    expect(result).toBe('ok');
+    expect(calls).toEqual(['db_transaction_begin', 'WORK', 'db_transaction_finish:true']);
+  });
+
+  it('runTauriTransaction rolls back failed work', async () => {
+    const calls: string[] = [];
+    jest.doMock('@tauri-apps/api/core', () => ({
+      invoke: jest.fn((command: string, args?: any) => {
+        calls.push(command === 'db_transaction_finish' ? `${command}:${args.commit}` : command);
+        return Promise.resolve(command === 'db_transaction_begin' ? 'tx-1' : {});
+      }),
+    }));
+    const { runTauriTransaction } = await import('@/lib/db/tauri');
+
+    await expect(runTauriTransaction(null, async () => {
+      calls.push('WORK');
+      throw new Error('boom');
+    })).rejects.toThrow('boom');
+
+    expect(calls).toEqual(['db_transaction_begin', 'WORK', 'db_transaction_finish:false']);
+  });
 });

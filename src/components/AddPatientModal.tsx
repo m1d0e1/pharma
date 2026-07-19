@@ -33,22 +33,19 @@ export default function AddPatientModal({ pharmacyId, onClose, onSuccess }: AddP
   const [paymentMethod, setPaymentMethod] = useState('cash')
   const [notes, setNotes] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [errors, setErrors] = useState<{ fullName?: boolean; phone?: boolean }>({})
+  const [errors, setErrors] = useState<{ fullName?: boolean }>({})
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     
-    const newErrors: { fullName?: boolean; phone?: boolean } = {}
+    const newErrors: { fullName?: boolean } = {}
     if (!fullName.trim()) {
       newErrors.fullName = true
-    }
-    if (!phone.trim()) {
-      newErrors.phone = true
     }
 
     if (Object.keys(newErrors).length > 0) {
       setErrors(newErrors)
-      toast.error('يرجى ملء الحقول المطلوبة: الاسم بالكامل ورقم الهاتف')
+      toast.error('يرجى إدخال الاسم بالكامل')
       return
     }
 
@@ -57,7 +54,7 @@ export default function AddPatientModal({ pharmacyId, onClose, onSuccess }: AddP
     const formData = {
       full_name: fullName,
       name_en: nameEn,
-      phone,
+      phone: phone || null,
       mobile,
       address,
       area,
@@ -129,15 +126,11 @@ export default function AddPatientModal({ pharmacyId, onClose, onSuccess }: AddP
             </div>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               <InputField
-                label="رقم الهاتف *"
+                label="رقم الهاتف (اختياري)"
                 value={phone}
-                onChange={(val: string) => {
-                  setPhone(val);
-                  if (errors.phone) setErrors(prev => ({ ...prev, phone: false }));
-                }}
+                onChange={setPhone}
                 placeholder="01xxxxxxxxx"
                 icon={Phone}
-                hasError={errors.phone}
               />
               <InputField label="رقم الموبايل" value={mobile} onChange={setMobile} placeholder="رقم إضافي..." icon={Phone} />
               <InputField label="العنوان" value={address} onChange={setAddress} placeholder="المحافظة، الحي، الشارع..." icon={MapPin} />

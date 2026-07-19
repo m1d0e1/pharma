@@ -26,8 +26,8 @@ describe('Tauri Configuration', () => {
     expect(config.build.devUrl).toBe('http://localhost:3000');
   });
 
-  it('sets withGlobalTauri for frontend IPC access', () => {
-    expect(config.app.withGlobalTauri).toBe(true);
+  it('does not expose the global window.__TAURI__ API', () => {
+    expect(config.app.withGlobalTauri).toBe(false);
   });
 
   it('CSP is not null', () => {

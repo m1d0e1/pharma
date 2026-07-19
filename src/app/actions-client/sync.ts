@@ -50,11 +50,15 @@ const db = {
 
 
 import { createClient } from '@/utils/supabase/client';
+import { getLocalSession, isOwnerOrAdmin } from '@/lib/auth/local';
 
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 
 export async function syncFromCloudAction() {
   try {
+    const localUser = await getLocalSession();
+    const canSyncStaff = isOwnerOrAdmin(localUser);
+
     // 1. Initialize Local DB if not already done
     initLocalDb();
 
@@ -230,7 +234,7 @@ export async function syncFromCloudAction() {
     let staffMembers: any[] | null = null;
     const syncedUsernames: string[] = [];
     
-    if (profile?.pharmacy_id) {
+    if (profile?.pharmacy_id && canSyncStaff) {
       const { data: staff } = await supabase
         .from('profiles')
         .select('*')
