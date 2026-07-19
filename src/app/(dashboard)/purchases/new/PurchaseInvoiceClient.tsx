@@ -353,9 +353,15 @@ export default function PurchaseInvoiceClient() {
       if (String(item.id) === String(id)) {
         const updated = { ...item, [field]: value };
         
-        // Auto-calculate cost_price ONLY when selling_price changes, set to base selling_price
-        if (field === 'selling_price') {
-          updated.cost_price = Number(updated.selling_price) || 0;
+        // ponytail: link selling_price, discount_percent, and cost_price bidirectionally
+        if (field === 'selling_price' || field === 'discount_percent') {
+          const sell = Number(field === 'selling_price' ? value : item.selling_price) || 0;
+          const disc = Number(field === 'discount_percent' ? value : item.discount_percent) || 0;
+          updated.cost_price = sell * (1 - disc / 100);
+        } else if (field === 'cost_price') {
+          const cost = Number(value) || 0;
+          const sell = Number(item.selling_price) || 0;
+          updated.discount_percent = sell > 0 ? ((sell - cost) / sell) * 100 : 0;
         }
         
         return updated;
@@ -371,8 +377,7 @@ export default function PurchaseInvoiceClient() {
   const calculateItemTotal = (item: any) => {
     const sub = Number(item.quantity || 0) * Number(item.cost_price || 0);
     const tax = sub * (Number(item.tax_percent || 0) / 100);
-    const disc = (sub + tax) * (Number(item.discount_percent || 0) / 100);
-    return sub + tax - disc;
+    return sub + tax;
   }
 
   const subTotal = cart.reduce((sum, item) => sum + calculateItemTotal(item), 0)

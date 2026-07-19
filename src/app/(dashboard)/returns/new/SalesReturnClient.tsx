@@ -9,6 +9,7 @@ import { toast } from 'react-hot-toast';
 
 export default function SalesReturnClient() {
   const router = useRouter();
+  const listRef = React.useRef<HTMLDivElement>(null);
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
   const [invoicesByDate, setInvoicesByDate] = useState<any[]>([]);
   const [invoiceId, setInvoiceId] = useState('');
@@ -46,7 +47,6 @@ export default function SalesReturnClient() {
     }
     fetchInvoices();
   }, [selectedDate]);
-
   // Fetch details of selected invoice
   React.useEffect(() => {
     if (selectedIndex >= 0 && selectedIndex < invoicesByDate.length) {
@@ -57,6 +57,19 @@ export default function SalesReturnClient() {
       setItemsToReturn([]);
     }
   }, [selectedIndex, invoicesByDate]);
+
+  // Scroll selected button into view
+  React.useEffect(() => {
+    if (selectedIndex >= 0 && listRef.current) {
+      const activeEl = listRef.current.children[selectedIndex] as HTMLElement;
+      if (activeEl) {
+        activeEl.scrollIntoView({
+          behavior: 'smooth',
+          block: 'nearest'
+        });
+      }
+    }
+  }, [selectedIndex]);
 
   // Handle keyboard arrow navigation
   React.useEffect(() => {
@@ -194,7 +207,7 @@ export default function SalesReturnClient() {
               </span>
             </h2>
             
-            <div className="space-y-2 max-h-[500px] overflow-y-auto pr-1">
+            <div ref={listRef} className="space-y-2 max-h-[500px] overflow-y-auto pr-1">
               {invoicesByDate.length === 0 ? (
                 <div className="py-12 text-center text-slate-400 font-bold text-xs">لا توجد فواتير مكتملة في هذا التاريخ</div>
               ) : (

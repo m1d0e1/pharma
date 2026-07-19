@@ -208,8 +208,7 @@ export async function createPurchaseInvoiceAction(data: {
           if (finalStatus === 'completed') {
             const itemSubtotal = (item.quantity * item.cost_price);
             const itemTax = itemSubtotal * (item.tax_percent / 100);
-            const itemDiscount = (itemSubtotal + itemTax) * (item.discount_percent / 100);
-            const itemTotal = itemSubtotal + itemTax - itemDiscount;
+            const itemTotal = itemSubtotal + itemTax;
             
             totalAmount += itemTotal;
 
@@ -375,10 +374,12 @@ export async function completePurchaseInvoiceAction(invoiceId: string) {
         // Base calculation
         const itemSubtotal = (item.quantity * item.cost_price);
         const itemTax = itemSubtotal * (item.tax_percent / 100);
-        const itemDiscount = (itemSubtotal + itemTax) * (item.discount_percent / 100);
-        const itemTotal = itemSubtotal + itemTax - itemDiscount;
+        const itemTotal = itemSubtotal + itemTax;
         
         totalAmount += itemTotal;
+
+        const totalReceivedQty = Number(item.quantity) + Number(item.bonus_quantity || 0);
+        const netUnitCost = totalReceivedQty > 0 ? (itemTotal / totalReceivedQty) : item.cost_price;
 
         // 2. Add to inventory with batch number
         const invId = generateId();
@@ -389,9 +390,9 @@ export async function completePurchaseInvoiceAction(invoiceId: string) {
           invId, 
           item.drug_id, 
           session.pharmacy_id, 
-          item.quantity + (item.bonus_quantity || 0), 
+          totalReceivedQty, 
           item.selling_price || 0, 
-          item.cost_price, 
+          netUnitCost, 
           item.expiry_date,
           invoice.invoice_number || 'BATCH-' + invoiceId.substring(0, 8),
           item.strips_per_box || 1
@@ -811,8 +812,7 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
           // Calculate item subtotal, tax, discount for unit cost
           const itemSubtotal = (newItem.quantity * newItem.cost_price);
           const itemTax = itemSubtotal * (newItem.tax_percent / 100);
-          const itemDiscount = (itemSubtotal + itemTax) * (newItem.discount_percent / 100);
-          const itemTotal = itemSubtotal + itemTax - itemDiscount;
+          const itemTotal = itemSubtotal + itemTax;
           const netUnitCost = newQty > 0 ? (itemTotal / newQty) : newItem.cost_price;
 
           if (inv) {
@@ -864,8 +864,7 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
           const newQty = Number(newItem.quantity) + (Number(newItem.bonus_quantity) || 0);
           const itemSubtotal = (newItem.quantity * newItem.cost_price);
           const itemTax = itemSubtotal * (newItem.tax_percent / 100);
-          const itemDiscount = (itemSubtotal + itemTax) * (newItem.discount_percent / 100);
-          const itemTotal = itemSubtotal + itemTax - itemDiscount;
+          const itemTotal = itemSubtotal + itemTax;
           const netUnitCost = newQty > 0 ? (itemTotal / newQty) : newItem.cost_price;
 
           const invId = generateId();
@@ -918,8 +917,7 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
 
         const itemSubtotal = (item.quantity * item.cost_price);
         const itemTax = itemSubtotal * (item.tax_percent / 100);
-        const itemDiscount = (itemSubtotal + itemTax) * (item.discount_percent / 100);
-        const itemTotal = itemSubtotal + itemTax - itemDiscount;
+        const itemTotal = itemSubtotal + itemTax;
         totalAmount += itemTotal;
       }
 

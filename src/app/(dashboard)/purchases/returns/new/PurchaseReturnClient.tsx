@@ -10,6 +10,7 @@ import { toast } from 'react-hot-toast';
 
 export default function PurchaseReturnClient() {
   const router = useRouter();
+  const listRef = React.useRef<HTMLDivElement>(null);
   const [suppliers, setSuppliers] = useState<any[]>([]);
   const [selectedSupplierId, setSelectedSupplierId] = useState<string>('');
   
@@ -61,6 +62,19 @@ export default function PurchaseReturnClient() {
       setItems([]);
     }
   }, [selectedIndex, invoices]);
+
+  // Scroll selected button into view
+  useEffect(() => {
+    if (selectedIndex >= 0 && listRef.current) {
+      const activeEl = listRef.current.children[selectedIndex] as HTMLElement;
+      if (activeEl) {
+        activeEl.scrollIntoView({
+          behavior: 'smooth',
+          block: 'nearest'
+        });
+      }
+    }
+  }, [selectedIndex]);
 
   // Handle keyboard arrow navigation
   useEffect(() => {
@@ -226,7 +240,7 @@ export default function PurchaseReturnClient() {
               </span>
             </h2>
 
-            <div className="space-y-2 max-h-[500px] overflow-y-auto pr-1">
+            <div ref={listRef} className="space-y-2 max-h-[500px] overflow-y-auto pr-1">
               {!selectedSupplierId ? (
                 <div className="py-12 text-center text-slate-400 font-bold text-xs">يرجى اختيار مورد أولاً</div>
               ) : invoices.length === 0 ? (

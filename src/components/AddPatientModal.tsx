@@ -16,7 +16,7 @@ interface AddPatientModalProps {
 export default function AddPatientModal({ pharmacyId, onClose, onSuccess }: AddPatientModalProps) {
   
   useHotkeys('esc', () => { if(typeof onClose === 'function') onClose(); }, { enableOnFormTags: true });
-const [fullName, setFullName] = useState('')
+  const [fullName, setFullName] = useState('')
   const [nameEn, setNameEn] = useState('')
   const [phone, setPhone] = useState('')
   const [mobile, setMobile] = useState('')
@@ -33,9 +33,25 @@ const [fullName, setFullName] = useState('')
   const [paymentMethod, setPaymentMethod] = useState('cash')
   const [notes, setNotes] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [errors, setErrors] = useState<{ fullName?: boolean; phone?: boolean }>({})
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    
+    const newErrors: { fullName?: boolean; phone?: boolean } = {}
+    if (!fullName.trim()) {
+      newErrors.fullName = true
+    }
+    if (!phone.trim()) {
+      newErrors.phone = true
+    }
+
+    if (Object.keys(newErrors).length > 0) {
+      setErrors(newErrors)
+      toast.error('يرجى ملء الحقول المطلوبة: الاسم بالكامل ورقم الهاتف')
+      return
+    }
+
     setIsSubmitting(true)
 
     const formData = {
@@ -97,12 +113,32 @@ const [fullName, setFullName] = useState('')
           <div className="space-y-6">
             <SectionHeader icon={Activity} label="البيانات الشخصية والأساسية" color="text-blue-600" />
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <InputField label="الاسم بالكامل (ع) *" value={fullName} onChange={setFullName} placeholder="محمد أحمد..." required icon={User} />
+              <InputField
+                label="الاسم بالكامل (ع) *"
+                value={fullName}
+                onChange={(val: string) => {
+                  setFullName(val);
+                  if (errors.fullName) setErrors(prev => ({ ...prev, fullName: false }));
+                }}
+                placeholder="محمد أحمد..."
+                icon={User}
+                hasError={errors.fullName}
+              />
               <InputField label="الاسم (En)" value={nameEn} onChange={setNameEn} placeholder="Name in English..." dir="ltr" />
               <InputField label="رقم الكود" value="تلقائي" onChange={() => {}} disabled placeholder="2" />
             </div>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <InputField label="رقم الهاتف *" value={phone} onChange={setPhone} placeholder="01xxxxxxxxx" required icon={Phone} />
+              <InputField
+                label="رقم الهاتف *"
+                value={phone}
+                onChange={(val: string) => {
+                  setPhone(val);
+                  if (errors.phone) setErrors(prev => ({ ...prev, phone: false }));
+                }}
+                placeholder="01xxxxxxxxx"
+                icon={Phone}
+                hasError={errors.phone}
+              />
               <InputField label="رقم الموبايل" value={mobile} onChange={setMobile} placeholder="رقم إضافي..." icon={Phone} />
               <InputField label="العنوان" value={address} onChange={setAddress} placeholder="المحافظة، الحي، الشارع..." icon={MapPin} />
             </div>
@@ -188,7 +224,7 @@ function SectionHeader({ icon: Icon, label, color }: any) {
   )
 }
 
-function InputField({ label, value, onChange, placeholder, required, type = "text", icon: Icon, disabled, dir, color }: any) {
+function InputField({ label, value, onChange, placeholder, required, type = "text", icon: Icon, disabled, dir, color, hasError }: any) {
   return (
     <div className="space-y-2">
       <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-2">{label}</label>
@@ -200,7 +236,10 @@ function InputField({ label, value, onChange, placeholder, required, type = "tex
           disabled={disabled}
           onChange={(e) => onChange(e.target.value)}
           className={cn(
-            "w-full bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-800 p-4 rounded-2xl outline-none font-black transition-all shadow-sm focus:border-blue-500",
+            "w-full bg-white dark:bg-slate-800 border p-4 rounded-2xl outline-none font-black transition-all shadow-sm",
+            hasError
+              ? "border-rose-500 dark:border-rose-500 focus:border-rose-500 border-2 animate-pulse"
+              : "border-slate-100 dark:border-slate-800 focus:border-blue-500",
             Icon && "pr-12",
             disabled && "opacity-50 bg-slate-50",
             color
