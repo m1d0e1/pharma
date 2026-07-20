@@ -8,7 +8,7 @@ import DrugDetailsModal from '../pos/DrugDetailsModal'
 import { useReactToPrint } from 'react-to-print'
 
 import { deleteInventoryAction } from '@/app/actions-client/inventory'
-import { dbSelect, dbExecute, generateId } from '@/lib/db/tauri'
+import { dbSelect, dbExecute, dbTransaction, generateId } from '@/lib/db/tauri'
 import { Download, Upload } from 'lucide-react'
 
 interface InventoryItem {
@@ -31,6 +31,17 @@ interface Props {
   searchTerm: string
   setSearchTerm: (val: string) => void
   onRefresh: () => void
+}
+
+const barcodeValue = (value: unknown) => value === null || value === undefined ? null : String(value).trim() || null;
+
+async function upsertExcelRows(table: 'master_drugs' | 'inventory', rows: any[], allowedColumns: string[]) {
+  for (const row of rows) {
+    const columns = allowedColumns.filter(column => row[column] !== undefined);
+    if (!columns.includes('id')) continue;
+    const updates = columns.filter(column => column !== 'id').map(column => `${column}=excluded.${column}`);
+    await dbExecute(`INSERT INTO ${table} (${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')}) ON CONFLICT(id) DO UPDATE SET ${updates.join(',')}`, columns.map(column => row[column]));
+  }
 }
 
 export default function InventoryTable({ items, searchTerm, setSearchTerm, onRefresh }: Props) {
@@ -131,15 +142,21 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
     try {
       const toastId = toast.loading('جاري تصدير المخزون الحالي...');
       const all = await dbSelect(`
-        SELECT i.id, i.drug_id, md.trade_name, md.trade_name_en, i.quantity, i.expiry_date, 
-               i.local_selling_price, i.cost_price, i.batch_number, i.supplier, i.min_stock_level,
-               COALESCE(NULLIF(i.barcode, ''), NULLIF(md.barcode, ''), (
+        SELECT i.*, COALESCE(NULLIF(i.barcode, ''), NULLIF(md.barcode, ''), (
                  SELECT ii.barcode FROM inventory ii
                  WHERE ii.drug_id = i.drug_id AND ii.barcode IS NOT NULL AND ii.barcode != ''
                  LIMIT 1
-               )) AS barcode, i.strips_per_box
+               )) AS resolved_barcode
         FROM inventory i
         JOIN master_drugs md ON i.drug_id = md.id
+      `);
+      const inventoryRows = all.map((row: any) => {
+        const { resolved_barcode, ...item } = row;
+        return { ...item, barcode: barcodeValue(item.barcode) || barcodeValue(resolved_barcode) };
+      });
+      const drugs = await dbSelect(`
+        SELECT md.* FROM master_drugs md
+        WHERE EXISTS (SELECT 1 FROM inventory i WHERE i.drug_id = md.id)
       `);
       
       const { save } = await import('@tauri-apps/plugin-dialog');
@@ -154,9 +171,9 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
       }
 
       const XLSX = await import('xlsx');
-      const worksheet = XLSX.utils.json_to_sheet(all);
       const workbook = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(workbook, worksheet, 'Inventory');
+      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(inventoryRows), 'inventory');
+      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(drugs), 'master_drugs');
       
       const fileBytes = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
       const { invoke } = await import('@tauri-apps/api/core');
@@ -181,9 +198,10 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
           const bstr = evt.target?.result;
           const XLSX = await import('xlsx');
           const wb = XLSX.read(bstr, { type: 'binary' });
-          const wsname = wb.SheetNames[0];
-          const ws = wb.Sheets[wsname];
-          const data: any[] = XLSX.utils.sheet_to_json(ws);
+          const inventorySheet = wb.Sheets.inventory || wb.Sheets.Inventory || wb.Sheets[wb.SheetNames[0]];
+          const drugsSheet = wb.Sheets.master_drugs || wb.Sheets.Drugs;
+          const data: any[] = XLSX.utils.sheet_to_json(inventorySheet, { raw: false });
+          const drugs: any[] = drugsSheet ? XLSX.utils.sheet_to_json(drugsSheet, { raw: false }) : [];
           
           if (data.length === 0) {
             toast.error('الملف فارغ أو غير صالح', { id: toastId });
@@ -192,44 +210,37 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
 
           toast.loading(`جاري استيراد ${data.length} صنف للمخزون...`, { id: toastId });
 
-          let inserted = 0;
-          for (const row of data) {
-            const id = row.id || generateId();
-            const drug_id = Number(row.drug_id);
-            const quantity = Number(row.quantity) || 0;
-            const expiry_date = row.expiry_date || null;
-            const local_selling_price = Number(row.local_selling_price) || 0;
-            const cost_price = Number(row.cost_price) || 0;
-            const batch_number = row.batch_number || null;
-            const supplier = row.supplier || null;
-            const min_stock_level = Number(row.min_stock_level) || 10;
-            const barcode = row.barcode || null;
-            const strips_per_box = Number(row.strips_per_box) || 1;
+          const masterColumns = (await dbSelect<any>('PRAGMA table_info(master_drugs)')).map(column => column.name);
+          const inventoryColumns = (await dbSelect<any>('PRAGMA table_info(inventory)')).map(column => column.name);
+          const normalizedDrugs = drugs.filter(row => Number(row.id)).map(row => ({ ...row, id: Number(row.id), barcode: barcodeValue(row.barcode) }));
+          const normalizedInventory = data.filter(row => Number(row.drug_id)).map(row => ({
+            ...row,
+            id: row.id || generateId(),
+            drug_id: Number(row.drug_id),
+            pharmacy_id: row.pharmacy_id || 'local_default',
+            barcode: barcodeValue(row.barcode),
+          }));
 
-            if (!drug_id) continue;
-
-            await dbExecute(`
-              INSERT INTO inventory (id, pharmacy_id, drug_id, quantity, expiry_date, local_selling_price, cost_price, batch_number, supplier, min_stock_level, barcode, strips_per_box)
-              VALUES (?, 'local_default', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-              ON CONFLICT(id) DO UPDATE SET
-                drug_id=excluded.drug_id,
-                quantity=excluded.quantity,
-                expiry_date=excluded.expiry_date,
-                local_selling_price=excluded.local_selling_price,
-                cost_price=excluded.cost_price,
-                batch_number=excluded.batch_number,
-                supplier=excluded.supplier,
-                min_stock_level=excluded.min_stock_level,
-                barcode=excluded.barcode,
-                strips_per_box=excluded.strips_per_box
-            `, [id, drug_id, quantity, expiry_date, local_selling_price, cost_price, batch_number, supplier, min_stock_level, barcode, strips_per_box]);
-            inserted++;
-          }
+          await dbTransaction(async () => {
+            await upsertExcelRows('master_drugs', normalizedDrugs, masterColumns);
+            for (const row of normalizedInventory) {
+              // Legacy one-sheet exports carry enough master data to restore names and barcode.
+              await dbExecute(`
+                INSERT INTO master_drugs (id, trade_name, trade_name_en, barcode)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                  trade_name=COALESCE(NULLIF(excluded.trade_name, ''), master_drugs.trade_name),
+                  trade_name_en=COALESCE(NULLIF(excluded.trade_name_en, ''), master_drugs.trade_name_en),
+                  barcode=COALESCE(NULLIF(excluded.barcode, ''), master_drugs.barcode)
+              `, [row.drug_id, row.trade_name || row.trade_name_en || `Drug ${row.drug_id}`, row.trade_name_en || null, row.barcode]);
+            }
+            await upsertExcelRows('inventory', normalizedInventory, inventoryColumns);
+          });
 
           const { secureCache } = await import('@/lib/cache/secure_cache');
           await secureCache.reload();
 
-          toast.success(`تم استيراد ${inserted} صنف للمخزون بنجاح!`, { id: toastId });
+          toast.success(`تم استيراد ${normalizedInventory.length} صنف للمخزون بنجاح!`, { id: toastId });
           onRefresh();
         } catch (err: any) {
           console.error(err);

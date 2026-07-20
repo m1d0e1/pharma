@@ -159,6 +159,20 @@ describe('Tauri Purchase Flow Fix — Verify createPurchaseInvoiceAction SQL', (
     expect(rows.every(row => row.selling_price === 30 && row.barcode === 'INV-BC')).toBe(true);
     expect(purchasePrice.value).toBe(16);
   });
+
+  it('restores an imported inventory barcode to the drug master too', () => {
+    db.prepare(`
+      INSERT INTO master_drugs (id, trade_name, barcode) VALUES (3, 'Imported', NULL)
+      ON CONFLICT(id) DO UPDATE SET barcode=excluded.barcode
+    `).run();
+    db.prepare("INSERT INTO inventory (id, drug_id, barcode) VALUES (?, 3, '6221234567890')").run(genId());
+    db.prepare(`
+      UPDATE master_drugs SET barcode = (
+        SELECT barcode FROM inventory WHERE drug_id = master_drugs.id AND barcode IS NOT NULL LIMIT 1
+      ) WHERE id = 3
+    `).run();
+    expect((db.prepare('SELECT barcode FROM master_drugs WHERE id = 3').get() as any).barcode).toBe('6221234567890');
+  });
 });
 
 describe('Tauri Purchase Flow — Schema Integrity', () => {
