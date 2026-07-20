@@ -1268,6 +1268,21 @@ export default function PurchaseInvoiceClient() {
         <DrugDetailsModal 
           drugId={showDrugDetails} 
           onClose={() => setShowDrugDetails(null)} 
+          onDrugUpdated={(updatedDrug) => {
+            setCart(prev => prev.map(item => String(item.id) === String(updatedDrug.id) ? {
+              ...item,
+              trade_name: updatedDrug.trade_name,
+              trade_name_en: updatedDrug.trade_name_en,
+              barcode: updatedDrug.barcode,
+              official_price: updatedDrug.official_price || item.official_price,
+              selling_price: updatedDrug.official_price || item.selling_price,
+              large_unit: updatedDrug.large_unit,
+              medium_unit: updatedDrug.medium_unit,
+              small_unit: updatedDrug.small_unit,
+              large_to_medium: updatedDrug.large_to_medium,
+              medium_to_small: updatedDrug.medium_to_small
+            } : item));
+          }}
         />
       )}
 

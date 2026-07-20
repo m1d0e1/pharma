@@ -10,7 +10,7 @@ import SidebarNav from '@/components/SidebarNav';
 import ThemeToggle from '@/components/ThemeToggle';
 import { getClientSession, logoutLocal } from '@/lib/auth/local';
 import { dbGet } from '@/lib/db/tauri';
-import { Monitor, Bell, LogOut, Menu } from 'lucide-react';
+import { Monitor, Bell, LogOut, Menu, ArrowRight } from 'lucide-react';
 import HeaderAlerts from '@/components/HeaderAlerts';
 import AuthGuard from '@/components/AuthGuard';
 import { isTauri as isTauriRuntime } from '@/lib/env';
@@ -299,6 +299,18 @@ export default function DashboardLayout({
     );
   }
 
+  const backButton = pathname !== '/' && (
+    <button
+      type="button"
+      onClick={() => router.back()}
+      aria-label="رجوع للصفحة السابقة"
+      title="رجوع"
+      className="fixed bottom-5 left-5 z-[190] flex h-11 w-11 items-center justify-center rounded-full bg-blue-600 text-white shadow-lg transition hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-2"
+    >
+      <ArrowRight className="h-5 w-5" />
+    </button>
+  );
+
   // ══════════════════════════════════════════════════════════════════════════
   // TAURI (Desktop) Layout — top menu bar, no sidebar
   // ══════════════════════════════════════════════════════════════════════════
@@ -309,6 +321,7 @@ export default function DashboardLayout({
           className="flex flex-col h-screen overflow-hidden bg-gradient-to-br from-slate-50 to-blue-50 dark:from-slate-950 dark:to-slate-900 font-sans"
           dir="rtl"
         >
+          {backButton}
           {/* 1. Main Toolbar/Header */}
           {!isPos && (
             <header className="sticky top-0 z-40 bg-white/80 dark:bg-slate-950/80 backdrop-blur-xl border-b border-slate-200/60 dark:border-slate-800/60 shadow-sm">
@@ -373,6 +386,7 @@ export default function DashboardLayout({
   return (
     <AuthGuard>
       <div className="flex h-screen overflow-hidden bg-gradient-to-br from-slate-50 to-blue-50 dark:from-slate-950 dark:to-slate-900 font-sans" dir="rtl">
+        {backButton}
         
         {/* Sidebar */}
         <aside className="hidden lg:flex w-80 flex-col border-l border-slate-200/60 dark:border-slate-800/60 bg-gradient-glass dark:bg-gradient-glass-dark backdrop-blur-xl shadow-hard z-30">

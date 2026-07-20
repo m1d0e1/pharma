@@ -1,10 +1,10 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { getPurchaseInvoicesAction, getPurchaseInvoiceDetailsAction } from '@/app/actions-client/purchases';
+import { getPurchaseInvoicesAction, getPurchaseInvoiceDetailsAction, deletePurchaseInvoiceAction } from '@/app/actions-client/purchases';
 import { format } from 'date-fns';
 import { ar } from 'date-fns/locale';
-import { Search, Receipt, FileText, ArrowUpRight, CheckCircle2, Clock, Printer, Pencil, X } from 'lucide-react';
+import { Search, Receipt, FileText, ArrowUpRight, CheckCircle2, Clock, Printer, Pencil, X, Trash2, PackageMinus } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import Link from 'next/link';
 import BarcodePrinter from '@/components/purchases/BarcodePrinter';
@@ -18,6 +18,7 @@ export default function PurchaseReportsClient() {
   const [selectedInvoice, setSelectedInvoice] = useState<any | null>(null);
   const [selectedItems, setSelectedItems] = useState<any[]>([]);
   const [detailsLoading, setDetailsLoading] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     async function load() {
@@ -84,6 +85,19 @@ export default function PurchaseReportsClient() {
     else toast.error('فشل تحميل تفاصيل فاتورة الشراء');
   };
 
+  const deleteInvoice = async (removeInventory: boolean) => {
+    if (!selectedInvoice || !confirm(removeInventory
+      ? 'حذف الفاتورة وخصم الكميات المرتبطة بها من المخزون؟'
+      : 'حذف الفاتورة مع إبقاء الكميات الحالية في المخزون؟')) return;
+    setDeleting(true);
+    const result = await deletePurchaseInvoiceAction(selectedInvoice.id, removeInventory);
+    setDeleting(false);
+    if (!result.success) return toast.error(result.error || 'فشل حذف فاتورة الشراء');
+    setInvoices(current => current.filter(invoice => invoice.id !== selectedInvoice.id));
+    setSelectedInvoice(null);
+    toast.success('تم حذف فاتورة الشراء');
+  };
+
   return (
     <div className="space-y-6">
       {selectedInvoiceForBarcode && (
@@ -122,6 +136,14 @@ export default function PurchaseReportsClient() {
                 </table>
               </div>
             )}
+            <div className="mt-6 flex flex-wrap gap-3 border-t border-slate-200 pt-5 dark:border-slate-700">
+              <button disabled={deleting} onClick={() => deleteInvoice(false)} className="inline-flex items-center gap-2 rounded-xl bg-amber-100 px-4 py-2.5 font-bold text-amber-800 disabled:opacity-50">
+                <Trash2 className="h-4 w-4" /> حذف الفاتورة فقط
+              </button>
+              <button disabled={deleting} onClick={() => deleteInvoice(true)} className="inline-flex items-center gap-2 rounded-xl bg-rose-600 px-4 py-2.5 font-bold text-white disabled:opacity-50">
+                <PackageMinus className="h-4 w-4" /> حذف الفاتورة وكمياتها من المخزون
+              </button>
+            </div>
           </div>
         </div>
       )}

@@ -102,6 +102,13 @@ pub struct PurchaseResult {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct DeletePurchasePayload {
+    pub invoice_id: String,
+    #[serde(default)]
+    pub remove_inventory: bool,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct ReturnPayload {
     pub invoice_id: String,
     pub user_id: String,
@@ -266,6 +273,24 @@ pub async fn save_purchase_invoice_critical(
             tx.commit().await.map_err(|e| e.to_string())?;
             Ok(result)
         }
+        Err(error) => {
+            let _ = tx.rollback().await;
+            Err(error)
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn delete_purchase_invoice_critical(
+    app: tauri::AppHandle,
+    payload: DeletePurchasePayload,
+) -> Result<(), String> {
+    let mut conn = open_app_connection(&app).await?;
+    let mut tx = conn.begin().await.map_err(|e| e.to_string())?;
+    let result =
+        delete_purchase_invoice_tx(&mut tx, &payload.invoice_id, payload.remove_inventory).await;
+    match result {
+        Ok(()) => tx.commit().await.map_err(|e| e.to_string()),
         Err(error) => {
             let _ = tx.rollback().await;
             Err(error)
@@ -615,7 +640,10 @@ async fn save_purchase_invoice_tx(
             .map_err(|e| e.to_string())?
             .is_none()
         {
-            return Err(format!("Drug {} no longer exists; remove it and add it again", item.id));
+            return Err(format!(
+                "Drug {} no longer exists; remove it and add it again",
+                item.id
+            ));
         }
     }
 
@@ -672,7 +700,7 @@ async fn save_purchase_invoice_tx(
     let mut items_total = 0.0;
     for item in &payload.cart {
         let expiry = normalize_date_ymd(item.expiry_date.as_deref());
-        sqlx::query(
+        let inserted_item = sqlx::query(
             "INSERT INTO purchase_invoice_items (invoice_id, drug_id, quantity, unit_id, expiry_date, cost_price, selling_price, bonus_quantity, tax_percent, discount_percent, strips_per_box) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&invoice_id)
@@ -689,6 +717,7 @@ async fn save_purchase_invoice_tx(
         .execute(&mut **tx)
         .await
         .map_err(|e| e.to_string())?;
+        let purchase_item_id = inserted_item.last_insert_rowid();
 
         if item.strips_per_box > 0 {
             sqlx::query("UPDATE master_drugs SET large_to_medium = ? WHERE id = ?")
@@ -724,6 +753,23 @@ async fn save_purchase_invoice_tx(
                 item.strips_per_box,
             )
             .await?;
+        }
+
+        if final_status == "completed" {
+            let inventory_id = find_inventory_for_batch(
+                tx,
+                item.id,
+                payload.pharmacy_id.as_deref(),
+                expiry.as_deref(),
+            )
+            .await?
+            .ok_or_else(|| format!("Inventory link missing for drug {}", item.id))?;
+            sqlx::query("UPDATE purchase_invoice_items SET inventory_id = ? WHERE id = ?")
+                .bind(inventory_id)
+                .bind(purchase_item_id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| e.to_string())?;
         }
     }
 
@@ -1477,6 +1523,14 @@ async fn reverse_completed_purchase(
         .await?;
     }
 
+    reverse_purchase_accounting(tx, invoice_id, old_invoice).await
+}
+
+async fn reverse_purchase_accounting(
+    tx: &mut Transaction<'_, Sqlite>,
+    invoice_id: &str,
+    old_invoice: &sqlx::sqlite::SqliteRow,
+) -> Result<(), String> {
     let old_total: f64 = old_invoice.try_get("total_amount").unwrap_or(0.0);
     let old_supplier_id: i64 = old_invoice.try_get("supplier_id").unwrap_or(0);
     let old_payment: String = old_invoice.try_get("payment_method").unwrap_or_default();
@@ -1527,6 +1581,91 @@ async fn reverse_completed_purchase(
             .await
             .map_err(|e| e.to_string())?;
     }
+    Ok(())
+}
+
+async fn delete_purchase_invoice_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    invoice_id: &str,
+    remove_inventory: bool,
+) -> Result<(), String> {
+    let invoice = sqlx::query("SELECT supplier_id, total_amount, payment_method, status, invoice_number, pharmacy_id FROM purchase_invoices WHERE id = ?")
+        .bind(invoice_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Purchase invoice not found".to_string())?;
+
+    if sqlx::query("SELECT 1 FROM purchase_returns WHERE purchase_invoice_id = ? LIMIT 1")
+        .bind(invoice_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|e| e.to_string())?
+        .is_some()
+    {
+        return Err("Delete the linked purchase returns before deleting this invoice".into());
+    }
+
+    let status: String = invoice.try_get("status").unwrap_or_default();
+    if status == "completed" && remove_inventory {
+        let pharmacy_id: Option<String> = invoice.try_get("pharmacy_id").unwrap_or(None);
+        let items = sqlx::query("SELECT drug_id, CAST(quantity + COALESCE(bonus_quantity, 0) AS REAL) AS quantity, expiry_date, inventory_id FROM purchase_invoice_items WHERE invoice_id = ?")
+            .bind(invoice_id)
+            .fetch_all(&mut **tx)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        for item in items {
+            let drug_id: i64 = item.try_get("drug_id").map_err(|e| e.to_string())?;
+            let quantity: f64 = item.try_get("quantity").map_err(|e| e.to_string())?;
+            let linked_id: Option<String> = item.try_get("inventory_id").unwrap_or(None);
+            let expiry: Option<String> = item.try_get("expiry_date").unwrap_or(None);
+            let inventory_id = match linked_id {
+                Some(id) => id,
+                None => {
+                    find_inventory_for_batch(tx, drug_id, pharmacy_id.as_deref(), expiry.as_deref())
+                        .await?
+                        .ok_or_else(|| format!("Inventory row missing for drug {}", drug_id))?
+                }
+            };
+            let available: f64 = sqlx::query(
+                "SELECT CAST(quantity AS REAL) AS quantity FROM inventory WHERE id = ?",
+            )
+            .bind(&inventory_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("Linked inventory row missing for drug {}", drug_id))?
+            .try_get("quantity")
+            .map_err(|e| e.to_string())?;
+            if available + 0.000001 < quantity {
+                return Err(format!(
+                    "Cannot remove invoice stock for drug {}; part of it has already been sold",
+                    drug_id
+                ));
+            }
+            sqlx::query("UPDATE inventory SET quantity = MAX(0, quantity - ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+                .bind(quantity)
+                .bind(inventory_id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
+    if status == "completed" {
+        reverse_purchase_accounting(tx, invoice_id, &invoice).await?;
+    }
+    sqlx::query("DELETE FROM purchase_invoice_items WHERE invoice_id = ?")
+        .bind(invoice_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    sqlx::query("DELETE FROM purchase_invoices WHERE id = ?")
+        .bind(invoice_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -1786,7 +1925,12 @@ async fn account_id(
         .await
         .map_err(|e| e.to_string())?
         .and_then(|r| r.try_get::<i64, _>("id").ok())
-        .ok_or_else(|| format!("Accounting setup is missing '{}'; restart after installing the update", category))
+        .ok_or_else(|| {
+            format!(
+                "Accounting setup is missing '{}'; restart after installing the update",
+                category
+            )
+        })
 }
 
 async fn insert_journal_entry(
@@ -1822,10 +1966,10 @@ fn loyalty_points(total_amount: f64, loyalty_level: Option<&str>) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        add_purchase_inventory, checkout_total, create_return_tx, loyalty_points,
-        process_checkout_tx, return_quantity_in_sale_unit, return_restock_qty, sale_stock_qty,
-        save_purchase_invoice_tx, validate_write_sql, CheckoutItem, CheckoutPayload, PurchaseItem,
-        PurchasePayload, ReturnItem, ReturnPayload,
+        add_purchase_inventory, checkout_total, create_return_tx, delete_purchase_invoice_tx,
+        loyalty_points, process_checkout_tx, return_quantity_in_sale_unit, return_restock_qty,
+        sale_stock_qty, save_purchase_invoice_tx, validate_write_sql, CheckoutItem,
+        CheckoutPayload, PurchaseItem, PurchasePayload, ReturnItem, ReturnPayload,
     };
     use sqlx::{Connection, Row, SqliteConnection};
 
@@ -1998,7 +2142,8 @@ mod tests {
             "CREATE TABLE master_drugs (id INTEGER PRIMARY KEY, large_to_medium INTEGER)",
             "CREATE TABLE inventory (id TEXT PRIMARY KEY, drug_id INTEGER, pharmacy_id TEXT, quantity INTEGER, local_selling_price REAL, cost_price REAL, expiry_date TEXT, batch_number TEXT, strips_per_box INTEGER, created_at TEXT, updated_at TEXT)",
             "CREATE TABLE purchase_invoices (id TEXT PRIMARY KEY, supplier_id INTEGER, pharmacy_id TEXT, user_id TEXT, invoice_number TEXT, invoice_date TEXT, payment_method TEXT, notes TEXT, check_number TEXT, expenses REAL, discount_value REAL, discount_percent REAL, tax_percent REAL, status TEXT, total_amount REAL)",
-            "CREATE TABLE purchase_invoice_items (invoice_id TEXT, drug_id INTEGER, quantity INTEGER, unit_id INTEGER, expiry_date TEXT, cost_price REAL, selling_price REAL, bonus_quantity INTEGER, tax_percent REAL, discount_percent REAL, strips_per_box INTEGER)",
+            "CREATE TABLE purchase_invoice_items (id INTEGER PRIMARY KEY AUTOINCREMENT, invoice_id TEXT, drug_id INTEGER, quantity INTEGER, unit_id INTEGER, expiry_date TEXT, cost_price REAL, selling_price REAL, bonus_quantity INTEGER, tax_percent REAL, discount_percent REAL, strips_per_box INTEGER, inventory_id TEXT)",
+            "CREATE TABLE purchase_returns (purchase_invoice_id TEXT)",
             "CREATE TABLE suppliers (id INTEGER PRIMARY KEY, balance REAL)",
             "CREATE TABLE users (id TEXT PRIMARY KEY)",
             "CREATE TABLE accounts (id INTEGER PRIMARY KEY)",
@@ -2075,6 +2220,51 @@ mod tests {
         assert_eq!(inventory.try_get::<i64, _>("quantity").unwrap(), 5);
         assert!((inventory.try_get::<f64, _>("cost_price").unwrap() - 11.55).abs() < 0.001);
         assert!((edited.total_amount - 57.75).abs() < 0.001);
+
+        let linked: Option<String> = sqlx::query(
+            "SELECT inventory_id FROM purchase_invoice_items WHERE invoice_id = 'purchase-1'",
+        )
+        .fetch_one(&mut conn)
+        .await
+        .unwrap()
+        .try_get("inventory_id")
+        .unwrap();
+        assert!(linked.is_some());
+
+        let mut tx = conn.begin().await.unwrap();
+        delete_purchase_invoice_tx(&mut tx, "purchase-1", true)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let remaining: f64 = sqlx::query(
+            "SELECT CAST(quantity AS REAL) AS quantity FROM inventory WHERE drug_id = 4463",
+        )
+        .fetch_one(&mut conn)
+        .await
+        .unwrap()
+        .try_get("quantity")
+        .unwrap();
+        assert_eq!(remaining, 0.0);
+
+        let mut tx = conn.begin().await.unwrap();
+        save_purchase_invoice_tx(&mut tx, purchase(5.0))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let mut tx = conn.begin().await.unwrap();
+        delete_purchase_invoice_tx(&mut tx, "purchase-1", false)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let kept: f64 = sqlx::query(
+            "SELECT CAST(quantity AS REAL) AS quantity FROM inventory WHERE drug_id = 4463",
+        )
+        .fetch_one(&mut conn)
+        .await
+        .unwrap()
+        .try_get("quantity")
+        .unwrap();
+        assert_eq!(kept, 5.0);
     }
 
     #[tokio::test]

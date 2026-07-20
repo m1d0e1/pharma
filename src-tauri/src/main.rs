@@ -142,6 +142,12 @@ fn main() {
             sql: include_str!("../migrations/006_accounting_upgrade_seed.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 7,
+            description: "purchase_inventory_links",
+            sql: include_str!("../migrations/007_purchase_inventory_links.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()
@@ -548,6 +554,7 @@ fn main() {
             commands::critical::db_transaction_finish,
             commands::critical::process_checkout_critical,
             commands::critical::save_purchase_invoice_critical,
+            commands::critical::delete_purchase_invoice_critical,
             commands::critical::create_return_critical,
             open_new_window,
             log_frontend_error,

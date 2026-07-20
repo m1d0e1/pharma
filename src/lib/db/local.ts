@@ -327,6 +327,11 @@ export function initLocalDb() {
       if (!e.message.includes('duplicate column name')) throw e;
     }
   }
+  if (!piiColInfo.some(c => c.name === 'inventory_id')) {
+    try { db.exec('ALTER TABLE purchase_invoice_items ADD COLUMN inventory_id TEXT REFERENCES inventory(id) ON DELETE SET NULL'); } catch (e: any) {
+      if (!e.message.includes('duplicate column name')) throw e;
+    }
+  }
 
 
   db.exec(`
@@ -630,8 +635,10 @@ export function initLocalDb() {
       tax_percent REAL DEFAULT 0,
       discount_percent REAL DEFAULT 0,
       strips_per_box INTEGER DEFAULT 1,
+      inventory_id TEXT,
       FOREIGN KEY (invoice_id) REFERENCES purchase_invoices (id),
-      FOREIGN KEY (drug_id) REFERENCES master_drugs (id)
+      FOREIGN KEY (drug_id) REFERENCES master_drugs (id),
+      FOREIGN KEY (inventory_id) REFERENCES inventory (id) ON DELETE SET NULL
     );
 
     CREATE TABLE IF NOT EXISTS purchase_returns (

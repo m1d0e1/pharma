@@ -1163,6 +1163,12 @@ export default function ItemsManagementClient({ initialItems }: Props) {
         <DrugDetailsModal 
           drugId={detailsDrugId} 
           onClose={() => setDetailsDrugId(null)} 
+          onDrugUpdated={(updatedDrug) => {
+             setItems(prev => prev.map(item => String(item.id) === String(updatedDrug.id) ? {
+                ...item,
+                ...updatedDrug
+             } : item));
+          }}
         />
       )}
 </div>

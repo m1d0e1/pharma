@@ -55,8 +55,9 @@ function parseCsvLine(line) {
 }
 
 /** Parse CSV file into array of row arrays (skips header) */
-function parseCsv(filePath) {
+function parseCsv(filePath, required = false) {
   if (!fs.existsSync(filePath)) {
+    if (required) throw new Error(`Required seed file not found: ${filePath}`);
     console.warn(`  ⚠ Warning: ${path.basename(filePath)} not found. Skipping CSV parse.`);
     return { header: [], rows: [] };
   }
@@ -90,7 +91,7 @@ if (DRY_RUN) console.log('⚠  DRY RUN mode — no writes will be made\n');
 
 // 1. Parse CSVs first (fail fast before touching DB)
 console.log('📂 Parsing CSVs...');
-const drugsData = parseCsv(DRUGS_CSV);
+const drugsData = parseCsv(DRUGS_CSV, true);
 const interactionsData = parseCsv(INTERACTIONS_CSV);
 console.log('');
 

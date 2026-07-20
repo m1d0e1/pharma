@@ -645,12 +645,12 @@ export async function getPurchaseInvoiceDetailsAction(invoiceId: string) {
       FROM purchase_invoice_items pii
       JOIN master_drugs d ON pii.drug_id = d.id
       LEFT JOIN units u ON pii.unit_id = u.id
-      LEFT JOIN inventory i ON i.id = (
+      LEFT JOIN inventory i ON i.id = COALESCE(pii.inventory_id, (
         SELECT ii.id FROM inventory ii
         WHERE ii.drug_id = pii.drug_id
           AND (ii.expiry_date = pii.expiry_date OR (ii.expiry_date IS NULL AND pii.expiry_date IS NULL))
         ORDER BY ii.quantity DESC, ii.created_at ASC LIMIT 1
-      )
+      ))
       WHERE pii.invoice_id = ?
     `).all(invoiceId);
     return { success: true, data: items };
@@ -778,6 +778,21 @@ export async function getPurchaseReturnsAction() {
     return { success: true, data: rows };
   } catch (err: any) {
     return { success: false, error: err.message };
+  }
+}
+
+export async function deletePurchaseInvoiceAction(invoiceId: string, removeInventory: boolean) {
+  try {
+    const session = await getLocalSession();
+    if (!session || !hasUserPermissionSync(session, 'can_view_purchases')) return { success: false, error: 'Unauthorized' };
+    if (!isTauri) return { success: false, error: 'Purchase deletion is available in the offline desktop app' };
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('delete_purchase_invoice_critical', {
+      payload: { invoice_id: invoiceId, remove_inventory: removeInventory }
+    });
+    return { success: true };
+  } catch (error: any) {
+    return { success: false, error: error?.message || String(error) };
   }
 }
 

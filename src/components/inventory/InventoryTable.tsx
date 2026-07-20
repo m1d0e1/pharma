@@ -40,7 +40,8 @@ async function upsertExcelRows(table: 'master_drugs' | 'inventory', rows: any[],
     const columns = allowedColumns.filter(column => row[column] !== undefined);
     if (!columns.includes('id')) continue;
     const updates = columns.filter(column => column !== 'id').map(column => `${column}=excluded.${column}`);
-    await dbExecute(`INSERT INTO ${table} (${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')}) ON CONFLICT(id) DO UPDATE SET ${updates.join(',')}`, columns.map(column => row[column]));
+    const conflict = updates.length ? `DO UPDATE SET ${updates.join(',')}` : 'DO NOTHING';
+    await dbExecute(`INSERT INTO ${table} (${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')}) ON CONFLICT(id) ${conflict}`, columns.map(column => row[column]));
   }
 }
 
@@ -215,7 +216,8 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
           const normalizedDrugs = drugs.filter(row => Number(row.id)).map(row => ({ ...row, id: Number(row.id), barcode: barcodeValue(row.barcode) }));
           const normalizedInventory = data.filter(row => Number(row.drug_id)).map(row => ({
             ...row,
-            id: row.id || generateId(),
+            // SQLite inventory IDs are TEXT; preserving Excel numbers as numbers breaks edit/delete validation.
+            id: String(row.id || generateId()),
             drug_id: Number(row.drug_id),
             pharmacy_id: row.pharmacy_id || 'local_default',
             barcode: barcodeValue(row.barcode),
@@ -555,6 +557,9 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
         <DrugDetailsModal 
           drugId={detailsDrugId} 
           onClose={() => setDetailsDrugId(null)} 
+          onDrugUpdated={() => {
+            handleRefresh();
+          }}
         />
       )}
 
