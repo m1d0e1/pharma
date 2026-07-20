@@ -589,6 +589,36 @@ async fn save_purchase_invoice_tx(
         .clone()
         .unwrap_or_else(|| "DATE('now', 'localtime')".into());
 
+    if sqlx::query("SELECT 1 FROM suppliers WHERE id = ?")
+        .bind(payload.supplier_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|e| e.to_string())?
+        .is_none()
+    {
+        return Err("The selected supplier no longer exists; select the supplier again".into());
+    }
+    if sqlx::query("SELECT 1 FROM users WHERE id = ?")
+        .bind(&payload.user_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|e| e.to_string())?
+        .is_none()
+    {
+        return Err("The current user no longer exists; sign out and sign in again".into());
+    }
+    for item in &payload.cart {
+        if sqlx::query("SELECT 1 FROM master_drugs WHERE id = ?")
+            .bind(item.id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|e| e.to_string())?
+            .is_none()
+        {
+            return Err(format!("Drug {} no longer exists; remove it and add it again", item.id));
+        }
+    }
+
     let mut editing_completed = false;
     if let Some(old) = sqlx::query("SELECT supplier_id, total_amount, payment_method, status, invoice_number FROM purchase_invoices WHERE id = ?")
         .bind(&invoice_id)
@@ -1742,14 +1772,21 @@ async fn account_id(
     category: &str,
     fallback: i64,
 ) -> Result<i64, String> {
-    let row = sqlx::query("SELECT account_id FROM trial_balance_settings WHERE category = ?")
+    let row = sqlx::query("SELECT a.id FROM trial_balance_settings t JOIN accounts a ON a.id = t.account_id WHERE t.category = ? LIMIT 1")
         .bind(category)
         .fetch_optional(&mut **tx)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(row
-        .and_then(|r| r.try_get::<i64, _>("account_id").ok())
-        .unwrap_or(fallback))
+    if let Some(id) = row.and_then(|r| r.try_get::<i64, _>("id").ok()) {
+        return Ok(id);
+    }
+    sqlx::query("SELECT id FROM accounts WHERE id = ?")
+        .bind(fallback)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|e| e.to_string())?
+        .and_then(|r| r.try_get::<i64, _>("id").ok())
+        .ok_or_else(|| format!("Accounting setup is missing '{}'; restart after installing the update", category))
 }
 
 async fn insert_journal_entry(
@@ -1963,6 +2000,8 @@ mod tests {
             "CREATE TABLE purchase_invoices (id TEXT PRIMARY KEY, supplier_id INTEGER, pharmacy_id TEXT, user_id TEXT, invoice_number TEXT, invoice_date TEXT, payment_method TEXT, notes TEXT, check_number TEXT, expenses REAL, discount_value REAL, discount_percent REAL, tax_percent REAL, status TEXT, total_amount REAL)",
             "CREATE TABLE purchase_invoice_items (invoice_id TEXT, drug_id INTEGER, quantity INTEGER, unit_id INTEGER, expiry_date TEXT, cost_price REAL, selling_price REAL, bonus_quantity INTEGER, tax_percent REAL, discount_percent REAL, strips_per_box INTEGER)",
             "CREATE TABLE suppliers (id INTEGER PRIMARY KEY, balance REAL)",
+            "CREATE TABLE users (id TEXT PRIMARY KEY)",
+            "CREATE TABLE accounts (id INTEGER PRIMARY KEY)",
             "CREATE TABLE supplier_transactions (supplier_id INTEGER, type TEXT, amount REAL, reference_id TEXT, notes TEXT)",
             "CREATE TABLE daily_journals (id TEXT PRIMARY KEY, date TEXT, description TEXT, created_by TEXT, total_amount REAL)",
             "CREATE TABLE journal_entries (journal_id TEXT, account_id INTEGER, type TEXT, amount REAL)",
@@ -1977,6 +2016,14 @@ mod tests {
             .await
             .unwrap();
         sqlx::query("INSERT INTO suppliers (id, balance) VALUES (1, 0)")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO users (id) VALUES ('admin')")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO accounts (id) VALUES (6), (7), (10)")
             .execute(&mut conn)
             .await
             .unwrap();
@@ -2075,10 +2122,15 @@ mod tests {
             "CREATE TABLE daily_journals (id TEXT PRIMARY KEY, date TEXT, description TEXT, created_by TEXT, total_amount REAL)",
             "CREATE TABLE journal_entries (journal_id TEXT, account_id INTEGER, type TEXT, amount REAL)",
             "CREATE TABLE trial_balance_settings (category TEXT, account_id INTEGER)",
+            "CREATE TABLE accounts (id INTEGER PRIMARY KEY)",
         ] {
             sqlx::query(sql).execute(&mut conn).await.unwrap();
         }
         sqlx::query("INSERT INTO master_drugs VALUES (4463, 'COLONA', 0, 1, 1)")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO accounts (id) VALUES (6), (8), (9), (10), (11)")
             .execute(&mut conn)
             .await
             .unwrap();
@@ -2163,10 +2215,15 @@ mod tests {
             "CREATE TABLE daily_journals (id TEXT PRIMARY KEY, date TEXT, description TEXT, created_by TEXT, total_amount REAL)",
             "CREATE TABLE journal_entries (journal_id TEXT, account_id INTEGER, type TEXT, amount REAL)",
             "CREATE TABLE trial_balance_settings (category TEXT, account_id INTEGER)",
+            "CREATE TABLE accounts (id INTEGER PRIMARY KEY)",
         ] {
             sqlx::query(sql).execute(&mut conn).await.unwrap();
         }
         sqlx::query("INSERT INTO master_drugs (id, trade_name, large_to_medium, medium_to_small) VALUES (4463, 'COLONA', 10, 1)")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO accounts (id) VALUES (6), (8), (9), (10), (11)")
             .execute(&mut conn)
             .await
             .unwrap();

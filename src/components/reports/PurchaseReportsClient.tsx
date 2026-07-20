@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { getPurchaseInvoicesAction, getPurchaseInvoiceDetailsAction } from '@/app/actions-client/purchases';
 import { format } from 'date-fns';
 import { ar } from 'date-fns/locale';
-import { Search, Receipt, FileText, ArrowUpRight, CheckCircle2, Clock, Printer, Pencil } from 'lucide-react';
+import { Search, Receipt, FileText, ArrowUpRight, CheckCircle2, Clock, Printer, Pencil, X } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import Link from 'next/link';
 import BarcodePrinter from '@/components/purchases/BarcodePrinter';
@@ -15,6 +15,9 @@ export default function PurchaseReportsClient() {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [selectedInvoiceForBarcode, setSelectedInvoiceForBarcode] = useState<any[] | null>(null);
+  const [selectedInvoice, setSelectedInvoice] = useState<any | null>(null);
+  const [selectedItems, setSelectedItems] = useState<any[]>([]);
+  const [detailsLoading, setDetailsLoading] = useState(false);
 
   useEffect(() => {
     async function load() {
@@ -71,10 +74,56 @@ export default function PurchaseReportsClient() {
     }
   };
 
+  const showInvoice = async (invoice: any) => {
+    setSelectedInvoice(invoice);
+    setSelectedItems([]);
+    setDetailsLoading(true);
+    const res = await getPurchaseInvoiceDetailsAction(invoice.id);
+    setDetailsLoading(false);
+    if (res.success && res.data) setSelectedItems(res.data);
+    else toast.error('فشل تحميل تفاصيل فاتورة الشراء');
+  };
+
   return (
     <div className="space-y-6">
       {selectedInvoiceForBarcode && (
         <BarcodePrinter items={selectedInvoiceForBarcode} onClose={() => setSelectedInvoiceForBarcode(null)} />
+      )}
+      {selectedInvoice && (
+        <div className="fixed inset-0 z-[210] flex items-center justify-center bg-slate-950/60 p-4" onClick={() => setSelectedInvoice(null)}>
+          <div className="max-h-[90vh] w-full max-w-5xl overflow-y-auto rounded-3xl bg-white p-6 shadow-2xl dark:bg-slate-900" dir="rtl" onClick={e => e.stopPropagation()}>
+            <div className="mb-6 flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-2xl font-black">فاتورة شراء {selectedInvoice.invoice_number || selectedInvoice.id.slice(0, 8)}</h3>
+                <p className="mt-1 text-sm text-slate-500">{selectedInvoice.supplier_name} {selectedInvoice.supplier_phone ? `- ${selectedInvoice.supplier_phone}` : ''}</p>
+              </div>
+              <button onClick={() => setSelectedInvoice(null)} className="rounded-xl p-2 hover:bg-slate-100 dark:hover:bg-slate-800" aria-label="إغلاق"><X /></button>
+            </div>
+            <div className="mb-6 grid grid-cols-2 gap-3 rounded-2xl bg-slate-50 p-4 text-sm dark:bg-slate-800 md:grid-cols-4">
+              <div><span className="text-slate-500">التاريخ</span><p className="font-bold">{selectedInvoice.invoice_date || selectedInvoice.created_at}</p></div>
+              <div><span className="text-slate-500">المستخدم</span><p className="font-bold">{selectedInvoice.user_name || '---'}</p></div>
+              <div><span className="text-slate-500">الدفع</span><p className="font-bold">{selectedInvoice.payment_method}</p></div>
+              <div><span className="text-slate-500">الحالة</span><p className="font-bold">{selectedInvoice.status}</p></div>
+              <div><span className="text-slate-500">الضريبة</span><p className="font-bold">{Number(selectedInvoice.tax_percent || 0).toFixed(2)}%</p></div>
+              <div><span className="text-slate-500">الخصم</span><p className="font-bold">{Number(selectedInvoice.discount_value || 0).toFixed(2)} ج.م</p></div>
+              <div><span className="text-slate-500">المصروفات</span><p className="font-bold">{Number(selectedInvoice.expenses || 0).toFixed(2)} ج.م</p></div>
+              <div><span className="text-slate-500">الإجمالي</span><p className="font-black text-primary-600">{Number(selectedInvoice.total_amount || 0).toFixed(2)} ج.م</p></div>
+              {selectedInvoice.check_number && <div><span className="text-slate-500">رقم الشيك</span><p className="font-bold">{selectedInvoice.check_number}</p></div>}
+              {selectedInvoice.notes && <div className="col-span-2"><span className="text-slate-500">ملاحظات</span><p className="font-bold">{selectedInvoice.notes}</p></div>}
+            </div>
+            {detailsLoading ? <p className="py-10 text-center text-slate-500">جاري التحميل...</p> : (
+              <div className="overflow-x-auto rounded-2xl border border-slate-200 dark:border-slate-700">
+                <table className="w-full text-right text-sm">
+                  <thead className="bg-slate-50 dark:bg-slate-800"><tr><th className="p-3">الصنف</th><th className="p-3">الباركود</th><th className="p-3">الكمية</th><th className="p-3">المجاني</th><th className="p-3">الصلاحية</th><th className="p-3">سعر الشراء</th><th className="p-3">الضريبة</th><th className="p-3">الإجمالي</th></tr></thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">{selectedItems.map(item => {
+                    const total = Number(item.quantity || 0) * Number(item.cost_price || 0) * (1 + Number(item.tax_percent || 0) / 100);
+                    return <tr key={item.id}><td className="p-3 font-bold">{item.trade_name_en || item.trade_name}</td><td className="p-3">{item.barcode || '---'}</td><td className="p-3">{item.quantity} {item.unit || ''}</td><td className="p-3">{item.bonus_quantity || 0}</td><td className="p-3">{item.expiry_date || '---'}</td><td className="p-3 font-bold text-blue-600">{Number(item.cost_price || 0).toFixed(2)}</td><td className="p-3">{Number(item.tax_percent || 0).toFixed(2)}%</td><td className="p-3 font-black">{total.toFixed(2)}</td></tr>;
+                  })}</tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
       )}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         <div className="bg-white dark:bg-slate-900 rounded-2xl p-6 border border-slate-100 dark:border-slate-800 flex items-center gap-4">
@@ -155,7 +204,7 @@ export default function PurchaseReportsClient() {
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {filteredInvoices.map((inv) => (
-                <tr key={inv.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+                <tr key={inv.id} tabIndex={0} onClick={() => showInvoice(inv)} onKeyDown={e => { if (e.key === 'Enter') showInvoice(inv); }} className="cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
                   <td className="p-4 font-bold text-primary-600">{inv.invoice_number || inv.id.substring(0, 8)}</td>
                   <td className="p-4">{inv.supplier_name || 'غير محدد'}</td>
                   <td className="p-4 text-slate-500">
@@ -184,6 +233,7 @@ export default function PurchaseReportsClient() {
                     {inv.status !== 'completed' && (
                       <Link
                         href={`/purchases/new?supplier_id=${inv.supplier_id}`}
+                        onClick={e => e.stopPropagation()}
                         className="p-2 text-slate-400 hover:text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/30 rounded-xl transition-all"
                         title="استكمال الفاتورة"
                       >
@@ -193,6 +243,7 @@ export default function PurchaseReportsClient() {
                     {inv.status === 'completed' && (
                       <Link
                         href={`/purchases/new?edit_invoice_id=${inv.id}`}
+                        onClick={e => e.stopPropagation()}
                         className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded-xl transition-all"
                         title="تعديل الفاتورة المكتملة"
                       >
@@ -200,7 +251,7 @@ export default function PurchaseReportsClient() {
                       </Link>
                     )}
                     <button
-                      onClick={() => handlePrintBarcode(inv.id)}
+                      onClick={(e) => { e.stopPropagation(); handlePrintBarcode(inv.id); }}
                       className="p-2 text-slate-400 hover:text-primary-600 hover:bg-primary-50 dark:hover:bg-primary-900/30 rounded-xl transition-all"
                       title="طباعة ملصقات الباركود"
                     >

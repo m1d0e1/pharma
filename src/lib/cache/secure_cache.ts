@@ -8,7 +8,7 @@ export interface MasterDrug {
   unit: string;
   category: string;
   manufacturer: string;
-  base_price: number; // alias of official_price
+  base_price: number;
   active_ingredient: string;
   official_price: number;
   trade_name_en: string;
@@ -57,7 +57,7 @@ class SecureCache {
         this.drugsList = await dbSelect<MasterDrug>(`
           SELECT id, trade_name, trade_name_en, generic_name, active_ingredient,
                  barcode, manufacturer, is_medicine, is_service, stop_dealing,
-                 official_price, official_price AS base_price,
+                 official_price, base_price,
                  large_unit, medium_unit, small_unit, large_to_medium, medium_to_small
           FROM master_drugs
         `);

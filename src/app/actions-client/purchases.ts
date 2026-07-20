@@ -159,9 +159,11 @@ export async function getPurchaseInvoicesAction() {
     if (!session || !hasUserPermissionSync(session, 'can_view_purchases')) return { success: false, error: 'Unauthorized' };
 
     const items = await db.prepare(`
-      SELECT i.*, s.name_ar as supplier_name 
+      SELECT i.*, s.name_ar as supplier_name, s.phone as supplier_phone,
+             u.full_name as user_name
       FROM purchase_invoices i
       JOIN suppliers s ON i.supplier_id = s.id
+      LEFT JOIN users u ON i.user_id = u.id
       ORDER BY i.created_at DESC
     `).all();
     return { success: true, data: items };

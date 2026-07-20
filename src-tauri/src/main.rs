@@ -136,10 +136,24 @@ fn main() {
             sql: include_str!("../migrations/005_purchase_return_details.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 6,
+            description: "accounting_upgrade_seed",
+            sql: include_str!("../migrations/006_accounting_upgrade_seed.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()
         .manage(commands::critical::DbTransactions::default())
+        // Application menus are global on Windows; the shortcut invokes the command directly.
+        .on_menu_event(|app, event| {
+            if event.id().as_ref() == "new_window" {
+                if let Err(err) = open_new_window_for_app(app) {
+                    eprintln!("failed to open new window: {}", err);
+                }
+            }
+        })
         .setup(|app| {
             // 1. ملف (File)
             let file_menu = Submenu::with_items(
@@ -546,13 +560,7 @@ fn main() {
 fn handle_menu_event<R: tauri::Runtime>(window: &tauri::Window<R>, id: &str) {
     let route = match id {
         // Actions
-        "new_window" => {
-            let app = window.app_handle();
-            if let Err(err) = open_new_window_for_app(&app) {
-                eprintln!("failed to open new window: {}", err);
-            }
-            return;
-        }
+        "new_window" => return,
         "print" => {
             let _ = window.emit_to(window.label(), "menu-action", "print");
             return;

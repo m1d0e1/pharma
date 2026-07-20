@@ -133,7 +133,11 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
       const all = await dbSelect(`
         SELECT i.id, i.drug_id, md.trade_name, md.trade_name_en, i.quantity, i.expiry_date, 
                i.local_selling_price, i.cost_price, i.batch_number, i.supplier, i.min_stock_level,
-               i.barcode, i.strips_per_box
+               COALESCE(NULLIF(i.barcode, ''), NULLIF(md.barcode, ''), (
+                 SELECT ii.barcode FROM inventory ii
+                 WHERE ii.drug_id = i.drug_id AND ii.barcode IS NOT NULL AND ii.barcode != ''
+                 LIMIT 1
+               )) AS barcode, i.strips_per_box
         FROM inventory i
         JOIN master_drugs md ON i.drug_id = md.id
       `);

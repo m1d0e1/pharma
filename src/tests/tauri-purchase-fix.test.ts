@@ -140,6 +140,25 @@ describe('Tauri Purchase Flow Fix — Verify createPurchaseInvoiceAction SQL', (
     expect(rows).toHaveLength(1);
     expect(rows[0].quantity).toBe(115);
   });
+
+  it('keeps selling price, purchase cost, and exported barcode distinct', () => {
+    db.prepare("INSERT INTO inventory (id, drug_id, quantity, local_selling_price, cost_price, barcode) VALUES (?, 2, 2, 25, 10, 'INV-BC'), (?, 2, 3, 25, 20, NULL)")
+      .run(genId(), genId());
+    db.prepare('UPDATE master_drugs SET official_price = 30 WHERE id = 2').run();
+    db.prepare('UPDATE inventory SET local_selling_price = 30 WHERE drug_id = 2').run();
+
+    const rows = db.prepare(`
+      SELECT i.local_selling_price AS selling_price,
+             COALESCE(NULLIF(i.barcode, ''), NULLIF(md.barcode, ''), (
+               SELECT ii.barcode FROM inventory ii
+               WHERE ii.drug_id = i.drug_id AND ii.barcode IS NOT NULL AND ii.barcode != '' LIMIT 1
+             )) AS barcode
+      FROM inventory i JOIN master_drugs md ON md.id = i.drug_id WHERE i.drug_id = 2
+    `).all() as any[];
+    const purchasePrice = db.prepare('SELECT SUM(quantity * cost_price) / SUM(quantity) AS value FROM inventory WHERE drug_id = 2').get() as any;
+    expect(rows.every(row => row.selling_price === 30 && row.barcode === 'INV-BC')).toBe(true);
+    expect(purchasePrice.value).toBe(16);
+  });
 });
 
 describe('Tauri Purchase Flow — Schema Integrity', () => {
@@ -171,6 +190,21 @@ describe('Tauri Purchase Flow — Schema Integrity', () => {
     expect(colNames).toContain('notes');
     expect(colNames).toContain('user_id');
     expect(colNames).toContain('date');
+  });
+
+  it('repairs accounting mappings on databases upgraded from migration 1', () => {
+    db.prepare('DELETE FROM trial_balance_settings').run();
+    db.prepare('DELETE FROM accounts WHERE id >= 6').run();
+    db.prepare("INSERT INTO accounts (id, code, name_ar, type) VALUES (6, 'custom', 'Custom', 'asset')").run();
+    db.exec(require('fs').readFileSync('src-tauri/migrations/006_accounting_upgrade_seed.sql', 'utf8'));
+
+    const mappings = db.prepare(`
+      SELECT t.category, a.code FROM trial_balance_settings t
+      JOIN accounts a ON a.id = t.account_id
+      WHERE t.category IN ('cash_drawer','accounts_payable','accounts_receivable','sales_revenue','inventory_asset','cogs_expense')
+    `).all() as any[];
+    expect(mappings).toHaveLength(6);
+    expect(mappings).toContainEqual({ category: 'inventory_asset', code: '1.1.3' });
   });
 
   it('integrity check passes', () => {

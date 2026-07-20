@@ -174,19 +174,12 @@ export default function PurchaseInvoiceClient() {
   useHotkeys('f10', (e) => { e.preventDefault(); handleSubmit(true); }, { enableOnFormTags: true }, [cart, selectedSupplier, invoiceHeader]);
 
 
-  const [hydrated, setHydrated] = useState(false)
   const handledDrugIdRef = React.useRef<string | null>(null)
 
-  // Wait for Zustand store hydration
+  // Unsaved purchases are deliberately discarded when leaving this screen.
   useEffect(() => {
-    const unsub = usePurchaseStore.persist.onFinishHydration(() => {
-      setHydrated(true)
-    })
-    if (usePurchaseStore.persist.hasHydrated()) {
-      setHydrated(true)
-    }
-    return () => unsub()
-  }, [])
+    return () => resetPurchase()
+  }, [resetPurchase])
 
   // Load suppliers
   useEffect(() => {
@@ -197,10 +190,8 @@ export default function PurchaseInvoiceClient() {
 
   const searchParams = useSearchParams()
 
-  // Handle drugId and supplier_id from URL once store is hydrated
+  // Handle drugId and supplier_id from URL
   useEffect(() => {
-    if (!hydrated) return
-
     const drugId = searchParams.get('drugId')
     if (drugId && handledDrugIdRef.current !== drugId) {
       handledDrugIdRef.current = drugId
@@ -285,7 +276,7 @@ export default function PurchaseInvoiceClient() {
         toast.error('حدث خطأ أثناء تحميل الفاتورة')
       })
     }
-  }, [hydrated, searchParams, suppliers])
+  }, [searchParams, suppliers])
 
   const handleDrugSearch = async (query: string, byActive = searchByActive) => {
     setSearchQuery(query)
@@ -323,11 +314,12 @@ export default function PurchaseInvoiceClient() {
       }
       wasAdded = true
       const officialPrice = Number(drug.official_price) || 0
+      const purchasePrice = Number(drug.base_price) || officialPrice
       return [...prev, { 
         ...drug, 
         quantity: 1, 
         bonus_quantity: 0,
-        cost_price: officialPrice, 
+        cost_price: purchasePrice,
         selling_price: officialPrice,
         tax_percent: 0,
         discount_percent: 0,

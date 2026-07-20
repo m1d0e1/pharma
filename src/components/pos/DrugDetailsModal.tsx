@@ -139,7 +139,7 @@ export default function DrugDetailsModal({ drugId, onClose }: DrugDetailsModalPr
       const res = await updateMasterDrugAction(currentId as number, formData);
       if (res.success) {
         toast.success('تم حفظ التعديلات بنجاح');
-        setDrugData(formData);
+        await loadDrugDetails(currentId);
         setIsEditing(false);
       } else {
         toast.error(res.error || 'فشل الحفظ');

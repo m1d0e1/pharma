@@ -197,6 +197,11 @@ export async function updateMasterDrugAction(id: number, data: any) {
     }
     if (!localUser || !hasUserPermissionSync(localUser, 'can_manage_inventory')) return { success: false, error: 'غير مصرح' };
 
+    const officialPrice = Number(data.official_price);
+    if (!Number.isFinite(officialPrice) || officialPrice < 0) {
+      return { success: false, error: 'سعر البيع غير صالح' };
+    }
+
     const stmt = db.prepare(`
       UPDATE master_drugs SET
         trade_name = ?, trade_name_en = ?, generic_name = ?, active_ingredient = ?, barcode = ?, 
@@ -210,13 +215,14 @@ export async function updateMasterDrugAction(id: number, data: any) {
       WHERE id = ?
     `);
 
-    await stmt.run(
+    const update = db.transaction(async () => {
+      await stmt.run(
       data.trade_name,
       data.trade_name_en || null,
       data.generic_name || null,
       data.active_ingredient || null,
       data.barcode || null,
-      data.official_price || 0,
+      officialPrice,
       data.category || null,
       data.manufacturer || null,
       data.is_medicine ?? 1,
@@ -248,8 +254,18 @@ export async function updateMasterDrugAction(id: number, data: any) {
       data.is_table ?? 0,
       data.indications || null,
       data.side_effects || null,
-      id
-    );
+        id
+      );
+      // ponytail: one selling price source keeps inventory, POS and purchase entry aligned.
+      await db.prepare(`
+        UPDATE inventory
+        SET local_selling_price = ?,
+            barcode = CASE WHEN (barcode IS NULL OR barcode = '') AND ? != '' THEN ? ELSE barcode END,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE drug_id = ?
+      `).run(officialPrice, data.barcode || '', data.barcode || '', id);
+    });
+    await update();
 
     secureCache.updateDrug(id, {
       trade_name: data.trade_name,
@@ -257,8 +273,7 @@ export async function updateMasterDrugAction(id: number, data: any) {
       generic_name: data.generic_name,
       active_ingredient: data.active_ingredient,
       barcode: data.barcode,
-      official_price: data.official_price || 0,
-      base_price: data.official_price || 0,
+      official_price: officialPrice,
       large_unit: data.large_unit,
       medium_unit: data.medium_unit,
       small_unit: data.small_unit,
@@ -381,7 +396,19 @@ export async function searchMasterDrugsAction(queryOrOptions: string | {
       .map(item => item.drug)
       .slice(0, 100);
 
-    return { success: true, data: merged };
+    const ids = merged.map(drug => drug.id);
+    const costs = ids.length ? await db.prepare(`
+      SELECT drug_id, SUM(quantity * cost_price) / NULLIF(SUM(quantity), 0) AS purchase_price
+      FROM inventory
+      WHERE drug_id IN (${ids.map(() => '?').join(',')}) AND quantity > 0
+      GROUP BY drug_id
+    `).all(...ids) as any[] : [];
+    const purchasePrices = new Map(costs.map(row => [String(row.drug_id), Number(row.purchase_price) || 0]));
+
+    return {
+      success: true,
+      data: merged.map(drug => ({ ...drug, base_price: purchasePrices.get(String(drug.id)) || drug.base_price || 0 }))
+    };
   } catch (error: any) {
     console.error('Search master drugs error:', error);
     return { success: false, error: error.message };
