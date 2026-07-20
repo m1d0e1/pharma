@@ -640,7 +640,7 @@ export async function getPurchaseInvoiceDetailsAction(invoiceId: string) {
   try {
     const items = await db.prepare(`
       SELECT pii.*, d.trade_name, d.trade_name_en, d.barcode, d.large_to_medium,
-             d.medium_to_small, d.base_price, u.name_en as unit,
+             d.medium_to_small, d.official_price as base_price, u.name_en as unit,
              i.id as inventory_id, i.batch_number, i.expiry_date as inventory_expiry_date
       FROM purchase_invoice_items pii
       JOIN master_drugs d ON pii.drug_id = d.id

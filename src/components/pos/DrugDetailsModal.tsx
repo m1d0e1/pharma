@@ -11,9 +11,10 @@ import { updateMasterDrugAction, searchMasterDrugsAction, addDrugAlternativeActi
 interface DrugDetailsModalProps {
   drugId: number | string;
   onClose: () => void;
+  onDrugUpdated?: (data: any) => void;
 }
 
-export default function DrugDetailsModal({ drugId, onClose }: DrugDetailsModalProps) {
+export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: DrugDetailsModalProps) {
   useHotkeys('esc', () => { if(typeof onClose === 'function') onClose(); }, { enableOnFormTags: true });
 
   const [activeTab, setActiveTab] = useState<'info' | 'expiry' | 'stock' | 'alternatives' | 'usage' | 'consumption' | 'units_suppliers' | 'financial' | 'advanced'>('info');
@@ -141,6 +142,7 @@ export default function DrugDetailsModal({ drugId, onClose }: DrugDetailsModalPr
         toast.success('تم حفظ التعديلات بنجاح');
         await loadDrugDetails(currentId);
         setIsEditing(false);
+        if (onDrugUpdated) onDrugUpdated(formData);
       } else {
         toast.error(res.error || 'فشل الحفظ');
       }

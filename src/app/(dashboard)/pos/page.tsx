@@ -1292,6 +1292,23 @@ export default function POSPage() {
         <DrugDetailsModal 
           drugId={showDrugDetails} 
           onClose={() => setShowDrugDetails(null)} 
+          onDrugUpdated={(updatedDrug) => {
+            setCart(prev => prev.map(item => String(item.drug_id) === String(updatedDrug.id) ? {
+              ...item,
+              trade_name: updatedDrug.trade_name,
+              trade_name_en: updatedDrug.trade_name_en,
+              active_ingredient: updatedDrug.active_ingredient,
+              basePrice: updatedDrug.official_price || updatedDrug.min_price || item.basePrice,
+              price: item.selectedUnit === 'medium' ? (updatedDrug.official_price || item.basePrice) / (updatedDrug.large_to_medium || 1) :
+                     item.selectedUnit === 'small' ? (updatedDrug.official_price || item.basePrice) / ((updatedDrug.large_to_medium || 1) * (updatedDrug.medium_to_small || 1)) :
+                     (updatedDrug.official_price || item.basePrice),
+              units: {
+                ...item.units,
+                large_to_medium: updatedDrug.large_to_medium,
+                medium_to_small: updatedDrug.medium_to_small
+              }
+            } : item));
+          }}
         />
       )}
     </div>
