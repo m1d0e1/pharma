@@ -20,7 +20,7 @@ const Database = require('better-sqlite3');
 
 const ROOT = path.join(__dirname, '..');
 const DB_PATH = path.join(ROOT, 'pharma_local.db');
-const DRUGS_CSV = path.join(ROOT, 'egypt_drugs_database_full.csv');
+const DRUGS_CSV = path.join(ROOT, 'egypt_drugs_smart_scrape.csv');
 const INTERACTIONS_CSV = path.join(ROOT, 'db_drug_interactions.csv');
 
 const args = process.argv.slice(2);
