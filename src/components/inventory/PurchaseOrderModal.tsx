@@ -152,17 +152,20 @@ export default function PurchaseOrderModal({ initialItems, onClose }: Props) {
             <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
               <div className="md:col-span-4 space-y-2">
                 <label className="text-xs font-black text-slate-400 uppercase tracking-widest mr-2">المورد / الشركة</label>
-                <select 
+                <input 
+                  type="text"
                   required
+                  list="suppliers-datalist"
                   value={supplier}
                   onChange={e => setSupplier(e.target.value)}
+                  placeholder="اختر أو اكتب اسم المورد..."
                   className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-6 py-4 rounded-2xl font-bold outline-none focus:ring-2 focus:ring-blue-500 transition-all"
-                >
-                  <option value="">اختر المورد...</option>
+                />
+                <datalist id="suppliers-datalist">
                   {suppliers.map(s => (
-                    <option key={s.id} value={s.name_ar}>{s.name_ar}</option>
+                    <option key={s.id} value={s.name_ar || s.name_en} />
                   ))}
-                </select>
+                </datalist>
               </div>
               
               <div className="md:col-span-8 space-y-2 relative">

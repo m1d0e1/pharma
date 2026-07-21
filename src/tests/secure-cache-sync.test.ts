@@ -33,8 +33,8 @@ describe('secureCache synchronization tests', () => {
   beforeAll(async () => {
     // Clear and prepare test database
     const db = getDatabase();
-    db.prepare('DELETE FROM master_drugs WHERE id = 9999').run();
     db.prepare('DELETE FROM inventory WHERE drug_id = 9999').run();
+    db.prepare('DELETE FROM master_drugs WHERE id = 9999').run();
     db.prepare(`
       INSERT INTO master_drugs (id, trade_name, trade_name_en, official_price, is_medicine, stop_dealing)
       VALUES (9999, 'Cardixin Test', 'Cardixin Test', 10.0, 1, 0)
@@ -46,8 +46,8 @@ describe('secureCache synchronization tests', () => {
 
   afterAll(() => {
     const db = getDatabase();
-    db.prepare('DELETE FROM master_drugs WHERE id = 9999').run();
     db.prepare('DELETE FROM inventory WHERE drug_id = 9999').run();
+    db.prepare('DELETE FROM master_drugs WHERE id = 9999').run();
   });
 
   it('verifies that adding inventory updates master_drugs and secureCache large_to_medium', async () => {

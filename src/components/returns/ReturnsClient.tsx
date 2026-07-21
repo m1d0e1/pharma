@@ -42,12 +42,15 @@ export default function ReturnsClient({ title, type = 'sales' }: { title: string
     (type === 'purchases' ? r.supplier_name?.includes(searchTerm) : false)
   );
 
-  const openPurchaseReturn = async (id: string) => {
-    if (type !== 'purchases') return;
-    setDetailsLoading(true);
-    const res = await getPurchaseReturnDetailsAction(id);
-    setDetailsLoading(false);
-    if (res.success) setSelectedReturn(res.data);
+  const openReturn = async (r: any) => {
+    if (type === 'purchases') {
+      setDetailsLoading(true);
+      const res = await getPurchaseReturnDetailsAction(r.id);
+      setDetailsLoading(false);
+      if (res.success) setSelectedReturn(res.data);
+    } else {
+      setSelectedReturn(r);
+    }
   };
 
   return (
@@ -100,7 +103,7 @@ export default function ReturnsClient({ title, type = 'sales' }: { title: string
                 <tr>
                   <th className="px-6 py-4 font-medium">رقم المرتجع</th>
                   <th className="px-6 py-4 font-medium">رقم الفاتورة</th>
-                  {type === 'purchases' && <th className="px-6 py-4 font-medium">المورد</th>}
+                  {type === 'purchases' ? <th className="px-6 py-4 font-medium">المورد</th> : <th className="px-6 py-4 font-medium">العميل</th>}
                   <th className="px-6 py-4 font-medium">المستخدم</th>
                   <th className="px-6 py-4 font-medium">الإجمالي</th>
                   <th className="px-6 py-4 font-medium">التاريخ</th>
@@ -110,14 +113,14 @@ export default function ReturnsClient({ title, type = 'sales' }: { title: string
                 {filteredReturns.map((r, i) => (
                   <tr
                     key={i}
-                    onClick={() => openPurchaseReturn(r.id)}
-                    onKeyDown={e => e.key === 'Enter' && openPurchaseReturn(r.id)}
-                    tabIndex={type === 'purchases' ? 0 : undefined}
-                    className={`hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors ${type === 'purchases' ? 'cursor-pointer focus:outline-none focus:ring-2 focus:ring-inset focus:ring-primary-500' : ''}`}
+                    onClick={() => openReturn(r)}
+                    onKeyDown={e => e.key === 'Enter' && openReturn(r)}
+                    tabIndex={0}
+                    className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-inset focus:ring-primary-500"
                   >
                     <td className="px-6 py-4 font-medium text-slate-900 dark:text-white">{r.id?.substring(0, 8)}</td>
-                    <td className="px-6 py-4 text-slate-500">{type === 'purchases' ? (r.invoice_number || r.purchase_invoice_id?.substring(0, 8)) : r.invoice_id?.substring(0, 8)}</td>
-                    {type === 'purchases' && <td className="px-6 py-4 text-slate-500">{r.supplier_name}</td>}
+                    <td className="px-6 py-4 text-slate-500">{type === 'purchases' ? (r.invoice_number || r.purchase_invoice_id?.substring(0, 8)) : (r.invoice_id?.substring(0, 8) || 'عام')}</td>
+                    {type === 'purchases' ? <td className="px-6 py-4 text-slate-500">{r.supplier_name}</td> : <td className="px-6 py-4 text-slate-500">{r.patient_name || 'عميل نقدي'}</td>}
                     <td className="px-6 py-4 text-slate-500">{r.user_name || r.created_by_name}</td>
                     <td className="px-6 py-4 font-bold text-primary-600">{(r.total_refund || r.total_amount || 0).toFixed(2)} ج.م</td>
                     <td className="px-6 py-4 text-slate-500">{r.created_at ? format(new Date(r.created_at), 'yyyy-MM-dd HH:mm') : ''}</td>
@@ -134,28 +137,54 @@ export default function ReturnsClient({ title, type = 'sales' }: { title: string
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setSelectedReturn(null)}>
           <div className="max-h-[90vh] w-full max-w-5xl overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl dark:bg-slate-900" onClick={e => e.stopPropagation()} dir="rtl">
             <div className="mb-5 flex items-center justify-between">
-              <h2 className="text-xl font-black text-slate-900 dark:text-white">تفاصيل مرتجع المشتريات</h2>
+              <h2 className="text-xl font-black text-slate-900 dark:text-white">
+                {type === 'sales' ? 'تفاصيل مرتجع المبيعات' : 'تفاصيل مرتجع المشتريات'}
+              </h2>
               <button onClick={() => setSelectedReturn(null)} aria-label="إغلاق" className="rounded-lg p-2 hover:bg-slate-100 dark:hover:bg-slate-800"><X className="h-5 w-5" /></button>
             </div>
             <div className="mb-6 grid grid-cols-2 gap-3 rounded-xl bg-slate-50 p-4 text-sm dark:bg-slate-800 md:grid-cols-4">
               <div><span className="text-slate-500">رقم المرتجع</span><p className="font-bold">{selectedReturn.id}</p></div>
-              <div><span className="text-slate-500">الفاتورة الأصلية</span><p className="font-bold">{selectedReturn.invoice_number || selectedReturn.purchase_invoice_id || 'غير مرتبطة'}</p></div>
+              <div><span className="text-slate-500">الفاتورة الأصلية</span><p className="font-bold">{selectedReturn.invoice_number || selectedReturn.invoice_id || selectedReturn.purchase_invoice_id || 'غير مرتبطة'}</p></div>
               <div><span className="text-slate-500">تاريخ الفاتورة</span><p className="font-bold">{selectedReturn.invoice_date || '-'}</p></div>
               <div><span className="text-slate-500">إجمالي الفاتورة</span><p className="font-bold">{selectedReturn.invoice_total == null ? '-' : `${Number(selectedReturn.invoice_total).toFixed(2)} ج.م`}</p></div>
-              <div><span className="text-slate-500">المورد</span><p className="font-bold">{selectedReturn.supplier_name || '-'}</p></div>
-              <div><span className="text-slate-500">هاتف المورد</span><p className="font-bold">{selectedReturn.supplier_phone || '-'}</p></div>
+              {type === 'purchases' ? (
+                <>
+                  <div><span className="text-slate-500">المورد</span><p className="font-bold">{selectedReturn.supplier_name || '-'}</p></div>
+                  <div><span className="text-slate-500">هاتف المورد</span><p className="font-bold">{selectedReturn.supplier_phone || '-'}</p></div>
+                </>
+              ) : (
+                <div><span className="text-slate-500">العميل</span><p className="font-bold">{selectedReturn.patient_name || 'عميل نقدي'}</p></div>
+              )}
               <div><span className="text-slate-500">المستخدم</span><p className="font-bold">{selectedReturn.user_name || '-'}</p></div>
-              <div><span className="text-slate-500">طريقة الاسترداد</span><p className="font-bold">{selectedReturn.refund_method === 'cash' ? 'نقدي' : 'خصم من حساب المورد'}</p></div>
-              <div><span className="text-slate-500">الحالة</span><p className="font-bold">{selectedReturn.status}</p></div>
-              <div><span className="text-slate-500">إجمالي المرتجع</span><p className="font-bold text-primary-600">{Number(selectedReturn.total_amount || 0).toFixed(2)} ج.م</p></div>
+              <div><span className="text-slate-500">طريقة الاسترداد</span><p className="font-bold">{selectedReturn.refund_method === 'cash' ? 'نقدي' : selectedReturn.refund_method === 'patient_account' ? 'حساب المريض' : 'خصم من حساب المورد'}</p></div>
+              <div><span className="text-slate-500">الحالة</span><p className="font-bold">{selectedReturn.status || 'مكتمل'}</p></div>
+              <div><span className="text-slate-500">إجمالي المرتجع</span><p className="font-bold text-primary-600">{Number(selectedReturn.total_refund || selectedReturn.total_amount || 0).toFixed(2)} ج.م</p></div>
               <div><span className="text-slate-500">التاريخ</span><p className="font-bold">{selectedReturn.created_at ? format(new Date(selectedReturn.created_at), 'yyyy-MM-dd HH:mm') : '-'}</p></div>
               <div className="col-span-2 md:col-span-4"><span className="text-slate-500">السبب / الملاحظات</span><p className="font-bold">{selectedReturn.reason || '-'}</p></div>
             </div>
             <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700">
               <table className="w-full text-right text-sm">
-                <thead className="bg-slate-50 text-slate-500 dark:bg-slate-800"><tr><th className="p-3">الصنف</th><th className="p-3">الكمية</th><th className="p-3">الوحدة</th><th className="p-3">سعر الوحدة</th><th className="p-3">الإجمالي</th><th className="p-3">التشغيلة</th><th className="p-3">الصلاحية</th></tr></thead>
+                <thead className="bg-slate-50 text-slate-500 dark:bg-slate-800">
+                  <tr>
+                    <th className="p-3">الصنف</th>
+                    <th className="p-3">الكمية</th>
+                    <th className="p-3">الوحدة</th>
+                    <th className="p-3">سعر الوحدة</th>
+                    <th className="p-3">الإجمالي</th>
+                    {type === 'purchases' && <><th className="p-3">التشغيلة</th><th className="p-3">الصلاحية</th></>}
+                  </tr>
+                </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                  {selectedReturn.items?.map((item: any) => <tr key={item.id}><td className="p-3 font-bold">{item.drug_name || item.trade_name_en}</td><td className="p-3">{item.quantity_returned}</td><td className="p-3">{item.unit || 'large'}</td><td className="p-3">{Number(item.unit_price || 0).toFixed(2)}</td><td className="p-3">{Number(item.total_price || 0).toFixed(2)}</td><td className="p-3">{item.batch_number || '-'}</td><td className="p-3">{item.expiry_date || '-'}</td></tr>)}
+                  {selectedReturn.items?.map((item: any, idx: number) => (
+                    <tr key={item.id || idx}>
+                      <td className="p-3 font-bold">{item.trade_name_ar || item.trade_name_en || item.drug_name}</td>
+                      <td className="p-3">{item.quantity_returned || item.quantity}</td>
+                      <td className="p-3">{item.unit || 'large'}</td>
+                      <td className="p-3">{Number(item.unit_price || 0).toFixed(2)}</td>
+                      <td className="p-3">{Number((item.total_price != null ? item.total_price : (item.quantity_returned || item.quantity || 0) * (item.unit_price || 0))).toFixed(2)}</td>
+                      {type === 'purchases' && <><td className="p-3">{item.batch_number || '-'}</td><td className="p-3">{item.expiry_date || '-'}</td></>}
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>

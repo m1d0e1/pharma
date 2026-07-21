@@ -568,26 +568,43 @@ export async function getDrugPurchaseHistoryAction(drugId: number) {
 export async function createPurchaseOrderAction(data: { supplier_name: string; notes?: string; items: { drug_id: number; quantity: number; expected_price: number }[]; }) {
   try {
     const user = await getLocalSession();
-    if (!user) return { success: false, error: 'Unauthorized' };
+    if (!user) return { success: false, error: 'غير مصرح' };
 
-    if (!data.items || data.items.length === 0) return { success: false, error: 'No items' };
-    if (data.items.some(i => i.quantity <= 0)) return { success: false, error: 'Invalid quantity' };
+    if (!data.items || data.items.length === 0) return { success: false, error: 'لا توجد أصناف في الطلب' };
+    if (data.items.some(i => i.quantity <= 0)) return { success: false, error: 'الكمية يجب أن تكون أكبر من 0' };
 
     const po_id = 'PO-' + generateId().substring(0, 8).toUpperCase();
     const total_amount = data.items.reduce((sum, item) => sum + (item.quantity * item.expected_price), 0);
 
-    const transaction = db.transaction(async () => {
-      await db.prepare('INSERT INTO purchase_orders (id, user_id, supplier_name, total_amount, notes) VALUES (?, ?, ?, ?, ?)').run(po_id, user.id, data.supplier_name, total_amount, data.notes || null);
-      const itemStmt = await db.prepare('INSERT INTO purchase_order_items (po_id, drug_id, quantity, expected_price) VALUES (?, ?, ?, ?)');
-      for (const item of data.items) { await itemStmt.run(po_id, item.drug_id, item.quantity, item.expected_price); }
-      await db.prepare('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)').run(user.id, 'Create PO', 'PO created ' + po_id);
+    await dbTransaction(async () => {
+      await dbExecute('INSERT INTO purchase_orders (id, user_id, supplier_name, total_amount, notes) VALUES (?, ?, ?, ?, ?)', [
+        po_id,
+        user.id,
+        data.supplier_name,
+        total_amount,
+        data.notes || null
+      ]);
+
+      for (const item of data.items) {
+        await dbExecute('INSERT INTO purchase_order_items (po_id, drug_id, quantity, expected_price) VALUES (?, ?, ?, ?)', [
+          po_id,
+          item.drug_id,
+          item.quantity,
+          item.expected_price
+        ]);
+      }
+
+      await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [
+        user.id,
+        'Create PO',
+        'PO created ' + po_id
+      ]);
     });
-    await transaction();
     
-    // No next.js cache invalidation in client mode
     return { success: true, po_id };
-  } catch (error) {
-    return { success: false, error: 'Failed' };
+  } catch (error: any) {
+    console.error('createPurchaseOrderAction error:', error);
+    return { success: false, error: error?.message || 'فشل إنشاء أمر الشراء' };
   }
 }
 

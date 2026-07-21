@@ -301,21 +301,24 @@ export async function getReturnsAction() {
     if (!user || !hasUserPermissionSync(user, 'can_view_returns')) return { success: false, error: 'غير مصرح' };
 
     const returns = await db.prepare(`
-      SELECT r.*, u.full_name as user_name
+      SELECT r.*, u.full_name as user_name, p.full_name as patient_name, si.total_amount as invoice_total, si.created_at as invoice_date
       FROM returns r
-      JOIN users u ON r.user_id = u.id
+      LEFT JOIN users u ON r.user_id = u.id
+      LEFT JOIN sales_invoices si ON r.invoice_id = si.id
+      LEFT JOIN patients p ON si.patient_id = p.id
       ORDER BY r.created_at DESC
       LIMIT 100
     `).all() as any[];
 
     // Get items for each return
     const returnsWithItems = await Promise.all(returns.map(async ret => {
-      const items = await db.prepare('SELECT * FROM return_items WHERE return_id = ?').all(ret.id);
+      const items = await db.prepare('SELECT ri.*, md.trade_name_en, md.trade_name_ar FROM return_items ri LEFT JOIN master_drugs md ON ri.drug_id = md.id WHERE ri.return_id = ?').all(ret.id);
       return { ...ret, items };
     }));
 
     return { success: true, data: returnsWithItems };
   } catch (error) {
+    console.error('getReturnsAction error:', error);
     return { success: false, error: 'فشل جلب المرتجعات' };
   }
 }
