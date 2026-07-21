@@ -2,6 +2,7 @@
 
 import nextDynamic from 'next/dynamic'
 import React, { useState, useEffect } from 'react'
+import { useHotkeys } from 'react-hotkeys-hook'
 import {
    Search,
    Plus,
@@ -318,6 +319,12 @@ export default function ItemsManagementClient({ initialItems }: Props) {
      document.addEventListener('click', handleClickOutside);
      return () => document.removeEventListener('click', handleClickOutside);
    }, []);
+
+   useHotkeys('insert', (e) => {
+      e.preventDefault();
+      setEditingItem({});
+      setIsModalOpen(true);
+   }, { enableOnFormTags: true });
 
    
    const handleDelete = async (id: number) => {

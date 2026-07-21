@@ -695,6 +695,15 @@ export default function POSPage() {
     handleCheckout('completed');
   }, { enableOnFormTags: true }, [cart.length, isProcessing, handleCheckout]);
 
+  useHotkeys('insert', event => {
+    event.preventDefault();
+    const searchInput = document.querySelector('[data-nav="search-input"]') as HTMLInputElement;
+    if (searchInput) {
+      searchInput.focus();
+      searchInput.select();
+    }
+  }, { enableOnFormTags: true });
+
   const fetchDrafts = async () => {
     setIsLoadingDrafts(true);
     try {

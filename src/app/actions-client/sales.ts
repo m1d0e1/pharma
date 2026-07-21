@@ -593,7 +593,7 @@ export async function processCheckoutAction(data: any) {
                 WHERE drug_id = ? AND (expiry_date IS NULL OR expiry_date >= ?)
               `).get(item.drug_id, today) as any;
           
-          if ((validStock?.total || 0) < deductionQty) {
+          if ((validStock?.total || 0) + 0.005 < deductionQty) {
             throw new Error(`الكمية غير كافية للصنف "${drugName}" (المتاح: ${(validStock?.total || 0).toFixed(2)})`);
           }
 
@@ -608,15 +608,18 @@ export async function processCheckoutAction(data: any) {
               `).all(item.drug_id, today) as any[];
 
           for (const batch of batches) {
-            if (remainingToDeduct <= 0) break;
+            if (remainingToDeduct <= 0.0001) break;
 
-            const deductFromThisBatch = Math.min(batch.quantity, remainingToDeduct);
+            let deductFromThisBatch = Math.min(batch.quantity, remainingToDeduct);
+            if (batch.quantity + 0.005 >= remainingToDeduct && batch.quantity < remainingToDeduct) {
+              deductFromThisBatch = batch.quantity;
+            }
             const batchProp = deductFromThisBatch / deductionQty;
             const quantityInSelectedUnit = item.quantity_sold * batchProp;
 
             await db.prepare(
-              'UPDATE inventory SET quantity = quantity - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
-            ).run(deductFromThisBatch, batch.id);
+              'UPDATE inventory SET quantity = CASE WHEN quantity - ? < 0.0001 THEN 0 ELSE quantity - ? END, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
+            ).run(deductFromThisBatch, deductFromThisBatch, batch.id);
             
             await db.prepare(`
               INSERT INTO sales_items (invoice_id, inventory_id, drug_id, quantity_sold, unit_price, unit, is_negative, cost_price, created_at)

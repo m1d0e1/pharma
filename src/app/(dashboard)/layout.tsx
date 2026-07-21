@@ -144,6 +144,7 @@ export default function DashboardLayout({
           if (action === 'shortcuts') {
             toast.success(
               'اختصارات لوحة المفاتيح:\n' +
+              'Insert: تمييز البحث (الكاشير) / إضافة صنف (المخزون)\n' +
               'Ctrl+P: الكاشير\n' +
               'Ctrl+I: المخزون\n' +
               'Ctrl+D: الرئيسية\n' +

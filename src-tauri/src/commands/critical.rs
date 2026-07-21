@@ -477,7 +477,7 @@ async fn create_return_tx(
                 &sold_unit,
             )
             .await?;
-            if requested > sold_qty - returned {
+            if requested > sold_qty - returned + 0.005 {
                 return Err(format!(
                     "Return quantity exceeds remaining quantity for {}",
                     item.drug_name
@@ -989,7 +989,7 @@ async fn process_checkout_tx(
             .map_err(|e| e.to_string())?
             .try_get("total")
             .unwrap_or(0.0);
-            if selected_stock >= deduction_qty {
+            if selected_stock + 0.005 >= deduction_qty {
                 Some(inventory_id.as_str())
             } else {
                 None
@@ -1017,7 +1017,7 @@ async fn process_checkout_tx(
             .try_get("total")
             .unwrap_or(0.0)
         };
-        if stock_total < deduction_qty {
+        if stock_total + 0.005 < deduction_qty {
             return Err(format!(
                 "Insufficient stock for \"{}\" (available: {:.2})",
                 drug_name, stock_total
@@ -1047,17 +1047,22 @@ async fn process_checkout_tx(
 
         let mut remaining = deduction_qty;
         for batch in batches {
-            if remaining <= 0.0 {
+            if remaining <= 0.0001 {
                 break;
             }
             let batch_id: String = batch.try_get("id").map_err(|e| e.to_string())?;
             let batch_qty: f64 = batch.try_get("quantity").unwrap_or(0.0);
             let cost_price: f64 = batch.try_get("cost_price").unwrap_or(0.0);
-            let deduct = batch_qty.min(remaining);
+            let deduct = if batch_qty + 0.005 >= remaining {
+                remaining.min(batch_qty)
+            } else {
+                batch_qty
+            };
             let batch_prop = deduct / deduction_qty;
             let quantity_in_selected_unit = item.quantity_sold * batch_prop;
 
-            sqlx::query("UPDATE inventory SET quantity = quantity - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+            sqlx::query("UPDATE inventory SET quantity = CASE WHEN quantity - ? < 0.0001 THEN 0 ELSE quantity - ? END, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+                .bind(deduct)
                 .bind(deduct)
                 .bind(&batch_id)
                 .execute(&mut **tx)

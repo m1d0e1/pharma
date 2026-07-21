@@ -166,7 +166,7 @@ export async function createReturnAction(data: {
       if (!soldItem) continue;
 
       const returned = alreadyReturned.find(ar => ar.sale_item_id === returnItem.sale_item_id)?.total || 0;
-      if (returnItem.quantity > (soldItem.quantity_sold - returned)) {
+      if (returnItem.quantity > (soldItem.quantity_sold - returned + 0.005)) {
         return { success: false, error: `كمية المرتجع تتجاوز الكمية المتبقية للصنف "${returnItem.drug_name}"` };
       }
     }
@@ -237,7 +237,7 @@ export async function createReturnAction(data: {
         await db.prepare('UPDATE inventory SET quantity = quantity + ? WHERE id = ?').run(restockQty, finalInventoryId);
         
         // Calculate COGS reversal based on original cost
-        totalCogsReversal += (saleItem.cost_price || 0) * restockQty;
+        totalCogsReversal += (saleItem?.cost_price || 0) * restockQty;
       }
 
       // 5. Update patient wallet/balance if applicable

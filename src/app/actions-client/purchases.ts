@@ -710,12 +710,13 @@ export async function createPurchaseReturnAction(data: {
 
         const inventory = item.inventory_id
           ? await db.prepare('SELECT id, drug_id, quantity FROM inventory WHERE id = ?').get(item.inventory_id) as any
-          : await db.prepare('SELECT id, drug_id, quantity FROM inventory WHERE drug_id = ? AND quantity >= ? ORDER BY expiry_date ASC LIMIT 1').get(item.drug_id, deductQty) as any;
-        if (!inventory || Number(inventory.drug_id) !== Number(item.drug_id) || Number(inventory.quantity) < deductQty) {
+          : await db.prepare('SELECT id, drug_id, quantity FROM inventory WHERE drug_id = ? AND quantity + 0.005 >= ? ORDER BY expiry_date ASC LIMIT 1').get(item.drug_id, deductQty) as any;
+        if (!inventory || Number(inventory.drug_id) !== Number(item.drug_id) || Number(inventory.quantity) + 0.005 < deductQty) {
           throw new Error(`Insufficient inventory for ${item.drug_name}`);
         }
         await itemStmt.run(returnId, item.purchase_invoice_item_id || null, inventory.id, item.drug_id, item.drug_name, item.quantity, item.unit_price, lineTotal, returnUnit, data.reason || null);
-        await db.prepare('UPDATE inventory SET quantity = quantity - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(deductQty, inventory.id);
+        const actualDeduct = Math.min(Number(inventory.quantity), deductQty);
+        await db.prepare('UPDATE inventory SET quantity = CASE WHEN quantity - ? < 0.0001 THEN 0 ELSE quantity - ? END, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(actualDeduct, actualDeduct, inventory.id);
       }
 
       // Financial impact
