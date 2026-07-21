@@ -209,15 +209,27 @@ export async function createPurchaseInvoiceAction(data: {
         payload: {
           ...data,
           pharmacy_id: session.pharmacy_id || null,
-          user_id: session.id,
+          user_id: String(session.id || 'admin'),
+          supplier_id: Number(data.supplier_id),
           status: data.status || 'completed',
-          cart: data.cart || [],
+          cart: (data.cart || []).map(item => ({
+            ...item,
+            id: Number(item.id || item.drug_id),
+            quantity: Number(item.quantity || 0),
+            unit_id: item.unit_id ? Number(item.unit_id) : null,
+            cost_price: Number(item.cost_price || 0),
+            selling_price: item.selling_price != null ? Number(item.selling_price) : null,
+            bonus_quantity: Number(item.bonus_quantity || 0),
+            tax_percent: Number(item.tax_percent || 0),
+            discount_percent: Number(item.discount_percent || 0),
+            strips_per_box: Number(item.strips_per_box || item.large_to_medium || 1)
+          }))
         }
       }) as any;
       revalidatePath('/purchases');
       revalidatePath('/inventory');
       revalidatePath('/purchases/suppliers');
-      return { success: true, id: result.id };
+      return { success: true, id: result?.id };
     }
 
     const transaction = db.transaction(async () => {
@@ -909,9 +921,21 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
         payload: {
           ...data,
           pharmacy_id: session.pharmacy_id || null,
-          user_id: session.id,
+          user_id: String(session.id || 'admin'),
+          supplier_id: Number(data.supplier_id),
           status: 'completed',
-          cart: data.cart || [],
+          cart: (data.cart || []).map(item => ({
+            ...item,
+            id: Number(item.id || item.drug_id),
+            quantity: Number(item.quantity || 0),
+            unit_id: item.unit_id ? Number(item.unit_id) : null,
+            cost_price: Number(item.cost_price || 0),
+            selling_price: item.selling_price != null ? Number(item.selling_price) : null,
+            bonus_quantity: Number(item.bonus_quantity || 0),
+            tax_percent: Number(item.tax_percent || 0),
+            discount_percent: Number(item.discount_percent || 0),
+            strips_per_box: Number(item.strips_per_box || item.large_to_medium || 1)
+          }))
         }
       });
       revalidatePath('/purchases');
