@@ -65,5 +65,8 @@ test('POS patient search includes the current outstanding debit', async () => {
   const query = (dbSelect as jest.Mock).mock.calls[0][0];
   expect(query).toContain("si.payment_method = 'credit'");
   expect(query).toContain("si.status = 'completed'");
-  expect(query).toContain("pt.type IN ('payment', 'adjustment')");
+  expect(query).toContain("WHEN pt.type = 'payment' THEN -ABS");
+  expect(query).toContain("WHEN pt.type = 'adjustment' THEN CAST(pt.amount AS REAL)");
+  expect(query).toContain("r.refund_method = 'patient_account'");
+  expect(query).toContain("r.status = 'approved'");
 });

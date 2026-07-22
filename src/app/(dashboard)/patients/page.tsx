@@ -3,8 +3,8 @@
 import React, { useEffect, useState } from 'react';
 import PatientListClient from '@/components/patients/PatientListClient';
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
-import { dbSelect } from '@/lib/db/tauri';
 import AccessDenied from '@/components/AccessDenied';
+import { getPatientsAction } from '@/app/actions-client/patients';
 
 export default function PatientsPage() {
   const [patients, setPatients] = useState<any[]>([]);
@@ -25,12 +25,8 @@ export default function PatientsPage() {
 
           if (isAllowed) {
             setAllowed(true);
-            const data = await dbSelect(`
-              SELECT * FROM patients
-              ORDER BY created_at DESC
-              LIMIT 200
-            `);
-            setPatients(data);
+            const result = await getPatientsAction();
+            setPatients(result.success ? (result.data || []).slice(0, 200) : []);
           }
         }
       } catch (err) {

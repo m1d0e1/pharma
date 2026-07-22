@@ -708,6 +708,79 @@ export async function createPurchaseReturnAction(data: {
       return { success: false, error: 'Invalid purchase return data' };
     }
 
+    if (isTauri) {
+      const returnId = generateId();
+      let totalAmount = 0;
+      for (const item of data.items) totalAmount += item.quantity * item.unit_price;
+
+      await dbTransaction(async () => {
+        // Safe schema migration for fresh installs
+        await dbExecute('ALTER TABLE purchase_return_items ADD COLUMN purchase_invoice_item_id INTEGER').catch(() => {});
+        await dbExecute("ALTER TABLE purchase_return_items ADD COLUMN unit TEXT DEFAULT 'large'").catch(() => {});
+
+        await dbExecute(
+          `INSERT INTO purchase_returns (id, purchase_invoice_id, supplier_id, user_id, reason, total_amount, refund_method, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'completed')`,
+          [returnId, data.purchase_invoice_id, data.supplier_id, session.id, data.reason || null, totalAmount, data.refund_method]
+        );
+
+        for (const item of data.items) {
+          const lineTotal = item.quantity * item.unit_price;
+          const drugInfo = await dbGet<any>('SELECT large_to_medium, medium_to_small FROM master_drugs WHERE id = ?', [item.drug_id]);
+          const returnUnit = item.unit || 'large';
+          let deductQty = item.quantity;
+          if (returnUnit === 'medium') deductQty = item.quantity / (drugInfo?.large_to_medium || 1);
+          else if (returnUnit === 'small') deductQty = item.quantity / ((drugInfo?.large_to_medium || 1) * (drugInfo?.medium_to_small || 1));
+
+          const inventory = item.inventory_id
+            ? await dbGet<any>('SELECT id, drug_id, quantity FROM inventory WHERE id = ?', [item.inventory_id])
+            : await dbGet<any>('SELECT id, drug_id, quantity FROM inventory WHERE drug_id = ? AND quantity + 0.005 >= ? ORDER BY expiry_date ASC LIMIT 1', [item.drug_id, deductQty]);
+
+          if (!inventory || Number(inventory.drug_id) !== Number(item.drug_id) || Number(inventory.quantity) + 0.005 < deductQty) {
+            throw new Error(`Insufficient inventory for ${item.drug_name}`);
+          }
+
+          await dbExecute(
+            `INSERT INTO purchase_return_items (purchase_return_id, purchase_invoice_item_id, inventory_id, drug_id, drug_name, quantity_returned, unit_price, total_price, unit, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [returnId, item.purchase_invoice_item_id || null, inventory.id, item.drug_id, item.drug_name, item.quantity, item.unit_price, lineTotal, returnUnit, data.reason || null]
+          );
+
+          const actualDeduct = Math.min(Number(inventory.quantity), deductQty);
+          await dbExecute(
+            'UPDATE inventory SET quantity = CASE WHEN quantity - ? < 0.0001 THEN 0 ELSE quantity - ? END, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+            [actualDeduct, actualDeduct, inventory.id]
+          );
+        }
+
+        if (data.refund_method === 'credit') {
+          await dbExecute(
+            `INSERT INTO supplier_transactions (supplier_id, type, amount, reference_id, notes) VALUES (?, 'return', ?, ?, ?)`,
+            [data.supplier_id, totalAmount, returnId, data.reason || 'مرتجع مشتريات']
+          );
+          await dbExecute('UPDATE suppliers SET balance = balance - ? WHERE id = ?', [totalAmount, data.supplier_id]);
+        } else if (data.refund_method === 'cash') {
+          const openShift = await dbGet<any>("SELECT id FROM shifts WHERE user_id = ? AND status = 'open'", [session.id]);
+          if (openShift) {
+            await dbExecute(
+              `INSERT INTO cash_movements (id, user_id, shift_id, type, category, amount, notes, date) VALUES (?, ?, ?, 'in', 'purchase_return', ?, ?, ?)`,
+              [generateId(), session.id, openShift.id, totalAmount, `مرتجع مشتريات نقدي للمورد رقم ${data.supplier_id}`, new Date().toISOString().split('T')[0]]
+            );
+          }
+          await dbExecute(
+            `INSERT INTO supplier_transactions (supplier_id, type, amount, reference_id, notes) VALUES (?, 'return', ?, ?, ?)`,
+            [data.supplier_id, totalAmount, returnId, data.reason || 'مرتجع نقدي']
+          );
+          await dbExecute(
+            `INSERT INTO supplier_transactions (supplier_id, type, amount, reference_id, notes) VALUES (?, 'payment', ?, ?, ?)`,
+            [data.supplier_id, -totalAmount, returnId, 'استرداد نقدي للمرتجع']
+          );
+        }
+      });
+
+      revalidatePath('/purchases/returns');
+      revalidatePath('/inventory');
+      return { success: true, id: returnId };
+    }
+
     const transaction = db.transaction(async () => {
       const returnId = generateId();
       let totalAmount = 0;

@@ -94,6 +94,7 @@ interface Patient {
   wallet_balance?: number;
   opening_balance?: number;
   outstanding_balance?: number;
+  payment_method?: 'cash' | 'credit' | 'visa' | 'wallet';
 }
 
 export interface POSSearchSidebarRef {
@@ -305,7 +306,7 @@ export default function POSPage() {
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number, drugId: string | number } | null>(null);
 
   // Billing State
-  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'credit' | 'check' | 'visa' | 'delivery'>('cash');
+  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'credit' | 'check' | 'visa' | 'delivery' | 'wallet'>('cash');
   const [checkNumber, setCheckNumber] = useState('');
   const [totalDiscount, setTotalDiscount] = useState(0);
   const [discountPercent, setDiscountPercent] = useState(0);
@@ -901,13 +902,21 @@ export default function POSPage() {
               <div className="space-y-1">
                 <div className="flex items-center justify-between bg-purple-50 dark:bg-purple-900/20 p-2 rounded-xl border border-purple-100 dark:border-purple-800">
                   <span className="font-bold text-xs text-purple-700 dark:text-purple-300 truncate">👤 {selectedPatient.full_name}</span>
-                  <button onClick={() => setSelectedPatient(null)} className="text-purple-400 hover:text-purple-900">×</button>
+                  <button onClick={() => { setSelectedPatient(null); if (paymentMethod === 'credit' || paymentMethod === 'wallet') setPaymentMethod('cash'); }} className="text-purple-400 hover:text-purple-900">×</button>
                 </div>
                 {paymentMethod === 'credit' && (
                   <div className="text-[10px] font-black px-1 flex justify-between">
                     <span className="text-slate-400">الائتمان المتبقي:</span>
                     <span className={((selectedPatient.credit_limit || 0) - (selectedPatient.outstanding_balance || 0)) < total ? "text-rose-500 font-bold" : "text-emerald-600 font-bold"}>
                       {((selectedPatient.credit_limit || 0) - (selectedPatient.outstanding_balance || 0)).toFixed(2)} ج.م
+                    </span>
+                  </div>
+                )}
+                {paymentMethod === 'wallet' && (
+                  <div className="text-[10px] font-black px-1 flex justify-between">
+                    <span className="text-slate-400">رصيد المحفظة:</span>
+                    <span className={(selectedPatient.wallet_balance || 0) < total ? "text-rose-500 font-bold" : "text-emerald-600 font-bold"}>
+                      {Number(selectedPatient.wallet_balance || 0).toFixed(2)} ج.م
                     </span>
                   </div>
                 )}
@@ -928,7 +937,14 @@ export default function POSPage() {
                     {patientResults.map(p => (
                       <button 
                         key={p.id}
-                        onClick={() => { setSelectedPatient(p); setPatientResults([]); setPatientSearch(''); }}
+                        onClick={() => {
+                          setSelectedPatient(p);
+                          if (p.payment_method && ['cash', 'credit', 'visa', 'wallet'].includes(p.payment_method)) {
+                            setPaymentMethod(p.payment_method);
+                          }
+                          setPatientResults([]);
+                          setPatientSearch('');
+                        }}
                         className="w-full text-right p-3 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-xl text-xs font-bold"
                       >
                         <span className="flex items-center justify-between gap-2">
@@ -951,6 +967,7 @@ export default function POSPage() {
                 {[
                   { id: 'cash', label: 'كاش', icon: '💵', color: 'emerald' },
                   { id: 'credit', label: 'آجل', icon: '💳', color: 'blue' },
+                  { id: 'wallet', label: 'محفظة', icon: '👛', color: 'purple' },
                   { id: 'visa', label: 'فيزا', icon: '🏧', color: 'indigo' },
                   { id: 'delivery', label: 'توصيل', icon: '🛵', color: 'rose' }
                 ].map(method => (

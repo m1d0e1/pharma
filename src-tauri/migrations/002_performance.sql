@@ -1,23 +1,5 @@
 -- 002_performance.sql
--- SQLite performance tuning + indexes missing from Tauri migration
-
--- WAL mode: allows concurrent reads during writes, biggest single perf win
-PRAGMA journal_mode = WAL;
-
--- NORMAL sync is safe with WAL and ~2x faster than FULL
-PRAGMA synchronous = NORMAL;
-
--- 64MB cache (default is 2MB) — drugs table alone is ~20MB
-PRAGMA cache_size = -65536;
-
--- Memory-map up to 256MB of the DB file for faster reads
-PRAGMA mmap_size = 268435456;
-
--- Temp tables in memory
-PRAGMA temp_store = MEMORY;
-
--- Enable foreign keys
-PRAGMA foreign_keys = ON;
+-- Transaction-safe indexes. Connection PRAGMAs belong outside migrations.
 
 -- ============================================
 -- INVENTORY INDEXES
@@ -50,10 +32,10 @@ CREATE INDEX IF NOT EXISTS idx_users_active ON users(is_active) WHERE is_active 
 -- ============================================
 -- AUDIT / SHIFT / RETURNS
 -- ============================================
-CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at);
-CREATE INDEX IF NOT EXISTS idx_audit_logs_action_type ON audit_logs(action_type);
-CREATE INDEX IF NOT EXISTS idx_shift_registers_status ON shift_registers(status);
-CREATE INDEX IF NOT EXISTS idx_shift_registers_user_status ON shift_registers(user_id, status) WHERE status = 'open';
+CREATE INDEX IF NOT EXISTS idx_activity_log_created_at ON activity_log(created_at);
+CREATE INDEX IF NOT EXISTS idx_activity_log_action ON activity_log(action);
+CREATE INDEX IF NOT EXISTS idx_shifts_status ON shifts(status);
+CREATE INDEX IF NOT EXISTS idx_shifts_user_status ON shifts(user_id, status) WHERE status = 'open';
 CREATE INDEX IF NOT EXISTS idx_returns_status ON returns(status);
 CREATE INDEX IF NOT EXISTS idx_returns_created_at ON returns(created_at);
 

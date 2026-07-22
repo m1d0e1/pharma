@@ -150,6 +150,132 @@ describe('Finance Module Server Actions', () => {
     });
   });
 
+  describe('patient receivables flow', () => {
+    it('records a cash collection, cash movement, and balanced A/R journal atomically', async () => {
+      (dbExecute as jest.Mock).mockResolvedValue({ rowsAffected: 1 });
+      (dbGet as jest.Mock)
+        .mockResolvedValueOnce({ id: 'patient-1', full_name: 'Test Patient' })
+        .mockResolvedValueOnce({ outstanding_balance: 300 })
+        .mockResolvedValueOnce({ account_id: 6 })
+        .mockResolvedValueOnce({ account_id: 8 });
+
+      const result = await addPatientPaymentAction({
+        patient_id: 'patient-1',
+        amount: 75,
+        payment_method: 'cash',
+        notes: 'partial collection',
+        date: '2026-07-22',
+      });
+
+      expect(result).toMatchObject({ success: true, remainingBalance: 225 });
+      expect(dbTransaction).toHaveBeenCalledTimes(1);
+      expect(dbExecute).toHaveBeenCalledWith(
+        expect.stringContaining('INSERT INTO patient_transactions'),
+        expect.arrayContaining(['patient-1', 'test-user-id', 75, 'cash'])
+      );
+      expect(dbExecute).toHaveBeenCalledWith(
+        expect.stringContaining('INSERT INTO cash_movements'),
+        expect.arrayContaining([75, 'patient-1'])
+      );
+      expect(dbExecute).toHaveBeenCalledWith(
+        expect.stringContaining('INSERT INTO journal_entries'),
+        [expect.any(String), 6, 'debit', 75]
+      );
+      expect(dbExecute).toHaveBeenCalledWith(
+        expect.stringContaining('INSERT INTO journal_entries'),
+        [expect.any(String), 8, 'credit', 75]
+      );
+    });
+
+    it('posts a bank collection to bank clearing without inflating the cash drawer', async () => {
+      (dbExecute as jest.Mock).mockResolvedValue({ rowsAffected: 1 });
+      (dbGet as jest.Mock)
+        .mockResolvedValueOnce({ id: 'patient-1', full_name: 'Test Patient' })
+        .mockResolvedValueOnce({ outstanding_balance: 100 })
+        .mockResolvedValueOnce({ account_id: 12 })
+        .mockResolvedValueOnce({ account_id: 8 });
+
+      const result = await addPatientPaymentAction({
+        patient_id: 'patient-1',
+        amount: 100,
+        payment_method: 'bank',
+        date: '2026-07-22',
+      });
+
+      expect(result).toMatchObject({ success: true, remainingBalance: 0 });
+      expect(dbExecute).not.toHaveBeenCalledWith(
+        expect.stringContaining('INSERT INTO cash_movements'),
+        expect.anything()
+      );
+      expect(dbExecute).toHaveBeenCalledWith(
+        expect.stringContaining('INSERT INTO journal_entries'),
+        [expect.any(String), 12, 'debit', 100]
+      );
+    });
+
+    it('rejects overpayment before writing any financial row', async () => {
+      (dbGet as jest.Mock)
+        .mockResolvedValueOnce({ id: 'patient-1', full_name: 'Test Patient' })
+        .mockResolvedValueOnce({ outstanding_balance: 40 });
+
+      const result = await addPatientPaymentAction({
+        patient_id: 'patient-1',
+        amount: 50,
+        payment_method: 'cash',
+        date: '2026-07-22',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('يتجاوز المديونية الحالية');
+      expect(dbExecute).not.toHaveBeenCalled();
+    });
+
+    it('stores debit notices as positive adjustments and credit notices as negative adjustments', async () => {
+      (dbExecute as jest.Mock).mockResolvedValue({ rowsAffected: 1 });
+      (dbGet as jest.Mock)
+        .mockResolvedValueOnce({ id: 'patient-1' })
+        .mockResolvedValueOnce({ account_id: 8 })
+        .mockResolvedValueOnce({ account_id: 13 });
+
+      const debit = await addFinancialNoticeAction({
+        target_type: 'customer',
+        target_id: 'patient-1',
+        type: 'debit',
+        amount: 20,
+        reason: 'debit correction',
+        date: '2026-07-22',
+      });
+      expect(debit.success).toBe(true);
+      expect(dbExecute).toHaveBeenCalledWith(
+        expect.stringContaining('INSERT INTO patient_transactions'),
+        [expect.any(String), 'patient-1', 'test-user-id', 20, 'debit correction', '2026-07-22']
+      );
+
+      jest.clearAllMocks();
+      (getLocalSession as jest.Mock).mockResolvedValue(mockUser);
+      (dbTransaction as jest.Mock).mockImplementation((cb: any) => cb());
+      (dbExecute as jest.Mock).mockResolvedValue({ rowsAffected: 1 });
+      (dbGet as jest.Mock)
+        .mockResolvedValueOnce({ id: 'patient-1' })
+        .mockResolvedValueOnce({ account_id: 8 })
+        .mockResolvedValueOnce({ account_id: 13 });
+
+      const credit = await addFinancialNoticeAction({
+        target_type: 'customer',
+        target_id: 'patient-1',
+        type: 'credit',
+        amount: 15,
+        reason: 'credit correction',
+        date: '2026-07-22',
+      });
+      expect(credit.success).toBe(true);
+      expect(dbExecute).toHaveBeenCalledWith(
+        expect.stringContaining('INSERT INTO patient_transactions'),
+        [expect.any(String), 'patient-1', 'test-user-id', -15, 'credit correction', '2026-07-22']
+      );
+    });
+  });
+
   describe('generateDailySnapshotAction (Logic Test - Net Profit)', () => {
     it('should aggregate sales, returns, and movements to calculate net profit', async () => {
       (dbExecute as jest.Mock).mockResolvedValue({ rowsAffected: 1 });

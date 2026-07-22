@@ -55,6 +55,10 @@ import { z } from 'zod';
 import { secureCache } from '@/lib/cache/secure_cache';
 import { calculateCheckoutTotal, calculateLoyaltyPoints } from '@/lib/pos/checkout-calculation';
 import { isTauri } from '@/lib/env';
+import {
+  patientOutstandingBalanceExpression,
+  patientOutstandingBalanceQuery,
+} from '@/lib/patients/balance';
 
 const CheckoutItemSchema = z.object({
   drug_id: z.coerce.number(),
@@ -268,22 +272,8 @@ export async function searchPatientsAction(query: string) {
         p.credit_limit,
         p.wallet_balance,
         p.opening_balance,
-        (
-          COALESCE(p.opening_balance, 0) +
-          (SELECT COALESCE(SUM(si.total_amount), 0)
-             FROM sales_invoices si
-            WHERE si.patient_id = p.id
-              AND si.payment_method = 'credit'
-              AND si.status = 'completed') -
-          (SELECT COALESCE(SUM(r.total_refund), 0)
-             FROM returns r
-             JOIN sales_invoices si ON r.invoice_id = si.id
-            WHERE si.patient_id = p.id) -
-          (SELECT COALESCE(SUM(pt.amount), 0)
-             FROM patient_transactions pt
-            WHERE pt.patient_id = p.id
-              AND pt.type IN ('payment', 'adjustment'))
-        ) AS outstanding_balance
+        p.payment_method,
+        CAST(${patientOutstandingBalanceExpression('p')} AS REAL) AS outstanding_balance
       FROM patients p
       WHERE (p.full_name LIKE ? OR p.phone LIKE ?)
       LIMIT 5
@@ -506,19 +496,15 @@ export async function processCheckoutAction(data: any) {
     let patientLoyaltyLevel: string | null = null;
     if (validatedData.patient_id && validatedData.status === 'completed') {
       const patient = await db.prepare('SELECT credit_limit, wallet_balance, loyalty_level FROM patients WHERE id = ?').get(validatedData.patient_id) as any;
+      if (!patient) {
+        return { success: false, error: 'المريض المحدد غير موجود' };
+      }
       if (patient) {
         patientLoyaltyLevel = patient.loyalty_level || null;
         const subTotal = calculateCheckoutTotal(validatedData.items, validatedData.total_discount || 0, validatedData.additional_fees || 0);
 
         if (validatedData.payment_method === 'credit') {
-          const balanceRow = await db.prepare(`
-            SELECT (
-              (SELECT COALESCE(opening_balance, 0) FROM patients WHERE id = ?) +
-              (SELECT COALESCE(SUM(total_amount), 0) FROM sales_invoices WHERE patient_id = ? AND payment_method = 'credit' AND status = 'completed') -
-              (SELECT COALESCE(SUM(r.total_refund), 0) FROM returns r JOIN sales_invoices si ON r.invoice_id = si.id WHERE si.patient_id = ?) -
-              (SELECT COALESCE(SUM(amount), 0) FROM patient_transactions WHERE patient_id = ? AND type IN ('payment', 'adjustment'))
-            ) as outstanding_balance
-          `).get(validatedData.patient_id, validatedData.patient_id, validatedData.patient_id, validatedData.patient_id) as any;
+          const balanceRow = await db.prepare(patientOutstandingBalanceQuery()).get(validatedData.patient_id) as any;
            const currentDebt = balanceRow?.outstanding_balance || 0;
           const creditLeft = (patient.credit_limit || 0) - currentDebt;
 
@@ -661,7 +647,9 @@ export async function processCheckoutAction(data: any) {
 
         let debitAccount = accounts.cash;
         if (validatedData.payment_method === 'credit') debitAccount = accounts.receivable;
-        if (validatedData.payment_method === 'wallet') debitAccount = accounts.receivable;
+        if (validatedData.payment_method === 'wallet') {
+          debitAccount = await getAccountId('patient_wallet_liability') || 7;
+        }
 
         await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, debitAccount, 'debit', totalAmount);
         await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, accounts.sales, 'credit', totalAmount);

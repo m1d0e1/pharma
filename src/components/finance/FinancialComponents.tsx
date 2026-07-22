@@ -45,14 +45,9 @@ export function CustomerStatementContent({ patientId }: { patientId: string }) {
   // 2. Compute running balance for all movements
   let running = patient.opening_balance || 0;
   const movementsWithBalance = sortedMovements.map(mov => {
-    const isCreditInvoice = mov.type === 'فاتورة بيع' && mov.payment_method === 'credit';
-    const isAccountReturn = mov.type === 'مرتجع بيع' && mov.payment_method === 'patient_account';
-    const isPaymentOrAdjustment = mov.type === 'توريد نقدية' || mov.type === 'إشعار';
-    
-    if (isCreditInvoice || isAccountReturn || isPaymentOrAdjustment) {
-      running += mov.value;
-    }
-    return { ...mov, runningBalance: running };
+    const balanceEffect = Number(mov.balance_effect ?? 0);
+    running += balanceEffect;
+    return { ...mov, balanceEffect, runningBalance: running };
   });
 
   // 3. Apply appliedFilter
@@ -106,7 +101,7 @@ export function CustomerStatementContent({ patientId }: { patientId: string }) {
              {hasFilter && (
                 <button onClick={handleReset} className="px-4 py-4 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-2xl font-bold transition-all">إعادة تعيين</button>
              )}
-             <button className="p-4 bg-slate-100 dark:bg-slate-800 rounded-2xl text-slate-500 hover:bg-slate-200 transition-all"><Printer className="w-6 h-6" /></button>
+              <button onClick={() => window.print()} className="p-4 bg-slate-100 dark:bg-slate-800 rounded-2xl text-slate-500 hover:bg-slate-200 transition-all"><Printer className="w-6 h-6" /></button>
           </div>
           <div className="text-left">
              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">
@@ -146,16 +141,16 @@ export function CustomerStatementContent({ patientId }: { patientId: string }) {
                          <div className="flex items-center gap-3">
                             <div className={cn(
                                "w-8 h-8 rounded-lg flex items-center justify-center",
-                               mov.value > 0 ? "bg-blue-100 text-blue-600" : "bg-emerald-100 text-emerald-600"
-                            )}>
-                               {mov.value > 0 ? <ArrowUpRight className="w-4 h-4" /> : <ArrowDownLeft className="w-4 h-4" />}
+                               mov.balanceEffect > 0 ? "bg-blue-100 text-blue-600" : "bg-emerald-100 text-emerald-600"
+                             )}>
+                                {mov.balanceEffect > 0 ? <ArrowUpRight className="w-4 h-4" /> : <ArrowDownLeft className="w-4 h-4" />}
                             </div>
                             <span className="font-black text-slate-800 dark:text-white">{mov.type}</span>
                             <span className="text-[10px] font-bold text-slate-400">#{mov.doc_no.slice(0, 6)}</span>
                          </div>
                       </td>
-                      <td className="px-6 py-4 font-black text-blue-600">{mov.value > 0 ? mov.value.toLocaleString('en-US') : '0.00'}</td>
-                      <td className="px-6 py-4 font-black text-emerald-600">{mov.value < 0 ? Math.abs(mov.value).toLocaleString('en-US') : '0.00'}</td>
+                       <td className="px-6 py-4 font-black text-blue-600">{mov.balanceEffect > 0 ? mov.balanceEffect.toLocaleString('en-US') : '0.00'}</td>
+                       <td className="px-6 py-4 font-black text-emerald-600">{mov.balanceEffect < 0 ? Math.abs(mov.balanceEffect).toLocaleString('en-US') : '0.00'}</td>
                       <td className="px-6 py-4 font-black text-slate-900 dark:text-white">{mov.runningBalance.toLocaleString('en-US')}</td>
                    </tr>
                 ))}

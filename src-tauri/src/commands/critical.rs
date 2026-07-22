@@ -115,10 +115,14 @@ pub struct DeletePurchasePayload {
 pub struct ReturnPayload {
     pub invoice_id: String,
     pub user_id: String,
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub pharmacy_id: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub shift_id: Option<String>,
     pub refund_method: String,
-    pub reason: String,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub reason: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub patient_id: Option<String>,
     pub items: Vec<ReturnItem>,
 }
@@ -127,12 +131,14 @@ pub struct ReturnPayload {
 pub struct ReturnItem {
     #[serde(default, deserialize_with = "de_opt_i64")]
     pub sale_item_id: Option<i64>,
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub inventory_id: Option<String>,
     pub drug_name: String,
     #[serde(default, deserialize_with = "de_f64")]
     pub quantity: f64,
     #[serde(default, deserialize_with = "de_f64")]
     pub unit_price: f64,
+    #[serde(default, deserialize_with = "de_opt_string")]
     pub unit: Option<String>,
 }
 
@@ -423,6 +429,14 @@ async fn create_return_tx(
         .execute(&mut **tx)
         .await
         .ok();
+    sqlx::query("ALTER TABLE return_items ADD COLUMN drug_id INTEGER")
+        .execute(&mut **tx)
+        .await
+        .ok();
+    sqlx::query("ALTER TABLE return_items ADD COLUMN total_price REAL")
+        .execute(&mut **tx)
+        .await
+        .ok();
 
     let invoice = sqlx::query("SELECT patient_id FROM sales_invoices WHERE id = ?")
         .bind(&payload.invoice_id)
@@ -430,6 +444,19 @@ async fn create_return_tx(
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Invoice not found".to_string())?;
+    if payload.refund_method == "patient_account" {
+        let invoice_patient = invoice
+            .try_get::<Option<String>, _>("patient_id")
+            .unwrap_or(None);
+        if invoice_patient.is_none()
+            || payload
+                .patient_id
+                .as_ref()
+                .is_some_and(|id| Some(id) != invoice_patient.as_ref())
+        {
+            return Err("Patient-account returns require the invoice patient".into());
+        }
+    }
 
     for item in &payload.items {
         if let Some(sale_item_id) = item.sale_item_id {
@@ -449,7 +476,7 @@ async fn create_return_tx(
             }
 
             let sold = sqlx::query(
-                "SELECT quantity_sold, unit, drug_id, inventory_id FROM sales_items WHERE id = ? AND invoice_id = ?",
+                "SELECT CAST(quantity_sold AS REAL) AS quantity_sold, unit, drug_id, inventory_id FROM sales_items WHERE id = ? AND invoice_id = ?",
             )
             .bind(sale_item_id)
             .bind(&payload.invoice_id)
@@ -462,7 +489,7 @@ async fn create_return_tx(
             let drug_id: Option<i64> = sold.try_get("drug_id").ok();
             let inventory_id: Option<String> = sold.try_get("inventory_id").ok();
             let returned: f64 = sqlx::query(
-                "SELECT COALESCE(SUM(ri.quantity_returned), 0) as total FROM return_items ri JOIN returns r ON ri.return_id = r.id WHERE r.invoice_id = ? AND r.status = 'approved' AND ri.sale_item_id = ?",
+                "SELECT CAST(COALESCE(SUM(ri.quantity_returned), 0) AS REAL) as total FROM return_items ri JOIN returns r ON ri.return_id = r.id WHERE r.invoice_id = ? AND r.status = 'approved' AND ri.sale_item_id = ?",
             )
             .bind(&payload.invoice_id)
             .bind(sale_item_id)
@@ -511,7 +538,7 @@ async fn create_return_tx(
     for item in &payload.items {
         let sale_item = if let Some(id) = item.sale_item_id {
             sqlx::query(
-                "SELECT drug_id, cost_price, unit, inventory_id FROM sales_items WHERE id = ?",
+                "SELECT drug_id, CAST(cost_price AS REAL) AS cost_price, unit, inventory_id FROM sales_items WHERE id = ?",
             )
             .bind(id)
             .fetch_optional(&mut **tx)
@@ -552,14 +579,16 @@ async fn create_return_tx(
             &sold_unit,
         )
         .await?;
-        sqlx::query("INSERT INTO return_items (return_id, inventory_id, drug_name, quantity_returned, unit_price, sale_item_id, unit) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO return_items (return_id, inventory_id, drug_id, drug_name, quantity_returned, unit_price, sale_item_id, unit, total_price) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(&return_id)
             .bind(&inventory_id)
+            .bind(drug_id)
             .bind(&item.drug_name)
             .bind(returned_in_sold_unit)
             .bind(item.unit_price)
             .bind(item.sale_item_id)
             .bind(unit)
+            .bind(item.quantity * item.unit_price)
             .execute(&mut **tx)
             .await
             .map_err(|e| e.to_string())?;
@@ -575,21 +604,6 @@ async fn create_return_tx(
         total_cogs_reversal += cost_price * restock_qty;
     }
 
-    let target_patient = payload
-        .patient_id
-        .clone()
-        .or_else(|| invoice.try_get("patient_id").ok());
-    if payload.refund_method == "patient_account" {
-        if let Some(patient_id) = &target_patient {
-            sqlx::query("UPDATE patients SET wallet_balance = wallet_balance + ? WHERE id = ?")
-                .bind(total_refund)
-                .bind(patient_id)
-                .execute(&mut **tx)
-                .await
-                .map_err(|e| e.to_string())?;
-        }
-    }
-
     apply_return_accounting(tx, &payload, &return_id, total_refund, total_cogs_reversal).await?;
     Ok(ReturnResult {
         return_id,
@@ -601,6 +615,10 @@ async fn save_purchase_invoice_tx(
     tx: &mut Transaction<'_, Sqlite>,
     payload: PurchasePayload,
 ) -> Result<PurchaseResult, String> {
+    sqlx::query("ALTER TABLE purchase_invoice_items ADD COLUMN inventory_id TEXT")
+        .execute(&mut **tx)
+        .await
+        .ok();
     let invoice_id = payload
         .id
         .clone()
@@ -646,7 +664,8 @@ async fn save_purchase_invoice_tx(
         .map_err(|e| e.to_string())?;
 
     let effective_user_id: String = if let Some(row) = user_row {
-        row.try_get("id").unwrap_or_else(|_| payload.user_id.clone())
+        row.try_get("id")
+            .unwrap_or_else(|_| payload.user_id.clone())
     } else {
         let first_usr = sqlx::query("SELECT id FROM users ORDER BY created_at ASC LIMIT 1")
             .fetch_optional(&mut **tx)
@@ -833,6 +852,32 @@ fn checkout_total(items: &[CheckoutItem], discount: f64, additional_fees: f64) -
         - discount
 }
 
+async fn patient_outstanding_debt(
+    tx: &mut Transaction<'_, Sqlite>,
+    patient_id: &str,
+) -> Result<f64, String> {
+    let row = sqlx::query(
+        r#"
+        SELECT CAST(
+          (SELECT COALESCE(CAST(opening_balance AS REAL), 0) FROM patients WHERE id = ?) +
+          (SELECT COALESCE(SUM(CAST(total_amount AS REAL)), 0) FROM sales_invoices WHERE patient_id = ? AND payment_method = 'credit' AND status = 'completed') -
+          (SELECT COALESCE(SUM(CAST(r.total_refund AS REAL)), 0) FROM returns r JOIN sales_invoices si ON r.invoice_id = si.id WHERE si.patient_id = ? AND (r.status = 'approved' OR r.status = 'completed') AND r.refund_method = 'patient_account') -
+          (SELECT COALESCE(SUM(ABS(CAST(amount AS REAL))), 0) FROM patient_transactions WHERE patient_id = ? AND type = 'payment') +
+          (SELECT COALESCE(SUM(CAST(amount AS REAL)), 0) FROM patient_transactions WHERE patient_id = ? AND type = 'adjustment')
+        AS REAL) AS outstanding_balance
+        "#,
+    )
+    .bind(patient_id)
+    .bind(patient_id)
+    .bind(patient_id)
+    .bind(patient_id)
+    .bind(patient_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(row.try_get("outstanding_balance").unwrap_or(0.0))
+}
+
 fn sale_stock_qty(
     quantity: f64,
     unit: &str,
@@ -866,7 +911,7 @@ async fn process_checkout_tx(
     if payload.status == "completed" {
         if let Some(patient_id) = &payload.patient_id {
             if let Some(patient) = sqlx::query(
-                "SELECT credit_limit, wallet_balance, loyalty_level FROM patients WHERE id = ?",
+                "SELECT CAST(COALESCE(credit_limit, 0) AS REAL) AS credit_limit, CAST(COALESCE(wallet_balance, 0) AS REAL) AS wallet_balance, loyalty_level FROM patients WHERE id = ?",
             )
             .bind(patient_id)
             .fetch_optional(&mut **tx)
@@ -878,24 +923,7 @@ async fn process_checkout_tx(
                 patient_loyalty_level = patient.try_get("loyalty_level").ok();
 
                 if payload.payment_method == "credit" {
-                    let debt_row = sqlx::query(
-                        r#"
-                        SELECT (
-                          (SELECT COALESCE(opening_balance, 0) FROM patients WHERE id = ?) +
-                          (SELECT COALESCE(SUM(total_amount), 0) FROM sales_invoices WHERE patient_id = ? AND payment_method = 'credit' AND status = 'completed') -
-                          (SELECT COALESCE(SUM(r.total_refund), 0) FROM returns r JOIN sales_invoices si ON r.invoice_id = si.id WHERE si.patient_id = ?) -
-                          (SELECT COALESCE(SUM(amount), 0) FROM patient_transactions WHERE patient_id = ? AND type IN ('payment', 'adjustment'))
-                        ) as outstanding_balance
-                        "#,
-                    )
-                    .bind(patient_id)
-                    .bind(patient_id)
-                    .bind(patient_id)
-                    .bind(patient_id)
-                    .fetch_one(&mut **tx)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                    let current_debt: f64 = debt_row.try_get("outstanding_balance").unwrap_or(0.0);
+                    let current_debt = patient_outstanding_debt(tx, patient_id).await?;
                     if current_debt + total_amount > credit_limit {
                         return Err("Credit limit exceeded".into());
                     }
@@ -1128,10 +1156,10 @@ async fn process_checkout_tx(
         let sales = account_id(tx, "sales_revenue", 9).await?;
         let inventory = account_id(tx, "inventory_asset", 10).await?;
         let cogs = account_id(tx, "cogs_expense", 11).await?;
-        let debit = if payload.payment_method == "credit" || payload.payment_method == "wallet" {
-            receivable
-        } else {
-            cash
+        let debit = match payload.payment_method.as_str() {
+            "credit" => receivable,
+            "wallet" => account_id(tx, "patient_wallet_liability", 0).await?,
+            _ => cash,
         };
 
         insert_journal_entry(tx, &journal_id, debit, "debit", total_amount).await?;
@@ -1811,9 +1839,20 @@ async fn ensure_return_inventory(
         {
             return Ok(id.to_string());
         }
-        return Err("Original inventory batch no longer exists".into());
     }
     let drug_id = drug_id.ok_or_else(|| "Return item is missing drug id".to_string())?;
+
+    if let Some(row) = sqlx::query("SELECT id FROM inventory WHERE drug_id = ? LIMIT 1")
+        .bind(drug_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        if let Ok(existing_id) = row.try_get::<String, _>("id") {
+            return Ok(existing_id);
+        }
+    }
+
     let id = uuid::Uuid::new_v4().to_string();
     let batch = format!("RET-{}", &id[..8]);
     sqlx::query("INSERT INTO inventory (id, pharmacy_id, drug_id, batch_number, expiry_date, quantity, unit_price, cost_price, created_at, updated_at) VALUES (?, ?, ?, ?, NULL, 0, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)")
@@ -2029,9 +2068,10 @@ fn loyalty_points(total_amount: f64, loyalty_level: Option<&str>) -> i64 {
 mod tests {
     use super::{
         add_purchase_inventory, checkout_total, create_return_tx, delete_purchase_invoice_tx,
-        loyalty_points, process_checkout_tx, return_quantity_in_sale_unit, return_restock_qty,
-        sale_stock_qty, save_purchase_invoice_tx, validate_write_sql, CheckoutItem,
-        CheckoutPayload, PurchaseItem, PurchasePayload, ReturnItem, ReturnPayload,
+        loyalty_points, patient_outstanding_debt, process_checkout_tx,
+        return_quantity_in_sale_unit, return_restock_qty, sale_stock_qty, save_purchase_invoice_tx,
+        validate_write_sql, CheckoutItem, CheckoutPayload, PurchaseItem, PurchasePayload,
+        ReturnItem, ReturnPayload,
     };
     use sqlx::{Connection, Row, SqliteConnection};
 
@@ -2057,6 +2097,40 @@ mod tests {
         ];
         assert_eq!(checkout_total(&items, 4.0, 2.0), 33.0);
         assert_eq!(loyalty_points(33.0, Some("gold")), 49);
+    }
+
+    #[tokio::test]
+    async fn patient_debt_uses_only_receivable_movements() {
+        let mut conn = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        for sql in [
+            "CREATE TABLE patients (id TEXT PRIMARY KEY, opening_balance INTEGER)",
+            "CREATE TABLE sales_invoices (id TEXT PRIMARY KEY, patient_id TEXT, total_amount INTEGER, payment_method TEXT, status TEXT)",
+            "CREATE TABLE returns (invoice_id TEXT, total_refund INTEGER, refund_method TEXT, status TEXT)",
+            "CREATE TABLE patient_transactions (patient_id TEXT, type TEXT, amount INTEGER)",
+        ] {
+            sqlx::query(sql).execute(&mut conn).await.unwrap();
+        }
+        sqlx::query("INSERT INTO patients VALUES ('p1', 50)")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO sales_invoices VALUES ('credit-sale', 'p1', 100, 'credit', 'completed'), ('cash-sale', 'p1', 50, 'cash', 'completed')")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO returns VALUES ('credit-sale', 20, 'patient_account', 'approved'), ('credit-sale', 10, 'cash', 'approved'), ('credit-sale', 50, 'patient_account', 'pending')")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO patient_transactions VALUES ('p1', 'payment', 30), ('p1', 'adjustment', -10), ('p1', 'adjustment', 5)")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+
+        let mut tx = conn.begin().await.unwrap();
+        let debt = patient_outstanding_debt(&mut tx, "p1").await.unwrap();
+        tx.rollback().await.unwrap();
+        assert_eq!(debt, 95.0);
     }
 
     #[test]
@@ -2368,9 +2442,10 @@ mod tests {
             "CREATE TABLE master_drugs (id INTEGER PRIMARY KEY, trade_name TEXT, no_return INTEGER, large_to_medium INTEGER, medium_to_small INTEGER)",
             "CREATE TABLE inventory (id TEXT PRIMARY KEY, pharmacy_id TEXT, drug_id INTEGER, batch_number TEXT, expiry_date TEXT, quantity REAL, unit_price REAL, cost_price REAL, strips_per_box INTEGER, created_at TEXT, updated_at TEXT)",
             "CREATE TABLE sales_invoices (id TEXT PRIMARY KEY, patient_id TEXT)",
-            "CREATE TABLE sales_items (id INTEGER PRIMARY KEY, invoice_id TEXT, inventory_id TEXT, drug_id INTEGER, quantity_sold REAL, unit_price REAL, unit TEXT, cost_price REAL)",
+            "CREATE TABLE patients (id TEXT PRIMARY KEY, wallet_balance REAL)",
+            "CREATE TABLE sales_items (id INTEGER PRIMARY KEY, invoice_id TEXT, inventory_id TEXT, drug_id INTEGER, quantity_sold INTEGER, unit_price REAL, unit TEXT, cost_price INTEGER)",
             "CREATE TABLE returns (id TEXT PRIMARY KEY, invoice_id TEXT, user_id TEXT, shift_id TEXT, reason TEXT, total_refund REAL, refund_method TEXT, status TEXT)",
-            "CREATE TABLE return_items (id INTEGER PRIMARY KEY AUTOINCREMENT, return_id TEXT, inventory_id TEXT, drug_name TEXT, quantity_returned REAL, unit_price REAL, sale_item_id INTEGER, unit TEXT)",
+            "CREATE TABLE return_items (id INTEGER PRIMARY KEY AUTOINCREMENT, return_id TEXT, inventory_id TEXT, drug_name TEXT, quantity_returned INTEGER, unit_price REAL)",
             "CREATE TABLE daily_journals (id TEXT PRIMARY KEY, date TEXT, description TEXT, created_by TEXT, total_amount REAL)",
             "CREATE TABLE journal_entries (journal_id TEXT, account_id INTEGER, type TEXT, amount REAL)",
             "CREATE TABLE trial_balance_settings (category TEXT, account_id INTEGER)",
@@ -2378,7 +2453,7 @@ mod tests {
         ] {
             sqlx::query(sql).execute(&mut conn).await.unwrap();
         }
-        sqlx::query("INSERT INTO master_drugs VALUES (4463, 'COLONA', 0, 1, 1)")
+        sqlx::query("INSERT INTO master_drugs VALUES (4463, 'COLONA', 0, 10, 2)")
             .execute(&mut conn)
             .await
             .unwrap();
@@ -2387,7 +2462,11 @@ mod tests {
             .await
             .unwrap();
         sqlx::query("INSERT INTO inventory VALUES ('batch-2027', 'ph-1', 4463, 'B-27', '2027-08-13', 0, 69, 40, 10, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)").execute(&mut conn).await.unwrap();
-        sqlx::query("INSERT INTO sales_invoices VALUES ('invoice-1', NULL)")
+        sqlx::query("INSERT INTO patients VALUES ('patient-1', 0)")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO sales_invoices VALUES ('invoice-1', 'patient-1')")
             .execute(&mut conn)
             .await
             .unwrap();
@@ -2399,7 +2478,7 @@ mod tests {
             pharmacy_id: Some("ph-1".into()),
             shift_id: None,
             refund_method: "cash".into(),
-            reason: "partial".into(),
+            reason: Some("partial".into()),
             patient_id: None,
             items: vec![ReturnItem {
                 sale_item_id: Some(1),
@@ -2433,19 +2512,85 @@ mod tests {
         assert_eq!(expiry, "2027-08-13");
         assert!((1.0 - returned - 0.8).abs() < 0.000_001);
 
+        let patient_return = ReturnPayload {
+            invoice_id: "invoice-1".into(),
+            user_id: "admin".into(),
+            pharmacy_id: Some("ph-1".into()),
+            shift_id: None,
+            refund_method: "patient_account".into(),
+            reason: None,
+            patient_id: None,
+            items: vec![ReturnItem {
+                sale_item_id: Some(1),
+                inventory_id: Some("batch-2027".into()),
+                drug_name: "COLONA".into(),
+                quantity: 4.0,
+                unit_price: 3.45,
+                unit: Some("small".into()),
+            }],
+        };
+        let mut tx = conn.begin().await.unwrap();
+        create_return_tx(&mut tx, patient_return).await.unwrap();
+        tx.commit().await.unwrap();
+        let wallet: f64 = sqlx::query("SELECT wallet_balance FROM patients WHERE id = 'patient-1'")
+            .fetch_one(&mut conn)
+            .await
+            .unwrap()
+            .try_get("wallet_balance")
+            .unwrap();
+        let receivable_credit: f64 = sqlx::query(
+            "SELECT CAST(COALESCE(SUM(amount), 0) AS REAL) AS total FROM journal_entries WHERE account_id = 8 AND type = 'credit'",
+        )
+        .fetch_one(&mut conn)
+        .await
+        .unwrap()
+        .try_get("total")
+        .unwrap();
+        assert_eq!(wallet, 0.0);
+        assert!((receivable_credit - 13.8).abs() < 0.000_001);
+
+        let full_return = ReturnPayload {
+            invoice_id: "invoice-1".into(),
+            user_id: "admin".into(),
+            pharmacy_id: Some("ph-1".into()),
+            shift_id: None,
+            refund_method: "cash".into(),
+            reason: Some("complete".into()),
+            patient_id: None,
+            items: vec![ReturnItem {
+                sale_item_id: Some(1),
+                inventory_id: Some("batch-2027".into()),
+                drug_name: "COLONA".into(),
+                quantity: 0.6,
+                unit_price: 69.0,
+                unit: Some("large".into()),
+            }],
+        };
+        let mut tx = conn.begin().await.unwrap();
+        create_return_tx(&mut tx, full_return).await.unwrap();
+        tx.commit().await.unwrap();
+        let final_stock: f64 =
+            sqlx::query("SELECT quantity FROM inventory WHERE id = 'batch-2027'")
+                .fetch_one(&mut conn)
+                .await
+                .unwrap()
+                .try_get("quantity")
+                .unwrap();
+        assert!((final_stock - 1.0).abs() < 0.000_001);
+
         let excessive = ReturnPayload {
             invoice_id: "invoice-1".into(),
             user_id: "admin".into(),
             pharmacy_id: Some("ph-1".into()),
             shift_id: None,
             refund_method: "cash".into(),
-            reason: "too much".into(),
+            reason: Some("too much".into()),
             patient_id: None,
             items: vec![ReturnItem {
                 sale_item_id: Some(1),
                 inventory_id: Some("batch-2027".into()),
                 drug_name: "COLONA".into(),
-                quantity: 9.0,
+                quantity: 1.0,
                 unit_price: 6.9,
                 unit: Some("medium".into()),
             }],
@@ -2457,7 +2602,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn checkout_falls_back_when_selected_inventory_row_is_empty() {
+    async fn checkout_handles_batch_fallback_and_wallet_accounting() {
         let mut conn = SqliteConnection::connect("sqlite::memory:").await.unwrap();
         for sql in [
             "CREATE TABLE master_drugs (id INTEGER PRIMARY KEY, trade_name TEXT, large_to_medium INTEGER, medium_to_small INTEGER, medium_unit TEXT, small_unit TEXT)",
@@ -2468,6 +2613,10 @@ mod tests {
             "CREATE TABLE journal_entries (journal_id TEXT, account_id INTEGER, type TEXT, amount REAL)",
             "CREATE TABLE trial_balance_settings (category TEXT, account_id INTEGER)",
             "CREATE TABLE accounts (id INTEGER PRIMARY KEY)",
+            "CREATE TABLE patients (id TEXT PRIMARY KEY, credit_limit INTEGER, wallet_balance INTEGER, loyalty_level TEXT, points_balance INTEGER)",
+            "CREATE TABLE returns (invoice_id TEXT, total_refund REAL, refund_method TEXT, status TEXT)",
+            "CREATE TABLE patient_transactions (patient_id TEXT, type TEXT, amount REAL)",
+            "CREATE TABLE refill_reminders (id TEXT, patient_id TEXT, drug_id INTEGER, last_sold_date TEXT, next_refill_date TEXT, created_at TEXT)",
         ] {
             sqlx::query(sql).execute(&mut conn).await.unwrap();
         }
@@ -2475,7 +2624,11 @@ mod tests {
             .execute(&mut conn)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO accounts (id) VALUES (6), (8), (9), (10), (11)")
+        sqlx::query("INSERT INTO accounts (id) VALUES (6), (8), (9), (10), (11), (12)")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO trial_balance_settings VALUES ('patient_wallet_liability', 12)")
             .execute(&mut conn)
             .await
             .unwrap();
@@ -2515,5 +2668,51 @@ mod tests {
             .try_get("quantity")
             .unwrap();
         assert_eq!(full_qty, 6);
+
+        sqlx::query("INSERT INTO patients VALUES ('p1', 300, 100, 'bronze', 0)")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        let wallet_payload = CheckoutPayload {
+            pharmacy_id: "ph-001".into(),
+            user_id: "admin".into(),
+            items: vec![CheckoutItem {
+                drug_id: 4463,
+                inventory_id: Some("full".into()),
+                quantity_sold: 1.0,
+                unit_price: 69.0,
+                selected_unit: "large".into(),
+                is_negative: false,
+            }],
+            patient_id: Some("p1".into()),
+            shift_id: None,
+            payment_method: "wallet".into(),
+            check_number: None,
+            status: "completed".into(),
+            total_discount: 0.0,
+            additional_fees: 0.0,
+        };
+        let mut tx = conn.begin().await.unwrap();
+        process_checkout_tx(&mut tx, wallet_payload, 69.0)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let wallet: f64 = sqlx::query(
+            "SELECT CAST(wallet_balance AS REAL) AS wallet_balance FROM patients WHERE id = 'p1'",
+        )
+        .fetch_one(&mut conn)
+        .await
+        .unwrap()
+        .try_get("wallet_balance")
+        .unwrap();
+        let wallet_debit: f64 = sqlx::query("SELECT CAST(COALESCE(SUM(amount), 0) AS REAL) AS total FROM journal_entries WHERE account_id = 12 AND type = 'debit'")
+            .fetch_one(&mut conn)
+            .await
+            .unwrap()
+            .try_get("total")
+            .unwrap();
+        assert_eq!(wallet, 31.0);
+        assert_eq!(wallet_debit, 69.0);
     }
 }

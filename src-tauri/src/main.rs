@@ -148,6 +148,12 @@ fn main() {
             sql: include_str!("../migrations/007_purchase_inventory_links.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 8,
+            description: "patient_accounting",
+            sql: include_str!("../migrations/008_patient_accounting.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()

@@ -55,18 +55,29 @@ import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 
+async function ensureReturnItemsSchema() {
+  for (const sql of [
+    'ALTER TABLE return_items ADD COLUMN sale_item_id INTEGER',
+    "ALTER TABLE return_items ADD COLUMN unit TEXT DEFAULT 'large'",
+    'ALTER TABLE return_items ADD COLUMN drug_id INTEGER',
+    'ALTER TABLE return_items ADD COLUMN total_price REAL',
+  ]) await dbExecute(sql).catch(() => {});
+}
+
 /**
  * Get sales invoices by date for return flow
  */
 export async function getSalesInvoicesByDateAction(dateStr: string) {
   try {
+    await ensureReturnItemsSchema();
     const invoices = await db.prepare(`
        SELECT i.id, i.patient_id, i.total_amount, i.created_at, i.status, u.full_name as user_name,
              p.full_name as patient_name, i.payment_method
       FROM sales_invoices i
       LEFT JOIN users u ON i.user_id = u.id
       LEFT JOIN patients p ON i.patient_id = p.id
-      WHERE date(i.created_at) = ? AND i.status = 'completed'
+      WHERE (date(i.created_at) = ? OR date(i.created_at, 'localtime') = ?)
+        AND (i.status IS NULL OR i.status = 'completed' OR i.status = 'approved' OR i.status = '')
         AND EXISTS (
           SELECT 1
           FROM sales_items si
@@ -74,14 +85,14 @@ export async function getSalesInvoicesByDateAction(dateStr: string) {
             SELECT sale_item_id, SUM(quantity_returned) as returned
             FROM return_items ri
             JOIN returns r ON ri.return_id = r.id
-            WHERE r.status = 'approved'
+            WHERE r.status = 'approved' OR r.status = 'completed'
             GROUP BY sale_item_id
           ) ret ON si.id = ret.sale_item_id
           WHERE si.invoice_id = i.id 
             AND si.quantity_sold > COALESCE(ret.returned, 0)
         )
       ORDER BY i.created_at DESC
-    `).all(dateStr);
+    `).all(dateStr, dateStr);
     return { success: true, data: invoices };
   } catch (err: any) {
     return { success: false, error: err.message };
@@ -101,23 +112,25 @@ export async function createReturnAction(data: {
 }) {
   try {
     const user = await getLocalSession();
-    if (!user || (user.role !== 'owner' && user.role !== 'admin')) {
-      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
-    }
     if (!user || !hasUserPermissionSync(user, 'can_view_returns')) return { success: false, error: 'غير مصرح' };
 
     if (isTauri) {
       const { invoke } = await import('@tauri-apps/api/core');
       const result = await invoke('create_return_critical', {
         payload: {
-          ...data,
+          invoice_id: data.invoice_id,
           user_id: user.id,
           pharmacy_id: user.pharmacy_id || null,
+          shift_id: data.shift_id || null,
+          refund_method: data.refund_method || 'cash',
+          reason: data.reason || '',
           patient_id: data.patient_id ? String(data.patient_id) : null,
           items: data.items.map(item => ({
-            ...item,
-            inventory_id: item.inventory_id || null,
             sale_item_id: item.sale_item_id || null,
+            inventory_id: item.inventory_id || null,
+            drug_name: item.drug_name || '',
+            quantity: Number(item.quantity || 0),
+            unit_price: Number(item.unit_price || 0),
             unit: item.unit || 'large',
           })),
         }
@@ -136,6 +149,16 @@ export async function createReturnAction(data: {
 
     const dbHeader = await db.prepare('SELECT * FROM sales_invoices WHERE id = ?').get(data.invoice_id) as any;
     if (!dbHeader) return { success: false, error: 'الفاتورة غير موجودة' };
+    if (data.refund_method === 'patient_account' && !dbHeader.patient_id) {
+      return { success: false, error: 'لا يمكن ترحيل المرتجع لحساب مريض لأن الفاتورة غير مرتبطة بمريض' };
+    }
+    if (
+      data.refund_method === 'patient_account' &&
+      data.patient_id != null &&
+      String(data.patient_id) !== String(dbHeader.patient_id)
+    ) {
+      return { success: false, error: 'يجب ترحيل المرتجع إلى حساب مريض الفاتورة نفسه' };
+    }
 
     // 1. Validate: check for non-returnable drugs
     for (const item of data.items) {
@@ -240,13 +263,8 @@ export async function createReturnAction(data: {
         totalCogsReversal += (saleItem?.cost_price || 0) * restockQty;
       }
 
-      // 5. Update patient wallet/balance if applicable
-      const targetPatientId = data.patient_id || dbHeader.patient_id;
-      if (data.refund_method === 'patient_account' && targetPatientId) {
-        await db.prepare('UPDATE patients SET wallet_balance = wallet_balance + ? WHERE id = ?').run(totalRefund, targetPatientId);
-      }
-
-      // 6. Accounting Journal Entry
+      // 5. Accounting Journal Entry. A patient-account refund reduces A/R;
+      // wallet credit is a separate operation and must not be granted as well.
       const journalId = generateId();
       const returnDate = new Date().toISOString().split('T')[0];
       await db.prepare(`
@@ -300,6 +318,8 @@ export async function getReturnsAction() {
     const user = await getLocalSession();
     if (!user || !hasUserPermissionSync(user, 'can_view_returns')) return { success: false, error: 'غير مصرح' };
 
+    await ensureReturnItemsSchema();
+
     const returns = await db.prepare(`
       SELECT r.*, u.full_name as user_name, p.full_name as patient_name, si.total_amount as invoice_total, si.created_at as invoice_date
       FROM returns r
@@ -312,7 +332,7 @@ export async function getReturnsAction() {
 
     // Get items for each return
     const returnsWithItems = await Promise.all(returns.map(async ret => {
-      const items = await db.prepare('SELECT ri.*, md.trade_name_en, md.trade_name_ar FROM return_items ri LEFT JOIN master_drugs md ON ri.drug_id = md.id WHERE ri.return_id = ?').all(ret.id);
+      const items = await db.prepare('SELECT ri.*, md.trade_name_en, md.trade_name AS trade_name_ar FROM return_items ri LEFT JOIN master_drugs md ON ri.drug_id = md.id WHERE ri.return_id = ?').all(ret.id);
       return { ...ret, items };
     }));
 
@@ -389,6 +409,7 @@ export async function searchInvoicesForReturnAction(filters: {
  */
 export async function getInvoiceForReturnAction(invoiceId: string) {
   try {
+    await ensureReturnItemsSchema();
     const user = await getLocalSession();
     if (!user || !hasUserPermissionSync(user, 'can_view_returns')) return { success: false, error: 'غير مصرح' };
 
@@ -580,11 +601,6 @@ export async function createGeneralReturnAction(data: {
         
         // Link the return to this new sale invoice if possible
         await db.prepare('UPDATE returns SET invoice_id = ? WHERE id = ?').run(saleInvoiceId, returnId);
-      }
-
-      // 4. Update Patient Balance if credit
-      if (data.patient_id && data.refund_method === 'patient_account') {
-         await db.prepare('UPDATE patients SET wallet_balance = wallet_balance - ? WHERE id = ?').run(netAmount, data.patient_id);
       }
 
       logActivity(user.id, 'GENERAL_RETURN', `مرتجع عام بقيمة ${totalReturn} ج.م ومبيعات بديلة بقيمة ${totalSale} ج.م`);

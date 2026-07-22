@@ -7,6 +7,8 @@ import EditInventoryModal from '../EditInventoryModal'
 import DrugDetailsModal from '../pos/DrugDetailsModal'
 import { useReactToPrint } from 'react-to-print'
 
+import { useHotkeys } from 'react-hotkeys-hook'
+import AddInventoryModal from '../AddInventoryModal'
 import { deleteInventoryAction } from '@/app/actions-client/inventory'
 import { dbSelect, dbExecute, dbTransaction, generateId } from '@/lib/db/tauri'
 import { Download, Upload } from 'lucide-react'
@@ -48,12 +50,17 @@ async function upsertExcelRows(table: 'master_drugs' | 'inventory', rows: any[],
 export default function InventoryTable({ items, searchTerm, setSearchTerm, onRefresh }: Props) {
   const [editingItem, setEditingItem] = useState<InventoryItem | null>(null)
   const [detailsDrugId, setDetailsDrugId] = useState<number | null>(null)
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false)
   const router = useRouter()
+
+  useHotkeys('insert', (e) => {
+    e.preventDefault();
+    setIsAddModalOpen(true);
+  }, { enableOnFormTags: true });
 
   const [currentPage, setCurrentPage] = useState(1);
   const [sort, setSort] = useState<{ key: string; dir: 'asc' | 'desc' } | null>(null);
   const itemsPerPage = 50;
-  
   const printRef = useRef<HTMLDivElement>(null);
   const handlePrint = useReactToPrint({
     contentRef: printRef,
@@ -636,6 +643,14 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
             <span className="w-5 text-center">🗑️</span> حذف الصنف
           </button>
         </div>
+      )}
+
+      {isAddModalOpen && (
+        <AddInventoryModal
+          pharmacyId=""
+          onClose={() => setIsAddModalOpen(false)}
+          onSuccess={onRefresh}
+        />
       )}
     </div>
   )

@@ -269,11 +269,16 @@ CREATE TABLE IF NOT EXISTS return_items (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   return_id TEXT NOT NULL,
   inventory_id TEXT,
+  drug_id INTEGER,
   drug_name TEXT,
-  quantity_returned INTEGER,
+  quantity_returned REAL,
   unit_price REAL,
+  total_price REAL,
+  sale_item_id INTEGER,
+  unit TEXT DEFAULT 'large',
   FOREIGN KEY (return_id) REFERENCES returns (id),
-  FOREIGN KEY (inventory_id) REFERENCES inventory (id)
+  FOREIGN KEY (inventory_id) REFERENCES inventory (id),
+  FOREIGN KEY (drug_id) REFERENCES master_drugs (id)
 );
 
 -- 9. Suppliers & Purchases
@@ -322,8 +327,10 @@ CREATE TABLE IF NOT EXISTS purchase_invoice_items (
   tax_percent REAL DEFAULT 0,
   discount_percent REAL DEFAULT 0,
   strips_per_box INTEGER DEFAULT 1,
+  inventory_id TEXT,
   FOREIGN KEY (invoice_id) REFERENCES purchase_invoices (id),
-  FOREIGN KEY (drug_id) REFERENCES master_drugs (id)
+  FOREIGN KEY (drug_id) REFERENCES master_drugs (id),
+  FOREIGN KEY (inventory_id) REFERENCES inventory (id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS supplier_transactions (
@@ -364,6 +371,7 @@ CREATE TABLE IF NOT EXISTS purchase_returns (
   id TEXT PRIMARY KEY,
   supplier_id INTEGER NOT NULL,
   user_id TEXT NOT NULL,
+  purchase_invoice_id TEXT,
   reason TEXT,
   total_amount REAL,
   refund_method TEXT DEFAULT 'credit',
@@ -382,6 +390,8 @@ CREATE TABLE IF NOT EXISTS purchase_return_items (
   unit_price REAL,
   total_price REAL,
   reason TEXT,
+  purchase_invoice_item_id INTEGER,
+  unit TEXT DEFAULT 'large',
   FOREIGN KEY (purchase_return_id) REFERENCES purchase_returns (id)
 );
 

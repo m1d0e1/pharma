@@ -55,6 +55,10 @@ const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, 
 
 import { getLocalSession } from '@/lib/auth/local';
 import { secureCache } from '@/lib/cache/secure_cache';
+import {
+  patientOutstandingBalanceExpression,
+  patientOutstandingBalanceQuery,
+} from '@/lib/patients/balance';
 
 const patientSchema = z.object({
   full_name: z.string().min(3, 'الاسم يجب أن يكون 3 أحرف على الأقل'),
@@ -74,8 +78,6 @@ const patientSchema = z.object({
   opening_balance: z.number().default(0),
   points_balance: z.number().nonnegative().default(0),
   point_value: z.number().default(1),
-  wallet_balance: z.number().default(0),
-  loyalty_level: z.enum(['bronze', 'silver', 'gold', 'platinum']).default('bronze'),
   customer_type: z.string().default('individual'),
   payment_method: z.string().default('cash'),
   notes: z.string().optional().nullable(),
@@ -110,27 +112,55 @@ export async function addPatientAction(formData: AddPatientInput) {
     const data = validationResult.data;
     const id = generateId();
 
-    // 3. Insert the patient locally
-    await db.prepare(`
-      INSERT INTO patients (
-        id, full_name, name_en, phone, mobile, address, area, birth_date, 
-        gender, insurance_number, car_number, credit_limit, opening_balance, 
-        points_balance, point_value, customer_type, payment_method, notes
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      id, data.full_name, data.name_en || null, data.phone || null, data.mobile || null,
-      data.address || null, data.area || null, data.birth_date || null,
-      data.gender || null, data.insurance_number || null, data.car_number || null,
-      data.credit_limit, data.opening_balance, data.points_balance,
-      data.point_value, data.customer_type, data.payment_method, data.notes || null
-    );
+    // 3. Insert the patient and opening receivable as one atomic operation.
+    await dbTransaction(async () => {
+      await db.prepare(`
+        INSERT INTO patients (
+          id, full_name, name_en, phone, mobile, address, area, birth_date,
+          gender, insurance_number, car_number, credit_limit, opening_balance,
+          points_balance, point_value, customer_type, payment_method, notes
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        id, data.full_name, data.name_en || null, data.phone || null, data.mobile || null,
+        data.address || null, data.area || null, data.birth_date || null,
+        data.gender || null, data.insurance_number || null, data.car_number || null,
+        data.credit_limit, data.opening_balance, data.points_balance,
+        data.point_value, data.customer_type, data.payment_method, data.notes || null
+      );
+
+      if (Math.abs(data.opening_balance) > 0.000001) {
+        const receivable = await db.prepare(
+          "SELECT account_id FROM trial_balance_settings WHERE category = 'accounts_receivable' LIMIT 1"
+        ).get() as any;
+        const openingEquity = await db.prepare(
+          "SELECT account_id FROM trial_balance_settings WHERE category = 'opening_balance_equity' LIMIT 1"
+        ).get() as any;
+        const receivableAccountId = Number(receivable?.account_id || 8);
+        const equityAccountId = Number(openingEquity?.account_id || 9);
+        const amount = Math.abs(data.opening_balance);
+        const journalId = generateId();
+        const date = new Date().toISOString().slice(0, 10);
+
+        await db.prepare(`
+          INSERT INTO daily_journals (id, date, description, created_by, total_amount)
+          VALUES (?, ?, ?, ?, ?)
+        `).run(journalId, date, `رصيد افتتاحي للمريض: ${data.full_name}`, localUser.id, amount);
+
+        const debitAccount = data.opening_balance > 0 ? receivableAccountId : equityAccountId;
+        const creditAccount = data.opening_balance > 0 ? equityAccountId : receivableAccountId;
+        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
+          .run(journalId, debitAccount, 'debit', amount);
+        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
+          .run(journalId, creditAccount, 'credit', amount);
+      }
+    });
 
     // 4. Revalidate pages
     revalidatePath('/patients');
     revalidatePath('/pos');
 
-    return { success: true };
+    return { success: true, id };
   } catch (error: any) {
     console.error('Local Patient Error:', error);
     return {
@@ -149,8 +179,9 @@ export async function searchPatientsAction(query: string) {
     
     const searchPattern = `%${query}%`;
     const patients = await db.prepare(`
-      SELECT id, full_name, phone, credit_limit, wallet_balance, opening_balance
-      FROM patients
+      SELECT p.id, p.full_name, p.phone, p.credit_limit, p.wallet_balance, p.opening_balance,
+             CAST(${patientOutstandingBalanceExpression('p')} AS REAL) AS outstanding_balance
+      FROM patients p
       WHERE (full_name LIKE ? OR phone LIKE ?)
       LIMIT 5
     `).all(searchPattern, searchPattern) as any[];
@@ -177,9 +208,9 @@ export async function getPatientProfileAction(patientId: string) {
     const conditions = await db.prepare('SELECT * FROM patient_conditions WHERE patient_id = ? ORDER BY created_at DESC').all(patientId);
     
     const purchaseHistory = await db.prepare(`
-      SELECT si.id as invoice_id, si.total_amount, si.created_at
+      SELECT si.id as invoice_id, si.total_amount, si.payment_method, si.created_at
       FROM sales_invoices si
-      WHERE si.patient_id = ?
+      WHERE si.patient_id = ? AND si.status = 'completed'
       ORDER BY si.created_at DESC
       LIMIT 50
     `).all(patientId) as any[];
@@ -202,9 +233,20 @@ export async function getPatientProfileAction(patientId: string) {
     }
 
     const totalSpent = await db.prepare(`
-      SELECT COALESCE(SUM(total_amount), 0) as total 
-      FROM sales_invoices WHERE patient_id = ?
+      SELECT COALESCE(SUM(CAST(total_amount AS REAL)), 0) as total
+      FROM sales_invoices WHERE patient_id = ? AND status = 'completed'
     `).get(patientId) as any;
+
+    const payments = await db.prepare(`
+      SELECT pt.*, u.full_name AS user_name
+      FROM patient_transactions pt
+      LEFT JOIN users u ON u.id = pt.user_id
+      WHERE pt.patient_id = ? AND pt.type = 'payment'
+      ORDER BY pt.date DESC, pt.created_at DESC
+    `).all(patientId) as any[];
+
+    const balance = await db.prepare(patientOutstandingBalanceQuery()).get(patientId) as any;
+    const outstandingBalance = Number(balance?.outstanding_balance || 0);
 
     return {
       success: true,
@@ -213,8 +255,11 @@ export async function getPatientProfileAction(patientId: string) {
         allergies,
         conditions,
         purchaseHistory,
+        payments,
         totalSpent: totalSpent?.total || 0,
         visitCount: (purchaseHistory as any[]).length,
+        outstandingBalance,
+        availableCredit: Math.max(0, Number(patient.credit_limit || 0) - outstandingBalance),
       }
     };
   } catch (error) {
@@ -303,29 +348,26 @@ export async function updatePatientAction(id: string, formData: AddPatientInput)
       return { success: false, error: 'غير مصرح. يرجى تسجيل الدخول محلياً.' };
     }
 
-    const { 
-      full_name, name_en, phone, address, birth_date, 
-      gender, insurance_number, credit_limit, points_balance, 
-      wallet_balance, loyalty_level,
-      customer_type, notes 
+    const {
+      full_name, name_en, phone, mobile, address, area, birth_date,
+      gender, insurance_number, car_number, credit_limit, points_balance,
+      point_value, customer_type, payment_method, notes
     } = validationResult.data;
 
     // 3. Update the patient locally
     await db.prepare(`
       UPDATE patients 
       SET 
-        full_name = ?, name_en = ?, phone = ?, address = ?, 
-        birth_date = ?, gender = ?, insurance_number = ?, 
-        credit_limit = ?, points_balance = ?, 
-        wallet_balance = ?, loyalty_level = ?,
-        customer_type = ?, notes = ?
+        full_name = ?, name_en = ?, phone = ?, mobile = ?, address = ?, area = ?,
+        birth_date = ?, gender = ?, insurance_number = ?, car_number = ?,
+        credit_limit = ?, points_balance = ?, point_value = ?,
+        customer_type = ?, payment_method = ?, notes = ?
       WHERE id = ?
     `).run(
-      full_name, name_en || null, phone || null, address || null,
-      birth_date || null, gender || null, insurance_number || null, 
-      credit_limit, points_balance, 
-      wallet_balance, loyalty_level,
-      customer_type, notes || null,
+      full_name, name_en || null, phone || null, mobile || null, address || null, area || null,
+      birth_date || null, gender || null, insurance_number || null, car_number || null,
+      credit_limit, points_balance, point_value,
+      customer_type, payment_method, notes || null,
       id
     );
 
@@ -352,19 +394,26 @@ export async function getPatientStatementAction(patientId: string) {
     const patient = await db.prepare('SELECT * FROM patients WHERE id = ?').get(patientId) as any;
     if (!patient) return { success: false, error: 'العميل غير موجود' };
 
-    // 2. Get Movements (Sales and Returns)
+    // 2. Get all documents, with a separate effect on accounts receivable.
     const movements = await db.prepare(`
-      SELECT 'فاتورة بيع' as type, id as doc_no, created_at as date, total_amount as value, payment_method, 
+      SELECT 'فاتورة بيع' as type, id as doc_no, created_at as date,
+             CAST(total_amount AS REAL) as value,
+             CASE WHEN payment_method = 'credit' THEN CAST(total_amount AS REAL) ELSE 0 END as balance_effect,
+             payment_method,
              (SELECT full_name FROM users WHERE id = user_id) as user_name
       FROM sales_invoices
-      WHERE patient_id = ?
+      WHERE patient_id = ? AND status = 'completed'
       
       UNION ALL
       
-      SELECT 'مرتجع بيع' as type, id as doc_no, created_at as date, -total_refund as value, refund_method as payment_method,
+      SELECT 'مرتجع بيع' as type, id as doc_no, created_at as date,
+             -CAST(total_refund AS REAL) as value,
+             CASE WHEN refund_method = 'patient_account' THEN -CAST(total_refund AS REAL) ELSE 0 END as balance_effect,
+             refund_method as payment_method,
              (SELECT full_name FROM users WHERE id = user_id) as user_name
       FROM returns
-      WHERE invoice_id IN (SELECT id FROM sales_invoices WHERE patient_id = ?)
+      WHERE status = 'approved'
+        AND invoice_id IN (SELECT id FROM sales_invoices WHERE patient_id = ?)
 
       UNION ALL
 
@@ -374,7 +423,18 @@ export async function getPatientStatementAction(patientId: string) {
           WHEN type = 'adjustment' THEN 'إشعار'
           ELSE type 
         END as type, 
-        id as doc_no, date, -amount as value, payment_method,
+        id as doc_no, date,
+        CASE
+          WHEN type = 'payment' THEN -ABS(CAST(amount AS REAL))
+          WHEN type = 'adjustment' THEN CAST(amount AS REAL)
+          ELSE 0
+        END as value,
+        CASE
+          WHEN type = 'payment' THEN -ABS(CAST(amount AS REAL))
+          WHEN type = 'adjustment' THEN CAST(amount AS REAL)
+          ELSE 0
+        END as balance_effect,
+        payment_method,
         (SELECT full_name FROM users WHERE id = user_id) as user_name
       FROM patient_transactions
       WHERE patient_id = ?
@@ -388,7 +448,7 @@ export async function getPatientStatementAction(patientId: string) {
              'بيع' as action
       FROM sales_items si
       JOIN sales_invoices sinv ON si.invoice_id = sinv.id
-      WHERE sinv.patient_id = ?
+      WHERE sinv.patient_id = ? AND sinv.status = 'completed'
       
       UNION ALL
       
@@ -397,7 +457,7 @@ export async function getPatientStatementAction(patientId: string) {
       FROM return_items ri
       JOIN returns r ON ri.return_id = r.id
       JOIN sales_invoices sinv ON r.invoice_id = sinv.id
-      WHERE sinv.patient_id = ?
+      WHERE sinv.patient_id = ? AND r.status = 'approved'
       
       ORDER BY date DESC
     `).all(patientId, patientId) as any[];
@@ -437,16 +497,9 @@ export async function getPatientStatementAction(patientId: string) {
       }
     });
 
-    // 4. Calculate Current Balance (Opening + Sum of all movements)
-    // We treat 'فاتورة بيع' as positive (increase debt), 'مرتجع بيع' as negative, and transactions as already signed in the query
-    // Actually, it's easier to just sum the movements if we adjust signs
-    const totalMovements = movements.reduce((acc, mov) => {
-      // For credit invoices, value is positive (debt)
-      // For payments, value is negative in the query above (reduces debt)
-      // For returns, value is negative (reduces debt)
-      return acc + (mov.payment_method === 'credit' || mov.type === 'توريد نقدية' || mov.type === 'إشعار' || mov.type === 'مرتجع بيع' ? mov.value : 0);
-    }, 0);
-    const currentBalance = (patient.opening_balance || 0) + totalMovements;
+    // 4. Use the same balance definition as POS and checkout validation.
+    const balance = await db.prepare(patientOutstandingBalanceQuery()).get(patientId) as any;
+    const currentBalance = Number(balance?.outstanding_balance || 0);
 
     return { 
       success: true, 
@@ -469,20 +522,50 @@ export async function updatePatientWalletAction(patientId: string, amount: numbe
     if (!user || (user.role !== 'owner' && user.role !== 'admin')) {
       return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
     }
-    if (!user) return { success: false, error: 'Unauthorized' };
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return { success: false, error: 'يجب أن يكون مبلغ شحن المحفظة أكبر من صفر' };
+    }
 
-    await db.prepare('UPDATE patients SET wallet_balance = wallet_balance + ? WHERE id = ?').run(amount, patientId);
-    
-    // Log as a transaction for statements
-    await db.prepare(`
-      INSERT INTO cash_movements (id, user_id, type, category, amount, notes, date)
-      VALUES (?, ?, 'receipt', 'patient_wallet', ?, ?, date('now'))
-    `).run(generateId(), user.id, Math.abs(amount), `شحن محفظة: ${notes || ''}`);
+    let newBalance = 0;
+    await dbTransaction(async () => {
+      const patient = await db.prepare('SELECT full_name, CAST(wallet_balance AS REAL) AS wallet_balance FROM patients WHERE id = ?')
+        .get(patientId) as any;
+      if (!patient) throw new Error('المريض غير موجود');
+
+      const update = await db.prepare('UPDATE patients SET wallet_balance = COALESCE(wallet_balance, 0) + ? WHERE id = ?')
+        .run(amount, patientId);
+      if (!update.changes) throw new Error('تعذر تحديث رصيد المحفظة');
+
+      const cashMovementId = generateId();
+      const journalId = generateId();
+      const date = new Date().toISOString().slice(0, 10);
+      await db.prepare(`
+        INSERT INTO cash_movements (id, user_id, type, category, amount, source_type, target_name, notes, date)
+        VALUES (?, ?, 'receipt', 'patient_wallet', ?, 'patient_wallet', ?, ?, ?)
+      `).run(cashMovementId, user.id, amount, patientId, `شحن محفظة ${patient.full_name}: ${notes || ''}`, date);
+
+      const cashSetting = await db.prepare("SELECT account_id FROM trial_balance_settings WHERE category = 'cash_drawer' LIMIT 1").get() as any;
+      const walletSetting = await db.prepare("SELECT account_id FROM trial_balance_settings WHERE category = 'patient_wallet_liability' LIMIT 1").get() as any;
+      const cashAccountId = Number(cashSetting?.account_id || 6);
+      const walletAccountId = Number(walletSetting?.account_id || 7);
+
+      await db.prepare(`
+        INSERT INTO daily_journals (id, date, description, created_by, total_amount)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(journalId, date, `شحن محفظة المريض: ${patient.full_name}`, user.id, amount);
+      await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
+        .run(journalId, cashAccountId, 'debit', amount);
+      await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
+        .run(journalId, walletAccountId, 'credit', amount);
+
+      newBalance = Number(patient.wallet_balance || 0) + amount;
+    });
 
     revalidatePath('/patients');
-    return { success: true };
+    revalidatePath('/pos');
+    return { success: true, balance: newBalance };
   } catch (error: any) {
-    return { success: false, error: error.message };
+    return { success: false, error: error?.message || 'فشل شحن محفظة المريض' };
   }
 }
 
@@ -491,7 +574,11 @@ export async function getPatientsAction() {
     const localUser = await getLocalSession();
     if (!localUser) return { success: false, error: 'غير مصرح' };
 
-    const patients = await db.prepare('SELECT * FROM patients ORDER BY full_name ASC').all() as any[];
+    const patients = await db.prepare(`
+      SELECT p.*, CAST(${patientOutstandingBalanceExpression('p')} AS REAL) AS outstanding_balance
+      FROM patients p
+      ORDER BY p.full_name ASC
+    `).all() as any[];
     return { success: true, data: patients };
   } catch (error) {
     return { success: false, error: 'فشل جلب قائمة المرضى' };
@@ -527,5 +614,59 @@ export async function deletePatientAction(patientId: string) {
     return { success: true };
   } catch (error: any) {
     return { success: false, error: error?.message || 'فشل حذف المريض' };
+  }
+}
+
+export async function getReceiptDetailsAction(invoiceId: string) {
+  try {
+    const user = await getLocalSession();
+    if (!user) return { success: false, error: 'غير مصرح' };
+
+    const inv = await db.prepare(`
+      SELECT si.id, si.total_amount, si.created_at, si.payment_method,
+             u.full_name as user_name, p.full_name as patient_name, p.phone as patient_phone
+      FROM sales_invoices si
+      LEFT JOIN users u ON si.user_id = u.id
+      LEFT JOIN patients p ON si.patient_id = p.id
+      WHERE si.id = ?
+    `).get(invoiceId) as any;
+
+    if (!inv) return { success: false, error: 'الفاتورة غير موجودة' };
+
+    const rawItems = await db.prepare(`
+      SELECT sit.quantity_sold, sit.unit_price, sit.unit, md.trade_name, md.trade_name_en
+      FROM sales_items sit
+      LEFT JOIN master_drugs md ON sit.drug_id = md.id
+      WHERE sit.invoice_id = ?
+    `).all(invoiceId) as any[];
+
+    const sales_items = rawItems.map(item => ({
+      quantity_sold: item.quantity_sold,
+      unit_price: item.unit_price,
+      unit: item.unit,
+      trade_name: item.trade_name || 'صنف',
+      trade_name_en: item.trade_name_en,
+      inventory: {
+        master_drugs: {
+          trade_name: item.trade_name || 'صنف',
+          trade_name_en: item.trade_name_en,
+        }
+      }
+    }));
+
+    return {
+      success: true,
+      data: {
+        id: inv.id,
+        total_amount: inv.total_amount,
+        created_at: inv.created_at,
+        payment_method: inv.payment_method,
+        profiles: { full_name: inv.user_name || 'المستخدم' },
+        patients: inv.patient_name ? { full_name: inv.patient_name, phone: inv.patient_phone || '' } : null,
+        sales_items
+      }
+    };
+  } catch (error: any) {
+    return { success: false, error: 'فشل جلب تفاصيل الفاتورة' };
   }
 }

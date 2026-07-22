@@ -19,19 +19,6 @@ export default function SalesReturnClient() {
   const [refundMethod, setRefundMethod] = useState<'cash' | 'patient_account'>('cash');
   const [isSearching, setIsSearching] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [patients, setPatients] = useState<any[]>([]);
-  const [selectedPatientId, setSelectedPatientId] = useState<string>('');
-
-  // Fetch patients on mount
-  React.useEffect(() => {
-    import('@/app/actions-client/patients').then(({ getPatientsAction }) => {
-      getPatientsAction().then(res => {
-        if (res.success) {
-          setPatients(res.data || []);
-        }
-      });
-    });
-  }, []);
 
   const [selectedIndex, setSelectedIndex] = useState<number>(-1);
 
@@ -109,6 +96,7 @@ export default function SalesReturnClient() {
     
     if (res.success && res.data) {
       setInvoice(res.data);
+      if (!res.data.patient_id) setRefundMethod('cash');
       // Initialize return items with 0 quantity
       setItemsToReturn(res.data.items.map((item: any) => ({
         ...item,
@@ -172,7 +160,7 @@ export default function SalesReturnClient() {
       invoice_id: invoiceId,
       refund_method: refundMethod,
       reason,
-      patient_id: selectedPatientId || undefined,
+      patient_id: invoice.patient_id || undefined,
       items: activeReturns.map(i => ({
         sale_item_id: i.id,
         inventory_id: i.inventory_id,
@@ -395,23 +383,13 @@ export default function SalesReturnClient() {
                       onChange={(e) => setRefundMethod(e.target.value as any)}
                     >
                       <option value="cash">استرداد نقدي (كاش)</option>
-                      <option value="patient_account">إضافة لرصيد المريض (آجل)</option>
+                      <option value="patient_account" disabled={!invoice?.patient_id}>خصم من مديونية مريض الفاتورة (حساب آجل)</option>
                     </select>
                   </div>
 
-                  {refundMethod === 'patient_account' && !invoice?.patient_id && (
-                    <div className="animate-in fade-in slide-in-from-top-1 duration-200">
-                      <label className="block text-xs font-bold text-slate-500 mb-1">اختيار المريض لتسجيل الحساب الآجل *</label>
-                      <select
-                        className="w-full p-2.5 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-blue-500 font-bold"
-                        value={selectedPatientId}
-                        onChange={(e) => setSelectedPatientId(e.target.value)}
-                      >
-                        <option value="">-- اختر المريض --</option>
-                        {patients.map(p => (
-                          <option key={p.id} value={p.id}>{p.full_name} ({p.phone || 'بدون هاتف'})</option>
-                        ))}
-                      </select>
+                  {!invoice?.patient_id && (
+                    <div className="animate-in fade-in slide-in-from-top-1 duration-200 rounded-lg bg-amber-50 p-3 text-xs font-bold text-amber-700 dark:bg-amber-950/20 dark:text-amber-300">
+                      الفاتورة غير مرتبطة بمريض؛ يجب استخدام الاسترداد النقدي حتى لا يُرحّل الرصيد إلى حساب غير صحيح.
                     </div>
                   )}
 

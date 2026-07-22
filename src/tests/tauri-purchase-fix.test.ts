@@ -11,7 +11,14 @@ function migrate(db: Database.Database) {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.exec(sql);
-  db.exec(require('fs').readFileSync('src-tauri/migrations/005_purchase_return_details.sql', 'utf8'));
+  // Run each statement in migration 005 individually, tolerating duplicate column errors
+  // (001_initial.sql now includes these columns for fresh installs)
+  const m005 = require('fs').readFileSync('src-tauri/migrations/005_purchase_return_details.sql', 'utf8');
+  for (const stmt of m005.split(';').map(s => s.trim()).filter(Boolean)) {
+    try { db.exec(stmt + ';'); } catch (e: any) {
+      if (!e.message?.includes('duplicate column')) throw e;
+    }
+  }
   // Seed test data
   const hash = bcrypt.hashSync('admin', 4);
   db.prepare("UPDATE users SET pharmacy_id = 'ph-001', permissions = '{}' WHERE id = 'admin'").run();
@@ -172,6 +179,31 @@ describe('Tauri Purchase Flow Fix — Verify createPurchaseInvoiceAction SQL', (
       ) WHERE id = 3
     `).run();
     expect((db.prepare('SELECT barcode FROM master_drugs WHERE id = 3').get() as any).barcode).toBe('6221234567890');
+  });
+});
+
+describe('Tauri runtime bootstrap', () => {
+  it('runs all migrations on the shipped legacy database', () => {
+    const fs = require('fs');
+    const copy = require('path').join(require('os').tmpdir(), `pharma-migration-${process.pid}.db`);
+    fs.copyFileSync('src-tauri/pharma_local.db', copy);
+    const db = new Database(copy);
+    try {
+      for (let version = 1; version <= 7; version++) {
+        const name = fs.readdirSync('src-tauri/migrations').find((file: string) => file.startsWith(`00${version}_`));
+        const migration = fs.readFileSync(`src-tauri/migrations/${name}`, 'utf8');
+        expect(() => db.transaction(() => db.exec(migration))()).not.toThrow();
+      }
+      expect(db.prepare("SELECT name FROM sqlite_master WHERE name = 'idx_returns_status'").get()).toBeTruthy();
+    } finally {
+      db.close();
+      fs.rmSync(copy, { force: true });
+    }
+  });
+
+  it('allows the native Tauri IPC endpoint through CSP', () => {
+    const config = JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json', 'utf8'));
+    expect(config.app.security.csp).toContain('ipc: http://ipc.localhost');
   });
 });
 

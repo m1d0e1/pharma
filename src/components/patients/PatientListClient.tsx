@@ -15,6 +15,9 @@ interface Patient {
   address: string
   notes: string
   points_balance: number
+  outstanding_balance?: number
+  wallet_balance?: number
+  credit_limit?: number
   customer_type: string
   created_at: string
 }
@@ -37,13 +40,10 @@ export default function PatientListClient({ initialPatients, pharmacyId }: Props
 
   const fetchPatients = async () => {
     try {
-      const { dbSelect } = await import('@/lib/db/tauri')
-      const data = await dbSelect(`
-        SELECT * FROM patients
-        ORDER BY created_at DESC
-        LIMIT 200
-      `)
-      setPatients(data as Patient[])
+      const { getPatientsAction } = await import('@/app/actions-client/patients')
+      const result = await getPatientsAction()
+      if (!result.success) throw new Error(result.error)
+      setPatients(((result.data || []) as Patient[]).slice(0, 200))
     } catch (err) {
       console.error('Failed to load patients:', err)
     }
@@ -113,6 +113,20 @@ export default function PatientListClient({ initialPatients, pharmacyId }: Props
             </div>
 
             <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-2">
+                <div className={`rounded-xl px-3 py-2 ${Number(patient.outstanding_balance || 0) < 0 ? 'bg-cyan-50 dark:bg-cyan-950/20' : 'bg-rose-50 dark:bg-rose-950/20'}`}>
+                  <p className={`text-[9px] font-black ${Number(patient.outstanding_balance || 0) < 0 ? 'text-cyan-500' : 'text-rose-400'}`}>
+                    {Number(patient.outstanding_balance || 0) < 0 ? 'رصيد دائن' : 'المديونية'}
+                  </p>
+                  <p className={`font-black ${Number(patient.outstanding_balance || 0) < 0 ? 'text-cyan-600' : 'text-rose-600'}`}>
+                    {Math.abs(Number(patient.outstanding_balance || 0)).toFixed(2)} ج.م
+                  </p>
+                </div>
+                <div className="rounded-xl bg-purple-50 dark:bg-purple-950/20 px-3 py-2">
+                  <p className="text-[9px] font-black text-purple-400">رصيد المحفظة</p>
+                  <p className="font-black text-purple-600">{Number(patient.wallet_balance || 0).toFixed(2)} ج.م</p>
+                </div>
+              </div>
               <div className="flex items-center gap-3 text-blue-600 dark:text-blue-400 font-black">
                 <Phone className="w-4 h-4" />
                 <span>{patient.phone || 'بدون هاتف'}</span>

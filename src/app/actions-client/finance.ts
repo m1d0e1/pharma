@@ -55,6 +55,7 @@ const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, 
 import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { format } from 'date-fns';
 import { z } from 'zod';
+import { patientOutstandingBalanceQuery } from '@/lib/patients/balance';
 
 const noticeSchema = z.object({
   target_type: z.enum(['customer', 'supplier', 'pharmacy']),
@@ -75,64 +76,80 @@ export async function addFinancialNoticeAction(rawData: z.infer<typeof noticeSch
     }
     if (!user || !hasUserPermissionSync(user, 'rep_can_view_financial')) return { success: false, error: 'غير مصرح' };
 
+    if (data.target_type !== 'pharmacy' && !data.target_id) {
+      return { success: false, error: 'يجب اختيار الحساب المستهدف' };
+    }
+
     const id = generateId();
-    
-    await db.prepare(`
-      INSERT INTO financial_notices (id, user_id, target_type, target_id, type, amount, reason, notes, date)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, user.id, data.target_type, data.target_id || null, data.type, data.amount, data.reason, data.notes || null, data.date);
+    await dbTransaction(async () => {
+      if (data.target_type === 'customer') {
+        const patient = await db.prepare('SELECT id FROM patients WHERE id = ?').get(data.target_id) as any;
+        if (!patient) throw new Error('المريض غير موجود');
+      } else if (data.target_type === 'supplier') {
+        const supplier = await db.prepare('SELECT id FROM suppliers WHERE CAST(id AS TEXT) = ?').get(data.target_id) as any;
+        if (!supplier) throw new Error('المورد غير موجود');
+      }
 
-    // If it's a customer, also add to patient_transactions for statement visibility
-    if (data.target_type === 'customer' && data.target_id) {
-       const transId = generateId();
-       const sign = data.type === 'credit' ? -1 : 1;
-       await db.prepare(`
-         INSERT INTO patient_transactions (id, patient_id, user_id, type, amount, notes, date)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-       `).run(transId, data.target_id, user.id, 'adjustment', data.amount * sign, data.reason, data.date);
-    }
+      await db.prepare(`
+        INSERT INTO financial_notices (id, user_id, target_type, target_id, type, amount, reason, notes, date)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(id, user.id, data.target_type, data.target_id || null, data.type, data.amount, data.reason, data.notes || null, data.date);
 
-    // Create journal entries for the financial notice to maintain trial balance
-    const journalId = generateId();
-    await db.prepare(`
-      INSERT INTO daily_journals (id, date, description, created_by, total_amount)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(journalId, data.date, `إشعار ${data.type === 'credit' ? 'دائن' : 'مدين'}: ${data.reason}`, user.id, data.amount);
+      // A positive adjustment is a debit (more owed); a negative one is a credit.
+      if (data.target_type === 'customer' && data.target_id) {
+        const signedAmount = data.type === 'credit' ? -data.amount : data.amount;
+        await db.prepare(`
+          INSERT INTO patient_transactions (id, patient_id, user_id, type, amount, notes, date)
+          VALUES (?, ?, ?, 'adjustment', ?, ?, ?)
+        `).run(generateId(), data.target_id, user.id, signedAmount, data.reason, data.date);
+      }
 
-    const getAccount = async (cat: string) => {
-      const setting = await db.prepare('SELECT account_id FROM trial_balance_settings WHERE category = ?').get(cat) as any;
-      return setting?.account_id;
-    };
+      const getAccount = async (category: string, fallback: number) => {
+        const setting = await db.prepare(
+          'SELECT account_id FROM trial_balance_settings WHERE category = ? ORDER BY id LIMIT 1'
+        ).get(category) as any;
+        return Number(setting?.account_id || fallback);
+      };
+      const targetCategory = data.target_type === 'customer'
+        ? 'accounts_receivable'
+        : data.target_type === 'supplier'
+          ? 'accounts_payable'
+          : 'cash_drawer';
+      const targetFallback = data.target_type === 'customer' ? 8 : data.target_type === 'supplier' ? 7 : 6;
+      const targetAccountId = await getAccount(targetCategory, targetFallback);
+      const adjustmentAccountId = await getAccount('customer_adjustments', 9);
+      const journalId = generateId();
 
-    let targetAccountCategory = 'cash_drawer';
-    if (data.target_type === 'customer') targetAccountCategory = 'accounts_receivable';
-    else if (data.target_type === 'supplier') targetAccountCategory = 'accounts_payable';
+      await db.prepare(`
+        INSERT INTO daily_journals (id, date, description, created_by, total_amount)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(journalId, data.date, `إشعار ${data.type === 'credit' ? 'دائن' : 'مدين'}: ${data.reason}`, user.id, data.amount);
 
-    const targetAccountId = await getAccount(targetAccountCategory) || 11;
-    const expenseAccountId = await getAccount('inventory_adjustment') || 11; // Fallback account for adjustments
-
-    if (data.type === 'credit') {
-      // Credit Note: Debit Expense, Credit Target
-      await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, expenseAccountId, 'debit', data.amount);
-      await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, targetAccountId, 'credit', data.amount);
-    } else {
-      // Debit Note: Debit Target, Credit Income/Adjustment
-      await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, targetAccountId, 'debit', data.amount);
-      await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, expenseAccountId, 'credit', data.amount);
-    }
+      if (data.type === 'credit') {
+        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
+          .run(journalId, adjustmentAccountId, 'debit', data.amount);
+        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
+          .run(journalId, targetAccountId, 'credit', data.amount);
+      } else {
+        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
+          .run(journalId, targetAccountId, 'debit', data.amount);
+        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
+          .run(journalId, adjustmentAccountId, 'credit', data.amount);
+      }
+    });
 
     revalidatePath('/patients');
-    return { success: true };
+    return { success: true, id };
   } catch (error) {
     console.error('Add notice error:', error);
-    return { success: false, error: 'فشل إضافة الإشعار' };
+    return { success: false, error: error instanceof Error ? error.message : 'فشل إضافة الإشعار' };
   }
 }
 
 const paymentSchema = z.object({
   patient_id: z.string().min(1),
   amount: z.number().positive(),
-  payment_method: z.string().min(1),
+  payment_method: z.enum(['cash', 'bank']),
   notes: z.string().optional(),
   date: z.string(),
 });
@@ -141,33 +158,70 @@ export async function addPatientPaymentAction(rawData: z.infer<typeof paymentSch
   try {
     const data = paymentSchema.parse(rawData);
     const user = await getLocalSession();
-    if (!user || (user.role !== 'owner' && user.role !== 'admin')) {
-      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
+    if (!user) return { success: false, error: 'غير مصرح' };
+    if (!hasUserPermissionSync(user, 'rep_can_view_financial') && !hasUserPermissionSync(user, 'can_view_patients')) {
+      return { success: false, error: 'غير مصرح' };
     }
-    if (!user || !hasUserPermissionSync(user, 'rep_can_view_financial')) return { success: false, error: 'غير مصرح' };
 
     const id = generateId();
-    
-    await db.prepare(`
-      INSERT INTO patient_transactions (id, patient_id, user_id, type, amount, payment_method, notes, date)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, data.patient_id, user.id, 'payment', data.amount, data.payment_method, data.notes || null, data.date);
+    let remainingBalance = 0;
+    await dbTransaction(async () => {
+      const patient = await db.prepare('SELECT id, full_name FROM patients WHERE id = ?').get(data.patient_id) as any;
+      if (!patient) throw new Error('المريض غير موجود');
 
-    // Create Cash Movement for this patient payment to enforce Double Entry Accounting
-    await createCashMovementAction({
-      type: 'receipt',
-      category: 'accounts_receivable',
-      amount: data.amount,
-      target_name: data.patient_id,
-      notes: `دفعة من عميل: ${data.notes || ''}`,
-      date: data.date,
+      const balanceRow = await db.prepare(patientOutstandingBalanceQuery()).get(data.patient_id) as any;
+      const outstanding = Number(balanceRow?.outstanding_balance || 0);
+      if (outstanding <= 0.005) {
+        throw new Error('لا توجد مديونية مستحقة على المريض');
+      }
+      if (data.amount > outstanding + 0.005) {
+        throw new Error(`مبلغ الدفعة يتجاوز المديونية الحالية (${outstanding.toFixed(2)} ج.م). استخدم شحن المحفظة للمبالغ المقدمة.`);
+      }
+
+      await db.prepare(`
+        INSERT INTO patient_transactions (id, patient_id, user_id, type, amount, payment_method, notes, date)
+        VALUES (?, ?, ?, 'payment', ?, ?, ?, ?)
+      `).run(id, data.patient_id, user.id, data.amount, data.payment_method, data.notes || null, data.date);
+
+      if (data.payment_method === 'cash') {
+        await db.prepare(`
+          INSERT INTO cash_movements (
+            id, user_id, type, category, amount, source_type, target_name, notes, date
+          ) VALUES (?, ?, 'receipt', 'accounts_receivable', ?, 'patient_payment', ?, ?, ?)
+        `).run(generateId(), user.id, data.amount, data.patient_id, `دفعة من المريض ${patient.full_name}: ${data.notes || ''}`, data.date);
+      }
+
+      const getAccount = async (category: string, fallback: number) => {
+        const setting = await db.prepare(
+          'SELECT account_id FROM trial_balance_settings WHERE category = ? ORDER BY id LIMIT 1'
+        ).get(category) as any;
+        return Number(setting?.account_id || fallback);
+      };
+      const debitAccountId = data.payment_method === 'bank'
+        ? await getAccount('bank_clearing', 6)
+        : await getAccount('cash_drawer', 6);
+      const receivableAccountId = await getAccount('accounts_receivable', 8);
+      const journalId = generateId();
+      await db.prepare(`
+        INSERT INTO daily_journals (id, date, description, created_by, total_amount)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(journalId, data.date, `تحصيل من المريض: ${patient.full_name}`, user.id, data.amount);
+      await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
+        .run(journalId, debitAccountId, 'debit', data.amount);
+      await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
+        .run(journalId, receivableAccountId, 'credit', data.amount);
+      await db.prepare("INSERT INTO activity_log (user_id, action, details) VALUES (?, 'PATIENT_PAYMENT', ?)")
+        .run(user.id, `Patient ${data.patient_id} paid ${data.amount} via ${data.payment_method}`);
+
+      remainingBalance = Math.max(0, outstanding - data.amount);
     });
 
     revalidatePath('/patients');
-    return { success: true };
+    revalidatePath('/pos');
+    return { success: true, id, remainingBalance };
   } catch (error) {
     console.error('Add payment error:', error);
-    return { success: false, error: 'فشل إضافة الدفعة' };
+    return { success: false, error: error instanceof Error ? error.message : 'فشل إضافة الدفعة' };
   }
 }
 
@@ -690,47 +744,9 @@ export async function saveTrialBalanceSettingAction(data: {
 }
 
 export async function getPatientStatementAction(patientId: string) {
-  try {
-    const user = await getLocalSession();
-    if (!user || !hasUserPermissionSync(user, 'rep_can_view_financial')) return { success: false, error: 'غير مصرح' };
-
-    const transactions = await db.prepare(`
-      SELECT 
-        'invoice' as type, 
-        id, 
-        total_amount as debit, 
-        0 as credit, 
-        created_at as date,
-        'فاتورة مبيعات' as description
-      FROM sales_invoices
-      WHERE patient_id = ? AND status = 'completed'
-      
-      UNION ALL
-      
-      SELECT 
-        type as type, 
-        id, 
-        CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END as debit,
-        CASE WHEN amount > 0 THEN amount ELSE 0 END as credit,
-        date,
-        notes as description
-      FROM patient_transactions
-      WHERE patient_id = ?
-      
-      ORDER BY date ASC
-    `).all(patientId, patientId) as any[];
-
-    let runningBalance = 0;
-    const history = transactions.map(t => {
-      runningBalance += (t.debit - t.credit);
-      return { ...t, balance: runningBalance };
-    });
-
-    return { success: true, data: history };
-  } catch (error) {
-    console.error('Statement error:', error);
-    return { success: false, error: 'فشل جلب كشف الحساب' };
-  }
+  // Keep the legacy export, but route it through the canonical patient ledger.
+  const patients = await import('./patients');
+  return patients.getPatientStatementAction(patientId);
 }
 
 export async function getTrialBalanceAction() {

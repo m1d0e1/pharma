@@ -10,12 +10,13 @@ import { toast } from 'react-hot-toast'
 import { 
   getPatientProfileAction, updatePatientAction, 
   addPatientAllergyAction, addPatientConditionAction,
-  deletePatientAllergyAction
+  deletePatientAllergyAction, getReceiptDetailsAction
 } from '@/app/actions-client/patients'
 import { addPatientPaymentAction } from '@/app/actions-client/finance'
 import { format } from 'date-fns'
 import { ar } from 'date-fns/locale'
 import CustomerStatementModal from './CustomerStatementModal'
+import ReceiptDetailsModal from '../receipts/ReceiptDetailsModal'
 import { CustomerStatementContent, FinancialNoticeForm } from '../finance/FinancialComponents'
 import { Plus } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -34,11 +35,29 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
   const [data, setData] = useState<any>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [showStatement, setShowStatement] = useState(false)
+  const [selectedReceipt, setSelectedReceipt] = useState<any>(null)
+  const [loadingReceipt, setLoadingReceipt] = useState(false)
+
+  const handleOpenReceipt = async (invoiceId: string) => {
+    try {
+      setLoadingReceipt(true)
+      const res = await getReceiptDetailsAction(invoiceId)
+      setLoadingReceipt(false)
+      if (res.success && res.data) {
+        setSelectedReceipt(res.data)
+      } else {
+        toast.error(res.error || 'فشل تحميل تفاصيل الفاتورة')
+      }
+    } catch {
+      setLoadingReceipt(false)
+      toast.error('حدث خطأ أثناء تحميل الفاتورة')
+    }
+  }
 
   // Payment Form States
   const [showPaymentForm, setShowPaymentForm] = useState(false)
   const [paymentAmount, setPaymentAmount] = useState('')
-  const [paymentMethod, setPaymentMethod] = useState('cash')
+  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'bank'>('cash')
   const [paymentNotes, setPaymentNotes] = useState('')
   const [paymentDate, setPaymentDate] = useState(format(new Date(), 'yyyy-MM-dd'))
   const [isSubmittingPayment, setIsSubmittingPayment] = useState(false)
@@ -209,7 +228,7 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
            <p className="font-black text-slate-500">جاري تحميل ملف العميل...</p>
         </div>
       </div>
-    )
+    );
   }
 
   return (
@@ -658,7 +677,7 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                              <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider">طريقة الدفع</label>
                              <select
                                 value={paymentMethod}
-                                onChange={(e) => setPaymentMethod(e.target.value)}
+                                onChange={(e) => setPaymentMethod(e.target.value as 'cash' | 'bank')}
                                 className="w-full bg-slate-50 dark:bg-slate-800 p-4 rounded-2xl border-none outline-none font-bold"
                              >
                                 <option value="cash">نقدي (Cash)</option>
@@ -740,33 +759,57 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
           )}
 
           {activeTab === 'history' && (
-            <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4">
-               <h3 className="font-black text-slate-800 dark:text-white flex items-center gap-3">
-                  <Activity className="w-8 h-8 text-purple-500" /> سجل العمليات والمشتريات
-               </h3>
-               <div className="space-y-4">
-                  {data.purchaseHistory.filter((h: any) => h.drugs).map((inv: any) => (
-                    <div key={inv.invoice_id} className="bg-white dark:bg-slate-800/50 p-8 rounded-[40px] border border-slate-100 dark:border-slate-800 flex justify-between items-center hover:shadow-2xl hover:border-purple-500 transition-all cursor-pointer group">
-                       <div className="flex gap-8 items-center">
-                          <div className="w-16 h-16 bg-slate-100 dark:bg-slate-800 rounded-[24px] flex items-center justify-center text-3xl group-hover:scale-110 transition-transform">
-                             📄
+
+             <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4">
+                <h3 className="font-black text-slate-800 dark:text-white flex items-center gap-3">
+                   <Activity className="w-8 h-8 text-purple-500" /> سجل العمليات والمشتريات
+                </h3>
+                <div className="space-y-4">
+                   {(!data?.purchaseHistory || data.purchaseHistory.length === 0) ? (
+                     <div className="p-8 text-center text-slate-400 font-bold bg-white dark:bg-slate-800/50 rounded-[32px]">
+                       لا توجد عمليات مشتريات مسجلة لهذا المريض
+                     </div>
+                   ) : (
+                     data.purchaseHistory.map((inv: any) => (
+                       <div 
+                         key={inv.invoice_id} 
+                         onClick={() => handleOpenReceipt(inv.invoice_id)}
+                         className="bg-white dark:bg-slate-800/50 p-8 rounded-[40px] border border-slate-100 dark:border-slate-800 flex justify-between items-center hover:shadow-2xl hover:border-purple-500 transition-all cursor-pointer group"
+                       >
+                          <div className="flex gap-8 items-center">
+                             <div className="w-16 h-16 bg-purple-50 dark:bg-purple-900/30 text-purple-600 rounded-[24px] flex items-center justify-center text-3xl group-hover:scale-110 transition-transform">
+                                📄
+                             </div>
+                             <div>
+                               <p className="font-black text-slate-900 dark:text-white text-xl flex items-center gap-2">
+                                 فاتورة #{inv.invoice_id ? inv.invoice_id.substring(0, 8) : ''}
+                                 <span className="text-xs bg-purple-100 dark:bg-purple-900/40 text-purple-600 px-3 py-1 rounded-full font-bold">
+                                   عرض الفاتورة والأصناف 👁️
+                                 </span>
+                               </p>
+                               <p className="text-sm font-bold text-slate-400 mt-1 line-clamp-1">
+                                 {inv.drugs || (inv.payment_method === 'credit' ? 'فاتورة آجل' : 'فاتورة مبيعات')}
+                               </p>
+                             </div>
                           </div>
-                          <div>
-                            <p className="font-black text-slate-900 dark:text-white text-xl">فاتورة #{inv.invoice_id.split('-')[0]}</p>
-                            <p className="text-sm font-bold text-slate-400 mt-1 line-clamp-1">{inv.drugs}</p>
+                          <div className="text-left">
+                             <p className="font-black text-purple-600 text-3xl">{Number(inv.total_amount || 0).toFixed(2)} <span className="text-sm">ج.م</span></p>
+                             <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-2">{inv.created_at ? format(new Date(inv.created_at), 'PPP', { locale: ar }) : ''}</p>
                           </div>
                        </div>
-                       <div className="text-left">
-                          <p className="font-black text-purple-600 text-3xl">{inv.total_amount} <span className="text-sm">ج.م</span></p>
-                          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-2">{format(new Date(inv.created_at), 'PPP', { locale: ar })}</p>
-                       </div>
-                    </div>
-                  ))}
-               </div>
-            </div>
-          )}
+                     ))
+                   )}
+                </div>
+             </div>
+           )}
         </div>
 
+        {selectedReceipt && (
+          <ReceiptDetailsModal
+            invoice={selectedReceipt}
+            onClose={() => setSelectedReceipt(null)}
+          />
+        )}
         {/* Statement Modal Overlay */}
         {showStatement && (
           <CustomerStatementModal 
