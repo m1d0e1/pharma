@@ -55,16 +55,31 @@ export default function PatientListClient({ initialPatients, pharmacyId }: Props
     (p.name_en && p.name_en.toLowerCase().includes(searchTerm.toLowerCase()))
   )
 
-  const handleDeletePatient = async (patient: Patient) => {
-    if (!confirm(`هل أنت متأكد من حذف المريض "${patient.full_name}"؟`)) return;
-    const { deletePatientAction } = await import('@/app/actions-client/patients');
-    const res = await deletePatientAction(patient.id);
-    if (res.success) {
-      toast.success('تم حذف المريض');
-      await fetchPatients();
-      router.refresh();
-    } else {
-      toast.error(res.error || 'فشل حذف المريض');
+  const [deletingPatient, setDeletingPatient] = useState<Patient | null>(null)
+  const [isDeleting, setIsDeleting] = useState(false)
+
+  const handleDeletePatient = (patient: Patient) => {
+    setDeletingPatient(patient);
+  }
+
+  const confirmDeletePatient = async () => {
+    if (!deletingPatient) return;
+    setIsDeleting(true);
+    try {
+      const { deletePatientAction } = await import('@/app/actions-client/patients');
+      const res = await deletePatientAction(deletingPatient.id);
+      if (res.success) {
+        toast.success('تم حذف المريض بنجاح');
+        setDeletingPatient(null);
+        await fetchPatients();
+        router.refresh();
+      } else {
+        toast.error(res.error || 'فشل حذف المريض');
+      }
+    } catch {
+      toast.error('حدث خطأ أثناء حذف المريض');
+    } finally {
+      setIsDeleting(false);
     }
   }
 
@@ -179,6 +194,42 @@ export default function PatientListClient({ initialPatients, pharmacyId }: Props
           onClose={() => setSelectedPatientId(null)}
           onSuccess={() => { fetchPatients(); router.refresh(); }}
         />
+      )}
+
+      {deletingPatient && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4 z-[350]" dir="rtl">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl p-8 max-w-md w-full border border-slate-200 dark:border-slate-800 shadow-2xl space-y-6 animate-in zoom-in duration-200">
+            <div className="flex items-center gap-4 text-rose-600">
+              <div className="w-12 h-12 bg-rose-100 dark:bg-rose-950/40 rounded-2xl flex items-center justify-center text-2xl">
+                ⚠️
+              </div>
+              <div>
+                <h3 className="text-xl font-black text-slate-900 dark:text-white">تأكيد حذف المريض</h3>
+                <p className="text-xs font-bold text-slate-400 mt-1">إجراء غير قابل للتراجع</p>
+              </div>
+            </div>
+            <p className="font-bold text-slate-700 dark:text-slate-300">
+              هل أنت متأكد من حذف المريض <span className="font-black text-rose-600">"{deletingPatient.full_name}"</span>؟
+            </p>
+            <div className="flex justify-end gap-3 pt-4 border-t border-slate-100 dark:border-slate-800">
+              <button
+                type="button"
+                onClick={() => setDeletingPatient(null)}
+                className="px-6 py-3 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 rounded-xl font-bold transition-all text-slate-600 dark:text-slate-200"
+              >
+                إلغاء
+              </button>
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={confirmDeletePatient}
+                className="px-6 py-3 bg-rose-600 hover:bg-rose-700 text-white rounded-xl font-black transition-all shadow-lg shadow-rose-600/20"
+              >
+                {isDeleting ? 'جاري الحذف...' : 'نعم، تأكيد الحذف'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

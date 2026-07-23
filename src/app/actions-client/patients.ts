@@ -170,20 +170,32 @@ export async function addPatientAction(formData: AddPatientInput) {
   }
 }
 
-export async function searchPatientsAction(query: string) {
+export async function searchPatientsAction(query: string, fetchAll: boolean = false) {
   try {
     const localUser = await getLocalSession();
     if (!localUser) return { success: false, error: 'Unauthorized' };
 
-    if (!query || query.length < 2) return { success: true, data: [] };
-    
+    if (!fetchAll && (!query || query.length < 2)) return { success: true, data: [] };
+
+    if (fetchAll || !query || query.trim() === '') {
+      const patients = await db.prepare(`
+        SELECT p.id, p.full_name, p.phone, p.credit_limit, p.wallet_balance, p.opening_balance, p.payment_method,
+               CAST(${patientOutstandingBalanceExpression('p')} AS REAL) AS outstanding_balance
+        FROM patients p
+        ORDER BY p.full_name ASC
+        LIMIT 100
+      `).all() as any[];
+      return { success: true, data: patients };
+    }
+
     const searchPattern = `%${query}%`;
     const patients = await db.prepare(`
-      SELECT p.id, p.full_name, p.phone, p.credit_limit, p.wallet_balance, p.opening_balance,
+      SELECT p.id, p.full_name, p.phone, p.credit_limit, p.wallet_balance, p.opening_balance, p.payment_method,
              CAST(${patientOutstandingBalanceExpression('p')} AS REAL) AS outstanding_balance
       FROM patients p
       WHERE (full_name LIKE ? OR phone LIKE ?)
-      LIMIT 5
+      ORDER BY p.full_name ASC
+      LIMIT 25
     `).all(searchPattern, searchPattern) as any[];
     
     return { success: true, data: patients };

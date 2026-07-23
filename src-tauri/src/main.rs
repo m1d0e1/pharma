@@ -34,11 +34,359 @@ fn open_new_window_for_app<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Resu
         .build()
         .map_err(|e| e.to_string())?;
 
+    if let Ok(menu) = create_app_menu(app) {
+        let _ = w.set_menu(menu);
+    }
+
     w.on_menu_event(move |win, event| {
         handle_menu_event(win, event.id().as_ref());
     });
 
     Ok(())
+}
+
+fn create_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Menu<R>, tauri::Error> {
+    // 1. ملف (File)
+    let file_menu = Submenu::with_items(
+        app,
+        "ملف",
+        true,
+        &[
+            &MenuItem::with_id(
+                app,
+                "pos",
+                "فاتورة مبيعات جديدة",
+                true,
+                Some("CmdOrCtrl+P"),
+            )?,
+            &MenuItem::with_id(
+                app,
+                "purchases_new",
+                "فاتورة مشتريات جديدة",
+                true,
+                None::<&str>,
+            )?,
+            &PredefinedMenuItem::separator(app)?,
+            &MenuItem::with_id(
+                app,
+                "new_window",
+                "نافذة جديدة",
+                true,
+                Some("CmdOrCtrl+N"),
+            )?,
+            &PredefinedMenuItem::separator(app)?,
+            &MenuItem::with_id(app, "print", "طباعة", true, Some("CmdOrCtrl+Shift+P"))?,
+            &PredefinedMenuItem::separator(app)?,
+            &MenuItem::with_id(app, "logout", "تسجيل الخروج", true, None::<&str>)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::quit(app, None)?,
+        ],
+    )?;
+
+    // 2. البيانات الأساسية (Master Data)
+    let master_data_menu = Submenu::with_items(
+        app,
+        "البيانات الأساسية",
+        true,
+        &[
+            &MenuItem::with_id(
+                app,
+                "dashboard",
+                "لوحة التحكم (الرئيسية)",
+                true,
+                Some("CmdOrCtrl+D"),
+            )?,
+            &PredefinedMenuItem::separator(app)?,
+            &MenuItem::with_id(app, "stores_items", "الأصناف", true, None::<&str>)?,
+            &MenuItem::with_id(app, "stores_alternatives", "البدائل", true, None::<&str>)?,
+            &MenuItem::with_id(app, "stores_nature", "النوع", true, None::<&str>)?,
+            &MenuItem::with_id(app, "stores_usage", "الاستخدام", true, None::<&str>)?,
+            &MenuItem::with_id(app, "stores_units", "الوحدات", true, None::<&str>)?,
+            &MenuItem::with_id(
+                app,
+                "stores_indications",
+                "دواعي الاستعمال",
+                true,
+                None::<&str>,
+            )?,
+            &MenuItem::with_id(
+                app,
+                "stores_drug_indications",
+                "الاصناف ودواعي الاستخدام",
+                true,
+                None::<&str>,
+            )?,
+            &MenuItem::with_id(
+                app,
+                "stores_manufacturers",
+                "الشركات المنتجة",
+                true,
+                None::<&str>,
+            )?,
+            &MenuItem::with_id(
+                app,
+                "stores_scientific_groups",
+                "المجموعات العلمية",
+                true,
+                None::<&str>,
+            )?,
+            &MenuItem::with_id(app, "stores_categories", "التصنيفات", true, None::<&str>)?,
+        ],
+    )?;
+
+    // 3. العمليات المخزنية (Inventory Ops)
+    let inventory_ops_menu = Submenu::with_items(
+        app,
+        "العمليات المخزنية",
+        true,
+        &[
+            &MenuItem::with_id(app, "inventory", "المخزون", true, Some("CmdOrCtrl+I"))?,
+            &MenuItem::with_id(
+                app,
+                "stores_shortages",
+                "كشكول النواقص",
+                true,
+                None::<&str>,
+            )?,
+            &MenuItem::with_id(
+                app,
+                "inventory_item_movements",
+                "حركات الأصناف",
+                true,
+                None::<&str>,
+            )?,
+            &MenuItem::with_id(app, "restock", "إعادة التموين", true, None::<&str>)?,
+            &MenuItem::with_id(
+                app,
+                "inventory_opening_balances",
+                "الأرصدة الإفتتاحية",
+                true,
+                None::<&str>,
+            )?,
+            &MenuItem::with_id(app, "stores_adjustments", "التعديلات", true, None::<&str>)?,
+            &MenuItem::with_id(
+                app,
+                "stores_adjustment_reasons",
+                "أسباب التعديل",
+                true,
+                None::<&str>,
+            )?,
+            &MenuItem::with_id(
+                app,
+                "inventory_settlement",
+                "تسوية المخزون",
+                true,
+                None::<&str>,
+            )?,
+            &MenuItem::with_id(
+                app,
+                "stores_delete_items",
+                "حذف الأصناف",
+                true,
+                None::<&str>,
+            )?,
+        ],
+    )?;
+
+    // 4. المبيعات (Sales)
+    let sales_menu = Submenu::with_items(
+        app,
+        "المبيعات",
+        true,
+        &[
+            &MenuItem::with_id(app, "pos", "فاتورة مبيعات جديدة", true, None::<&str>)?,
+            &MenuItem::with_id(app, "receipts", "الفواتير", true, None::<&str>)?,
+            &MenuItem::with_id(app, "sales", "المبيعات والتحصيل", true, None::<&str>)?,
+            &MenuItem::with_id(app, "sales_delivery", "توصيل منزلي", true, None::<&str>)?,
+            &MenuItem::with_id(app, "sales_cogs", "تعديل التكلفة", true, None::<&str>)?,
+            &MenuItem::with_id(
+                app,
+                "sales_settlement",
+                "تسوية المبيعات",
+                true,
+                None::<&str>,
+            )?,
+            &MenuItem::with_id(app, "returns", "مرتجعات العملاء", true, None::<&str>)?,
+        ],
+    )?;
+
+    // 5. المشتريات (Purchases)
+    let purchases_menu = Submenu::with_items(
+        app,
+        "المشتريات",
+        true,
+        &[
+            &MenuItem::with_id(app, "purchases", "المشتريات", true, Some("CmdOrCtrl+O"))?,
+            &MenuItem::with_id(app, "purchase_orders", "أوامر الشراء", true, None::<&str>)?,
+            &MenuItem::with_id(app, "purchases_suppliers", "الموردون", true, None::<&str>)?,
+            &MenuItem::with_id(
+                app,
+                "purchases_returns",
+                "مرتجعات للموردين",
+                true,
+                None::<&str>,
+            )?,
+            &MenuItem::with_id(
+                app,
+                "purchases_general_returns",
+                "مرتجعات عامة",
+                true,
+                None::<&str>,
+            )?,
+        ],
+    )?;
+
+    // 6. المالية (Finance)
+    let finance_menu = Submenu::with_items(
+        app,
+        "المالية",
+        true,
+        &[
+            &MenuItem::with_id(app, "accounts", "الحسابات والمالية", true, None::<&str>)?,
+            &MenuItem::with_id(
+                app,
+                "accounts_cash_transactions",
+                "حركة النقدية",
+                true,
+                None::<&str>,
+            )?,
+            &MenuItem::with_id(app, "finance_handover", "تسليم الدرج", true, None::<&str>)?,
+            &MenuItem::with_id(app, "finance_banks", "البنوك", true, None::<&str>)?,
+            &MenuItem::with_id(
+                app,
+                "finance_cards",
+                "البطاقات والماكينات",
+                true,
+                None::<&str>,
+            )?,
+            &MenuItem::with_id(
+                app,
+                "finance_pos_management",
+                "إدارة نقاط البيع",
+                true,
+                None::<&str>,
+            )?,
+            &MenuItem::with_id(
+                app,
+                "finance_accounts",
+                "شجرة الحسابات",
+                true,
+                None::<&str>,
+            )?,
+            &MenuItem::with_id(
+                app,
+                "accounts_settings_trial_balance",
+                "إعدادات ميزان المراجعة",
+                true,
+                None::<&str>,
+            )?,
+        ],
+    )?;
+
+    // 7. التقارير (Reports)
+    let reports_menu = Submenu::with_items(
+        app,
+        "التقارير",
+        true,
+        &[
+            &MenuItem::with_id(app, "reports", "لوحة التقارير", true, None::<&str>)?,
+            &MenuItem::with_id(
+                app,
+                "reports_sales2",
+                "تقارير المبيعات",
+                true,
+                None::<&str>,
+            )?,
+            &MenuItem::with_id(
+                app,
+                "reports_purchases",
+                "تقارير المشتريات",
+                true,
+                None::<&str>,
+            )?,
+            &MenuItem::with_id(
+                app,
+                "reports_trial_balance",
+                "ميزان المراجعة",
+                true,
+                None::<&str>,
+            )?,
+            &MenuItem::with_id(app, "expenses", "المصروفات", true, None::<&str>)?,
+            &MenuItem::with_id(app, "shifts", "الشفتات النقدية", true, None::<&str>)?,
+        ],
+    )?;
+
+    // 8. المرضى والطبية (Patients)
+    let patients_menu = Submenu::with_items(
+        app,
+        "المرضى والطبية",
+        true,
+        &[
+            &MenuItem::with_id(app, "patients", "المرضى", true, None::<&str>)?,
+            &MenuItem::with_id(
+                app,
+                "interactions",
+                "التفاعلات الدوائية",
+                true,
+                None::<&str>,
+            )?,
+        ],
+    )?;
+
+    // 9. الإدارة (Administration)
+    let admin_menu = Submenu::with_items(
+        app,
+        "الإدارة",
+        true,
+        &[
+            &MenuItem::with_id(app, "staff", "أداء الموظفين", true, None::<&str>)?,
+            &MenuItem::with_id(app, "staff_manage", "إدارة الموظفين", true, None::<&str>)?,
+            &MenuItem::with_id(app, "staff_roles", "الوظائف والرواتب", true, None::<&str>)?,
+            &MenuItem::with_id(app, "audit", "سجل المراقبة", true, None::<&str>)?,
+            &MenuItem::with_id(app, "settings", "الإعدادات", true, None::<&str>)?,
+        ],
+    )?;
+
+    // 10. مساعدة (Help)
+    let help_menu = Submenu::with_items(
+        app,
+        "مساعدة",
+        true,
+        &[
+            &MenuItem::with_id(
+                app,
+                "update_program",
+                "تحديث البرنامج",
+                true,
+                None::<&str>,
+            )?,
+            &PredefinedMenuItem::separator(app)?,
+            &MenuItem::with_id(
+                app,
+                "help_shortcuts",
+                "اختصارات لوحة المفاتيح",
+                true,
+                None::<&str>,
+            )?,
+            &MenuItem::with_id(app, "help_about", "عن النظام", true, None::<&str>)?,
+        ],
+    )?;
+
+    Menu::with_items(
+        app,
+        &[
+            &help_menu,
+            &reports_menu,
+            &admin_menu,
+            &patients_menu,
+            &finance_menu,
+            &purchases_menu,
+            &sales_menu,
+            &inventory_ops_menu,
+            &master_data_menu,
+            &file_menu,
+        ],
+    )
 }
 
 fn new_window_url<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::WebviewUrl {
@@ -167,347 +515,7 @@ fn main() {
             }
         })
         .setup(|app| {
-            // 1. ملف (File)
-            let file_menu = Submenu::with_items(
-                app,
-                "ملف",
-                true,
-                &[
-                    &MenuItem::with_id(
-                        app,
-                        "pos",
-                        "فاتورة مبيعات جديدة",
-                        true,
-                        Some("CmdOrCtrl+P"),
-                    )?,
-                    &MenuItem::with_id(
-                        app,
-                        "purchases_new",
-                        "فاتورة مشتريات جديدة",
-                        true,
-                        None::<&str>,
-                    )?,
-                    &PredefinedMenuItem::separator(app)?,
-                    &MenuItem::with_id(
-                        app,
-                        "new_window",
-                        "نافذة جديدة",
-                        true,
-                        Some("CmdOrCtrl+N"),
-                    )?,
-                    &PredefinedMenuItem::separator(app)?,
-                    &MenuItem::with_id(app, "print", "طباعة", true, Some("CmdOrCtrl+Shift+P"))?,
-                    &PredefinedMenuItem::separator(app)?,
-                    &MenuItem::with_id(app, "logout", "تسجيل الخروج", true, None::<&str>)?,
-                    &PredefinedMenuItem::separator(app)?,
-                    &PredefinedMenuItem::quit(app, None)?,
-                ],
-            )?;
-
-            // 2. البيانات الأساسية (Master Data)
-            let master_data_menu = Submenu::with_items(
-                app,
-                "البيانات الأساسية",
-                true,
-                &[
-                    &MenuItem::with_id(
-                        app,
-                        "dashboard",
-                        "لوحة التحكم (الرئيسية)",
-                        true,
-                        Some("CmdOrCtrl+D"),
-                    )?,
-                    &PredefinedMenuItem::separator(app)?,
-                    &MenuItem::with_id(app, "stores_items", "الأصناف", true, None::<&str>)?,
-                    &MenuItem::with_id(app, "stores_alternatives", "البدائل", true, None::<&str>)?,
-                    &MenuItem::with_id(app, "stores_nature", "النوع", true, None::<&str>)?,
-                    &MenuItem::with_id(app, "stores_usage", "الاستخدام", true, None::<&str>)?,
-                    &MenuItem::with_id(app, "stores_units", "الوحدات", true, None::<&str>)?,
-                    &MenuItem::with_id(
-                        app,
-                        "stores_indications",
-                        "دواعي الاستعمال",
-                        true,
-                        None::<&str>,
-                    )?,
-                    &MenuItem::with_id(
-                        app,
-                        "stores_drug_indications",
-                        "الاصناف ودواعي الاستخدام",
-                        true,
-                        None::<&str>,
-                    )?,
-                    &MenuItem::with_id(
-                        app,
-                        "stores_manufacturers",
-                        "الشركات المنتجة",
-                        true,
-                        None::<&str>,
-                    )?,
-                    &MenuItem::with_id(
-                        app,
-                        "stores_scientific_groups",
-                        "المجموعات العلمية",
-                        true,
-                        None::<&str>,
-                    )?,
-                    &MenuItem::with_id(app, "stores_categories", "التصنيفات", true, None::<&str>)?,
-                ],
-            )?;
-
-            // 3. العمليات المخزنية (Inventory Ops)
-            let inventory_ops_menu = Submenu::with_items(
-                app,
-                "العمليات المخزنية",
-                true,
-                &[
-                    &MenuItem::with_id(app, "inventory", "المخزون", true, Some("CmdOrCtrl+I"))?,
-                    &MenuItem::with_id(
-                        app,
-                        "stores_shortages",
-                        "كشكول النواقص",
-                        true,
-                        None::<&str>,
-                    )?,
-                    &MenuItem::with_id(
-                        app,
-                        "inventory_item_movements",
-                        "حركات الأصناف",
-                        true,
-                        None::<&str>,
-                    )?,
-                    &MenuItem::with_id(app, "restock", "إعادة التموين", true, None::<&str>)?,
-                    &MenuItem::with_id(
-                        app,
-                        "inventory_opening_balances",
-                        "الأرصدة الإفتتاحية",
-                        true,
-                        None::<&str>,
-                    )?,
-                    &MenuItem::with_id(app, "stores_adjustments", "التعديلات", true, None::<&str>)?,
-                    &MenuItem::with_id(
-                        app,
-                        "stores_adjustment_reasons",
-                        "أسباب التعديل",
-                        true,
-                        None::<&str>,
-                    )?,
-                    &MenuItem::with_id(
-                        app,
-                        "inventory_settlement",
-                        "تسوية المخزون",
-                        true,
-                        None::<&str>,
-                    )?,
-                    &MenuItem::with_id(
-                        app,
-                        "stores_delete_items",
-                        "حذف الأصناف",
-                        true,
-                        None::<&str>,
-                    )?,
-                ],
-            )?;
-
-            // 4. المبيعات (Sales)
-            let sales_menu = Submenu::with_items(
-                app,
-                "المبيعات",
-                true,
-                &[
-                    &MenuItem::with_id(app, "pos", "فاتورة مبيعات جديدة", true, None::<&str>)?,
-                    &MenuItem::with_id(app, "receipts", "الفواتير", true, None::<&str>)?,
-                    &MenuItem::with_id(app, "sales", "المبيعات والتحصيل", true, None::<&str>)?,
-                    &MenuItem::with_id(app, "sales_delivery", "توصيل منزلي", true, None::<&str>)?,
-                    &MenuItem::with_id(app, "sales_cogs", "تعديل التكلفة", true, None::<&str>)?,
-                    &MenuItem::with_id(
-                        app,
-                        "sales_settlement",
-                        "تسوية المبيعات",
-                        true,
-                        None::<&str>,
-                    )?,
-                    &MenuItem::with_id(app, "returns", "مرتجعات العملاء", true, None::<&str>)?,
-                ],
-            )?;
-
-            // 5. المشتريات (Purchases)
-            let purchases_menu = Submenu::with_items(
-                app,
-                "المشتريات",
-                true,
-                &[
-                    &MenuItem::with_id(app, "purchases", "المشتريات", true, Some("CmdOrCtrl+O"))?,
-                    &MenuItem::with_id(app, "purchase_orders", "أوامر الشراء", true, None::<&str>)?,
-                    &MenuItem::with_id(app, "purchases_suppliers", "الموردون", true, None::<&str>)?,
-                    &MenuItem::with_id(
-                        app,
-                        "purchases_returns",
-                        "مرتجعات للموردين",
-                        true,
-                        None::<&str>,
-                    )?,
-                    &MenuItem::with_id(
-                        app,
-                        "purchases_general_returns",
-                        "مرتجعات عامة",
-                        true,
-                        None::<&str>,
-                    )?,
-                ],
-            )?;
-
-            // 6. المالية (Finance)
-            let finance_menu = Submenu::with_items(
-                app,
-                "المالية",
-                true,
-                &[
-                    &MenuItem::with_id(app, "accounts", "الحسابات والمالية", true, None::<&str>)?,
-                    &MenuItem::with_id(
-                        app,
-                        "accounts_cash_transactions",
-                        "حركة النقدية",
-                        true,
-                        None::<&str>,
-                    )?,
-                    &MenuItem::with_id(app, "finance_handover", "تسليم الدرج", true, None::<&str>)?,
-                    &MenuItem::with_id(app, "finance_banks", "البنوك", true, None::<&str>)?,
-                    &MenuItem::with_id(
-                        app,
-                        "finance_cards",
-                        "البطاقات والماكينات",
-                        true,
-                        None::<&str>,
-                    )?,
-                    &MenuItem::with_id(
-                        app,
-                        "finance_pos_management",
-                        "إدارة نقاط البيع",
-                        true,
-                        None::<&str>,
-                    )?,
-                    &MenuItem::with_id(
-                        app,
-                        "finance_accounts",
-                        "شجرة الحسابات",
-                        true,
-                        None::<&str>,
-                    )?,
-                    &MenuItem::with_id(
-                        app,
-                        "accounts_settings_trial_balance",
-                        "إعدادات ميزان المراجعة",
-                        true,
-                        None::<&str>,
-                    )?,
-                ],
-            )?;
-
-            // 7. التقارير (Reports)
-            let reports_menu = Submenu::with_items(
-                app,
-                "التقارير",
-                true,
-                &[
-                    &MenuItem::with_id(app, "reports", "لوحة التقارير", true, None::<&str>)?,
-                    &MenuItem::with_id(
-                        app,
-                        "reports_sales2",
-                        "تقارير المبيعات",
-                        true,
-                        None::<&str>,
-                    )?,
-                    &MenuItem::with_id(
-                        app,
-                        "reports_purchases",
-                        "تقارير المشتريات",
-                        true,
-                        None::<&str>,
-                    )?,
-                    &MenuItem::with_id(
-                        app,
-                        "reports_trial_balance",
-                        "ميزان المراجعة",
-                        true,
-                        None::<&str>,
-                    )?,
-                    &MenuItem::with_id(app, "expenses", "المصروفات", true, None::<&str>)?,
-                    &MenuItem::with_id(app, "shifts", "الشفتات النقدية", true, None::<&str>)?,
-                ],
-            )?;
-
-            // 8. المرضى والطبية (Patients)
-            let patients_menu = Submenu::with_items(
-                app,
-                "المرضى والطبية",
-                true,
-                &[
-                    &MenuItem::with_id(app, "patients", "المرضى", true, None::<&str>)?,
-                    &MenuItem::with_id(
-                        app,
-                        "interactions",
-                        "التفاعلات الدوائية",
-                        true,
-                        None::<&str>,
-                    )?,
-                ],
-            )?;
-
-            // 9. الإدارة (Administration)
-            let admin_menu = Submenu::with_items(
-                app,
-                "الإدارة",
-                true,
-                &[
-                    &MenuItem::with_id(app, "staff", "أداء الموظفين", true, None::<&str>)?,
-                    &MenuItem::with_id(app, "staff_manage", "إدارة الموظفين", true, None::<&str>)?,
-                    &MenuItem::with_id(app, "staff_roles", "الوظائف والرواتب", true, None::<&str>)?,
-                    &MenuItem::with_id(app, "audit", "سجل المراقبة", true, None::<&str>)?,
-                    &MenuItem::with_id(app, "settings", "الإعدادات", true, None::<&str>)?,
-                ],
-            )?;
-
-            // 10. مساعدة (Help)
-            let help_menu = Submenu::with_items(
-                app,
-                "مساعدة",
-                true,
-                &[
-                    &MenuItem::with_id(
-                        app,
-                        "update_program",
-                        "تحديث البرنامج",
-                        true,
-                        None::<&str>,
-                    )?,
-                    &PredefinedMenuItem::separator(app)?,
-                    &MenuItem::with_id(
-                        app,
-                        "help_shortcuts",
-                        "اختصارات لوحة المفاتيح",
-                        true,
-                        None::<&str>,
-                    )?,
-                    &MenuItem::with_id(app, "help_about", "عن النظام", true, None::<&str>)?,
-                ],
-            )?;
-
-            let menu = Menu::with_items(
-                app,
-                &[
-                    &help_menu,
-                    &reports_menu,
-                    &admin_menu,
-                    &patients_menu,
-                    &finance_menu,
-                    &purchases_menu,
-                    &sales_menu,
-                    &inventory_ops_menu,
-                    &master_data_menu,
-                    &file_menu,
-                ],
-            )?;
+            let menu = create_app_menu(app.handle())?;
             app.set_menu(menu)?;
 
             // Extract the seeded database from resources on first run

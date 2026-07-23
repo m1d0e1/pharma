@@ -61,6 +61,7 @@ export interface DrugItem {
 }
 
 export interface CartItem {
+  id: string;
   drug_id: string | number;
   trade_name: string;
   trade_name_en?: string;
@@ -297,13 +298,13 @@ export default function POSPage() {
   const [isLoadingDrafts, setIsLoadingDrafts] = useState(false);
 
   // Selected Row for deletion
-  const [selectedRowId, setSelectedRowId] = useState<string | number | null>(null);
+  const [selectedRowCartId, setSelectedRowCartId] = useState<string | null>(null);
 
   // Return/Stock Modal State
   const [showStockWarning, setShowStockWarning] = useState<DrugItem | null>(null);
   const [showReturnModal, setShowReturnModal] = useState(false);
   const [showDrugDetails, setShowDrugDetails] = useState<string | number | null>(null);
-  const [contextMenu, setContextMenu] = useState<{ x: number, y: number, drugId: string | number } | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ x: number, y: number, drugId: string | number, cartItemId: string } | null>(null);
 
   // Billing State
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'credit' | 'check' | 'visa' | 'delivery' | 'wallet'>('cash');
@@ -436,6 +437,7 @@ export default function POSPage() {
     }, 150);
   }, [router]);
 
+  // Redirect if coming from drafts tab
   useEffect(() => {
     if (searchParams.get('tab') === 'drafts') {
       setShowDraftsModal(true);
@@ -445,28 +447,25 @@ export default function POSPage() {
   // Global Keydown for Delete
   useEffect(() => {
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Delete' && selectedRowId !== null) {
-        // Prevent deleting if typing in an input
+      if (e.key === 'Delete' && selectedRowCartId !== null) {
         if (document.activeElement?.tagName === 'INPUT') return;
-        setCart(prev => prev.filter(i => String(i.drug_id) !== String(selectedRowId)));
-        setSelectedRowId(null);
+        setCart(prev => prev.filter(i => i.id !== selectedRowCartId));
+        setSelectedRowCartId(null);
       }
     };
     window.addEventListener('keydown', handleGlobalKeyDown);
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
-  }, [selectedRowId]);
+  }, [selectedRowCartId]);
 
-
-
-  // Search Patients
+  // Handle Patient Search Debounce
   useEffect(() => {
     const searchPatients = async () => {
       if (patientSearch.length < 2) {
         setPatientResults([]);
         return;
       }
-
       try {
+        const { searchPatientsAction } = await import('@/app/actions-client/patients');
         const res = await searchPatientsAction(patientSearch);
         if (res.success) {
           setPatientResults(res.data || []);
@@ -506,13 +505,16 @@ export default function POSPage() {
     }
 
     const drugId = String(drug.id);
+    const defaultUnit = 'large';
 
     setCart(prev => {
-      const existing = prev.find(i => String(i.drug_id) === drugId);
+      const existing = prev.find(i => String(i.drug_id) === drugId && (i.selectedUnit === defaultUnit || i.selectedUnit === drug.units?.large) && !i.inventory_id);
       if (existing) {
-        return prev.map(i => String(i.drug_id) === drugId ? { ...i, qty: i.qty + 1 } : i);
+        return prev.map(i => i.id === existing.id ? { ...i, qty: i.qty + 1 } : i);
       }
+      const newItemId = `${drugId}-${defaultUnit}-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
       return [...prev, { 
+        id: newItemId,
         drug_id: drugId, 
         trade_name: drug.trade_name, 
         trade_name_en: drug.trade_name_en,
@@ -521,7 +523,7 @@ export default function POSPage() {
         price: drug.min_price, 
         itemDiscountPercent: 0,
         basePrice: drug.min_price,
-        selectedUnit: 'large',
+        selectedUnit: defaultUnit,
         units: drug.units,
         total_stock: drug.total_stock,
         reorder_point: drug.reorder_point,
@@ -533,9 +535,32 @@ export default function POSPage() {
     });
   }, []);
 
-  const handleUnitChange = useCallback((drugId: string | number, unit: string) => {
+  const addAnotherUnitRow = useCallback((item: CartItem) => {
+    const nextUnit = item.selectedUnit === 'large' && item.units.medium 
+      ? 'medium' 
+      : (item.selectedUnit === 'medium' && item.units.small ? 'small' : 'large');
+
+    let newPrice = item.basePrice;
+    if (nextUnit === item.units.medium || nextUnit === 'medium') {
+      newPrice = item.basePrice / (item.units.large_to_medium || 1);
+    } else if (nextUnit === item.units.small || nextUnit === 'small') {
+      newPrice = item.basePrice / ((item.units.large_to_medium || 1) * (item.units.medium_to_small || 1));
+    }
+
+    const newItemId = `${item.drug_id}-${nextUnit}-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    setCart(prev => [...prev, {
+      ...item,
+      id: newItemId,
+      qty: 1,
+      selectedUnit: nextUnit,
+      price: Number(newPrice.toFixed(2))
+    }]);
+    toast.success(`تمت إضافة وحدة جديدة (${nextUnit === 'medium' ? item.units.medium || 'شريط' : (nextUnit === 'small' ? item.units.small || 'قرص' : item.units.large || 'علبة')})`);
+  }, []);
+
+  const handleUnitChange = useCallback((cartItemId: string, unit: string) => {
     setCart(prev => prev.map(item => {
-      if (String(item.drug_id) !== String(drugId)) return item;
+      if (item.id !== cartItemId) return item;
       
       let newPrice = item.basePrice;
       if (unit === item.units.medium || unit === 'medium') {
@@ -548,9 +573,9 @@ export default function POSPage() {
     }));
   }, []);
 
-  const handleBatchChange = useCallback((drugId: string | number, inventoryId: string) => {
+  const handleBatchChange = useCallback((cartItemId: string, inventoryId: string) => {
     setCart(prev => prev.map(item => {
-      if (String(item.drug_id) !== String(drugId)) return item;
+      if (item.id !== cartItemId) return item;
       
       const batchId = inventoryId === 'auto' ? null : inventoryId;
       let newPrice = item.price;
@@ -558,7 +583,6 @@ export default function POSPage() {
       if (batchId && item.batches) {
         const batch = item.batches.find((b: any) => String(b.inventory_id) === String(batchId));
         if (batch && batch.unit_price) {
-          // Calculate price based on selected unit
           let basePrice = batch.unit_price;
           if (item.selectedUnit === item.units.medium || item.selectedUnit === 'medium') {
             basePrice = basePrice / (item.units.large_to_medium || 1);
@@ -784,37 +808,41 @@ export default function POSPage() {
     return subtotal - totalDiscount - percentDiscountValue + additionalFees;
   }, [subtotal, totalDiscount, percentDiscountValue, additionalFees]);
 
-  const handleContextMenu = (e: React.MouseEvent, drugId: string | number) => {
+  const handleContextMenu = (e: React.MouseEvent, drugId: string | number, cartItemId: string) => {
     e.preventDefault();
-    const menuWidth = 192;
-    const menuHeight = 220;
+    const menuWidth = 220;
+    const menuHeight = 260;
     let x = e.clientX;
     let y = e.clientY;
     if (x + menuWidth > window.innerWidth) x = window.innerWidth - menuWidth - 12;
     if (y + menuHeight > window.innerHeight) y = window.innerHeight - menuHeight - 12;
     if (x < 12) x = 12;
     if (y < 12) y = 12;
-    setContextMenu({ x, y, drugId });
+    setContextMenu({ x, y, drugId, cartItemId });
   };
 
   const closeContextMenu = () => setContextMenu(null);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'F2' && selectedRowId) {
+      if (e.key === 'F2' && selectedRowCartId) {
         e.preventDefault();
-        setShowDrugDetails(selectedRowId);
+        const selectedItem = cart.find(i => i.id === selectedRowCartId);
+        if (selectedItem) setShowDrugDetails(selectedItem.drug_id);
       }
-      if (e.key === 'F9' && selectedRowId) {
+      if (e.key === 'F9' && selectedRowCartId) {
         e.preventDefault();
-        addToShortagesAction({ drug_id: selectedRowId }).then(res => {
-          if (res.success) toast.success('تمت الإضافة إلى النواقص');
-        });
+        const selectedItem = cart.find(i => i.id === selectedRowCartId);
+        if (selectedItem) {
+          addToShortagesAction({ drug_id: selectedItem.drug_id }).then(res => {
+            if (res.success) toast.success('تمت الإضافة إلى النواقص');
+          });
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedRowId]);
+  }, [selectedRowCartId, cart]);
 
   useEffect(() => {
     const handleClick = () => closeContextMenu();
@@ -901,8 +929,8 @@ export default function POSPage() {
             {selectedPatient ? (
               <div className="space-y-1">
                 <div className="flex items-center justify-between bg-purple-50 dark:bg-purple-900/20 p-2 rounded-xl border border-purple-100 dark:border-purple-800">
-                  <span className="font-bold text-xs text-purple-700 dark:text-purple-300 truncate">👤 {selectedPatient.full_name}</span>
-                  <button onClick={() => { setSelectedPatient(null); if (paymentMethod === 'credit' || paymentMethod === 'wallet') setPaymentMethod('cash'); }} className="text-purple-400 hover:text-purple-900">×</button>
+                  <span className="font-bold text-xs text-purple-700 dark:text-purple-300 break-words leading-relaxed" title={selectedPatient.full_name}>👤 {selectedPatient.full_name}</span>
+                  <button onClick={() => { setSelectedPatient(null); if (paymentMethod === 'credit' || paymentMethod === 'wallet') setPaymentMethod('cash'); }} className="text-purple-400 hover:text-purple-900 font-bold px-1 text-sm shrink-0">×</button>
                 </div>
                 {paymentMethod === 'credit' && (
                   <div className="text-[10px] font-black px-1 flex justify-between">
@@ -925,15 +953,22 @@ export default function POSPage() {
               <div className="relative">
                 <input 
                   type="text" 
-                  placeholder="بحث عن عميل..."
+                  placeholder="بحث عن عميل (نقرتين لعرض الكل)..."
                   value={patientSearch}
                   onChange={(e) => setPatientSearch(e.target.value)}
+                  onDoubleClick={async () => {
+                    const { searchPatientsAction } = await import('@/app/actions-client/patients');
+                    const res = await searchPatientsAction('', true);
+                    if (res.success && res.data) {
+                      setPatientResults(res.data);
+                    }
+                  }}
                   data-nav="patient-input"
                   onKeyDown={handleInputKeyDown}
                   className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-100 dark:border-slate-700 dark:text-white rounded-xl px-3 py-2 text-xs font-bold outline-none focus:ring-2 focus:ring-purple-500"
                 />
                 {(patientResults.length > 0 || (patientSearch.length >= 2)) && (
-                  <div className="absolute top-full left-0 right-0 bg-white dark:bg-slate-800 shadow-2xl rounded-2xl mt-2 z-50 border border-slate-100 dark:border-slate-700 p-2">
+                  <div className="absolute top-full left-0 right-0 max-h-64 overflow-y-auto bg-white dark:bg-slate-800 shadow-2xl rounded-2xl mt-2 z-50 border border-slate-100 dark:border-slate-700 p-2">
                     {patientResults.map(p => (
                       <button 
                         key={p.id}
@@ -945,11 +980,13 @@ export default function POSPage() {
                           setPatientResults([]);
                           setPatientSearch('');
                         }}
-                        className="w-full text-right p-3 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-xl text-xs font-bold"
+                        className="w-full text-right p-3 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-xl text-xs font-bold transition-colors border-b last:border-b-0 border-slate-50 dark:border-slate-700/30"
                       >
-                        <span className="flex items-center justify-between gap-2">
-                          <span className="truncate">{p.full_name} ({p.phone || 'بدون هاتف'})</span>
-                          <span className={`shrink-0 ${Number(p.outstanding_balance || 0) > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
+                        <span className="flex items-center justify-between gap-3">
+                          <span className="font-bold text-slate-800 dark:text-white break-words" title={p.full_name}>
+                            👤 {p.full_name} {p.phone ? `(${p.phone})` : ''}
+                          </span>
+                          <span className={`shrink-0 text-[10px] ${Number(p.outstanding_balance || 0) > 0 ? 'text-rose-600 dark:text-rose-400 font-black' : 'text-emerald-600 dark:text-emerald-400 font-bold'}`}>
                             مديونية: {Math.max(0, Number(p.outstanding_balance || 0)).toFixed(2)} ج.م
                           </span>
                         </span>
@@ -1034,10 +1071,10 @@ export default function POSPage() {
               <tbody className="divide-y divide-slate-50 dark:divide-slate-800">
                 {cart.map((item, index) => (
                   <tr 
-                    key={`${item.drug_id}-${index}`} 
-                    onClick={() => setSelectedRowId(String(item.drug_id))}
-                    onContextMenu={(e) => handleContextMenu(e, String(item.drug_id))}
-                    className={`group hover:bg-slate-50/50 dark:hover:bg-slate-800/50 transition-colors cursor-pointer ${String(selectedRowId) === String(item.drug_id) ? 'bg-blue-50/50 dark:bg-blue-900/20 ring-1 ring-inset ring-blue-500/20' : ''}`}
+                    key={item.id} 
+                    onClick={() => setSelectedRowCartId(item.id)}
+                    onContextMenu={(e) => handleContextMenu(e, item.drug_id, item.id)}
+                    className={`group hover:bg-slate-50/50 dark:hover:bg-slate-800/50 transition-colors cursor-pointer ${selectedRowCartId === item.id ? 'bg-blue-50/50 dark:bg-blue-900/20 ring-1 ring-inset ring-blue-500/20' : ''}`}
                   >
                     <td className="px-1 py-2 text-[9px] font-bold text-slate-400 text-center w-10">#{item.drug_id}</td>
                     <td className="px-1.5 py-2 text-right">
@@ -1047,7 +1084,7 @@ export default function POSPage() {
                     <td className="px-1 py-2 text-center w-12">
                       <select 
                         value={item.selectedUnit}
-                        onChange={(e) => handleUnitChange(item.drug_id, e.target.value)}
+                        onChange={(e) => handleUnitChange(item.id, e.target.value)}
                         data-nav={`unit-select-${index}`}
                         onKeyDown={handleInputKeyDown}
                         className="bg-transparent border-none text-[9px] font-black outline-none cursor-pointer text-blue-600 focus:ring-1 focus:ring-blue-500 rounded px-0.5"
@@ -1061,7 +1098,7 @@ export default function POSPage() {
                       {item.batches && item.batches.length > 1 ? (
                         <select
                           value={item.inventory_id || 'auto'}
-                          onChange={(e) => handleBatchChange(item.drug_id, e.target.value)}
+                          onChange={(e) => handleBatchChange(item.id, e.target.value)}
                           className="w-full bg-slate-50 dark:bg-slate-800 border-none p-1 rounded text-[9px] font-bold focus:ring-1 focus:ring-blue-500"
                         >
                           <option value="auto">تلقائي ({item.nearest_expiry || '---'})</option>
@@ -1081,7 +1118,7 @@ export default function POSPage() {
                     </td>
                     <td className="px-1 py-2 text-center w-20">
                       <div className="flex items-center justify-center gap-0.5 bg-slate-100 dark:bg-slate-800 rounded-lg p-0.5 w-20 mx-auto font-sans">
-                        <button tabIndex={-1} onClick={() => setCart(p => p.map(i => String(i.drug_id) === String(item.drug_id) ? {...i, qty: Math.max(1, i.qty-1)} : i))} className="w-4 h-4 flex items-center justify-center hover:bg-white dark:hover:bg-slate-700 rounded text-slate-500 font-bold text-xs">-</button>
+                        <button tabIndex={-1} onClick={() => setCart(p => p.map(i => i.id === item.id ? {...i, qty: Math.max(1, i.qty-1)} : i))} className="w-4 h-4 flex items-center justify-center hover:bg-white dark:hover:bg-slate-700 rounded text-slate-500 font-bold text-xs">-</button>
                         <input 
                           type="number" 
                           value={item.qty} 
@@ -1089,12 +1126,12 @@ export default function POSPage() {
                           data-nav={`qty-input-${index}`}
                           onChange={(e) => {
                             const newQty = parseInt(e.target.value);
-                            setCart(p => p.map(i => String(i.drug_id) === String(item.drug_id) ? {...i, qty: isNaN(newQty) ? 1 : Math.max(1, newQty)} : i))
+                            setCart(p => p.map(i => i.id === item.id ? {...i, qty: isNaN(newQty) ? 1 : Math.max(1, newQty)} : i))
                           }}
                           onKeyDown={handleInputKeyDown}
                           className="w-8 bg-transparent text-center font-bold text-xs outline-none focus:ring-1 focus:ring-blue-500 rounded p-0 text-[10px]"
                         />
-                        <button tabIndex={-1} onClick={() => setCart(p => p.map(i => String(i.drug_id) === String(item.drug_id) ? {...i, qty: i.qty+1} : i))} className="w-4 h-4 flex items-center justify-center hover:bg-white dark:hover:bg-slate-700 rounded text-slate-500 font-bold text-xs">+</button>
+                        <button tabIndex={-1} onClick={() => setCart(p => p.map(i => i.id === item.id ? {...i, qty: i.qty+1} : i))} className="w-4 h-4 flex items-center justify-center hover:bg-white dark:hover:bg-slate-700 rounded text-slate-500 font-bold text-xs">+</button>
                       </div>
                     </td>
                     <td className="px-1 py-2 text-center font-black text-[11px] w-12">{item.price}</td>
@@ -1108,7 +1145,7 @@ export default function POSPage() {
                       <input 
                         type="number"
                         value={item.itemDiscountPercent || 0}
-                        onChange={(e) => setCart(p => p.map(i => String(i.drug_id) === String(item.drug_id) ? {...i, itemDiscountPercent: Number(e.target.value)} : i))}
+                        onChange={(e) => setCart(p => p.map(i => i.id === item.id ? {...i, itemDiscountPercent: Number(e.target.value)} : i))}
                         data-nav={`discount-input-${index}`}
                         onKeyDown={handleInputKeyDown}
                         className="w-12 bg-slate-50 dark:bg-slate-800 border-none p-0.5 rounded text-[9px] font-black text-center text-rose-500 focus:ring-2 focus:ring-rose-500"
@@ -1119,7 +1156,7 @@ export default function POSPage() {
                       {(item.price * item.qty * (1 - (item.itemDiscountPercent || 0) / 100)).toFixed(2)}
                     </td>
                     <td className="px-1 py-2 text-left w-8">
-                      <button tabIndex={-1} onClick={() => setCart(p => p.filter(i => String(i.drug_id) !== String(item.drug_id)))} className="p-1 text-red-300 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-all opacity-0 group-hover:opacity-100">
+                      <button tabIndex={-1} onClick={() => setCart(p => p.filter(i => i.id !== item.id))} className="p-1 text-red-300 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-all opacity-0 group-hover:opacity-100">
                         <Trash2 className="w-3 h-3" />
                       </button>
                     </td>
@@ -1216,10 +1253,13 @@ export default function POSPage() {
         }}
         onNegativeSale={(drug) => {
           const drugId = String(drug.id);
+          const defaultUnit = 'large';
           setCart(prev => {
-            const existing = prev.find(i => String(i.drug_id) === drugId);
-            if (existing) return prev.map(i => String(i.drug_id) === drugId ? { ...i, qty: i.qty + 1 } : i);
+            const existing = prev.find(i => String(i.drug_id) === drugId && i.selectedUnit === defaultUnit);
+            if (existing) return prev.map(i => i.id === existing.id ? { ...i, qty: i.qty + 1 } : i);
+            const newItemId = `${drugId}-${defaultUnit}-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
             return [...prev, {
+              id: newItemId,
               drug_id: drugId,
               trade_name: drug.trade_name,
               trade_name_en: drug.trade_name_en,
@@ -1284,6 +1324,14 @@ export default function POSPage() {
         >
           <div className="p-2 space-y-1">
             <ContextMenuItem 
+              icon={PlusCircle} 
+              label="إضافة وحدة أخرى (شريط / علبة)" 
+              onClick={() => {
+                const item = cart.find(i => i.id === contextMenu.cartItemId);
+                if (item) addAnotherUnitRow(item);
+              }} 
+            />
+            <ContextMenuItem 
               icon={Info} 
               label="معلومات الصنف (F2)" 
               onClick={() => setShowDrugDetails(contextMenu.drugId)} 
@@ -1307,7 +1355,7 @@ export default function POSPage() {
               icon={Trash2} 
               label="حذف من الفاتورة (Del)" 
               color="text-red-500"
-              onClick={() => setCart(p => p.filter(i => String(i.drug_id) !== String(contextMenu.drugId)))} 
+              onClick={() => setCart(p => p.filter(i => i.id !== contextMenu.cartItemId))} 
             />
           </div>
         </div>
