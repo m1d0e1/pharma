@@ -160,7 +160,13 @@ export async function getPurchaseInvoicesAction() {
 
     const items = await db.prepare(`
       SELECT i.*, s.name_ar as supplier_name, s.phone as supplier_phone,
-             u.full_name as user_name
+             u.full_name as user_name,
+             (
+               SELECT GROUP_CONCAT(md.trade_name, ' ')
+               FROM purchase_invoice_items pii
+               JOIN master_drugs md ON CAST(pii.drug_id AS TEXT) = CAST(md.id AS TEXT)
+               WHERE pii.invoice_id = i.id OR pii.invoice_id = i.invoice_number
+             ) as drug_names
       FROM purchase_invoices i
       JOIN suppliers s ON i.supplier_id = s.id
       LEFT JOIN users u ON i.user_id = u.id
@@ -650,38 +656,59 @@ export async function updatePurchaseOrderStatusAction(poId: string, status: stri
 
 export async function getPurchasesReportsAction(filters: any = {}) {
   try {
-    let sql = 'SELECT i.*, s.name_ar as supplier_name, COALESCE(u.full_name, u.username, i.user_id, \'غير محدد\') as staff_name FROM purchase_invoices i LEFT JOIN suppliers s ON i.supplier_id = s.id LEFT JOIN users u ON i.user_id = u.id WHERE 1=1';
+    let sql = `
+      SELECT DISTINCT i.*,
+             s.name_ar as supplier_name,
+             COALESCE(u.full_name, u.username, i.user_id, 'غير محدد') as staff_name,
+             COALESCE((
+               SELECT SUM(pii.quantity * COALESCE(pii.selling_price, md.official_price, 0))
+               FROM purchase_invoice_items pii
+               JOIN master_drugs md ON pii.drug_id = md.id
+               WHERE pii.invoice_id = i.id
+             ), 0) as total_selling_amount
+      FROM purchase_invoices i
+      LEFT JOIN suppliers s ON i.supplier_id = s.id
+      LEFT JOIN users u ON i.user_id = u.id
+    `;
     const params: any[] = [];
+
+    if (filters.drugName && filters.drugName.trim()) {
+      sql += ` JOIN purchase_invoice_items pii_search ON pii_search.invoice_id = i.id JOIN master_drugs md_search ON pii_search.drug_id = md_search.id`;
+    }
+
+    sql += ' WHERE 1=1';
     if (filters.startDate) { sql += ' AND date(i.created_at) >= ?'; params.push(filters.startDate); }
     if (filters.endDate) { sql += ' AND date(i.created_at) <= ?'; params.push(filters.endDate); }
     if (filters.userId && filters.userId !== 'all') { sql += ' AND i.user_id = ?'; params.push(filters.userId); }
     if (filters.paymentMethod && filters.paymentMethod !== 'all') { sql += ' AND i.payment_method = ?'; params.push(filters.paymentMethod); }
     if (filters.supplierId && filters.supplierId !== 'all') { sql += ' AND i.supplier_id = ?'; params.push(filters.supplierId); }
     if (filters.invoiceNumber) { sql += ' AND i.invoice_number LIKE ?'; params.push('%' + filters.invoiceNumber + '%'); }
+    if (filters.drugName && filters.drugName.trim()) {
+      sql += ' AND (md_search.trade_name LIKE ? OR md_search.trade_name_en LIKE ? OR md_search.active_ingredient LIKE ?)';
+      const term = '%' + filters.drugName.trim() + '%';
+      params.push(term, term, term);
+    }
     sql += ' ORDER BY i.created_at DESC';
     const items = await db.prepare(sql).all(...params) as any[];
     const totalCost = items.reduce((sum, inv) => sum + (inv.total_amount || 0), 0);
-    return { success: true, data: items, totalCost, invoiceCount: items.length };
+    const totalSelling = items.reduce((sum, inv) => sum + (inv.total_selling_amount || 0), 0);
+    return { success: true, data: items, totalCost, totalSelling, invoiceCount: items.length };
   } catch (error: any) { return { success: false, error: error.message }; }
 }
 
 export async function getPurchaseInvoiceDetailsAction(invoiceId: string) {
   try {
     const items = await db.prepare(`
-      SELECT pii.*, d.trade_name, d.trade_name_en, d.barcode, d.large_to_medium,
-             d.medium_to_small, d.official_price as base_price, u.name_en as unit,
-             i.id as inventory_id, i.batch_number, i.expiry_date as inventory_expiry_date
+      SELECT pii.*,
+             d.trade_name, d.trade_name_en, d.barcode, d.large_to_medium, d.medium_to_small,
+             d.official_price as base_price, u.name_en as unit,
+             COALESCE(pii.selling_price, d.official_price, 0) as selling_price
       FROM purchase_invoice_items pii
-      JOIN master_drugs d ON pii.drug_id = d.id
-      LEFT JOIN units u ON pii.unit_id = u.id
-      LEFT JOIN inventory i ON i.id = COALESCE(pii.inventory_id, (
-        SELECT ii.id FROM inventory ii
-        WHERE ii.drug_id = pii.drug_id
-          AND (ii.expiry_date = pii.expiry_date OR (ii.expiry_date IS NULL AND pii.expiry_date IS NULL))
-        ORDER BY ii.quantity DESC, ii.created_at ASC LIMIT 1
-      ))
-      WHERE pii.invoice_id = ?
-    `).all(invoiceId);
+      JOIN master_drugs d ON CAST(pii.drug_id AS TEXT) = CAST(d.id AS TEXT)
+      LEFT JOIN units u ON CAST(pii.unit_id AS TEXT) = CAST(u.id AS TEXT)
+      LEFT JOIN purchase_invoices inv ON pii.invoice_id = inv.id OR pii.invoice_id = inv.invoice_number
+      WHERE inv.id = ? OR inv.invoice_number = ? OR pii.invoice_id = ?
+    `).all(invoiceId, invoiceId, invoiceId);
     return { success: true, data: items };
   } catch (error: any) { return { success: false, error: error.message }; }
 }

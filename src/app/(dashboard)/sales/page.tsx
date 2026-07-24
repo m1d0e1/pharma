@@ -37,14 +37,6 @@ const salesModules = [
     roles: ['owner', 'admin', 'pharmacist']
   },
   { 
-    title: 'تسليم الدرج', 
-    desc: 'تصفية نقدية الوردية وتسليم العهدة', 
-    icon: ArrowLeftRight, 
-    href: '/finance/handover', 
-    color: 'bg-blue-600',
-    roles: ['owner', 'admin', 'pharmacist']
-  },
-  { 
     title: 'تسوية مبيعات بدون رصيد', 
     desc: 'ربط المبيعات السالبة بأرصدة المخزون', 
     icon: PackageSearch, 

@@ -133,7 +133,7 @@ export default function DashboardLayout({
               const version = await getVersion();
               const { message } = await import('@tauri-apps/plugin-dialog');
               await message(
-                `الإصدار: ${version}\nنظام إدارة صيدليات ذكي، مبني بأحدث التقنيات لضمان السرعة والأمان والموثوقية.\n\nتم إنشاؤه بواسطة محمد شعبان بحب لمجتمع الصيادلة.\nللتواصل: m0hamed.essamit2000@gmail.com`,
+                `الإصدار: ${version}\nنظام إدارة صيدليات ذكي، مبني بأحدث التقنيات لضمان السرعة والأمان والموثوقية.\n\nتم انشاؤه بواسطة محمد عصام لمجتمع الصيادلة.\nللتواصل: m0hamed.essamit2000@gmail.com`,
                 { title: 'نظام فارما تيك المتكامل', kind: 'info' }
               ).catch(() => toast.success(`نظام فارما تيك المتكامل - الإصدار ${version}`));
             } catch (e) {

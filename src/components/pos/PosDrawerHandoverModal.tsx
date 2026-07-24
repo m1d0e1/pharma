@@ -1,0 +1,341 @@
+'use client';
+
+import React, { useState, useEffect } from 'react';
+import { X, Save, ArrowLeftRight, Lock, User, AlertCircle, ShieldCheck } from 'lucide-react';
+import { getHandoverDetailsAction, processHandoverAction } from '@/app/actions-client/handover';
+import { getCurrentShiftAction } from '@/app/actions-client/shifts';
+import { getBanksAction } from '@/app/actions-client/finance';
+import { getStaffAction } from '@/app/actions-client/users';
+import { format } from 'date-fns';
+import toast from 'react-hot-toast';
+
+interface PosDrawerHandoverModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+}
+
+export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHandoverModalProps) {
+  const [shiftId, setShiftId] = useState<string | null>(null);
+  const [details, setDetails] = useState<any>(null);
+  const [activeUserDisplay, setActiveUserDisplay] = useState<string>('');
+  const [banks, setBanks] = useState<any[]>([]);
+  const [staff, setStaff] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [processing, setProcessing] = useState(false);
+
+  const [form, setForm] = useState({
+    transferAmount: 0,
+    transferTargetId: '',
+    transferTargetType: 'treasury' as 'treasury' | 'bank',
+    receiverUsername: '',
+    receiverPassword: '',
+    notes: ''
+  });
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    async function loadData() {
+      setLoading(true);
+
+      const { getClientSession } = await import('@/lib/auth/local');
+      const sessionUser = await getClientSession();
+      const activeUserName = sessionUser?.full_name || sessionUser?.username || 'المستخدم الحالي';
+      setActiveUserDisplay(activeUserName);
+
+      const shiftRes = await getCurrentShiftAction();
+      let activeShiftId = shiftRes.data?.id;
+
+      if (activeShiftId) {
+        setShiftId(activeShiftId);
+        const detailsRes = await getHandoverDetailsAction(activeShiftId);
+        if (detailsRes.success && detailsRes.data) {
+          setDetails({
+            ...detailsRes.data,
+            user_name: activeUserName
+          });
+        }
+      }
+
+      const banksRes = await getBanksAction();
+      if (banksRes.success) setBanks(banksRes.data || []);
+
+      const staffRes = await getStaffAction();
+      if (staffRes.success) {
+        setStaff(staffRes.data || []);
+        if (staffRes.data && staffRes.data.length > 0) {
+          setForm(prev => ({ ...prev, receiverUsername: staffRes.data[0].username }));
+        }
+      }
+
+      setLoading(false);
+    }
+
+    loadData();
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
+
+  if (!isOpen) return null;
+
+  const expectedCash = details?.expected_cash || 0;
+  const remainingCash = expectedCash - (form.transferAmount || 0);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!shiftId) {
+      toast.error('لا توجد وردية مفتوحة');
+      return;
+    }
+    if (form.transferAmount < 0) {
+      toast.error('مبلغ التحويل يجب أن يكون أكبر من أو يساوي 0');
+      return;
+    }
+    if (!form.receiverUsername) {
+      toast.error('يرجى اختيار المستلم');
+      return;
+    }
+
+    setProcessing(true);
+    const res = await processHandoverAction({
+      shiftId,
+      transferAmount: form.transferAmount,
+      transferTargetId: form.transferTargetId,
+      transferTargetType: form.transferTargetType,
+      receiverUsername: form.receiverUsername,
+      receiverPasswordHash: form.receiverPassword,
+      notes: form.notes
+    });
+
+    if (res.success) {
+      toast.success('تمت عملية تسليم الدرج بنجاح');
+      onClose();
+    } else {
+      toast.error(res.error || 'فشل تسليم الدرج');
+    }
+    setProcessing(false);
+  };
+
+  const formattedStartTime = details?.start_time
+    ? format(new Date(details.start_time), 'HH:mm dd/MM/yyyy')
+    : format(new Date(), 'HH:mm dd/MM/yyyy');
+
+  return (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in" dir="rtl">
+      <div className="w-full max-w-lg bg-slate-200 dark:bg-slate-900 text-slate-900 dark:text-white rounded-2xl shadow-2xl border-2 border-slate-400 dark:border-slate-700 overflow-hidden font-sans">
+        
+        {/* Title Bar (Classic Window Header matching screenshot) */}
+        <div className="bg-gradient-to-r from-blue-900 via-blue-800 to-blue-950 text-white px-4 py-2 flex justify-between items-center select-none">
+          <div className="flex items-center gap-2">
+            <ArrowLeftRight className="w-4 h-4 text-blue-200" />
+            <span className="font-bold text-sm">تسليم درج</span>
+          </div>
+          <button 
+            onClick={onClose} 
+            className="w-6 h-6 rounded bg-slate-700/50 hover:bg-rose-600 flex items-center justify-center text-xs transition-colors"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Form Body */}
+        {loading ? (
+          <div className="p-12 text-center font-bold text-slate-600 dark:text-slate-400 animate-pulse">
+            جاري تحميل بيانات الوردية والدرج...
+          </div>
+        ) : (
+          <form onSubmit={handleSubmit} className="p-6 space-y-5">
+            
+            {/* Header Title inside form */}
+            <div className="text-center pb-2">
+              <h2 className="text-2xl font-black text-slate-800 dark:text-slate-100 tracking-tight">
+                تسليم درج نقطة البيع
+              </h2>
+            </div>
+
+            {/* Section 1: المستخدم الحالي */}
+            <div className="border border-slate-400 dark:border-slate-700 rounded-xl p-4 bg-slate-100/80 dark:bg-slate-800/60 relative pt-3">
+              <span className="absolute -top-3 right-4 px-2 bg-slate-200 dark:bg-slate-900 font-bold text-xs text-slate-700 dark:text-slate-300">
+                المستخدم الحالي
+              </span>
+              
+              <div className="space-y-2 text-xs font-bold">
+                <div className="grid grid-cols-3 items-center gap-2">
+                  <label className="col-span-1 text-slate-700 dark:text-slate-300">المستخدم الحالي</label>
+                  <input 
+                    type="text" 
+                    readOnly 
+                    value={activeUserDisplay || details?.user_name || 'المستخدم الحالي'} 
+                    className="col-span-2 px-3 py-1.5 bg-amber-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded font-black text-red-600 dark:text-red-400 text-center uppercase"
+                  />
+                </div>
+
+                <div className="grid grid-cols-3 items-center gap-2">
+                  <label className="col-span-1 text-slate-700 dark:text-slate-300">الرصيد الإفتتاحي</label>
+                  <input 
+                    type="text" 
+                    readOnly 
+                    value={(details?.starting_cash || 0).toFixed(2)} 
+                    className="col-span-2 px-3 py-1.5 bg-white dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded font-black text-red-600 dark:text-red-400 text-center"
+                  />
+                </div>
+
+                <div className="grid grid-cols-3 items-center gap-2">
+                  <label className="col-span-1 text-slate-700 dark:text-slate-300">بداية الفترة</label>
+                  <input 
+                    type="text" 
+                    readOnly 
+                    value={formattedStartTime} 
+                    className="col-span-2 px-3 py-1.5 bg-blue-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded font-black text-blue-800 dark:text-blue-300 text-center dir-ltr"
+                  />
+                </div>
+
+                <div className="grid grid-cols-3 items-center gap-2">
+                  <label className="col-span-1 text-slate-700 dark:text-slate-300">أجل</label>
+                  <input 
+                    type="text" 
+                    readOnly 
+                    value={(details?.credit_sales || 0).toFixed(2)} 
+                    className="col-span-2 px-3 py-1.5 bg-white dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded font-black text-slate-900 dark:text-white text-center"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Section 2: النقدية */}
+            <div className="border border-slate-400 dark:border-slate-700 rounded-xl p-4 bg-slate-100/80 dark:bg-slate-800/60 relative pt-3">
+              <span className="absolute -top-3 right-4 px-2 bg-slate-200 dark:bg-slate-900 font-bold text-xs text-slate-700 dark:text-slate-300">
+                النقدية
+              </span>
+
+              <div className="space-y-2 text-xs font-bold">
+                <div className="grid grid-cols-3 items-center gap-2">
+                  <label className="col-span-1 text-slate-700 dark:text-slate-300">النقدية بالدرج</label>
+                  <input 
+                    type="text" 
+                    readOnly 
+                    value={expectedCash.toFixed(2)} 
+                    className="col-span-2 px-3 py-1.5 bg-white dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded font-black text-slate-900 dark:text-white text-center"
+                  />
+                </div>
+
+                <div className="grid grid-cols-3 items-center gap-2">
+                  <label className="col-span-1 text-slate-700 dark:text-slate-300">تحويل مبلغ</label>
+                  <div className="col-span-2 flex items-center gap-2">
+                    <input 
+                      type="number" 
+                      step="0.01" 
+                      value={form.transferAmount} 
+                      onChange={(e) => setForm({ ...form, transferAmount: parseFloat(e.target.value) || 0 })}
+                      className="w-1/2 px-3 py-1.5 bg-white dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded font-black text-slate-900 dark:text-white text-center"
+                    />
+                    <span className="text-slate-600 dark:text-slate-400 font-bold">إلى</span>
+                    <select 
+                      value={form.transferTargetType === 'bank' ? form.transferTargetId : 'treasury'}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val === 'treasury') {
+                          setForm({ ...form, transferTargetType: 'treasury', transferTargetId: '' });
+                        } else {
+                          setForm({ ...form, transferTargetType: 'bank', transferTargetId: val });
+                        }
+                      }}
+                      className="w-1/2 px-2 py-1.5 bg-white dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded font-bold text-xs text-slate-900 dark:text-white"
+                    >
+                      <option value="treasury">الخزينة الرئيسية</option>
+                      {banks.map(b => (
+                        <option key={b.id} value={b.id}>{b.name_ar}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-3 items-center gap-2">
+                  <label className="col-span-1 text-slate-700 dark:text-slate-300">الباقي</label>
+                  <input 
+                    type="text" 
+                    readOnly 
+                    value={remainingCash.toFixed(2)} 
+                    className="col-span-2 px-3 py-1.5 bg-amber-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded font-black text-emerald-700 dark:text-emerald-400 text-center"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Section 3: المسلم */}
+            <div className="border border-slate-400 dark:border-slate-700 rounded-xl p-4 bg-slate-100/80 dark:bg-slate-800/60 relative pt-3">
+              <span className="absolute -top-3 right-4 px-2 bg-slate-200 dark:bg-slate-900 font-bold text-xs text-slate-700 dark:text-slate-300">
+                المسلم
+              </span>
+
+              <div className="space-y-2 text-xs font-bold">
+                <div className="grid grid-cols-3 items-center gap-2">
+                  <label className="col-span-1 text-slate-700 dark:text-slate-300">إسم المستخدم</label>
+                  <select 
+                    value={form.receiverUsername}
+                    onChange={(e) => setForm({ ...form, receiverUsername: e.target.value })}
+                    className="col-span-2 px-3 py-1.5 bg-white dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded font-black text-red-600 dark:text-red-400 text-center uppercase"
+                  >
+                    {staff.map(s => (
+                      <option key={s.id} value={s.username}>{s.full_name || s.username}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="grid grid-cols-3 items-center gap-2">
+                  <label className="col-span-1 text-slate-700 dark:text-slate-300">كلمة المرور</label>
+                  <input 
+                    type="password" 
+                    value={form.receiverPassword} 
+                    onChange={(e) => setForm({ ...form, receiverPassword: e.target.value })}
+                    placeholder="***" 
+                    className="col-span-2 px-3 py-1.5 bg-white dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded font-black text-slate-900 dark:text-white text-center"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Section 4: ملاحظات */}
+            <div className="grid grid-cols-4 items-center gap-2 text-xs font-bold">
+              <label className="col-span-1 text-slate-700 dark:text-slate-300">ملاحظات</label>
+              <input 
+                type="text" 
+                value={form.notes} 
+                onChange={(e) => setForm({ ...form, notes: e.target.value })}
+                className="col-span-3 px-3 py-2 bg-white dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded font-bold text-slate-900 dark:text-white"
+              />
+            </div>
+
+            {/* Bottom Action Buttons */}
+            <div className="flex justify-center gap-6 pt-3">
+              <button 
+                type="submit" 
+                disabled={processing}
+                className="px-8 py-2 bg-slate-300 hover:bg-slate-400 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-900 dark:text-white rounded border border-slate-500 font-black text-sm shadow transition-all active:translate-y-0.5"
+              >
+                {processing ? 'جاري الحفظ...' : 'حفظ S'}
+              </button>
+              <button 
+                type="button" 
+                onClick={onClose} 
+                className="px-8 py-2 bg-slate-300 hover:bg-slate-400 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-900 dark:text-white rounded border border-slate-500 font-black text-sm shadow transition-all active:translate-y-0.5"
+              >
+                إغلاق C
+              </button>
+            </div>
+
+          </form>
+        )}
+      </div>
+    </div>
+  );
+}

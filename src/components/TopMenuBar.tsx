@@ -118,7 +118,6 @@ const MENUS: Menu[] = [
     items: [
       { type: 'link', label: 'الحسابات والمالية',       href: '/accounts',                        icon: Wallet,     roles: ['owner','admin'], permission: 'acc_can_view_general' },
       { type: 'link', label: 'حركة النقدية',            href: '/accounts/cash-transactions',      icon: DollarSign, roles: ['owner','admin','pharmacist'], permission: 'acc_can_process_cash_flow' },
-      { type: 'link', label: 'تسليم الدرج',             href: '/finance/handover',                icon: Handshake,  roles: ['owner','admin','pharmacist'], permission: 'acc_can_view_handover' },
       { type: 'separator' },
       { type: 'link', label: 'البنوك',                  href: '/finance/banks',                   icon: Landmark,   roles: ['owner','admin'], permission: 'acc_can_view_bank_accounts' },
       { type: 'link', label: 'البطاقات والماكينات',     href: '/finance/cards',                   icon: CreditCard, roles: ['owner','admin'], permission: 'acc_can_collect_credit_cards' },
@@ -162,8 +161,6 @@ const MENUS: Menu[] = [
       { type: 'link', label: 'ميزان المراجعة',   href: '/reports/trial-balance', icon: PieChart,   roles: ['owner','admin'] },
       { type: 'separator' },
       { type: 'link', label: 'المصروفات',         href: '/expenses',              icon: Receipt,    roles: ['owner','admin'], permission: 'process_sales' },
-      { type: 'link', label: 'الشفتات النقدية',  href: '/shifts',                icon: Calendar,   roles: ['owner','admin','pharmacist'], permission: 'manage_shifts' },
-      { type: 'link', label: 'تقرير الشفتة',     href: '/shifts/report',         icon: FileText,   roles: ['owner','admin','pharmacist'], permission: 'manage_shifts' },
     ],
   },
   {
@@ -226,7 +223,8 @@ function AboutModal({ onClose }: { onClose: () => void }) {
       <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 p-8 w-full max-w-sm mx-4 text-center" onClick={e => e.stopPropagation()}>
         <div className="text-5xl mb-3">💊</div>
         <h2 className="text-lg font-bold text-slate-900 dark:text-white">نظام إدارة الصيدليات</h2>
-        <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 mb-4">الإصدار 1.0.0</p>
+        <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">الإصدار 1.0.0</p>
+        <p className="text-xs font-bold text-slate-600 dark:text-slate-300 mt-2 mb-4">تم انشاؤه بواسطة محمد عصام لمجتمع الصيادلة</p>
         <button onClick={onClose} className="px-6 py-2 bg-blue-600 text-white rounded-lg font-bold text-sm hover:bg-blue-700 transition-colors">إغلاق</button>
       </div>
     </div>

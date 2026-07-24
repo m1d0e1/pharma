@@ -29,6 +29,7 @@ export default function PurchasesReportsClient({ userRole }: { userRole?: string
     supplierId: 'all',
     paymentMethod: 'all',
     invoiceNumber: '',
+    drugName: '',
   });
 
   useEffect(() => {
@@ -70,7 +71,7 @@ export default function PurchasesReportsClient({ userRole }: { userRole?: string
         <div className="flex justify-between items-center mb-8">
           <div>
             <h1 className="text-3xl font-black text-slate-800 dark:text-white">تقرير فواتير المشتريات</h1>
-            <p className="text-slate-500 font-bold">عرض وتحليل تفصيلي لعمليات البيع والمرتجعات</p>
+            <p className="text-slate-500 font-bold">عرض وتحليل تفصيلي لعمليات البيع والمرتجعات والأسعار</p>
           </div>
           <div className="flex gap-4">
             <button className="p-5 bg-slate-50 dark:bg-slate-800 text-slate-500 rounded-2xl border border-slate-100 dark:border-slate-700 hover:bg-slate-100 transition-all">
@@ -82,83 +83,110 @@ export default function PurchasesReportsClient({ userRole }: { userRole?: string
           </div>
         </div>
 
-        {/* Filters (Following Image 4 style) */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 p-8 bg-slate-50 dark:bg-slate-800/50 rounded-[32px] border border-slate-100 dark:border-slate-700">
+        {/* Filters */}
+        <div className="space-y-6 p-8 bg-slate-50 dark:bg-slate-800/50 rounded-[32px] border border-slate-100 dark:border-slate-700">
+          
+          {/* Top Main Search Bar for Drug Name */}
           <div className="space-y-2">
-            <label className="text-[10px] font-black text-slate-400 uppercase mr-2">من تاريخ</label>
+            <label className="text-xs font-black text-blue-600 dark:text-blue-400 uppercase tracking-wide flex items-center gap-2">
+              <Search className="w-4 h-4" /> البحث باسم الصنف / الدواء في كافة فواتير المشتريات
+            </label>
             <div className="relative">
-              <Calendar className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
+              <Search className="absolute right-4 top-1/2 -translate-y-1/2 w-6 h-6 text-slate-400" />
               <input 
-                type="date" 
-                className="w-full pr-12 pl-4 py-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 font-bold outline-none focus:border-blue-500"
-                value={filters.startDate}
-                onChange={(e) => setFilters({...filters, startDate: e.target.value})}
+                type="text" 
+                placeholder="ادخل اسم الصنف أو المادة الفعالة للبحث في الفواتير..."
+                className="w-full pr-14 pl-4 py-4 bg-white dark:bg-slate-900 rounded-2xl border-2 border-blue-200 dark:border-blue-900 font-black text-lg text-slate-900 dark:text-white outline-none focus:border-blue-600 shadow-sm"
+                value={filters.drugName}
+                onChange={(e) => setFilters({...filters, drugName: e.target.value})}
               />
             </div>
           </div>
-          <div className="space-y-2">
-            <label className="text-[10px] font-black text-slate-400 uppercase mr-2">إلى تاريخ</label>
-            <div className="relative">
-              <Calendar className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
+
+          {/* Secondary Filters */}
+          <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4">
+            <div className="space-y-2">
+              <label className="text-[10px] font-black text-slate-400 uppercase mr-2">من تاريخ</label>
+              <div className="relative">
+                <Calendar className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                <input 
+                  type="date" 
+                  className="w-full pr-10 pl-3 py-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 font-bold text-xs outline-none focus:border-blue-500"
+                  value={filters.startDate}
+                  onChange={(e) => setFilters({...filters, startDate: e.target.value})}
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-[10px] font-black text-slate-400 uppercase mr-2">إلى تاريخ</label>
+              <div className="relative">
+                <Calendar className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                <input 
+                  type="date" 
+                  className="w-full pr-10 pl-3 py-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 font-bold text-xs outline-none focus:border-blue-500"
+                  value={filters.endDate}
+                  onChange={(e) => setFilters({...filters, endDate: e.target.value})}
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-[10px] font-black text-slate-400 uppercase mr-2">رقم الفاتورة</label>
               <input 
-                type="date" 
-                className="w-full pr-12 pl-4 py-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 font-bold outline-none focus:border-blue-500"
-                value={filters.endDate}
-                onChange={(e) => setFilters({...filters, endDate: e.target.value})}
+                type="text" 
+                placeholder="رقم الفاتورة..."
+                className="w-full px-4 py-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 font-bold text-xs outline-none"
+                value={filters.invoiceNumber}
+                onChange={(e) => setFilters({...filters, invoiceNumber: e.target.value})}
               />
             </div>
+
+            <div className="space-y-2">
+              <label className="text-[10px] font-black text-slate-400 uppercase mr-2">المورد</label>
+              <select 
+                className="w-full px-3 py-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 font-bold text-xs outline-none"
+                value={filters.supplierId}
+                onChange={(e) => setFilters({...filters, supplierId: e.target.value})}
+              >
+                <option value="all">كل الموردين</option>
+                {suppliers.map(s => <option key={s.id} value={s.id}>{s.name_ar}</option>)}
+              </select>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-[10px] font-black text-slate-400 uppercase mr-2">الموظف / الصيدلي</label>
+              <select 
+                className="w-full px-3 py-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 font-bold text-xs outline-none"
+                value={filters.userId}
+                onChange={(e) => setFilters({...filters, userId: e.target.value})}
+              >
+                <option value="all">كل الموظفين</option>
+                {staff.map(s => <option key={s.id} value={s.id}>{s.full_name}</option>)}
+              </select>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-[10px] font-black text-slate-400 uppercase mr-2">طريقة الدفع</label>
+              <select 
+                className="w-full px-3 py-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 font-bold text-xs outline-none"
+                value={filters.paymentMethod}
+                onChange={(e) => setFilters({...filters, paymentMethod: e.target.value})}
+              >
+                <option value="all">الكل</option>
+                <option value="cash">نقدي</option>
+                <option value="credit">آجل / عملاء</option>
+                <option value="visa">فيزا / شبكة</option>
+              </select>
+            </div>
           </div>
-          <div className="space-y-2">
-            <label className="text-[10px] font-black text-slate-400 uppercase mr-2">الموظف / الصيدلي</label>
-            <select 
-              className="w-full px-4 py-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 font-bold outline-none"
-              value={filters.userId}
-              onChange={(e) => setFilters({...filters, userId: e.target.value})}
-            >
-              <option value="all">كل الموظفين</option>
-              {staff.map(s => <option key={s.id} value={s.id}>{s.full_name}</option>)}
-            </select>
-          </div>
-          <div className="space-y-2">
-            <label className="text-[10px] font-black text-slate-400 uppercase mr-2">طريقة الدفع</label>
-            <select 
-              className="w-full px-4 py-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 font-bold outline-none"
-              value={filters.paymentMethod}
-              onChange={(e) => setFilters({...filters, paymentMethod: e.target.value})}
-            >
-              <option value="all">الكل</option>
-              <option value="cash">نقدي</option>
-              <option value="credit">آجل / عملاء</option>
-              <option value="visa">فيزا / شبكة</option>
-            </select>
-          </div>
-          <div className="md:col-span-2 space-y-2">
-            <label className="text-[10px] font-black text-slate-400 uppercase mr-2">المورد</label>
-            <select 
-              className="w-full px-4 py-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 font-bold outline-none"
-              value={filters.supplierId}
-              onChange={(e) => setFilters({...filters, supplierId: e.target.value})}
-            >
-              <option value="all">كل الموردين</option>
-              {suppliers.map(s => <option key={s.id} value={s.id}>{s.name_ar}</option>)}
-            </select>
-          </div>
-          <div className="space-y-2">
-            <label className="text-[10px] font-black text-slate-400 uppercase mr-2">رقم الفاتورة</label>
-            <input 
-              type="text" 
-              placeholder="ابحث برقم الفاتورة..."
-              className="w-full px-4 py-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 font-bold outline-none"
-              value={filters.invoiceNumber}
-              onChange={(e) => setFilters({...filters, invoiceNumber: e.target.value})}
-            />
-          </div>
-          <div className="flex items-end">
+
+          <div className="pt-2 flex justify-end">
             <button 
               onClick={handleSearch}
-              className="w-full py-3 bg-slate-900 text-white rounded-xl font-black flex items-center justify-center gap-2 hover:bg-slate-800 transition-all shadow-lg"
+              className="px-10 py-4 bg-slate-900 text-white rounded-2xl font-black flex items-center justify-center gap-3 hover:bg-slate-800 transition-all shadow-xl text-base"
             >
-              <Search className="w-5 h-5" /> بحث (F)
+              <Search className="w-5 h-5" /> بحث في الفواتير (F)
             </button>
           </div>
         </div>
@@ -201,22 +229,23 @@ export default function PurchasesReportsClient({ userRole }: { userRole?: string
             <table className="w-full text-right">
               <thead className="bg-slate-50 dark:bg-slate-800/50">
                 <tr className="text-slate-400 text-[10px] font-black uppercase tracking-widest">
-                  <th className="px-8 py-6">الرقم</th>
-                  <th className="px-8 py-6">النوع</th>
-                  <th className="px-8 py-6">التاريخ</th>
-                  <th className="px-8 py-6">المورد</th>
-                  <th className="px-8 py-6">الموظف</th>
-                  <th className="px-8 py-6">ق. الفاتورة</th>
-                  <th className="px-8 py-6">ق. الخصم</th>
-                  <th className="px-8 py-6">ق. بعد الخصم</th>
-                  <th className="px-8 py-6">الحالة</th>
+                  <th className="px-6 py-6">الرقم</th>
+                  <th className="px-6 py-6">النوع</th>
+                  <th className="px-6 py-6">التاريخ</th>
+                  <th className="px-6 py-6">المورد</th>
+                  <th className="px-6 py-6">الموظف</th>
+                  <th className="px-6 py-6">ق. الشراء</th>
+                  <th className="px-6 py-6">ق. البيع المتوقعة</th>
+                  <th className="px-6 py-6">ق. الخصم</th>
+                  <th className="px-6 py-6">صافي الشراء</th>
+                  <th className="px-6 py-6">الحالة</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                 {loading ? (
-                  <tr><td colSpan={9} className="py-20 text-center font-bold text-slate-400 italic animate-pulse">جاري البحث...</td></tr>
+                  <tr><td colSpan={10} className="py-20 text-center font-bold text-slate-400 italic animate-pulse">جاري البحث...</td></tr>
                 ) : invoices.length === 0 ? (
-                  <tr><td colSpan={9} className="py-20 text-center font-bold text-slate-400 italic">لا توجد فواتير مطابقة للبحث</td></tr>
+                  <tr><td colSpan={10} className="py-20 text-center font-bold text-slate-400 italic">لا توجد فواتير مطابقة للبحث</td></tr>
                 ) : invoices.map((inv) => (
                   <tr 
                     key={inv.id} 
@@ -226,8 +255,8 @@ export default function PurchasesReportsClient({ userRole }: { userRole?: string
                       selectedInvoice === inv.id ? "bg-blue-50/50 dark:bg-blue-900/10" : ""
                     )}
                   >
-                    <td className="px-8 py-6 font-mono font-black text-blue-600 group-hover:underline">#{inv.id.slice(0, 8)}</td>
-                    <td className="px-8 py-6">
+                    <td className="px-6 py-6 font-mono font-black text-blue-600 group-hover:underline">#{inv.id.slice(0, 8)}</td>
+                    <td className="px-6 py-6">
                       <span className={cn(
                         "px-4 py-1.5 rounded-full text-[10px] font-black",
                         inv.payment_method === 'cash' ? "bg-emerald-50 text-emerald-600" :
@@ -236,13 +265,14 @@ export default function PurchasesReportsClient({ userRole }: { userRole?: string
                         {inv.payment_method === 'cash' ? 'نقدي' : inv.payment_method === 'visa' ? 'فيزا' : 'آجل'}
                       </span>
                     </td>
-                    <td className="px-8 py-6 font-bold text-slate-500">{format(new Date(inv.created_at), 'yyyy/MM/dd HH:mm')}</td>
-                    <td className="px-8 py-6 font-black">{inv.supplier_name || '-'}</td>
-                    <td className="px-8 py-6 font-bold text-slate-400 italic">{inv.staff_name || 'غير محدد'}</td>
-                    <td className="px-8 py-6 font-black">{inv.total_amount.toLocaleString()}</td>
-                    <td className="px-8 py-6 font-black text-rose-500">{inv.discount_amount?.toLocaleString() || 0}</td>
-                    <td className="px-8 py-6 font-black text-lg text-slate-900 dark:text-white">{(inv.total_amount - (inv.discount_amount || 0)).toLocaleString()}</td>
-                    <td className="px-8 py-6">
+                    <td className="px-6 py-6 font-bold text-slate-500">{format(new Date(inv.created_at), 'yyyy/MM/dd HH:mm')}</td>
+                    <td className="px-6 py-6 font-black">{inv.supplier_name || '-'}</td>
+                    <td className="px-6 py-6 font-bold text-slate-400 italic">{inv.staff_name || 'غير محدد'}</td>
+                    <td className="px-6 py-6 font-black">{inv.total_amount.toLocaleString()}</td>
+                    <td className="px-6 py-6 font-black text-emerald-600">{(inv.total_selling_amount || 0).toLocaleString()}</td>
+                    <td className="px-6 py-6 font-black text-rose-500">{inv.discount_amount?.toLocaleString() || 0}</td>
+                    <td className="px-6 py-6 font-black text-lg text-slate-900 dark:text-white">{(inv.total_amount - (inv.discount_amount || 0)).toLocaleString()}</td>
+                    <td className="px-6 py-6">
                       <span className={cn(
                         "px-3 py-1 rounded-lg text-[10px] font-black uppercase",
                         inv.status === 'completed' ? "bg-emerald-50 text-emerald-600 dark:bg-emerald-950/20 dark:text-emerald-400" :
@@ -265,11 +295,11 @@ export default function PurchasesReportsClient({ userRole }: { userRole?: string
         {/* Invoice Items Modal */}
         {selectedInvoice && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-slate-900/50 backdrop-blur-sm animate-in fade-in">
-            <div className="w-full max-w-4xl bg-white dark:bg-slate-900 text-slate-900 dark:text-white rounded-[40px] shadow-2xl animate-in zoom-in-95 border border-slate-100 dark:border-slate-800 flex flex-col max-h-[90vh] overflow-hidden">
+            <div className="w-full max-w-5xl bg-white dark:bg-slate-900 text-slate-900 dark:text-white rounded-[40px] shadow-2xl animate-in zoom-in-95 border border-slate-100 dark:border-slate-800 flex flex-col max-h-[90vh] overflow-hidden">
               <div className="p-8 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center shrink-0">
                 <div>
                   <h4 className="text-xl font-black">أصناف الفاتورة #{selectedInvoice.slice(0, 8)}</h4>
-                  <p className="text-slate-500 dark:text-slate-400 text-xs font-bold">تفاصيل المشتريات والكميات</p>
+                  <p className="text-slate-500 dark:text-slate-400 text-xs font-bold">تفاصيل المشتريات والكميات والأسعار</p>
                 </div>
                 <button 
                   onClick={() => setSelectedInvoice(null)}
@@ -282,27 +312,33 @@ export default function PurchasesReportsClient({ userRole }: { userRole?: string
                 <table className="w-full text-right border-separate border-spacing-y-2 px-6">
                   <thead className="bg-slate-50 dark:bg-slate-800/50 sticky top-0 z-10">
                     <tr className="text-slate-400 text-[10px] font-black uppercase tracking-widest">
-                      <th className="px-6 py-5 rounded-r-2xl">كود الصنف</th>
-                      <th className="px-6 py-5">إسم الصنف</th>
-                      <th className="px-6 py-5">ت. الصلاحية</th>
-                      <th className="px-6 py-5">الكمية</th>
-                      <th className="px-6 py-5">الوحدة</th>
-                      <th className="px-6 py-5">سعر الشراء</th>
-                      <th className="px-6 py-5 rounded-l-2xl">الإجمالي</th>
+                      <th className="px-4 py-5 rounded-r-2xl">كود الصنف</th>
+                      <th className="px-4 py-5">إسم الصنف</th>
+                      <th className="px-4 py-5">ت. الصلاحية</th>
+                      <th className="px-4 py-5">الكمية</th>
+                      <th className="px-4 py-5">الوحدة</th>
+                      <th className="px-4 py-5">سعر الشراء</th>
+                      <th className="px-4 py-5">سعر البيع</th>
+                      <th className="px-4 py-5">إجمالي الشراء</th>
+                      <th className="px-4 py-5 rounded-l-2xl">إجمالي البيع</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-transparent">
                     {loadingItems ? (
-                      <tr><td colSpan={7} className="py-10 text-center animate-pulse text-slate-400 font-bold">جاري جلب الأصناف...</td></tr>
+                      <tr><td colSpan={9} className="py-10 text-center animate-pulse text-slate-400 font-bold">جاري جلب الأصناف...</td></tr>
+                    ) : invoiceItems.length === 0 ? (
+                      <tr><td colSpan={9} className="py-10 text-center text-slate-400 font-bold">لا توجد أصناف مسجلة لهذه الفاتورة</td></tr>
                     ) : invoiceItems.map((item) => (
                       <tr key={item.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors group">
-                        <td className="px-6 py-5 font-mono text-blue-500 rounded-r-2xl bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{item.barcode}</td>
-                        <td className="px-6 py-5 font-black bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{item.trade_name}</td>
-                        <td className="px-6 py-5 font-bold text-slate-400 italic bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{item.expiry_date ? format(new Date(item.expiry_date), 'yyyy/MM/dd') : '-'}</td>
-                        <td className="px-6 py-5 font-black text-lg bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{item.quantity}</td>
-                        <td className="px-6 py-5 text-slate-500 bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{item.unit_id === 1 ? 'شريط' : 'علبة'}</td>
-                        <td className="px-6 py-5 font-bold bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{item.cost_price?.toLocaleString()}</td>
-                        <td className="px-6 py-5 font-black text-emerald-500 rounded-l-2xl bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{((item.cost_price || 0) * (item.quantity || 0)).toLocaleString()}</td>
+                        <td className="px-4 py-5 font-mono text-blue-500 rounded-r-2xl bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{item.barcode}</td>
+                        <td className="px-4 py-5 font-black bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{item.trade_name}</td>
+                        <td className="px-4 py-5 font-bold text-slate-400 italic bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{item.expiry_date ? format(new Date(item.expiry_date), 'yyyy/MM/dd') : '-'}</td>
+                        <td className="px-4 py-5 font-black text-lg bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{item.quantity}</td>
+                        <td className="px-4 py-5 text-slate-500 bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{item.unit_id === 1 ? 'شريط' : 'علبة'}</td>
+                        <td className="px-4 py-5 font-bold bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{item.cost_price?.toLocaleString()}</td>
+                        <td className="px-4 py-5 font-bold text-emerald-600 bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{(item.selling_price || item.base_price || 0).toLocaleString()}</td>
+                        <td className="px-4 py-5 font-black bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{((item.cost_price || 0) * (item.quantity || 0)).toLocaleString()}</td>
+                        <td className="px-4 py-5 font-black text-emerald-500 rounded-l-2xl bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{(((item.selling_price || item.base_price || 0)) * (item.quantity || 0)).toLocaleString()}</td>
                       </tr>
                     ))}
                   </tbody>

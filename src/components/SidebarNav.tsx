@@ -62,7 +62,6 @@ const navItems = [
   // Finance
   { category: 'المالية', href: '/accounts', label: 'الحسابات والمالية', icon: Wallet, roles: ['owner', 'admin'], permission: 'rep_can_view_financial' },
   { category: 'المالية', href: '/accounts/cash-transactions', label: 'حركة النقدية', icon: ArrowLeftRight, roles: ['owner', 'admin', 'pharmacist'], permission: 'can_view_cash_transactions' },
-  { category: 'المالية', href: '/finance/handover', label: 'تسليم الدرج', icon: ArrowLeftRight, roles: ['owner', 'admin', 'pharmacist'], permission: 'acc_can_view_handover' },
   { category: 'المالية', href: '/finance/banks', label: 'البنوك', icon: Landmark, roles: ['owner', 'admin'], permission: 'can_view_banks' },
   { category: 'المالية', href: '/finance/cards', label: 'البطاقات', icon: CreditCard, roles: ['owner', 'admin'], permission: 'can_view_cards' },
   { category: 'المالية', href: '/finance/pos-management', label: 'نقاط البيع', icon: Monitor, roles: ['owner', 'admin'], permission: 'can_view_pos_management' },
@@ -75,7 +74,6 @@ const navItems = [
   { category: 'التقارير', href: '/reports/purchases', label: 'تقارير المشتريات', icon: ScrollText, roles: ['owner', 'admin'], permission: 'can_view_purchase_reports' },
   { category: 'التقارير', href: '/reports/trial-balance', label: 'ميزان المراجعة', icon: Database, roles: ['owner', 'admin'], permission: 'can_view_trial_balance_report' },
   { category: 'التقارير', href: '/expenses', label: 'المصروفات', icon: Receipt, roles: ['owner', 'admin'], permission: 'can_view_expenses' },
-  { category: 'التقارير', href: '/shifts', label: 'الشفتات النقدية', icon: Calendar, roles: ['owner', 'admin', 'pharmacist'], permission: 'can_view_shifts' },
 
   // Patients
   { category: 'المرضى والطبية', href: '/patients', label: 'المرضى', icon: Users, roles: ['owner', 'admin', 'pharmacist'], permission: 'can_view_patients' },

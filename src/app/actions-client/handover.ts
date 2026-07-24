@@ -50,51 +50,100 @@ const db = {
 
 
 
-import { getLocalSession } from '@/lib/auth/local';
+import { getLocalSession, verifyPassword } from '@/lib/auth/local';
 
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 
+const HANDOVER_DETAILS_SQL = `
+  SELECT
+    s.id,
+    s.user_id,
+    s.start_time,
+    s.end_time,
+    CAST(COALESCE(s.starting_cash, 0) AS REAL) AS starting_cash,
+    COALESCE(u.full_name, u.username, s.user_id) AS user_name,
+    (
+      SELECT COALESCE(SUM(CASE WHEN si.payment_method = 'cash' THEN CAST(si.total_amount AS REAL) ELSE 0 END), 0)
+      FROM sales_invoices si
+      WHERE si.status = 'completed'
+        AND (
+          si.shift_id = s.id OR
+          (si.shift_id IS NULL AND si.user_id = s.user_id AND si.created_at >= s.start_time AND (s.end_time IS NULL OR si.created_at <= s.end_time))
+        )
+    ) AS cash_sales,
+    (
+      SELECT COALESCE(SUM(CASE WHEN si.payment_method = 'visa' THEN CAST(si.total_amount AS REAL) ELSE 0 END), 0)
+      FROM sales_invoices si
+      WHERE si.status = 'completed'
+        AND (
+          si.shift_id = s.id OR
+          (si.shift_id IS NULL AND si.user_id = s.user_id AND si.created_at >= s.start_time AND (s.end_time IS NULL OR si.created_at <= s.end_time))
+        )
+    ) AS visa_sales,
+    (
+      SELECT COALESCE(SUM(CASE WHEN si.payment_method = 'credit' THEN CAST(si.total_amount AS REAL) ELSE 0 END), 0)
+      FROM sales_invoices si
+      WHERE si.status = 'completed'
+        AND (
+          si.shift_id = s.id OR
+          (si.shift_id IS NULL AND si.user_id = s.user_id AND si.created_at >= s.start_time AND (s.end_time IS NULL OR si.created_at <= s.end_time))
+        )
+    ) AS credit_sales,
+    (
+      SELECT COALESCE(SUM(CAST(r.total_refund AS REAL)), 0)
+      FROM returns r
+      WHERE r.refund_method = 'cash'
+        AND r.status IN ('approved', 'completed')
+        AND (
+          r.shift_id = s.id OR
+          (r.shift_id IS NULL AND r.user_id = s.user_id AND r.created_at >= s.start_time AND (s.end_time IS NULL OR r.created_at <= s.end_time))
+        )
+    ) AS returns,
+    (
+      SELECT COALESCE(SUM(CASE WHEN cm.type IN ('receipt', 'in') THEN CAST(cm.amount AS REAL) ELSE 0 END), 0)
+      FROM cash_movements cm
+      WHERE cm.shift_id = s.id OR
+        (cm.shift_id IS NULL AND cm.user_id = s.user_id AND cm.created_at >= s.start_time AND (s.end_time IS NULL OR cm.created_at <= s.end_time))
+    ) AS receipts,
+    (
+      SELECT COALESCE(SUM(CASE WHEN cm.type IN ('disbursement', 'out') THEN CAST(cm.amount AS REAL) ELSE 0 END), 0)
+      FROM cash_movements cm
+      WHERE cm.shift_id = s.id OR
+        (cm.shift_id IS NULL AND cm.user_id = s.user_id AND cm.created_at >= s.start_time AND (s.end_time IS NULL OR cm.created_at <= s.end_time))
+    ) AS disbursements
+  FROM shifts s
+  LEFT JOIN users u ON u.id = s.user_id
+  WHERE s.id = ?
+`;
+
+async function loadHandoverDetails(shiftId: string) {
+  const row = await db.prepare(HANDOVER_DETAILS_SQL).get(shiftId) as any;
+  if (!row) throw new Error('الوردية غير موجودة');
+
+  const data = {
+    ...row,
+    starting_cash: Number(row.starting_cash || 0),
+    cash_sales: Number(row.cash_sales || 0),
+    visa_sales: Number(row.visa_sales || 0),
+    credit_sales: Number(row.credit_sales || 0),
+    returns: Number(row.returns || 0),
+    receipts: Number(row.receipts || 0),
+    disbursements: Number(row.disbursements || 0),
+  };
+
+  return {
+    ...data,
+    expected_cash: data.starting_cash + data.cash_sales + data.receipts - data.disbursements - data.returns,
+  };
+}
+
 export async function getHandoverDetailsAction(shiftId: string) {
   try {
-    const shift = await db.prepare('SELECT * FROM shifts WHERE id = ?').get(shiftId) as any;
-    if (!shift) return { success: false, error: 'الوردية غير موجودة' };
-
-    // Breakdown similar to Image 3
-    const sales = await db.prepare(`
-      SELECT 
-        SUM(CASE WHEN payment_method = 'cash' THEN total_amount ELSE 0 END) as cash_sales,
-        SUM(CASE WHEN payment_method = 'visa' THEN total_amount ELSE 0 END) as visa_sales,
-        SUM(CASE WHEN payment_method = 'credit' THEN total_amount ELSE 0 END) as credit_sales
-      FROM sales_invoices 
-      WHERE shift_id = ?
-    `).get(shiftId) as any;
-
-    const returns = await db.prepare(`
-      SELECT SUM(total_refund) as total FROM returns WHERE shift_id = ?
-    `).get(shiftId) as any;
-
-    const movements = await db.prepare(`
-      SELECT 
-        SUM(CASE WHEN type = 'receipt' THEN amount ELSE 0 END) as receipts,
-        SUM(CASE WHEN type = 'disbursement' THEN amount ELSE 0 END) as disbursements
-      FROM cash_movements
-      WHERE shift_id = ?
-    `).get(shiftId) as any;
-
-    const data = {
-      starting_cash: shift.starting_cash || 0,
-      cash_sales: sales.cash_sales || 0,
-      visa_sales: sales.visa_sales || 0,
-      credit_sales: sales.credit_sales || 0,
-      returns: returns.total || 0,
-      receipts: movements.receipts || 0,
-      disbursements: movements.disbursements || 0,
-      expected_cash: (shift.starting_cash || 0) + (sales.cash_sales || 0) + (movements.receipts || 0) - (movements.disbursements || 0) - (returns.total || 0)
-    };
-
-    return { success: true, data };
+    if (!await getLocalSession()) return { success: false, error: 'غير مصرح' };
+    return { success: true, data: await loadHandoverDetails(shiftId) };
   } catch (error) {
-    return { success: false, error: 'فشل جلب تفاصيل التسليم' };
+    console.error('Get handover details error:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'فشل جلب تفاصيل التسليم' };
   }
 }
 
@@ -110,21 +159,29 @@ export async function processHandoverAction(data: {
   try {
     const user = await getLocalSession();
     if (!user) return { success: false, error: 'غير مصرح' };
+    if (!Number.isFinite(data.transferAmount) || data.transferAmount < 0) {
+      return { success: false, error: 'مبلغ التحويل غير صالح' };
+    }
+
+    const details = await loadHandoverDetails(data.shiftId);
+    if (data.transferAmount > details.expected_cash + 0.005) {
+      return { success: false, error: 'مبلغ التحويل أكبر من النقدية المتاحة في الدرج' };
+    }
 
     // Validate receiver
     const receiver = await db.prepare('SELECT id, password_hash FROM users WHERE username = ?').get(data.receiverUsername) as any;
     if (!receiver) return { success: false, error: 'المستلم غير موجود' };
-    
-    // In a real app, we'd verify password_hash here. 
-    // For this local demo, we'll assume the client sent the correct hash or just trust the username.
+    if (!data.receiverPasswordHash || !receiver.password_hash || !await verifyPassword(data.receiverPasswordHash, receiver.password_hash)) {
+      return { success: false, error: 'كلمة مرور المستلم غير صحيحة' };
+    }
     
     const getAccount = async (cat: string) => {
       const setting = await db.prepare('SELECT account_id FROM trial_balance_settings WHERE category = ?').get(cat) as any;
       return setting?.account_id;
     };
 
-    const cashDrawerAcc = await getAccount('cash_drawer') || (await db.prepare("SELECT id FROM accounts WHERE code = '111'").get() as any)?.id || 7;
-    const bankAcc = await getAccount('bank') || (await db.prepare("SELECT id FROM accounts WHERE code = '112'").get() as any)?.id || 8;
+    const cashDrawerAcc = await getAccount('cash_drawer') || (await db.prepare("SELECT id FROM accounts WHERE code = '1.1.1'").get() as any)?.id || 6;
+    const bankAcc = await getAccount('bank_clearing') || (await db.prepare("SELECT id FROM accounts WHERE code = '1.1.4'").get() as any)?.id;
 
     const transaction = db.transaction(async () => {
       // 1. Create a cash movement for the transfer
@@ -153,6 +210,7 @@ export async function processHandoverAction(data: {
         VALUES (?, ?, ?, ?, ?)
       `).run(journalId, date, `تسليم درج: تحويل إلى ${targetText}`, user.id, data.transferAmount);
 
+      if (data.transferTargetType === 'bank' && !bankAcc) throw new Error('حساب البنك غير مهيأ');
       const targetAcc = data.transferTargetType === 'bank' ? bankAcc : cashDrawerAcc;
       
       // Debit the receiving account (Bank or Main Treasury), Credit the Cash Drawer (which represents the drawer cash)
@@ -172,4 +230,19 @@ export async function processHandoverAction(data: {
   }
 }
 
-export async function getOpenShiftHandoverAction() { return { success: false, data: null }; }
+export async function getOpenShiftHandoverAction() {
+  try {
+    const user = await getLocalSession();
+    if (!user) return { success: false, error: 'غير مصرح', data: null };
+    const shift = await db.prepare(`
+      SELECT id, user_id, start_time, starting_cash, status
+      FROM shifts
+      WHERE user_id = ? AND status = 'open'
+      ORDER BY start_time DESC
+      LIMIT 1
+    `).get(user.id);
+    return { success: true, data: shift || null };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'فشل جلب الوردية المفتوحة', data: null };
+  }
+}

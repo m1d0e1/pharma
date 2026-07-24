@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, forwardRef, useImperativeHandle, useMemo, 
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useBarcodeScanner } from '@/hooks/useBarcodeScanner';
 import { toast, Toaster } from 'react-hot-toast';
-import { ShoppingCart, Search, User, X, Loader2, FileText, Clock, Plus, Printer, Trash2, Maximize2, Minimize2, Calculator, BarChart3, RotateCcw, PlusCircle, Settings, Save, Info } from 'lucide-react';
+import { ShoppingCart, Search, User, X, Loader2, FileText, Clock, Plus, Printer, Trash2, Maximize2, Minimize2, Calculator, BarChart3, RotateCcw, PlusCircle, Settings, Save, Info, ArrowLeftRight } from 'lucide-react';
 import nextDynamic from 'next/dynamic';
 import { useHotkeys } from 'react-hotkeys-hook';
 
@@ -14,6 +14,7 @@ const DrugDetailsModal = nextDynamic(() => import('@/components/pos/DrugDetailsM
 const ReturnsClient = nextDynamic(() => import('@/components/returns/ReturnsClient'), { ssr: false });
 const DraftsModal = nextDynamic(() => import('@/components/pos/DraftsModal'), { ssr: false });
 const StockWarningModal = nextDynamic(() => import('@/components/pos/StockWarningModal'), { ssr: false });
+const PosDrawerHandoverModal = nextDynamic(() => import('@/components/pos/PosDrawerHandoverModal'), { ssr: false });
 import { getCurrentUserAction } from '@/app/actions-client/auth';
 import { addToShortagesAction } from '@/app/actions-client/shortages';
 import { 
@@ -303,6 +304,7 @@ export default function POSPage() {
   // Return/Stock Modal State
   const [showStockWarning, setShowStockWarning] = useState<DrugItem | null>(null);
   const [showReturnModal, setShowReturnModal] = useState(false);
+  const [showHandoverModal, setShowHandoverModal] = useState(false);
   const [showDrugDetails, setShowDrugDetails] = useState<string | number | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number, drugId: string | number, cartItemId: string } | null>(null);
 
@@ -909,6 +911,7 @@ export default function POSPage() {
         <div className="h-px bg-slate-100 dark:bg-slate-800 my-1" />
         <SidebarButton icon={FileText} label="فواتير معلقة" color="bg-amber-500" onClick={() => { fetchDrafts(); setShowDraftsModal(true); }} />
         <SidebarButton icon={RotateCcw} label="استرجاع" color="bg-rose-500" onClick={() => setShowReturnModal(true)} />
+        <SidebarButton icon={ArrowLeftRight} label="تسليم الدرج" color="bg-blue-600" onClick={() => setShowHandoverModal(true)} />
         <div className="h-px bg-slate-100 dark:bg-slate-800 my-1" />
         <SidebarButton icon={User} label="عميل جديد" color="bg-purple-500" onClick={() => setPatientSearch('')} />
         <SidebarButton icon={PlusCircle} label="إضافة صنف" color="bg-slate-700" onClick={() => { searchSidebarRef.current?.clear(); searchSidebarRef.current?.focus(); }} />
@@ -1315,6 +1318,11 @@ export default function POSPage() {
           </div>
         </div>
       )}
+
+      <PosDrawerHandoverModal 
+        isOpen={showHandoverModal} 
+        onClose={() => setShowHandoverModal(false)} 
+      />
 
       {/* Item Context Menu */}
       {contextMenu && (

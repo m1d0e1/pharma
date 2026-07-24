@@ -13,6 +13,7 @@ export default function PurchaseReportsClient() {
   const [invoices, setInvoices] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const [drugSearchTerm, setDrugSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [selectedInvoiceForBarcode, setSelectedInvoiceForBarcode] = useState<any[] | null>(null);
   const [selectedInvoice, setSelectedInvoice] = useState<any | null>(null);
@@ -34,17 +35,24 @@ export default function PurchaseReportsClient() {
   }, []);
 
   const filteredInvoices = invoices.filter(inv => {
-    const matchesSearch = inv.invoice_number?.includes(searchTerm) || 
-                          inv.supplier_name?.includes(searchTerm) ||
-                          inv.id?.includes(searchTerm);
+    const matchesSearch = !searchTerm || 
+                          inv.invoice_number?.toLowerCase().includes(searchTerm.toLowerCase()) || 
+                          inv.supplier_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                          inv.id?.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesDrug = !drugSearchTerm.trim() || 
+                        inv.drug_names?.toLowerCase().includes(drugSearchTerm.toLowerCase());
     const matchesStatus = statusFilter === 'all' || 
                           (statusFilter === 'completed' && inv.status === 'completed') ||
                           (statusFilter === 'pending' && inv.status !== 'completed');
-    return matchesSearch && matchesStatus;
+    return matchesSearch && matchesDrug && matchesStatus;
   });
 
   const totalPurchases = invoices.reduce((sum, inv) => sum + (Number(inv.total_amount) || 0), 0);
   const completedPurchases = invoices.filter(i => i.status === 'completed').reduce((sum, inv) => sum + (Number(inv.total_amount) || 0), 0);
+  const selectedSellingTotal = selectedItems.reduce(
+    (sum, item) => sum + Number(item.quantity || 0) * Number(item.selling_price ?? item.base_price ?? 0),
+    0
+  );
 
   if (loading) {
     return (
@@ -122,16 +130,17 @@ export default function PurchaseReportsClient() {
               <div><span className="text-slate-500">الخصم</span><p className="font-bold">{Number(selectedInvoice.discount_value || 0).toFixed(2)} ج.م</p></div>
               <div><span className="text-slate-500">المصروفات</span><p className="font-bold">{Number(selectedInvoice.expenses || 0).toFixed(2)} ج.م</p></div>
               <div><span className="text-slate-500">الإجمالي</span><p className="font-black text-primary-600">{Number(selectedInvoice.total_amount || 0).toFixed(2)} ج.م</p></div>
+              <div><span className="text-slate-500">إجمالي قيمة البيع</span><p className="font-black text-emerald-600">{selectedSellingTotal.toFixed(2)} ج.م</p></div>
               {selectedInvoice.check_number && <div><span className="text-slate-500">رقم الشيك</span><p className="font-bold">{selectedInvoice.check_number}</p></div>}
               {selectedInvoice.notes && <div className="col-span-2"><span className="text-slate-500">ملاحظات</span><p className="font-bold">{selectedInvoice.notes}</p></div>}
             </div>
             {detailsLoading ? <p className="py-10 text-center text-slate-500">جاري التحميل...</p> : (
               <div className="overflow-x-auto rounded-2xl border border-slate-200 dark:border-slate-700">
                 <table className="w-full text-right text-sm">
-                  <thead className="bg-slate-50 dark:bg-slate-800"><tr><th className="p-3">الصنف</th><th className="p-3">الباركود</th><th className="p-3">الكمية</th><th className="p-3">المجاني</th><th className="p-3">الصلاحية</th><th className="p-3">سعر الشراء</th><th className="p-3">الضريبة</th><th className="p-3">الإجمالي</th></tr></thead>
+                  <thead className="bg-slate-50 dark:bg-slate-800"><tr><th className="p-3">الصنف</th><th className="p-3">الباركود</th><th className="p-3">الكمية</th><th className="p-3">المجاني</th><th className="p-3">الصلاحية</th><th className="p-3">سعر الشراء</th><th className="p-3">سعر البيع</th><th className="p-3">الضريبة</th><th className="p-3">الإجمالي</th></tr></thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800">{selectedItems.map(item => {
                     const total = Number(item.quantity || 0) * Number(item.cost_price || 0) * (1 + Number(item.tax_percent || 0) / 100);
-                    return <tr key={item.id}><td className="p-3 font-bold">{item.trade_name_en || item.trade_name}</td><td className="p-3">{item.barcode || '---'}</td><td className="p-3">{item.quantity} {item.unit || ''}</td><td className="p-3">{item.bonus_quantity || 0}</td><td className="p-3">{item.expiry_date || '---'}</td><td className="p-3 font-bold text-blue-600">{Number(item.cost_price || 0).toFixed(2)}</td><td className="p-3">{Number(item.tax_percent || 0).toFixed(2)}%</td><td className="p-3 font-black">{total.toFixed(2)}</td></tr>;
+                    return <tr key={item.id}><td className="p-3 font-bold">{item.trade_name_en || item.trade_name}</td><td className="p-3">{item.barcode || '---'}</td><td className="p-3">{item.quantity} {item.unit || ''}</td><td className="p-3">{item.bonus_quantity || 0}</td><td className="p-3">{item.expiry_date || '---'}</td><td className="p-3 font-bold text-blue-600">{Number(item.cost_price || 0).toFixed(2)}</td><td className="p-3 font-bold text-emerald-600">{Number(item.selling_price ?? item.base_price ?? 0).toFixed(2)}</td><td className="p-3">{Number(item.tax_percent || 0).toFixed(2)}%</td><td className="p-3 font-black">{total.toFixed(2)}</td></tr>;
                   })}</tbody>
                 </table>
               </div>
@@ -188,26 +197,36 @@ export default function PurchaseReportsClient() {
       <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-100 dark:border-slate-800 overflow-hidden">
         <div className="p-6 border-b border-slate-100 dark:border-slate-800 flex flex-wrap gap-4 items-center justify-between">
           <h2 className="text-xl font-bold">سجل الفواتير</h2>
-          <div className="flex items-center gap-4 w-full md:w-auto">
+          <div className="flex items-center gap-3 w-full md:w-auto flex-wrap">
+            <div className="relative flex-1 md:w-64">
+              <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 text-blue-600 dark:text-blue-400" />
+              <input 
+                type="text"
+                placeholder="بحث باسم الصنف / الدواء..."
+                value={drugSearchTerm}
+                onChange={e => setDrugSearchTerm(e.target.value)}
+                className="w-full pr-10 pl-4 py-2.5 bg-blue-50/70 dark:bg-slate-800 border-2 border-blue-200 dark:border-blue-900 rounded-xl focus:ring-2 focus:ring-blue-500 font-bold text-sm text-slate-900 dark:text-white transition-all"
+              />
+            </div>
+            <div className="relative flex-1 md:w-56">
+              <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
+              <input 
+                type="text"
+                placeholder="بحث برقم الفاتورة أو المورد..."
+                value={searchTerm}
+                onChange={e => setSearchTerm(e.target.value)}
+                className="w-full pr-10 pl-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-primary-500 text-sm transition-all"
+              />
+            </div>
             <select
               value={statusFilter}
               onChange={e => setStatusFilter(e.target.value)}
-              className="px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border-none rounded-xl focus:ring-2 focus:ring-primary-500 font-bold outline-none"
+              className="px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-primary-500 font-bold text-sm outline-none"
             >
               <option value="all">كل الفواتير</option>
               <option value="completed">المكتملة فقط</option>
               <option value="pending">المعلقة فقط</option>
             </select>
-            <div className="relative flex-1 md:w-64">
-              <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
-              <input 
-                type="text"
-                placeholder="بحث في الفواتير..."
-                value={searchTerm}
-                onChange={e => setSearchTerm(e.target.value)}
-                className="w-full pr-10 pl-4 py-2.5 bg-slate-50 dark:bg-slate-800 border-none rounded-xl focus:ring-2 focus:ring-primary-500 transition-all"
-              />
-            </div>
           </div>
         </div>
 

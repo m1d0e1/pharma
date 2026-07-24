@@ -247,9 +247,10 @@ export async function getCurrentShiftAction() {
     if (!user) return { success: false, error: 'غير مصرح' };
 
     const shift = await db.prepare(`
-      SELECT id, start_time as shift_start, starting_cash as starting_cash_amount, status
+      SELECT id, user_id, start_time as shift_start, starting_cash as starting_cash_amount, status
       FROM shifts 
       WHERE user_id = ? AND status = 'open'
+      ORDER BY start_time DESC LIMIT 1
     `).get(user.id) as any;
 
     return { 

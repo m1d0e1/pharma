@@ -250,7 +250,6 @@ fn create_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Menu<
                 true,
                 None::<&str>,
             )?,
-            &MenuItem::with_id(app, "finance_handover", "تسليم الدرج", true, None::<&str>)?,
             &MenuItem::with_id(app, "finance_banks", "البنوك", true, None::<&str>)?,
             &MenuItem::with_id(
                 app,
@@ -312,7 +311,6 @@ fn create_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Menu<
                 None::<&str>,
             )?,
             &MenuItem::with_id(app, "expenses", "المصروفات", true, None::<&str>)?,
-            &MenuItem::with_id(app, "shifts", "الشفتات النقدية", true, None::<&str>)?,
         ],
     )?;
 
@@ -641,7 +639,6 @@ fn handle_menu_event<R: tauri::Runtime>(window: &tauri::Window<R>, id: &str) {
         "stores_delete_items" => "/stores/delete-items",
         "accounts" => "/accounts",
         "accounts_cash_transactions" => "/accounts/cash-transactions",
-        "finance_handover" => "/finance/handover",
         "finance_banks" => "/finance/banks",
         "finance_cards" => "/finance/cards",
         "finance_pos_management" => "/finance/pos-management",
@@ -651,7 +648,6 @@ fn handle_menu_event<R: tauri::Runtime>(window: &tauri::Window<R>, id: &str) {
         "reports_trial_balance" => "/reports/trial-balance",
         "reports_purchases" => "/reports/purchases",
         "expenses" => "/expenses",
-        "shifts" => "/shifts",
         "patients" => "/patients",
         "interactions" => "/interactions",
         "staff" => "/staff",

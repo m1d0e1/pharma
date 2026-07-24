@@ -464,6 +464,11 @@ export async function processCheckoutAction(data: any) {
     const userId = localUser.id;
 
     const validatedData = CheckoutRequestSchema.parse(data);
+    const shiftId = validatedData.shift_id
+      ? String(validatedData.shift_id)
+      : ((await db.prepare(
+          "SELECT id FROM shifts WHERE user_id = ? AND status = 'open' ORDER BY start_time DESC LIMIT 1"
+        ).get(userId) as any)?.id || null);
 
     if (isTauri) {
       const { invoke } = await import('@tauri-apps/api/core');
@@ -473,7 +478,7 @@ export async function processCheckoutAction(data: any) {
           user_id: userId,
           items: validatedData.items,
           patient_id: validatedData.patient_id ? String(validatedData.patient_id) : null,
-          shift_id: validatedData.shift_id ? String(validatedData.shift_id) : null,
+          shift_id: shiftId,
           payment_method: validatedData.payment_method,
           check_number: validatedData.check_number || null,
           status: validatedData.status,
@@ -540,7 +545,7 @@ export async function processCheckoutAction(data: any) {
       `).run(
         saleId, pharmacyId, userId, 
         validatedData.patient_id || null, 
-        validatedData.shift_id || null, 
+        shiftId,
         totalAmount, 
         validatedData.payment_method,
         validatedData.check_number || null,
