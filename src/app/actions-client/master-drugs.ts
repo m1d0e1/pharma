@@ -820,14 +820,11 @@ export async function getUnusedItemsAction() {
 export async function deleteMasterDrugAction(id: number) {
   try {
     const localUser = await getLocalSession();
-    if (!localUser || (localUser.role !== 'owner' && localUser.role !== 'admin')) {
-      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
-    }
     if (!localUser) return { success: false, error: 'غير مصرح' };
 
-    // Security check - Only owner/admin
-    if (localUser.role !== 'owner' && localUser.role !== 'admin') {
-      return { success: false, error: 'ليس لديك صلاحية الحذف' };
+    const { hasUserPermissionSync } = await import('@/lib/auth/local');
+    if (!hasUserPermissionSync(localUser, 'can_manage_inventory')) {
+      return { success: false, error: 'ليس لديك صلاحية حذف الأصناف' };
     }
 
     // Triple check - don't delete if it has inventory now
@@ -835,10 +832,14 @@ export async function deleteMasterDrugAction(id: number) {
     if (check.count > 0) return { success: false, error: 'لا يمكن حذف صنف له رصيد حالي' };
 
     await db.prepare('DELETE FROM master_drugs WHERE id = ?').run(id);
+
+    const { secureCache } = await import('@/lib/cache/secure_cache');
+    await secureCache.reload();
     
     logActivity(localUser.id, 'DELETE_MASTER_DRUG', `حذف الصنف كود: ${id}`);
     revalidatePath('/stores/delete-items');
     revalidatePath('/stores/items');
+    revalidatePath('/inventory');
 
     return { success: true };
   } catch (error: any) {

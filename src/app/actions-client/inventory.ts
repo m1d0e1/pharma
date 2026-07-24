@@ -69,7 +69,7 @@ const addInventorySchema = z.object({
 
 // Zod schema for updating inventory
 const updateInventorySchema = z.object({
-  id: z.string().uuid('معرف المخزون غير صالح'),
+  id: z.string().min(1, 'معرف المخزون غير صالح'),
   quantity: z.number().min(0, 'الكمية لا يمكن أن تكون سالبة'),
   local_selling_price: z.number().positive('السعر يجب أن يكون رقم موجب'),
   reason_id: z.number().optional().nullable(),
@@ -79,7 +79,7 @@ const updateInventorySchema = z.object({
 
 // Zod schema for deleting inventory
 const deleteInventorySchema = z.object({
-  id: z.string().uuid('معرف المخزون غير صالح'),
+  id: z.string().min(1, 'معرف المخزون غير صالح'),
 });
 
 export type AddInventoryInput = z.infer<typeof addInventorySchema>;
@@ -90,20 +90,12 @@ export type DeleteInventoryInput = z.infer<typeof deleteInventorySchema>;
  * Server Action to add a new inventory item (Local Enforcer)
  */
 export async function addInventoryAction(formData: AddInventoryInput) {
-  console.log('[addInventoryAction] Starting with formData:', JSON.stringify(formData));
   try {
-    // Step 1: Auth check
-    console.log('[addInventoryAction] Step 1: Getting local session...');
     const localUser = await getLocalSession();
-    console.log('[addInventoryAction] Step 1 result: localUser=', localUser ? `id=${localUser.id}, role=${localUser.role}` : 'NULL');
     if (!localUser) return { success: false, error: 'غير مصرح - لا يوجد جلسة' };
 
-    // Step 2: Permission check
-    console.log('[addInventoryAction] Step 2: Checking permission can_manage_inventory...');
-    const { hasPermission } = await import('@/lib/auth/local');
-    const hasPerm = await hasPermission('can_manage_inventory');
-    console.log('[addInventoryAction] Step 2 result: hasPerm=', hasPerm);
-    if (!hasPerm) {
+    const { hasUserPermissionSync } = await import('@/lib/auth/local');
+    if (!hasUserPermissionSync(localUser, 'can_manage_inventory')) {
       return { success: false, error: 'ليس لديك صلاحية إضافة أصناف للمخزون' };
     }
 
@@ -183,8 +175,8 @@ export async function updateInventoryAction(formData: UpdateInventoryInput) {
     const localUser = await getLocalSession();
     if (!localUser) return { success: false, error: 'غير مصرح' };
 
-    const { hasPermission } = await import('@/lib/auth/local');
-    if (!await hasPermission('can_manage_inventory')) {
+    const { hasUserPermissionSync } = await import('@/lib/auth/local');
+    if (!hasUserPermissionSync(localUser, 'can_manage_inventory')) {
       return { success: false, error: 'ليس لديك صلاحية تحديث بيانات المخزون' };
     }
 
@@ -195,92 +187,95 @@ export async function updateInventoryAction(formData: UpdateInventoryInput) {
 
     const { id, quantity, local_selling_price, reason_id, large_to_medium, expiry_date } = validationResult.data;
 
+    const { secureCache } = await import('@/lib/cache/secure_cache');
     await secureCache.load();
-    const transaction = db.transaction(async () => {
-      const current = await db.prepare(`
-        SELECT i.quantity, i.drug_id
-        FROM inventory i 
-        WHERE i.id = ?
-      `).get(id) as { quantity: number, drug_id: number };
 
-      if (!current) throw new Error('Inventory not found');
+    const current = await db.prepare(`
+      SELECT i.quantity, i.drug_id
+      FROM inventory i 
+      WHERE i.id = ?
+    `).get(id) as { quantity: number, drug_id: number };
 
-      let updateInvQuery = `
-        UPDATE inventory 
-        SET quantity = ?, local_selling_price = ?, updated_at = CURRENT_TIMESTAMP
-      `;
-      const invParams: any[] = [quantity, local_selling_price];
+    if (!current) return { success: false, error: 'الصنف غير موجود بالمخزون' };
 
-      if (expiry_date) {
-        updateInvQuery += `, expiry_date = ?`;
-        invParams.push(expiry_date);
-      }
+    let updateInvQuery = `
+      UPDATE inventory 
+      SET quantity = ?, local_selling_price = ?, updated_at = CURRENT_TIMESTAMP
+    `;
+    const invParams: any[] = [quantity, local_selling_price];
 
-      updateInvQuery += ` WHERE id = ?`;
-      invParams.push(id);
+    if (expiry_date) {
+      updateInvQuery += `, expiry_date = ?`;
+      invParams.push(expiry_date);
+    }
 
-      await db.prepare(updateInvQuery).run(...invParams);
+    updateInvQuery += ` WHERE id = ?`;
+    invParams.push(id);
 
-      if (large_to_medium !== undefined && large_to_medium !== null) {
-        await db.prepare('UPDATE master_drugs SET large_to_medium = ? WHERE id = ?').run(large_to_medium, current.drug_id);
-        secureCache.updateDrug(current.drug_id, { large_to_medium });
-      }
+    await db.prepare(updateInvQuery).run(...invParams);
 
-      // Direct SQL lookup for trade name (avoids loading full 191K cache for a log message)
-      const drugRow2 = await db.prepare('SELECT trade_name, trade_name_en, active_ingredient FROM master_drugs WHERE id = ?').get(current.drug_id) as any;
-      const tradeName = drugRow2?.trade_name_en || drugRow2?.trade_name || drugRow2?.active_ingredient || `صنف #${current.drug_id}`;
+    if (large_to_medium !== undefined && large_to_medium !== null) {
+      await db.prepare('UPDATE master_drugs SET large_to_medium = ? WHERE id = ?').run(large_to_medium, current.drug_id);
+      secureCache.updateDrug(current.drug_id, { large_to_medium });
+    }
 
-      if (reason_id && quantity !== current.quantity) {
+    // Keep selling price aligned across master_drugs & inventory
+    await db.prepare('UPDATE master_drugs SET official_price = ? WHERE id = ?').run(local_selling_price, current.drug_id);
+    secureCache.updateDrug(current.drug_id, { official_price: local_selling_price });
+
+    // Direct SQL lookup for trade name
+    const drugRow2 = await db.prepare('SELECT trade_name, trade_name_en, active_ingredient FROM master_drugs WHERE id = ?').get(current.drug_id) as any;
+    const tradeName = drugRow2?.trade_name_en || drugRow2?.trade_name || drugRow2?.active_ingredient || `صنف #${current.drug_id}`;
+
+    if (reason_id && quantity !== current.quantity) {
+      await db.prepare(`
+        INSERT INTO stock_adjustments (inventory_id, reason_id, old_quantity, new_quantity, user_id)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(id, reason_id, current.quantity, quantity, localUser.id);
+
+      // Accounting for Adjustment
+      const journalId = generateId();
+      const diff = Math.abs(quantity - current.quantity);
+      const costPrice = await db.prepare('SELECT cost_price FROM inventory WHERE id = ?').get(id) as { cost_price: number };
+      const totalValue = diff * (costPrice?.cost_price || 0);
+
+      if (totalValue > 0) {
+        const adjDate = new Date().toISOString().split('T')[0];
         await db.prepare(`
-          INSERT INTO stock_adjustments (inventory_id, reason_id, old_quantity, new_quantity, user_id)
+          INSERT INTO daily_journals (id, date, description, created_by, total_amount)
           VALUES (?, ?, ?, ?, ?)
-        `).run(id, reason_id, current.quantity, quantity, localUser.id);
+        `).run(journalId, adjDate, `تسوية مخزنية: ${tradeName}`, localUser.id, totalValue);
 
-        // Accounting for Adjustment
-        const journalId = generateId();
-        const diff = Math.abs(quantity - current.quantity);
-        const costPrice = await db.prepare('SELECT cost_price FROM inventory WHERE id = ?').get(id) as { cost_price: number };
-        const totalValue = diff * (costPrice?.cost_price || 0);
+        const getAccountId = async (cat: string) => {
+          const s = await db.prepare('SELECT account_id FROM trial_balance_settings WHERE category = ?').get(cat) as any;
+          return s?.account_id;
+        };
 
-        if (totalValue > 0) {
-          const adjDate = new Date().toISOString().split('T')[0];
-          await db.prepare(`
-            INSERT INTO daily_journals (id, date, description, created_by, total_amount)
-            VALUES (?, ?, ?, ?, ?)
-          `).run(journalId, adjDate, `تسوية مخزنية: ${tradeName}`, localUser.id, totalValue);
+        const invAcc = await getAccountId('inventory_asset') || 10;
+        const adjAcc = await getAccountId('inventory_adjustment') || 12;
 
-          const getAccountId = async (cat: string) => {
-            const s = await db.prepare('SELECT account_id FROM trial_balance_settings WHERE category = ?').get(cat) as any;
-            return s?.account_id;
-          };
-
-          const invAcc = await getAccountId('inventory_asset') || 10;
-          const adjAcc = await getAccountId('inventory_adjustment') || 12;
-
-          if (quantity < current.quantity) {
-            // Decrease: Debit Adjustment (Expense), Credit Inventory (Asset)
-            await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, adjAcc, 'debit', totalValue);
-            await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, invAcc, 'credit', totalValue);
-          } else {
-            // Increase: Debit Inventory (Asset), Credit Adjustment (Gain/Income)
-            await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, invAcc, 'debit', totalValue);
-            await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, adjAcc, 'credit', totalValue);
-          }
+        if (quantity < current.quantity) {
+          await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, adjAcc, 'debit', totalValue);
+          await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, invAcc, 'credit', totalValue);
+        } else {
+          await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, invAcc, 'debit', totalValue);
+          await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, adjAcc, 'credit', totalValue);
         }
       }
+    }
 
-      logActivity(localUser.id, 'UPDATE_INVENTORY', `حدث بيانات ${tradeName} (الكمية: ${quantity})`);
-    });
+    logActivity(localUser.id, 'UPDATE_INVENTORY', `تحديث بيانات ${tradeName} (الكمية: ${quantity})`);
 
-    await transaction();
+    await secureCache.reload();
 
     revalidatePath('/inventory');
+    revalidatePath('/pos');
     revalidatePath('/');
 
     return { success: true };
   } catch (error: any) {
     console.error('Local Update Error:', error);
-    return { success: false, error: 'فشل تحديث المخزون.' };
+    return { success: false, error: 'فشل تحديث المخزون: ' + (error.message || error) };
   }
 }
 
@@ -291,6 +286,11 @@ export async function deleteInventoryAction(formData: DeleteInventoryInput) {
   try {
     const localUser = await getLocalSession();
     if (!localUser) return { success: false, error: 'غير مصرح' };
+
+    const { hasUserPermissionSync } = await import('@/lib/auth/local');
+    if (!hasUserPermissionSync(localUser, 'can_manage_inventory')) {
+      return { success: false, error: 'ليس لديك صلاحية حذف بيانات المخزون' };
+    }
 
     const validationResult = deleteInventorySchema.safeParse(formData);
     if (!validationResult.success) {
