@@ -53,6 +53,7 @@ function normalizeDateToYMD(dateStr: string | null | undefined): string | null {
 }
 
 const DrugDetailsModal = nextDynamic(() => import('@/components/pos/DrugDetailsModal'), { ssr: false });
+const QuickAddDrugModal = nextDynamic(() => import('@/components/master-drugs/QuickAddDrugModal'), { ssr: false });
 
 function ContextMenuItem({ icon: Icon, label, onClick, color = "text-slate-700 dark:text-slate-300" }: any) {
   return (
@@ -109,6 +110,32 @@ export default function PurchaseInvoiceClient() {
   const [drafts, setDrafts] = useState<any[]>([])
   const [showDraftsModal, setShowDraftsModal] = useState(false)
   const [isEditingCompleted, setIsEditingCompleted] = useState(false)
+  const [isQuickAddOpen, setIsQuickAddOpen] = useState(false)
+
+  const handleEnterNext = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const currentTd = e.currentTarget.closest('td');
+      const row = e.currentTarget.closest('tr');
+      if (!currentTd || !row) return;
+      
+      const inputs = Array.from(row.querySelectorAll('input'));
+      const idx = inputs.indexOf(e.currentTarget);
+      if (idx >= 0 && idx < inputs.length - 1) {
+        inputs[idx + 1].focus();
+        (inputs[idx + 1] as HTMLInputElement).select?.();
+      } else {
+        const nextRow = row.nextElementSibling;
+        if (nextRow) {
+          const nextInput = nextRow.querySelector('input') as HTMLInputElement | null;
+          if (nextInput) {
+            nextInput.focus();
+            nextInput.select?.();
+          }
+        }
+      }
+    }
+  };
 
   const loadDrafts = async () => {
     const { getDraftPurchaseInvoicesAction } = await import('@/app/actions-client/purchases');
@@ -932,44 +959,54 @@ export default function PurchaseInvoiceClient() {
             </h2>
 
             
-            <div className="relative mb-2">
-              <Search className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 w-5 h-5" />
-              <input 
-                type="text"
-                placeholder="اسم الصنف أو الباركود..."
-                className="w-full pr-12 pl-4 py-4 bg-slate-50 dark:bg-slate-800 border-none rounded-2xl font-bold outline-none ring-2 ring-transparent focus:ring-primary-500/20 transition-all"
-                value={searchQuery}
-                onChange={(e) => handleDrugSearch(e.target.value)}
-              />
-              {searchResults.length > 0 && (
-                <div className="absolute top-full left-0 right-0 mt-1 bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl shadow-hard z-50 overflow-y-auto max-h-[300px] animate-in fade-in duration-200">
-                  {searchResults.map((drug) => (
-                    <button 
-                      key={drug.id}
-                      onClick={() => addToCart(drug)}
-                      className="w-full p-4 text-right hover:bg-primary-50 dark:hover:bg-primary-900/20 transition-all border-b border-slate-50 dark:border-slate-800 last:border-0"
-                    >
-                      <div className="font-black text-slate-900 dark:text-white leading-tight">{drug.trade_name_en || drug.trade_name}</div>
-                      {drug.trade_name_en && (
-                        <div className="text-[11px] text-slate-500 font-bold italic mt-0.5">{drug.trade_name}</div>
-                      )}
-                      <div className="flex items-center gap-2 mt-1.5">
-                        <div className="text-[9px] text-slate-400 font-bold uppercase tracking-widest bg-slate-100 dark:bg-slate-800 inline-block px-2 py-0.5 rounded-md">
-                          {drug.barcode || 'بدون باركود'}
-                        </div>
-                        <div className="text-[9px] text-emerald-600 font-bold uppercase tracking-widest bg-emerald-50 dark:bg-emerald-900/20 inline-block px-2 py-0.5 rounded-md border border-emerald-100 dark:border-emerald-800">
-                          بيع: {drug.official_price}
-                        </div>
-                        {drug.base_price > 0 && (
-                          <div className="text-[9px] text-blue-600 font-bold uppercase tracking-widest bg-blue-50 dark:bg-blue-900/20 inline-block px-2 py-0.5 rounded-md border border-blue-100 dark:border-blue-800">
-                            شراء: {drug.base_price}
-                          </div>
+            <div className="flex items-center gap-2 mb-2">
+              <div className="relative flex-1">
+                <Search className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 w-5 h-5" />
+                <input 
+                  type="text"
+                  placeholder="اسم الصنف أو الباركود..."
+                  className="w-full pr-12 pl-4 py-4 bg-slate-50 dark:bg-slate-800 border-none rounded-2xl font-bold outline-none ring-2 ring-transparent focus:ring-primary-500/20 transition-all"
+                  value={searchQuery}
+                  onChange={(e) => handleDrugSearch(e.target.value)}
+                />
+                {searchResults.length > 0 && (
+                  <div className="absolute top-full left-0 right-0 mt-1 bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl shadow-hard z-50 overflow-y-auto max-h-[300px] animate-in fade-in duration-200">
+                    {searchResults.map((drug) => (
+                      <button 
+                        key={drug.id}
+                        onClick={() => addToCart(drug)}
+                        className="w-full p-4 text-right hover:bg-primary-50 dark:hover:bg-primary-900/20 transition-all border-b border-slate-50 dark:border-slate-800 last:border-0"
+                      >
+                        <div className="font-black text-slate-900 dark:text-white leading-tight">{drug.trade_name_en || drug.trade_name}</div>
+                        {drug.trade_name_en && (
+                          <div className="text-[11px] text-slate-500 font-bold italic mt-0.5">{drug.trade_name}</div>
                         )}
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              )}
+                        <div className="flex items-center gap-2 mt-1.5">
+                          <div className="text-[9px] text-slate-400 font-bold uppercase tracking-widest bg-slate-100 dark:bg-slate-800 inline-block px-2 py-0.5 rounded-md">
+                            {drug.barcode || 'بدون باركود'}
+                          </div>
+                          <div className="text-[9px] text-emerald-600 font-bold uppercase tracking-widest bg-emerald-50 dark:bg-emerald-900/20 inline-block px-2 py-0.5 rounded-md border border-emerald-100 dark:border-emerald-800">
+                            بيع: {drug.official_price}
+                          </div>
+                          {drug.base_price > 0 && (
+                            <div className="text-[9px] text-blue-600 font-bold uppercase tracking-widest bg-blue-50 dark:bg-blue-900/20 inline-block px-2 py-0.5 rounded-md border border-blue-100 dark:border-blue-800">
+                              شراء: {drug.base_price}
+                            </div>
+                          )}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsQuickAddOpen(true)}
+                className="p-4 bg-primary-600 hover:bg-primary-700 text-white rounded-2xl font-bold transition-all shadow-md flex items-center justify-center shrink-0"
+                title="إضافة دواء جديد كلياً"
+              >
+                <Plus className="w-5 h-5" />
+              </button>
             </div>
             
             <div className="flex items-center gap-2 mb-4 px-1">
@@ -1065,6 +1102,7 @@ export default function PurchaseInvoiceClient() {
                 <thead>
                   <tr className="bg-slate-50 dark:bg-slate-800/50">
                     <th className="px-2 py-4 font-black text-slate-400 text-[10px] uppercase tracking-widest border-b border-slate-100 dark:border-slate-800">الصنف</th>
+                    <th className="px-2 py-4 font-black text-slate-400 text-[10px] uppercase tracking-widest border-b border-slate-100 dark:border-slate-800">الباركود / QR</th>
                     <th className="px-2 py-4 font-black text-slate-400 text-[10px] uppercase tracking-widest border-b border-slate-100 dark:border-slate-800">سعر بيع الوحدة</th>
                     <th className="px-2 py-4 font-black text-slate-400 text-[10px] uppercase tracking-widest border-b border-slate-100 dark:border-slate-800">الكمية</th>
                     <th className="px-2 py-4 font-black text-slate-400 text-[10px] uppercase tracking-widest border-b border-slate-100 dark:border-slate-800">بونص</th>
@@ -1088,12 +1126,23 @@ export default function PurchaseInvoiceClient() {
                       <td className="px-2 py-3">
                         <input 
                           type="text"
+                          placeholder="باركود..."
+                          className="w-24 p-2.5 bg-slate-50 dark:bg-slate-800 border-none rounded-xl font-bold text-center outline-none focus:ring-2 focus:ring-primary-500/20 text-xs"
+                          value={item.barcode || ''}
+                          onChange={(e) => updateCartItem(item.id, 'barcode', e.target.value)}
+                          onKeyDown={handleEnterNext}
+                        />
+                      </td>
+                      <td className="px-2 py-3">
+                        <input 
+                          type="text"
                           className="w-16 p-2.5 bg-slate-50 dark:bg-slate-800 border-none rounded-xl font-bold text-center outline-none focus:ring-2 focus:ring-emerald-500/20 text-xs text-emerald-600 dark:text-emerald-400"
                           value={item.selling_price}
                           onChange={(e) => {
                             const val = e.target.value.replace(/[^0-9.]/g, '');
                             updateCartItem(item.id, 'selling_price', val);
                           }}
+                          onKeyDown={handleEnterNext}
                         />
                       </td>
                       <td className="px-2 py-3">
@@ -1107,6 +1156,7 @@ export default function PurchaseInvoiceClient() {
                             const val = e.target.value.replace(/[^0-9]/g, '');
                             updateCartItem(item.id, 'quantity', val);
                           }}
+                          onKeyDown={handleEnterNext}
                         />
                       </td>
                       <td className="px-2 py-3">
@@ -1118,6 +1168,7 @@ export default function PurchaseInvoiceClient() {
                             const val = e.target.value.replace(/[^0-9]/g, '');
                             updateCartItem(item.id, 'bonus_quantity', val);
                           }}
+                          onKeyDown={handleEnterNext}
                         />
                       </td>
                       <td className="px-2 py-3">
@@ -1132,6 +1183,7 @@ export default function PurchaseInvoiceClient() {
                             onChange={(e) => updateCartItem(item.id, 'expiry_date', e.target.value)}
                             onClick={(e) => { try { e.currentTarget.showPicker(); } catch (err) {} }}
                             onFocus={(e) => { try { e.currentTarget.showPicker(); } catch (err) {} }}
+                            onKeyDown={handleEnterNext}
                           />
                         </div>
                       </td>
@@ -1144,6 +1196,7 @@ export default function PurchaseInvoiceClient() {
                             const val = e.target.value.replace(/[^0-9]/g, '');
                             updateCartItem(item.id, 'strips_per_box', val ? parseInt(val) : '');
                           }}
+                          onKeyDown={handleEnterNext}
                         />
                       </td>
                       <td className="px-2 py-3">
@@ -1155,6 +1208,7 @@ export default function PurchaseInvoiceClient() {
                             const val = e.target.value.replace(/[^0-9.]/g, '');
                             updateCartItem(item.id, 'tax_percent', val);
                           }}
+                          onKeyDown={handleEnterNext}
                         />
                       </td>
                       <td className="px-2 py-3">
@@ -1166,6 +1220,7 @@ export default function PurchaseInvoiceClient() {
                             const val = e.target.value.replace(/[^0-9.]/g, '');
                             updateCartItem(item.id, 'discount_percent', val);
                           }}
+                          onKeyDown={handleEnterNext}
                         />
                       </td>
                       <td className="px-2 py-3">
@@ -1179,6 +1234,7 @@ export default function PurchaseInvoiceClient() {
                             const val = e.target.value.replace(/[^0-9.]/g, '');
                             updateCartItem(item.id, 'cost_price', val);
                           }}
+                          onKeyDown={handleEnterNext}
                         />
                         <div className="mt-1 text-[9px] font-bold text-emerald-600 text-center">
                           {calculateTaxedUnitCost(item).toFixed(2)} {'شامل الضريبة'}
@@ -1282,6 +1338,28 @@ export default function PurchaseInvoiceClient() {
               large_to_medium: updatedDrug.large_to_medium,
               medium_to_small: updatedDrug.medium_to_small
             } : item));
+          }}
+        />
+      )}
+
+      {isQuickAddOpen && (
+        <QuickAddDrugModal
+          onClose={() => setIsQuickAddOpen(false)}
+          onSuccess={(drugId, tradeName, large_unit, official_price, large_to_medium, barcode) => {
+            setIsQuickAddOpen(false);
+            if (drugId) {
+              addToCart({
+                id: drugId,
+                trade_name: tradeName,
+                trade_name_en: tradeName,
+                official_price: official_price,
+                base_price: official_price,
+                large_unit: large_unit,
+                large_to_medium: large_to_medium || 1,
+                barcode: barcode || ''
+              });
+              toast.success(`تمت إضافة "${tradeName}" للفاتورة`);
+            }
           }}
         />
       )}

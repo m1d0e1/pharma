@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation'
 import AddPatientModal from '../AddPatientModal'
 import PatientProfileModal from './PatientProfileModal'
 import { toast } from 'react-hot-toast'
-import { User, Phone, MapPin, CreditCard, ChevronLeft, Trash2 } from 'lucide-react'
+import { User, Phone, MapPin, CreditCard, ChevronLeft, Trash2, Pencil } from 'lucide-react'
 
 interface Patient {
   id: string
@@ -152,8 +152,7 @@ export default function PatientListClient({ initialPatients, pharmacyId }: Props
                 <span className="line-clamp-1">{patient.address || 'لا يوجد عنوان مسجل'}</span>
               </div>
 
-              <div className="pt-6 border-t border-slate-50 dark:border-slate-800 flex justify-between items-center group-hover:translate-x-[-4px] transition-transform">
-                 <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{patient.customer_type === 'individual' ? 'فردي' : 'متعاقد'}</span>
+              <div className="pt-6 border-t border-slate-50 dark:border-slate-800 flex justify-between items-center">
                  <div className="flex items-center gap-2">
                    <button
                      type="button"
@@ -163,9 +162,18 @@ export default function PatientListClient({ initialPatients, pharmacyId }: Props
                    >
                      <Trash2 className="w-4 h-4" />
                    </button>
-                   <div className="flex items-center gap-1 text-purple-600 font-black text-sm">
-                      عرض الملف الكامل <ChevronLeft className="w-4 h-4" />
-                   </div>
+                   <button
+                     type="button"
+                     onClick={(e) => { e.stopPropagation(); setSelectedPatientId(patient.id); }}
+                     className="p-2 text-purple-600 hover:bg-purple-50 dark:hover:bg-purple-950/30 rounded-xl transition-all"
+                     title="تعديل بيانات المريض"
+                   >
+                     <Pencil className="w-4 h-4" />
+                   </button>
+                   <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest mr-2">{patient.customer_type === 'individual' ? 'فردي' : 'متعاقد'}</span>
+                 </div>
+                 <div className="flex items-center gap-1 text-purple-600 font-black text-sm hover:translate-x-[-4px] transition-transform">
+                    عرض وتعديل الملف <ChevronLeft className="w-4 h-4" />
                  </div>
               </div>
             </div>

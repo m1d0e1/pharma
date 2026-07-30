@@ -96,6 +96,7 @@ pub struct PurchaseItem {
     pub discount_percent: f64,
     #[serde(default = "one_i64", deserialize_with = "de_i64")]
     pub strips_per_box: i64,
+    pub barcode: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -619,6 +620,10 @@ async fn save_purchase_invoice_tx(
         .execute(&mut **tx)
         .await
         .ok();
+    sqlx::query("ALTER TABLE purchase_invoice_items ADD COLUMN barcode TEXT")
+        .execute(&mut **tx)
+        .await
+        .ok();
     let invoice_id = payload
         .id
         .clone()
@@ -746,7 +751,7 @@ async fn save_purchase_invoice_tx(
     for item in &payload.cart {
         let expiry = normalize_date_ymd(item.expiry_date.as_deref());
         let inserted_item = sqlx::query(
-            "INSERT INTO purchase_invoice_items (invoice_id, drug_id, quantity, unit_id, expiry_date, cost_price, selling_price, bonus_quantity, tax_percent, discount_percent, strips_per_box) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO purchase_invoice_items (invoice_id, drug_id, quantity, unit_id, expiry_date, cost_price, selling_price, bonus_quantity, tax_percent, discount_percent, strips_per_box, barcode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&invoice_id)
         .bind(item.id)
@@ -759,6 +764,7 @@ async fn save_purchase_invoice_tx(
         .bind(item.tax_percent)
         .bind(item.discount_percent)
         .bind(item.strips_per_box)
+        .bind(&item.barcode)
         .execute(&mut **tx)
         .await
         .map_err(|e| e.to_string())?;
@@ -771,6 +777,23 @@ async fn save_purchase_invoice_tx(
                 .execute(&mut **tx)
                 .await
                 .map_err(|e| e.to_string())?;
+        }
+
+        if let Some(ref bc) = item.barcode {
+            if !bc.trim().is_empty() {
+                sqlx::query("UPDATE master_drugs SET barcode = ? WHERE id = ? AND (barcode IS NULL OR barcode = '')")
+                    .bind(bc)
+                    .bind(item.id)
+                    .execute(&mut **tx)
+                    .await
+                    .ok();
+                sqlx::query("UPDATE inventory SET barcode = ? WHERE drug_id = ? AND (barcode IS NULL OR barcode = '')")
+                    .bind(bc)
+                    .bind(item.id)
+                    .execute(&mut **tx)
+                    .await
+                    .ok();
+            }
         }
 
         let item_total = purchase_item_total(item, payload.tax_percent);

@@ -9,6 +9,20 @@ const logActivity = async (userId, action, details) => {
   }
 };
 const initLocalDb = () => {};
+let migrationDone = false;
+async function ensureBarcodeColumn() {
+  if (migrationDone) return;
+  try {
+    const cols = await dbSelect("PRAGMA table_info(purchase_invoice_items)");
+    const hasBarcode = cols.some((c: any) => c.name === 'barcode');
+    if (!hasBarcode) {
+      await dbExecute("ALTER TABLE purchase_invoice_items ADD COLUMN barcode TEXT");
+    }
+  } catch (e) {
+    // ponytail: migration safe fallback
+  }
+  migrationDone = true;
+}
 const clearAuditLogs = async () => {
   try {
     await dbExecute('DELETE FROM activity_log');
@@ -209,6 +223,8 @@ export async function createPurchaseInvoiceAction(data: {
     const session = await getLocalSession();
     if (!session || !hasUserPermissionSync(session, 'can_view_purchases')) return { success: false, error: 'Unauthorized' };
 
+    await ensureBarcodeColumn();
+
     if (isTauri) {
       const { invoke } = await import('@tauri-apps/api/core');
       const result = await invoke('save_purchase_invoice_critical', {
@@ -228,7 +244,8 @@ export async function createPurchaseInvoiceAction(data: {
             bonus_quantity: Number(item.bonus_quantity || 0),
             tax_percent: Number(item.tax_percent || 0),
             discount_percent: Number(item.discount_percent || 0),
-            strips_per_box: Number(item.strips_per_box || item.large_to_medium || 1)
+            strips_per_box: Number(item.strips_per_box || item.large_to_medium || 1),
+            barcode: item.barcode || null
           }))
         }
       }) as any;
@@ -276,8 +293,8 @@ export async function createPurchaseInvoiceAction(data: {
 
       if (data.cart && data.cart.length > 0) {
         const itemStmt = await db.prepare(`
-          INSERT INTO purchase_invoice_items (invoice_id, drug_id, quantity, unit_id, expiry_date, cost_price, selling_price, bonus_quantity, tax_percent, discount_percent, strips_per_box)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO purchase_invoice_items (invoice_id, drug_id, quantity, unit_id, expiry_date, cost_price, selling_price, bonus_quantity, tax_percent, discount_percent, strips_per_box, barcode)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
         for (const item of data.cart) {
           const normExpiry = normalizeDateToYMD(item.expiry_date);
@@ -292,12 +309,19 @@ export async function createPurchaseInvoiceAction(data: {
             item.bonus_quantity || 0,
             item.tax_percent || 0,
             item.discount_percent || 0,
-            item.strips_per_box || 1
+            item.strips_per_box || 1,
+            item.barcode || null
           );
 
           if (item.strips_per_box) {
             await db.prepare('UPDATE master_drugs SET large_to_medium = ? WHERE id = ?').run(item.strips_per_box, item.id);
             secureCache.updateDrug(Number(item.id), { large_to_medium: item.strips_per_box });
+          }
+
+          if (item.barcode) {
+            await db.prepare('UPDATE master_drugs SET barcode = ? WHERE id = ? AND (barcode IS NULL OR barcode = "")').run(item.barcode, item.id);
+            await db.prepare('UPDATE inventory SET barcode = ? WHERE drug_id = ? AND (barcode IS NULL OR barcode = "")').run(item.barcode, item.id);
+            secureCache.updateDrug(Number(item.id), { barcode: item.barcode });
           }
 
           if (finalStatus === 'completed') {
@@ -698,6 +722,7 @@ export async function getPurchasesReportsAction(filters: any = {}) {
 
 export async function getPurchaseInvoiceDetailsAction(invoiceId: string) {
   try {
+    await ensureBarcodeColumn();
     const items = await db.prepare(`
       SELECT pii.*,
              d.trade_name, d.trade_name_en, d.barcode, d.large_to_medium, d.medium_to_small,
