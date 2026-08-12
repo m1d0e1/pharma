@@ -5,7 +5,6 @@ import Link from 'next/link';
 import { 
   FilePlus, 
   RotateCcw, 
-  ClipboardList, 
   TrendingUp, 
   Users,
   Search,
@@ -31,22 +30,6 @@ const purchaseOptions = [
     icon: RotateCcw,
     color: 'bg-amber-500',
     shadow: 'shadow-amber-500/20'
-  },
-  {
-    title: 'مرتجع شراء عام',
-    subtitle: 'تسجيل مرتجعات غير مرتبطة بفاتورة',
-    href: '/purchases/general-returns',
-    icon: RotateCcw,
-    color: 'bg-orange-500',
-    shadow: 'shadow-orange-500/20'
-  },
-  {
-    title: 'تعديل مرتجعات شراء',
-    subtitle: 'إدارة وتعديل المرتجعات السابقة',
-    href: '/purchases/edit-returns',
-    icon: ClipboardList,
-    color: 'bg-slate-500',
-    shadow: 'shadow-slate-500/20'
   },
   {
     title: 'تقارير المشتريات',

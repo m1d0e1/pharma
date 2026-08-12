@@ -19,16 +19,28 @@ const fs = require('fs');
 const Database = require('better-sqlite3');
 
 const ROOT = path.join(__dirname, '..');
-const DB_PATH = path.join(ROOT, 'pharma_local.db');
 const DRUGS_CSV = path.join(ROOT, 'egypt_drugs_smart_scrape.csv');
 const INTERACTIONS_CSV = path.join(ROOT, 'db_drug_interactions.csv');
+const MIGRATIONS_DIR = path.join(ROOT, 'src-tauri', 'migrations');
 
 const args = process.argv.slice(2);
 const DRY_RUN = args.includes('--dry-run');
 const COPY_DEST = (() => {
   const idx = args.indexOf('--dest');
-  return idx !== -1 ? path.join(ROOT, args[idx + 1]) : null;
+  if (idx === -1) return null;
+  if (!args[idx + 1]) throw new Error('--dest requires a directory');
+  const dest = path.resolve(ROOT, args[idx + 1]);
+  if (dest !== ROOT && !dest.startsWith(`${ROOT}${path.sep}`)) {
+    throw new Error('--dest must stay inside the project directory');
+  }
+  return dest;
 })();
+const OUTPUT_DB = COPY_DEST
+  ? path.join(COPY_DEST, 'pharma_local.db')
+  : path.join(ROOT, 'pharma_local.db');
+const DB_PATH = COPY_DEST
+  ? path.join(COPY_DEST, '.pharma_local.seed.tmp.db')
+  : OUTPUT_DB;
 
 // ─────────────────────────────────────────────────
 // Helpers
@@ -103,66 +115,22 @@ if (DRY_RUN) {
 }
 
 // 2. Open database
+if (COPY_DEST) {
+  fs.mkdirSync(COPY_DEST, { recursive: true });
+  for (const file of [DB_PATH, `${DB_PATH}-wal`, `${DB_PATH}-shm`]) {
+    fs.rmSync(file, { force: true });
+  }
+}
 console.log(`🗄  Opening database: ${DB_PATH}`);
 const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 db.pragma('synchronous = NORMAL');
 db.pragma('foreign_keys = OFF'); // speed during bulk insert
 
-// 3. Ensure tables exist
-console.log('🔧 Ensuring tables exist...');
-db.exec(`
-  CREATE TABLE IF NOT EXISTS master_drugs (
-    id INTEGER PRIMARY KEY,
-    trade_name TEXT NOT NULL,
-    trade_name_en TEXT,
-    generic_name TEXT,
-    active_ingredient TEXT,
-    barcode TEXT,
-    official_price REAL DEFAULT 0,
-    category TEXT,
-    manufacturer TEXT,
-    is_medicine INTEGER DEFAULT 1,
-    is_service INTEGER DEFAULT 0,
-    is_refrigerated INTEGER DEFAULT 0,
-    is_chronic INTEGER DEFAULT 0,
-    has_expiry INTEGER DEFAULT 1,
-    no_return INTEGER DEFAULT 0,
-    origin TEXT,
-    notes TEXT,
-    large_unit TEXT,
-    small_unit TEXT,
-    medium_unit TEXT,
-    large_to_medium INTEGER,
-    medium_to_small INTEGER,
-    min_limit INTEGER,
-    max_limit INTEGER,
-    reorder_point INTEGER,
-    default_purchase_qty INTEGER,
-    prevent_fractions INTEGER DEFAULT 0,
-    tax_percent REAL DEFAULT 0,
-    discount_percent REAL DEFAULT 0,
-    stop_dealing INTEGER DEFAULT 0,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE TABLE IF NOT EXISTS drug_interactions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ingredient_a TEXT NOT NULL COLLATE NOCASE,
-    ingredient_b TEXT NOT NULL COLLATE NOCASE,
-    severity TEXT NOT NULL DEFAULT 'moderate',
-    description_ar TEXT,
-    description_en TEXT,
-    recommendation TEXT,
-    source TEXT DEFAULT 'DrugBank'
-  );
-`);
-
-// Ensure unique index exists BEFORE any inserts (required for INSERT OR IGNORE dedup)
-try {
-  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uidx_interactions ON drug_interactions(ingredient_a, ingredient_b)');
-} catch (e) {
-  console.warn('  Note: could not create uidx_interactions:', e.message);
+// 3. Build schema from the same immutable migrations used by Tauri.
+console.log('🔧 Applying schema migrations...');
+for (const filename of fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql')).sort()) {
+  db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, filename), 'utf8'));
 }
 
 
@@ -177,9 +145,9 @@ console.log(`   Existing rows: ${existingDrugs.count.toLocaleString()}`);
 
 const insertDrug = db.prepare(`
   INSERT OR IGNORE INTO master_drugs
-    (id, trade_name, official_price, active_ingredient, category, manufacturer)
+    (id, trade_name, official_price, active_ingredient, category, manufacturer, created_at)
   VALUES
-    (?, ?, ?, ?, ?, ?)
+    (?, ?, ?, ?, ?, ?, '1970-01-01 00:00:00')
 `);
 
 const importDrugs = db.transaction((rows) => {
@@ -279,27 +247,6 @@ console.log(`   📊 Total in DB: ${totalInteractions.count.toLocaleString()}`);
 // ─────────────────────────────────────────────────
 console.log('\n🔄 Syncing categories, scientific groups & manufacturers from master_drugs...');
 
-// Ensure tables exist
-db.exec(`
-  CREATE TABLE IF NOT EXISTS product_categories (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    parent_id INTEGER,
-    name_ar TEXT NOT NULL,
-    name_en TEXT,
-    FOREIGN KEY (parent_id) REFERENCES product_categories (id)
-  );
-  CREATE TABLE IF NOT EXISTS scientific_groups (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name_ar TEXT NOT NULL,
-    name_en TEXT
-  );
-  CREATE TABLE IF NOT EXISTS manufacturers (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name_ar TEXT NOT NULL,
-    name_en TEXT
-  );
-`);
-
   const syncCategories = db.prepare(`
     INSERT INTO product_categories (name_ar)
     SELECT DISTINCT 
@@ -342,18 +289,48 @@ console.log(`   Manufacturers synced: ${mfgResult.changes} new`);
 // ─────────────────────────────────────────────────
 // 7. Finalize
 // ─────────────────────────────────────────────────
+if (COPY_DEST) {
+  const businessTables = [
+    'patients', 'inventory', 'sales_invoices', 'sales_items',
+    'purchase_invoices', 'purchase_invoice_items', 'returns', 'return_items'
+  ];
+  const populated = businessTables.filter(table => db.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get());
+  if (populated.length) throw new Error(`Seed contains business data: ${populated.join(', ')}`);
+  const users = db.prepare('SELECT id, username FROM users').all();
+  if (users.length !== 1 || users[0].id !== 'admin' || users[0].username !== 'admin') {
+    throw new Error('Seed must contain only the default admin user');
+  }
+}
 db.pragma('foreign_keys = ON');
+const foreignKeyErrors = db.pragma('foreign_key_check');
+if (foreignKeyErrors.length) throw new Error(`Seed foreign-key check failed: ${JSON.stringify(foreignKeyErrors)}`);
+if (db.pragma('integrity_check', { simple: true }) !== 'ok') throw new Error('Seed integrity check failed');
+db.exec('ANALYZE');
 db.pragma('wal_checkpoint(TRUNCATE)');
 db.close();
 
 console.log('\n✅ Database seeding complete!');
 
-// 7. Optionally copy to destination
+// 8. Publish the isolated build artifact.
 if (COPY_DEST) {
-  const destPath = path.join(COPY_DEST, 'pharma_local.db');
-  console.log(`\n📦 Copying DB to ${destPath}...`);
-  fs.mkdirSync(COPY_DEST, { recursive: true });
-  fs.copyFileSync(DB_PATH, destPath);
+  console.log(`\n📦 Publishing DB to ${OUTPUT_DB}...`);
+  const previous = `${OUTPUT_DB}.seed.previous`;
+  fs.rmSync(previous, { force: true });
+  for (const file of [`${OUTPUT_DB}-wal`, `${OUTPUT_DB}-shm`]) {
+    fs.rmSync(file, { force: true });
+  }
+  if (fs.existsSync(OUTPUT_DB)) fs.renameSync(OUTPUT_DB, previous);
+  try {
+    fs.renameSync(DB_PATH, OUTPUT_DB);
+    fs.rmSync(previous, { force: true });
+  } catch (error) {
+    if (fs.existsSync(previous)) fs.renameSync(previous, OUTPUT_DB);
+    throw error;
+  } finally {
+    for (const file of [DB_PATH, `${DB_PATH}-wal`, `${DB_PATH}-shm`]) {
+      fs.rmSync(file, { force: true });
+    }
+  }
   console.log('   ✅ Done');
 }
 

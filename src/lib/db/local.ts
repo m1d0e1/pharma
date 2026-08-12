@@ -162,7 +162,9 @@ export function initLocalDb() {
     { name: 'scientific_group', type: 'TEXT' },
     { name: 'usage_method', type: 'TEXT' },
     { name: 'active_ingredient_ratio', type: 'TEXT' },
-    { name: 'is_table', type: 'INTEGER DEFAULT 0' }
+    { name: 'is_table', type: 'INTEGER DEFAULT 0' },
+    { name: 'indications', type: 'TEXT' },
+    { name: 'side_effects', type: 'TEXT' }
   ];
 
   for (const col of requiredColumns) {
@@ -173,50 +175,6 @@ export function initLocalDb() {
         console.error(`Failed to add column ${col.name}:`, e);
       }
     }
-  }
-
-  // FTS5 Implementation for fast searching
-  try {
-    db.exec(`
-      CREATE VIRTUAL TABLE IF NOT EXISTS master_drugs_fts USING fts5(
-        id UNINDEXED,
-        trade_name,
-        trade_name_en,
-        generic_name,
-        active_ingredient,
-        content='master_drugs',
-        content_rowid='id'
-      );
-
-      -- Triggers to keep FTS index in sync
-      CREATE TRIGGER IF NOT EXISTS master_drugs_ai AFTER INSERT ON master_drugs BEGIN
-        INSERT INTO master_drugs_fts(rowid, trade_name, trade_name_en, generic_name, active_ingredient)
-        VALUES (new.id, new.trade_name, new.trade_name_en, new.generic_name, new.active_ingredient);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS master_drugs_ad AFTER DELETE ON master_drugs BEGIN
-        INSERT INTO master_drugs_fts(master_drugs_fts, rowid, trade_name, trade_name_en, generic_name, active_ingredient)
-        VALUES('delete', old.id, old.trade_name, old.trade_name_en, old.generic_name, old.active_ingredient);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS master_drugs_au AFTER UPDATE ON master_drugs BEGIN
-        INSERT INTO master_drugs_fts(master_drugs_fts, rowid, trade_name, trade_name_en, generic_name, active_ingredient)
-        VALUES('delete', old.id, old.trade_name, old.trade_name_en, old.generic_name, old.active_ingredient);
-        INSERT INTO master_drugs_fts(rowid, trade_name, trade_name_en, generic_name, active_ingredient)
-        VALUES (new.id, new.trade_name, new.trade_name_en, new.generic_name, new.active_ingredient);
-      END;
-    `);
-
-    // Initial sync if FTS table is empty
-    const ftsCount = db.prepare("SELECT count(*) as count FROM master_drugs_fts").get() as any;
-    if (ftsCount.count === 0) {
-      db.exec(`
-      INSERT INTO master_drugs_fts(rowid, trade_name, trade_name_en, generic_name, active_ingredient)
-      SELECT id, trade_name, trade_name_en, generic_name, active_ingredient FROM master_drugs;
-      `);
-    }
-  } catch (e) {
-    console.error("FTS5 Setup Error (might not be supported):", e);
   }
 
   db.exec(`
@@ -320,20 +278,6 @@ export function initLocalDb() {
     }
   }
 
-  // Migration: Add strips_per_box to purchase_invoice_items if missing
-  const piiColInfo = db.prepare("PRAGMA table_info(purchase_invoice_items)").all() as any[];
-  if (!piiColInfo.some(c => c.name === 'strips_per_box')) {
-    try { db.exec('ALTER TABLE purchase_invoice_items ADD COLUMN strips_per_box INTEGER DEFAULT 1'); } catch (e: any) {
-      if (!e.message.includes('duplicate column name')) throw e;
-    }
-  }
-  if (!piiColInfo.some(c => c.name === 'inventory_id')) {
-    try { db.exec('ALTER TABLE purchase_invoice_items ADD COLUMN inventory_id TEXT REFERENCES inventory(id) ON DELETE SET NULL'); } catch (e: any) {
-      if (!e.message.includes('duplicate column name')) throw e;
-    }
-  }
-
-
   db.exec(`
     CREATE TABLE IF NOT EXISTS sales_invoices (
       id TEXT PRIMARY KEY,
@@ -436,9 +380,11 @@ export function initLocalDb() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       return_id TEXT NOT NULL,
       inventory_id TEXT,
+      drug_id INTEGER,
       drug_name TEXT,
-      quantity_returned INTEGER,
+      quantity_returned REAL,
       unit_price REAL,
+      total_price REAL,
       sale_item_id INTEGER,
       unit TEXT
     );
@@ -619,6 +565,7 @@ export function initLocalDb() {
       discount_percent REAL DEFAULT 0,
       tax_percent REAL DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (supplier_id) REFERENCES suppliers (id)
     );
 
@@ -636,6 +583,7 @@ export function initLocalDb() {
       discount_percent REAL DEFAULT 0,
       strips_per_box INTEGER DEFAULT 1,
       inventory_id TEXT,
+      barcode TEXT,
       FOREIGN KEY (invoice_id) REFERENCES purchase_invoices (id),
       FOREIGN KEY (drug_id) REFERENCES master_drugs (id),
       FOREIGN KEY (inventory_id) REFERENCES inventory (id) ON DELETE SET NULL
@@ -857,7 +805,8 @@ export function initLocalDb() {
     { name: 'discount_value', type: 'REAL DEFAULT 0' },
     { name: 'discount_percent', type: 'REAL DEFAULT 0' },
     { name: 'tax_percent', type: 'REAL DEFAULT 0' },
-    { name: 'status', type: "TEXT DEFAULT 'pending'" }
+    { name: 'status', type: "TEXT DEFAULT 'pending'" },
+    { name: 'updated_at', type: 'DATETIME' }
   ];
 
   for (const col of requiredPurchaseCols) {
@@ -879,6 +828,18 @@ export function initLocalDb() {
       if (!e.message.includes('duplicate column name')) throw e;
     }
   };
+
+  const purchaseItemColumns = db.prepare("PRAGMA table_info(purchase_invoice_items)").all() as any[];
+  for (const col of [
+    { name: 'strips_per_box', type: 'INTEGER DEFAULT 1' },
+    { name: 'inventory_id', type: 'TEXT' },
+    { name: 'barcode', type: 'TEXT' }
+  ]) {
+    if (!purchaseItemColumns.some(c => c.name === col.name)) {
+      addColumnSafely('purchase_invoice_items', col.name, col.type);
+    }
+  }
+  db.exec('UPDATE purchase_invoices SET updated_at = COALESCE(updated_at, created_at, CURRENT_TIMESTAMP) WHERE updated_at IS NULL');
 
   addColumnSafely('master_drugs', 'has_expiry', 'INTEGER DEFAULT 1');
   addColumnSafely('sales_items', 'cost_price', 'REAL DEFAULT 0');
@@ -924,6 +885,12 @@ export function initLocalDb() {
   }
   if (!returnItemColumns.some(c => c.name === 'unit')) {
     addColumnSafely('return_items', 'unit', 'TEXT');
+  }
+  if (!returnItemColumns.some(c => c.name === 'drug_id')) {
+    addColumnSafely('return_items', 'drug_id', 'INTEGER');
+  }
+  if (!returnItemColumns.some(c => c.name === 'total_price')) {
+    addColumnSafely('return_items', 'total_price', 'REAL');
   }
 
   const purchaseReturnColumns = db.prepare("PRAGMA table_info(purchase_returns)").all() as any[];
@@ -1060,6 +1027,43 @@ export function initLocalDb() {
     } catch (e) {
       console.warn('Failed to seed trial_balance_settings:', e);
     }
+  }
+
+  // Keep patient accounting mappings available on both fresh databases and
+  // databases created before the patient-accounting migration.  The generic
+  // fallbacks used by the actions point at core accounts, so silently missing
+  // mappings would otherwise post wallet/opening-balance entries to unrelated
+  // ledgers (for example A/P or Sales Revenue).
+  try {
+    db.exec(`
+      INSERT OR IGNORE INTO accounts (code, name_ar, name_en, type, is_group) VALUES
+        ('1.1.4', 'تسويات البنوك', 'Bank Clearing', 'asset', 0),
+        ('2.2', 'أرصدة محافظ العملاء', 'Patient Wallet Liability', 'liability', 0),
+        ('4.2', 'تسويات حسابات العملاء', 'Customer Adjustments', 'expense', 0),
+        ('3.9', 'حقوق ملكية الأرصدة الافتتاحية', 'Opening Balance Equity', 'equity', 0);
+
+      INSERT INTO trial_balance_settings (category, target_type, account_id)
+      SELECT 'bank_clearing', 'account', id FROM accounts
+      WHERE code = '1.1.4'
+        AND NOT EXISTS (SELECT 1 FROM trial_balance_settings WHERE category = 'bank_clearing');
+
+      INSERT INTO trial_balance_settings (category, target_type, account_id)
+      SELECT 'patient_wallet_liability', 'account', id FROM accounts
+      WHERE code = '2.2'
+        AND NOT EXISTS (SELECT 1 FROM trial_balance_settings WHERE category = 'patient_wallet_liability');
+
+      INSERT INTO trial_balance_settings (category, target_type, account_id)
+      SELECT 'customer_adjustments', 'account', id FROM accounts
+      WHERE code = '4.2'
+        AND NOT EXISTS (SELECT 1 FROM trial_balance_settings WHERE category = 'customer_adjustments');
+
+      INSERT INTO trial_balance_settings (category, target_type, account_id)
+      SELECT 'opening_balance_equity', 'account', id FROM accounts
+      WHERE code = '3.9'
+        AND NOT EXISTS (SELECT 1 FROM trial_balance_settings WHERE category = 'opening_balance_equity');
+    `);
+  } catch (e) {
+    console.warn('Failed to ensure patient accounting mappings:', e);
   }
 
   // Apply performance indexes

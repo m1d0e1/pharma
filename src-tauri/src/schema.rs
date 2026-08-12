@@ -1,0 +1,1187 @@
+use sqlx::sqlite::SqliteConnectOptions;
+use sqlx::{Connection, Row, Sqlite, SqliteConnection, Transaction};
+use std::path::Path;
+use std::str::FromStr;
+use tauri::Manager;
+
+#[allow(dead_code)]
+struct ChecksumRepair {
+    version: i64,
+    current: &'static str,
+    legacy: &'static [&'static str],
+}
+
+const CHECKSUM_REPAIRS: &[ChecksumRepair] = &[
+    ChecksumRepair {
+        version: 1,
+        current: "6EF41382A6590B2E6A487DB0D9560F9F826E203BA07ED7065E71016C53083911A864F55EFA6C204DDA6272167F8E6BDC",
+        legacy: &[
+            "BEC57847DA8403B63C28258329D6F9EEEB7FC894B1496393DCBB6527AAB25D7045EFE661B6BE6473B68C6A579C49A153",
+            "F82014A0B12E5F2148E15B27514F88C074C127EA08140C38889D59CAC54695EF9BA4194FC77168A621732F9627A20AA2",
+            "78532E45F393BD746018E6EC48E3DD3D661145347E5A0716C28424B1347B2F3BD98F4C7B70C9562950286660AFA22B6C",
+            "2A80B93C05E98DF0C64648ED4C88215B5F0985853E4F389A2D2F82C721C7BDFA37823009D1FEA14B92E9AC979C0BB56A",
+            "DE4E784D7C8659F5683F96DBD3C66E62D5A5EE715EC147C9E5E17D6915A97CF583065DE96F58C54450DF785BD6854D42",
+        ],
+    },
+    ChecksumRepair {
+        version: 2,
+        current: "1D375CF6D1CC6170CA5EC70CE930AD0F9F4D6E0355E5A7ED2637E683D5721A96D62D53C37E573E260B617513DF883375",
+        legacy: &["EB5B98F60883978153907406799C9010EE82FD3B6233E54E3EF0ABE66C182CC4B967378D5C2F431F4180AE8544F7B049"],
+    },
+    ChecksumRepair {
+        version: 4,
+        current: "CF8CB76E3264BA762F3CC260B56FB253BEF65AD4C7B80D6E7DA2F950AB9AD5A88CB0DB45072EF2ECE5E3C553AD00D85F",
+        legacy: &["DC6E060272C078A60806DDBE5DBCC30F42837A45725E0A02163D72863B6F5523E2A51618D4215AEE0E3721748C90125D"],
+    },
+    ChecksumRepair {
+        version: 5,
+        current: "06CDB339DAF88B9A19B495D4F48AEB5450A3AEA9EE02BB36E69C6C4ABE3F7FA6BA4C0657841FEE7F0102ABFCC2115DC7",
+        legacy: &["5EDF8FB853589FF8E8C5DE39B9A3432B940C4DB1BC1F0A43438C2B14D376DB187063BDE0F6C55E34C4C2EE261AA3F5A7"],
+    },
+    ChecksumRepair {
+        version: 7,
+        current: "ADD70A4E03CA17C0E204F600C91803410D880921B6C6A2504D39309E684CA58B2B7B2CA683BDF3E1EB7ABA6EE96C64AE",
+        legacy: &["48DF50E8B76D93E61F77DEB39E7498CFA1D34B6A7AB76DC1E773320F1B1D448C43B191746F5958858AD1C6F75C6E6013"],
+    },
+];
+
+fn options(path: &Path) -> Result<SqliteConnectOptions, String> {
+    SqliteConnectOptions::from_str(&format!("sqlite:{}", path.display()))
+        .map(|options| options.create_if_missing(true).foreign_keys(true))
+        .map_err(|error| error.to_string())
+}
+
+async fn connect(path: &Path) -> Result<SqliteConnection, String> {
+    let mut connection = SqliteConnection::connect_with(&options(path)?)
+        .await
+        .map_err(|e| e.to_string())?;
+    sqlx::query("PRAGMA busy_timeout = 5000")
+        .execute(&mut connection)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(connection)
+}
+
+async fn table_exists(executor: &mut SqliteConnection, table: &str) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?)",
+    )
+    .bind(table)
+    .fetch_one(executor)
+    .await
+}
+
+async fn has_column(
+    transaction: &mut Transaction<'_, Sqlite>,
+    table: &str,
+    column: &str,
+) -> Result<bool, sqlx::Error> {
+    let rows = sqlx::query(&format!("PRAGMA table_info({table})"))
+        .fetch_all(&mut **transaction)
+        .await?;
+    Ok(rows
+        .iter()
+        .any(|row| row.get::<String, _>("name") == column))
+}
+
+async fn add_column(
+    transaction: &mut Transaction<'_, Sqlite>,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<(), sqlx::Error> {
+    if !has_column(transaction, table, column).await? {
+        sqlx::raw_sql(&format!("ALTER TABLE {table} ADD COLUMN {definition}"))
+            .execute(&mut **transaction)
+            .await?;
+    }
+    Ok(())
+}
+
+async fn ensure_compatibility(
+    transaction: &mut Transaction<'_, Sqlite>,
+) -> Result<(), sqlx::Error> {
+    sqlx::raw_sql(
+        r#"
+        CREATE TABLE IF NOT EXISTS purchase_returns (
+          id TEXT PRIMARY KEY,
+          supplier_id INTEGER NOT NULL,
+          user_id TEXT NOT NULL,
+          purchase_invoice_id TEXT,
+          reason TEXT,
+          total_amount REAL,
+          refund_method TEXT DEFAULT 'credit',
+          status TEXT DEFAULT 'completed',
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (supplier_id) REFERENCES suppliers (id)
+        );
+
+        CREATE TABLE IF NOT EXISTS purchase_return_items (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          purchase_return_id TEXT NOT NULL,
+          inventory_id TEXT,
+          drug_id INTEGER,
+          drug_name TEXT,
+          quantity_returned INTEGER,
+          unit_price REAL,
+          total_price REAL,
+          reason TEXT,
+          purchase_invoice_item_id INTEGER,
+          unit TEXT DEFAULT 'large',
+          FOREIGN KEY (purchase_return_id) REFERENCES purchase_returns (id)
+        );
+
+        CREATE TABLE IF NOT EXISTS refill_reminders (
+          id TEXT PRIMARY KEY,
+          patient_id TEXT,
+          drug_id INTEGER,
+          last_sold_date TEXT,
+          next_refill_date TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (patient_id) REFERENCES patients (id),
+          FOREIGN KEY (drug_id) REFERENCES master_drugs (id)
+        );
+
+        CREATE TABLE IF NOT EXISTS patient_allergies (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          patient_id TEXT NOT NULL,
+          allergen TEXT NOT NULL,
+          severity TEXT DEFAULT 'moderate',
+          notes TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (patient_id) REFERENCES patients (id)
+        );
+
+        CREATE TABLE IF NOT EXISTS patient_conditions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          patient_id TEXT NOT NULL,
+          condition_name TEXT NOT NULL,
+          diagnosed_date TEXT,
+          medications TEXT,
+          notes TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (patient_id) REFERENCES patients (id)
+        );
+
+        CREATE TABLE IF NOT EXISTS patient_transactions (
+          id TEXT PRIMARY KEY,
+          patient_id TEXT NOT NULL,
+          user_id TEXT NOT NULL,
+          type TEXT NOT NULL,
+          amount REAL NOT NULL,
+          payment_method TEXT DEFAULT 'cash',
+          notes TEXT,
+          date TEXT NOT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (patient_id) REFERENCES patients (id),
+          FOREIGN KEY (user_id) REFERENCES users (id)
+        );
+
+        CREATE TABLE IF NOT EXISTS financial_notices (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          target_type TEXT NOT NULL,
+          target_id TEXT,
+          type TEXT NOT NULL,
+          amount REAL NOT NULL,
+          reason TEXT,
+          notes TEXT,
+          date TEXT NOT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (user_id) REFERENCES users (id)
+        );
+
+        CREATE TABLE IF NOT EXISTS cash_movements (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          shift_id TEXT,
+          type TEXT NOT NULL,
+          category TEXT NOT NULL,
+          sub_category TEXT,
+          amount REAL NOT NULL,
+          source_type TEXT,
+          target_name TEXT,
+          notes TEXT,
+          date TEXT NOT NULL,
+          actual_date TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (user_id) REFERENCES users (id),
+          FOREIGN KEY (shift_id) REFERENCES shifts (id)
+        );
+        "#,
+    )
+    .execute(&mut **transaction)
+    .await?;
+
+    for (table, column, definition) in [
+        ("master_drugs", "base_price", "base_price REAL DEFAULT 0"),
+        ("master_drugs", "code_2", "code_2 TEXT"),
+        ("master_drugs", "item_nature", "item_nature TEXT"),
+        ("master_drugs", "scientific_group", "scientific_group TEXT"),
+        ("master_drugs", "usage_method", "usage_method TEXT"),
+        (
+            "master_drugs",
+            "active_ingredient_ratio",
+            "active_ingredient_ratio TEXT",
+        ),
+        ("master_drugs", "is_table", "is_table INTEGER DEFAULT 0"),
+        ("master_drugs", "indications", "indications TEXT"),
+        ("master_drugs", "side_effects", "side_effects TEXT"),
+        ("return_items", "drug_id", "drug_id INTEGER"),
+        ("return_items", "total_price", "total_price REAL"),
+        ("return_items", "sale_item_id", "sale_item_id INTEGER"),
+        ("return_items", "unit", "unit TEXT DEFAULT 'large'"),
+        ("purchase_invoices", "updated_at", "updated_at DATETIME"),
+        (
+            "purchase_invoice_items",
+            "strips_per_box",
+            "strips_per_box INTEGER DEFAULT 1",
+        ),
+        (
+            "purchase_invoice_items",
+            "inventory_id",
+            "inventory_id TEXT",
+        ),
+        ("purchase_invoice_items", "barcode", "barcode TEXT"),
+        (
+            "purchase_returns",
+            "purchase_invoice_id",
+            "purchase_invoice_id TEXT",
+        ),
+        (
+            "purchase_return_items",
+            "purchase_invoice_item_id",
+            "purchase_invoice_item_id INTEGER",
+        ),
+        ("purchase_return_items", "unit", "unit TEXT DEFAULT 'large'"),
+        (
+            "patients",
+            "opening_balance",
+            "opening_balance REAL DEFAULT 0",
+        ),
+        (
+            "patients",
+            "wallet_balance",
+            "wallet_balance REAL DEFAULT 0",
+        ),
+        (
+            "patients",
+            "points_balance",
+            "points_balance REAL DEFAULT 0",
+        ),
+        ("financial_notices", "target_type", "target_type TEXT"),
+        ("financial_notices", "target_id", "target_id TEXT"),
+        ("cash_movements", "source_type", "source_type TEXT"),
+        ("cash_movements", "target_name", "target_name TEXT"),
+    ] {
+        add_column(transaction, table, column, definition).await?;
+    }
+
+    sqlx::raw_sql(
+        r#"
+        UPDATE purchase_invoices
+        SET updated_at = COALESCE(updated_at, created_at, CURRENT_TIMESTAMP)
+        WHERE updated_at IS NULL;
+
+        CREATE TRIGGER IF NOT EXISTS purchase_invoices_set_updated_at
+        AFTER INSERT ON purchase_invoices
+        WHEN NEW.updated_at IS NULL
+        BEGIN
+          UPDATE purchase_invoices SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+        END;
+
+        CREATE INDEX IF NOT EXISTS idx_activity_log_created_at ON activity_log(created_at);
+        CREATE INDEX IF NOT EXISTS idx_activity_log_action ON activity_log(action);
+        CREATE INDEX IF NOT EXISTS idx_shifts_status ON shifts(status);
+        CREATE INDEX IF NOT EXISTS idx_shifts_user_status ON shifts(user_id, status) WHERE status = 'open';
+        CREATE INDEX IF NOT EXISTS idx_purchase_items_inventory_id ON purchase_invoice_items(inventory_id);
+
+        -- Old completed receipts predate inventory_id. Prefer their exact receipt
+        -- batch; otherwise link only one unambiguous, sufficiently stocked lot.
+        UPDATE purchase_invoice_items
+        SET inventory_id = (
+          SELECT MIN(i.id)
+          FROM purchase_invoices pi
+          JOIN inventory i
+            ON i.drug_id = purchase_invoice_items.drug_id
+           AND COALESCE(NULLIF(TRIM(i.pharmacy_id), ''), 'local_default') =
+               COALESCE(NULLIF(TRIM(pi.pharmacy_id), ''), 'local_default')
+           AND COALESCE(
+                 CASE WHEN i.expiry_date LIKE '__/__/____'
+                      THEN substr(i.expiry_date, 7, 4) || '-' || substr(i.expiry_date, 4, 2) || '-' || substr(i.expiry_date, 1, 2)
+                      ELSE NULLIF(TRIM(i.expiry_date), '') END,
+                 ''
+               ) = COALESCE(
+                 CASE WHEN purchase_invoice_items.expiry_date LIKE '__/__/____'
+                      THEN substr(purchase_invoice_items.expiry_date, 7, 4) || '-' || substr(purchase_invoice_items.expiry_date, 4, 2) || '-' || substr(purchase_invoice_items.expiry_date, 1, 2)
+                      ELSE NULLIF(TRIM(purchase_invoice_items.expiry_date), '') END,
+                 ''
+               )
+           AND NULLIF(TRIM(i.batch_number), '') = COALESCE(
+                 NULLIF(TRIM(pi.invoice_number), ''),
+                 'BATCH-' || substr(pi.id, 1, 8)
+               )
+          WHERE pi.id = purchase_invoice_items.invoice_id
+            AND LOWER(COALESCE(pi.status, '')) = 'completed'
+          HAVING COUNT(*) = 1
+        )
+        WHERE inventory_id IS NULL;
+
+        -- ponytail: ambiguity is safer than a wrong historical link. If several
+        -- compatible lots exist, leave the receipt unlinked for manual resolution.
+        UPDATE purchase_invoice_items
+        SET inventory_id = (
+          SELECT MIN(i.id)
+          FROM purchase_invoices pi
+          JOIN inventory i
+            ON i.drug_id = purchase_invoice_items.drug_id
+           AND COALESCE(NULLIF(TRIM(i.pharmacy_id), ''), 'local_default') =
+               COALESCE(NULLIF(TRIM(pi.pharmacy_id), ''), 'local_default')
+           AND COALESCE(
+                 CASE WHEN i.expiry_date LIKE '__/__/____'
+                      THEN substr(i.expiry_date, 7, 4) || '-' || substr(i.expiry_date, 4, 2) || '-' || substr(i.expiry_date, 1, 2)
+                      ELSE NULLIF(TRIM(i.expiry_date), '') END,
+                 ''
+               ) = COALESCE(
+                 CASE WHEN purchase_invoice_items.expiry_date LIKE '__/__/____'
+                      THEN substr(purchase_invoice_items.expiry_date, 7, 4) || '-' || substr(purchase_invoice_items.expiry_date, 4, 2) || '-' || substr(purchase_invoice_items.expiry_date, 1, 2)
+                      ELSE NULLIF(TRIM(purchase_invoice_items.expiry_date), '') END,
+                 ''
+               )
+           AND CAST(i.quantity AS REAL) + 0.000001 >=
+               CAST(purchase_invoice_items.quantity + COALESCE(purchase_invoice_items.bonus_quantity, 0) AS REAL)
+          WHERE pi.id = purchase_invoice_items.invoice_id
+            AND LOWER(COALESCE(pi.status, '')) = 'completed'
+          HAVING COUNT(*) = 1
+        )
+        WHERE inventory_id IS NULL;
+
+        INSERT OR IGNORE INTO units (id, name_ar, name_en) VALUES
+          (1, 'علبة', 'Box'), (2, 'شريط', 'Strip'), (3, 'قرص', 'Pill'),
+          (4, 'كبسولة', 'Capsule'), (5, 'أمبول', 'Ampoule'), (6, 'فيال', 'Vial'),
+          (7, 'زجاجة', 'Bottle'), (8, 'أنبوبة', 'Tube'), (9, 'كيس', 'Sachet'),
+          (10, 'قطرة', 'Drops'), (11, 'حقنة', 'Syringe');
+
+        INSERT OR IGNORE INTO item_natures (id, name_ar, name_en) VALUES
+          (1, 'أدوية', 'Drugs'), (2, 'مستلزمات طبية', 'Medical Supplies'),
+          (3, 'مستحضرات تجميل', 'Cosmetics'), (4, 'أجهزة طبية', 'Medical Devices'),
+          (5, 'مكملات غذائية', 'Nutritional Supplements'), (6, 'مواد تعقيم', 'Disinfectants'),
+          (7, 'حفاضات ومستلزمات الأطفال', 'Baby Products'),
+          (8, 'منتجات الأم والطفل', 'Mother & Baby Care');
+        "#,
+    )
+    .execute(&mut **transaction)
+    .await?;
+
+    // Seed rows added to old migrations are not replayed on upgrades. Keep every
+    // account used by purchase/POS transactions self-healing on each startup.
+    sqlx::raw_sql(
+        r#"
+        INSERT OR IGNORE INTO accounts (code, name_ar, name_en, type, is_group) VALUES
+          ('1.1.1', 'الصندوق', 'Cash Drawer', 'asset', 0),
+          ('2.1', 'دائنون', 'Accounts Payable', 'liability', 0),
+          ('1.1.2', 'حسابات العملاء', 'Accounts Receivable', 'asset', 0),
+          ('3.1', 'إيرادات المبيعات', 'Sales Revenue', 'revenue', 0),
+          ('1.1.3', 'المخزون السلعي', 'Inventory Asset', 'asset', 0),
+          ('4.1', 'تكلفة البضاعة المباعة', 'Cost of Goods Sold', 'expense', 0),
+          ('1.1.4', 'تسويات البنوك', 'Bank Clearing', 'asset', 0),
+          ('2.2', 'أرصدة محافظ العملاء', 'Patient Wallet Liability', 'liability', 0),
+          ('4.2', 'تسويات حسابات العملاء', 'Customer Adjustments', 'expense', 0),
+          ('3.9', 'حقوق ملكية الأرصدة الافتتاحية', 'Opening Balance Equity', 'equity', 0);
+
+        WITH required(category, code) AS (VALUES
+          ('cash_drawer', '1.1.1'),
+          ('accounts_payable', '2.1'),
+          ('accounts_receivable', '1.1.2'),
+          ('sales_revenue', '3.1'),
+          ('inventory_asset', '1.1.3'),
+          ('cogs_expense', '4.1'),
+          ('bank_clearing', '1.1.4'),
+          ('patient_wallet_liability', '2.2'),
+          ('customer_adjustments', '4.2'),
+          ('opening_balance_equity', '3.9')
+        )
+        UPDATE trial_balance_settings
+        SET account_id = (
+          SELECT a.id FROM required r JOIN accounts a ON a.code = r.code
+          WHERE r.category = trial_balance_settings.category
+        )
+        WHERE category IN (SELECT category FROM required)
+          AND COALESCE(
+                (SELECT a.code FROM accounts a WHERE a.id = trial_balance_settings.account_id),
+                ''
+              ) <> (SELECT r.code FROM required r WHERE r.category = trial_balance_settings.category);
+
+        WITH required(category, code) AS (VALUES
+          ('cash_drawer', '1.1.1'),
+          ('accounts_payable', '2.1'),
+          ('accounts_receivable', '1.1.2'),
+          ('sales_revenue', '3.1'),
+          ('inventory_asset', '1.1.3'),
+          ('cogs_expense', '4.1'),
+          ('bank_clearing', '1.1.4'),
+          ('patient_wallet_liability', '2.2'),
+          ('customer_adjustments', '4.2'),
+          ('opening_balance_equity', '3.9')
+        )
+        INSERT INTO trial_balance_settings (category, target_type, account_id)
+        SELECT r.category, 'account', a.id
+        FROM required r JOIN accounts a ON a.code = r.code
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM trial_balance_settings s JOIN accounts mapped ON mapped.id = s.account_id
+          WHERE s.category = r.category
+        );
+        "#,
+    )
+    .execute(&mut **transaction)
+    .await?;
+
+    Ok(())
+}
+
+async fn prepare_connection(connection: &mut SqliteConnection) -> Result<(), String> {
+    if !table_exists(connection, "_sqlx_migrations")
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        // Bundled and pre-plugin databases have a complete schema but no migration
+        // ledger. Repair those; let the plugin initialize a genuinely blank file.
+        if !table_exists(connection, "purchase_invoices")
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            return Ok(());
+        }
+        let mut transaction = connection.begin().await.map_err(|e| e.to_string())?;
+        ensure_compatibility(&mut transaction)
+            .await
+            .map_err(|e| e.to_string())?;
+        return transaction.commit().await.map_err(|e| e.to_string());
+    }
+
+    let applied = sqlx::query(
+        "SELECT version, hex(checksum) AS checksum FROM _sqlx_migrations WHERE success = 1",
+    )
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(|e| e.to_string())?;
+    let mut repairs = Vec::new();
+    for row in applied {
+        let version = row.get::<i64, _>("version");
+        let checksum = row.get::<String, _>("checksum");
+        let Some(repair) = CHECKSUM_REPAIRS
+            .iter()
+            .find(|repair| repair.version == version)
+        else {
+            continue;
+        };
+        if checksum == repair.current {
+            continue;
+        }
+        repairs.push((repair, checksum));
+    }
+    let mut transaction = connection.begin().await.map_err(|e| e.to_string())?;
+    ensure_compatibility(&mut transaction)
+        .await
+        .map_err(|e| e.to_string())?;
+    for (repair, checksum) in repairs {
+        sqlx::query(&format!(
+            "UPDATE _sqlx_migrations SET checksum = X'{}' WHERE version = ? AND hex(checksum) = ?",
+            repair.current
+        ))
+        .bind(repair.version)
+        .bind(checksum)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+    transaction.commit().await.map_err(|e| e.to_string())
+}
+
+pub fn prepare_legacy_database(path: &Path) -> Result<(), String> {
+    tauri::async_runtime::block_on(async {
+        let mut connection = connect(path).await?;
+        prepare_connection(&mut connection).await
+    })
+}
+
+#[tauri::command]
+pub fn ensure_schema_compatibility(app: tauri::AppHandle) -> Result<(), String> {
+    let path = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("pharma_local.db");
+    tauri::async_runtime::block_on(async {
+        let mut connection = connect(&path).await?;
+        let mut transaction = connection.begin().await.map_err(|e| e.to_string())?;
+        ensure_compatibility(&mut transaction)
+            .await
+            .map_err(|e| e.to_string())?;
+        transaction.commit().await.map_err(|e| e.to_string())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn upgrades_v014_schema_and_normalizes_its_checksum() {
+        let mut connection = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        sqlx::raw_sql(
+            r#"
+            CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT);
+            CREATE TABLE master_drugs (id INTEGER PRIMARY KEY, trade_name TEXT NOT NULL);
+            CREATE TABLE suppliers (id INTEGER PRIMARY KEY);
+            CREATE TABLE users (id TEXT PRIMARY KEY);
+            CREATE TABLE patients (id TEXT PRIMARY KEY, full_name TEXT NOT NULL);
+            CREATE TABLE sales_invoices (id TEXT PRIMARY KEY, patient_id TEXT);
+            CREATE TABLE return_items (id INTEGER PRIMARY KEY);
+            CREATE TABLE inventory (
+              id TEXT PRIMARY KEY,
+              drug_id INTEGER,
+              pharmacy_id TEXT,
+              quantity REAL,
+              expiry_date TEXT,
+              batch_number TEXT
+            );
+            CREATE TABLE purchase_invoices (
+              id TEXT PRIMARY KEY,
+              pharmacy_id TEXT,
+              invoice_number TEXT,
+              status TEXT,
+              created_at DATETIME
+            );
+            CREATE TABLE purchase_invoice_items (
+              id INTEGER PRIMARY KEY,
+              invoice_id TEXT,
+              drug_id INTEGER,
+              quantity REAL,
+              bonus_quantity REAL,
+              expiry_date TEXT
+            );
+            CREATE TABLE activity_log (id INTEGER PRIMARY KEY, action TEXT, created_at DATETIME);
+            CREATE TABLE shifts (id TEXT PRIMARY KEY, user_id TEXT, status TEXT);
+            CREATE TABLE units (id INTEGER PRIMARY KEY, name_ar TEXT, name_en TEXT);
+            CREATE TABLE item_natures (id INTEGER PRIMARY KEY, name_ar TEXT, name_en TEXT);
+            CREATE TABLE accounts (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              code TEXT NOT NULL UNIQUE,
+              name_ar TEXT NOT NULL,
+              name_en TEXT,
+              type TEXT NOT NULL,
+              is_group INTEGER DEFAULT 0
+            );
+            CREATE TABLE trial_balance_settings (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              category TEXT NOT NULL UNIQUE,
+              target_type TEXT NOT NULL,
+              account_id INTEGER
+            );
+            INSERT INTO accounts (code, name_ar, name_en, type, is_group)
+            VALUES ('9.9', 'Legacy account', 'Legacy account', 'asset', 0);
+            INSERT INTO trial_balance_settings (category, target_type, account_id)
+            SELECT 'legacy_setting', 'account', id FROM accounts WHERE code = '9.9';
+            CREATE TABLE _sqlx_migrations (
+              version BIGINT PRIMARY KEY,
+              description TEXT NOT NULL,
+              installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              success BOOLEAN NOT NULL,
+              checksum BLOB NOT NULL,
+              execution_time BIGINT NOT NULL
+            );
+            INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
+            VALUES (1, 'initial_schema', 1, X'F82014A0B12E5F2148E15B27514F88C074C127EA08140C38889D59CAC54695EF9BA4194FC77168A621732F9627A20AA2', 0);
+            INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
+            VALUES (2, 'performance_tuning', 1, X'EB5B98F60883978153907406799C9010EE82FD3B6233E54E3EF0ABE66C182CC4B967378D5C2F431F4180AE8544F7B049', 0);
+            INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
+            VALUES (4, 'return_items_patch', 1, X'DC6E060272C078A60806DDBE5DBCC30F42837A45725E0A02163D72863B6F5523E2A51618D4215AEE0E3721748C90125D', 0);
+            INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
+            VALUES (5, 'purchase_return_details', 1, X'5EDF8FB853589FF8E8C5DE39B9A3432B940C4DB1BC1F0A43438C2B14D376DB187063BDE0F6C55E34C4C2EE261AA3F5A7', 0);
+            INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
+            VALUES (7, 'purchase_inventory_links', 1, X'48DF50E8B76D93E61F77DEB39E7498CFA1D34B6A7AB76DC1E773320F1B1D448C43B191746F5958858AD1C6F75C6E6013', 0);
+            "#,
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+
+        prepare_connection(&mut connection).await.unwrap();
+
+        for repair in CHECKSUM_REPAIRS {
+            let checksum: String =
+                sqlx::query_scalar("SELECT hex(checksum) FROM _sqlx_migrations WHERE version = ?")
+                    .bind(repair.version)
+                    .fetch_one(&mut connection)
+                    .await
+                    .unwrap();
+            assert_eq!(checksum, repair.current);
+        }
+
+        let mut transaction = connection.begin().await.unwrap();
+        ensure_compatibility(&mut transaction).await.unwrap();
+        transaction.commit().await.unwrap();
+
+        for (table, column) in [
+            ("master_drugs", "base_price"),
+            ("master_drugs", "indications"),
+            ("return_items", "sale_item_id"),
+            ("purchase_invoice_items", "barcode"),
+            ("purchase_returns", "purchase_invoice_id"),
+            ("patients", "opening_balance"),
+            ("patients", "wallet_balance"),
+            ("patients", "points_balance"),
+            ("financial_notices", "target_type"),
+            ("financial_notices", "target_id"),
+            ("cash_movements", "source_type"),
+            ("cash_movements", "target_name"),
+        ] {
+            let rows = sqlx::query(&format!("PRAGMA table_info({table})"))
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
+            assert_eq!(rows.get::<String, _>("name"), "id");
+            let mut transaction = connection.begin().await.unwrap();
+            assert!(has_column(&mut transaction, table, column).await.unwrap());
+            transaction.commit().await.unwrap();
+        }
+
+        for (category, code) in [
+            ("bank_clearing", "1.1.4"),
+            ("patient_wallet_liability", "2.2"),
+            ("customer_adjustments", "4.2"),
+            ("opening_balance_equity", "3.9"),
+        ] {
+            let mapped_code: String = sqlx::query_scalar(
+                "SELECT a.code FROM trial_balance_settings s JOIN accounts a ON a.id = s.account_id WHERE s.category = ?",
+            )
+            .bind(category)
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+            assert_eq!(mapped_code, code);
+        }
+
+        for table in [
+            "refill_reminders",
+            "patient_allergies",
+            "patient_conditions",
+            "patient_transactions",
+            "financial_notices",
+            "cash_movements",
+        ] {
+            assert!(
+                table_exists(&mut connection, table).await.unwrap(),
+                "{table}"
+            );
+        }
+
+        sqlx::query(
+            "INSERT INTO patients (id, full_name) VALUES ('legacy-patient', 'Legacy Patient')",
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+        let patient_balances = sqlx::query(
+            "SELECT opening_balance, wallet_balance, points_balance FROM patients WHERE id = 'legacy-patient'",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(patient_balances.get::<f64, _>("opening_balance"), 0.0);
+        assert_eq!(patient_balances.get::<f64, _>("wallet_balance"), 0.0);
+        assert_eq!(patient_balances.get::<f64, _>("points_balance"), 0.0);
+
+        // A later startup with already-normalized checksums must still repair schema drift.
+        sqlx::query("ALTER TABLE master_drugs DROP COLUMN side_effects")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM trial_balance_settings WHERE category = 'bank_clearing'")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM accounts WHERE code = '1.1.4'")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        prepare_connection(&mut connection).await.unwrap();
+        let mut transaction = connection.begin().await.unwrap();
+        assert!(has_column(&mut transaction, "master_drugs", "side_effects")
+            .await
+            .unwrap());
+        transaction.commit().await.unwrap();
+        let bank_mapping_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM trial_balance_settings s JOIN accounts a ON a.id = s.account_id WHERE s.category = 'bank_clearing' AND a.code = '1.1.4'",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(bank_mapping_count, 1);
+    }
+
+    async fn representative_purchase_database(v239: bool) -> SqliteConnection {
+        let mut connection = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            r#"
+            CREATE TABLE users (id TEXT PRIMARY KEY);
+            CREATE TABLE master_drugs (
+              id INTEGER PRIMARY KEY,
+              trade_name TEXT NOT NULL,
+              large_to_medium INTEGER,
+              medium_to_small INTEGER
+            );
+            CREATE TABLE inventory (
+              id TEXT PRIMARY KEY,
+              drug_id INTEGER,
+              pharmacy_id TEXT,
+              quantity INTEGER DEFAULT 0,
+              local_selling_price REAL,
+              cost_price REAL DEFAULT 0,
+              expiry_date TEXT,
+              barcode TEXT,
+              batch_number TEXT,
+              min_stock_level INTEGER DEFAULT 10,
+              supplier TEXT,
+              unit_price REAL DEFAULT 0,
+              created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+              strips_per_box INTEGER DEFAULT 1,
+              FOREIGN KEY (drug_id) REFERENCES master_drugs (id)
+            );
+            CREATE TABLE suppliers (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              name_ar TEXT NOT NULL,
+              balance REAL DEFAULT 0
+            );
+            CREATE TABLE purchase_invoices (
+              id TEXT PRIMARY KEY,
+              supplier_id INTEGER NOT NULL,
+              pharmacy_id TEXT,
+              user_id TEXT,
+              invoice_number TEXT,
+              invoice_date TEXT,
+              total_amount REAL DEFAULT 0,
+              paid_amount REAL DEFAULT 0,
+              payment_method TEXT DEFAULT 'credit',
+              status TEXT DEFAULT 'pending',
+              notes TEXT,
+              check_number TEXT,
+              expenses REAL DEFAULT 0,
+              discount_value REAL DEFAULT 0,
+              discount_percent REAL DEFAULT 0,
+              tax_percent REAL DEFAULT 0,
+              created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+              FOREIGN KEY (supplier_id) REFERENCES suppliers (id),
+              FOREIGN KEY (user_id) REFERENCES users (id)
+            );
+            CREATE TABLE supplier_transactions (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              supplier_id INTEGER NOT NULL,
+              type TEXT NOT NULL,
+              amount REAL NOT NULL,
+              reference_id TEXT,
+              notes TEXT,
+              FOREIGN KEY (supplier_id) REFERENCES suppliers (id)
+            );
+            CREATE TABLE accounts (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              code TEXT NOT NULL UNIQUE,
+              name_ar TEXT NOT NULL,
+              name_en TEXT,
+              type TEXT NOT NULL,
+              is_group INTEGER DEFAULT 0
+            );
+            CREATE TABLE trial_balance_settings (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              category TEXT NOT NULL,
+              target_type TEXT,
+              account_id INTEGER,
+              FOREIGN KEY (account_id) REFERENCES accounts (id)
+            );
+            CREATE TABLE daily_journals (
+              id TEXT PRIMARY KEY,
+              date TEXT NOT NULL,
+              description TEXT,
+              created_by TEXT,
+              total_amount REAL NOT NULL,
+              FOREIGN KEY (created_by) REFERENCES users (id)
+            );
+            CREATE TABLE journal_entries (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              journal_id TEXT NOT NULL,
+              account_id INTEGER NOT NULL,
+              type TEXT NOT NULL,
+              amount REAL NOT NULL,
+              FOREIGN KEY (journal_id) REFERENCES daily_journals (id),
+              FOREIGN KEY (account_id) REFERENCES accounts (id)
+            );
+            CREATE TABLE patients (id TEXT PRIMARY KEY, full_name TEXT NOT NULL);
+            CREATE TABLE sales_invoices (id TEXT PRIMARY KEY, patient_id TEXT);
+            CREATE TABLE return_items (id INTEGER PRIMARY KEY);
+            CREATE TABLE activity_log (id INTEGER PRIMARY KEY, action TEXT, created_at DATETIME);
+            CREATE TABLE shifts (id TEXT PRIMARY KEY, user_id TEXT, status TEXT);
+            CREATE TABLE units (id INTEGER PRIMARY KEY, name_ar TEXT, name_en TEXT);
+            CREATE TABLE item_natures (id INTEGER PRIMARY KEY, name_ar TEXT, name_en TEXT);
+            CREATE TABLE _sqlx_migrations (
+              version BIGINT PRIMARY KEY,
+              description TEXT NOT NULL,
+              installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              success BOOLEAN NOT NULL,
+              checksum BLOB NOT NULL,
+              execution_time BIGINT NOT NULL
+            );
+            "#,
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+
+        if v239 {
+            sqlx::raw_sql(
+                r#"
+                CREATE TABLE purchase_invoice_items (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  invoice_id TEXT NOT NULL,
+                  drug_id INTEGER NOT NULL,
+                  quantity INTEGER NOT NULL,
+                  unit_id INTEGER,
+                  expiry_date TEXT,
+                  cost_price REAL NOT NULL,
+                  selling_price REAL,
+                  bonus_quantity INTEGER DEFAULT 0,
+                  tax_percent REAL DEFAULT 0,
+                  discount_percent REAL DEFAULT 0,
+                  strips_per_box INTEGER DEFAULT 1,
+                  inventory_id TEXT,
+                  FOREIGN KEY (invoice_id) REFERENCES purchase_invoices (id),
+                  FOREIGN KEY (drug_id) REFERENCES master_drugs (id),
+                  FOREIGN KEY (inventory_id) REFERENCES inventory (id) ON DELETE SET NULL
+                );
+                CREATE TABLE purchase_returns (
+                  id TEXT PRIMARY KEY,
+                  supplier_id INTEGER NOT NULL,
+                  user_id TEXT NOT NULL,
+                  purchase_invoice_id TEXT,
+                  reason TEXT,
+                  total_amount REAL,
+                  refund_method TEXT DEFAULT 'credit',
+                  status TEXT DEFAULT 'completed',
+                  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                  FOREIGN KEY (supplier_id) REFERENCES suppliers (id)
+                );
+                CREATE TABLE purchase_return_items (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  purchase_return_id TEXT NOT NULL,
+                  inventory_id TEXT,
+                  drug_id INTEGER,
+                  drug_name TEXT,
+                  quantity_returned INTEGER,
+                  unit_price REAL,
+                  total_price REAL,
+                  reason TEXT,
+                  purchase_invoice_item_id INTEGER,
+                  unit TEXT DEFAULT 'large',
+                  FOREIGN KEY (purchase_return_id) REFERENCES purchase_returns (id)
+                );
+                INSERT INTO accounts (id, code, name_ar, name_en, type, is_group) VALUES
+                  (6, '1.1.1', 'Cash', 'Cash Drawer', 'asset', 0),
+                  (7, '2.1', 'Payable', 'Accounts Payable', 'liability', 0),
+                  (8, '1.1.2', 'Receivable', 'Accounts Receivable', 'asset', 0),
+                  (9, '3.1', 'Sales', 'Sales Revenue', 'revenue', 0),
+                  (10, '1.1.3', 'Inventory', 'Inventory Asset', 'asset', 0),
+                  (11, '4.1', 'COGS', 'Cost of Goods Sold', 'expense', 0);
+                INSERT INTO trial_balance_settings (category, target_type, account_id) VALUES
+                  ('cash_drawer', 'account', 6),
+                  ('accounts_receivable', 'account', 8),
+                  ('sales_revenue', 'account', 9),
+                  ('inventory_asset', 'account', 10),
+                  ('cogs_expense', 'account', 11);
+                INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES
+                  (1, 'initial_schema', 1, X'BEC57847DA8403B63C28258329D6F9EEEB7FC894B1496393DCBB6527AAB25D7045EFE661B6BE6473B68C6A579C49A153', 0),
+                  (2, 'performance_tuning', 1, X'1D375CF6D1CC6170CA5EC70CE930AD0F9F4D6E0355E5A7ED2637E683D5721A96D62D53C37E573E260B617513DF883375', 0),
+                  (3, 'sync_metadata', 1, X'AC4D263917A382C814AD54B4018090D5B867C42B949BAB27F208A1675F92DDB2B7DBA20363793E32F541509388D6A5F6', 0),
+                  (4, 'return_items_patch', 1, X'CF8CB76E3264BA762F3CC260B56FB253BEF65AD4C7B80D6E7DA2F950AB9AD5A88CB0DB45072EF2ECE5E3C553AD00D85F', 0),
+                  (5, 'purchase_return_details', 1, X'06CDB339DAF88B9A19B495D4F48AEB5450A3AEA9EE02BB36E69C6C4ABE3F7FA6BA4C0657841FEE7F0102ABFCC2115DC7', 0),
+                  (6, 'accounting_upgrade_seed', 1, X'8C1DEC5BFB088CCB52A98D085D81F34EFC948B37B2E6DE2946F067BAEA8D07F419C8E064553B850E9417EF03312E7D7A', 0),
+                  (7, 'purchase_inventory_links', 1, X'ADD70A4E03CA17C0E204F600C91803410D880921B6C6A2504D39309E684CA58B2B7B2CA683BDF3E1EB7ABA6EE96C64AE', 0),
+                  (8, 'patient_accounting', 1, X'09BB9D9AFA5BE22F074E9073ECEBA993227E4FE23CC90FEAB5F442B4A4FCD772456F4202856F49E6F653E4BFA8439D65', 0);
+                "#,
+            )
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        } else {
+            sqlx::raw_sql(
+                r#"
+                CREATE TABLE purchase_invoice_items (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  invoice_id TEXT NOT NULL,
+                  drug_id INTEGER NOT NULL,
+                  quantity INTEGER NOT NULL,
+                  unit_id INTEGER,
+                  expiry_date TEXT,
+                  cost_price REAL NOT NULL,
+                  selling_price REAL,
+                  bonus_quantity INTEGER DEFAULT 0,
+                  tax_percent REAL DEFAULT 0,
+                  discount_percent REAL DEFAULT 0,
+                  FOREIGN KEY (invoice_id) REFERENCES purchase_invoices (id),
+                  FOREIGN KEY (drug_id) REFERENCES master_drugs (id)
+                );
+                INSERT INTO accounts (id, code, name_ar, name_en, type, is_group)
+                VALUES (6, '9.9', 'Legacy account', 'Legacy account', 'asset', 0);
+                INSERT INTO trial_balance_settings (category, target_type, account_id)
+                VALUES ('cash_drawer', 'account', 6);
+                INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
+                VALUES (1, 'initial_schema', 1, X'78532E45F393BD746018E6EC48E3DD3D661145347E5A0716C28424B1347B2F3BD98F4C7B70C9562950286660AFA22B6C', 0);
+                "#,
+            )
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        }
+
+        sqlx::raw_sql(
+            r#"
+            INSERT INTO users (id) VALUES ('legacy-purchase-user');
+            INSERT INTO suppliers (id, name_ar, balance) VALUES (70, 'Legacy Supplier', 0);
+            INSERT INTO master_drugs (id, trade_name, large_to_medium, medium_to_small) VALUES
+              (9100, 'Exact legacy lot', 10, 1),
+              (9101, 'Unique fallback lot', 10, 1),
+              (9102, 'Ambiguous legacy lot', 10, 1);
+            INSERT INTO inventory
+              (id, drug_id, pharmacy_id, quantity, expiry_date, batch_number)
+            VALUES
+              ('legacy-exact', 9100, 'local_default', 6, '2028-12-31', 'LEGACY-EXACT'),
+              ('legacy-fallback', 9101, NULL, 8, '2028-12-31', 'OLD-BATCH'),
+              ('legacy-ambiguous-a', 9102, 'local_default', 6, '2028-12-31', 'OLD-A'),
+              ('legacy-ambiguous-b', 9102, 'local_default', 6, '2028-12-31', 'OLD-B');
+            INSERT INTO purchase_invoices
+              (id, supplier_id, pharmacy_id, user_id, invoice_number, invoice_date,
+               payment_method, status)
+            VALUES
+              ('legacy-exact-invoice', 70, NULL, 'legacy-purchase-user', 'LEGACY-EXACT', '2026-01-01', 'credit', 'completed'),
+              ('legacy-fallback-invoice', 70, 'local_default', 'legacy-purchase-user', 'NEW-BATCH', '2026-01-01', 'credit', 'completed'),
+              ('legacy-ambiguous-invoice', 70, 'local_default', 'legacy-purchase-user', 'NEW-AMBIGUOUS', '2026-01-01', 'credit', 'completed');
+            INSERT INTO purchase_invoice_items
+              (invoice_id, drug_id, quantity, expiry_date, cost_price, bonus_quantity)
+            VALUES
+              ('legacy-exact-invoice', 9100, 6, '31/12/2028', 10, 0),
+              ('legacy-fallback-invoice', 9101, 6, '31/12/2028', 10, 0),
+              ('legacy-ambiguous-invoice', 9102, 6, '31/12/2028', 10, 0);
+            "#,
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+        connection
+    }
+
+    #[tokio::test]
+    async fn upgraded_purchase_schemas_support_inventory_links_returns_and_accounting() {
+        for (label, v239) in [("v0.2.14", false), ("v0.2.39", true)] {
+            let mut connection = representative_purchase_database(v239).await;
+            prepare_connection(&mut connection).await.unwrap();
+
+            let linked_lots = sqlx::query(
+                "SELECT invoice_id, inventory_id FROM purchase_invoice_items WHERE invoice_id LIKE 'legacy-%' ORDER BY invoice_id",
+            )
+            .fetch_all(&mut connection)
+            .await
+            .unwrap();
+            let links: std::collections::HashMap<String, Option<String>> = linked_lots
+                .into_iter()
+                .map(|row| {
+                    (
+                        row.get::<String, _>("invoice_id"),
+                        row.try_get::<Option<String>, _>("inventory_id").unwrap(),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                links["legacy-exact-invoice"].as_deref(),
+                Some("legacy-exact")
+            );
+            assert_eq!(
+                links["legacy-fallback-invoice"].as_deref(),
+                Some("legacy-fallback")
+            );
+            assert_eq!(links["legacy-ambiguous-invoice"], None);
+
+            let mut transaction = connection.begin().await.unwrap();
+            for column in ["strips_per_box", "inventory_id", "barcode"] {
+                assert!(
+                    has_column(&mut transaction, "purchase_invoice_items", column)
+                        .await
+                        .unwrap(),
+                    "{label} is missing purchase_invoice_items.{column}"
+                );
+            }
+            assert!(
+                has_column(&mut transaction, "purchase_invoices", "updated_at")
+                    .await
+                    .unwrap(),
+                "{label} is missing purchase_invoices.updated_at"
+            );
+            transaction.commit().await.unwrap();
+
+            for (category, code) in [
+                ("cash_drawer", "1.1.1"),
+                ("accounts_payable", "2.1"),
+                ("accounts_receivable", "1.1.2"),
+                ("sales_revenue", "3.1"),
+                ("inventory_asset", "1.1.3"),
+                ("cogs_expense", "4.1"),
+            ] {
+                let mapped_code: String = sqlx::query_scalar(
+                    "SELECT a.code FROM trial_balance_settings s JOIN accounts a ON a.id = s.account_id WHERE s.category = ? LIMIT 1",
+                )
+                .bind(category)
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
+                assert_eq!(mapped_code, code, "{label} has a bad {category} mapping");
+            }
+
+            let mut transaction = connection.begin().await.unwrap();
+            sqlx::raw_sql(
+                r#"
+                INSERT INTO users (id) VALUES ('purchase-user');
+                INSERT INTO suppliers (id, name_ar, balance) VALUES (77, 'Supplier', 0);
+                INSERT INTO master_drugs (id, trade_name, large_to_medium, medium_to_small)
+                VALUES (9001, 'Upgrade Drug', 10, 1);
+                INSERT INTO inventory
+                  (id, drug_id, pharmacy_id, quantity, local_selling_price, cost_price,
+                   expiry_date, barcode, batch_number, strips_per_box)
+                VALUES ('upgrade-lot', 9001, 'local_default', 6, 15, 10,
+                        '2028-12-31', '6220000009001', 'UPGRADE-1', 10);
+                INSERT INTO purchase_invoices
+                  (id, supplier_id, pharmacy_id, user_id, invoice_number, invoice_date,
+                   total_amount, payment_method, status, tax_percent)
+                VALUES ('upgrade-invoice', 77, 'local_default', 'purchase-user', 'UPGRADE-1',
+                        '2026-08-12', 63, 'credit', 'completed', 5);
+                INSERT INTO purchase_invoice_items
+                  (invoice_id, drug_id, quantity, expiry_date, cost_price, selling_price,
+                   tax_percent, strips_per_box, inventory_id, barcode)
+                VALUES ('upgrade-invoice', 9001, 6, '2028-12-31', 10, 15,
+                        5, 10, 'upgrade-lot', '6220000009001');
+                INSERT INTO supplier_transactions
+                  (supplier_id, type, amount, reference_id, notes)
+                VALUES (77, 'invoice', 63, 'upgrade-invoice', 'Upgrade purchase');
+                UPDATE suppliers SET balance = balance + 63 WHERE id = 77;
+                INSERT INTO daily_journals
+                  (id, date, description, created_by, total_amount)
+                VALUES ('upgrade-journal', '2026-08-12', 'Purchase invoice UPGRADE-1',
+                        'purchase-user', 63);
+                "#,
+            )
+            .execute(&mut *transaction)
+            .await
+            .unwrap();
+            let inventory_account: i64 = sqlx::query_scalar(
+                "SELECT account_id FROM trial_balance_settings WHERE category = 'inventory_asset' LIMIT 1",
+            )
+            .fetch_one(&mut *transaction)
+            .await
+            .unwrap();
+            let payable_account: i64 = sqlx::query_scalar(
+                "SELECT account_id FROM trial_balance_settings WHERE category = 'accounts_payable' LIMIT 1",
+            )
+            .fetch_one(&mut *transaction)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES ('upgrade-journal', ?, 'debit', 63), ('upgrade-journal', ?, 'credit', 63)",
+            )
+            .bind(inventory_account)
+            .bind(payable_account)
+            .execute(&mut *transaction)
+            .await
+            .unwrap();
+            sqlx::raw_sql(
+                r#"
+                INSERT INTO purchase_returns
+                  (id, purchase_invoice_id, supplier_id, user_id, total_amount, refund_method, status)
+                VALUES ('upgrade-return', 'upgrade-invoice', 77, 'purchase-user', 10.5, 'credit', 'completed');
+                INSERT INTO purchase_return_items
+                  (purchase_return_id, purchase_invoice_item_id, inventory_id, drug_id,
+                   drug_name, quantity_returned, unit_price, total_price, unit)
+                SELECT 'upgrade-return', id, 'upgrade-lot', 9001, 'Upgrade Drug', 1, 10.5, 10.5, 'large'
+                FROM purchase_invoice_items WHERE invoice_id = 'upgrade-invoice';
+                "#,
+            )
+            .execute(&mut *transaction)
+            .await
+            .unwrap();
+            transaction.commit().await.unwrap();
+
+            let linked: (String, String, String) = sqlx::query_as(
+                "SELECT pii.inventory_id, pii.barcode, i.batch_number FROM purchase_invoice_items pii JOIN inventory i ON i.id = pii.inventory_id WHERE pii.invoice_id = 'upgrade-invoice'",
+            )
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+            assert_eq!(
+                linked,
+                (
+                    "upgrade-lot".into(),
+                    "6220000009001".into(),
+                    "UPGRADE-1".into()
+                )
+            );
+            let journal_entries: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM journal_entries WHERE journal_id = 'upgrade-journal'",
+            )
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+            assert_eq!(journal_entries, 2, "{label} purchase journal is incomplete");
+            let fk_errors = sqlx::query("PRAGMA foreign_key_check")
+                .fetch_all(&mut connection)
+                .await
+                .unwrap();
+            assert!(fk_errors.is_empty(), "{label} has foreign-key errors");
+        }
+    }
+
+    #[tokio::test]
+    async fn repairs_untracked_seeded_database_but_leaves_blank_database_for_migrations() {
+        let mut seeded = representative_purchase_database(false).await;
+        sqlx::query("DROP TABLE _sqlx_migrations")
+            .execute(&mut seeded)
+            .await
+            .unwrap();
+        prepare_connection(&mut seeded).await.unwrap();
+
+        let mut transaction = seeded.begin().await.unwrap();
+        assert!(
+            has_column(&mut transaction, "purchase_invoice_items", "barcode")
+                .await
+                .unwrap()
+        );
+        assert!(
+            has_column(&mut transaction, "purchase_invoices", "updated_at")
+                .await
+                .unwrap()
+        );
+        transaction.commit().await.unwrap();
+        let inventory_code: String = sqlx::query_scalar(
+            "SELECT a.code FROM trial_balance_settings s JOIN accounts a ON a.id = s.account_id WHERE s.category = 'inventory_asset' LIMIT 1",
+        )
+        .fetch_one(&mut seeded)
+        .await
+        .unwrap();
+        assert_eq!(inventory_code, "1.1.3");
+
+        let mut blank = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        prepare_connection(&mut blank).await.unwrap();
+        assert!(!table_exists(&mut blank, "purchase_invoices").await.unwrap());
+    }
+}

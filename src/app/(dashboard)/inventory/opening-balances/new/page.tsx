@@ -36,7 +36,7 @@ export default function NewOpeningBalanceClient() {
   const selectDrug = (drug: any) => {
     setSelectedDrug(drug);
     setCostPrice(drug.cost_price || 0);
-    setUnitPrice(drug.base_price || 0);
+    setUnitPrice(Number(drug.min_price ?? drug.official_price ?? 0));
     setSearchTerm('');
     setSearchResults([]);
   };

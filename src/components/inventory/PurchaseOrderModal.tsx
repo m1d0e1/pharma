@@ -28,7 +28,7 @@ export default function PurchaseOrderModal({ initialItems, onClose }: Props) {
         drug_id: item.master_drugs.id,
         trade_name: item.master_drugs.trade_name_en || item.master_drugs.trade_name,
         quantity: item.suggested_order !== undefined ? item.suggested_order : Math.max(0, (item.min_stock_level * 2) - item.quantity),
-        expected_price: item.master_drugs.official_price || 0,
+        expected_price: item.cost_price || item.master_drugs.base_price || 0,
         available_quantity: Number(item.quantity || 0),
       }))
   );
@@ -76,7 +76,7 @@ export default function PurchaseOrderModal({ initialItems, onClose }: Props) {
       drug_id: drug.id,
       trade_name: drug.trade_name_en || drug.trade_name,
       quantity: 1,
-      expected_price: drug.official_price || 0,
+      expected_price: drug.base_price || 0,
       available_quantity: stock.success ? stock.data : 0,
     }]);
     setSearchQuery('');
@@ -211,7 +211,7 @@ export default function PurchaseOrderModal({ initialItems, onClose }: Props) {
                           )}
                         </div>
                         <div className="text-left">
-                          <p className="text-sm font-black text-blue-600">{drug.official_price} ج.م</p>
+                          <p className="text-sm font-black text-blue-600">{Number(drug.base_price || 0).toFixed(2)} ج.م</p>
                           <span className="text-[8px] bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full uppercase font-black">أضف للطلب</span>
                         </div>
                       </button>

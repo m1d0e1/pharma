@@ -76,7 +76,7 @@ const MENUS: Menu[] = [
   },
   {
     id: 'purchases', label: 'المشتريات',
-    ownerRoutes: ['/purchases','/purchases/new','/purchase-orders','/purchases/suppliers','/purchases/returns','/purchases/general-returns'],
+    ownerRoutes: ['/purchases','/purchases/new','/purchase-orders','/purchases/suppliers','/purchases/returns'],
     items: [
       { type: 'link', label: 'المشتريات',              href: '/purchases',                 icon: ShoppingCart,  roles: ['owner','admin'], permission: 'manage_inventory' },
       { type: 'link', label: 'فاتورة مشتريات جديدة',  href: '/purchases/new',             icon: PlusCircle,    roles: ['owner','admin'], permission: 'manage_inventory' },
@@ -84,7 +84,6 @@ const MENUS: Menu[] = [
       { type: 'link', label: 'الموردون',               href: '/purchases/suppliers',       icon: Truck,         roles: ['owner','admin'], permission: 'manage_inventory' },
       { type: 'separator' },
       { type: 'link', label: 'مرتجعات للموردين',      href: '/purchases/returns',         icon: RotateCcw,     roles: ['owner','admin'], permission: 'process_sales' },
-      { type: 'link', label: 'مرتجعات عامة',          href: '/purchases/general-returns', icon: RotateCcw,     roles: ['owner','admin'], permission: 'process_sales' },
     ],
   },
   {

@@ -8,6 +8,8 @@ export interface Supplier {
 
 export interface PurchaseItem {
   id: number | string;
+  cart_line_id?: string;
+  purchase_invoice_item_id?: number;
   trade_name: string;
   trade_name_en?: string;
   quantity: number | string;

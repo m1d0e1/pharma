@@ -37,7 +37,7 @@ export default function InventoryClientWrapper({ pharmacyId, onSuccess }: Props)
 
       {isModalOpen && (
         <AddInventoryModal 
-          pharmacyId={pharmacyId || 'placeholder-id'} 
+          pharmacyId={pharmacyId || 'local_default'}
           onClose={() => setIsModalOpen(false)} 
           onSuccess={handleSuccess} 
         />

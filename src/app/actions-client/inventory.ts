@@ -55,6 +55,11 @@ const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, 
 
 import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 
+function normalizePharmacyId(value: unknown): string {
+  const pharmacyId = String(value ?? '').trim();
+  return pharmacyId || 'local_default';
+}
+
 // Zod schema for adding inventory
 const addInventorySchema = z.object({
   pharmacy_id: z.string().optional().nullable(),
@@ -108,7 +113,8 @@ export async function addInventoryAction(formData: AddInventoryInput) {
     }
     console.log('[addInventoryAction] Step 3 result: validation passed');
 
-    const { pharmacy_id, drug_id, quantity, local_selling_price, expiry_date, barcode, unit, large_to_medium } = validationResult.data;
+    const { drug_id, quantity, local_selling_price, expiry_date, barcode, unit, large_to_medium } = validationResult.data;
+    const pharmacyId = normalizePharmacyId(localUser.pharmacy_id);
 
     // Step 4: Generate ID
     console.log('[addInventoryAction] Step 4: Generating UUID...');
@@ -117,13 +123,13 @@ export async function addInventoryAction(formData: AddInventoryInput) {
 
     // Step 5: Insert
     console.log('[addInventoryAction] Step 5: Inserting into inventory...');
-    console.log('[addInventoryAction] Step 5 params:', { id, pharmacy_id: pharmacy_id || null, drug_id, quantity, local_selling_price, expiry_date, barcode: barcode || null, unit, large_to_medium });
+    console.log('[addInventoryAction] Step 5 params:', { id, pharmacy_id: pharmacyId, drug_id, quantity, local_selling_price, expiry_date, barcode: barcode || null, unit, large_to_medium });
     
     // Begin Transaction using single queries (or standard run)
     await db.prepare(`
       INSERT INTO inventory (id, pharmacy_id, drug_id, quantity, local_selling_price, expiry_date, barcode, strips_per_box)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, pharmacy_id || null, drug_id, quantity, local_selling_price, expiry_date, barcode || null, large_to_medium || 1);
+    `).run(id, pharmacyId, drug_id, quantity, local_selling_price, expiry_date, barcode || null, large_to_medium || 1);
     
     if (unit) {
       await db.prepare('UPDATE master_drugs SET large_unit = ? WHERE id = ?').run(unit, drug_id);
@@ -186,6 +192,7 @@ export async function updateInventoryAction(formData: UpdateInventoryInput) {
     }
 
     const { id, quantity, local_selling_price, reason_id, large_to_medium, expiry_date } = validationResult.data;
+    const pharmacyId = normalizePharmacyId(localUser.pharmacy_id);
 
     const { secureCache } = await import('@/lib/cache/secure_cache');
     await secureCache.load();
@@ -194,7 +201,8 @@ export async function updateInventoryAction(formData: UpdateInventoryInput) {
       SELECT i.quantity, i.drug_id
       FROM inventory i 
       WHERE i.id = ?
-    `).get(id) as { quantity: number, drug_id: number };
+        AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
+    `).get(id, pharmacyId, pharmacyId) as { quantity: number, drug_id: number };
 
     if (!current) return { success: false, error: 'الصنف غير موجود بالمخزون' };
 
@@ -296,29 +304,84 @@ export async function deleteInventoryAction(formData: DeleteInventoryInput) {
     if (!validationResult.success) {
       return { success: false, error: 'بيانات الحذف غير صالحة.' };
     }
+    const pharmacyId = normalizePharmacyId(localUser.pharmacy_id);
+    const inventoryId = validationResult.data.id;
 
-    // Get drug info before deletion
-    const current = await db.prepare(`
-      SELECT i.drug_id
-      FROM inventory i 
-      WHERE i.id = ?
-    `).get(validationResult.data.id) as { drug_id: number };
+    const remove = db.transaction(async () => {
+      const current = await db.prepare(`
+        SELECT i.drug_id, CAST(COALESCE(i.quantity, 0) AS REAL) AS quantity, i.batch_number,
+               COALESCE(m.trade_name_en, m.trade_name, m.active_ingredient) AS trade_name
+        FROM inventory i
+        LEFT JOIN master_drugs m ON m.id = i.drug_id
+        WHERE i.id = ?
+          AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
+      `).get(inventoryId, pharmacyId, pharmacyId) as any;
 
-    // Direct SQL lookup for trade name (avoids loading full 191K cache for a log message)
-    const drug3Row = await db.prepare('SELECT trade_name, trade_name_en, active_ingredient FROM master_drugs WHERE id = ?').get(current?.drug_id ?? 0) as any;
-    const tradeName = drug3Row?.trade_name_en || drug3Row?.trade_name || drug3Row?.active_ingredient || `صنف #${current?.drug_id ?? '?'}`;
+      if (!current) throw new Error('Inventory item not found in this pharmacy');
+      const history = await db.prepare(`
+        SELECT
+          EXISTS(SELECT 1 FROM sales_items WHERE inventory_id = ?) OR
+          EXISTS(SELECT 1 FROM return_items WHERE inventory_id = ?) OR
+          EXISTS(SELECT 1 FROM purchase_invoice_items WHERE inventory_id = ?) OR
+          EXISTS(SELECT 1 FROM purchase_return_items WHERE inventory_id = ?) OR
+          EXISTS(SELECT 1 FROM stock_adjustments WHERE inventory_id = ?)
+          AS has_history
+      `).get(inventoryId, inventoryId, inventoryId, inventoryId, inventoryId) as any;
+      const oldQuantity = Number(current.quantity);
+      if (Math.abs(oldQuantity) > 0.000001) {
+        const update = await db.prepare(`
+          UPDATE inventory
+          SET quantity = 0, updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+            AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+        `).run(inventoryId, pharmacyId, pharmacyId);
+        if (Number(update.changes) !== 1) throw new Error('Inventory item was not updated');
 
-    await db.prepare('DELETE FROM inventory WHERE id = ?').run(validationResult.data.id);
+        await db.prepare(`
+          INSERT INTO stock_adjustments (inventory_id, reason_id, old_quantity, new_quantity, user_id)
+          VALUES (?, NULL, ?, 0, ?)
+        `).run(inventoryId, oldQuantity, localUser.id);
+        await db.prepare(`
+          INSERT INTO activity_log (user_id, action, details)
+          VALUES (?, 'ZERO_INVENTORY', ?)
+        `).run(
+          localUser.id,
+          `Zeroed inventory lot ${inventoryId} (${current.trade_name || `drug #${current.drug_id}`}); old_quantity=${oldQuantity}; batch=${current.batch_number || 'none'}`
+        );
+        return;
+      }
 
-    logActivity(localUser.id, 'DELETE_INVENTORY', `حذف ${tradeName} من المخزون`);
+      if (Number(history?.has_history) === 1) {
+        throw new Error('Zero-quantity inventory lots with transaction or adjustment history are retained');
+      }
+
+      const result = await db.prepare(`
+        DELETE FROM inventory
+        WHERE id = ?
+          AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+      `).run(inventoryId, pharmacyId, pharmacyId);
+      if (Number(result.changes) !== 1) throw new Error('Inventory item was not deleted');
+
+      await db.prepare(`
+        INSERT INTO activity_log (user_id, action, details)
+        VALUES (?, 'DELETE_INVENTORY', ?)
+      `).run(
+        localUser.id,
+        `Deleted unreferenced inventory lot ${inventoryId} (${current.trade_name || `drug #${current.drug_id}`}); quantity=${Number(current.quantity)}; batch=${current.batch_number || 'none'}`
+      );
+    });
+
+    await remove();
 
     revalidatePath('/inventory');
     revalidatePath('/');
 
     return { success: true };
   } catch (error: any) {
-    console.error('Local Delete Error:', error);
-    return { success: false, error: 'فشل حذف الصنف.' };
+    if (!error?.message?.includes('not found') && !error?.message?.includes('history')) {
+      console.error('Local Delete Error:', error);
+    }
+    return { success: false, error: error?.message || 'فشل حذف الصنف.' };
   }
 }
 
@@ -908,7 +971,7 @@ export async function addOpeningBalanceAction(data: {
     const batchNumber = 'OPEN-' + generateId().substring(0, 8);
     
     await db.prepare(`
-      INSERT INTO inventory (id, pharmacy_id, drug_id, batch_number, expiry_date, quantity, unit_price, cost_price)
+      INSERT INTO inventory (id, pharmacy_id, drug_id, batch_number, expiry_date, quantity, local_selling_price, cost_price)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(generateId(), session.pharmacy_id || 'local_default', data.drug_id, batchNumber, data.expiry_date, data.quantity, data.unit_price, data.cost_price);
 
@@ -922,5 +985,12 @@ export async function addOpeningBalanceAction(data: {
 }
 export async function getRestockItemsAction() { return { success: false, data: [] }; }
 export async function getAdjustmentsAction() { return { success: false, data: [] }; }
-export async function getUnusedDrugsAction() { return { success: false, data: [] }; }
-export async function deleteDrugAction(id) { return { success: false }; }
+export async function getUnusedDrugsAction() {
+  const { getUnusedItemsAction } = await import('./master-drugs');
+  return getUnusedItemsAction();
+}
+
+export async function deleteDrugAction(id: number) {
+  const { deleteMasterDrugAction } = await import('./master-drugs');
+  return deleteMasterDrugAction(id);
+}

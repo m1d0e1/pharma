@@ -8,7 +8,7 @@ export function generateId(): string {
 
 const isServer = typeof window === 'undefined' || process.env.JEST_WORKER_ID !== undefined;
 
-let tauriDb: any = null;
+let tauriDbPromise: Promise<any> | null = null;
 let tauriTransactionQueue: Promise<unknown> = Promise.resolve();
 let activeTauriTransactionId: string | null = null;
 
@@ -21,11 +21,19 @@ async function executeTauri(
 }
 
 async function getTauriDb() {
-  if (!tauriDb) {
-    const DatabasePlugin = (await import('@tauri-apps/plugin-sql')).default;
-    tauriDb = await DatabasePlugin.load('sqlite:pharma_local.db');
+  if (!tauriDbPromise) {
+    tauriDbPromise = (async () => {
+      const DatabasePlugin = (await import('@tauri-apps/plugin-sql')).default;
+      const database = await DatabasePlugin.load('sqlite:pharma_local.db');
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('ensure_schema_compatibility');
+      return database;
+    })().catch(error => {
+      tauriDbPromise = null;
+      throw error;
+    });
   }
-  return tauriDb;
+  return tauriDbPromise;
 }
 
 export async function dbSelect<T = any>(sql: string, params: any[] = []): Promise<T[]> {
@@ -70,6 +78,7 @@ export async function dbExecute(
   }
 
   if (isTauriEnv) {
+    await getTauriDb();
     return executeTauri(sql, safeParams);
   }
 

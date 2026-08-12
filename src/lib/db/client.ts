@@ -8,6 +8,11 @@ function getDatabasePath(): string {
     return process.env.PHARMA_DB_PATH;
   }
 
+  if (process.env.JEST_WORKER_ID) {
+    const { tmpdir } = require('os');
+    return join(tmpdir(), `pharma-jest-${process.pid}-${process.env.JEST_WORKER_ID}.db`);
+  }
+
   // Prevent Next.js standalone tracer from copying the local database during build
   if (process.env.npm_lifecycle_event === 'build' || process.env.NEXT_PHASE === 'phase-production-build') {
     return join(process.cwd(), 'pharma_local.db');

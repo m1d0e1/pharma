@@ -10,7 +10,8 @@ import { useReactToPrint } from 'react-to-print'
 import { useHotkeys } from 'react-hotkeys-hook'
 import AddInventoryModal from '../AddInventoryModal'
 import { deleteInventoryAction } from '@/app/actions-client/inventory'
-import { dbSelect, dbExecute, dbTransaction, generateId } from '@/lib/db/tauri'
+import { dbSelect } from '@/lib/db/tauri'
+import { importInventoryWorkbookRows } from '@/lib/inventory/import'
 import { Download, Upload } from 'lucide-react'
 
 interface InventoryItem {
@@ -33,21 +34,12 @@ interface Props {
   searchTerm: string
   setSearchTerm: (val: string) => void
   onRefresh: () => void
+  pharmacyId: string
 }
 
 const barcodeValue = (value: unknown) => value === null || value === undefined ? null : String(value).trim() || null;
 
-async function upsertExcelRows(table: 'master_drugs' | 'inventory', rows: any[], allowedColumns: string[]) {
-  for (const row of rows) {
-    const columns = allowedColumns.filter(column => row[column] !== undefined);
-    if (!columns.includes('id')) continue;
-    const updates = columns.filter(column => column !== 'id').map(column => `${column}=excluded.${column}`);
-    const conflict = updates.length ? `DO UPDATE SET ${updates.join(',')}` : 'DO NOTHING';
-    await dbExecute(`INSERT INTO ${table} (${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')}) ON CONFLICT(id) ${conflict}`, columns.map(column => row[column]));
-  }
-}
-
-export default function InventoryTable({ items, searchTerm, setSearchTerm, onRefresh }: Props) {
+export default function InventoryTable({ items, searchTerm, setSearchTerm, onRefresh, pharmacyId }: Props) {
   const [editingItem, setEditingItem] = useState<InventoryItem | null>(null)
   const [detailsDrugId, setDetailsDrugId] = useState<number | null>(null)
   const [isAddModalOpen, setIsAddModalOpen] = useState(false)
@@ -208,8 +200,8 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
           const wb = XLSX.read(bstr, { type: 'binary' });
           const inventorySheet = wb.Sheets.inventory || wb.Sheets.Inventory || wb.Sheets[wb.SheetNames[0]];
           const drugsSheet = wb.Sheets.master_drugs || wb.Sheets.Drugs;
-          const data: any[] = XLSX.utils.sheet_to_json(inventorySheet, { raw: false });
-          const drugs: any[] = drugsSheet ? XLSX.utils.sheet_to_json(drugsSheet, { raw: false }) : [];
+          const data: any[] = XLSX.utils.sheet_to_json(inventorySheet, { raw: true });
+          const drugs: any[] = drugsSheet ? XLSX.utils.sheet_to_json(drugsSheet, { raw: true }) : [];
           
           if (data.length === 0) {
             toast.error('الملف فارغ أو غير صالح', { id: toastId });
@@ -218,38 +210,12 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
 
           toast.loading(`جاري استيراد ${data.length} صنف للمخزون...`, { id: toastId });
 
-          const masterColumns = (await dbSelect<any>('PRAGMA table_info(master_drugs)')).map(column => column.name);
-          const inventoryColumns = (await dbSelect<any>('PRAGMA table_info(inventory)')).map(column => column.name);
-          const normalizedDrugs = drugs.filter(row => Number(row.id)).map(row => ({ ...row, id: Number(row.id), barcode: barcodeValue(row.barcode) }));
-          const normalizedInventory = data.filter(row => Number(row.drug_id)).map(row => ({
-            ...row,
-            // SQLite inventory IDs are TEXT; preserving Excel numbers as numbers breaks edit/delete validation.
-            id: String(row.id || generateId()),
-            drug_id: Number(row.drug_id),
-            pharmacy_id: row.pharmacy_id || 'local_default',
-            barcode: barcodeValue(row.barcode),
-          }));
-
-          await dbTransaction(async () => {
-            await upsertExcelRows('master_drugs', normalizedDrugs, masterColumns);
-            for (const row of normalizedInventory) {
-              // Legacy one-sheet exports carry enough master data to restore names and barcode.
-              await dbExecute(`
-                INSERT INTO master_drugs (id, trade_name, trade_name_en, barcode)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                  trade_name=COALESCE(NULLIF(excluded.trade_name, ''), master_drugs.trade_name),
-                  trade_name_en=COALESCE(NULLIF(excluded.trade_name_en, ''), master_drugs.trade_name_en),
-                  barcode=COALESCE(NULLIF(excluded.barcode, ''), master_drugs.barcode)
-              `, [row.drug_id, row.trade_name || row.trade_name_en || `Drug ${row.drug_id}`, row.trade_name_en || null, row.barcode]);
-            }
-            await upsertExcelRows('inventory', normalizedInventory, inventoryColumns);
-          });
+          const imported = await importInventoryWorkbookRows(data, drugs, pharmacyId || 'local_default');
 
           const { secureCache } = await import('@/lib/cache/secure_cache');
           await secureCache.reload();
 
-          toast.success(`تم استيراد ${normalizedInventory.length} صنف للمخزون بنجاح!`, { id: toastId });
+          toast.success(`تم استيراد ${imported.inventoryCount} صنف للمخزون بنجاح!`, { id: toastId });
           onRefresh();
         } catch (err: any) {
           console.error(err);

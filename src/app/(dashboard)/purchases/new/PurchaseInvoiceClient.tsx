@@ -39,6 +39,11 @@ import { usePurchaseStore } from '@/store/usePurchaseStore'
 import { useHotkeys } from 'react-hotkeys-hook'
 import { Supplier, PurchaseItem } from '@/types/purchases'
 import BarcodePrinter from '@/components/purchases/BarcodePrinter'
+import {
+  clampPurchasePercent,
+  derivePurchaseDiscountPercent,
+  getPurchaseExpiryStatus,
+} from '@/lib/purchases/invoice-form'
 function normalizeDateToYMD(dateStr: string | null | undefined): string | null {
   if (!dateStr) return null;
   dateStr = dateStr.trim();
@@ -51,6 +56,11 @@ function normalizeDateToYMD(dateStr: string | null | undefined): string | null {
   if (match) return `${match[2]}-${match[1].padStart(2, '0')}-01`;
   return dateStr;
 }
+
+let purchaseCartLineSequence = 0;
+const newCartLineId = (drugId: number | string) => `new-${drugId}-${Date.now()}-${++purchaseCartLineSequence}`;
+const cartLineId = (item: PurchaseItem) => item.cart_line_id
+  || (item.purchase_invoice_item_id ? `invoice-${item.purchase_invoice_item_id}` : `drug-${item.id}`);
 
 const DrugDetailsModal = nextDynamic(() => import('@/components/pos/DrugDetailsModal'), { ssr: false });
 const QuickAddDrugModal = nextDynamic(() => import('@/components/master-drugs/QuickAddDrugModal'), { ssr: false });
@@ -69,10 +79,10 @@ function ContextMenuItem({ icon: Icon, label, onClick, color = "text-slate-700 d
 
 export default function PurchaseInvoiceClient() {
   const router = useRouter()
-  const [contextMenu, setContextMenu] = useState<{ x: number, y: number, drugId: string | number } | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ x: number, y: number, drugId: string | number, lineId: string } | null>(null);
   const [showDrugDetails, setShowDrugDetails] = useState<string | number | null>(null);
 
-  const handleContextMenu = (e: React.MouseEvent, drugId: string | number) => {
+  const handleContextMenu = (e: React.MouseEvent, drugId: string | number, lineId: string) => {
     e.preventDefault();
     const menuWidth = 192;
     const menuHeight = 220;
@@ -82,7 +92,7 @@ export default function PurchaseInvoiceClient() {
     if (y + menuHeight > window.innerHeight) y = window.innerHeight - menuHeight - 12;
     if (x < 12) x = 12;
     if (y < 12) y = 12;
-    setContextMenu({ x, y, drugId });
+    setContextMenu({ x, y, drugId, lineId });
   };
   const closeContextMenu = () => setContextMenu(null);
 
@@ -111,6 +121,8 @@ export default function PurchaseInvoiceClient() {
   const [showDraftsModal, setShowDraftsModal] = useState(false)
   const [isEditingCompleted, setIsEditingCompleted] = useState(false)
   const [isQuickAddOpen, setIsQuickAddOpen] = useState(false)
+  const searchInputRef = React.useRef<HTMLInputElement>(null)
+  const submissionLockRef = React.useRef(false)
 
   const handleEnterNext = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
@@ -161,13 +173,17 @@ export default function PurchaseInvoiceClient() {
           invoice_date: normalizeDateToYMD(invoice.invoice_date) || new Date().toISOString().split('T')[0],
           payment_method: invoice.payment_method || 'cash',
           notes: invoice.notes || '',
+          check_number: invoice.check_number || '',
           discount_percent: invoice.discount_percent || 0,
           discount_value: invoice.discount_value || 0,
           expenses: invoice.expenses || 0,
+          tax_percent: invoice.tax_percent || 0,
         });
         
         const formattedCart: PurchaseItem[] = itemsRes.data.map((i: any) => ({
           id: i.drug_id,
+          purchase_invoice_item_id: i.id,
+          cart_line_id: `invoice-${i.id}`,
           trade_name: i.trade_name_en || i.trade_name || i.drug_name || '',
           barcode: i.barcode || '',
           quantity: i.quantity || 1,
@@ -196,9 +212,12 @@ export default function PurchaseInvoiceClient() {
 
   // Hotkeys
   useHotkeys('f2', (e) => { e.preventDefault(); handleNewInvoice(); }, { enableOnFormTags: true });
-  useHotkeys('f4', (e) => { e.preventDefault(); document.querySelector<HTMLInputElement>('input[placeholder*="Search"]')?.focus(); }, { enableOnFormTags: true });
+  useHotkeys('f4', (e) => { e.preventDefault(); searchInputRef.current?.focus(); }, { enableOnFormTags: true });
   useHotkeys('f9', (e) => { e.preventDefault(); handleSubmit(false); }, { enableOnFormTags: true }, [cart, selectedSupplier, invoiceHeader]);
-  useHotkeys('f10', (e) => { e.preventDefault(); handleSubmit(true); }, { enableOnFormTags: true }, [cart, selectedSupplier, invoiceHeader]);
+  useHotkeys('f10', (e) => {
+    e.preventDefault();
+    if (!isEditingCompleted) handleSubmit(true);
+  }, { enableOnFormTags: true }, [cart, selectedSupplier, invoiceHeader, isEditingCompleted]);
 
 
   const handledDrugIdRef = React.useRef<string | null>(null)
@@ -271,13 +290,17 @@ export default function PurchaseInvoiceClient() {
             invoice_date: normalizeDateToYMD(invoice.invoice_date) || new Date().toISOString().split('T')[0],
             payment_method: invoice.payment_method || 'cash',
             notes: invoice.notes || '',
+            check_number: invoice.check_number || '',
             discount_percent: invoice.discount_percent || 0,
             discount_value: invoice.discount_value || 0,
             expenses: invoice.expenses || 0,
+            tax_percent: invoice.tax_percent || 0,
           })
           
           const formattedCart: PurchaseItem[] = itemsRes.data.map((i: any) => ({
             id: i.drug_id,
+            purchase_invoice_item_id: i.id,
+            cart_line_id: `invoice-${i.id}`,
             trade_name: i.trade_name_en || i.trade_name || i.drug_name || '',
             barcode: i.barcode || '',
             quantity: i.quantity || 1,
@@ -316,7 +339,6 @@ export default function PurchaseInvoiceClient() {
   }
 
   const addToCart = async (drug: any) => {
-    let wasAdded = false
     let finalStripsPerBox = drug.large_to_medium || '';
     if (!finalStripsPerBox) {
       try {
@@ -336,14 +358,11 @@ export default function PurchaseInvoiceClient() {
     }
 
     setCart(prev => {
-      if (prev.find(item => String(item.id) === String(drug.id))) {
-        return prev
-      }
-      wasAdded = true
       const officialPrice = Number(drug.official_price) || 0
       const purchasePrice = Number(drug.base_price) || officialPrice
       return [...prev, { 
         ...drug, 
+        cart_line_id: newCartLineId(drug.id),
         quantity: 1, 
         bonus_quantity: 0,
         cost_price: purchasePrice,
@@ -357,30 +376,24 @@ export default function PurchaseInvoiceClient() {
       }]
     })
 
-    if (!wasAdded) {
-      toast.error('هذا الصنف مضاف بالفعل')
-      return
-    }
-
     setSearchQuery('')
     setSearchResults([])
   }
 
 
-  const updateCartItem = (id: number | string, field: string, value: any) => {
+  const updateCartItem = (lineId: string, field: string, value: any) => {
     setCart(prev => prev.map(item => {
-      if (String(item.id) === String(id)) {
+      if (cartLineId(item) === lineId) {
         const updated = { ...item, [field]: value };
         
         // ponytail: link selling_price, discount_percent, and cost_price bidirectionally
         if (field === 'selling_price' || field === 'discount_percent') {
           const sell = Number(field === 'selling_price' ? value : item.selling_price) || 0;
-          const disc = Number(field === 'discount_percent' ? value : item.discount_percent) || 0;
+          const disc = clampPurchasePercent(field === 'discount_percent' ? value : item.discount_percent);
+          updated.discount_percent = disc;
           updated.cost_price = sell * (1 - disc / 100);
         } else if (field === 'cost_price') {
-          const cost = Number(value) || 0;
-          const sell = Number(item.selling_price) || 0;
-          updated.discount_percent = sell > 0 ? ((sell - cost) / sell) * 100 : 0;
+          updated.discount_percent = derivePurchaseDiscountPercent(value, item.selling_price);
         }
         
         return updated;
@@ -389,8 +402,8 @@ export default function PurchaseInvoiceClient() {
     }))
   }
 
-  const removeFromCart = (id: number | string) => {
-    setCart(prev => prev.filter(item => String(item.id) !== String(id)))
+  const removeFromCart = (lineId: string) => {
+    setCart(prev => prev.filter(item => cartLineId(item) !== lineId))
   }
 
   const calculateItemTotal = (item: any) => {
@@ -431,13 +444,17 @@ export default function PurchaseInvoiceClient() {
                 invoice_date: normalizeDateToYMD(res.invoice.invoice_date) || new Date().toISOString().split('T')[0],
                 payment_method: res.invoice.payment_method || 'cash',
                 notes: res.invoice.notes || '',
+                check_number: res.invoice.check_number || '',
                 discount_percent: res.invoice.discount_percent || 0,
                 discount_value: res.invoice.discount_value || 0,
                 expenses: res.invoice.expenses || 0,
+                tax_percent: res.invoice.tax_percent || 0,
               });
               
               const formattedCart: PurchaseItem[] = itemsRes.data.map((i: any) => ({
                 id: i.drug_id,
+                purchase_invoice_item_id: i.id,
+                cart_line_id: `invoice-${i.id}`,
                 trade_name: i.trade_name_en || i.trade_name || i.drug_name || '',
                 barcode: i.barcode || '',
                 quantity: i.quantity || 1,
@@ -479,13 +496,17 @@ export default function PurchaseInvoiceClient() {
                         invoice_date: normalizeDateToYMD(res.invoice.invoice_date) || new Date().toISOString().split('T')[0],
                         payment_method: res.invoice.payment_method || 'cash',
                         notes: res.invoice.notes || '',
+                        check_number: res.invoice.check_number || '',
                         discount_percent: res.invoice.discount_percent || 0,
                         discount_value: res.invoice.discount_value || 0,
                         expenses: res.invoice.expenses || 0,
+                        tax_percent: res.invoice.tax_percent || 0,
                       });
                       
                       const formattedCart: PurchaseItem[] = itemsRes.data.map((i: any) => ({
                         id: i.drug_id,
+                        purchase_invoice_item_id: i.id,
+                        cart_line_id: `invoice-${i.id}`,
                         trade_name: i.trade_name_en || i.trade_name || i.drug_name || '',
                         barcode: i.barcode || '',
                         quantity: i.quantity || 1,
@@ -530,17 +551,22 @@ export default function PurchaseInvoiceClient() {
 
 
   const handleSubmit = async (isDraft = false) => {
+    if (submissionLockRef.current) return
+
     const headerErrors: Record<string, boolean> = {}
     const rowErrors: Record<string, Record<string, boolean>> = {}
 
     if (!selectedSupplier) {
       headerErrors.supplier = true
     }
-    if (!invoiceHeader.invoice_number || invoiceHeader.invoice_number.trim() === '') {
+    if (!isDraft && (!invoiceHeader.invoice_number || invoiceHeader.invoice_number.trim() === '')) {
       headerErrors.invoice_number = true
     }
-    if (!invoiceHeader.invoice_date || invoiceHeader.invoice_date.trim() === '') {
+    if (!isDraft && (!invoiceHeader.invoice_date || invoiceHeader.invoice_date.trim() === '')) {
       headerErrors.invoice_date = true
+    }
+    if (!isDraft && invoiceHeader.payment_method === 'check' && !invoiceHeader.check_number?.trim()) {
+      headerErrors.check_number = true
     }
     if (cart.length === 0) {
       headerErrors.cartEmpty = true
@@ -563,35 +589,23 @@ export default function PurchaseInvoiceClient() {
       }
 
       const costPriceNum = Number(item.cost_price) || 0;
-      if (costPriceNum <= 0) {
+      if (!isDraft && costPriceNum <= 0) {
         itemErr.cost_price = true;
       }
 
-      if (!item.expiry_date || item.expiry_date.trim() === '') {
+      if (!isDraft && (!item.expiry_date || item.expiry_date.trim() === '')) {
         itemErr.expiry_date = true;
-      } else {
-        const parts = item.expiry_date.split('-');
-        if (parts.length !== 3 || parts[0].length !== 4 || parts[1].length !== 2 || parts[2].length !== 2) {
+      } else if (item.expiry_date) {
+        const expiryStatus = getPurchaseExpiryStatus(item.expiry_date);
+        if (expiryStatus === 'invalid') {
           itemErr.expiry_date = true;
-        } else {
-          const year = parseInt(parts[0], 10);
-          const month = parseInt(parts[1], 10);
-          const day = parseInt(parts[2], 10);
-          if (day < 1 || day > 31 || month < 1 || month > 12 || year < 2000) {
-            itemErr.expiry_date = true;
-          } else {
-            const now = new Date();
-            const expiry = new Date(year, month - 1, day);
-            const diffMonths = (expiry.getFullYear() - now.getFullYear()) * 12 + (expiry.getMonth() - now.getMonth());
-            if (diffMonths < 0) {
-              itemErr.expiry_expired = true;
-            }
-          }
+        } else if (expiryStatus === 'expired') {
+          itemErr.expiry_expired = true;
         }
       }
 
       if (Object.keys(itemErr).length > 0) {
-        rowErrors[String(item.id)] = itemErr;
+        rowErrors[cartLineId(item)] = itemErr;
       }
     }
 
@@ -599,7 +613,8 @@ export default function PurchaseInvoiceClient() {
     setItemErrors(rowErrors)
 
     if (Object.keys(headerErrors).length > 0) {
-      if (headerErrors.supplier) toast.error('يرجى اختيار المورد')
+      if (headerErrors.check_number) toast.error('\u064a\u0631\u062c\u0649 \u0625\u062f\u062e\u0627\u0644 \u0631\u0642\u0645 \u0627\u0644\u0634\u064a\u0643')
+      else if (headerErrors.supplier) toast.error('يرجى اختيار المورد')
       else if (headerErrors.invoice_number) toast.error('يرجى إدخال رقم الفاتورة')
       else if (headerErrors.invoice_date) toast.error('يرجى إدخال تاريخ الفاتورة')
       else if (headerErrors.cartEmpty) toast.error('يرجى إضافة أصناف للفاتورة')
@@ -608,7 +623,7 @@ export default function PurchaseInvoiceClient() {
 
     if (Object.keys(rowErrors).length > 0) {
       const firstItemId = Object.keys(rowErrors)[0];
-      const firstItem = cart.find(i => String(i.id) === firstItemId);
+      const firstItem = cart.find(i => cartLineId(i) === firstItemId);
       const itemName = firstItem ? (firstItem.trade_name_en || firstItem.trade_name) : 'الصنف';
       
       const firstErr = rowErrors[firstItemId];
@@ -647,6 +662,7 @@ export default function PurchaseInvoiceClient() {
       }
     }
 
+    submissionLockRef.current = true;
     if (isDraft) setIsDrafting(true); else setIsSubmitting(true);
     
     try {
@@ -674,7 +690,7 @@ export default function PurchaseInvoiceClient() {
           discount_percent: Number(invoiceHeader.discount_percent) || 0,
           tax_percent: Number(invoiceHeader.tax_percent) || 0,
           supplier_id: (selectedSupplier as any).id,
-          status: isDraft ? 'draft' : 'pending',
+          status: isDraft ? 'draft' : 'completed',
           cart: normalizedCart.map(item => {
             return { ...item, expiry_date: item.expiry_date };
           }),
@@ -712,6 +728,7 @@ export default function PurchaseInvoiceClient() {
     } catch (error: any) {
       toast.error(error.message || 'فشل في تسجيل الفاتورة')
     } finally {
+      submissionLockRef.current = false
       setIsDrafting(false)
       setIsSubmitting(false)
     }
@@ -946,6 +963,19 @@ export default function PurchaseInvoiceClient() {
             />
           </div>
         </div>
+        <div className="mt-6 space-y-3">
+          <label htmlFor="purchase-notes" className="text-xs font-black text-slate-400 uppercase tracking-widest mr-2">
+            ملاحظات الفاتورة
+          </label>
+          <textarea
+            id="purchase-notes"
+            rows={2}
+            className="w-full p-4 bg-slate-50 dark:bg-slate-800 border-none rounded-2xl font-bold outline-none ring-2 ring-transparent focus:ring-primary-500/20 transition-all resize-y"
+            value={invoiceHeader.notes || ''}
+            onChange={(e) => setInvoiceHeader({ ...invoiceHeader, notes: e.target.value })}
+            placeholder="ملاحظات اختيارية عن فاتورة الشراء..."
+          />
+        </div>
       </div>
 
       {/* Item Selector & Cart Grid */}
@@ -963,6 +993,8 @@ export default function PurchaseInvoiceClient() {
               <div className="relative flex-1">
                 <Search className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 w-5 h-5" />
                 <input 
+                  ref={searchInputRef}
+                  id="purchase-drug-search"
                   type="text"
                   placeholder="اسم الصنف أو الباركود..."
                   className="w-full pr-12 pl-4 py-4 bg-slate-50 dark:bg-slate-800 border-none rounded-2xl font-bold outline-none ring-2 ring-transparent focus:ring-primary-500/20 transition-all"
@@ -1117,8 +1149,10 @@ export default function PurchaseInvoiceClient() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-50 dark:divide-slate-800">
-                  {cart.map((item) => (
-                    <tr key={String(item.id)} onContextMenu={(e) => handleContextMenu(e, item.id)} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-all group">
+                  {cart.map((item) => {
+                    const lineId = cartLineId(item);
+                    return (
+                    <tr key={lineId} onContextMenu={(e) => handleContextMenu(e, item.id, lineId)} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-all group">
                       <td className="px-2 py-3">
                         <div className="font-black text-slate-900 dark:text-white group-hover:text-primary-600 transition-colors text-sm">{item.trade_name_en || item.trade_name}</div>
                         <div className="text-[10px] text-slate-400 font-bold mt-1 uppercase">{item.trade_name}</div>
@@ -1129,7 +1163,7 @@ export default function PurchaseInvoiceClient() {
                           placeholder="باركود..."
                           className="w-24 p-2.5 bg-slate-50 dark:bg-slate-800 border-none rounded-xl font-bold text-center outline-none focus:ring-2 focus:ring-primary-500/20 text-xs"
                           value={item.barcode || ''}
-                          onChange={(e) => updateCartItem(item.id, 'barcode', e.target.value)}
+                          onChange={(e) => updateCartItem(lineId, 'barcode', e.target.value)}
                           onKeyDown={handleEnterNext}
                         />
                       </td>
@@ -1140,7 +1174,7 @@ export default function PurchaseInvoiceClient() {
                           value={item.selling_price}
                           onChange={(e) => {
                             const val = e.target.value.replace(/[^0-9.]/g, '');
-                            updateCartItem(item.id, 'selling_price', val);
+                            updateCartItem(lineId, 'selling_price', val);
                           }}
                           onKeyDown={handleEnterNext}
                         />
@@ -1149,12 +1183,12 @@ export default function PurchaseInvoiceClient() {
                         <input 
                           type="text"
                           className={`w-12 p-2.5 bg-slate-50 dark:bg-slate-800 border rounded-xl font-bold text-center outline-none focus:ring-2 focus:ring-primary-500/20 text-xs ${
-                            itemErrors[item.id]?.quantity ? 'border-red-500 ring-2 ring-red-500/20' : 'border-none'
+                            itemErrors[lineId]?.quantity ? 'border-red-500 ring-2 ring-red-500/20' : 'border-none'
                           }`}
                           value={item.quantity}
                           onChange={(e) => {
                             const val = e.target.value.replace(/[^0-9]/g, '');
-                            updateCartItem(item.id, 'quantity', val);
+                            updateCartItem(lineId, 'quantity', val);
                           }}
                           onKeyDown={handleEnterNext}
                         />
@@ -1166,7 +1200,7 @@ export default function PurchaseInvoiceClient() {
                           value={item.bonus_quantity}
                           onChange={(e) => {
                             const val = e.target.value.replace(/[^0-9]/g, '');
-                            updateCartItem(item.id, 'bonus_quantity', val);
+                            updateCartItem(lineId, 'bonus_quantity', val);
                           }}
                           onKeyDown={handleEnterNext}
                         />
@@ -1177,10 +1211,10 @@ export default function PurchaseInvoiceClient() {
                           <input 
                             type="date"
                             className={`w-full pr-8 pl-8 py-2.5 bg-slate-50 dark:bg-slate-800 border rounded-xl font-bold text-center outline-none focus:ring-2 focus:ring-primary-500/20 text-xs cursor-pointer ${
-                              itemErrors[item.id]?.expiry_date || itemErrors[item.id]?.expiry_expired ? 'border-red-500 ring-2 ring-red-500/20' : 'border-none'
+                              itemErrors[lineId]?.expiry_date || itemErrors[lineId]?.expiry_expired ? 'border-red-500 ring-2 ring-red-500/20' : 'border-none'
                             }`}
                             value={item.expiry_date}
-                            onChange={(e) => updateCartItem(item.id, 'expiry_date', e.target.value)}
+                            onChange={(e) => updateCartItem(lineId, 'expiry_date', e.target.value)}
                             onClick={(e) => { try { e.currentTarget.showPicker(); } catch (err) {} }}
                             onFocus={(e) => { try { e.currentTarget.showPicker(); } catch (err) {} }}
                             onKeyDown={handleEnterNext}
@@ -1194,7 +1228,7 @@ export default function PurchaseInvoiceClient() {
                           value={item.strips_per_box === undefined || item.strips_per_box === null ? '' : item.strips_per_box}
                           onChange={(e) => {
                             const val = e.target.value.replace(/[^0-9]/g, '');
-                            updateCartItem(item.id, 'strips_per_box', val ? parseInt(val) : '');
+                            updateCartItem(lineId, 'strips_per_box', val ? parseInt(val) : '');
                           }}
                           onKeyDown={handleEnterNext}
                         />
@@ -1206,7 +1240,7 @@ export default function PurchaseInvoiceClient() {
                           value={item.tax_percent}
                           onChange={(e) => {
                             const val = e.target.value.replace(/[^0-9.]/g, '');
-                            updateCartItem(item.id, 'tax_percent', val);
+                            updateCartItem(lineId, 'tax_percent', val);
                           }}
                           onKeyDown={handleEnterNext}
                         />
@@ -1218,7 +1252,7 @@ export default function PurchaseInvoiceClient() {
                           value={item.discount_percent}
                           onChange={(e) => {
                             const val = e.target.value.replace(/[^0-9.]/g, '');
-                            updateCartItem(item.id, 'discount_percent', val);
+                            updateCartItem(lineId, 'discount_percent', val);
                           }}
                           onKeyDown={handleEnterNext}
                         />
@@ -1227,12 +1261,12 @@ export default function PurchaseInvoiceClient() {
                         <input 
                           type="text"
                           className={`w-16 p-2.5 bg-slate-50 dark:bg-slate-800 border rounded-xl font-bold text-center outline-none focus:ring-2 focus:ring-blue-500/20 text-xs text-blue-600 dark:text-blue-400 ${
-                            itemErrors[item.id]?.cost_price ? 'border-red-500 ring-2 ring-red-500/20' : 'border-none'
+                            itemErrors[lineId]?.cost_price ? 'border-red-500 ring-2 ring-red-500/20' : 'border-none'
                           }`}
                           value={item.cost_price}
                           onChange={(e) => {
                             const val = e.target.value.replace(/[^0-9.]/g, '');
-                            updateCartItem(item.id, 'cost_price', val);
+                            updateCartItem(lineId, 'cost_price', val);
                           }}
                           onKeyDown={handleEnterNext}
                         />
@@ -1245,14 +1279,14 @@ export default function PurchaseInvoiceClient() {
                       </td>
                       <td className="px-2 py-3">
                         <button 
-                          onClick={() => removeFromCart(item.id)}
+                          onClick={() => removeFromCart(lineId)}
                           className="p-2 text-slate-400 hover:text-danger-600 hover:bg-danger-50 dark:hover:bg-danger-900/20 rounded-xl transition-all"
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>
                       </td>
                     </tr>
-                  ))}
+                  )})}
                   {cart.length === 0 && (
                     <tr>
                       <td colSpan={10} className="p-32 text-center">
@@ -1310,9 +1344,7 @@ export default function PurchaseInvoiceClient() {
               label="حذف من الفاتورة" 
               color="text-red-500"
               onClick={() => {
-                const newCart = [...cart];
-                newCart.splice(cart.findIndex(i => String(i.id) === String(contextMenu.drugId)), 1);
-                setCart(newCart);
+                removeFromCart(contextMenu.lineId);
                 closeContextMenu();
               }} 
             />

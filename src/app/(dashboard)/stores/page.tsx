@@ -26,7 +26,7 @@ const inventoryActions = [
     category: 'عامة',
     items: [
       { href: '/inventory', label: 'المخزون الحالي', icon: Package, description: 'عرض الرصيد الحالي وتواريخ الصلاحية' },
-      { href: '/stores/opening-balances', label: 'الأرصدة الإفتتاحية', icon: ClipboardList, description: 'إدخال رصيد أول مدة للأصناف' },
+      { href: '/inventory/opening-balances', label: 'الأرصدة الإفتتاحية', icon: ClipboardList, description: 'إدخال رصيد أول مدة للأصناف' },
       { href: '/stores/shortages', label: 'كشكول النواقص', icon: FileText, description: 'تسجيل ومتابعة الأصناف الناقصة' },
       { href: '/stores/delete-items', label: 'حذف الأصناف', icon: Trash2, description: 'حذف أصناف غير نشطة من النظام' },
     ]
@@ -36,7 +36,6 @@ const inventoryActions = [
     items: [
       { href: '/stores/adjustments', label: 'تسوية الكميات', icon: Activity, description: 'تعديل أرصدة الأصناف يدوياً' },
       { href: '/stores/alternatives', label: 'البدائل الدوائية', icon: Activity, description: 'ربط الأصناف ببدائلها الدوائية' },
-      { href: '/stores/divisions', label: 'تقسيم المخازن', icon: Layers, description: 'إدارة أماكن التخزين والأرفف' },
     ]
   },
   {

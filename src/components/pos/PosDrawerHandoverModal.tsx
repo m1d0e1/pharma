@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { X, Save, ArrowLeftRight, Lock, User, AlertCircle, ShieldCheck } from 'lucide-react';
-import { getHandoverDetailsAction, processHandoverAction } from '@/app/actions-client/handover';
+import { getHandoverDetailsAction, processHandoverAction, getOpenShiftHandoverAction } from '@/app/actions-client/handover';
 import { getCurrentShiftAction } from '@/app/actions-client/shifts';
 import { getBanksAction } from '@/app/actions-client/finance';
 import { getStaffAction } from '@/app/actions-client/users';
@@ -45,6 +45,10 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
 
       const shiftRes = await getCurrentShiftAction();
       let activeShiftId = shiftRes.data?.id;
+      if (!activeShiftId) {
+        const openShiftRes = await getOpenShiftHandoverAction();
+        activeShiftId = openShiftRes.data?.id;
+      }
 
       if (activeShiftId) {
         setShiftId(activeShiftId);

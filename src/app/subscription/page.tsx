@@ -45,7 +45,7 @@ export default function SubscriptionActivationPage() {
 
       // Redirect to dashboard after 2 seconds
       setTimeout(() => {
-        router.push('/dashboard');
+        router.push('/');
       }, 2000);
     } catch (error) {
       console.error('Activation error:', error);
@@ -61,7 +61,7 @@ export default function SubscriptionActivationPage() {
     // Allow skipping for demo purposes
     localStorage.setItem('subscriptionActivated', 'true');
     toast('Subscription activation skipped');
-    router.push('/dashboard');
+    router.push('/');
   };
 
   return (

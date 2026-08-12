@@ -25,9 +25,10 @@ interface Patient {
 interface Props {
   initialPatients: Patient[]
   pharmacyId: string
+  canDeletePatients: boolean
 }
 
-export default function PatientListClient({ initialPatients, pharmacyId }: Props) {
+export default function PatientListClient({ initialPatients, pharmacyId, canDeletePatients }: Props) {
   const [searchTerm, setSearchTerm] = useState('')
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null)
@@ -154,14 +155,16 @@ export default function PatientListClient({ initialPatients, pharmacyId }: Props
 
               <div className="pt-6 border-t border-slate-50 dark:border-slate-800 flex justify-between items-center">
                  <div className="flex items-center gap-2">
-                   <button
-                     type="button"
-                     onClick={(e) => { e.stopPropagation(); handleDeletePatient(patient); }}
-                     className="p-2 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-xl transition-all"
-                     title="حذف المريض"
-                   >
-                     <Trash2 className="w-4 h-4" />
-                   </button>
+                   {canDeletePatients && (
+                     <button
+                       type="button"
+                       onClick={(e) => { e.stopPropagation(); handleDeletePatient(patient); }}
+                       className="p-2 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-xl transition-all"
+                       title="حذف المريض"
+                     >
+                       <Trash2 className="w-4 h-4" />
+                     </button>
+                   )}
                    <button
                      type="button"
                      onClick={(e) => { e.stopPropagation(); setSelectedPatientId(patient.id); }}

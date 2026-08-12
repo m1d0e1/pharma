@@ -11,7 +11,7 @@ function InventoryPageContent() {
   const searchParams = useSearchParams();
   const [items, setItems] = useState<any[]>([]);
   const [searchTerm, setSearchTerm] = useState(searchParams.get('search') || '');
-  const [pharmacyId, setPharmacyId] = useState<string>('');
+  const [pharmacyId, setPharmacyId] = useState<string>('local_default');
   const [loading, setLoading] = useState(true);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
 
@@ -23,7 +23,7 @@ function InventoryPageContent() {
       try {
         const localUser = await getClientSession();
         if (localUser && active) {
-          setPharmacyId(localUser.pharmacy_id || '');
+          setPharmacyId(localUser.pharmacy_id || 'local_default');
         }
 
         const res = await getInventoryListAction(searchTerm);
@@ -71,6 +71,7 @@ function InventoryPageContent() {
         searchTerm={searchTerm} 
         setSearchTerm={setSearchTerm} 
         onRefresh={refreshInventory} 
+        pharmacyId={pharmacyId}
       />
     </div>
   );

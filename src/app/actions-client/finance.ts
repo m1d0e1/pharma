@@ -171,12 +171,6 @@ export async function addPatientPaymentAction(rawData: z.infer<typeof paymentSch
 
       const balanceRow = await db.prepare(patientOutstandingBalanceQuery()).get(data.patient_id) as any;
       const outstanding = Number(balanceRow?.outstanding_balance || 0);
-      if (outstanding <= 0.005) {
-        throw new Error('لا توجد مديونية مستحقة على المريض');
-      }
-      if (data.amount > outstanding + 0.005) {
-        throw new Error(`مبلغ الدفعة يتجاوز المديونية الحالية (${outstanding.toFixed(2)} ج.م). استخدم شحن المحفظة للمبالغ المقدمة.`);
-      }
 
       await db.prepare(`
         INSERT INTO patient_transactions (id, patient_id, user_id, type, amount, payment_method, notes, date)

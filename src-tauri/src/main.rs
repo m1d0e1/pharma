@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod schema;
 
 use std::fs;
 use std::path::Path;
@@ -52,13 +53,7 @@ fn create_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Menu<
         "ملف",
         true,
         &[
-            &MenuItem::with_id(
-                app,
-                "pos",
-                "فاتورة مبيعات جديدة",
-                true,
-                Some("CmdOrCtrl+P"),
-            )?,
+            &MenuItem::with_id(app, "pos", "فاتورة مبيعات جديدة", true, Some("CmdOrCtrl+P"))?,
             &MenuItem::with_id(
                 app,
                 "purchases_new",
@@ -67,13 +62,7 @@ fn create_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Menu<
                 None::<&str>,
             )?,
             &PredefinedMenuItem::separator(app)?,
-            &MenuItem::with_id(
-                app,
-                "new_window",
-                "نافذة جديدة",
-                true,
-                Some("CmdOrCtrl+N"),
-            )?,
+            &MenuItem::with_id(app, "new_window", "نافذة جديدة", true, Some("CmdOrCtrl+N"))?,
             &PredefinedMenuItem::separator(app)?,
             &MenuItem::with_id(app, "print", "طباعة", true, Some("CmdOrCtrl+Shift+P"))?,
             &PredefinedMenuItem::separator(app)?,
@@ -141,13 +130,7 @@ fn create_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Menu<
         true,
         &[
             &MenuItem::with_id(app, "inventory", "المخزون", true, Some("CmdOrCtrl+I"))?,
-            &MenuItem::with_id(
-                app,
-                "stores_shortages",
-                "كشكول النواقص",
-                true,
-                None::<&str>,
-            )?,
+            &MenuItem::with_id(app, "stores_shortages", "كشكول النواقص", true, None::<&str>)?,
             &MenuItem::with_id(
                 app,
                 "inventory_item_movements",
@@ -178,13 +161,7 @@ fn create_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Menu<
                 true,
                 None::<&str>,
             )?,
-            &MenuItem::with_id(
-                app,
-                "stores_delete_items",
-                "حذف الأصناف",
-                true,
-                None::<&str>,
-            )?,
+            &MenuItem::with_id(app, "stores_delete_items", "حذف الأصناف", true, None::<&str>)?,
         ],
     )?;
 
@@ -226,13 +203,6 @@ fn create_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Menu<
                 true,
                 None::<&str>,
             )?,
-            &MenuItem::with_id(
-                app,
-                "purchases_general_returns",
-                "مرتجعات عامة",
-                true,
-                None::<&str>,
-            )?,
         ],
     )?;
 
@@ -265,13 +235,7 @@ fn create_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Menu<
                 true,
                 None::<&str>,
             )?,
-            &MenuItem::with_id(
-                app,
-                "finance_accounts",
-                "شجرة الحسابات",
-                true,
-                None::<&str>,
-            )?,
+            &MenuItem::with_id(app, "finance_accounts", "شجرة الحسابات", true, None::<&str>)?,
             &MenuItem::with_id(
                 app,
                 "accounts_settings_trial_balance",
@@ -289,13 +253,7 @@ fn create_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Menu<
         true,
         &[
             &MenuItem::with_id(app, "reports", "لوحة التقارير", true, None::<&str>)?,
-            &MenuItem::with_id(
-                app,
-                "reports_sales2",
-                "تقارير المبيعات",
-                true,
-                None::<&str>,
-            )?,
+            &MenuItem::with_id(app, "reports_sales2", "تقارير المبيعات", true, None::<&str>)?,
             &MenuItem::with_id(
                 app,
                 "reports_purchases",
@@ -321,13 +279,7 @@ fn create_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Menu<
         true,
         &[
             &MenuItem::with_id(app, "patients", "المرضى", true, None::<&str>)?,
-            &MenuItem::with_id(
-                app,
-                "interactions",
-                "التفاعلات الدوائية",
-                true,
-                None::<&str>,
-            )?,
+            &MenuItem::with_id(app, "interactions", "التفاعلات الدوائية", true, None::<&str>)?,
         ],
     )?;
 
@@ -351,13 +303,7 @@ fn create_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Menu<
         "مساعدة",
         true,
         &[
-            &MenuItem::with_id(
-                app,
-                "update_program",
-                "تحديث البرنامج",
-                true,
-                None::<&str>,
-            )?,
+            &MenuItem::with_id(app, "update_program", "تحديث البرنامج", true, None::<&str>)?,
             &PredefinedMenuItem::separator(app)?,
             &MenuItem::with_id(
                 app,
@@ -500,6 +446,12 @@ fn main() {
             sql: include_str!("../migrations/008_patient_accounting.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 9,
+            description: "rebuild_master_drugs_fts",
+            sql: include_str!("../migrations/009_rebuild_master_drugs_fts.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()
@@ -539,6 +491,10 @@ fn main() {
                 }
             }
 
+            if let Err(err) = schema::prepare_legacy_database(&db_path) {
+                eprintln!("Warning: prepare_legacy_database encountered error: {}", err);
+            }
+
             let main_window = app.get_webview_window("main").unwrap();
             main_window.maximize().unwrap();
 
@@ -568,6 +524,9 @@ fn main() {
             commands::critical::save_purchase_invoice_critical,
             commands::critical::delete_purchase_invoice_critical,
             commands::critical::create_return_critical,
+            commands::critical::settle_negative_sale_item_critical,
+            commands::purchase_returns::create_purchase_return_critical,
+            schema::ensure_schema_compatibility,
             open_new_window,
             log_frontend_error,
             write_binary_file,

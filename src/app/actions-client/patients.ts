@@ -53,7 +53,7 @@ import { z } from 'zod';
 
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 
-import { getLocalSession } from '@/lib/auth/local';
+import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { secureCache } from '@/lib/cache/secure_cache';
 import {
   patientOutstandingBalanceExpression,
@@ -85,6 +85,18 @@ const patientSchema = z.object({
 
 export type AddPatientInput = z.infer<typeof patientSchema>;
 
+function canManagePatients(user: any): boolean {
+  return !!user && hasUserPermissionSync(user, 'can_view_patients');
+}
+
+function canDeletePatients(user: any): boolean {
+  return !!user && ['owner', 'admin'].includes(user.role);
+}
+
+function canSearchPatientsForPos(user: any): boolean {
+  return canManagePatients(user) || (!!user && hasUserPermissionSync(user, 'can_view_sales'));
+}
+
 /**
  * Server Action to add a new patient (Local Enforcer)
  */
@@ -102,7 +114,7 @@ export async function addPatientAction(formData: AddPatientInput) {
 
     // 2. Check local session
     const localUser = await getLocalSession();
-    if (!localUser || (localUser.role !== 'owner' && localUser.role !== 'admin')) {
+    if (!canManagePatients(localUser)) {
       return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
     }
     if (!localUser) {
@@ -173,7 +185,7 @@ export async function addPatientAction(formData: AddPatientInput) {
 export async function searchPatientsAction(query: string, fetchAll: boolean = false) {
   try {
     const localUser = await getLocalSession();
-    if (!localUser) return { success: false, error: 'Unauthorized' };
+    if (!canSearchPatientsForPos(localUser)) return { success: false, error: 'Unauthorized' };
 
     if (!fetchAll && (!query || query.length < 2)) return { success: true, data: [] };
 
@@ -211,7 +223,7 @@ export async function searchPatientsAction(query: string, fetchAll: boolean = fa
 export async function getPatientProfileAction(patientId: string) {
   try {
     const user = await getLocalSession();
-    if (!user) return { success: false, error: 'غير مصرح' };
+    if (!canManagePatients(user)) return { success: false, error: 'غير مصرح' };
 
     const patient = await db.prepare('SELECT * FROM patients WHERE id = ?').get(patientId) as any;
     if (!patient) return { success: false, error: 'المريض غير موجود' };
@@ -285,7 +297,7 @@ export async function getPatientProfileAction(patientId: string) {
 export async function addPatientAllergyAction(data: { patient_id: string; allergen: string; severity: string; notes?: string }) {
   try {
     const user = await getLocalSession();
-    if (!user || (user.role !== 'owner' && user.role !== 'admin')) {
+    if (!canManagePatients(user)) {
       return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
     }
     if (!user) return { success: false, error: 'غير مصرح' };
@@ -305,7 +317,7 @@ export async function addPatientAllergyAction(data: { patient_id: string; allerg
 export async function addPatientConditionAction(data: { patient_id: string; condition_name: string; medications?: string; notes?: string }) {
   try {
     const user = await getLocalSession();
-    if (!user || (user.role !== 'owner' && user.role !== 'admin')) {
+    if (!canManagePatients(user)) {
       return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
     }
     if (!user) return { success: false, error: 'غير مصرح' };
@@ -325,7 +337,7 @@ export async function addPatientConditionAction(data: { patient_id: string; cond
 export async function deletePatientAllergyAction(id: number) {
   try {
     const user = await getLocalSession();
-    if (!user || (user.role !== 'owner' && user.role !== 'admin')) {
+    if (!canManagePatients(user)) {
       return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
     }
     if (!user) return { success: false, error: 'غير مصرح' };
@@ -353,7 +365,7 @@ export async function updatePatientAction(id: string, formData: AddPatientInput)
 
     // 2. Check local session
     const localUser = await getLocalSession();
-    if (!localUser || (localUser.role !== 'owner' && localUser.role !== 'admin')) {
+    if (!canManagePatients(localUser)) {
       return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
     }
     if (!localUser) {
@@ -363,25 +375,38 @@ export async function updatePatientAction(id: string, formData: AddPatientInput)
     const {
       full_name, name_en, phone, mobile, address, area, birth_date,
       gender, insurance_number, car_number, credit_limit, points_balance,
-      point_value, customer_type, payment_method, notes
+      point_value, customer_type, payment_method, notes, opening_balance
     } = validationResult.data;
 
-    // 3. Update the patient locally
-    await db.prepare(`
-      UPDATE patients 
-      SET 
-        full_name = ?, name_en = ?, phone = ?, mobile = ?, address = ?, area = ?,
-        birth_date = ?, gender = ?, insurance_number = ?, car_number = ?,
-        credit_limit = ?, points_balance = ?, point_value = ?,
-        customer_type = ?, payment_method = ?, notes = ?
-      WHERE id = ?
-    `).run(
-      full_name, name_en || null, phone || null, mobile || null, address || null, area || null,
-      birth_date || null, gender || null, insurance_number || null, car_number || null,
-      credit_limit, points_balance, point_value,
-      customer_type, payment_method, notes || null,
-      id
-    );
+    // Opening balance is an accounted opening entry, not editable patient
+    // metadata.  Changing it silently would desynchronise A/R from its journal;
+    // later balance changes must use a debit/credit notice instead.
+    await dbTransaction(async () => {
+      const existing = await db.prepare(
+        'SELECT CAST(COALESCE(opening_balance, 0) AS REAL) AS opening_balance FROM patients WHERE id = ?'
+      ).get(id) as any;
+      if (!existing) throw new Error('المريض غير موجود');
+      if (Math.abs(Number(existing.opening_balance || 0) - Number(opening_balance || 0)) > 0.000001) {
+        throw new Error('لا يمكن تعديل الرصيد الافتتاحي مباشرة؛ استخدم إشعار دائن أو مدين');
+      }
+
+      const updated = await db.prepare(`
+        UPDATE patients
+        SET
+          full_name = ?, name_en = ?, phone = ?, mobile = ?, address = ?, area = ?,
+          birth_date = ?, gender = ?, insurance_number = ?, car_number = ?,
+          credit_limit = ?, points_balance = ?, point_value = ?,
+          customer_type = ?, payment_method = ?, notes = ?
+        WHERE id = ?
+      `).run(
+        full_name, name_en || null, phone || null, mobile || null, address || null, area || null,
+        birth_date || null, gender || null, insurance_number || null, car_number || null,
+        credit_limit, points_balance, point_value,
+        customer_type, payment_method, notes || null,
+        id
+      );
+      if (!updated.changes) throw new Error('تعذر تحديث بيانات المريض');
+    });
 
     // 4. Revalidate pages
     revalidatePath('/patients');
@@ -392,7 +417,7 @@ export async function updatePatientAction(id: string, formData: AddPatientInput)
     console.error('Update Patient Error:', error);
     return {
       success: false,
-      error: 'حدث خطأ أثناء تحديث بيانات المريض.',
+      error: error?.message || 'حدث خطأ أثناء تحديث بيانات المريض.',
     };
   }
 }
@@ -400,7 +425,7 @@ export async function updatePatientAction(id: string, formData: AddPatientInput)
 export async function getPatientStatementAction(patientId: string) {
   try {
     const user = await getLocalSession();
-    if (!user) return { success: false, error: 'غير مصرح' };
+    if (!canManagePatients(user)) return { success: false, error: 'غير مصرح' };
 
     // 1. Get Patient Details
     const patient = await db.prepare('SELECT * FROM patients WHERE id = ?').get(patientId) as any;
@@ -424,7 +449,7 @@ export async function getPatientStatementAction(patientId: string) {
              refund_method as payment_method,
              (SELECT full_name FROM users WHERE id = user_id) as user_name
       FROM returns
-      WHERE status = 'approved'
+      WHERE status IN ('approved', 'completed')
         AND invoice_id IN (SELECT id FROM sales_invoices WHERE patient_id = ?)
 
       UNION ALL
@@ -464,12 +489,12 @@ export async function getPatientStatementAction(patientId: string) {
       
       UNION ALL
       
-      SELECT r.id as invoice_id, r.created_at as date, NULL as drug_id, ri.drug_name as fallback_name, -ri.quantity_returned as quantity_sold, 
-             'وحدة' as unit, ri.unit_price, 'مرتجع' as action
+      SELECT r.id as invoice_id, r.created_at as date, ri.drug_id, ri.drug_name as fallback_name, -ri.quantity_returned as quantity_sold,
+             COALESCE(ri.unit, 'large') as unit, ri.unit_price, 'مرتجع' as action
       FROM return_items ri
       JOIN returns r ON ri.return_id = r.id
       JOIN sales_invoices sinv ON r.invoice_id = sinv.id
-      WHERE sinv.patient_id = ? AND r.status = 'approved'
+      WHERE sinv.patient_id = ? AND r.status IN ('approved', 'completed')
       
       ORDER BY date DESC
     `).all(patientId, patientId) as any[];
@@ -531,7 +556,7 @@ export async function getPatientStatementAction(patientId: string) {
 export async function updatePatientWalletAction(patientId: string, amount: number, notes?: string) {
   try {
     const user = await getLocalSession();
-    if (!user || (user.role !== 'owner' && user.role !== 'admin')) {
+    if (!canManagePatients(user)) {
       return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
     }
     if (!Number.isFinite(amount) || amount <= 0) {
@@ -584,7 +609,7 @@ export async function updatePatientWalletAction(patientId: string, amount: numbe
 export async function getPatientsAction() {
   try {
     const localUser = await getLocalSession();
-    if (!localUser) return { success: false, error: 'غير مصرح' };
+    if (!canManagePatients(localUser)) return { success: false, error: 'غير مصرح' };
 
     const patients = await db.prepare(`
       SELECT p.*, CAST(${patientOutstandingBalanceExpression('p')} AS REAL) AS outstanding_balance
@@ -600,25 +625,43 @@ export async function getPatientsAction() {
 export async function deletePatientAction(patientId: string) {
   try {
     const user = await getLocalSession();
-    if (!user || (user.role !== 'owner' && user.role !== 'admin')) {
+    if (!canDeletePatients(user)) {
       return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
     }
 
-    const linked = await db.prepare(`
-      SELECT
-        (SELECT COUNT(*) FROM sales_invoices WHERE patient_id = ?) +
-        (SELECT COUNT(*) FROM patient_transactions WHERE patient_id = ?) +
-        (SELECT COUNT(*) FROM refill_reminders WHERE patient_id = ?) as count
-    `).get(patientId, patientId, patientId) as any;
-
-    if ((Number(linked?.count) || 0) > 0) {
-      return { success: false, error: 'لا يمكن حذف مريض له فواتير أو معاملات مرتبطة' };
-    }
-
     await dbTransaction(async () => {
+      // ponytail: validate and delete under the same BEGIN IMMEDIATE lock.
+      const linked = await db.prepare(`
+        SELECT
+          p.id,
+          CAST(COALESCE(p.opening_balance, 0) AS REAL) AS opening_balance,
+          CAST(COALESCE(p.wallet_balance, 0) AS REAL) AS wallet_balance,
+          CAST(COALESCE(p.points_balance, 0) AS REAL) AS points_balance,
+          (SELECT COUNT(*) FROM sales_invoices WHERE patient_id = ?) +
+          (SELECT COUNT(*) FROM patient_transactions WHERE patient_id = ?) +
+          (SELECT COUNT(*) FROM refill_reminders WHERE patient_id = ?) +
+          (SELECT COUNT(*) FROM financial_notices WHERE target_type = 'customer' AND target_id = ?) +
+          (SELECT COUNT(*) FROM cash_movements WHERE target_name = ? AND source_type IN ('patient_wallet', 'patient_payment')) AS linked_count
+        FROM patients p
+        WHERE p.id = ?
+      `).get(patientId, patientId, patientId, patientId, patientId, patientId) as any;
+
+      if (!linked) throw new Error('المريض غير موجود');
+      if (
+        (Number(linked.linked_count) || 0) > 0 ||
+        Math.abs(Number(linked.opening_balance) || 0) > 0.000001 ||
+        Math.abs(Number(linked.wallet_balance) || 0) > 0.000001 ||
+        Math.abs(Number(linked.points_balance) || 0) > 0.000001
+      ) {
+        throw new Error('لا يمكن حذف مريض له فواتير أو معاملات مرتبطة');
+      }
+
       await db.prepare('DELETE FROM patient_allergies WHERE patient_id = ?').run(patientId);
       await db.prepare('DELETE FROM patient_conditions WHERE patient_id = ?').run(patientId);
-      await db.prepare('DELETE FROM patients WHERE id = ?').run(patientId);
+      const deleted = await db.prepare('DELETE FROM patients WHERE id = ?').run(patientId);
+      if (deleted.changes !== 1) throw new Error('المريض غير موجود');
+      await db.prepare('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)')
+        .run(user.id, 'PATIENT_DELETED', JSON.stringify({ patient_id: patientId }));
     });
 
     revalidatePath('/patients');
@@ -632,7 +675,9 @@ export async function deletePatientAction(patientId: string) {
 export async function getReceiptDetailsAction(invoiceId: string) {
   try {
     const user = await getLocalSession();
-    if (!user) return { success: false, error: 'غير مصرح' };
+    if (!user || (!hasUserPermissionSync(user, 'can_view_patients') && !hasUserPermissionSync(user, 'can_view_receipts'))) {
+      return { success: false, error: 'غير مصرح' };
+    }
 
     const inv = await db.prepare(`
       SELECT si.id, si.total_amount, si.created_at, si.payment_method,

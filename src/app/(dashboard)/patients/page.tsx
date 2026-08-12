@@ -60,7 +60,11 @@ export default function PatientsPage() {
         </div>
       </div>
 
-      <PatientListClient initialPatients={patients || []} pharmacyId={pharmacyId} />
+      <PatientListClient
+        initialPatients={patients || []}
+        pharmacyId={pharmacyId}
+        canDeletePatients={user.role === 'owner' || user.role === 'admin'}
+      />
     </div>
   );
 }

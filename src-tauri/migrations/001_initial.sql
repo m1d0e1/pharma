@@ -70,6 +70,8 @@ CREATE TABLE IF NOT EXISTS master_drugs (
   usage_method TEXT,
   active_ingredient_ratio TEXT,
   is_table INTEGER DEFAULT 0,
+  indications TEXT,
+  side_effects TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -310,6 +312,7 @@ CREATE TABLE IF NOT EXISTS purchase_invoices (
   discount_percent REAL DEFAULT 0,
   tax_percent REAL DEFAULT 0,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (supplier_id) REFERENCES suppliers (id),
   FOREIGN KEY (user_id) REFERENCES users (id)
 );
@@ -328,6 +331,7 @@ CREATE TABLE IF NOT EXISTS purchase_invoice_items (
   discount_percent REAL DEFAULT 0,
   strips_per_box INTEGER DEFAULT 1,
   inventory_id TEXT,
+  barcode TEXT,
   FOREIGN KEY (invoice_id) REFERENCES purchase_invoices (id),
   FOREIGN KEY (drug_id) REFERENCES master_drugs (id),
   FOREIGN KEY (inventory_id) REFERENCES inventory (id) ON DELETE SET NULL

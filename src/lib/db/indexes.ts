@@ -104,6 +104,16 @@ export function applyIndexes(): void {
     // FULL TEXT SEARCH (FTS5)
     // ============================================
 
+    const ftsColumns = db.prepare('PRAGMA table_info(master_drugs_fts)').all() as { name: string }[];
+    if (ftsColumns.length && ['manufacturer', 'category'].some(name => !ftsColumns.some(column => column.name === name))) {
+      db.exec(`
+        DROP TRIGGER IF EXISTS master_drugs_ai;
+        DROP TRIGGER IF EXISTS master_drugs_ad;
+        DROP TRIGGER IF EXISTS master_drugs_au;
+        DROP TABLE master_drugs_fts;
+      `);
+    }
+
     db.exec(`
       CREATE VIRTUAL TABLE IF NOT EXISTS master_drugs_fts USING fts5(
         id UNINDEXED,

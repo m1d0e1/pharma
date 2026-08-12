@@ -11,6 +11,67 @@ import { cn } from '@/lib/utils';
 import { getPurchasesReportsAction, getPurchaseInvoiceDetailsAction, getSuppliersAction } from '@/app/actions-client/purchases';
 import { getStaffAction } from '@/app/actions-client/users';
 import { format } from 'date-fns';
+import { toast } from 'react-hot-toast';
+
+function optionalNumber(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    if (value === null || value === undefined || value === '') continue;
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
+
+export function purchaseReportPaymentLabel(method: unknown): string {
+  if (method === 'cash') return 'نقدي';
+  if (method === 'credit') return 'آجل';
+  if (method === 'check') return 'شيك';
+  return String(method || '-');
+}
+
+export function purchaseReportUnitLabel(item: Record<string, unknown>): string {
+  const unitId = Number(item.unit_id);
+  if (unitId === 1) return 'علبة';
+  if (unitId === 2) return 'شريط';
+  return String(item.unit || '-');
+}
+
+export function purchaseReportDate(value: unknown, includeTime = false): string {
+  if (!value) return '-';
+  const text = String(value);
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+  if (dateOnly) return `${dateOnly[1]}/${dateOnly[2]}/${dateOnly[3]}`;
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) return text;
+  return format(parsed, includeTime ? 'yyyy/MM/dd HH:mm' : 'yyyy/MM/dd');
+}
+
+export function purchaseReportLineAmounts(item: Record<string, unknown>) {
+  const quantity = Number(item.quantity || 0);
+  const unitCost = Number(item.cost_price || 0);
+  const taxPercent = Number(item.tax_percent || 0);
+  // Bonus stock is free; only paid quantity contributes to the invoice value.
+  const fallbackGross = quantity * unitCost * (1 + taxPercent / 100);
+  const gross = optionalNumber(
+    item.line_gross_amount,
+    item.lineGrossAmount,
+    item.gross_amount,
+    fallbackGross,
+  ) ?? 0;
+  const explicitDiscount = optionalNumber(
+    item.line_discount_amount,
+    item.lineDiscountAmount,
+    item.allocated_discount_amount,
+    item.discount_amount,
+  ) ?? 0;
+  const net = optionalNumber(
+    item.line_net_amount,
+    item.lineNetAmount,
+    item.net_amount,
+    gross - explicitDiscount,
+  ) ?? gross;
+  return { gross, discount: Math.max(0, gross - net), net };
+}
 
 export default function PurchasesReportsClient({ userRole }: { userRole?: string }) {
   const [invoices, setInvoices] = useState<any[]>([]);
@@ -64,6 +125,37 @@ export default function PurchasesReportsClient({ userRole }: { userRole?: string
     setLoadingItems(false);
   };
 
+  const handleExport = async () => {
+    if (invoices.length === 0) {
+      toast.error('لا توجد فواتير لتصديرها');
+      return;
+    }
+
+    try {
+      const XLSX = await import('xlsx');
+      const rows = invoices.map((invoice) => ({
+        'رقم الفاتورة': invoice.invoice_number || invoice.id,
+        'تاريخ الفاتورة': invoice.invoice_date || invoice.created_at,
+        'المورد': invoice.supplier_name || '',
+        'المستخدم': invoice.staff_name || '',
+        'طريقة الدفع': purchaseReportPaymentLabel(invoice.payment_method),
+        'إجمالي قبل الخصم': Number(invoice.gross_amount ?? invoice.total_amount ?? 0),
+        'الخصم': Number(invoice.discount_amount || 0),
+        'صافي الفاتورة': Number(invoice.total_amount || 0),
+        'إجمالي البيع المتوقع': Number(invoice.total_selling_amount || 0),
+        'الحالة': invoice.status || '',
+      }));
+      const workbook = XLSX.utils.book_new();
+      const worksheet = XLSX.utils.json_to_sheet(rows);
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'Purchases');
+      XLSX.writeFile(workbook, `purchase-report-${format(new Date(), 'yyyy-MM-dd')}.xlsx`);
+      toast.success('تم تصدير تقرير المشتريات');
+    } catch (error) {
+      console.error('Failed to export purchase report:', error);
+      toast.error('فشل تصدير تقرير المشتريات');
+    }
+  };
+
   return (
     <div className="space-y-8 pb-20" dir="rtl">
       {/* Header */}
@@ -74,10 +166,22 @@ export default function PurchasesReportsClient({ userRole }: { userRole?: string
             <p className="text-slate-500 font-bold">عرض وتحليل تفصيلي لعمليات البيع والمرتجعات والأسعار</p>
           </div>
           <div className="flex gap-4">
-            <button className="p-5 bg-slate-50 dark:bg-slate-800 text-slate-500 rounded-2xl border border-slate-100 dark:border-slate-700 hover:bg-slate-100 transition-all">
+            <button
+              type="button"
+              onClick={() => window.print()}
+              aria-label="طباعة تقرير المشتريات"
+              title="طباعة تقرير المشتريات"
+              className="p-5 bg-slate-50 dark:bg-slate-800 text-slate-500 rounded-2xl border border-slate-100 dark:border-slate-700 hover:bg-slate-100 transition-all"
+            >
               <Printer className="w-6 h-6" />
             </button>
-            <button className="p-5 bg-blue-50 dark:bg-blue-900/20 text-blue-600 rounded-2xl hover:bg-blue-600 hover:text-white transition-all">
+            <button
+              type="button"
+              onClick={handleExport}
+              aria-label="تصدير تقرير المشتريات إلى Excel"
+              title="تصدير تقرير المشتريات إلى Excel"
+              className="p-5 bg-blue-50 dark:bg-blue-900/20 text-blue-600 rounded-2xl hover:bg-blue-600 hover:text-white transition-all"
+            >
               <Download className="w-6 h-6" />
             </button>
           </div>
@@ -175,8 +279,8 @@ export default function PurchasesReportsClient({ userRole }: { userRole?: string
               >
                 <option value="all">الكل</option>
                 <option value="cash">نقدي</option>
-                <option value="credit">آجل / عملاء</option>
-                <option value="visa">فيزا / شبكة</option>
+                <option value="credit">آجل</option>
+                <option value="check">شيك</option>
               </select>
             </div>
           </div>
@@ -234,7 +338,7 @@ export default function PurchasesReportsClient({ userRole }: { userRole?: string
                   <th className="px-6 py-6">التاريخ</th>
                   <th className="px-6 py-6">المورد</th>
                   <th className="px-6 py-6">الموظف</th>
-                  <th className="px-6 py-6">ق. الشراء</th>
+                  <th className="px-6 py-6">إجمالي قبل الخصم</th>
                   <th className="px-6 py-6">ق. البيع المتوقعة</th>
                   <th className="px-6 py-6">ق. الخصم</th>
                   <th className="px-6 py-6">صافي الشراء</th>
@@ -260,18 +364,18 @@ export default function PurchasesReportsClient({ userRole }: { userRole?: string
                       <span className={cn(
                         "px-4 py-1.5 rounded-full text-[10px] font-black",
                         inv.payment_method === 'cash' ? "bg-emerald-50 text-emerald-600" :
-                        inv.payment_method === 'visa' ? "bg-blue-50 text-blue-600" : "bg-purple-50 text-purple-600"
+                        inv.payment_method === 'check' ? "bg-amber-50 text-amber-600" : "bg-purple-50 text-purple-600"
                       )}>
-                        {inv.payment_method === 'cash' ? 'نقدي' : inv.payment_method === 'visa' ? 'فيزا' : 'آجل'}
+                        {inv.payment_method === 'cash' ? 'نقدي' : inv.payment_method === 'check' ? 'شيك' : 'آجل'}
                       </span>
                     </td>
-                    <td className="px-6 py-6 font-bold text-slate-500">{format(new Date(inv.created_at), 'yyyy/MM/dd HH:mm')}</td>
+                    <td className="px-6 py-6 font-bold text-slate-500">{purchaseReportDate(inv.invoice_date || inv.created_at, true)}</td>
                     <td className="px-6 py-6 font-black">{inv.supplier_name || '-'}</td>
                     <td className="px-6 py-6 font-bold text-slate-400 italic">{inv.staff_name || 'غير محدد'}</td>
-                    <td className="px-6 py-6 font-black">{inv.total_amount.toLocaleString()}</td>
+                    <td className="px-6 py-6 font-black">{Number(inv.gross_amount ?? inv.total_amount ?? 0).toLocaleString()}</td>
                     <td className="px-6 py-6 font-black text-emerald-600">{(inv.total_selling_amount || 0).toLocaleString()}</td>
-                    <td className="px-6 py-6 font-black text-rose-500">{inv.discount_amount?.toLocaleString() || 0}</td>
-                    <td className="px-6 py-6 font-black text-lg text-slate-900 dark:text-white">{(inv.total_amount - (inv.discount_amount || 0)).toLocaleString()}</td>
+                    <td className="px-6 py-6 font-black text-rose-500">{Number(inv.discount_amount || 0).toLocaleString()}</td>
+                    <td className="px-6 py-6 font-black text-lg text-slate-900 dark:text-white">{Number(inv.total_amount || 0).toLocaleString()}</td>
                     <td className="px-6 py-6">
                       <span className={cn(
                         "px-3 py-1 rounded-lg text-[10px] font-black uppercase",
@@ -319,29 +423,63 @@ export default function PurchasesReportsClient({ userRole }: { userRole?: string
                       <th className="px-4 py-5">الوحدة</th>
                       <th className="px-4 py-5">سعر الشراء</th>
                       <th className="px-4 py-5">سعر البيع</th>
-                      <th className="px-4 py-5">إجمالي الشراء</th>
+                      <th className="px-4 py-5">إجمالي قبل الخصم</th>
+                      <th className="px-4 py-5">صافي الشراء</th>
                       <th className="px-4 py-5 rounded-l-2xl">إجمالي البيع</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-transparent">
                     {loadingItems ? (
-                      <tr><td colSpan={9} className="py-10 text-center animate-pulse text-slate-400 font-bold">جاري جلب الأصناف...</td></tr>
+                      <tr><td colSpan={10} className="py-10 text-center animate-pulse text-slate-400 font-bold">جاري جلب الأصناف...</td></tr>
                     ) : invoiceItems.length === 0 ? (
-                      <tr><td colSpan={9} className="py-10 text-center text-slate-400 font-bold">لا توجد أصناف مسجلة لهذه الفاتورة</td></tr>
-                    ) : invoiceItems.map((item) => (
-                      <tr key={item.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors group">
+                      <tr><td colSpan={10} className="py-10 text-center text-slate-400 font-bold">لا توجد أصناف مسجلة لهذه الفاتورة</td></tr>
+                    ) : invoiceItems.map((item) => {
+                      const amounts = purchaseReportLineAmounts(item);
+                      return <tr key={item.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors group">
                         <td className="px-4 py-5 font-mono text-blue-500 rounded-r-2xl bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{item.barcode}</td>
                         <td className="px-4 py-5 font-black bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{item.trade_name}</td>
-                        <td className="px-4 py-5 font-bold text-slate-400 italic bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{item.expiry_date ? format(new Date(item.expiry_date), 'yyyy/MM/dd') : '-'}</td>
+                        <td className="px-4 py-5 font-bold text-slate-400 italic bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{purchaseReportDate(item.expiry_date)}</td>
                         <td className="px-4 py-5 font-black text-lg bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{item.quantity}</td>
-                        <td className="px-4 py-5 text-slate-500 bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{item.unit_id === 1 ? 'شريط' : 'علبة'}</td>
+                        <td className="px-4 py-5 text-slate-500 bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{purchaseReportUnitLabel(item)}</td>
                         <td className="px-4 py-5 font-bold bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{item.cost_price?.toLocaleString()}</td>
                         <td className="px-4 py-5 font-bold text-emerald-600 bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{(item.selling_price || item.base_price || 0).toLocaleString()}</td>
-                        <td className="px-4 py-5 font-black bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{((item.cost_price || 0) * (item.quantity || 0)).toLocaleString()}</td>
+                        <td className="px-4 py-5 font-black bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{amounts.gross.toLocaleString()}</td>
+                        <td className="px-4 py-5 font-black text-blue-600 bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{amounts.net.toLocaleString()}</td>
                         <td className="px-4 py-5 font-black text-emerald-500 rounded-l-2xl bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{(((item.selling_price || item.base_price || 0)) * (item.quantity || 0)).toLocaleString()}</td>
-                      </tr>
-                    ))}
+                      </tr>;
+                    })}
                   </tbody>
+                  {!loadingItems && invoiceItems.length > 0 && (() => {
+                    const selected = invoices.find(invoice => invoice.id === selectedInvoice);
+                    const lineTotals = invoiceItems.reduce((totals, item) => {
+                      const amounts = purchaseReportLineAmounts(item);
+                      totals.gross += amounts.gross;
+                      totals.net += amounts.net;
+                      return totals;
+                    }, { gross: 0, net: 0 });
+                    const invoiceNet = Number(selected?.total_amount ?? lineTotals.net);
+                    const reconciliation = invoiceNet - lineTotals.net;
+                    return (
+                      <tfoot className="border-t-2 border-slate-200 bg-slate-50 font-black dark:border-slate-700 dark:bg-slate-800/70">
+                        <tr>
+                          <td colSpan={7} className="px-4 py-3">إجمالي السطور</td>
+                          <td className="px-4 py-3">{lineTotals.gross.toLocaleString()}</td>
+                          <td className="px-4 py-3 text-blue-600">{lineTotals.net.toLocaleString()}</td>
+                          <td />
+                        </tr>
+                        <tr>
+                          <td colSpan={8} className="px-4 py-3 text-slate-500">تسوية الفاتورة (ضريبة/خصم/مصروفات)</td>
+                          <td className="px-4 py-3 text-slate-600">{reconciliation.toLocaleString()}</td>
+                          <td />
+                        </tr>
+                        <tr>
+                          <td colSpan={8} className="px-4 py-3">صافي الفاتورة</td>
+                          <td className="px-4 py-3 text-lg text-blue-700">{invoiceNet.toLocaleString()}</td>
+                          <td />
+                        </tr>
+                      </tfoot>
+                    );
+                  })()}
                 </table>
               </div>
             </div>

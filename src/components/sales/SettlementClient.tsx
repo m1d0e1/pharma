@@ -106,7 +106,7 @@ export default function SettlementClient({ initialItems }: { initialItems: Unset
     if (!selectedItem) return
     setIsProcessing(true)
     
-    const result = await settleSaleItemAction(selectedItem.item_id, batchId, selectedItem.quantity_sold)
+    const result = await settleSaleItemAction(selectedItem.item_id, batchId)
     
     setIsProcessing(false)
     if (result.success) {

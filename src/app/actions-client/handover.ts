@@ -65,51 +65,63 @@ const HANDOVER_DETAILS_SQL = `
     (
       SELECT COALESCE(SUM(CASE WHEN si.payment_method = 'cash' THEN CAST(si.total_amount AS REAL) ELSE 0 END), 0)
       FROM sales_invoices si
-      WHERE si.status = 'completed'
+      WHERE (si.status IS NULL OR si.status = '' OR si.status = 'completed' OR si.status = 'approved')
         AND (
           si.shift_id = s.id OR
-          (si.shift_id IS NULL AND si.user_id = s.user_id AND si.created_at >= s.start_time AND (s.end_time IS NULL OR si.created_at <= s.end_time))
+          ((si.shift_id IS NULL OR TRIM(si.shift_id) = '') AND (si.user_id = s.user_id OR si.user_id IS NULL OR TRIM(si.user_id) = '')
+            AND (datetime(si.created_at) >= datetime(s.start_time) OR si.created_at >= s.start_time)
+            AND (s.end_time IS NULL OR datetime(si.created_at) <= datetime(s.end_time) OR si.created_at <= s.end_time))
         )
     ) AS cash_sales,
     (
       SELECT COALESCE(SUM(CASE WHEN si.payment_method = 'visa' THEN CAST(si.total_amount AS REAL) ELSE 0 END), 0)
       FROM sales_invoices si
-      WHERE si.status = 'completed'
+      WHERE (si.status IS NULL OR si.status = '' OR si.status = 'completed' OR si.status = 'approved')
         AND (
           si.shift_id = s.id OR
-          (si.shift_id IS NULL AND si.user_id = s.user_id AND si.created_at >= s.start_time AND (s.end_time IS NULL OR si.created_at <= s.end_time))
+          ((si.shift_id IS NULL OR TRIM(si.shift_id) = '') AND (si.user_id = s.user_id OR si.user_id IS NULL OR TRIM(si.user_id) = '')
+            AND (datetime(si.created_at) >= datetime(s.start_time) OR si.created_at >= s.start_time)
+            AND (s.end_time IS NULL OR datetime(si.created_at) <= datetime(s.end_time) OR si.created_at <= s.end_time))
         )
     ) AS visa_sales,
     (
       SELECT COALESCE(SUM(CASE WHEN si.payment_method = 'credit' THEN CAST(si.total_amount AS REAL) ELSE 0 END), 0)
       FROM sales_invoices si
-      WHERE si.status = 'completed'
+      WHERE (si.status IS NULL OR si.status = '' OR si.status = 'completed' OR si.status = 'approved')
         AND (
           si.shift_id = s.id OR
-          (si.shift_id IS NULL AND si.user_id = s.user_id AND si.created_at >= s.start_time AND (s.end_time IS NULL OR si.created_at <= s.end_time))
+          ((si.shift_id IS NULL OR TRIM(si.shift_id) = '') AND (si.user_id = s.user_id OR si.user_id IS NULL OR TRIM(si.user_id) = '')
+            AND (datetime(si.created_at) >= datetime(s.start_time) OR si.created_at >= s.start_time)
+            AND (s.end_time IS NULL OR datetime(si.created_at) <= datetime(s.end_time) OR si.created_at <= s.end_time))
         )
     ) AS credit_sales,
     (
       SELECT COALESCE(SUM(CAST(r.total_refund AS REAL)), 0)
       FROM returns r
       WHERE r.refund_method = 'cash'
-        AND r.status IN ('approved', 'completed')
+        AND (r.status IS NULL OR r.status = '' OR r.status IN ('approved', 'completed'))
         AND (
           r.shift_id = s.id OR
-          (r.shift_id IS NULL AND r.user_id = s.user_id AND r.created_at >= s.start_time AND (s.end_time IS NULL OR r.created_at <= s.end_time))
+          ((r.shift_id IS NULL OR TRIM(r.shift_id) = '') AND (r.user_id = s.user_id OR r.user_id IS NULL OR TRIM(r.user_id) = '')
+            AND (datetime(r.created_at) >= datetime(s.start_time) OR r.created_at >= s.start_time)
+            AND (s.end_time IS NULL OR datetime(r.created_at) <= datetime(s.end_time) OR r.created_at <= s.end_time))
         )
     ) AS returns,
     (
       SELECT COALESCE(SUM(CASE WHEN cm.type IN ('receipt', 'in') THEN CAST(cm.amount AS REAL) ELSE 0 END), 0)
       FROM cash_movements cm
       WHERE cm.shift_id = s.id OR
-        (cm.shift_id IS NULL AND cm.user_id = s.user_id AND cm.created_at >= s.start_time AND (s.end_time IS NULL OR cm.created_at <= s.end_time))
+        ((cm.shift_id IS NULL OR TRIM(cm.shift_id) = '') AND (cm.user_id = s.user_id OR cm.user_id IS NULL OR TRIM(cm.user_id) = '')
+          AND (datetime(cm.created_at) >= datetime(s.start_time) OR cm.created_at >= s.start_time)
+          AND (s.end_time IS NULL OR datetime(cm.created_at) <= datetime(s.end_time) OR cm.created_at <= s.end_time))
     ) AS receipts,
     (
       SELECT COALESCE(SUM(CASE WHEN cm.type IN ('disbursement', 'out') THEN CAST(cm.amount AS REAL) ELSE 0 END), 0)
       FROM cash_movements cm
       WHERE cm.shift_id = s.id OR
-        (cm.shift_id IS NULL AND cm.user_id = s.user_id AND cm.created_at >= s.start_time AND (s.end_time IS NULL OR cm.created_at <= s.end_time))
+        ((cm.shift_id IS NULL OR TRIM(cm.shift_id) = '') AND (cm.user_id = s.user_id OR cm.user_id IS NULL OR TRIM(cm.user_id) = '')
+          AND (datetime(cm.created_at) >= datetime(s.start_time) OR cm.created_at >= s.start_time)
+          AND (s.end_time IS NULL OR datetime(cm.created_at) <= datetime(s.end_time) OR cm.created_at <= s.end_time))
     ) AS disbursements
   FROM shifts s
   LEFT JOIN users u ON u.id = s.user_id

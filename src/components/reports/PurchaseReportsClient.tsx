@@ -9,6 +9,66 @@ import { toast } from 'react-hot-toast';
 import Link from 'next/link';
 import BarcodePrinter from '@/components/purchases/BarcodePrinter';
 
+function optionalNumber(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    if (value === null || value === undefined || value === '') continue;
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
+
+export function purchaseInvoicePaymentLabel(method: unknown): string {
+  if (method === 'cash') return 'نقدي';
+  if (method === 'credit') return 'آجل';
+  if (method === 'check') return 'شيك';
+  return String(method || '-');
+}
+
+export function purchaseInvoiceUnitLabel(item: Record<string, unknown>): string {
+  const unitId = Number(item.unit_id);
+  if (unitId === 1) return 'علبة';
+  if (unitId === 2) return 'شريط';
+  return String(item.unit || '-');
+}
+
+export function purchaseInvoiceDate(value: unknown): string {
+  if (!value) return '-';
+  const text = String(value);
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+  if (dateOnly) return `${dateOnly[3]}/${dateOnly[2]}/${dateOnly[1]}`;
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) return text;
+  return format(parsed, 'dd MMMM yyyy', { locale: ar });
+}
+
+export function purchaseInvoiceLineAmounts(item: Record<string, unknown>) {
+  const quantity = Number(item.quantity || 0);
+  const unitCost = Number(item.cost_price || 0);
+  const taxPercent = Number(item.tax_percent || 0);
+  // Bonus stock is free; only paid quantity contributes to the invoice value.
+  const fallbackGross = quantity * unitCost * (1 + taxPercent / 100);
+  const gross = optionalNumber(
+    item.line_gross_amount,
+    item.lineGrossAmount,
+    item.gross_amount,
+    fallbackGross,
+  ) ?? 0;
+  const explicitDiscount = optionalNumber(
+    item.line_discount_amount,
+    item.lineDiscountAmount,
+    item.allocated_discount_amount,
+    item.discount_amount,
+  ) ?? 0;
+  const net = optionalNumber(
+    item.line_net_amount,
+    item.lineNetAmount,
+    item.net_amount,
+    gross - explicitDiscount,
+  ) ?? gross;
+  return { gross, discount: Math.max(0, gross - net), net };
+}
+
 export default function PurchaseReportsClient() {
   const [invoices, setInvoices] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -53,6 +113,18 @@ export default function PurchaseReportsClient() {
     (sum, item) => sum + Number(item.quantity || 0) * Number(item.selling_price ?? item.base_price ?? 0),
     0
   );
+  const selectedLineTotals = selectedItems.reduce((totals, item) => {
+    const amounts = purchaseInvoiceLineAmounts(item);
+    totals.gross += amounts.gross;
+    totals.net += amounts.net;
+    return totals;
+  }, { gross: 0, net: 0 });
+  const selectedInvoiceNet = Number(selectedInvoice?.total_amount || 0);
+  const selectedInvoiceGross = optionalNumber(selectedInvoice?.gross_amount)
+    ?? (selectedLineTotals.gross + Number(selectedInvoice?.expenses || 0));
+  const selectedInvoiceDiscount = optionalNumber(selectedInvoice?.discount_amount)
+    ?? Math.max(0, selectedInvoiceGross - selectedInvoiceNet);
+  const selectedReconciliation = selectedInvoiceNet - selectedLineTotals.net;
 
   if (loading) {
     return (
@@ -95,8 +167,8 @@ export default function PurchaseReportsClient() {
 
   const deleteInvoice = async (removeInventory: boolean) => {
     if (!selectedInvoice || !confirm(removeInventory
-      ? 'حذف الفاتورة وخصم الكميات المرتبطة بها من المخزون؟'
-      : 'حذف الفاتورة مع إبقاء الكميات الحالية في المخزون؟')) return;
+      ? 'حذف الفاتورة وعكس كمياتها من المخزون وقيودها المحاسبية ورصيد المورد؟'
+      : 'حذف سجل الفاتورة فقط؟ ستبقى الكميات في المخزون والقيود المحاسبية ورصيد المورد دون تغيير.')) return;
     setDeleting(true);
     const result = await deletePurchaseInvoiceAction(selectedInvoice.id, removeInventory);
     setDeleting(false);
@@ -122,14 +194,15 @@ export default function PurchaseReportsClient() {
               <button onClick={() => setSelectedInvoice(null)} className="rounded-xl p-2 hover:bg-slate-100 dark:hover:bg-slate-800" aria-label="إغلاق"><X /></button>
             </div>
             <div className="mb-6 grid grid-cols-2 gap-3 rounded-2xl bg-slate-50 p-4 text-sm dark:bg-slate-800 md:grid-cols-4">
-              <div><span className="text-slate-500">التاريخ</span><p className="font-bold">{selectedInvoice.invoice_date || selectedInvoice.created_at}</p></div>
+              <div><span className="text-slate-500">تاريخ الفاتورة</span><p className="font-bold">{purchaseInvoiceDate(selectedInvoice.invoice_date || selectedInvoice.created_at)}</p></div>
               <div><span className="text-slate-500">المستخدم</span><p className="font-bold">{selectedInvoice.user_name || '---'}</p></div>
-              <div><span className="text-slate-500">الدفع</span><p className="font-bold">{selectedInvoice.payment_method}</p></div>
+              <div><span className="text-slate-500">الدفع</span><p className="font-bold">{purchaseInvoicePaymentLabel(selectedInvoice.payment_method)}</p></div>
               <div><span className="text-slate-500">الحالة</span><p className="font-bold">{selectedInvoice.status}</p></div>
               <div><span className="text-slate-500">الضريبة</span><p className="font-bold">{Number(selectedInvoice.tax_percent || 0).toFixed(2)}%</p></div>
-              <div><span className="text-slate-500">الخصم</span><p className="font-bold">{Number(selectedInvoice.discount_value || 0).toFixed(2)} ج.م</p></div>
+              <div><span className="text-slate-500">إجمالي قبل الخصم</span><p className="font-bold">{selectedInvoiceGross.toFixed(2)} ج.م</p></div>
+              <div><span className="text-slate-500">إجمالي الخصم</span><p className="font-bold text-rose-600">{selectedInvoiceDiscount.toFixed(2)} ج.م</p></div>
               <div><span className="text-slate-500">المصروفات</span><p className="font-bold">{Number(selectedInvoice.expenses || 0).toFixed(2)} ج.م</p></div>
-              <div><span className="text-slate-500">الإجمالي</span><p className="font-black text-primary-600">{Number(selectedInvoice.total_amount || 0).toFixed(2)} ج.م</p></div>
+              <div><span className="text-slate-500">صافي الفاتورة</span><p className="font-black text-primary-600">{selectedInvoiceNet.toFixed(2)} ج.م</p></div>
               <div><span className="text-slate-500">إجمالي قيمة البيع</span><p className="font-black text-emerald-600">{selectedSellingTotal.toFixed(2)} ج.م</p></div>
               {selectedInvoice.check_number && <div><span className="text-slate-500">رقم الشيك</span><p className="font-bold">{selectedInvoice.check_number}</p></div>}
               {selectedInvoice.notes && <div className="col-span-2"><span className="text-slate-500">ملاحظات</span><p className="font-bold">{selectedInvoice.notes}</p></div>}
@@ -137,20 +210,27 @@ export default function PurchaseReportsClient() {
             {detailsLoading ? <p className="py-10 text-center text-slate-500">جاري التحميل...</p> : (
               <div className="overflow-x-auto rounded-2xl border border-slate-200 dark:border-slate-700">
                 <table className="w-full text-right text-sm">
-                  <thead className="bg-slate-50 dark:bg-slate-800"><tr><th className="p-3">الصنف</th><th className="p-3">الباركود</th><th className="p-3">الكمية</th><th className="p-3">المجاني</th><th className="p-3">الصلاحية</th><th className="p-3">سعر الشراء</th><th className="p-3">سعر البيع</th><th className="p-3">الضريبة</th><th className="p-3">الإجمالي</th></tr></thead>
+                  <thead className="bg-slate-50 dark:bg-slate-800"><tr><th className="p-3">الصنف</th><th className="p-3">الباركود</th><th className="p-3">الكمية</th><th className="p-3">المجاني</th><th className="p-3">الصلاحية</th><th className="p-3">سعر الشراء</th><th className="p-3">سعر البيع</th><th className="p-3">الضريبة</th><th className="p-3">إجمالي قبل الخصم</th><th className="p-3">صافي السطر</th></tr></thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800">{selectedItems.map(item => {
-                    const total = Number(item.quantity || 0) * Number(item.cost_price || 0) * (1 + Number(item.tax_percent || 0) / 100);
-                    return <tr key={item.id}><td className="p-3 font-bold">{item.trade_name_en || item.trade_name}</td><td className="p-3">{item.barcode || '---'}</td><td className="p-3">{item.quantity} {item.unit || ''}</td><td className="p-3">{item.bonus_quantity || 0}</td><td className="p-3">{item.expiry_date || '---'}</td><td className="p-3 font-bold text-blue-600">{Number(item.cost_price || 0).toFixed(2)}</td><td className="p-3 font-bold text-emerald-600">{Number(item.selling_price ?? item.base_price ?? 0).toFixed(2)}</td><td className="p-3">{Number(item.tax_percent || 0).toFixed(2)}%</td><td className="p-3 font-black">{total.toFixed(2)}</td></tr>;
+                    const amounts = purchaseInvoiceLineAmounts(item);
+                    return <tr key={item.id}><td className="p-3 font-bold">{item.trade_name_en || item.trade_name}</td><td className="p-3">{item.barcode || '---'}</td><td className="p-3">{item.quantity} {purchaseInvoiceUnitLabel(item)}</td><td className="p-3">{item.bonus_quantity || 0}</td><td className="p-3">{purchaseInvoiceDate(item.expiry_date)}</td><td className="p-3 font-bold text-blue-600">{Number(item.cost_price || 0).toFixed(2)}</td><td className="p-3 font-bold text-emerald-600">{Number(item.selling_price ?? item.base_price ?? 0).toFixed(2)}</td><td className="p-3">{Number(item.tax_percent || 0).toFixed(2)}%</td><td className="p-3 font-black">{amounts.gross.toFixed(2)}</td><td className="p-3 font-black text-blue-600">{amounts.net.toFixed(2)}</td></tr>;
                   })}</tbody>
+                  {selectedItems.length > 0 && (
+                    <tfoot className="border-t-2 border-slate-200 bg-slate-50 font-black dark:border-slate-700 dark:bg-slate-800/70">
+                      <tr><td colSpan={8} className="p-3">إجمالي السطور</td><td className="p-3">{selectedLineTotals.gross.toFixed(2)}</td><td className="p-3 text-blue-600">{selectedLineTotals.net.toFixed(2)}</td></tr>
+                      <tr><td colSpan={9} className="p-3 text-slate-500">تسوية الفاتورة (ضريبة/خصم/مصروفات)</td><td className="p-3">{selectedReconciliation.toFixed(2)}</td></tr>
+                      <tr><td colSpan={9} className="p-3">صافي الفاتورة</td><td className="p-3 text-lg text-primary-600">{selectedInvoiceNet.toFixed(2)}</td></tr>
+                    </tfoot>
+                  )}
                 </table>
               </div>
             )}
             <div className="mt-6 flex flex-wrap gap-3 border-t border-slate-200 pt-5 dark:border-slate-700">
               <button disabled={deleting} onClick={() => deleteInvoice(false)} className="inline-flex items-center gap-2 rounded-xl bg-amber-100 px-4 py-2.5 font-bold text-amber-800 disabled:opacity-50">
-                <Trash2 className="h-4 w-4" /> حذف الفاتورة فقط
+                <Trash2 className="h-4 w-4" /> حذف السجل فقط (إبقاء المخزون والحسابات)
               </button>
               <button disabled={deleting} onClick={() => deleteInvoice(true)} className="inline-flex items-center gap-2 rounded-xl bg-rose-600 px-4 py-2.5 font-bold text-white disabled:opacity-50">
-                <PackageMinus className="h-4 w-4" /> حذف الفاتورة وكمياتها من المخزون
+                <PackageMinus className="h-4 w-4" /> حذف وعكس المخزون والحسابات
               </button>
             </div>
           </div>
@@ -249,11 +329,11 @@ export default function PurchaseReportsClient() {
                   <td className="p-4 font-bold text-primary-600">{inv.invoice_number || inv.id.substring(0, 8)}</td>
                   <td className="p-4">{inv.supplier_name || 'غير محدد'}</td>
                   <td className="p-4 text-slate-500">
-                    {format(new Date(inv.created_at), 'dd MMMM yyyy', { locale: ar })}
+                    {purchaseInvoiceDate(inv.invoice_date || inv.created_at)}
                   </td>
                   <td className="p-4">
                     <span className="px-3 py-1 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-lg text-sm font-bold">
-                      {inv.payment_method === 'cash' ? 'نقدي' : inv.payment_method === 'credit' ? 'آجل' : 'شيك'}
+                      {purchaseInvoicePaymentLabel(inv.payment_method)}
                     </span>
                   </td>
                   <td className="p-4">

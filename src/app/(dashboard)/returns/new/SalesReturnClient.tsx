@@ -233,8 +233,8 @@ export default function SalesReturnClient() {
                   >
                     <div className="flex justify-between items-center w-full">
                       <span className="font-black text-xs text-slate-800 dark:text-slate-100">رقم الفاتورة: {inv.id.slice(0, 8)}</span>
-                      <span className="text-[10px] text-slate-400 font-bold">
-                        {new Date(inv.created_at).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}
+                      <span className="text-[10px] text-slate-500 font-bold bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded">
+                        {inv.created_at ? new Date(inv.created_at).toLocaleString('ar-EG', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: true }) : ''}
                       </span>
                     </div>
                     <div className="flex justify-between items-center w-full mt-1">
@@ -265,9 +265,12 @@ export default function SalesReturnClient() {
             <div className="space-y-6">
               {/* Items Section */}
               <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6">
-                <div className="flex justify-between items-center mb-4">
+                <div className="flex justify-between items-center mb-4 flex-wrap gap-2">
                   <h2 className="text-lg font-bold text-slate-800 dark:text-white">أصناف الفاتورة</h2>
-                  <div className="text-xs text-slate-500 flex gap-4">
+                  <div className="text-xs text-slate-500 flex gap-3 flex-wrap items-center">
+                    <span className="bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 px-2.5 py-1 rounded-lg font-bold border border-blue-200/50 dark:border-blue-800/50">
+                      📅 تاريخ ووقت الفاتورة: {invoice.created_at ? new Date(invoice.created_at).toLocaleString('ar-EG', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: true }) : 'غير محدد'}
+                    </span>
                     <span>المريض: {invoice.patient_name || 'غير محدد'}</span>
                     <span>البائع: {invoice.user_name || 'غير محدد'}</span>
                   </div>

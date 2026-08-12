@@ -47,6 +47,31 @@ const db = {
   }
 };
 
+function normalizeBarcode(value: unknown): string | null {
+  const barcode = String(value ?? '').trim();
+  return barcode.length > 0 ? barcode : null;
+}
+
+async function assertBarcodeAvailable(barcode: string | null, excludedDrugId?: number) {
+  if (!barcode) return;
+
+  const existing = excludedDrugId === undefined
+    ? await db.prepare(`
+        SELECT id FROM master_drugs
+        WHERE barcode IS NOT NULL AND TRIM(barcode) = ? COLLATE NOCASE
+        LIMIT 1
+      `).get(barcode) as any
+    : await db.prepare(`
+        SELECT id FROM master_drugs
+        WHERE id != ? AND barcode IS NOT NULL AND TRIM(barcode) = ? COLLATE NOCASE
+        LIMIT 1
+      `).get(excludedDrugId, barcode) as any;
+
+  if (existing) {
+    throw new Error('Barcode is already assigned to another drug');
+  }
+}
+
 
 
 
@@ -74,6 +99,12 @@ export async function addMasterDrugAction(data: any) {
     }
     if (!localUser || !hasUserPermissionSync(localUser, 'can_manage_inventory')) return { success: false, error: 'غير مصرح' };
 
+    const officialPrice = Number(data.official_price);
+    if (!Number.isFinite(officialPrice) || officialPrice < 0) {
+      return { success: false, error: 'Invalid selling price' };
+    }
+    const barcode = normalizeBarcode(data.barcode);
+
     const stmt = db.prepare(`
       INSERT INTO master_drugs (
         trade_name, trade_name_en, generic_name, active_ingredient, barcode, 
@@ -86,13 +117,15 @@ export async function addMasterDrugAction(data: any) {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    const result = await stmt.run(
+    const insert = db.transaction(async () => {
+      await assertBarcodeAvailable(barcode);
+      return stmt.run(
       data.trade_name,
       data.trade_name_en || null,
       data.generic_name || null,
       data.active_ingredient || null,
-      data.barcode || null,
-      data.official_price || 0,
+      barcode,
+      officialPrice,
       data.category || null,
       data.manufacturer || null,
       data.is_medicine ?? 1,
@@ -122,7 +155,9 @@ export async function addMasterDrugAction(data: any) {
       data.usage_method || null,
       data.active_ingredient_ratio || null,
       data.is_table ?? 0
-    );
+      );
+    });
+    const result = await insert();
 
     logActivity(localUser.id, 'ADD_MASTER_DRUG', `أضاف الصنف: ${data.trade_name}`);
     revalidatePath('/stores/items');
@@ -202,6 +237,8 @@ export async function updateMasterDrugAction(id: number, data: any) {
       return { success: false, error: 'سعر البيع غير صالح' };
     }
 
+    const barcode = normalizeBarcode(data.barcode);
+
     const stmt = db.prepare(`
       UPDATE master_drugs SET
         trade_name = ?, trade_name_en = ?, generic_name = ?, active_ingredient = ?, barcode = ?, 
@@ -216,12 +253,13 @@ export async function updateMasterDrugAction(id: number, data: any) {
     `);
 
     const update = db.transaction(async () => {
+      await assertBarcodeAvailable(barcode, id);
       await stmt.run(
       data.trade_name,
       data.trade_name_en || null,
       data.generic_name || null,
       data.active_ingredient || null,
-      data.barcode || null,
+      barcode,
       officialPrice,
       data.category || null,
       data.manufacturer || null,
@@ -263,7 +301,7 @@ export async function updateMasterDrugAction(id: number, data: any) {
             barcode = CASE WHEN (barcode IS NULL OR barcode = '') AND ? != '' THEN ? ELSE barcode END,
             updated_at = CURRENT_TIMESTAMP
         WHERE drug_id = ?
-      `).run(officialPrice, data.barcode || '', data.barcode || '', id);
+      `).run(officialPrice, barcode || '', barcode || '', id);
     });
     await update();
 
@@ -272,7 +310,7 @@ export async function updateMasterDrugAction(id: number, data: any) {
       trade_name_en: data.trade_name_en,
       generic_name: data.generic_name,
       active_ingredient: data.active_ingredient,
-      barcode: data.barcode,
+      barcode,
       official_price: officialPrice,
       large_unit: data.large_unit,
       medium_unit: data.medium_unit,
@@ -802,13 +840,30 @@ export async function deleteDrugIndicationAction(drugId: number, indicationId: n
   }
 }
 
+const MASTER_DRUG_REFERENCE_PREDICATE = `
+  EXISTS(SELECT 1 FROM inventory WHERE drug_id = m.id) OR
+  EXISTS(SELECT 1 FROM sales_items WHERE drug_id = m.id) OR
+  EXISTS(SELECT 1 FROM refill_reminders WHERE drug_id = m.id) OR
+  EXISTS(SELECT 1 FROM return_items WHERE drug_id = m.id) OR
+  EXISTS(SELECT 1 FROM purchase_invoice_items WHERE drug_id = m.id) OR
+  EXISTS(SELECT 1 FROM purchase_order_items WHERE drug_id = m.id) OR
+  EXISTS(SELECT 1 FROM purchase_return_items WHERE drug_id = m.id) OR
+  EXISTS(SELECT 1 FROM opening_balance_items WHERE drug_id = m.id) OR
+  EXISTS(SELECT 1 FROM shortages WHERE drug_id = m.id) OR
+  EXISTS(SELECT 1 FROM drug_indications WHERE drug_id = m.id) OR
+  EXISTS(SELECT 1 FROM drug_alternatives WHERE drug_id = m.id OR alternative_id = m.id)
+`;
+
 export async function getUnusedItemsAction() {
   try {
-    // Items that are NOT in inventory AND NOT in sales_items
+    const localUser = await getLocalSession();
+    if (!localUser || !hasUserPermissionSync(localUser, 'can_manage_inventory')) {
+      return { success: false, error: 'Unauthorized' };
+    }
+
     const items = await db.prepare(`
       SELECT m.* FROM master_drugs m
-      WHERE NOT EXISTS (SELECT 1 FROM inventory i WHERE i.drug_id = m.id)
-      AND NOT EXISTS (SELECT 1 FROM sales_items s WHERE s.drug_id = m.id)
+      WHERE NOT (${MASTER_DRUG_REFERENCE_PREDICATE})
       ORDER BY m.trade_name ASC
     `).all() as any[];
     return { success: true, data: items };
@@ -820,27 +875,44 @@ export async function getUnusedItemsAction() {
 export async function deleteMasterDrugAction(id: number) {
   try {
     const localUser = await getLocalSession();
-    if (!localUser) return { success: false, error: 'غير مصرح' };
-
-    const { hasUserPermissionSync } = await import('@/lib/auth/local');
-    if (!hasUserPermissionSync(localUser, 'can_manage_inventory')) {
-      return { success: false, error: 'ليس لديك صلاحية حذف الأصناف' };
+    if (!localUser || !hasUserPermissionSync(localUser, 'can_manage_inventory')) {
+      return { success: false, error: 'Unauthorized' };
+    }
+    if (!Number.isInteger(Number(id)) || Number(id) <= 0) {
+      return { success: false, error: 'Invalid drug id' };
     }
 
-    // Triple check - don't delete if it has inventory now
-    const check = await db.prepare('SELECT COUNT(*) as count FROM inventory WHERE drug_id = ?').get(id) as any;
-    if (check.count > 0) return { success: false, error: 'لا يمكن حذف صنف له رصيد حالي' };
+    const remove = db.transaction(async () => {
+      const item = await db.prepare(`
+        SELECT m.id, CASE WHEN (${MASTER_DRUG_REFERENCE_PREDICATE}) THEN 1 ELSE 0 END AS is_referenced
+        FROM master_drugs m
+        WHERE m.id = ?
+      `).get(Number(id)) as any;
 
-    await db.prepare('DELETE FROM master_drugs WHERE id = ?').run(id);
+      if (!item) throw new Error('Drug not found');
+      if (Number(item.is_referenced) === 1) {
+        throw new Error('Drugs with inventory, transaction, or clinical history cannot be deleted');
+      }
 
-    const { secureCache } = await import('@/lib/cache/secure_cache');
-    await secureCache.reload();
-    
-    logActivity(localUser.id, 'DELETE_MASTER_DRUG', `حذف الصنف كود: ${id}`);
+      const result = await db.prepare('DELETE FROM master_drugs WHERE id = ?').run(Number(id));
+      if (Number(result.changes) !== 1) throw new Error('Drug was not deleted');
+
+      await db.prepare(`
+        INSERT INTO activity_log (user_id, action, details)
+        VALUES (?, 'DELETE_MASTER_DRUG', ?)
+      `).run(localUser.id, `Deleted unused master drug #${Number(id)}`);
+    });
+
+    await remove();
+    try {
+      await secureCache.reload();
+    } catch (cacheError) {
+      console.warn('Master drug deleted but cache reload failed:', cacheError);
+    }
+
     revalidatePath('/stores/delete-items');
     revalidatePath('/stores/items');
     revalidatePath('/inventory');
-
     return { success: true };
   } catch (error: any) {
     return { success: false, error: error.message };

@@ -7,6 +7,11 @@ import { getSuppliersAction, createPurchaseReturnAction, getPurchasesReportsActi
 import { Search, Save, Trash2, ArrowRight, FileText } from 'lucide-react';
 import Link from 'next/link';
 import { toast } from 'react-hot-toast';
+import {
+  PurchaseReturnUnit,
+  purchaseReturnPriceForUnit,
+  purchaseReturnQuantityForUnit,
+} from '@/lib/purchases/return-units';
 
 export default function PurchaseReturnClient() {
   const router = useRouter();
@@ -42,10 +47,10 @@ export default function PurchaseReturnClient() {
     }
     const fetchInvoices = async () => {
       setIsLoadingInvoices(true);
-      const res = await getPurchasesReportsAction({ supplierId: selectedSupplierId });
+      const res = await getPurchasesReportsAction({ supplierId: selectedSupplierId, status: 'completed' });
       setIsLoadingInvoices(false);
       if (res.success && res.data) {
-        const list = res.data;
+        const list = res.data.filter((invoice: any) => invoice.status === 'completed');
         setInvoices(list);
         setSelectedIndex(list.length > 0 ? 0 : -1);
       }
@@ -119,12 +124,16 @@ export default function PurchaseReturnClient() {
         drug_id: item.drug_id,
         drug_name: item.trade_name,
         quantity: 0, // This is the return quantity
-        max_quantity: item.quantity, // Max allowed to return
-        unit_price: item.cost_price || 0,
-        original_unit: item.unit || 'large',
-        unit: item.unit || 'large',
-        base_price: item.cost_price || 0, // Store original base cost price
-        large_to_medium: item.large_to_medium || 1,
+        original_quantity: Number(item.quantity || 0),
+        returned_large_quantity: Number(item.returned_large_quantity || 0),
+        remaining_large_quantity: Number(item.remaining_large_quantity || 0),
+        max_quantity: Number(item.remaining_large_quantity || 0),
+        refundable_large_unit_price: Number(item.refundable_large_unit_price || 0),
+        unit_price: Number(item.refundable_large_unit_price || 0),
+        original_unit: 'large',
+        unit: 'large',
+        base_price: Number(item.refundable_large_unit_price || 0),
+        large_to_medium: item.strips_per_box || item.large_to_medium || 1,
         medium_to_small: item.medium_to_small || 1,
         expiry_date: item.inventory_expiry_date || item.expiry_date,
         batch_number: item.batch_number,
@@ -138,35 +147,38 @@ export default function PurchaseReturnClient() {
   const updateItem = (index: number, field: string, value: any) => {
     setItems(prev => {
       const newItems = [...prev];
+      const item = { ...newItems[index] };
       if (field === 'quantity') {
-        const max = newItems[index].max_quantity;
+        const max = purchaseReturnQuantityForUnit(
+          item.remaining_large_quantity,
+          item.unit as PurchaseReturnUnit,
+          item.large_to_medium,
+          item.medium_to_small
+        );
         if (value > max) value = max;
         if (value < 0) value = 0;
+        item.quantity = value;
       }
       
       if (field === 'unit') {
-        // Recalculate price based on unit change, from original base cost price
-        const item = newItems[index];
-        const oldUnit = item.unit;
-        let originalBasePrice = item.base_price;
-        
-        // If the original invoice unit was 'medium', the cost_price we have is already medium. Let's find true 'large' base price:
-        if (item.original_unit === 'medium') {
-            originalBasePrice = item.base_price * item.large_to_medium;
-        } else if (item.original_unit === 'small') {
-            originalBasePrice = item.base_price * item.large_to_medium * item.medium_to_small;
-        }
-
-        if (value === 'large') {
-          newItems[index].unit_price = originalBasePrice;
-        } else if (value === 'medium') {
-          newItems[index].unit_price = originalBasePrice / item.large_to_medium;
-        } else if (value === 'small') {
-          newItems[index].unit_price = originalBasePrice / (item.large_to_medium * item.medium_to_small);
-        }
+        const unit = value as PurchaseReturnUnit;
+        item.unit = unit;
+        item.unit_price = purchaseReturnPriceForUnit(
+          item.refundable_large_unit_price,
+          unit,
+          item.large_to_medium,
+          item.medium_to_small
+        );
+        item.quantity = Math.min(Number(item.quantity || 0), purchaseReturnQuantityForUnit(
+          item.remaining_large_quantity,
+          unit,
+          item.large_to_medium,
+          item.medium_to_small
+        ));
       }
 
-      newItems[index] = { ...newItems[index], [field]: value };
+      if (field !== 'quantity' && field !== 'unit') item[field] = value;
+      newItems[index] = item;
       return newItems;
     });
   };
@@ -263,12 +275,12 @@ export default function PurchaseReturnClient() {
                   >
                     <div className="flex justify-between items-center w-full">
                       <span className="font-black text-xs text-slate-800 dark:text-slate-100">رقم الفاتورة: {inv.invoice_number || inv.id.slice(0, 8)}</span>
-                      <span className="text-[10px] text-slate-400 font-bold">
-                        {new Date(inv.created_at).toLocaleDateString('ar-EG')}
+                      <span className="text-[10px] text-slate-500 font-bold bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded">
+                        {inv.created_at ? new Date(inv.created_at).toLocaleString('ar-EG', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: true }) : inv.invoice_date || ''}
                       </span>
                     </div>
                     <div className="flex justify-between items-center w-full mt-1">
-                      <span className="text-sm font-black text-blue-600 dark:text-blue-400">{inv.total_amount.toFixed(2)} ج.م</span>
+                      <span className="text-sm font-black text-blue-600 dark:text-blue-400">{Number(inv.total_amount || 0).toFixed(2)} ج.م</span>
                       <span className="text-[9px] bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded font-black text-slate-500">
                         {inv.payment_method === 'cash' ? 'نقدي' : 'آجل'}
                       </span>
@@ -292,7 +304,17 @@ export default function PurchaseReturnClient() {
             <div className="space-y-6">
               {/* Items Section */}
               <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6">
-                <h2 className="text-lg font-bold mb-4 text-slate-800 dark:text-white">الأصناف المرتجعة</h2>
+                <div className="flex justify-between items-center mb-4 flex-wrap gap-2">
+                  <h2 className="text-lg font-bold text-slate-800 dark:text-white">الأصناف المرتجعة</h2>
+                  {invoices[selectedIndex] && (
+                    <div className="text-xs text-slate-500 flex gap-3 flex-wrap items-center">
+                      <span className="bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 px-2.5 py-1 rounded-lg font-bold border border-blue-200/50 dark:border-blue-800/50">
+                        📅 تاريخ ووقت الفاتورة: {invoices[selectedIndex].created_at ? new Date(invoices[selectedIndex].created_at).toLocaleString('ar-EG', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: true }) : invoices[selectedIndex].invoice_date || 'غير محدد'}
+                      </span>
+                      <span>المستلم: {invoices[selectedIndex].staff_name || 'غير محدد'}</span>
+                    </div>
+                  )}
+                </div>
                 
                 <div className="overflow-x-auto">
                   <table className="w-full text-right text-sm">
@@ -310,12 +332,26 @@ export default function PurchaseReturnClient() {
                         <tr key={idx} className="group">
                           <td className="p-3 font-medium text-slate-800 dark:text-slate-200">{item.drug_name}</td>
                           <td className="p-3 text-slate-500">
-                            {item.max_quantity} {item.original_unit === 'large' ? 'علبة' : item.original_unit === 'medium' ? 'شريط' : 'وحدة'}
+                            <div>{item.original_quantity} علبة</div>
+                            <div className="mt-1 text-[10px] font-bold text-emerald-600">
+                              المتبقي: {purchaseReturnQuantityForUnit(
+                                item.remaining_large_quantity,
+                                item.unit as PurchaseReturnUnit,
+                                item.large_to_medium,
+                                item.medium_to_small
+                              ).toFixed(2)} {item.unit === 'large' ? 'علبة' : item.unit === 'medium' ? 'شريط' : 'وحدة'}
+                            </div>
                           </td>
                           <td className="p-3 flex items-center justify-center gap-2">
                             <input
                               type="number"
                               min="0"
+                              max={purchaseReturnQuantityForUnit(
+                                item.remaining_large_quantity,
+                                item.unit as PurchaseReturnUnit,
+                                item.large_to_medium,
+                                item.medium_to_small
+                              )}
                               className="w-20 p-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-white focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                               value={item.quantity}
                               onChange={(e) => updateItem(idx, 'quantity', Number(e.target.value))}
@@ -331,14 +367,9 @@ export default function PurchaseReturnClient() {
                             </select>
                           </td>
                           <td className="p-3">
-                            <input
-                              type="number"
-                              min="0.01"
-                              step="0.01"
-                              className="w-full p-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-white focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                              value={item.unit_price}
-                              onChange={(e) => updateItem(idx, 'unit_price', Number(e.target.value))}
-                            />
+                            <div className="w-full p-2 bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded font-bold text-slate-900 dark:text-white">
+                              {Number(item.unit_price || 0).toFixed(2)}
+                            </div>
                           </td>
                           <td className="p-3 font-semibold text-slate-800 dark:text-slate-200">
                             {(item.quantity * item.unit_price).toFixed(2)} ج.م
