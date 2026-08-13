@@ -219,59 +219,52 @@ export default function PurchaseInvoiceClient() {
     if (!isEditingCompleted) handleSubmit(true);
   }, { enableOnFormTags: true }, [cart, selectedSupplier, invoiceHeader, isEditingCompleted]);
 
-
-  const handledDrugIdRef = React.useRef<string | null>(null)
-
-  // Unsaved purchases are deliberately discarded when leaving this screen.
-  useEffect(() => {
-    return () => resetPurchase()
-  }, [resetPurchase])
+  const handledDrugIdRef = React.useRef<string | null>(null);
 
   // Load suppliers
   useEffect(() => {
     getSuppliersAction().then(res => {
-      if (res.success) setSuppliers(res.data)
-    })
-  }, [])
+      if (res.success) setSuppliers(res.data);
+    });
+  }, []);
 
-  const searchParams = useSearchParams()
+  const searchParams = useSearchParams();
 
-  // Handle drugId and supplier_id from URL
+  // Handle drugId, supplier_id, edit_invoice_id from URL
   useEffect(() => {
-    const drugId = searchParams.get('drugId')
+    const drugId = searchParams.get('drugId');
     if (drugId && handledDrugIdRef.current !== drugId) {
-      handledDrugIdRef.current = drugId
+      handledDrugIdRef.current = drugId;
       
-      // Clean up URL parameters immediately to prevent duplicate runs on remounts
-      const newUrl = window.location.pathname
-      window.history.replaceState({}, '', newUrl)
+      const newUrl = window.location.pathname;
+      window.history.replaceState({}, '', newUrl);
 
       import('@/app/actions-client/master-drugs').then(({ getMasterDrugAction }) => {
         getMasterDrugAction(parseInt(drugId)).then(res => {
           if (res.success && res.data) {
-            addToCart(res.data)
-            toast.success(`تمت إضافة "${res.data.trade_name_en || res.data.trade_name}" للفاتورة تلقائياً`)
+            addToCart(res.data);
+            toast.success(`تمت إضافة "${res.data.trade_name_en || res.data.trade_name}" للفاتورة تلقائياً`);
           }
-        })
-      })
+        });
+      });
     }
 
-    const supplierIdParam = searchParams.get('supplier_id')
+    const supplierIdParam = searchParams.get('supplier_id');
     if (supplierIdParam && suppliers.length > 0) {
-      handleSupplierChange(parseInt(supplierIdParam), suppliers, true)
+      handleSupplierChange(parseInt(supplierIdParam), suppliers, true);
       
-      const newUrl = window.location.pathname
-      window.history.replaceState({}, '', newUrl)
+      const newUrl = window.location.pathname;
+      window.history.replaceState({}, '', newUrl);
     }
 
-    const editInvoiceId = searchParams.get('edit_invoice_id')
+    const editInvoiceId = searchParams.get('edit_invoice_id');
     if (editInvoiceId && handledDrugIdRef.current !== editInvoiceId && suppliers.length > 0) {
-      handledDrugIdRef.current = editInvoiceId
+      handledDrugIdRef.current = editInvoiceId;
       
-      const newUrl = window.location.pathname
-      window.history.replaceState({}, '', newUrl)
-      
-      toast.loading('جاري تحميل الفاتورة للتعديل...', { id: 'loading-edit' })
+      const newUrl = window.location.pathname;
+      window.history.replaceState({}, '', newUrl);
+
+      toast.loading('جاري تحميل الفاتورة للتعديل...', { id: 'loading-edit' });
       Promise.all([
         getPurchaseInvoiceAction(editInvoiceId),
         getPurchaseInvoiceDetailsAction(editInvoiceId)

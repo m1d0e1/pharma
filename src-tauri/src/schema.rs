@@ -208,6 +208,69 @@ async fn ensure_compatibility(
           FOREIGN KEY (user_id) REFERENCES users (id),
           FOREIGN KEY (shift_id) REFERENCES shifts (id)
         );
+
+        CREATE TABLE IF NOT EXISTS stock_adjustments (
+          id TEXT PRIMARY KEY,
+          pharmacy_id TEXT,
+          user_id TEXT NOT NULL,
+          inventory_id TEXT NOT NULL,
+          old_quantity REAL,
+          new_quantity REAL,
+          adjustment_quantity REAL NOT NULL,
+          reason TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS shortages (
+          id TEXT PRIMARY KEY,
+          drug_id INTEGER,
+          drug_name TEXT NOT NULL,
+          quantity_needed INTEGER DEFAULT 1,
+          priority TEXT DEFAULT 'normal',
+          status TEXT DEFAULT 'pending',
+          notes TEXT,
+          user_id TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS config (
+          key TEXT PRIMARY KEY,
+          value TEXT,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS drug_indications (id INTEGER PRIMARY KEY AUTOINCREMENT, drug_id INTEGER, indication TEXT);
+        CREATE TABLE IF NOT EXISTS drug_interactions (id INTEGER PRIMARY KEY AUTOINCREMENT, drug_1_id INTEGER, drug_2_id INTEGER, severity TEXT, description TEXT);
+        CREATE TABLE IF NOT EXISTS drug_alternatives (id INTEGER PRIMARY KEY AUTOINCREMENT, drug_id INTEGER, alternative_drug_id INTEGER);
+        CREATE TABLE IF NOT EXISTS indications (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT);
+        CREATE TABLE IF NOT EXISTS usage_methods (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT);
+        CREATE TABLE IF NOT EXISTS scientific_groups (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT);
+        CREATE TABLE IF NOT EXISTS item_natures (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT);
+        CREATE TABLE IF NOT EXISTS manufacturers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT);
+        CREATE TABLE IF NOT EXISTS units (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT);
+        CREATE TABLE IF NOT EXISTS product_categories (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT);
+        CREATE TABLE IF NOT EXISTS employee_jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT);
+        CREATE TABLE IF NOT EXISTS expenses (id TEXT PRIMARY KEY, category TEXT, amount REAL, notes TEXT, user_id TEXT, date TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE IF NOT EXISTS expense_definitions (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT);
+        CREATE TABLE IF NOT EXISTS banks (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT);
+        CREATE TABLE IF NOT EXISTS credit_cards (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT);
+        CREATE TABLE IF NOT EXISTS points_of_sale (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT);
+        CREATE TABLE IF NOT EXISTS commercial_papers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT);
+        CREATE TABLE IF NOT EXISTS opening_balances (id TEXT PRIMARY KEY, date TEXT, notes TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE IF NOT EXISTS opening_balance_items (id INTEGER PRIMARY KEY AUTOINCREMENT, opening_balance_id TEXT, drug_id INTEGER, quantity REAL, cost_price REAL);
+        CREATE TABLE IF NOT EXISTS adjustment_reasons (id INTEGER PRIMARY KEY AUTOINCREMENT, reason TEXT);
+        CREATE TABLE IF NOT EXISTS purchase_orders (id TEXT PRIMARY KEY, supplier_id INTEGER, status TEXT DEFAULT 'pending', total_amount REAL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE IF NOT EXISTS purchase_order_items (id INTEGER PRIMARY KEY AUTOINCREMENT, order_id TEXT, drug_id INTEGER, quantity INTEGER, cost_price REAL);
+        CREATE TABLE IF NOT EXISTS sync_metadata (key TEXT PRIMARY KEY, value TEXT, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS master_drugs_fts USING fts5(
+          trade_name,
+          trade_name_en,
+          active_ingredient,
+          barcode,
+          content='master_drugs',
+          content_rowid='id'
+        );
         "#,
     )
     .execute(&mut **transaction)
@@ -219,58 +282,62 @@ async fn ensure_compatibility(
         ("master_drugs", "item_nature", "item_nature TEXT"),
         ("master_drugs", "scientific_group", "scientific_group TEXT"),
         ("master_drugs", "usage_method", "usage_method TEXT"),
-        (
-            "master_drugs",
-            "active_ingredient_ratio",
-            "active_ingredient_ratio TEXT",
-        ),
+        ("master_drugs", "active_ingredient_ratio", "active_ingredient_ratio TEXT"),
         ("master_drugs", "is_table", "is_table INTEGER DEFAULT 0"),
         ("master_drugs", "indications", "indications TEXT"),
         ("master_drugs", "side_effects", "side_effects TEXT"),
+        ("master_drugs", "no_return", "no_return INTEGER DEFAULT 0"),
+        ("master_drugs", "barcode", "barcode TEXT"),
+        ("master_drugs", "generic_name", "generic_name TEXT"),
+        ("master_drugs", "manufacturer", "manufacturer TEXT"),
+        ("master_drugs", "is_medicine", "is_medicine INTEGER DEFAULT 1"),
+        ("master_drugs", "is_service", "is_service INTEGER DEFAULT 0"),
+        ("master_drugs", "is_refrigerated", "is_refrigerated INTEGER DEFAULT 0"),
+        ("master_drugs", "is_chronic", "is_chronic INTEGER DEFAULT 0"),
+        ("master_drugs", "has_expiry", "has_expiry INTEGER DEFAULT 1"),
+        ("master_drugs", "origin", "origin TEXT"),
+        ("master_drugs", "notes", "notes TEXT"),
+        ("master_drugs", "min_limit", "min_limit REAL DEFAULT 0"),
+        ("master_drugs", "max_limit", "max_limit REAL DEFAULT 0"),
+        ("master_drugs", "reorder_point", "reorder_point REAL DEFAULT 0"),
+        ("master_drugs", "default_purchase_qty", "default_purchase_qty REAL DEFAULT 1"),
+        ("master_drugs", "prevent_fractions", "prevent_fractions INTEGER DEFAULT 0"),
+        ("master_drugs", "tax_percent", "tax_percent REAL DEFAULT 0"),
+        ("master_drugs", "discount_percent", "discount_percent REAL DEFAULT 0"),
+        ("master_drugs", "stop_dealing", "stop_dealing INTEGER DEFAULT 0"),
+        ("inventory", "min_stock_level", "min_stock_level INTEGER DEFAULT 5"),
+        ("inventory", "supplier", "supplier TEXT"),
+        ("inventory", "unit_price", "unit_price REAL"),
+        ("inventory", "barcode", "barcode TEXT"),
+        ("inventory", "strips_per_box", "strips_per_box INTEGER DEFAULT 1"),
+        ("purchase_invoices", "expenses", "expenses REAL DEFAULT 0"),
+        ("purchase_invoices", "discount_value", "discount_value REAL DEFAULT 0"),
+        ("purchase_invoices", "discount_percent", "discount_percent REAL DEFAULT 0"),
+        ("purchase_invoices", "updated_at", "updated_at DATETIME"),
+        ("sales_invoices", "paid_amount", "paid_amount REAL DEFAULT 0"),
+        ("sales_invoices", "remaining_amount", "remaining_amount REAL DEFAULT 0"),
+        ("returns", "approved_by", "approved_by TEXT"),
         ("return_items", "drug_id", "drug_id INTEGER"),
         ("return_items", "total_price", "total_price REAL"),
         ("return_items", "sale_item_id", "sale_item_id INTEGER"),
         ("return_items", "unit", "unit TEXT DEFAULT 'large'"),
-        ("purchase_invoices", "updated_at", "updated_at DATETIME"),
-        (
-            "purchase_invoice_items",
-            "strips_per_box",
-            "strips_per_box INTEGER DEFAULT 1",
-        ),
-        (
-            "purchase_invoice_items",
-            "inventory_id",
-            "inventory_id TEXT",
-        ),
+        ("purchase_invoice_items", "strips_per_box", "strips_per_box INTEGER DEFAULT 1"),
+        ("purchase_invoice_items", "inventory_id", "inventory_id TEXT"),
         ("purchase_invoice_items", "barcode", "barcode TEXT"),
-        (
-            "purchase_returns",
-            "purchase_invoice_id",
-            "purchase_invoice_id TEXT",
-        ),
-        (
-            "purchase_return_items",
-            "purchase_invoice_item_id",
-            "purchase_invoice_item_id INTEGER",
-        ),
+        ("purchase_returns", "purchase_invoice_id", "purchase_invoice_id TEXT"),
+        ("purchase_return_items", "purchase_invoice_item_id", "purchase_invoice_item_id INTEGER"),
         ("purchase_return_items", "unit", "unit TEXT DEFAULT 'large'"),
-        (
-            "patients",
-            "opening_balance",
-            "opening_balance REAL DEFAULT 0",
-        ),
-        (
-            "patients",
-            "wallet_balance",
-            "wallet_balance REAL DEFAULT 0",
-        ),
-        (
-            "patients",
-            "points_balance",
-            "points_balance REAL DEFAULT 0",
-        ),
+        ("patients", "name_en", "name_en TEXT"),
+        ("patients", "loyalty_level", "loyalty_level TEXT DEFAULT 'silver'"),
+        ("patients", "opening_balance", "opening_balance REAL DEFAULT 0"),
+        ("patients", "wallet_balance", "wallet_balance REAL DEFAULT 0"),
+        ("patients", "points_balance", "points_balance REAL DEFAULT 0"),
         ("financial_notices", "target_type", "target_type TEXT"),
         ("financial_notices", "target_id", "target_id TEXT"),
+        ("shifts", "ending_cash", "ending_cash REAL"),
+        ("shifts", "notes", "notes TEXT"),
+        ("cash_movements", "sub_category", "sub_category TEXT"),
+        ("cash_movements", "actual_date", "actual_date TEXT"),
         ("cash_movements", "source_type", "source_type TEXT"),
         ("cash_movements", "target_name", "target_name TEXT"),
     ] {

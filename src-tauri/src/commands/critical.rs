@@ -567,22 +567,13 @@ async fn create_return_tx(
     if !invoice_status.is_empty() && invoice_status != "completed" && invoice_status != "approved" {
         return Err("Only completed sales invoices can be returned".into());
     }
-    let invoice_payment = invoice
-        .try_get::<Option<String>, _>("payment_method")
-        .unwrap_or(None)
-        .unwrap_or_else(|| "cash".into())
-        .to_ascii_lowercase();
-    let required_refund_method = match invoice_payment.as_str() {
-        "credit" => "patient_account",
-        "wallet" => "wallet",
-        "visa" | "check" => "bank",
-        _ => "cash",
-    };
-    if payload.refund_method != required_refund_method {
-        return Err(format!(
-            "A {} sale must be refunded via {}",
-            invoice_payment, required_refund_method
-        ));
+    if payload.refund_method == "patient_account" || payload.refund_method == "wallet" {
+        let invoice_patient = invoice
+            .try_get::<Option<String>, _>("patient_id")
+            .unwrap_or(None);
+        if invoice_patient.is_none() {
+            return Err("Patient account refund requires a patient linked to the invoice".into());
+        }
     }
     let invoice_pharmacy_raw = invoice
         .try_get::<Option<String>, _>("pharmacy_id")

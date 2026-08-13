@@ -359,12 +359,14 @@ export async function searchInvoicesForReturnAction(filters: {
     if (!user || !hasUserPermissionSync(user, 'can_view_returns')) return { success: false, error: 'غير مصرح' };
 
     let query = `
-      SELECT DISTINCT si.id, si.total_amount, si.created_at, p.full_name as patient_name, si.payment_method
+      SELECT DISTINCT si.id, si.total_amount, si.created_at, p.full_name as patient_name, u.full_name as user_name, si.payment_method
       FROM sales_invoices si
       LEFT JOIN patients p ON si.patient_id = p.id
+      LEFT JOIN users u ON si.user_id = u.id
       LEFT JOIN sales_items sit ON sit.invoice_id = si.id
       LEFT JOIN master_drugs md ON sit.drug_id = md.id
-      WHERE 1=1
+      LEFT JOIN inventory inv ON sit.inventory_id = inv.id
+      WHERE (si.status IS NULL OR si.status = 'completed' OR si.status = 'approved' OR si.status = '')
     `;
     const params: any[] = [];
 
@@ -389,8 +391,8 @@ export async function searchInvoicesForReturnAction(filters: {
       params.push(filters.drugId);
     }
     if (filters.barcode) {
-      query += ` AND md.barcode = ?`;
-      params.push(filters.barcode);
+      query += ` AND (md.barcode = ? OR inv.barcode = ?)`;
+      params.push(filters.barcode, filters.barcode);
     }
 
     query += ` ORDER BY si.created_at DESC LIMIT 50`;
@@ -401,6 +403,52 @@ export async function searchInvoicesForReturnAction(filters: {
   } catch (error) {
     console.error('Search invoices error:', error);
     return { success: false, error: 'فشل البحث عن الفواتير' };
+  }
+}
+
+/**
+ * Search return invoices from the last 14 days by drug name, barcode, invoice ID or patient
+ */
+export async function searchRecentReturnInvoicesAction(searchTerm: string, days = 14) {
+  try {
+    const user = await getLocalSession();
+    if (!user || !hasUserPermissionSync(user, 'can_view_returns')) return { success: false, error: 'غير مصرح', data: [] };
+
+    await ensureReturnItemsSchema();
+    const term = searchTerm.trim();
+    if (!term) return { success: true, data: [] };
+
+    const query = `
+      SELECT DISTINCT 
+        si.id, si.total_amount, si.created_at, si.payment_method,
+        p.full_name AS patient_name,
+        u.full_name AS user_name
+      FROM sales_invoices si
+      LEFT JOIN patients p ON si.patient_id = p.id
+      LEFT JOIN users u ON si.user_id = u.id
+      LEFT JOIN sales_items sit ON sit.invoice_id = si.id
+      LEFT JOIN master_drugs md ON sit.drug_id = md.id
+      LEFT JOIN inventory inv ON sit.inventory_id = inv.id
+      WHERE (si.status IS NULL OR si.status = 'completed' OR si.status = 'approved' OR si.status = '')
+        AND (datetime(si.created_at) >= datetime('now', '-${days} days') OR date(si.created_at) >= date('now', '-${days} days'))
+        AND (
+          si.id LIKE ? OR
+          p.full_name LIKE ? OR
+          md.trade_name LIKE ? OR
+          md.trade_name_en LIKE ? OR
+          md.active_ingredient LIKE ? OR
+          md.barcode = ? OR
+          inv.barcode = ?
+        )
+      ORDER BY si.created_at DESC
+      LIMIT 50
+    `;
+    const wildcard = `%${term}%`;
+    const invoices = await db.prepare(query).all(wildcard, wildcard, wildcard, wildcard, wildcard, term, term) as any[];
+    return { success: true, data: invoices };
+  } catch (error: any) {
+    console.error('searchRecentReturnInvoicesAction error:', error);
+    return { success: false, error: error.message || 'فشل البحث في مرتجع المبيعات', data: [] };
   }
 }
 
@@ -428,6 +476,7 @@ export async function getInvoiceForReturnAction(invoiceId: string) {
         sit.*, 
         md.trade_name, 
         md.trade_name_en,
+        md.active_ingredient,
         md.id as drug_id,
         md.large_to_medium,
         md.medium_to_small,
@@ -436,7 +485,7 @@ export async function getInvoiceForReturnAction(invoiceId: string) {
           SELECT SUM(ri.quantity_returned)
           FROM return_items ri
           JOIN returns r ON ri.return_id = r.id
-          WHERE r.invoice_id = ? AND r.status = 'approved' AND ri.sale_item_id = sit.id
+          WHERE r.invoice_id = ? AND (r.status = 'approved' OR r.status = 'completed') AND ri.sale_item_id = sit.id
         ), 0) as returned_quantity
       FROM sales_items sit
       LEFT JOIN inventory i ON sit.inventory_id = i.id
@@ -444,24 +493,36 @@ export async function getInvoiceForReturnAction(invoiceId: string) {
       WHERE sit.invoice_id = ?
     `).all(invoiceId, invoiceId) as any[];
 
+    const isGenericPlaceholder = (name?: string) => !name || /^Drug\s*#?\s*\d+$/i.test(String(name).trim());
+
     return {
       success: true,
       data: {
         ...invoice,
-        items: items.map(i => ({
-          id: i.id,
-          inventory_id: i.inventory_id,
-          drug_id: i.drug_id,
-          drug_name: i.trade_name,
-          drug_name_en: i.trade_name_en,
-          quantity_sold: i.quantity_sold,
-          returned_quantity: i.returned_quantity,
-          unit_price: i.unit_price,
-          unit: i.unit,
-          expiry_date: i.expiry_date,
-          large_to_medium: i.large_to_medium,
-          medium_to_small: i.medium_to_small
-        }))
+        items: items.map(i => {
+          let resolvedName = i.trade_name;
+          if (isGenericPlaceholder(resolvedName)) {
+            if (i.trade_name_en && !isGenericPlaceholder(i.trade_name_en)) {
+              resolvedName = i.trade_name_en;
+            } else if (i.active_ingredient && !isGenericPlaceholder(i.active_ingredient)) {
+              resolvedName = i.active_ingredient;
+            }
+          }
+          return {
+            id: i.id,
+            inventory_id: i.inventory_id,
+            drug_id: i.drug_id,
+            drug_name: resolvedName || `صنف #${i.drug_id}`,
+            drug_name_en: i.trade_name_en,
+            quantity_sold: i.quantity_sold,
+            returned_quantity: i.returned_quantity,
+            unit_price: i.unit_price,
+            unit: i.unit,
+            expiry_date: i.expiry_date,
+            large_to_medium: i.large_to_medium,
+            medium_to_small: i.medium_to_small
+          };
+        })
       }
     };
   } catch (error) {

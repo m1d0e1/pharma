@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { getInvoiceForReturnAction, createReturnAction, getSalesInvoicesByDateAction } from '@/app/actions-client/returns';
+import { getInvoiceForReturnAction, createReturnAction, getSalesInvoicesByDateAction, searchRecentReturnInvoicesAction } from '@/app/actions-client/returns';
 import { Search, Save, Trash2, ArrowRight, Calendar, FileText } from 'lucide-react';
 import Link from 'next/link';
 import { toast } from 'react-hot-toast';
@@ -11,6 +11,7 @@ export default function SalesReturnClient() {
   const router = useRouter();
   const listRef = React.useRef<HTMLDivElement>(null);
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+  const [searchTerm, setSearchTerm] = useState('');
   const [invoicesByDate, setInvoicesByDate] = useState<any[]>([]);
   const [invoiceId, setInvoiceId] = useState('');
   const [invoice, setInvoice] = useState<any>(null);
@@ -22,18 +23,31 @@ export default function SalesReturnClient() {
 
   const [selectedIndex, setSelectedIndex] = useState<number>(-1);
 
-  // Fetch invoices when date changes
+  // Fetch invoices by date or search term (last 14 days)
   React.useEffect(() => {
     async function fetchInvoices() {
-      const res = await getSalesInvoicesByDateAction(selectedDate);
-      if (res.success) {
-        const list = res.data || [];
-        setInvoicesByDate(list);
-        setSelectedIndex(list.length > 0 ? 0 : -1);
+      setIsSearching(true);
+      if (searchTerm.trim()) {
+        const res = await searchRecentReturnInvoicesAction(searchTerm, 14);
+        setIsSearching(false);
+        if (res.success) {
+          const list = res.data || [];
+          setInvoicesByDate(list);
+          setSelectedIndex(list.length > 0 ? 0 : -1);
+        }
+      } else {
+        const res = await getSalesInvoicesByDateAction(selectedDate);
+        setIsSearching(false);
+        if (res.success) {
+          const list = res.data || [];
+          setInvoicesByDate(list);
+          setSelectedIndex(list.length > 0 ? 0 : -1);
+        }
       }
     }
-    fetchInvoices();
-  }, [selectedDate]);
+    const timer = setTimeout(fetchInvoices, 250);
+    return () => clearTimeout(timer);
+  }, [selectedDate, searchTerm]);
   // Fetch details of selected invoice
   React.useEffect(() => {
     if (selectedIndex >= 0 && selectedIndex < invoicesByDate.length) {
@@ -196,16 +210,34 @@ export default function SalesReturnClient() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left column: Date selection & Invoice list */}
         <div className="lg:col-span-1 space-y-4">
-          <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-4">
-            <label className="block text-xs font-bold text-slate-500 mb-2">تاريخ الفواتير</label>
-            <div className="relative">
-              <Calendar className="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
-              <input
-                type="date"
-                className="w-full pl-4 pr-10 py-2.5 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold text-slate-900 dark:text-white"
-                value={selectedDate}
-                onChange={(e) => setSelectedDate(e.target.value)}
-              />
+          <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-4 space-y-3">
+            <div>
+              <label className="block text-xs font-bold text-slate-500 mb-1.5">البحث باسم الدواء أو البار كود (آخر 14 يوم)</label>
+              <div className="relative">
+                <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder="اسم الدواء، البار كود، رقم الفاتورة..."
+                  className="w-full pl-4 pr-9 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold text-xs text-slate-900 dark:text-white"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                />
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-slate-500 mb-1.5">أو اختر تاريخ الفاتورة</label>
+              <div className="relative">
+                <Calendar className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                <input
+                  type="date"
+                  className="w-full pl-4 pr-9 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold text-xs text-slate-900 dark:text-white"
+                  value={selectedDate}
+                  onChange={(e) => {
+                    setSelectedDate(e.target.value);
+                    setSearchTerm('');
+                  }}
+                />
+              </div>
             </div>
           </div>
 

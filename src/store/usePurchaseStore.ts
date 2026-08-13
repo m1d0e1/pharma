@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 import { PurchaseItem, PurchaseInvoiceHeader, Supplier } from '@/types/purchases';
 
 interface PurchaseState {
@@ -26,6 +27,7 @@ const initialHeader: PurchaseInvoiceHeader = {
 };
 
 export const usePurchaseStore = create<PurchaseState>()(
+  persist(
     (set) => ({
       cart: [],
       selectedSupplier: null,
@@ -43,5 +45,9 @@ export const usePurchaseStore = create<PurchaseState>()(
         selectedSupplier: null,
         header: initialHeader,
       }),
-    })
+    }),
+    {
+      name: 'pharma_purchase_draft_v1',
+    }
+  )
 );

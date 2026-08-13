@@ -208,14 +208,14 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
             return;
           }
 
-          toast.loading(`جاري استيراد ${data.length} صنف للمخزون...`, { id: toastId });
+          toast.loading(`جاري استيراد ${data.length} سجل مخزون (تشغيلات)...`, { id: toastId });
 
           const imported = await importInventoryWorkbookRows(data, drugs, pharmacyId || 'local_default');
 
           const { secureCache } = await import('@/lib/cache/secure_cache');
           await secureCache.reload();
 
-          toast.success(`تم استيراد ${imported.inventoryCount} صنف للمخزون بنجاح!`, { id: toastId });
+          toast.success(`تم استيراد ${imported.inventoryCount} سجل مخزون لـ ${imported.masterDrugCount} صنف دوائي بنجاح!`, { id: toastId });
           onRefresh();
         } catch (err: any) {
           console.error(err);
