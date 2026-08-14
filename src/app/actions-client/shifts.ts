@@ -246,12 +246,40 @@ export async function getCurrentShiftAction() {
     const user = await getLocalSession();
     if (!user) return { success: false, error: 'غير مصرح' };
 
-    const shift = await db.prepare(`
+    let shift = await db.prepare(`
       SELECT id, user_id, start_time as shift_start, starting_cash as starting_cash_amount, status
       FROM shifts 
-      WHERE user_id = ? AND status = 'open'
+      WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
       ORDER BY start_time DESC LIMIT 1
     `).get(user.id) as any;
+
+    if (!shift) {
+      shift = await db.prepare(`
+        SELECT id, user_id, start_time as shift_start, starting_cash as starting_cash_amount, status
+        FROM shifts 
+        WHERE status = 'open'
+        ORDER BY start_time DESC LIMIT 1
+      `).get() as any;
+    }
+
+    if (!shift) {
+      const firstSale = await db.prepare(`
+        SELECT created_at FROM sales_invoices 
+        WHERE (CAST(user_id AS TEXT) = CAST(? AS TEXT) OR user_id IS NULL) 
+          AND DATE(created_at) = DATE('now', 'localtime')
+        ORDER BY created_at ASC LIMIT 1
+      `).get(user.id) as any;
+
+      const newShiftId = generateId();
+      const startTime = firstSale?.created_at || new Date().toISOString().replace('T', ' ').substring(0, 19);
+
+      await db.prepare(`
+        INSERT INTO shifts (id, user_id, start_time, starting_cash, status)
+        VALUES (?, ?, ?, 0, 'open')
+      `).run(newShiftId, user.id, startTime);
+
+      shift = { id: newShiftId, user_id: user.id, shift_start: startTime, starting_cash_amount: 0, status: 'open' };
+    }
 
     return { 
       success: true, 

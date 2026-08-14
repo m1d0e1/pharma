@@ -1430,15 +1430,32 @@ async fn process_checkout_tx(
     }
 
     let mut shift_id_to_use = payload.shift_id.clone().filter(|s| !s.trim().is_empty());
-    if shift_id_to_use.is_none() && !payload.user_id.trim().is_empty() {
-        if let Ok(Some(open_shift_id)) = sqlx::query_scalar::<_, String>(
-            "SELECT id FROM shifts WHERE user_id = ? AND status = 'open' ORDER BY start_time DESC LIMIT 1"
-        )
-        .bind(&payload.user_id)
-        .fetch_optional(&mut **tx)
-        .await
-        {
-            shift_id_to_use = Some(open_shift_id);
+    if shift_id_to_use.is_none() {
+        if !payload.user_id.trim().is_empty() {
+            if let Ok(Some(open_shift_id)) = sqlx::query_scalar::<_, String>(
+                "SELECT id FROM shifts WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open' ORDER BY start_time DESC LIMIT 1"
+            )
+            .bind(&payload.user_id)
+            .fetch_optional(&mut **tx)
+            .await
+            {
+                shift_id_to_use = Some(open_shift_id);
+            }
+        }
+        if shift_id_to_use.is_none() {
+            let auto_shift_id = uuid::Uuid::new_v4().to_string();
+            let auto_user_id = if payload.user_id.trim().is_empty() { "admin" } else { payload.user_id.trim() };
+            if sqlx::query(
+                "INSERT INTO shifts (id, user_id, start_time, starting_cash, status) VALUES (?, ?, CURRENT_TIMESTAMP, 0, 'open')"
+            )
+            .bind(&auto_shift_id)
+            .bind(auto_user_id)
+            .execute(&mut **tx)
+            .await
+            .is_ok()
+            {
+                shift_id_to_use = Some(auto_shift_id);
+            }
         }
     }
 

@@ -68,9 +68,16 @@ const HANDOVER_DETAILS_SQL = `
       WHERE (si.status IS NULL OR si.status = '' OR si.status = 'completed' OR si.status = 'approved')
         AND (
           si.shift_id = s.id OR
-          ((si.shift_id IS NULL OR TRIM(si.shift_id) = '') AND (si.user_id = s.user_id OR si.user_id IS NULL OR TRIM(si.user_id) = '')
-            AND (datetime(si.created_at) >= datetime(s.start_time) OR si.created_at >= s.start_time)
-            AND (s.end_time IS NULL OR datetime(si.created_at) <= datetime(s.end_time) OR si.created_at <= s.end_time))
+          (
+            (si.shift_id IS NULL OR TRIM(si.shift_id) = '') AND
+            (CAST(si.user_id AS TEXT) = CAST(s.user_id AS TEXT) OR si.user_id IS NULL OR s.user_id IS NULL) AND
+            (
+              datetime(si.created_at) >= datetime(s.start_time, '-12 hours') OR
+              si.created_at >= s.start_time OR
+              date(si.created_at) = date(s.start_time)
+            ) AND
+            (s.end_time IS NULL OR datetime(si.created_at) <= datetime(s.end_time, '+12 hours') OR si.created_at <= s.end_time)
+          )
         )
     ) AS cash_sales,
     (
@@ -79,9 +86,16 @@ const HANDOVER_DETAILS_SQL = `
       WHERE (si.status IS NULL OR si.status = '' OR si.status = 'completed' OR si.status = 'approved')
         AND (
           si.shift_id = s.id OR
-          ((si.shift_id IS NULL OR TRIM(si.shift_id) = '') AND (si.user_id = s.user_id OR si.user_id IS NULL OR TRIM(si.user_id) = '')
-            AND (datetime(si.created_at) >= datetime(s.start_time) OR si.created_at >= s.start_time)
-            AND (s.end_time IS NULL OR datetime(si.created_at) <= datetime(s.end_time) OR si.created_at <= s.end_time))
+          (
+            (si.shift_id IS NULL OR TRIM(si.shift_id) = '') AND
+            (CAST(si.user_id AS TEXT) = CAST(s.user_id AS TEXT) OR si.user_id IS NULL OR s.user_id IS NULL) AND
+            (
+              datetime(si.created_at) >= datetime(s.start_time, '-12 hours') OR
+              si.created_at >= s.start_time OR
+              date(si.created_at) = date(s.start_time)
+            ) AND
+            (s.end_time IS NULL OR datetime(si.created_at) <= datetime(s.end_time, '+12 hours') OR si.created_at <= s.end_time)
+          )
         )
     ) AS visa_sales,
     (
@@ -90,9 +104,16 @@ const HANDOVER_DETAILS_SQL = `
       WHERE (si.status IS NULL OR si.status = '' OR si.status = 'completed' OR si.status = 'approved')
         AND (
           si.shift_id = s.id OR
-          ((si.shift_id IS NULL OR TRIM(si.shift_id) = '') AND (si.user_id = s.user_id OR si.user_id IS NULL OR TRIM(si.user_id) = '')
-            AND (datetime(si.created_at) >= datetime(s.start_time) OR si.created_at >= s.start_time)
-            AND (s.end_time IS NULL OR datetime(si.created_at) <= datetime(s.end_time) OR si.created_at <= s.end_time))
+          (
+            (si.shift_id IS NULL OR TRIM(si.shift_id) = '') AND
+            (CAST(si.user_id AS TEXT) = CAST(s.user_id AS TEXT) OR si.user_id IS NULL OR s.user_id IS NULL) AND
+            (
+              datetime(si.created_at) >= datetime(s.start_time, '-12 hours') OR
+              si.created_at >= s.start_time OR
+              date(si.created_at) = date(s.start_time)
+            ) AND
+            (s.end_time IS NULL OR datetime(si.created_at) <= datetime(s.end_time, '+12 hours') OR si.created_at <= s.end_time)
+          )
         )
     ) AS credit_sales,
     (
@@ -102,26 +123,47 @@ const HANDOVER_DETAILS_SQL = `
         AND (r.status IS NULL OR r.status = '' OR r.status IN ('approved', 'completed'))
         AND (
           r.shift_id = s.id OR
-          ((r.shift_id IS NULL OR TRIM(r.shift_id) = '') AND (r.user_id = s.user_id OR r.user_id IS NULL OR TRIM(r.user_id) = '')
-            AND (datetime(r.created_at) >= datetime(s.start_time) OR r.created_at >= s.start_time)
-            AND (s.end_time IS NULL OR datetime(r.created_at) <= datetime(s.end_time) OR r.created_at <= s.end_time))
+          (
+            (r.shift_id IS NULL OR TRIM(r.shift_id) = '') AND
+            (CAST(r.user_id AS TEXT) = CAST(s.user_id AS TEXT) OR r.user_id IS NULL OR s.user_id IS NULL) AND
+            (
+              datetime(r.created_at) >= datetime(s.start_time, '-12 hours') OR
+              r.created_at >= s.start_time OR
+              date(r.created_at) = date(s.start_time)
+            ) AND
+            (s.end_time IS NULL OR datetime(r.created_at) <= datetime(s.end_time, '+12 hours') OR r.created_at <= s.end_time)
+          )
         )
     ) AS returns,
     (
       SELECT COALESCE(SUM(CASE WHEN cm.type IN ('receipt', 'in') THEN CAST(cm.amount AS REAL) ELSE 0 END), 0)
       FROM cash_movements cm
       WHERE cm.shift_id = s.id OR
-        ((cm.shift_id IS NULL OR TRIM(cm.shift_id) = '') AND (cm.user_id = s.user_id OR cm.user_id IS NULL OR TRIM(cm.user_id) = '')
-          AND (datetime(cm.created_at) >= datetime(s.start_time) OR cm.created_at >= s.start_time)
-          AND (s.end_time IS NULL OR datetime(cm.created_at) <= datetime(s.end_time) OR cm.created_at <= s.end_time))
+        (
+          (cm.shift_id IS NULL OR TRIM(cm.shift_id) = '') AND
+          (CAST(cm.user_id AS TEXT) = CAST(s.user_id AS TEXT) OR cm.user_id IS NULL OR s.user_id IS NULL) AND
+          (
+            datetime(cm.created_at) >= datetime(s.start_time, '-12 hours') OR
+            cm.created_at >= s.start_time OR
+            date(cm.created_at) = date(s.start_time)
+          ) AND
+          (s.end_time IS NULL OR datetime(cm.created_at) <= datetime(s.end_time, '+12 hours') OR cm.created_at <= s.end_time)
+        )
     ) AS receipts,
     (
       SELECT COALESCE(SUM(CASE WHEN cm.type IN ('disbursement', 'out') THEN CAST(cm.amount AS REAL) ELSE 0 END), 0)
       FROM cash_movements cm
       WHERE cm.shift_id = s.id OR
-        ((cm.shift_id IS NULL OR TRIM(cm.shift_id) = '') AND (cm.user_id = s.user_id OR cm.user_id IS NULL OR TRIM(cm.user_id) = '')
-          AND (datetime(cm.created_at) >= datetime(s.start_time) OR cm.created_at >= s.start_time)
-          AND (s.end_time IS NULL OR datetime(cm.created_at) <= datetime(s.end_time) OR cm.created_at <= s.end_time))
+        (
+          (cm.shift_id IS NULL OR TRIM(cm.shift_id) = '') AND
+          (CAST(cm.user_id AS TEXT) = CAST(s.user_id AS TEXT) OR cm.user_id IS NULL OR s.user_id IS NULL) AND
+          (
+            datetime(cm.created_at) >= datetime(s.start_time, '-12 hours') OR
+            cm.created_at >= s.start_time OR
+            date(cm.created_at) = date(s.start_time)
+          ) AND
+          (s.end_time IS NULL OR datetime(cm.created_at) <= datetime(s.end_time, '+12 hours') OR cm.created_at <= s.end_time)
+        )
     ) AS disbursements
   FROM shifts s
   LEFT JOIN users u ON u.id = s.user_id
@@ -246,13 +288,40 @@ export async function getOpenShiftHandoverAction() {
   try {
     const user = await getLocalSession();
     if (!user) return { success: false, error: 'غير مصرح', data: null };
-    const shift = await db.prepare(`
+    let shift = await db.prepare(`
       SELECT id, user_id, start_time, starting_cash, status
       FROM shifts
-      WHERE user_id = ? AND status = 'open'
+      WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
       ORDER BY start_time DESC
       LIMIT 1
     `).get(user.id);
+    if (!shift) {
+      shift = await db.prepare(`
+        SELECT id, user_id, start_time, starting_cash, status
+        FROM shifts
+        WHERE status = 'open'
+        ORDER BY start_time DESC
+        LIMIT 1
+      `).get();
+    }
+    if (!shift) {
+      const firstSale = await db.prepare(`
+        SELECT created_at FROM sales_invoices 
+        WHERE (CAST(user_id AS TEXT) = CAST(? AS TEXT) OR user_id IS NULL) 
+          AND DATE(created_at) = DATE('now', 'localtime')
+        ORDER BY created_at ASC LIMIT 1
+      `).get(user.id) as any;
+
+      const newShiftId = generateId();
+      const startTime = firstSale?.created_at || new Date().toISOString().replace('T', ' ').substring(0, 19);
+
+      await db.prepare(`
+        INSERT INTO shifts (id, user_id, start_time, starting_cash, status)
+        VALUES (?, ?, ?, 0, 'open')
+      `).run(newShiftId, user.id, startTime);
+
+      shift = { id: newShiftId, user_id: user.id, start_time: startTime, starting_cash: 0, status: 'open' };
+    }
     return { success: true, data: shift || null };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : 'فشل جلب الوردية المفتوحة', data: null };

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { persist, createJSONStorage } from 'zustand/middleware';
 import { PurchaseItem, PurchaseInvoiceHeader, Supplier } from '@/types/purchases';
 
 interface PurchaseState {
@@ -48,6 +48,7 @@ export const usePurchaseStore = create<PurchaseState>()(
     }),
     {
       name: 'pharma_purchase_draft_v1',
+      storage: createJSONStorage(() => localStorage),
     }
   )
 );
