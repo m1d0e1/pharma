@@ -544,21 +544,71 @@ export async function checkClinicalSafetyAction(patientId: string, activeIngredi
 /**
  * Get items with low stock (quantity < 10 or custom threshold)
  */
-export async function getLowStockAction(threshold: number = 10) {
+export async function getLowStockAction(threshold?: number) {
   try {
     const user = await getLocalSession();
     if (!user) return { success: false, error: 'غير مصرح' };
 
+    const defaultLimit = Number(threshold) > 0 ? Number(threshold) : 10;
+
     const items = await db.prepare(`
-      SELECT m.id as id, m.id as drug_id, SUM(i.quantity) as quantity, MIN(i.local_selling_price) as local_selling_price, MIN(i.expiry_date) as expiry_date,
-             m.trade_name, m.active_ingredient, m.manufacturer, m.trade_name_en, m.official_price,
-             COALESCE(NULLIF(m.barcode, ''), NULLIF(i.barcode, '')) as barcode
+      WITH DrugStock AS (
+        SELECT 
+          drug_id,
+          SUM(quantity) AS current_stock,
+          MIN(local_selling_price) AS local_selling_price,
+          MIN(expiry_date) AS nearest_expiry,
+          MAX(barcode) AS lot_barcode
+        FROM inventory
+        WHERE quantity > 0
+        GROUP BY drug_id
+      ),
+      MonthlySales AS (
+        SELECT 
+          si.drug_id,
+          SUM(si.quantity_sold) AS avg_monthly_usage
+        FROM sales_items si
+        JOIN sales_invoices inv ON si.invoice_id = inv.id
+        WHERE si.is_negative = 0 
+          AND inv.created_at >= datetime('now', '-30 days', 'localtime')
+        GROUP BY si.drug_id
+      )
+      SELECT 
+        m.id,
+        m.id AS drug_id,
+        COALESCE(ds.current_stock, 0) AS quantity,
+        COALESCE(ds.local_selling_price, m.official_price, 0) AS local_selling_price,
+        ds.nearest_expiry AS expiry_date,
+        m.trade_name,
+        m.trade_name_en,
+        m.active_ingredient,
+        m.generic_name,
+        m.manufacturer,
+        m.category,
+        COALESCE(NULLIF(m.barcode, ''), NULLIF(ds.lot_barcode, '')) AS barcode,
+        COALESCE(m.official_price, 0) AS official_price,
+        COALESCE(NULLIF(m.reorder_point, 0), NULLIF(m.min_limit, 0), ?) AS reorder_point,
+        COALESCE(NULLIF(m.default_purchase_qty, 0), 1) AS default_purchase_qty,
+        COALESCE(ms.avg_monthly_usage, 0) AS avg_monthly_usage,
+        MAX(0, COALESCE(NULLIF(m.reorder_point, 0), NULLIF(m.min_limit, 0), ?) - COALESCE(ds.current_stock, 0)) AS deficit,
+        CASE 
+          WHEN COALESCE(ds.current_stock, 0) <= 0 THEN 'out_of_stock'
+          WHEN COALESCE(ds.current_stock, 0) <= (COALESCE(NULLIF(m.reorder_point, 0), NULLIF(m.min_limit, 0), ?) / 2) THEN 'critical'
+          ELSE 'low'
+        END AS status
       FROM master_drugs m
-      JOIN inventory i ON CAST(m.id AS TEXT) = CAST(i.drug_id AS TEXT)
-      GROUP BY m.id
-      HAVING SUM(i.quantity) < ?
-      ORDER BY quantity ASC
-    `).all(threshold) as any[];
+      LEFT JOIN DrugStock ds ON CAST(m.id AS TEXT) = CAST(ds.drug_id AS TEXT)
+      LEFT JOIN MonthlySales ms ON CAST(m.id AS TEXT) = CAST(ms.drug_id AS TEXT)
+      WHERE (
+        (ds.current_stock IS NOT NULL AND ds.current_stock <= COALESCE(NULLIF(m.reorder_point, 0), NULLIF(m.min_limit, 0), ?))
+        OR (ds.current_stock IS NULL AND (m.reorder_point > 0 OR m.min_limit > 0 OR ms.avg_monthly_usage > 0))
+      )
+      ORDER BY 
+        CASE WHEN COALESCE(ds.current_stock, 0) <= 0 THEN 0 ELSE 1 END,
+        deficit DESC,
+        quantity ASC
+      LIMIT 250
+    `).all(defaultLimit, defaultLimit, defaultLimit, defaultLimit) as any[];
 
     return { success: true, data: items };
   } catch (error) {
@@ -1000,7 +1050,45 @@ export async function addOpeningBalanceAction(data: {
     return { success: false, error: err.message || (typeof err === 'string' ? err : 'Error saving balance') };
   }
 }
-export async function getRestockItemsAction() { return { success: false, data: [] }; }
+export async function getRestockItemsAction() {
+  try {
+    const user = await getLocalSession();
+    if (!user) return { success: false, error: 'غير مصرح' };
+
+    const lowStockRes = await getLowStockAction(10);
+    if (!lowStockRes.success) return { success: false, data: [] };
+
+    const items = (lowStockRes.data || []).map((item: any) => {
+      const suggestedOrder = Math.max(
+        Number(item.default_purchase_qty || 1),
+        Number(item.deficit || 1),
+        Math.ceil(Number(item.avg_monthly_usage || 0))
+      );
+
+      return {
+        id: String(item.id),
+        drug_id: item.drug_id,
+        quantity: item.quantity,
+        min_stock_level: item.reorder_point,
+        suggested_order: suggestedOrder,
+        master_drugs: {
+          id: item.drug_id,
+          trade_name: item.trade_name_en || item.trade_name,
+          trade_name_ar: item.trade_name,
+          official_price: item.official_price || item.local_selling_price || 0,
+          category: item.category || '',
+          manufacturer: item.manufacturer || '',
+          barcode: item.barcode || ''
+        }
+      };
+    });
+
+    return { success: true, data: items };
+  } catch (error: any) {
+    console.error('getRestockItemsAction error:', error);
+    return { success: false, error: error.message };
+  }
+}
 export async function getAdjustmentsAction() { return { success: false, data: [] }; }
 export async function getUnusedDrugsAction() {
   const { getUnusedItemsAction } = await import('./master-drugs');

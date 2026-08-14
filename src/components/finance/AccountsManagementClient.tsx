@@ -14,6 +14,7 @@ import {
 import { cn } from '@/lib/utils';
 import { FinancialNoticeForm } from './FinancialComponents';
 import TrialBalanceSettingsClient from './TrialBalanceSettingsClient';
+import TrialBalanceReport from '@/components/reports/TrialBalanceReport';
 import CashTransactionsClient from './CashTransactionsClient';
 import ShiftManagementClient from '../shifts/ShiftManagementClient';
 import { getExpensesAction } from '@/app/actions-client/expenses';
@@ -49,6 +50,7 @@ const ACCOUNT_TABS = [
   { group: 'المحاسبة العامة', items: [
     { id: 'chart_of_accounts', label: 'شجرة الحسابات', icon: Database, color: 'text-slate-600', bg: 'bg-slate-50' },
     { id: 'daily_journals', label: 'القيود اليومية', icon: FileText, color: 'text-blue-600', bg: 'bg-blue-50' },
+    { id: 'trial_balance', label: 'ميزان المراجعة', icon: BarChart3, color: 'text-purple-600', bg: 'bg-purple-50' },
     { id: 'trial_balance_settings', label: 'إعدادات الميزان', icon: Settings, color: 'text-blue-600', bg: 'bg-blue-50' },
   ]},
   
@@ -789,6 +791,12 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                     userRole={userRole}
                     staffList={staffList}
                  />
+              </div>
+           )}
+
+           {activeTab === 'trial_balance' && (
+              <div className="animate-in fade-in slide-in-from-left-4">
+                 <TrialBalanceReport userRole={userRole} />
               </div>
            )}
 

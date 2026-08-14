@@ -135,22 +135,28 @@ export default function DashboardPage() {
           WHERE sa.created_at >= ? AND sa.created_at <= ? AND new_quantity < old_quantity
         `, [startOfDay, endOfDay]);
 
-        // Stock alerts
+        // Stock alerts (Distinct drugs below reorder point or out of stock)
         const alertsRow = await dbGet(`
+          WITH DrugStock AS (
+            SELECT drug_id, SUM(quantity) as current_stock
+            FROM inventory
+            WHERE quantity > 0
+            GROUP BY drug_id
+          ),
+          MonthlySales AS (
+            SELECT si.drug_id, SUM(si.quantity_sold) as avg_monthly_usage
+            FROM sales_items si
+            JOIN sales_invoices inv ON si.invoice_id = inv.id
+            WHERE si.is_negative = 0 AND inv.created_at >= datetime('now', '-30 days', 'localtime')
+            GROUP BY si.drug_id
+          )
           SELECT COUNT(*) as count
-          FROM inventory i
-          JOIN master_drugs m ON i.drug_id = m.id
-          WHERE i.quantity <= COALESCE(
-            NULLIF(m.reorder_point, 0),
-            (
-              SELECT COALESCE(SUM(si.quantity_sold), 0)
-              FROM sales_items si
-              JOIN sales_invoices inv ON si.invoice_id = inv.id
-              WHERE si.drug_id = i.drug_id
-                AND si.is_negative = 0
-                AND inv.created_at >= datetime('now', '-30 days', 'localtime')
-            ),
-            10
+          FROM master_drugs m
+          LEFT JOIN DrugStock ds ON CAST(m.id AS TEXT) = CAST(ds.drug_id AS TEXT)
+          LEFT JOIN MonthlySales ms ON CAST(m.id AS TEXT) = CAST(ms.drug_id AS TEXT)
+          WHERE (
+            (ds.current_stock IS NOT NULL AND ds.current_stock <= COALESCE(NULLIF(m.reorder_point, 0), NULLIF(m.min_limit, 0), 10))
+            OR (ds.current_stock IS NULL AND (m.reorder_point > 0 OR m.min_limit > 0 OR ms.avg_monthly_usage > 0))
           )
         `);
 

@@ -297,6 +297,7 @@ export default function POSPage() {
   const [currentUserName, setCurrentUserName] = useState('صيدلي');
   const [currentUser, setCurrentUser] = useState<{ id: string; pharmacy_id: string } | null>(null);
   const [isAllowed, setIsAllowed] = useState(false);
+  const [canChangePrice, setCanChangePrice] = useState(false);
   const [isUserLoading, setIsUserLoading] = useState(true);
   const [pendingInteractions, setPendingInteractions] = useState<any[]>([]);
   const [showInteractionModal, setShowInteractionModal] = useState(false);
@@ -341,10 +342,12 @@ export default function POSPage() {
     cart.forEach((item, index) => {
       const unitSelect = document.querySelector(`[data-nav="unit-select-${index}"]`) as HTMLElement;
       const qtyInput = document.querySelector(`[data-nav="qty-input-${index}"]`) as HTMLElement;
+      const priceInput = document.querySelector(`[data-nav="price-input-${index}"]`) as HTMLElement;
       const discountInput = document.querySelector(`[data-nav="discount-input-${index}"]`) as HTMLElement;
       
       if (unitSelect) elements.push(unitSelect);
       if (qtyInput) elements.push(qtyInput);
+      if (priceInput) elements.push(priceInput);
       if (discountInput) elements.push(discountInput);
     });
     
@@ -401,6 +404,7 @@ export default function POSPage() {
       const navAttr = activeEl.getAttribute('data-nav');
       if (navAttr && (
         navAttr.startsWith('qty-input-') || 
+        navAttr.startsWith('price-input-') ||
         navAttr.startsWith('discount-input-') || 
         navAttr === 'additional-fees-input' || 
         navAttr === 'discount-percent-input'
@@ -425,6 +429,7 @@ export default function POSPage() {
       }
 
       setIsAllowed(hasUserPermissionSync(userObj, 'can_access_pos') || userObj.role === 'pharmacist' || userObj.role === 'owner' || userObj.role === 'admin');
+      setCanChangePrice(hasUserPermissionSync(userObj, 'can_change_price_sale') || userObj.role === 'owner' || userObj.role === 'admin');
 
       const res = await getCurrentUserAction();
       if (res.success && res.user) {
@@ -1128,7 +1133,28 @@ export default function POSPage() {
                         <button tabIndex={-1} onClick={() => setCart(p => p.map(i => i.id === item.id ? {...i, qty: i.qty+1} : i))} className="w-4 h-4 flex items-center justify-center hover:bg-white dark:hover:bg-slate-700 rounded text-slate-500 font-bold text-xs">+</button>
                       </div>
                     </td>
-                    <td className="px-1 py-2 text-center font-black text-[11px] w-12">{item.price}</td>
+                    <td className="px-1 py-2 text-center w-14">
+                      {canChangePrice ? (
+                        <input 
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          value={item.price}
+                          data-nav={`price-input-${index}`}
+                          onKeyDown={handleInputKeyDown}
+                          onChange={(e) => {
+                            const val = parseFloat(e.target.value);
+                            setCart(p => p.map(i => i.id === item.id ? { ...i, price: isNaN(val) ? 0 : val } : i));
+                          }}
+                          className="w-12 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded p-0.5 text-[11px] font-black text-center text-slate-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none shadow-inner"
+                          title="تعديل سعر البيع (متاح للصلاحيات)"
+                        />
+                      ) : (
+                        <span className="font-black text-[11px] text-slate-900 dark:text-white" title="تعديل السعر يتطلب صلاحية">
+                          {item.price}
+                        </span>
+                      )}
+                    </td>
                     <td className="px-1 py-2 text-center w-10">
                        <span className={`text-[9px] font-black ${item.total_stock <= (item.reorder_point || 0) ? 'text-red-500' : 'text-slate-400'}`}>
                         {Number(stockInSelectedUnit(item).toFixed(2))}

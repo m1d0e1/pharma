@@ -509,9 +509,20 @@ export async function updateAccountAction(id: number, rawData: z.infer<typeof up
   }
 }
 
-export async function getJournalsAction() {
+export async function getJournalsAction(filters?: { dateFrom?: string; dateTo?: string }) {
   try {
-    const results = await db.prepare(`SELECT * FROM daily_journals ORDER BY date DESC`).all();
+    let sql = `SELECT * FROM daily_journals WHERE 1=1`;
+    const params: any[] = [];
+    if (filters?.dateFrom) {
+      sql += ` AND date(date) >= date(?)`;
+      params.push(filters.dateFrom);
+    }
+    if (filters?.dateTo) {
+      sql += ` AND date(date) <= date(?)`;
+      params.push(filters.dateTo);
+    }
+    sql += ` ORDER BY date DESC, created_at DESC`;
+    const results = await db.prepare(sql).all(...params);
     return { success: true, data: results };
   } catch (error) {
     console.error('Get journals error:', error);
@@ -743,32 +754,75 @@ export async function getPatientStatementAction(patientId: string) {
   return patients.getPatientStatementAction(patientId);
 }
 
-export async function getTrialBalanceAction() {
+export async function getTrialBalanceAction(startDate?: string, endDate?: string) {
   try {
     const user = await getLocalSession();
     if (!user || !hasUserPermissionSync(user, 'rep_can_view_financial')) return { success: false, error: 'غير مصرح' };
 
+    const cleanStart = startDate && startDate.trim().length > 0 ? startDate.trim() : null;
+    const cleanEnd = endDate && endDate.trim().length > 0 ? endDate.trim() : null;
+
     const balances = await db.prepare(`
+      WITH RawEntries AS (
+        SELECT 
+          je.account_id,
+          je.type,
+          je.amount,
+          date(COALESCE(dj.date, dj.created_at, '1970-01-01')) as entry_date
+        FROM journal_entries je
+        LEFT JOIN daily_journals dj ON je.journal_id = dj.id
+      )
       SELECT 
         a.id,
         a.code,
         a.name_ar,
+        a.name_en,
         a.type,
         a.parent_id,
         a.is_group,
-        COALESCE(SUM(CASE WHEN je.type = 'debit' THEN je.amount ELSE 0 END), 0) as total_debit,
-        COALESCE(SUM(CASE WHEN je.type = 'credit' THEN je.amount ELSE 0 END), 0) as total_credit
+        -- Opening movements (before startDate)
+        COALESCE(SUM(CASE WHEN ? IS NOT NULL AND re.entry_date < ? AND re.type = 'debit' THEN re.amount ELSE 0 END), 0) as opening_debit,
+        COALESCE(SUM(CASE WHEN ? IS NOT NULL AND re.entry_date < ? AND re.type = 'credit' THEN re.amount ELSE 0 END), 0) as opening_credit,
+        -- Period movements (between startDate and endDate)
+        COALESCE(SUM(CASE 
+          WHEN (? IS NULL OR re.entry_date >= ?) AND (? IS NULL OR re.entry_date <= ?) AND re.type = 'debit' 
+          THEN re.amount ELSE 0 END), 0) as period_debit,
+        COALESCE(SUM(CASE 
+          WHEN (? IS NULL OR re.entry_date >= ?) AND (? IS NULL OR re.entry_date <= ?) AND re.type = 'credit' 
+          THEN re.amount ELSE 0 END), 0) as period_credit,
+        -- Total cumulative movements up to endDate
+        COALESCE(SUM(CASE 
+          WHEN (? IS NULL OR re.entry_date <= ?) AND re.type = 'debit' 
+          THEN re.amount ELSE 0 END), 0) as total_debit,
+        COALESCE(SUM(CASE 
+          WHEN (? IS NULL OR re.entry_date <= ?) AND re.type = 'credit' 
+          THEN re.amount ELSE 0 END), 0) as total_credit
       FROM accounts a
-      LEFT JOIN journal_entries je ON a.id = je.account_id
+      LEFT JOIN RawEntries re ON a.id = re.account_id
       GROUP BY a.id
       ORDER BY a.code ASC
-    `).all() as any[];
+    `).all(
+      cleanStart, cleanStart,
+      cleanStart, cleanStart,
+      cleanStart, cleanStart, cleanEnd, cleanEnd,
+      cleanStart, cleanStart, cleanEnd, cleanEnd,
+      cleanEnd, cleanEnd,
+      cleanEnd, cleanEnd
+    ) as any[];
 
     // Calculate Net Balances
     const results = balances.map(acc => {
+      const openingNetDebit = acc.opening_debit > acc.opening_credit ? acc.opening_debit - acc.opening_credit : 0;
+      const openingNetCredit = acc.opening_credit > acc.opening_debit ? acc.opening_credit - acc.opening_debit : 0;
       const netDebit = acc.total_debit > acc.total_credit ? acc.total_debit - acc.total_credit : 0;
       const netCredit = acc.total_credit > acc.total_debit ? acc.total_credit - acc.total_debit : 0;
-      return { ...acc, net_debit: netDebit, net_credit: netCredit };
+      return { 
+        ...acc, 
+        opening_net_debit: openingNetDebit,
+        opening_net_credit: openingNetCredit,
+        net_debit: netDebit, 
+        net_credit: netCredit 
+      };
     });
 
     return { success: true, data: results };

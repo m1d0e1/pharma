@@ -327,3 +327,68 @@ export async function getOpenShiftHandoverAction() {
     return { success: false, error: error instanceof Error ? error.message : 'فشل جلب الوردية المفتوحة', data: null };
   }
 }
+
+export async function getShiftCreditSalesAction(shiftId?: string) {
+  try {
+    const user = await getLocalSession();
+    if (!user) return { success: false, error: 'غير مصرح', data: [] };
+
+    let targetShiftId = shiftId;
+    if (!targetShiftId) {
+      const openShift = await db.prepare("SELECT id FROM shifts WHERE status = 'open' ORDER BY start_time DESC LIMIT 1").get() as any;
+      targetShiftId = openShift?.id;
+    }
+
+    if (!targetShiftId) return { success: true, data: [] };
+
+    const shift = await db.prepare('SELECT id, user_id, start_time, end_time FROM shifts WHERE id = ?').get(targetShiftId) as any;
+    if (!shift) return { success: false, error: 'الوردية غير موجودة', data: [] };
+
+    const items = await db.prepare(`
+      SELECT 
+        si.id,
+        si.id as invoice_number,
+        CAST(si.total_amount AS REAL) as total_amount,
+        CAST(COALESCE(si.paid_amount, 0) AS REAL) as paid_amount,
+        (CAST(si.total_amount AS REAL) - CAST(COALESCE(si.paid_amount, 0) AS REAL)) as credit_amount,
+        si.created_at,
+        si.check_number as notes,
+        si.patient_id,
+        COALESCE(p.full_name, 'عميل آجل') as patient_name,
+        p.phone as patient_phone
+      FROM sales_invoices si
+      LEFT JOIN patients p ON CAST(si.patient_id AS TEXT) = CAST(p.id AS TEXT)
+      WHERE (si.payment_method = 'credit' OR (si.remaining_amount IS NOT NULL AND CAST(si.remaining_amount AS REAL) > 0))
+        AND (si.status IS NULL OR si.status = '' OR si.status = 'completed' OR si.status = 'approved')
+        AND (
+          si.shift_id = ? OR
+          (
+            (si.shift_id IS NULL OR TRIM(si.shift_id) = '') AND
+            (CAST(si.user_id AS TEXT) = CAST(? AS TEXT) OR si.user_id IS NULL OR ? IS NULL) AND
+            (
+              datetime(si.created_at) >= datetime(?, '-12 hours') OR
+              si.created_at >= ? OR
+              date(si.created_at) = date(?)
+            ) AND
+            (? IS NULL OR datetime(si.created_at) <= datetime(?, '+12 hours') OR si.created_at <= ?)
+          )
+        )
+      ORDER BY si.created_at DESC
+    `).all(
+      shift.id,
+      shift.user_id,
+      shift.user_id,
+      shift.start_time,
+      shift.start_time,
+      shift.start_time,
+      shift.end_time || null,
+      shift.end_time || null,
+      shift.end_time || null
+    ) as any[];
+
+    return { success: true, data: items || [] };
+  } catch (error) {
+    console.error('getShiftCreditSalesAction error:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'فشل جلب تفاصيل الآجل', data: [] };
+  }
+}
