@@ -28,6 +28,7 @@ import { ShieldAlert } from 'lucide-react';
 import { checkDrugInteractions } from '@/app/actions-client/interactions';
 import AccessDenied from '@/components/AccessDenied';
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
+import { usePOSStore } from '@/store/usePOSStore';
 
 
 
@@ -62,7 +63,7 @@ export interface DrugItem {
 }
 
 export interface CartItem {
-  id: string;
+  id?: string;
   drug_id: string | number;
   trade_name: string;
   trade_name_en?: string;
@@ -81,7 +82,7 @@ export interface CartItem {
   };
   total_stock: number;
   reorder_point?: number;
-  nearest_expiry?: string;
+  nearest_expiry?: string | null;
   needsRefill: boolean;
   batches?: any[];
   inventory_id?: string | null;
@@ -273,7 +274,16 @@ POSSearchSidebar.displayName = 'POSSearchSidebar';
 export default function POSPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const [cart, setCart] = useState<CartItem[]>([]);
+  const {
+    cart, setCart,
+    selectedPatient, setSelectedPatient,
+    paymentMethod, setPaymentMethod,
+    checkNumber, setCheckNumber,
+    totalDiscount, setTotalDiscount,
+    discountPercent, setDiscountPercent,
+    additionalFees, setAdditionalFees,
+    resetPOS
+  } = usePOSStore();
   const [isProcessing, setIsProcessing] = useState(false);
   const [alternatives, setAlternatives] = useState<DrugItem[]>([]);
   const searchSidebarRef = useRef<POSSearchSidebarRef>(null);
@@ -281,7 +291,6 @@ export default function POSPage() {
   // Patient Selection
   const [patientSearch, setPatientSearch] = useState('');
   const [patientResults, setPatientResults] = useState<Patient[]>([]);
-  const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null);
 
   const [completedInvoice, setCompletedInvoice] = useState<any>(null);
   const [autoPrintReceipt, setAutoPrintReceipt] = useState(false);
@@ -307,13 +316,6 @@ export default function POSPage() {
   const [showHandoverModal, setShowHandoverModal] = useState(false);
   const [showDrugDetails, setShowDrugDetails] = useState<string | number | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number, drugId: string | number, cartItemId: string } | null>(null);
-
-  // Billing State
-  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'credit' | 'check' | 'visa' | 'delivery' | 'wallet'>('cash');
-  const [checkNumber, setCheckNumber] = useState('');
-  const [totalDiscount, setTotalDiscount] = useState(0);
-  const [discountPercent, setDiscountPercent] = useState(0);
-  const [additionalFees, setAdditionalFees] = useState(0);
 
   // Dynamic Units
   const [unitsList, setUnitsList] = useState<{name_ar: string}[]>([]);
@@ -609,13 +611,8 @@ export default function POSPage() {
 
   const resetCart = useCallback(() => {
     if (cart.length > 0 && !confirm('هل أنت متأكد من مسح السلة وبدء فاتورة جديدة؟')) return;
-    setCart([]);
-    setSelectedPatient(null);
-    setTotalDiscount(0);
-    setDiscountPercent(0);
-    setAdditionalFees(0);
-    setPaymentMethod('cash');
-  }, [cart]);
+    resetPOS();
+  }, [cart, resetPOS]);
 
   const handleCheckout = async (status: 'completed' | 'draft' = 'completed', force = false) => {
     if (cart.length === 0) return;
@@ -695,13 +692,7 @@ export default function POSPage() {
           import('@/app/actions-client/finance').then(mod => mod.generateDailySnapshotAction());
         }
         
-        setCart([]);
-        setSelectedPatient(null);
-        setPaymentMethod('cash');
-        setCheckNumber('');
-        setTotalDiscount(0);
-        setDiscountPercent(0);
-        setAdditionalFees(0);
+        resetPOS();
       } else {
         setAutoPrintReceipt(false);
         toast.error(result.error || 'فشلت العملية');

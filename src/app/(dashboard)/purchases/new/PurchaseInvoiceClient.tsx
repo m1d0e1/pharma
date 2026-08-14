@@ -35,9 +35,8 @@ import {
 } from '@/app/actions-client/purchases'
 import { toast } from 'react-hot-toast'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { usePurchaseStore } from '@/store/usePurchaseStore'
 import { useHotkeys } from 'react-hotkeys-hook'
-import { Supplier, PurchaseItem } from '@/types/purchases'
+import { Supplier, PurchaseItem, PurchaseInvoiceHeader } from '@/types/purchases'
 import BarcodePrinter from '@/components/purchases/BarcodePrinter'
 import {
   clampPurchasePercent,
@@ -101,12 +100,35 @@ export default function PurchaseInvoiceClient() {
     window.addEventListener('click', handleClick);
     return () => window.removeEventListener('click', handleClick);
   }, []);
-  const { 
-    cart, setCart, 
-    selectedSupplier, setSelectedSupplier, 
-    header: invoiceHeader, setHeader: setInvoiceHeader,
-    resetPurchase
-  } = usePurchaseStore()
+  const initialHeader: PurchaseInvoiceHeader = {
+    invoice_number: '',
+    invoice_date: new Date().toISOString().split('T')[0],
+    payment_method: 'credit',
+    notes: '',
+    check_number: '',
+    expenses: 0,
+    discount_value: 0,
+    discount_percent: 0,
+    tax_percent: 0
+  };
+
+  const [cart, setCart] = useState<PurchaseItem[]>([]);
+  const [selectedSupplier, setSelectedSupplier] = useState<Supplier | null>(null);
+  const [invoiceHeader, setInvoiceHeaderState] = useState<PurchaseInvoiceHeader>(initialHeader);
+
+  const setInvoiceHeader = (update: Partial<PurchaseInvoiceHeader> | ((prev: PurchaseInvoiceHeader) => PurchaseInvoiceHeader)) => {
+    setInvoiceHeaderState(prev => typeof update === 'function' ? update(prev) : { ...prev, ...update });
+  };
+
+  const resetPurchase = () => {
+    setCart([]);
+    setSelectedSupplier(null);
+    setInvoiceHeaderState(initialHeader);
+  };
+
+  useEffect(() => {
+    try { localStorage.removeItem('pharma_purchase_draft_v1'); } catch {}
+  }, []);
 
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
   const [searchQuery, setSearchQuery] = useState('')

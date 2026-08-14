@@ -25,6 +25,7 @@ interface LowStockItem {
   active_ingredient: string
   official_price: number
   manufacturer: string
+  barcode?: string
 }
 
 interface Props {
@@ -38,7 +39,8 @@ export default function LowStockClient({ initialItems }: Props) {
     item.trade_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
     (item.trade_name_en && item.trade_name_en.toLowerCase().includes(searchTerm.toLowerCase())) ||
     item.active_ingredient?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    item.manufacturer?.toLowerCase().includes(searchTerm.toLowerCase())
+    item.manufacturer?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    (item.barcode && item.barcode.toLowerCase().includes(searchTerm.toLowerCase()))
   )
 
   const handlePrint = () => {

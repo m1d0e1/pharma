@@ -195,10 +195,141 @@ export async function getSuppliersAction() {
     const session = await getLocalSession();
     if (!canViewSuppliers(session)) return { success: false, error: SUPPLIER_PERMISSION_ERROR };
 
-    const items = await db.prepare('SELECT * FROM suppliers ORDER BY name_ar ASC').all();
+    const items = await db.prepare(`
+      SELECT 
+        s.*,
+        COALESCE(s.balance, 0) AS balance,
+        (SELECT COUNT(*) FROM purchase_invoices WHERE supplier_id = s.id) AS purchase_count,
+        (SELECT COUNT(*) FROM supplier_transactions WHERE supplier_id = s.id) AS transaction_count
+      FROM suppliers s
+      ORDER BY s.name_ar ASC
+    `).all();
     return { success: true, data: items };
   } catch (error: any) {
     return { success: false, error: error.message };
+  }
+}
+
+export async function getSupplierTransactionsAction(supplierId: number) {
+  try {
+    const session = await getLocalSession();
+    if (!canViewSuppliers(session)) return { success: false, error: SUPPLIER_PERMISSION_ERROR };
+
+    const id = Number(supplierId);
+    if (!Number.isInteger(id) || id <= 0) return { success: false, error: 'معرف المورد غير صحيح' };
+
+    const items = await db.prepare(`
+      SELECT * FROM supplier_transactions 
+      WHERE supplier_id = ? 
+      ORDER BY datetime(COALESCE(created_at, CURRENT_TIMESTAMP)) DESC, id DESC
+      LIMIT 100
+    `).all(id);
+
+    return { success: true, data: items };
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+}
+
+export async function addSupplierPaymentAction(rawData: {
+  supplier_id: number;
+  amount: number;
+  payment_method?: 'cash' | 'bank' | 'check';
+  check_number?: string;
+  notes?: string;
+  date?: string;
+}) {
+  try {
+    const session = await getLocalSession();
+    if (!session || (!hasUserPermissionSync(session, 'can_view_suppliers') && !hasUserPermissionSync(session, 'can_view_purchases') && !hasUserPermissionSync(session, 'rep_can_view_financial'))) {
+      return { success: false, error: SUPPLIER_PERMISSION_ERROR };
+    }
+
+    const supplierId = Number(rawData.supplier_id);
+    const amount = Number(rawData.amount);
+    if (!Number.isInteger(supplierId) || supplierId <= 0) return { success: false, error: 'معرف المورد غير صحيح' };
+    if (!Number.isFinite(amount) || amount <= 0) return { success: false, error: 'يرجى إدخال مبلغ صحيح أكبر من الصفر' };
+
+    const paymentMethod = rawData.payment_method || 'cash';
+    const paymentDate = rawData.date || new Date().toISOString().split('T')[0];
+    const notes = rawData.notes ? String(rawData.notes).trim() : '';
+
+    let remainingBalance = 0;
+    const refId = `sup-pay-${Date.now()}`;
+
+    await dbTransaction(async () => {
+      const supplier = await db.prepare('SELECT id, name_ar, balance FROM suppliers WHERE id = ?').get(supplierId) as any;
+      if (!supplier) throw new Error('المورد غير موجود');
+
+      const currentBalance = Number(supplier.balance || 0);
+
+      // 1. Decrease supplier balance
+      await db.prepare('UPDATE suppliers SET balance = balance - ? WHERE id = ?').run(amount, supplierId);
+
+      // 2. Record in supplier_transactions
+      const transactionNote = notes 
+        ? `سداد دفعة (${paymentMethod === 'check' ? `شيك ${rawData.check_number || ''}` : paymentMethod === 'bank' ? 'تحويل بنكي' : 'نقدي'}): ${notes}`
+        : `سداد دفعة للمورد (${paymentMethod === 'check' ? `شيك ${rawData.check_number || ''}` : paymentMethod === 'bank' ? 'تحويل بنكي' : 'نقدي'})`;
+
+      await db.prepare(`
+        INSERT INTO supplier_transactions (supplier_id, type, amount, reference_id, notes, created_at)
+        VALUES (?, 'payment', ?, ?, ?, ?)
+      `).run(supplierId, amount, refId, transactionNote, `${paymentDate} ${new Date().toTimeString().split(' ')[0]}`);
+
+      // 3. Record in cash_movements if cash
+      if (paymentMethod === 'cash') {
+        const movementId = generateId();
+        await db.prepare(`
+          INSERT INTO cash_movements (
+            id, user_id, type, category, amount, source_type, target_name, notes, date
+          ) VALUES (?, ?, 'disbursement', 'accounts_payable', ?, 'supplier_payment', ?, ?, ?)
+        `).run(
+          movementId,
+          session.id,
+          amount,
+          String(supplierId),
+          `سداد دفعة للمورد ${supplier.name_ar}: ${notes}`,
+          paymentDate
+        );
+      }
+
+      // 4. Accounting entries
+      try {
+        const getAccount = async (category: string, fallback: number) => {
+          const setting = await db.prepare(
+            'SELECT account_id FROM trial_balance_settings WHERE category = ? ORDER BY id LIMIT 1'
+          ).get(category) as any;
+          return Number(setting?.account_id || fallback);
+        };
+        const payableAccountId = await getAccount('accounts_payable', 8);
+        const creditAccountId = paymentMethod === 'bank'
+          ? await getAccount('bank_clearing', 6)
+          : await getAccount('cash_drawer', 6);
+
+        const journalId = generateId();
+        await db.prepare(`
+          INSERT INTO daily_journals (id, date, description, created_by, total_amount)
+          VALUES (?, ?, ?, ?, ?)
+        `).run(journalId, paymentDate, `سداد دفعة للمورد: ${supplier.name_ar}`, session.id, amount);
+
+        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
+          .run(journalId, payableAccountId, 'debit', amount);
+        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
+          .run(journalId, creditAccountId, 'credit', amount);
+      } catch (accErr) {
+        console.warn('Accounting entry for supplier payment failed gracefully:', accErr);
+      }
+
+      await logActivity(session.id, 'SUPPLIER_PAYMENT', `Paid ${amount} to supplier #${supplierId} (${supplier.name_ar}) via ${paymentMethod}`);
+      remainingBalance = currentBalance - amount;
+    });
+
+    revalidatePath('/purchases/suppliers');
+    revalidatePath('/purchases');
+    return { success: true, remainingBalance };
+  } catch (error: any) {
+    console.error('Supplier payment error:', error);
+    return { success: false, error: error.message || 'فشل تسجيل الدفعة للمورد' };
   }
 }
 

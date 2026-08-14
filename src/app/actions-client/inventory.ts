@@ -551,9 +551,10 @@ export async function getLowStockAction(threshold: number = 10) {
 
     const items = await db.prepare(`
       SELECT m.id as id, m.id as drug_id, SUM(i.quantity) as quantity, MIN(i.local_selling_price) as local_selling_price, MIN(i.expiry_date) as expiry_date,
-             m.trade_name, m.active_ingredient, m.manufacturer, m.trade_name_en, m.official_price
+             m.trade_name, m.active_ingredient, m.manufacturer, m.trade_name_en, m.official_price,
+             COALESCE(NULLIF(m.barcode, ''), NULLIF(i.barcode, '')) as barcode
       FROM master_drugs m
-      JOIN inventory i ON m.id = i.drug_id
+      JOIN inventory i ON CAST(m.id AS TEXT) = CAST(i.drug_id AS TEXT)
       GROUP BY m.id
       HAVING SUM(i.quantity) < ?
       ORDER BY quantity ASC
@@ -886,6 +887,9 @@ export async function getInventoryListAction(search?: string) {
         i.quantity,
         i.expiry_date,
         i.local_selling_price,
+        COALESCE(NULLIF(i.barcode, ''), NULLIF(m.barcode, '')) AS barcode,
+        i.barcode AS lot_barcode,
+        m.barcode AS drug_barcode,
         m.trade_name,
         m.trade_name_en,
         m.generic_name,
@@ -894,21 +898,32 @@ export async function getInventoryListAction(search?: string) {
         m.manufacturer,
         m.large_to_medium
       FROM inventory i
-      JOIN master_drugs m ON i.drug_id = m.id
+      JOIN master_drugs m ON CAST(i.drug_id AS TEXT) = CAST(m.id AS TEXT)
     `;
     const params: any[] = [];
 
     if (search && search.trim().length > 0) {
+      const trimmed = search.trim();
+      const searchPattern = `%${trimmed}%`;
       queryStr += `
-        WHERE i.quantity > 0 AND (m.trade_name LIKE ? 
-           OR m.trade_name_en LIKE ? 
-           OR m.generic_name LIKE ? 
-           OR m.active_ingredient LIKE ?
-           OR m.category LIKE ?
-           OR m.manufacturer LIKE ?)
+        WHERE i.quantity > 0 AND (
+          m.trade_name LIKE ? 
+          OR m.trade_name_en LIKE ? 
+          OR m.generic_name LIKE ? 
+          OR m.active_ingredient LIKE ?
+          OR m.category LIKE ?
+          OR m.manufacturer LIKE ?
+          OR m.barcode LIKE ?
+          OR i.barcode LIKE ?
+          OR m.barcode = ?
+          OR i.barcode = ?
+        )
       `;
-      const searchPattern = `%${search.trim()}%`;
-      params.push(searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern);
+      params.push(
+        searchPattern, searchPattern, searchPattern, searchPattern, 
+        searchPattern, searchPattern, searchPattern, searchPattern, 
+        trimmed, trimmed
+      );
     } else {
       queryStr += ` WHERE i.quantity > 0`;
     }
@@ -920,13 +935,15 @@ export async function getInventoryListAction(search?: string) {
     // Query already JOINs master_drugs - no cache enrichment needed
     const mapped = data.map((item: any) => ({
       ...item,
+      barcode: item.barcode || item.lot_barcode || item.drug_barcode || '',
       master_drugs: {
         trade_name: item.trade_name,
         trade_name_en: item.trade_name_en || item.trade_name || '',
         active_ingredient: item.active_ingredient || item.generic_name || '---',
         category: item.category || '',
         manufacturer: item.manufacturer || '',
-        large_to_medium: item.large_to_medium || 1
+        large_to_medium: item.large_to_medium || 1,
+        barcode: item.drug_barcode || item.barcode || ''
       }
     }));
 

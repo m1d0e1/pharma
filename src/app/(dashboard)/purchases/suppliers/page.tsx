@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
-import BilingualManagementClient from '@/components/inventory/BilingualManagementClient';
+import React, { useEffect, useState, useCallback } from 'react';
+import SuppliersManagementClient from '@/components/purchases/SuppliersManagementClient';
 import {
   addSupplierAction,
   deleteSupplierAction,
@@ -14,27 +14,28 @@ export default function SuppliersPage() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
 
-  useEffect(() => {
-    async function loadSuppliers() {
-      try {
-        const result = await getSuppliersAction();
-        if (!result.success) throw new Error(result.error || 'فشل تحميل الموردين');
-        setSuppliers(result.data || []);
-      } catch (err) {
-        console.error('Failed to load suppliers:', err);
-        setLoadError(err instanceof Error ? err.message : 'فشل تحميل الموردين');
-      } finally {
-        setLoading(false);
-      }
+  const loadSuppliers = useCallback(async () => {
+    try {
+      const result = await getSuppliersAction();
+      if (!result.success) throw new Error(result.error || 'فشل تحميل الموردين');
+      setSuppliers(result.data || []);
+    } catch (err) {
+      console.error('Failed to load suppliers:', err);
+      setLoadError(err instanceof Error ? err.message : 'فشل تحميل الموردين');
+    } finally {
+      setLoading(false);
     }
-    loadSuppliers();
   }, []);
 
-  const handleAdd = async (data: { name_ar: string, name_en?: string }) => {
+  useEffect(() => {
+    loadSuppliers();
+  }, [loadSuppliers]);
+
+  const handleAdd = async (data: { name_ar: string; name_en?: string; phone?: string; address?: string }) => {
     return addSupplierAction(data);
   };
 
-  const handleUpdate = async (id: number, data: { name_ar: string, name_en?: string }) => {
+  const handleUpdate = async (id: number, data: { name_ar: string; name_en?: string; phone?: string; address?: string }) => {
     return updateSupplierAction(id, data);
   };
 
@@ -45,7 +46,7 @@ export default function SuppliersPage() {
   if (loading) {
     return (
       <div className="flex justify-center items-center py-12">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-500"></div>
       </div>
     );
   }
@@ -59,13 +60,21 @@ export default function SuppliersPage() {
   }
 
   return (
-    <BilingualManagementClient
-      title="الموردين"
-      initialData={suppliers}
-      iconName="Users"
-      onAdd={handleAdd}
-      onUpdate={handleUpdate}
-      onDelete={handleDelete}
-    />
+    <div className="space-y-6">
+      <div className="flex justify-between items-center" dir="rtl">
+        <div>
+          <h1 className="text-3xl font-black text-slate-900 dark:text-white">دليل الموردين والحسابات</h1>
+          <p className="text-slate-500 font-bold mt-1">متابعة مديونيات الموردين، كشوف الحسابات، وسداد الدفعات النقدية والبنكية.</p>
+        </div>
+      </div>
+
+      <SuppliersManagementClient
+        initialData={suppliers}
+        onAdd={handleAdd}
+        onUpdate={handleUpdate}
+        onDelete={handleDelete}
+        onRefresh={loadSuppliers}
+      />
+    </div>
   );
 }

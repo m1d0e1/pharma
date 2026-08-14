@@ -20,12 +20,14 @@ interface InventoryItem {
   quantity: number
   expiry_date: string
   local_selling_price: number
+  barcode?: string
   master_drugs: {
     trade_name: string
     trade_name_en?: string
     category: string
     manufacturer: string
     active_ingredient: string
+    barcode?: string
   }
 }
 
@@ -237,7 +239,7 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
           <span className="absolute inset-y-0 right-4 flex items-center text-slate-400">🔍</span>
           <input
             type="text"
-            placeholder="بحث في المخزون الحالي..."
+            placeholder="بحث بالاسم، الباركود، أو المادة الفعالة..."
             className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 pr-12 pl-4 py-3 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all font-medium"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
@@ -350,9 +352,16 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
                   >
                     <td className="px-8 py-5">
                       <div className="flex flex-col">
-                        <span className="font-bold text-slate-900 dark:text-white group-hover:text-blue-600 transition-colors">
-                          {item.master_drugs.trade_name_en || item.master_drugs.trade_name}
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-slate-900 dark:text-white group-hover:text-blue-600 transition-colors">
+                            {item.master_drugs.trade_name_en || item.master_drugs.trade_name}
+                          </span>
+                          {(item.barcode || item.master_drugs.barcode) && (
+                            <span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 font-mono text-[10px] font-bold">
+                              {item.barcode || item.master_drugs.barcode}
+                            </span>
+                          )}
+                        </div>
                         <span className="text-xs text-slate-400">{item.master_drugs.active_ingredient}</span>
                       </div>
                     </td>

@@ -340,6 +340,11 @@ async fn ensure_compatibility(
         ("cash_movements", "actual_date", "actual_date TEXT"),
         ("cash_movements", "source_type", "source_type TEXT"),
         ("cash_movements", "target_name", "target_name TEXT"),
+        ("suppliers", "balance", "balance REAL DEFAULT 0"),
+        ("suppliers", "phone", "phone TEXT"),
+        ("suppliers", "address", "address TEXT"),
+        ("suppliers", "name_en", "name_en TEXT"),
+        ("supplier_transactions", "created_at", "created_at DATETIME DEFAULT CURRENT_TIMESTAMP"),
     ] {
         add_column(transaction, table, column, definition).await?;
     }
@@ -448,6 +453,18 @@ async fn ensure_compatibility(
           (5, 'مكملات غذائية', 'Nutritional Supplements'), (6, 'مواد تعقيم', 'Disinfectants'),
           (7, 'حفاضات ومستلزمات الأطفال', 'Baby Products'),
           (8, 'منتجات الأم والطفل', 'Mother & Baby Care');
+
+        CREATE TABLE IF NOT EXISTS supplier_transactions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          supplier_id INTEGER NOT NULL,
+          type TEXT NOT NULL,
+          amount REAL NOT NULL,
+          reference_id TEXT,
+          notes TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (supplier_id) REFERENCES suppliers (id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_supplier_transactions_supplier ON supplier_transactions(supplier_id);
         "#,
     )
     .execute(&mut **transaction)
