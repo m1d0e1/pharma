@@ -1484,13 +1484,13 @@ async fn process_checkout_tx(
     for item in &payload.items {
         let drug = sqlx::query(
             r#"
-            SELECT md.trade_name, md.large_to_medium, md.medium_to_small, md.medium_unit, md.small_unit,
+            SELECT md.trade_name, md.trade_name_en, md.active_ingredient, md.large_to_medium, md.medium_to_small, md.medium_unit, md.small_unit,
                    COALESCE(MAX(i.strips_per_box), 1) as max_strips
             FROM master_drugs md
-            LEFT JOIN inventory i ON i.drug_id = md.id
+            LEFT JOIN inventory i ON CAST(i.drug_id AS TEXT) = CAST(md.id AS TEXT)
               AND (i.pharmacy_id IS ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
               AND (i.expiry_date IS NULL OR i.expiry_date >= DATE('now', 'localtime'))
-            WHERE md.id = ?
+            WHERE CAST(md.id AS TEXT) = CAST(? AS TEXT)
             GROUP BY md.id
             "#,
         )
@@ -1501,9 +1501,31 @@ async fn process_checkout_tx(
         .await
         .map_err(|e| e.to_string())?;
 
+        let is_placeholder = |s: &str| {
+            let t = s.trim();
+            t.is_empty() || (t.to_lowercase().starts_with("drug ") || t.to_lowercase().starts_with("drug #"))
+        };
+
         let drug_name = drug
             .as_ref()
-            .and_then(|r| r.try_get::<String, _>("trade_name").ok())
+            .and_then(|r| {
+                let trade_name = r.try_get::<String, _>("trade_name").ok().unwrap_or_default();
+                let trade_en = r.try_get::<String, _>("trade_name_en").ok().unwrap_or_default();
+                let active = r.try_get::<String, _>("active_ingredient").ok().unwrap_or_default();
+                if !is_placeholder(&trade_en) {
+                    Some(trade_en)
+                } else if !is_placeholder(&trade_name) {
+                    Some(trade_name)
+                } else if !is_placeholder(&active) {
+                    Some(active)
+                } else if !trade_name.is_empty() {
+                    Some(trade_name)
+                } else if !trade_en.is_empty() {
+                    Some(trade_en)
+                } else {
+                    None
+                }
+            })
             .unwrap_or_else(|| format!("Drug #{}", item.drug_id));
         let large_to_medium = drug
             .as_ref()

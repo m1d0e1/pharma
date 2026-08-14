@@ -974,7 +974,20 @@ export async function getPurchaseInvoiceDetailsAction(invoiceId: string) {
 
     const loadItems = (itemInvoiceId: string) => db.prepare(`
       SELECT pii.*,
-             d.trade_name, d.trade_name_en,
+             COALESCE(
+               NULLIF(NULLIF(d.trade_name, ''), 'Drug ' || d.id),
+               NULLIF(NULLIF(d.trade_name_en, ''), 'Drug ' || d.id),
+               d.trade_name,
+               d.trade_name_en,
+               'صنف #' || pii.drug_id
+             ) AS trade_name,
+             COALESCE(
+               NULLIF(NULLIF(d.trade_name_en, ''), 'Drug ' || d.id),
+               NULLIF(NULLIF(d.trade_name, ''), 'Drug ' || d.id),
+               d.trade_name_en,
+               d.trade_name,
+               'صنف #' || pii.drug_id
+             ) AS trade_name_en,
              COALESCE(NULLIF(pii.barcode, ''), NULLIF(lot.barcode, ''), d.barcode) AS barcode,
              d.large_to_medium, d.medium_to_small,
              d.official_price as base_price, u.name_en as unit,

@@ -277,9 +277,10 @@ export default function SalesReportsClient({ userRole }: { userRole?: string }) 
               sales_items: invoiceItems.map((item: any) => ({
                 quantity_sold: item.quantity_sold,
                 unit_price: item.unit_price,
-                inventory: { master_drugs: { trade_name: item.trade_name, trade_name_en: item.trade_name } },
+                inventory: { master_drugs: { trade_name: item.trade_name, trade_name_en: item.trade_name_en || item.trade_name } },
                 trade_name: item.trade_name,
-                trade_name_en: item.trade_name,
+                trade_name_en: item.trade_name_en || item.trade_name,
+                active_ingredient: item.active_ingredient,
                 unit: item.unit,
               }))
             } as any}

@@ -18,6 +18,7 @@ interface SaleItem {
   }
   trade_name?: string
   trade_name_en?: string
+  active_ingredient?: string
   unit?: string
   units?: any
 }
@@ -163,7 +164,17 @@ export default function ReceiptDetailsModal({ invoice, onClose, autoPrint = fals
               {invoice.sales_items?.map((item, idx) => (
                 <div key={idx} className="grid grid-cols-12 gap-2 items-center text-xs">
                   <div className="col-span-6 font-bold text-slate-800 dark:text-white truncate">
-                    {item.inventory?.master_drugs?.trade_name_en || item.trade_name_en || item.inventory?.master_drugs?.trade_name || item.trade_name || 'صنف دوائي'}
+                    {(() => {
+                      const names = [
+                        item.inventory?.master_drugs?.trade_name_en,
+                        item.trade_name_en,
+                        item.inventory?.master_drugs?.trade_name,
+                        item.trade_name,
+                        item.active_ingredient,
+                      ].filter(Boolean) as string[];
+                      const valid = names.find(n => !/^Drug\s*#?\s*\d+$/i.test(n.trim()));
+                      return valid || names[0] || 'صنف دوائي';
+                    })()}
                   </div>
                   <div className="col-span-2 text-center font-bold text-slate-700 dark:text-slate-200 text-xs">
                     {item.quantity_sold} {item.unit ? (item.units?.[item.unit] || (item.unit === 'large' ? 'علبة' : item.unit === 'medium' ? 'شريط' : 'وحدة')) : ''}

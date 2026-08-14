@@ -423,6 +423,19 @@ async fn ensure_compatibility(
         )
         WHERE inventory_id IS NULL;
 
+        -- Self-heal placeholder Drug xxxx names in master_drugs if the other name field holds the real name
+        UPDATE master_drugs
+        SET trade_name = trade_name_en
+        WHERE (trade_name IS NULL OR TRIM(trade_name) = '' OR trade_name GLOB 'Drug [0-9]*' OR trade_name GLOB 'Drug #[0-9]*')
+          AND trade_name_en IS NOT NULL AND TRIM(trade_name_en) != ''
+          AND trade_name_en NOT GLOB 'Drug [0-9]*' AND trade_name_en NOT GLOB 'Drug #[0-9]*';
+
+        UPDATE master_drugs
+        SET trade_name_en = trade_name
+        WHERE (trade_name_en IS NULL OR TRIM(trade_name_en) = '' OR trade_name_en GLOB 'Drug [0-9]*' OR trade_name_en GLOB 'Drug #[0-9]*')
+          AND trade_name IS NOT NULL AND TRIM(trade_name) != ''
+          AND trade_name NOT GLOB 'Drug [0-9]*' AND trade_name NOT GLOB 'Drug #[0-9]*';
+
         INSERT OR IGNORE INTO units (id, name_ar, name_en) VALUES
           (1, 'علبة', 'Box'), (2, 'شريط', 'Strip'), (3, 'قرص', 'Pill'),
           (4, 'كبسولة', 'Capsule'), (5, 'أمبول', 'Ampoule'), (6, 'فيال', 'Vial'),

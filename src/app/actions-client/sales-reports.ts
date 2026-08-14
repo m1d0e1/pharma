@@ -125,11 +125,24 @@ export async function getInvoiceDetailsAction(invoiceId: string) {
     const items = await db.prepare(`
       SELECT 
         si.*, 
-        md.trade_name,
-        md.trade_name_en,
+        COALESCE(
+          NULLIF(NULLIF(md.trade_name, ''), 'Drug ' || md.id),
+          NULLIF(NULLIF(md.trade_name_en, ''), 'Drug ' || md.id),
+          md.trade_name,
+          md.trade_name_en,
+          'صنف #' || si.drug_id
+        ) AS trade_name,
+        COALESCE(
+          NULLIF(NULLIF(md.trade_name_en, ''), 'Drug ' || md.id),
+          NULLIF(NULLIF(md.trade_name, ''), 'Drug ' || md.id),
+          md.trade_name_en,
+          md.trade_name,
+          'صنف #' || si.drug_id
+        ) AS trade_name_en,
+        md.active_ingredient,
         md.barcode
       FROM sales_items si
-      LEFT JOIN master_drugs md ON si.drug_id = md.id
+      LEFT JOIN master_drugs md ON CAST(si.drug_id AS TEXT) = CAST(md.id AS TEXT)
       WHERE si.invoice_id = ?
     `).all(invoiceId) as any[];
 

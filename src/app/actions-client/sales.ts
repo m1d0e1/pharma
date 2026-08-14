@@ -561,15 +561,20 @@ export async function processCheckoutAction(data: any) {
 
       for (const item of validatedData.items) {
         const drugInfo = await db.prepare(`
-          SELECT md.trade_name, md.large_to_medium, md.medium_to_small, md.has_expiry, md.medium_unit, md.small_unit,
+          SELECT md.trade_name, md.trade_name_en, md.active_ingredient, md.large_to_medium, md.medium_to_small, md.has_expiry, md.medium_unit, md.small_unit,
                  COALESCE(MAX(i.strips_per_box), 1) as max_strips
           FROM master_drugs md
-          LEFT JOIN inventory i ON i.drug_id = md.id
+          LEFT JOIN inventory i ON CAST(i.drug_id AS TEXT) = CAST(md.id AS TEXT)
             AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
-          WHERE md.id = ?
+          WHERE CAST(md.id AS TEXT) = CAST(? AS TEXT)
           GROUP BY md.id
         `).get(pharmacyId, pharmacyId, item.drug_id) as any;
-        const drugName = drugInfo?.trade_name || `Drug #${item.drug_id}`;
+        
+        const isPlaceholder = (s?: string) => !s || /^Drug\s*#?\s*\d+$/i.test(String(s).trim());
+        const drugName = (!isPlaceholder(drugInfo?.trade_name_en) ? drugInfo?.trade_name_en : null) ||
+                         (!isPlaceholder(drugInfo?.trade_name) ? drugInfo?.trade_name : null) ||
+                         (!isPlaceholder(drugInfo?.active_ingredient) ? drugInfo?.active_ingredient : null) ||
+                         drugInfo?.trade_name || drugInfo?.trade_name_en || `Drug #${item.drug_id}`;
         
         const actualLargeToMedium = drugInfo?.max_strips > 1 ? drugInfo.max_strips : (drugInfo?.large_to_medium || 1);
         const deductionQty = saleStockQty(item.quantity_sold, item.selected_unit, actualLargeToMedium, drugInfo?.medium_to_small || 1, drugInfo?.medium_unit, drugInfo?.small_unit);

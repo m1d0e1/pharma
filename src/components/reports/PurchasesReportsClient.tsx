@@ -437,7 +437,13 @@ export default function PurchasesReportsClient({ userRole }: { userRole?: string
                       const amounts = purchaseReportLineAmounts(item);
                       return <tr key={item.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors group">
                         <td className="px-4 py-5 font-mono text-blue-500 rounded-r-2xl bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{item.barcode}</td>
-                        <td className="px-4 py-5 font-black bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{item.trade_name}</td>
+                        <td className="px-4 py-5 font-black bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">
+                          {item.trade_name_en && !/^Drug\s*#?\s*\d+$/i.test(item.trade_name_en.trim())
+                            ? item.trade_name_en
+                            : (item.trade_name && !/^Drug\s*#?\s*\d+$/i.test(item.trade_name.trim())
+                              ? item.trade_name
+                              : (item.trade_name_en || item.trade_name || item.active_ingredient || `صنف #${item.drug_id || item.id}`))}
+                        </td>
                         <td className="px-4 py-5 font-bold text-slate-400 italic bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{purchaseReportDate(item.expiry_date)}</td>
                         <td className="px-4 py-5 font-black text-lg bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{item.quantity}</td>
                         <td className="px-4 py-5 text-slate-500 bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/50">{purchaseReportUnitLabel(item)}</td>
