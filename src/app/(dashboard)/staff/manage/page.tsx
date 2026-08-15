@@ -220,7 +220,10 @@ export default function StaffManagePage() {
           can_view_restock: false,
           can_view_audit: false,
           can_view_settings: false,
-          acc_can_view_handover: true
+          acc_can_view_handover: true,
+          can_view_expenses: false,
+          can_view_staff_manage: false,
+          can_view_staff_roles: false
         } : formData.role === 'admin' ? {
           can_view_stock_sale: true,
           can_manage_inventory: true,
@@ -260,8 +263,11 @@ export default function StaffManagePage() {
           can_view_restock: true,
           can_view_audit: false,
           can_view_settings: true,
-          acc_can_view_handover: true
-        } : formData.role === 'owner' ? defaultOwnerPerms : {};
+          acc_can_view_handover: true,
+          can_view_expenses: true,
+          can_view_staff_manage: true,
+          can_view_staff_roles: true
+        } : (formData.role === 'owner' || formData.role === 'admin') ? defaultOwnerPerms : {};
 
         await dbExecute(`
           INSERT INTO users (id, username, full_name, role, password_hash, permissions, job_id, qualification, hire_date, shift, code)

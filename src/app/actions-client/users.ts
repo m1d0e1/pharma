@@ -396,17 +396,23 @@ export async function updateUserAction(userId: string, data: {
 export async function getStaffAction() {
   try {
     const user = await getLocalSession();
-    if (!user || (user.role !== 'owner' && user.role !== 'admin')) return { success: false, error: 'Unauthorized' };
+    if (!user) return { success: false, error: 'Unauthorized' };
 
     const staff = await db.prepare(`
       SELECT 
-        u.*, 
+        u.id,
+        u.username,
+        u.full_name,
+        u.role,
+        u.is_active,
         ej.name_ar as job_name_ar, 
         ej.name_en as job_name_en
       FROM users u
       LEFT JOIN employee_jobs ej ON u.job_id = ej.id
+      WHERE u.is_active = 1
+      ORDER BY u.full_name ASC, u.username ASC
     `).all() as any[];
-    return { success: true, data: staff };
+    return { success: true, data: staff || [] };
   } catch (error) {
     return { success: false, error: 'فشل جلب قائمة الموظفين' };
   }
@@ -417,8 +423,8 @@ export async function getJobsAction() {
     const user = await getLocalSession();
     if (!user || (user.role !== 'owner' && user.role !== 'admin')) return { success: false, error: 'Unauthorized' };
 
-    const jobs = await db.prepare('SELECT * FROM employee_jobs').all() as any[];
-    return { success: true, data: jobs };
+    const jobs = await db.prepare('SELECT * FROM employee_jobs ORDER BY name_ar ASC').all() as any[];
+    return { success: true, data: jobs || [] };
   } catch (error) {
     return { success: false, error: 'فشل جلب قائمة الوظائف' };
   }
@@ -496,5 +502,76 @@ export async function resetUserPasswordAction(userId: string, newPassword: strin
   }
 }
 
+export async function getStaffManagementDataAction() {
+  try {
+    const user = await getLocalSession();
+    if (!user || (user.role !== 'owner' && user.role !== 'admin')) {
+      return { success: false, error: 'غير مصرح - للمالك فقط' };
+    }
 
-export async function getStaffManagementDataAction() { return { success: false, data: {} }; }
+    const users = await db.prepare(`
+      SELECT u.*, ej.name_ar as job_name_ar 
+      FROM users u
+      LEFT JOIN employee_jobs ej ON u.job_id = ej.id
+      ORDER BY u.full_name ASC, u.username ASC
+    `).all() as any[];
+
+    const jobs = await db.prepare('SELECT * FROM employee_jobs ORDER BY name_ar ASC').all() as any[];
+
+    return { success: true, users: users || [], jobs: jobs || [] };
+  } catch (error) {
+    return { success: false, error: 'فشل جلب بيانات الموظفين' };
+  }
+}
+
+export async function getStaffPerformanceAction() {
+  try {
+    const { hasUserPermissionSync, isOwnerOrAdmin } = await import('@/lib/auth/local');
+    const user = await getLocalSession();
+    if (!user || (!isOwnerOrAdmin(user) && !hasUserPermissionSync(user, 'rep_can_view_activity'))) {
+      return { success: false, error: 'غير مصرح' };
+    }
+
+    const metrics = await db.prepare(`
+      SELECT 
+        u.id, 
+        u.username, 
+        u.full_name, 
+        u.role,
+        COUNT(DISTINCT si.id) as transactions,
+        COALESCE(SUM(si.total_amount), 0) as total_revenue,
+        (SELECT COUNT(*) FROM returns r WHERE r.user_id = u.id) as returns_count,
+        (SELECT COUNT(*) FROM shifts s WHERE s.user_id = u.id) as shifts_count
+      FROM users u
+      LEFT JOIN sales_invoices si ON u.id = si.user_id AND (si.status IS NULL OR si.status != 'cancelled')
+      WHERE u.is_active = 1
+      GROUP BY u.id
+      ORDER BY total_revenue DESC
+    `).all() as any[];
+
+    const mapped = (metrics || []).map((member: any) => {
+      const transactions = Number(member.transactions || 0);
+      const totalRevenue = Number(member.total_revenue || 0);
+      const shiftsCount = Number(member.shifts_count || 0);
+      const returnsCount = Number(member.returns_count || 0);
+      const transactionsPerShift = shiftsCount > 0 ? (transactions / shiftsCount) : transactions;
+      const avgBasket = transactions > 0 ? totalRevenue / transactions : 0;
+      const returnRate = transactions > 0 ? (returnsCount / transactions) * 100 : 0;
+
+      return {
+        id: member.id,
+        name: member.full_name || member.username,
+        role: member.role,
+        transactionsPerShift,
+        avgBasket,
+        returnRate,
+        totalRevenue
+      };
+    });
+
+    return { success: true, data: mapped };
+  } catch (error: any) {
+    console.error('Failed to get staff performance data:', error);
+    return { success: false, error: 'فشل جلب بيانات أداء الموظفين' };
+  }
+}

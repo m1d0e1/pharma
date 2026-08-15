@@ -40,6 +40,7 @@ export function initLocalDb() {
       hire_date TEXT,
       shift TEXT,
       code TEXT UNIQUE,
+      permissions TEXT DEFAULT '{"can_sell": true, "can_manage_inventory": false}',
       is_active INTEGER DEFAULT 1
     );
 
@@ -91,6 +92,28 @@ export function initLocalDb() {
       try { db.exec(`ALTER TABLE users ADD COLUMN ${col.name} ${col.type}`); } catch (e) {}
     }
   }
+
+  // Migration: Add columns to employee_jobs if missing
+  try {
+    const jobColumns = db.prepare("PRAGMA table_info(employee_jobs)").all() as any[];
+    const jobCols = [
+      { name: 'name_ar', type: 'TEXT' },
+      { name: 'name_en', type: 'TEXT' },
+      { name: 'min_salary', type: 'REAL DEFAULT 0' },
+      { name: 'max_salary', type: 'REAL DEFAULT 0' },
+      { name: 'created_at', type: 'DATETIME' }
+    ];
+    for (const col of jobCols) {
+      if (!jobColumns.some(c => c.name === col.name)) {
+        try { db.exec(`ALTER TABLE employee_jobs ADD COLUMN ${col.name} ${col.type}`); } catch (e) {}
+      }
+    }
+    if (jobColumns.some(c => c.name === 'title')) {
+      try {
+        db.exec(`UPDATE employee_jobs SET name_ar = title WHERE (name_ar IS NULL OR name_ar = '') AND title IS NOT NULL`);
+      } catch (e) {}
+    }
+  } catch (e) {}
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS master_drugs (

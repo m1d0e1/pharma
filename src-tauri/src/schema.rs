@@ -249,7 +249,7 @@ async fn ensure_compatibility(
         CREATE TABLE IF NOT EXISTS manufacturers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT);
         CREATE TABLE IF NOT EXISTS units (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT);
         CREATE TABLE IF NOT EXISTS product_categories (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT);
-        CREATE TABLE IF NOT EXISTS employee_jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT);
+        CREATE TABLE IF NOT EXISTS employee_jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, name_ar TEXT, name_en TEXT, min_salary REAL DEFAULT 0, max_salary REAL DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS expenses (id TEXT PRIMARY KEY, category TEXT, amount REAL, notes TEXT, user_id TEXT, date TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS expense_definitions (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT);
         CREATE TABLE IF NOT EXISTS banks (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT);
@@ -344,7 +344,19 @@ async fn ensure_compatibility(
         ("suppliers", "phone", "phone TEXT"),
         ("suppliers", "address", "address TEXT"),
         ("suppliers", "name_en", "name_en TEXT"),
-        ("supplier_transactions", "created_at", "created_at DATETIME DEFAULT CURRENT_TIMESTAMP"),
+        ("supplier_transactions", "created_at", "created_at DATETIME"),
+        ("users", "job_id", "job_id INTEGER"),
+        ("users", "qualification", "qualification TEXT"),
+        ("users", "hire_date", "hire_date TEXT"),
+        ("users", "shift", "shift TEXT"),
+        ("users", "code", "code TEXT"),
+        ("users", "permissions", "permissions TEXT DEFAULT '{\"can_sell\": true, \"can_manage_inventory\": false}'"),
+        ("users", "is_active", "is_active INTEGER DEFAULT 1"),
+        ("employee_jobs", "name_ar", "name_ar TEXT"),
+        ("employee_jobs", "name_en", "name_en TEXT"),
+        ("employee_jobs", "min_salary", "min_salary REAL DEFAULT 0"),
+        ("employee_jobs", "max_salary", "max_salary REAL DEFAULT 0"),
+        ("employee_jobs", "created_at", "created_at DATETIME"),
     ] {
         add_column(transaction, table, column, definition).await?;
     }
@@ -361,6 +373,10 @@ async fn ensure_compatibility(
         BEGIN
           UPDATE purchase_invoices SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
         END;
+
+        UPDATE employee_jobs
+        SET name_ar = 'وظيفة'
+        WHERE (name_ar IS NULL OR name_ar = '');
 
         CREATE INDEX IF NOT EXISTS idx_activity_log_created_at ON activity_log(created_at);
         CREATE INDEX IF NOT EXISTS idx_activity_log_action ON activity_log(action);
