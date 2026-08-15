@@ -47,8 +47,8 @@ const navItems = [
 
   // Inventory Ops
   { category: 'العمليات المخزنية', href: '/inventory', label: 'المخزون', icon: Package, roles: ['owner', 'admin', 'pharmacist'] },
-  { category: 'العمليات المخزنية', href: '/stores/shortages', label: 'كشكول النواقص', icon: AlertTriangle, roles: ['owner', 'admin', 'pharmacist'], permission: 'can_view_shortages' },
-  { category: 'العمليات المخزنية', href: '/inventory/item-movements', label: 'حركات الأصناف', icon: Activity, roles: ['owner', 'admin', 'pharmacist'], permission: 'manage_inventory' },
+  { category: 'العمليات المخزنية', href: '/stores/shortages', label: 'كشكول النواقص', icon: AlertTriangle, roles: ['owner', 'admin', 'pharmacist'], permission: 'can_view_restock' },
+  { category: 'العمليات المخزنية', href: '/inventory/item-movements', label: 'حركات الأصناف', icon: Activity, roles: ['owner', 'admin', 'pharmacist'], permission: 'can_manage_inventory' },
   { category: 'العمليات المخزنية', href: '/restock', label: 'إعادة التموين', icon: Package, roles: ['owner', 'admin'], permission: 'can_view_restock' },
   { category: 'العمليات المخزنية', href: '/inventory/opening-balances', label: 'الأرصدة الإفتتاحية', icon: Database, roles: ['owner', 'admin'], permission: 'can_view_opening_balances' },
   { category: 'العمليات المخزنية', href: '/inventory/settlement', label: 'تسوية المخزون', icon: ArrowLeftRight, roles: ['owner', 'admin', 'pharmacist'], permission: 'can_view_settlement' },
@@ -60,26 +60,26 @@ const navItems = [
   { category: 'البيانات الأساسية', href: '/stores/items', label: 'إدارة المخازن', icon: Box, roles: ['owner', 'admin'], permission: 'can_manage_inventory' },
 
   // Finance
-  { category: 'المالية', href: '/accounts', label: 'الحسابات والمالية', icon: Wallet, roles: ['owner', 'admin'], permission: 'rep_can_view_financial' },
-  { category: 'المالية', href: '/accounts/cash-transactions', label: 'حركة النقدية', icon: ArrowLeftRight, roles: ['owner', 'admin', 'pharmacist'], permission: 'can_view_cash_transactions' },
-  { category: 'المالية', href: '/finance/banks', label: 'البنوك', icon: Landmark, roles: ['owner', 'admin'], permission: 'can_view_banks' },
-  { category: 'المالية', href: '/finance/cards', label: 'البطاقات', icon: CreditCard, roles: ['owner', 'admin'], permission: 'can_view_cards' },
-  { category: 'المالية', href: '/finance/pos-management', label: 'نقاط البيع', icon: Monitor, roles: ['owner', 'admin'], permission: 'can_view_pos_management' },
-  { category: 'المالية', href: '/finance/accounts', label: 'شجرة الحسابات', icon: Database, roles: ['owner', 'admin'], permission: 'can_view_accounts_tree' },
-  { category: 'المالية', href: '/accounts/settings/trial-balance', label: 'ميزان المراجعة', icon: Settings, roles: ['owner', 'admin'], permission: 'can_view_trial_balance' },
+  { category: 'المالية', href: '/accounts', label: 'الحسابات والمالية', icon: Wallet, roles: ['owner', 'admin'], permission: 'acc_can_view_general' },
+  { category: 'المالية', href: '/accounts/cash-transactions', label: 'حركة النقدية', icon: ArrowLeftRight, roles: ['owner', 'admin', 'pharmacist'], permission: 'acc_can_process_cash_flow' },
+  { category: 'المالية', href: '/finance/banks', label: 'البنوك', icon: Landmark, roles: ['owner', 'admin'], permission: 'acc_can_view_bank_accounts' },
+  { category: 'المالية', href: '/finance/cards', label: 'البطاقات', icon: CreditCard, roles: ['owner', 'admin'], permission: 'acc_can_collect_credit_cards' },
+  { category: 'المالية', href: '/finance/pos-management', label: 'نقاط البيع', icon: Monitor, roles: ['owner', 'admin'], permission: 'acc_can_view_pos' },
+  { category: 'المالية', href: '/finance/accounts', label: 'شجرة الحسابات', icon: Database, roles: ['owner', 'admin'], permission: 'acc_can_view_general' },
+  { category: 'المالية', href: '/accounts/settings/trial-balance', label: 'ميزان المراجعة', icon: Settings, roles: ['owner', 'admin'], permission: 'acc_can_view_general' },
 
   // Reports
-  { category: 'التقارير', href: '/reports', label: 'لوحة التقارير', icon: BarChart3, roles: ['owner', 'admin'], permission: 'can_view_reports_dashboard' },
+  { category: 'التقارير', href: '/reports', label: 'لوحة التقارير', icon: BarChart3, roles: ['owner', 'admin'], permission: 'rep_can_view_sales' },
   { category: 'التقارير', href: '/reports/sales', label: 'تقارير المبيعات', icon: TrendingUp, roles: ['owner', 'admin'], permission: 'rep_can_view_sales' },
-  { category: 'التقارير', href: '/reports/purchases', label: 'تقارير المشتريات', icon: ScrollText, roles: ['owner', 'admin'], permission: 'can_view_purchase_reports' },
-  { category: 'التقارير', href: '/reports/trial-balance', label: 'ميزان المراجعة', icon: Database, roles: ['owner', 'admin'], permission: 'can_view_trial_balance_report' },
+  { category: 'التقارير', href: '/reports/purchases', label: 'تقارير المشتريات', icon: ScrollText, roles: ['owner', 'admin'], permission: 'rep_can_view_purchases' },
+  { category: 'التقارير', href: '/reports/trial-balance', label: 'ميزان المراجعة', icon: Database, roles: ['owner', 'admin'], permission: 'acc_can_view_reports' },
   { category: 'التقارير', href: '/expenses', label: 'المصروفات', icon: Receipt, roles: ['owner', 'admin'], permission: 'can_view_expenses' },
 
   // Patients
   { category: 'المرضى والطبية', href: '/patients', label: 'المرضى', icon: Users, roles: ['owner', 'admin', 'pharmacist'], permission: 'can_view_patients' },
 
   // Administration
-  { category: 'الإدارة', href: '/staff', label: 'أداء الموظفين', icon: UserCheck, roles: ['owner', 'admin'], permission: 'can_view_staff_performance' },
+  { category: 'الإدارة', href: '/staff', label: 'أداء الموظفين', icon: UserCheck, roles: ['owner', 'admin'], permission: 'rep_can_view_activity' },
   { category: 'الإدارة', href: '/staff/manage', label: 'إدارة الموظفين', icon: UserCog, roles: ['owner', 'admin'], permission: 'can_view_staff_manage' },
   { category: 'الإدارة', href: '/staff/roles', label: 'الوظائف والرواتب', icon: Briefcase, roles: ['owner', 'admin'], permission: 'can_view_staff_roles' },
   { category: 'الإدارة', href: '/audit', label: 'سجل المراقبة', icon: Shield, roles: ['owner'], permission: 'can_view_audit' },

@@ -124,7 +124,10 @@ const defaultOwnerPerms = {
   can_view_restock: true,
   can_view_audit: true,
   can_view_settings: true,
-  acc_can_view_handover: true
+  acc_can_view_handover: true,
+  can_view_expenses: true,
+  can_view_staff_manage: true,
+  can_view_staff_roles: true
 };
 
 export async function updateUserPermissionsAction(userId: string, permissions: any) {
@@ -239,7 +242,10 @@ export async function addUserAction(formData: {
       can_view_restock: false,
       can_view_audit: false,
       can_view_settings: false,
-      acc_can_view_handover: true
+      acc_can_view_handover: true,
+      can_view_expenses: false,
+      can_view_staff_manage: false,
+      can_view_staff_roles: false
     } : role === 'admin' ? {
       national_id: '', address: '', birth_date: '', qualification: '', mobile: '', gender: 'ذكر', social_status: 'أعزب', is_delivery_rep: false,
       can_view_stock_sale: true,
@@ -280,7 +286,10 @@ export async function addUserAction(formData: {
       can_view_restock: true,
       can_view_audit: false,
       can_view_settings: true,
-      acc_can_view_handover: true
+      acc_can_view_handover: true,
+      can_view_expenses: true,
+      can_view_staff_manage: true,
+      can_view_staff_roles: true
     } : (role === 'owner' || role === 'admin') ? defaultOwnerPerms : {};
 
     await db.prepare(`

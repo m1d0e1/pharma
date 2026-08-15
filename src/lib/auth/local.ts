@@ -282,7 +282,9 @@ export async function getPermissionValue(permissionKey: string, defaultValue: an
       }
       attempts++;
     }
-    if (perms && typeof perms === 'object' && perms[permissionKey] !== undefined) {
+    if (Array.isArray(perms)) {
+      if (perms.includes(permissionKey)) return true;
+    } else if (perms && typeof perms === 'object' && perms[permissionKey] !== undefined) {
       return perms[permissionKey];
     }
   }
@@ -320,8 +322,14 @@ export function hasUserPermissionSync(user: any, permissionKey: string): boolean
     attempts++;
   }
   
-  if (!perms || typeof perms !== 'object') return false;
-  return perms[permissionKey] === true || perms[permissionKey] === 'true' || perms[permissionKey] == 1;
+  if (!perms) return false;
+  if (Array.isArray(perms)) {
+    return perms.includes(permissionKey);
+  }
+  if (typeof perms === 'object') {
+    return perms[permissionKey] === true || perms[permissionKey] === 'true' || perms[permissionKey] == 1;
+  }
+  return false;
 }
 
 /**

@@ -56,7 +56,7 @@ const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, 
 export async function getShiftReportAction(shiftId: string) {
   try {
     const user = await getLocalSession();
-    if (!user || !hasUserPermissionSync(user, 'rep_can_view_shifts')) return { success: false, error: 'غير مصرح' };
+    if (!user || (!hasUserPermissionSync(user, 'can_view_shifts') && !hasUserPermissionSync(user, 'rep_can_view_sales') && !hasUserPermissionSync(user, 'rep_can_view_shifts'))) return { success: false, error: 'غير مصرح' };
 
     // 1. Shift Basic Info
     const shift = await db.prepare(`

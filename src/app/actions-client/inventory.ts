@@ -1031,7 +1031,7 @@ export async function addOpeningBalanceAction(data: {
 }) {
   try {
     const session = await getLocalSession();
-    if (!session || !hasUserPermissionSync(session, 'can_edit_inventory')) {
+    if (!session || (!hasUserPermissionSync(session, 'can_view_opening_balances') && !hasUserPermissionSync(session, 'can_manage_inventory'))) {
       return { success: false, error: 'Unauthorized' };
     }
 
