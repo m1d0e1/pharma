@@ -460,7 +460,7 @@ CREATE TABLE IF NOT EXISTS journal_entries (
 
 CREATE TABLE IF NOT EXISTS trial_balance_settings (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  category TEXT NOT NULL,
+  category TEXT NOT NULL UNIQUE,
   target_type TEXT,
   target_id TEXT,
   target_name TEXT,

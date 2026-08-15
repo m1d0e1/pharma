@@ -768,9 +768,9 @@ export function initLocalDb() {
 
     CREATE TABLE IF NOT EXISTS trial_balance_settings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      category TEXT NOT NULL, -- e.g., 'bank', 'cash', 'expense', 'delivery'
-      target_type TEXT, -- sub-category
-      target_id TEXT, 
+      category TEXT NOT NULL UNIQUE,
+      target_type TEXT,
+      target_id TEXT,
       target_name TEXT,
       account_id INTEGER,
       FOREIGN KEY (account_id) REFERENCES accounts (id)
@@ -986,23 +986,27 @@ export function initLocalDb() {
     }
   }
 
-  // Seed default accounts if empty
+  // Seed default accounts if empty (all accounts in one shot, including extended ones)
   const accountsCount = db.prepare('SELECT COUNT(*) as count FROM accounts').get() as { count: number };
   if (accountsCount.count === 0) {
     try {
       const insertAccount = db.prepare('INSERT OR IGNORE INTO accounts (id, code, name_ar, name_en, type, is_group) VALUES (?, ?, ?, ?, ?, ?)');
       const defaultAccounts = [
-        [1, '1', 'الأصول', 'Assets', 'asset', 1],
-        [2, '1.1', 'الأصول المتداولة', 'Current Assets', 'asset', 1],
-        [3, '2', 'الخصوم', 'Liabilities', 'liability', 1],
-        [4, '3', 'الإيرادات', 'Revenue', 'revenue', 1],
-        [5, '4', 'المصروفات', 'Expenses', 'expense', 1],
-        [6, '1.1.1', 'الصندوق', 'Cash Drawer', 'asset', 0],
-        [7, '2.1', 'دائنون', 'Accounts Payable', 'liability', 0],
-        [8, '1.1.2', 'حسابات العملاء', 'Accounts Receivable', 'asset', 0],
-        [9, '3.1', 'إيرادات المبيعات', 'Sales Revenue', 'revenue', 0],
-        [10, '1.1.3', 'المخزون السلعي', 'Inventory Asset', 'asset', 0],
-        [11, '4.1', 'تكلفة البضاعة المباعة', 'Cost of Goods Sold', 'expense', 0],
+        [1,  '1',     'الأصول',                          'Assets',                    'asset',     1],
+        [2,  '1.1',   'الأصول المتداولة',                'Current Assets',            'asset',     1],
+        [3,  '2',     'الخصوم',                          'Liabilities',               'liability', 1],
+        [4,  '3',     'الإيرادات',                       'Revenue',                   'revenue',   1],
+        [5,  '4',     'المصروفات',                       'Expenses',                  'expense',   1],
+        [6,  '1.1.1', 'الصندوق',                         'Cash Drawer',               'asset',     0],
+        [7,  '2.1',   'دائنون',                          'Accounts Payable',          'liability', 0],
+        [8,  '1.1.2', 'حسابات العملاء',                  'Accounts Receivable',       'asset',     0],
+        [9,  '3.1',   'إيرادات المبيعات',                'Sales Revenue',             'revenue',   0],
+        [10, '1.1.3', 'المخزون السلعي',                  'Inventory Asset',           'asset',     0],
+        [11, '4.1',   'تكلفة البضاعة المباعة',           'Cost of Goods Sold',        'expense',   0],
+        [12, '1.1.4', 'تسويات البنوك',                   'Bank Clearing',             'asset',     0],
+        [13, '2.2',   'أرصدة محافظ العملاء',             'Patient Wallet Liability',  'liability', 0],
+        [14, '4.2',   'تسويات حسابات العملاء',           'Customer Adjustments',      'expense',   0],
+        [15, '3.9',   'حقوق ملكية الأرصدة الافتتاحية',  'Opening Balance Equity',    'equity',    0],
       ];
       const seedAccounts = db.transaction((list: typeof defaultAccounts) => {
         for (const a of list) insertAccount.run(a[0], a[1], a[2], a[3], a[4], a[5]);
@@ -1013,20 +1017,28 @@ export function initLocalDb() {
     }
   }
 
-  // Seed trial_balance_settings if empty
-  const tbsCount = db.prepare('SELECT COUNT(*) as count FROM trial_balance_settings').get() as { count: number };
-  if (tbsCount.count === 0) {
-    try {
-      const tbs = db.prepare('INSERT OR IGNORE INTO trial_balance_settings (category, target_type, account_id) VALUES (?, ?, ?)');
-      tbs.run('cash_drawer', 'account', 6);
-      tbs.run('accounts_payable', 'account', 7);
-      tbs.run('accounts_receivable', 'account', 8);
-      tbs.run('sales_revenue', 'account', 9);
-      tbs.run('inventory_asset', 'account', 10);
-      tbs.run('cogs_expense', 'account', 11);
-    } catch (e) {
-      console.warn('Failed to seed trial_balance_settings:', e);
-    }
+  // Seed trial_balance_settings - use INSERT OR IGNORE so it is always idempotent
+  // The UNIQUE constraint on `category` prevents duplicates on repeated starts.
+  try {
+    db.exec(`
+      INSERT OR IGNORE INTO trial_balance_settings (category, target_type, account_id)
+      SELECT r.category, 'account', a.id
+      FROM (VALUES
+        ('cash_drawer',             '1.1.1'),
+        ('accounts_payable',        '2.1'),
+        ('accounts_receivable',     '1.1.2'),
+        ('sales_revenue',           '3.1'),
+        ('inventory_asset',         '1.1.3'),
+        ('cogs_expense',            '4.1'),
+        ('bank_clearing',           '1.1.4'),
+        ('patient_wallet_liability','2.2'),
+        ('customer_adjustments',    '4.2'),
+        ('opening_balance_equity',  '3.9')
+      ) AS r(category, code)
+      JOIN accounts a ON a.code = r.code;
+    `);
+  } catch (e) {
+    console.warn('Failed to seed trial_balance_settings:', e);
   }
 
   // Keep patient accounting mappings available on both fresh databases and
@@ -1042,29 +1054,22 @@ export function initLocalDb() {
         ('4.2', 'تسويات حسابات العملاء', 'Customer Adjustments', 'expense', 0),
         ('3.9', 'حقوق ملكية الأرصدة الافتتاحية', 'Opening Balance Equity', 'equity', 0);
 
-      INSERT INTO trial_balance_settings (category, target_type, account_id)
-      SELECT 'bank_clearing', 'account', id FROM accounts
-      WHERE code = '1.1.4'
-        AND NOT EXISTS (SELECT 1 FROM trial_balance_settings WHERE category = 'bank_clearing');
+      INSERT OR IGNORE INTO trial_balance_settings (category, target_type, account_id)
+      SELECT 'bank_clearing', 'account', id FROM accounts WHERE code = '1.1.4';
 
-      INSERT INTO trial_balance_settings (category, target_type, account_id)
-      SELECT 'patient_wallet_liability', 'account', id FROM accounts
-      WHERE code = '2.2'
-        AND NOT EXISTS (SELECT 1 FROM trial_balance_settings WHERE category = 'patient_wallet_liability');
+      INSERT OR IGNORE INTO trial_balance_settings (category, target_type, account_id)
+      SELECT 'patient_wallet_liability', 'account', id FROM accounts WHERE code = '2.2';
 
-      INSERT INTO trial_balance_settings (category, target_type, account_id)
-      SELECT 'customer_adjustments', 'account', id FROM accounts
-      WHERE code = '4.2'
-        AND NOT EXISTS (SELECT 1 FROM trial_balance_settings WHERE category = 'customer_adjustments');
+      INSERT OR IGNORE INTO trial_balance_settings (category, target_type, account_id)
+      SELECT 'customer_adjustments', 'account', id FROM accounts WHERE code = '4.2';
 
-      INSERT INTO trial_balance_settings (category, target_type, account_id)
-      SELECT 'opening_balance_equity', 'account', id FROM accounts
-      WHERE code = '3.9'
-        AND NOT EXISTS (SELECT 1 FROM trial_balance_settings WHERE category = 'opening_balance_equity');
+      INSERT OR IGNORE INTO trial_balance_settings (category, target_type, account_id)
+      SELECT 'opening_balance_equity', 'account', id FROM accounts WHERE code = '3.9';
     `);
   } catch (e) {
     console.warn('Failed to ensure patient accounting mappings:', e);
   }
+
 
   // Apply performance indexes
   try {

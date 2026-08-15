@@ -534,6 +534,20 @@ async fn ensure_compatibility(
     .execute(&mut **transaction)
     .await?;
 
+    // Deduplicate trial_balance_settings: keep the highest-id row per category.
+    // Pre-UNIQUE-constraint databases may have accumulated duplicate entries from
+    // repeated startup seeds. Safe to run on every startup — no-op if no duplicates.
+    sqlx::raw_sql(
+        r#"
+        DELETE FROM trial_balance_settings
+        WHERE id NOT IN (
+          SELECT MAX(id) FROM trial_balance_settings GROUP BY category
+        );
+        "#,
+    )
+    .execute(&mut **transaction)
+    .await?;
+
     Ok(())
 }
 

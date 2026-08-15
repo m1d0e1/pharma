@@ -106,7 +106,7 @@ export async function addFinancialNoticeAction(rawData: z.infer<typeof noticeSch
 
       const getAccount = async (category: string, fallback: number) => {
         const setting = await db.prepare(
-          'SELECT account_id FROM trial_balance_settings WHERE category = ? ORDER BY id LIMIT 1'
+          'SELECT account_id FROM trial_balance_settings WHERE category = ? LIMIT 1'
         ).get(category) as any;
         return Number(setting?.account_id || fallback);
       };
@@ -117,7 +117,7 @@ export async function addFinancialNoticeAction(rawData: z.infer<typeof noticeSch
           : 'cash_drawer';
       const targetFallback = data.target_type === 'customer' ? 8 : data.target_type === 'supplier' ? 7 : 6;
       const targetAccountId = await getAccount(targetCategory, targetFallback);
-      const adjustmentAccountId = await getAccount('customer_adjustments', 9);
+      const adjustmentAccountId = await getAccount('customer_adjustments', 14); // 4.2 Customer Adjustments
       const journalId = generateId();
 
       await db.prepare(`
@@ -187,7 +187,7 @@ export async function addPatientPaymentAction(rawData: z.infer<typeof paymentSch
 
       const getAccount = async (category: string, fallback: number) => {
         const setting = await db.prepare(
-          'SELECT account_id FROM trial_balance_settings WHERE category = ? ORDER BY id LIMIT 1'
+          'SELECT account_id FROM trial_balance_settings WHERE category = ? LIMIT 1'
         ).get(category) as any;
         return Number(setting?.account_id || fallback);
       };
@@ -511,6 +511,9 @@ export async function updateAccountAction(id: number, rawData: z.infer<typeof up
 
 export async function getJournalsAction(filters?: { dateFrom?: string; dateTo?: string }) {
   try {
+    const user = await getLocalSession();
+    if (!user || !hasUserPermissionSync(user, 'rep_can_view_financial')) return { success: false, error: 'غير مصرح' };
+
     let sql = `SELECT * FROM daily_journals WHERE 1=1`;
     const params: any[] = [];
     if (filters?.dateFrom) {
@@ -717,28 +720,16 @@ export async function saveTrialBalanceSettingAction(data: {
   account_id: number;
 }) {
   try {
-    // Check if exists based on category and target identification
-    let existing;
-    if (data.target_id) {
-      existing = await db.prepare(`
-        SELECT id FROM trial_balance_settings 
-        WHERE category = ? AND target_id = ?
-      `).get(data.category, data.target_id) as any;
-    } else {
-      existing = await db.prepare(`
-        SELECT id FROM trial_balance_settings 
-        WHERE category = ? AND target_name = ?
-      `).get(data.category, data.target_name) as any;
-    }
-
-    if (existing) {
-      await db.prepare('UPDATE trial_balance_settings SET account_id = ? WHERE id = ?').run(data.account_id, existing.id);
-    } else {
-      await db.prepare(`
-        INSERT INTO trial_balance_settings (category, target_type, target_id, target_name, account_id)
-        VALUES (?, ?, ?, ?, ?)
-      `).run(data.category, data.target_type || null, data.target_id || null, data.target_name || null, data.account_id);
-    }
+    // INSERT OR REPLACE leverages the UNIQUE constraint on `category`
+    await db.prepare(`
+      INSERT INTO trial_balance_settings (category, target_type, target_id, target_name, account_id)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(category) DO UPDATE SET
+        target_type = excluded.target_type,
+        target_id = excluded.target_id,
+        target_name = excluded.target_name,
+        account_id = excluded.account_id
+    `).run(data.category, data.target_type || null, data.target_id || null, data.target_name || null, data.account_id);
 
     revalidatePath('/accounts/settings/trial-balance');
     return { success: true };
@@ -747,6 +738,7 @@ export async function saveTrialBalanceSettingAction(data: {
     return { success: false, error: 'فشل حفظ الإعداد' };
   }
 }
+
 
 export async function getPatientStatementAction(patientId: string) {
   // Keep the legacy export, but route it through the canonical patient ledger.
