@@ -1039,7 +1039,6 @@ export function initLocalDb() {
       JOIN accounts a ON a.code = r.code;
     `);
   } catch (e) {
-
     console.warn('Failed to seed trial_balance_settings:', e);
   }
 
