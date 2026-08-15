@@ -1021,9 +1021,7 @@ export function initLocalDb() {
   // The UNIQUE constraint on `category` prevents duplicates on repeated starts.
   try {
     db.exec(`
-      INSERT OR IGNORE INTO trial_balance_settings (category, target_type, account_id)
-      SELECT r.category, 'account', a.id
-      FROM (VALUES
+      WITH required(category, code) AS (VALUES
         ('cash_drawer',             '1.1.1'),
         ('accounts_payable',        '2.1'),
         ('accounts_receivable',     '1.1.2'),
@@ -1034,10 +1032,14 @@ export function initLocalDb() {
         ('patient_wallet_liability','2.2'),
         ('customer_adjustments',    '4.2'),
         ('opening_balance_equity',  '3.9')
-      ) AS r(category, code)
+      )
+      INSERT OR IGNORE INTO trial_balance_settings (category, target_type, account_id)
+      SELECT r.category, 'account', a.id
+      FROM required r
       JOIN accounts a ON a.code = r.code;
     `);
   } catch (e) {
+
     console.warn('Failed to seed trial_balance_settings:', e);
   }
 
