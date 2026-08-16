@@ -106,8 +106,9 @@ export async function getShiftReportAction(shiftId: string) {
     // 5. Calculate Expected Cash (Only Cash & Delivery)
     const cashSales = sales.filter(s => ['cash', 'delivery'].includes(s.payment_method)).reduce((sum, s) => sum + (s.paid || s.total || 0), 0);
     const cashReturns = returns.find(r => r.refund_method === 'cash')?.total || 0;
-    const cashReceipts = movements.filter(m => m.type === 'receipt').reduce((sum, m) => sum + m.total, 0);
-    const cashDisbursements = movements.filter(m => m.type === 'disbursement').reduce((sum, m) => sum + m.total, 0);
+    const cashReceipts = movements.filter(m => m.type === 'receipt').reduce((sum, m) => sum + (m.total || 0), 0);
+    const cashHandover = movements.filter(m => m.type === 'disbursement' && m.category === 'handover').reduce((sum, m) => sum + (m.total || 0), 0);
+    const cashDisbursements = movements.filter(m => m.type === 'disbursement').reduce((sum, m) => sum + (m.total || 0), 0);
 
     const expectedCash = (shift.starting_cash || 0) + cashSales - cashReturns + cashReceipts - cashDisbursements;
 
@@ -123,6 +124,7 @@ export async function getShiftReportAction(shiftId: string) {
           cashReturns,
           cashReceipts,
           cashDisbursements,
+          cashHandover,
           expectedCash,
           actualCash: shift.ending_cash,
           difference: shift.ending_cash ? (shift.ending_cash - expectedCash) : 0

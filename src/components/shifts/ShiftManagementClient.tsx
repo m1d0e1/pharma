@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
+import Link from 'next/link';
 import { openShiftAction, closeShiftAction, getShiftsAction, forceCloseAllShiftsAction } from '@/app/actions-client/shifts';
 import { Button } from '@/components/ui/button';
 import { Calendar, Clock, DollarSign, User, AlertCircle, CheckCircle, XCircle, TrendingUp, TrendingDown } from 'lucide-react';
@@ -291,6 +292,19 @@ export default function ShiftManagementClient({
                 <p className="text-blue-600 dark:text-blue-400 text-sm mt-1">
                   تم الفتح: {formatDate(currentShift.shift_start)}
                 </p>
+              </div>
+
+              <div className="mb-4 p-4 bg-emerald-50 dark:bg-emerald-900/20 rounded-2xl border border-emerald-200 dark:border-emerald-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <p className="font-bold text-sm text-emerald-800 dark:text-emerald-300">هل ترغب في تسليم الدرج لموظف آخر أو إيداع النقدية؟</p>
+                  <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-0.5">تحويل النقدية إلى الخزينة/البنك أو تسليمها للمستلم التالي</p>
+                </div>
+                <Link
+                  href="/finance/handover"
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-sm transition-all text-center whitespace-nowrap"
+                >
+                  🤝 تسليم الدرج والمناوبة
+                </Link>
               </div>
               
               <div className="space-y-4">

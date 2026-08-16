@@ -1,10 +1,11 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import Link from 'next/link';
 import { 
   DollarSign, ArrowLeftRight, UserCheck, 
   FileText, ShieldCheck, AlertTriangle,
-  History, Landmark, Calculator, Printer, Eye, Receipt, X, AlertCircle
+  History, Landmark, Calculator, Printer, Eye, Receipt, X, AlertCircle, ArrowRight
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { getHandoverDetailsAction, processHandoverAction, getShiftCreditSalesAction } from '@/app/actions-client/handover';
@@ -131,8 +132,17 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
     <div className="max-w-4xl mx-auto space-y-8" dir="rtl">
       {/* Summary Header */}
       <div className="bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 overflow-hidden shadow-xl">
-        <div className="p-8 bg-slate-900 text-white flex justify-between items-center">
+        <div className="p-8 bg-slate-900 text-white flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
           <div className="flex items-center gap-4">
+            {!onClose && (
+              <Link 
+                href="/shifts" 
+                className="p-3 bg-white/10 hover:bg-white/20 rounded-2xl text-white transition-all no-print flex items-center justify-center"
+                title="العودة إلى إدارة الشفتات"
+              >
+                <ArrowRight className="w-5 h-5" />
+              </Link>
+            )}
             <div className="w-16 h-16 bg-blue-600/20 rounded-3xl flex items-center justify-center border border-blue-500/30">
               <Calculator className="w-8 h-8 text-blue-400" />
             </div>

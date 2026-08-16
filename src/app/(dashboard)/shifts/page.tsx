@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
+import Link from 'next/link';
 import ShiftManagementClient from '@/components/shifts/ShiftManagementClient';
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { dbSelect, dbGet } from '@/lib/db/tauri';
@@ -121,12 +122,21 @@ export default function ShiftsPage() {
           <h1 className="text-3xl font-bold text-slate-900 dark:text-white">إدارة الشفتات النقدية</h1>
           <p className="text-slate-500 mt-1">إدارة فتح وإغلاق الشفتات النقدية وتتبع الفروقات</p>
         </div>
+        <div className="flex gap-3">
+          <Link 
+            href="/finance/handover" 
+            className="px-6 py-3 bg-slate-900 dark:bg-slate-800 hover:bg-slate-800 text-white rounded-2xl font-bold text-sm shadow-lg transition-all flex items-center gap-2"
+          >
+            <span>🤝</span>
+            <span>تسليم الدرج والمناوبة</span>
+          </Link>
+        </div>
       </div>
 
       {/* Current Shift Status */}
       {hasOpenShift && currentShift && (
         <div className="p-6 bg-gradient-to-r from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20 rounded-3xl border-2 border-green-200 dark:border-green-800">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
               <h2 className="text-xl font-bold text-green-800 dark:text-green-300">✅ لديك شفت مفتوح حالياً</h2>
               <p className="text-green-600 dark:text-green-400 mt-1">
@@ -136,9 +146,18 @@ export default function ShiftsPage() {
                 الرصيد الافتتاحي: {currentShift.starting_cash_amount.toLocaleString('ar-EG')} ج.م
               </p>
             </div>
-            <div className="text-right">
-              <p className="text-sm text-green-600 dark:text-green-400">معرف الشفت</p>
-              <p className="font-mono text-green-800 dark:text-green-300">{currentShift.id.substring(0, 8)}...</p>
+            <div className="flex items-center gap-4">
+              <Link 
+                href="/finance/handover" 
+                className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm rounded-2xl shadow-md transition-all flex items-center gap-2 whitespace-nowrap"
+              >
+                <span>🤝</span>
+                <span>تسليم الدرج</span>
+              </Link>
+              <div className="text-right">
+                <p className="text-xs text-green-600 dark:text-green-400">معرف الشفت</p>
+                <p className="font-mono text-green-800 dark:text-green-300 font-bold">{currentShift.id.substring(0, 8)}...</p>
+              </div>
             </div>
           </div>
         </div>

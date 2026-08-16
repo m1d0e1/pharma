@@ -16,7 +16,7 @@ interface CustomerStatementModalProps {
 export default function CustomerStatementModal({ patientId, onClose }: CustomerStatementModalProps) {
   useHotkeys('esc', () => { if(typeof onClose === 'function') onClose(); }, { enableOnFormTags: true });
 
-  const [activeTab, setActiveTab] = useState<'movements' | 'items' | 'report'>('movements');
+  const [activeTab, setActiveTab] = useState<'movements' | 'items' | 'notices'>('movements');
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<any>(null);
   const [selectedReceipt, setSelectedReceipt] = useState<any>(null);
@@ -63,7 +63,7 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
     );
   }
 
-  const { patient, movements, items, currentBalance } = data;
+  const { patient, movements, items, notices, currentBalance } = data;
   let runningBalance = Number(patient.opening_balance || 0);
   const statementMovements = [...(movements || [])]
     .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
@@ -109,12 +109,28 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
                  <p className="text-2xl font-black text-emerald-600">{(patient.opening_balance || 0).toLocaleString()} ج.م</p>
               </div>
            </div>
+
+           {patient.notes && (
+             <div className="mt-4 p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/40 rounded-2xl flex items-center gap-3">
+               <span className="text-xl">📌</span>
+               <div>
+                 <p className="text-xs font-black text-amber-800 dark:text-amber-300">ملاحظات العميل:</p>
+                 <p className="text-sm font-bold text-amber-900 dark:text-amber-200">{patient.notes}</p>
+               </div>
+             </div>
+           )}
         </div>
 
         {/* Tab Selection */}
         <div className="flex bg-white dark:bg-slate-950 p-2 gap-2 border-b border-slate-200 dark:border-slate-800 shrink-0 no-print">
-           <TabButton active={activeTab === 'movements'} onClick={() => setActiveTab('movements')} icon={History} label="حركات" />
-           <TabButton active={activeTab === 'items'} onClick={() => setActiveTab('items')} icon={Package} label="أصناف" />
+           <TabButton active={activeTab === 'movements'} onClick={() => setActiveTab('movements')} icon={History} label="حركات وكشف الحساب" />
+           <TabButton active={activeTab === 'items'} onClick={() => setActiveTab('items')} icon={Package} label="أصناف المبيعات" />
+           <TabButton 
+             active={activeTab === 'notices'} 
+             onClick={() => setActiveTab('notices')} 
+             icon={FileText} 
+             label={`إشعارات وتعديلات (${(notices || []).length})`} 
+           />
         </div>
 
         {/* Content Area */}
@@ -125,6 +141,7 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
                   <thead className="bg-slate-50 dark:bg-slate-900/50">
                     <tr>
                        <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">الحركة</th>
+                       <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">البيان / الملاحظات</th>
                        <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">رقم المستند</th>
                        <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">التاريخ</th>
                        <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">المبلغ</th>
@@ -146,11 +163,16 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
                       >
                          <td className="px-6 py-4">
                             <span className={cn(
-                              "px-3 py-1 rounded-full text-[10px] font-bold flex items-center gap-2 w-fit",
-                              mov.balanceEffect > 0 ? "bg-blue-100 text-blue-600" : "bg-emerald-100 text-emerald-600"
+                               "px-3 py-1 rounded-full text-[10px] font-bold flex items-center gap-2 w-fit",
+                               mov.balanceEffect > 0 ? "bg-blue-100 text-blue-600" : "bg-emerald-100 text-emerald-600"
                             )}>
                                {mov.balanceEffect > 0 ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownLeft className="w-3 h-3" />}
                                {mov.type}
+                            </span>
+                         </td>
+                         <td className="px-6 py-4">
+                            <span className="text-xs font-bold text-slate-600 dark:text-slate-300">
+                               {mov.notes || '---'}
                             </span>
                          </td>
                          <td className="px-6 py-4 font-bold text-slate-500 hover:text-blue-600 underline">
@@ -171,6 +193,50 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
                     ))}
                   </tbody>
                 </table>
+             </div>
+           )}
+
+           {activeTab === 'notices' && (
+             <div className="bg-white dark:bg-slate-950 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm animate-in fade-in slide-in-from-bottom-4">
+                {(notices || []).length === 0 ? (
+                  <div className="p-16 text-center text-slate-400 font-bold">
+                    لا توجد إشعارات مالية مسجلة لهذا العميل
+                  </div>
+                ) : (
+                  <table className="w-full text-right">
+                    <thead className="bg-slate-50 dark:bg-slate-900/50">
+                      <tr>
+                        <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">نوع الإشعار</th>
+                        <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">المبلغ</th>
+                        <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">السبب / البيان</th>
+                        <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">ملاحظات</th>
+                        <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">التاريخ</th>
+                        <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">المستخدم</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                      {(notices || []).map((notice: any, i: number) => (
+                        <tr key={i} className="hover:bg-slate-50 dark:hover:bg-slate-900/30 transition-colors">
+                          <td className="px-6 py-4">
+                            <span className={cn(
+                              "px-3 py-1 rounded-full text-xs font-bold",
+                              notice.type === 'debit' ? "bg-blue-100 text-blue-700" : "bg-emerald-100 text-emerald-700"
+                            )}>
+                              {notice.type === 'debit' ? 'إشعار مدين (إضافة على الحساب)' : 'إشعار دائن (خصم من الحساب)'}
+                            </span>
+                          </td>
+                          <td className={cn("px-6 py-4 font-black text-lg", notice.type === 'debit' ? "text-blue-600" : "text-emerald-600")}>
+                            {notice.amount.toLocaleString()} ج.م
+                          </td>
+                          <td className="px-6 py-4 font-bold text-slate-800 dark:text-white">{notice.reason || '---'}</td>
+                          <td className="px-6 py-4 text-slate-500 font-medium text-sm">{notice.notes || '---'}</td>
+                          <td className="px-6 py-4 font-bold text-sm text-slate-600 dark:text-slate-400">{new Date(notice.date || notice.created_at).toLocaleDateString('ar-EG')}</td>
+                          <td className="px-6 py-4 text-slate-500 font-bold text-sm">{notice.user_name || 'النظام'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
              </div>
            )}
 

@@ -149,7 +149,7 @@ export async function addPatientAction(formData: AddPatientInput) {
           "SELECT account_id FROM trial_balance_settings WHERE category = 'opening_balance_equity' LIMIT 1"
         ).get() as any;
         const receivableAccountId = Number(receivable?.account_id || 8);
-        const equityAccountId = Number(openingEquity?.account_id || 9);
+        const equityAccountId = Number(openingEquity?.account_id || 15);
         const amount = Math.abs(data.opening_balance);
         const journalId = generateId();
         const date = new Date().toISOString().slice(0, 10);
@@ -437,6 +437,7 @@ export async function getPatientStatementAction(patientId: string) {
              CAST(total_amount AS REAL) as value,
              CASE WHEN payment_method = 'credit' THEN CAST(total_amount AS REAL) ELSE 0 END as balance_effect,
              payment_method,
+             notes,
              (SELECT full_name FROM users WHERE id = user_id) as user_name
       FROM sales_invoices
       WHERE patient_id = ? AND status = 'completed'
@@ -447,6 +448,7 @@ export async function getPatientStatementAction(patientId: string) {
              -CAST(total_refund AS REAL) as value,
              CASE WHEN refund_method = 'patient_account' THEN -CAST(total_refund AS REAL) ELSE 0 END as balance_effect,
              refund_method as payment_method,
+             NULL as notes,
              (SELECT full_name FROM users WHERE id = user_id) as user_name
       FROM returns
       WHERE status IN ('approved', 'completed')
@@ -457,7 +459,8 @@ export async function getPatientStatementAction(patientId: string) {
       SELECT 
         CASE 
           WHEN type = 'payment' THEN 'توريد نقدية'
-          WHEN type = 'adjustment' THEN 'إشعار'
+          WHEN type = 'adjustment' AND amount < 0 THEN 'إشعار دائن (خصم)'
+          WHEN type = 'adjustment' AND amount >= 0 THEN 'إشعار مدين (إضافة)'
           ELSE type 
         END as type, 
         id as doc_no, date,
@@ -472,6 +475,7 @@ export async function getPatientStatementAction(patientId: string) {
           ELSE 0
         END as balance_effect,
         payment_method,
+        notes,
         (SELECT full_name FROM users WHERE id = user_id) as user_name
       FROM patient_transactions
       WHERE patient_id = ?
@@ -534,16 +538,27 @@ export async function getPatientStatementAction(patientId: string) {
       }
     });
 
-    // 4. Use the same balance definition as POS and checkout validation.
+    // 4. Get Financial Notices for this patient
+    const notices = await db.prepare(`
+      SELECT fn.id, fn.type, fn.amount, fn.reason, fn.notes, fn.date, fn.created_at,
+             u.full_name as user_name
+      FROM financial_notices fn
+      LEFT JOIN users u ON u.id = fn.user_id
+      WHERE fn.target_type = 'customer' AND fn.target_id = ?
+      ORDER BY fn.date DESC, fn.created_at DESC
+    `).all(patientId) as any[];
+
+    // 5. Use the same balance definition as POS and checkout validation.
     const balance = await db.prepare(patientOutstandingBalanceQuery()).get(patientId) as any;
     const currentBalance = Number(balance?.outstanding_balance || 0);
 
-    return { 
-      success: true, 
+    return {
+      success: true,
       data: {
         patient,
         movements,
         items,
+        notices,
         currentBalance
       }
     };

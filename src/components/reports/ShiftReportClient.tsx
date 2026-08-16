@@ -120,7 +120,12 @@ export default function ShiftReportClient({ shiftId }: { shiftId: string }) {
               <ReconRow label="مبيعات نقدية (+)" value={summary.cashSales} color="text-emerald-400" />
               <ReconRow label="مرتجعات نقدية (-)" value={summary.cashReturns} color="text-rose-400" />
               <ReconRow label="توريدات يدوية (+)" value={summary.cashReceipts} color="text-emerald-400" />
-              <ReconRow label="مصروفات / سحب (-)" value={summary.cashDisbursements} color="text-rose-400" />
+              {summary.cashHandover > 0 && (
+                <ReconRow label="تسليم درج / تحويلات (-)" value={summary.cashHandover} color="text-amber-400" />
+              )}
+              {summary.cashDisbursements - (summary.cashHandover || 0) > 0 && (
+                <ReconRow label="مصروفات / سحب أخرى (-)" value={summary.cashDisbursements - (summary.cashHandover || 0)} color="text-rose-400" />
+              )}
               
               <div className="pt-6 border-t border-white/10 mt-6">
                  <div className="flex justify-between items-end">
