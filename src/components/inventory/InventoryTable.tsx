@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'react-hot-toast'
 import EditInventoryModal from '../EditInventoryModal'
@@ -91,23 +91,26 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
 
   // Items are pre-filtered on the database side
   const filteredItems = items;
-  const sortedItems = [...filteredItems].sort((a: any, b: any) => {
-    if (!sort) return 0;
-    const value = (item: any) => {
-      if (sort.key === 'name') return item.master_drugs.trade_name_en || item.master_drugs.trade_name || '';
-      if (sort.key === 'category') return item.master_drugs.category || '';
-      if (sort.key === 'quantity') return item.quantity || 0;
-      if (sort.key === 'expiry') return item.expiry_date || '';
-      if (sort.key === 'price') return item.local_selling_price || 0;
-      return '';
-    };
-    const av = value(a);
-    const bv = value(b);
-    const result = typeof av === 'number' && typeof bv === 'number'
-      ? av - bv
-      : String(av).localeCompare(String(bv), 'ar');
-    return sort.dir === 'asc' ? result : -result;
-  });
+  const sortedItems = useMemo(() => {
+    if (!sort) return filteredItems;
+    return [...filteredItems].sort((a: any, b: any) => {
+      const value = (item: any) => {
+        if (sort.key === 'name') return item.master_drugs.trade_name_en || item.master_drugs.trade_name || '';
+        if (sort.key === 'category') return item.master_drugs.category || '';
+        if (sort.key === 'quantity') return item.quantity || 0;
+        if (sort.key === 'expiry') return item.expiry_date || '';
+        if (sort.key === 'price') return item.local_selling_price || 0;
+        return '';
+      };
+      const av = value(a);
+      const bv = value(b);
+      const result = typeof av === 'number' && typeof bv === 'number'
+        ? av - bv
+        : String(av).localeCompare(String(bv), 'ar');
+      return sort.dir === 'asc' ? result : -result;
+    });
+  }, [filteredItems, sort]);
+
   const sortBy = (key: string) => {
     setSort(prev => prev?.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' });
     setCurrentPage(1);
@@ -126,15 +129,27 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
     setCurrentPage(1);
   }, [searchTerm]);
 
-  const totalQuantity = filteredItems.reduce((acc, item) => acc + (item.quantity || 0), 0);
-  const totalValue = filteredItems.reduce((acc, item) => acc + ((item.quantity || 0) * (item.local_selling_price || 0)), 0);
-  const uniqueDrugsCount = new Set(filteredItems.map(item => item.drug_id)).size;
+  const { totalQuantity, totalValue, uniqueDrugsCount } = useMemo(() => {
+    let qty = 0;
+    let val = 0;
+    const drugIds = new Set<number>();
+    for (let i = 0; i < filteredItems.length; i++) {
+      const item = filteredItems[i];
+      const q = item.quantity || 0;
+      qty += q;
+      val += q * (item.local_selling_price || 0);
+      if (item.drug_id) drugIds.add(item.drug_id);
+    }
+    return { totalQuantity: qty, totalValue: val, uniqueDrugsCount: drugIds.size };
+  }, [filteredItems]);
 
   const totalPages = Math.ceil(filteredItems.length / itemsPerPage);
-  const paginatedItems = sortedItems.slice(
-    (currentPage - 1) * itemsPerPage,
-    currentPage * itemsPerPage
-  );
+  const paginatedItems = useMemo(() => {
+    return sortedItems.slice(
+      (currentPage - 1) * itemsPerPage,
+      currentPage * itemsPerPage
+    );
+  }, [sortedItems, currentPage, itemsPerPage]);
 
   const handleRefresh = () => {
     onRefresh()
