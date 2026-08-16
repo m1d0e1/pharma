@@ -563,12 +563,12 @@ export async function processCheckoutAction(data: any) {
         const drugInfo = await db.prepare(`
           SELECT md.trade_name, md.trade_name_en, md.active_ingredient, md.large_to_medium, md.medium_to_small, md.has_expiry, md.medium_unit, md.small_unit,
                  COALESCE(MAX(i.strips_per_box), 1) as max_strips
-          FROM master_drugs md
-          LEFT JOIN inventory i ON CAST(i.drug_id AS TEXT) = CAST(md.id AS TEXT)
-            AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
-          WHERE CAST(md.id AS TEXT) = CAST(? AS TEXT)
-          GROUP BY md.id
-        `).get(pharmacyId, pharmacyId, item.drug_id) as any;
+           FROM master_drugs md
+           LEFT JOIN inventory i ON i.drug_id = md.id
+             AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
+           WHERE md.id = ?
+           GROUP BY md.id
+         `).get(pharmacyId, pharmacyId, item.drug_id) as any;
         
         const isPlaceholder = (s?: string) => !s || /^Drug\s*#?\s*\d+$/i.test(String(s).trim());
         const drugName = (!isPlaceholder(drugInfo?.trade_name_en) ? drugInfo?.trade_name_en : null) ||

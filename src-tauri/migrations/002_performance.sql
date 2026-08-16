@@ -6,6 +6,8 @@
 -- ============================================
 CREATE INDEX IF NOT EXISTS idx_inventory_quantity ON inventory(quantity);
 CREATE INDEX IF NOT EXISTS idx_inventory_drug_qty ON inventory(drug_id, quantity) WHERE quantity > 0;
+CREATE INDEX IF NOT EXISTS idx_inventory_barcode ON inventory(barcode) WHERE barcode IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_inventory_drug_qty_expiry ON inventory(drug_id, quantity, expiry_date) WHERE quantity > 0;
 
 -- ============================================
 -- SALES INDEXES

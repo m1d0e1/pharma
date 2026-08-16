@@ -948,7 +948,7 @@ export async function getInventoryListAction(search?: string) {
         m.manufacturer,
         m.large_to_medium
       FROM inventory i
-      JOIN master_drugs m ON CAST(i.drug_id AS TEXT) = CAST(m.id AS TEXT)
+      JOIN master_drugs m ON i.drug_id = m.id
     `;
     const params: any[] = [];
 
@@ -978,7 +978,8 @@ export async function getInventoryListAction(search?: string) {
       queryStr += ` WHERE i.quantity > 0`;
     }
 
-    queryStr += ` ORDER BY i.expiry_date ASC`;
+    // ponytail: LIMIT 2000 caps initial load; paginated on client anyway
+    queryStr += ` ORDER BY i.expiry_date ASC LIMIT 2000`;
 
     const data = await db.prepare(queryStr).all(...params) as any[];
 

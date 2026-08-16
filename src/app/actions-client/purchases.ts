@@ -462,7 +462,7 @@ export async function getPurchaseInvoicesAction() {
              (
                SELECT GROUP_CONCAT(md.trade_name, ' ')
                FROM purchase_invoice_items pii
-               JOIN master_drugs md ON CAST(pii.drug_id AS TEXT) = CAST(md.id AS TEXT)
+               JOIN master_drugs md ON pii.drug_id = md.id
                WHERE pii.invoice_id = i.id
              ) as drug_names
       FROM purchase_invoices i
@@ -1127,8 +1127,8 @@ export async function getPurchaseInvoiceDetailsAction(invoiceId: string) {
              lot.batch_number,
              lot.pharmacy_id AS inventory_pharmacy_id
       FROM purchase_invoice_items pii
-      JOIN master_drugs d ON CAST(pii.drug_id AS TEXT) = CAST(d.id AS TEXT)
-      LEFT JOIN units u ON CAST(pii.unit_id AS TEXT) = CAST(u.id AS TEXT)
+      JOIN master_drugs d ON pii.drug_id = d.id
+      LEFT JOIN units u ON pii.unit_id = u.id
       LEFT JOIN inventory lot ON lot.id = pii.inventory_id
         AND (lot.pharmacy_id = ? OR (lot.pharmacy_id IS NULL AND ? = 'local_default'))
       WHERE pii.invoice_id = ?

@@ -383,6 +383,8 @@ async fn ensure_compatibility(
         CREATE INDEX IF NOT EXISTS idx_shifts_status ON shifts(status);
         CREATE INDEX IF NOT EXISTS idx_shifts_user_status ON shifts(user_id, status) WHERE status = 'open';
         CREATE INDEX IF NOT EXISTS idx_purchase_items_inventory_id ON purchase_invoice_items(inventory_id);
+        CREATE INDEX IF NOT EXISTS idx_inventory_barcode ON inventory(barcode) WHERE barcode IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_inventory_drug_qty_expiry ON inventory(drug_id, quantity, expiry_date) WHERE quantity > 0;
 
         -- Old completed receipts predate inventory_id. Prefer their exact receipt
         -- batch; otherwise link only one unambiguous, sufficiently stocked lot.

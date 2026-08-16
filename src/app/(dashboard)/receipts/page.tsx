@@ -77,7 +77,7 @@ export default function ReceiptsPage() {
             md.medium_unit,
             md.small_unit
           FROM sales_items si
-          LEFT JOIN master_drugs md ON CAST(si.drug_id AS TEXT) = CAST(md.id AS TEXT)
+          LEFT JOIN master_drugs md ON si.drug_id = md.id
           WHERE si.invoice_id IN (${invoiceIds})
         `);
 

@@ -814,6 +814,8 @@ export function initLocalDb() {
     CREATE INDEX IF NOT EXISTS idx_sales_items_invoice ON sales_items(invoice_id);
     CREATE INDEX IF NOT EXISTS idx_sales_items_drug ON sales_items(drug_id);
     CREATE INDEX IF NOT EXISTS idx_inventory_drug ON inventory(drug_id);
+    CREATE INDEX IF NOT EXISTS idx_inventory_barcode ON inventory(barcode) WHERE barcode IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_inventory_drug_qty_expiry ON inventory(drug_id, quantity, expiry_date) WHERE quantity > 0;
     CREATE INDEX IF NOT EXISTS idx_sales_invoices_patient ON sales_invoices(patient_id);
     CREATE INDEX IF NOT EXISTS idx_sales_invoices_date ON sales_invoices(created_at);
     CREATE INDEX IF NOT EXISTS idx_patient_tx_date ON patient_transactions(created_at);

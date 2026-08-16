@@ -142,7 +142,7 @@ export async function getInvoiceDetailsAction(invoiceId: string) {
         md.active_ingredient,
         md.barcode
       FROM sales_items si
-      LEFT JOIN master_drugs md ON CAST(si.drug_id AS TEXT) = CAST(md.id AS TEXT)
+      LEFT JOIN master_drugs md ON si.drug_id = md.id
       WHERE si.invoice_id = ?
     `).all(invoiceId) as any[];
 
