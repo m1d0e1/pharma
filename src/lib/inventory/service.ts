@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { v4 as uuidv4 } from 'uuid';
+import { uuidv4 } from '../utils';
 import { getDatabase, execute, get, query, transaction } from '../db/client';
 
 // Inventory item schema

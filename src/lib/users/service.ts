@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { v4 as uuidv4 } from 'uuid';
+import { uuidv4 } from '../utils';
 import { getDatabase, execute, get, query } from '../db/client';
 import { hashPassword } from '../auth/password';
 import { ROLE_PERMISSIONS, Permission } from '../auth/roles';

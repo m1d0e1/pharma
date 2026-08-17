@@ -1,4 +1,4 @@
-import { v4 as uuidv4 } from 'uuid';
+import { uuidv4 } from '../utils';
 import { getDatabase, execute, query, get } from '../db/client';
 import { TokenPair, generateTokenPair, verifyRefreshToken } from './jwt';
 import { TokenPayload } from './jwt';

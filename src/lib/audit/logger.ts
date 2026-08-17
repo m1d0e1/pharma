@@ -3,7 +3,7 @@
  * Comprehensive audit trail for sensitive operations
  */
 
-import { v4 as uuidv4 } from 'uuid';
+import { uuidv4 } from '../utils';
 import { getDatabase, execute, get, query } from '../db/client';
 
 export interface AuditEvent {
