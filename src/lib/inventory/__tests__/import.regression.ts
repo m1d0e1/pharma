@@ -49,12 +49,11 @@ function upgradedV214Database(db: Database.Database) {
     initial.indexOf('CREATE TABLE IF NOT EXISTS master_drugs'),
     initial.indexOf('-- 5. Sales & Invoices'),
   ));
-  db.exec(`
-    ALTER TABLE master_drugs ADD COLUMN base_price REAL DEFAULT 0;
-    ALTER TABLE master_drugs ADD COLUMN indications TEXT;
-    ALTER TABLE master_drugs ADD COLUMN side_effects TEXT;
-    INSERT INTO master_drugs (id, trade_name, barcode) VALUES (14598, 'Drug 14598', NULL);
-  `);
+  const cols = (db.prepare('PRAGMA table_info(master_drugs)').all() as any[]).map(c => c.name);
+  if (!cols.includes('base_price')) db.exec('ALTER TABLE master_drugs ADD COLUMN base_price REAL DEFAULT 0;');
+  if (!cols.includes('indications')) db.exec('ALTER TABLE master_drugs ADD COLUMN indications TEXT;');
+  if (!cols.includes('side_effects')) db.exec('ALTER TABLE master_drugs ADD COLUMN side_effects TEXT;');
+  db.exec("INSERT INTO master_drugs (id, trade_name, barcode) VALUES (14598, 'Drug 14598', NULL);");
 }
 
 const variants = [

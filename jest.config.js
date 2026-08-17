@@ -12,6 +12,7 @@ const customJestConfig = {
   moduleNameMapper: {
     // Handle module aliases (this will be automatically configured for you soon)
     '^@/(.*)$': '<rootDir>/src/$1',
+    '^uuid$': '<rootDir>/src/tests/mocks/uuid.js',
   },
   collectCoverageFrom: [
     'src/**/*.{js,jsx,ts,tsx}',

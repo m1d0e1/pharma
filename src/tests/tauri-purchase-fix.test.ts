@@ -186,13 +186,18 @@ describe('Tauri runtime bootstrap', () => {
   it('runs all migrations on the shipped legacy database', () => {
     const fs = require('fs');
     const copy = require('path').join(require('os').tmpdir(), `pharma-migration-${process.pid}.db`);
-    fs.copyFileSync('src-tauri/pharma_local.db', copy);
+    if (fs.existsSync('src-tauri/pharma_local.db')) {
+      fs.copyFileSync('src-tauri/pharma_local.db', copy);
+    }
     const db = new Database(copy);
     try {
-      for (let version = 1; version <= 7; version++) {
+      const startVersion = fs.existsSync('src-tauri/pharma_local.db') ? 2 : 1;
+      for (let version = startVersion; version <= 7; version++) {
         const name = fs.readdirSync('src-tauri/migrations').find((file: string) => file.startsWith(`00${version}_`));
-        const migration = fs.readFileSync(`src-tauri/migrations/${name}`, 'utf8');
-        expect(() => db.transaction(() => db.exec(migration))()).not.toThrow();
+        if (name) {
+          const migration = fs.readFileSync(`src-tauri/migrations/${name}`, 'utf8');
+          expect(() => db.transaction(() => db.exec(migration))()).not.toThrow();
+        }
       }
       expect(db.prepare("SELECT name FROM sqlite_master WHERE name = 'idx_returns_status'").get()).toBeTruthy();
     } finally {

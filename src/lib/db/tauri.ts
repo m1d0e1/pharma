@@ -1,9 +1,15 @@
 // Database Abstraction Layer for Tauri and Web
-import { v4 as uuidv4 } from 'uuid';
 import { isTauri as isTauriEnv } from '@/lib/env';
 
 export function generateId(): string {
-  return uuidv4();
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
 }
 
 const isServer = typeof window === 'undefined' || process.env.JEST_WORKER_ID !== undefined;
