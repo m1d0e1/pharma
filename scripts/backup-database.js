@@ -22,8 +22,6 @@ const { exec } = require('child_process');
 const { promisify } = require('util');
 const fs = require('fs').promises;
 const path = require('path');
-const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
-const { Storage } = require('@google-cloud/storage');
 
 const execAsync = promisify(exec);
 
@@ -37,17 +35,14 @@ class DatabaseBackup {
     
     this.timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     this.backupFileName = `supabase-backup-${this.timestamp}.sql`;
-    this.localBackupPath = path.join(this.backupDir, this.backupFileName);
-    
+    this.isLocalSqlite = false;
     this.validateEnvironment();
   }
 
   validateEnvironment() {
-    if (!this.supabaseUrl) {
-      throw new Error('SUPABASE_URL environment variable is required');
-    }
-    if (!this.serviceRoleKey) {
-      throw new Error('SUPABASE_SERVICE_ROLE_KEY environment variable is required');
+    if (!this.supabaseUrl || !this.serviceRoleKey) {
+      console.log('SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not configured. Checking for local SQLite database...');
+      this.isLocalSqlite = true;
     }
   }
 
@@ -61,6 +56,26 @@ class DatabaseBackup {
   }
 
   async createDatabaseDump() {
+    if (this.isLocalSqlite) {
+      const candidates = [
+        path.join(process.cwd(), 'pharma_local.db'),
+        path.join(process.cwd(), 'src-tauri', 'pharma_local.db')
+      ];
+      for (const candidate of candidates) {
+        try {
+          await fs.access(candidate);
+          const sqliteBackupName = `sqlite-backup-${this.timestamp}.db`;
+          const sqliteBackupPath = path.join(this.backupDir, sqliteBackupName);
+          await fs.copyFile(candidate, sqliteBackupPath);
+          console.log(`Local SQLite database backed up: ${sqliteBackupPath}`);
+          return sqliteBackupPath;
+        } catch {
+          // try next candidate
+        }
+      }
+      console.log('No local SQLite database found to back up. Skipping gracefully.');
+      return null;
+    }
     console.log('Creating database dump...');
     
     // Extract database connection details from Supabase URL
@@ -122,6 +137,7 @@ SELECT 'Backup created at ${new Date().toISOString()}' as status;
   }
 
   async uploadToCloudStorage(backupPath) {
+    if (!backupPath) return null;
     switch (this.backupStorageType) {
       case 's3':
         return await this.uploadToS3(backupPath);
@@ -138,6 +154,7 @@ SELECT 'Backup created at ${new Date().toISOString()}' as status;
 
   async uploadToS3(backupPath) {
     console.log('Uploading to AWS S3...');
+    const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
     
     const s3Client = new S3Client({
       region: process.env.AWS_REGION || 'us-east-1',
@@ -169,6 +186,7 @@ SELECT 'Backup created at ${new Date().toISOString()}' as status;
 
   async uploadToGCS(backupPath) {
     console.log('Uploading to Google Cloud Storage...');
+    const { Storage } = require('@google-cloud/storage');
     
     const storage = new Storage();
     const bucketName = process.env.GCS_BUCKET_NAME;
@@ -201,7 +219,7 @@ SELECT 'Backup created at ${new Date().toISOString()}' as status;
       const retentionMs = this.backupRetentionDays * 24 * 60 * 60 * 1000;
       
       for (const file of files) {
-        if (!file.endsWith('.sql')) continue;
+        if (!file.endsWith('.sql') && !file.endsWith('.db')) continue;
         
         const filePath = path.join(this.backupDir, file);
         const stats = await fs.stat(filePath);

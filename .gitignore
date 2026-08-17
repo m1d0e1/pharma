@@ -19,6 +19,7 @@ actions_temp/
 node_modules/
 .next/
 out/
+backups/
 .swc/
 npm-debug.log*
 yarn-debug.log*
