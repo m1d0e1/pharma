@@ -469,25 +469,66 @@ fn main() {
             app.set_menu(menu)?;
 
             // Extract the seeded database from resources on first run
-            let app_data_dir = app
-                .path()
-                .app_data_dir()
-                .expect("failed to get app data dir");
+            let app_data_dir = match app.path().app_data_dir() {
+                Ok(dir) => dir,
+                Err(e) => {
+                    eprintln!("Failed to get app data dir: {}", e);
+                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+                }
+            };
 
-            fs::create_dir_all(&app_data_dir).expect("failed to create app data dir");
+            let _ = fs::create_dir_all(&app_data_dir);
 
             let db_path = app_data_dir.join("pharma_local.db");
 
-            if !db_path.exists() {
-                let resource_path = app
-                    .path()
-                    .resource_dir()
-                    .expect("failed to get resource dir")
-                    .join("pharma_local.db");
+            let should_copy_seed = !db_path.exists()
+                || fs::metadata(&db_path)
+                    .map(|m| m.len() == 0)
+                    .unwrap_or(true);
 
-                if resource_path.exists() {
-                    fs::copy(&resource_path, &db_path).expect("failed to copy seeded database");
-                    println!("Copied seeded database to {:?}", db_path);
+            if should_copy_seed {
+                let mut candidate_paths = Vec::new();
+
+                if let Ok(res_dir) = app.path().resource_dir() {
+                    candidate_paths.push(res_dir.join("pharma_local.db"));
+                    candidate_paths.push(res_dir.join("resources").join("pharma_local.db"));
+                }
+
+                if let Ok(exe_path) = std::env::current_exe() {
+                    if let Some(exe_dir) = exe_path.parent() {
+                        candidate_paths.push(exe_dir.join("pharma_local.db"));
+                        candidate_paths.push(exe_dir.join("resources").join("pharma_local.db"));
+                    }
+                }
+
+                for candidate in candidate_paths {
+                    if candidate.exists() {
+                        if let Ok(meta) = fs::metadata(&candidate) {
+                            if meta.len() > 0 {
+                                match fs::copy(&candidate, &db_path) {
+                                    Ok(_) => {
+                                        println!("Copied seeded database from {:?} to {:?}", candidate, db_path);
+                                        break;
+                                    }
+                                    Err(err) => {
+                                        eprintln!("Failed copying database from {:?}: {}", candidate, err);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Ensure destination SQLite files are NOT marked read-only on Windows
+            for file_name in &["pharma_local.db", "pharma_local.db-wal", "pharma_local.db-shm"] {
+                let path = app_data_dir.join(file_name);
+                if let Ok(metadata) = fs::metadata(&path) {
+                    let mut perms = metadata.permissions();
+                    if perms.readonly() {
+                        perms.set_readonly(false);
+                        let _ = fs::set_permissions(&path, perms);
+                    }
                 }
             }
 

@@ -27,7 +27,7 @@ export async function verifyPassword(password: string, hash: string): Promise<bo
 
 export async function loginLocal(username: string, password?: string) {
   if (!password || password.trim().length === 0) {
-    return { success: false, error: 'ÙƒÙ„Ù…Ø© Ø§Ù„Ù…Ø±ÙˆØ± Ù…Ø·Ù„ÙˆØ¨Ø©' };
+    return { success: false, error: 'كلمة المرور مطلوبة' };
   }
 
   if (isTauri) {

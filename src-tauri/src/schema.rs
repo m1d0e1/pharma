@@ -131,6 +131,54 @@ async fn ensure_compatibility(
           FOREIGN KEY (purchase_return_id) REFERENCES purchase_returns (id)
         );
 
+        CREATE TABLE IF NOT EXISTS returns (
+          id TEXT PRIMARY KEY,
+          invoice_id TEXT,
+          user_id TEXT,
+          shift_id TEXT,
+          reason TEXT,
+          total_refund REAL,
+          refund_method TEXT DEFAULT 'cash',
+          status TEXT DEFAULT 'pending',
+          approved_by TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS suppliers (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT,
+          name_en TEXT,
+          phone TEXT,
+          address TEXT,
+          balance REAL DEFAULT 0,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS supplier_transactions (
+          id TEXT PRIMARY KEY,
+          supplier_id INTEGER NOT NULL,
+          user_id TEXT NOT NULL,
+          type TEXT NOT NULL,
+          amount REAL NOT NULL,
+          payment_method TEXT DEFAULT 'cash',
+          notes TEXT,
+          date TEXT NOT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS return_items (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          return_id TEXT,
+          inventory_id TEXT,
+          drug_id INTEGER,
+          drug_name TEXT,
+          quantity_returned REAL,
+          unit_price REAL,
+          total_price REAL,
+          sale_item_id INTEGER,
+          unit TEXT DEFAULT 'large'
+        );
+
         CREATE TABLE IF NOT EXISTS refill_reminders (
           id TEXT PRIMARY KEY,
           patient_id TEXT,
@@ -344,14 +392,23 @@ async fn ensure_compatibility(
         ("suppliers", "phone", "phone TEXT"),
         ("suppliers", "address", "address TEXT"),
         ("suppliers", "name_en", "name_en TEXT"),
-        ("supplier_transactions", "created_at", "created_at DATETIME"),
+        ("users", "username", "username TEXT"),
+        ("users", "password_hash", "password_hash TEXT"),
+        ("users", "role", "role TEXT DEFAULT 'cashier'"),
+        ("users", "full_name", "full_name TEXT"),
+        ("users", "pharmacy_id", "pharmacy_id TEXT"),
+        ("users", "permissions", "permissions TEXT DEFAULT '{\"can_sell\": true, \"can_manage_inventory\": false}'"),
+        ("users", "is_active", "is_active INTEGER DEFAULT 1"),
         ("users", "job_id", "job_id INTEGER"),
         ("users", "qualification", "qualification TEXT"),
         ("users", "hire_date", "hire_date TEXT"),
         ("users", "shift", "shift TEXT"),
         ("users", "code", "code TEXT"),
-        ("users", "permissions", "permissions TEXT DEFAULT '{\"can_sell\": true, \"can_manage_inventory\": false}'"),
-        ("users", "is_active", "is_active INTEGER DEFAULT 1"),
+        ("sales_invoices", "notes", "notes TEXT"),
+        ("adjustment_reasons", "name_ar", "name_ar TEXT"),
+        ("adjustment_reasons", "name_en", "name_en TEXT"),
+        ("adjustment_reasons", "reason", "reason TEXT"),
+        ("master_drugs", "trade_name_en", "trade_name_en TEXT"),
         ("employee_jobs", "name_ar", "name_ar TEXT"),
         ("employee_jobs", "name_en", "name_en TEXT"),
         ("employee_jobs", "min_salary", "min_salary REAL DEFAULT 0"),
@@ -359,6 +416,29 @@ async fn ensure_compatibility(
         ("employee_jobs", "created_at", "created_at DATETIME"),
     ] {
         add_column(transaction, table, column, definition).await?;
+    }
+
+    let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+        .fetch_one(&mut **transaction)
+        .await
+        .unwrap_or(0);
+    if user_count == 0 {
+        sqlx::raw_sql(
+            r#"
+            INSERT OR IGNORE INTO users (id, username, password_hash, role, full_name, permissions, is_active)
+            VALUES (
+              'admin',
+              'admin',
+              '$2b$12$.FYM9XhLwanE5PdySaxB2uMwZwwLpF9fI6HXf/2XArluRQt0kfvVm',
+              'owner',
+              'System Administrator',
+              '{"view_dashboard":true,"view_reports":true,"manage_inventory":true,"manage_staff":true,"process_sales":true,"manage_patients":true,"view_all_sales":true,"manage_settings":true,"void_transactions":true,"manage_shifts":true,"manage_pharmacy":true,"export_data":true,"import_data":true,"view_audit_logs":true,"can_sell":true,"can_view_patients":true,"can_view_sales":true,"can_manage_inventory":true,"can_view_reports":true,"can_manage_users":true,"can_manage_settings":true,"can_view_shifts":true,"can_manage_shifts":true,"can_view_returns":true,"can_view_purchases":true}',
+              1
+            );
+            "#,
+        )
+        .execute(&mut **transaction)
+        .await?;
     }
 
     sqlx::raw_sql(

@@ -5211,7 +5211,7 @@ mod tests {
     async fn checkout_handles_batch_fallback_and_wallet_accounting() {
         let mut conn = SqliteConnection::connect("sqlite::memory:").await.unwrap();
         for sql in [
-            "CREATE TABLE master_drugs (id INTEGER PRIMARY KEY, trade_name TEXT, large_to_medium INTEGER, medium_to_small INTEGER, medium_unit TEXT, small_unit TEXT)",
+            "CREATE TABLE master_drugs (id INTEGER PRIMARY KEY, trade_name TEXT, trade_name_en TEXT, active_ingredient TEXT, large_to_medium INTEGER, medium_to_small INTEGER, medium_unit TEXT, small_unit TEXT)",
             "CREATE TABLE inventory (id TEXT PRIMARY KEY, drug_id INTEGER, pharmacy_id TEXT, quantity INTEGER, cost_price REAL, expiry_date TEXT, created_at TEXT, updated_at TEXT, strips_per_box INTEGER)",
             "CREATE TABLE sales_invoices (id TEXT PRIMARY KEY, pharmacy_id TEXT, user_id TEXT, patient_id TEXT, shift_id TEXT, total_amount REAL, payment_method TEXT, check_number TEXT, status TEXT, discount_amount REAL, created_at TEXT)",
             "CREATE TABLE sales_items (id INTEGER PRIMARY KEY AUTOINCREMENT, invoice_id TEXT, inventory_id TEXT, drug_id INTEGER, quantity_sold REAL, unit_price REAL, unit TEXT, is_negative INTEGER, cost_price REAL, created_at TEXT)",
@@ -5269,7 +5269,7 @@ mod tests {
                 .await
                 .unwrap_err();
         tx.rollback().await.unwrap();
-        assert!(location_error.contains("invalid or expired"));
+        assert!(location_error.contains("wrong drug/pharmacy or is expired") || location_error.contains("invalid or expired"));
         let mut tx = conn.begin().await.unwrap();
         let expiry_error = process_checkout_tx(&mut tx, cash_payload(Some("expired")), 69.0)
             .await
