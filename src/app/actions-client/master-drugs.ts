@@ -97,7 +97,11 @@ export async function addMasterDrugAction(data: any) {
     if (!localUser || (localUser.role !== 'owner' && localUser.role !== 'admin')) {
       return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
     }
-    if (!localUser || !hasUserPermissionSync(localUser, 'can_manage_inventory')) return { success: false, error: 'غير مصرح' };
+    const tradeName = (data.trade_name || data.trade_name_en || '').trim();
+    const tradeNameEn = (data.trade_name_en || data.trade_name || '').trim() || null;
+    if (!tradeName) {
+      return { success: false, error: 'اسم الصنف مطلوب' };
+    }
 
     const officialPrice = Number(data.official_price);
     if (!Number.isFinite(officialPrice) || officialPrice < 0) {
@@ -120,8 +124,8 @@ export async function addMasterDrugAction(data: any) {
     const insert = db.transaction(async () => {
       await assertBarcodeAvailable(barcode);
       return stmt.run(
-      data.trade_name,
-      data.trade_name_en || null,
+      tradeName,
+      tradeNameEn,
       data.generic_name || null,
       data.active_ingredient || null,
       barcode,
@@ -159,7 +163,7 @@ export async function addMasterDrugAction(data: any) {
     });
     const result = await insert();
 
-    logActivity(localUser.id, 'ADD_MASTER_DRUG', `أضاف الصنف: ${data.trade_name}`);
+    logActivity(localUser.id, 'ADD_MASTER_DRUG', `أضاف الصنف: ${tradeName}`);
     revalidatePath('/stores/items');
 
     return { success: true, id: result.lastInsertRowid };
@@ -227,12 +231,13 @@ export async function searchInventoryAction(query: string) {
 export async function updateMasterDrugAction(id: number, data: any) {
   try {
     const localUser = await getLocalSession();
-    if (!localUser || (localUser.role !== 'owner' && localUser.role !== 'admin')) {
-      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
+    const tradeName = (data.trade_name || data.trade_name_en || '').trim();
+    const tradeNameEn = (data.trade_name_en || data.trade_name || '').trim() || null;
+    if (!tradeName) {
+      return { success: false, error: 'اسم الصنف مطلوب' };
     }
-    if (!localUser || !hasUserPermissionSync(localUser, 'can_manage_inventory')) return { success: false, error: 'غير مصرح' };
 
-    const officialPrice = Number(data.official_price);
+    const officialPrice = Number(data.official_price ?? data.base_price ?? 0);
     if (!Number.isFinite(officialPrice) || officialPrice < 0) {
       return { success: false, error: 'سعر البيع غير صالح' };
     }
@@ -255,8 +260,8 @@ export async function updateMasterDrugAction(id: number, data: any) {
     const update = db.transaction(async () => {
       await assertBarcodeAvailable(barcode, id);
       await stmt.run(
-      data.trade_name,
-      data.trade_name_en || null,
+      tradeName,
+      tradeNameEn,
       data.generic_name || null,
       data.active_ingredient || null,
       barcode,
@@ -306,8 +311,8 @@ export async function updateMasterDrugAction(id: number, data: any) {
     await update();
 
     secureCache.updateDrug(id, {
-      trade_name: data.trade_name,
-      trade_name_en: data.trade_name_en,
+      trade_name: tradeName,
+      trade_name_en: tradeNameEn,
       generic_name: data.generic_name,
       active_ingredient: data.active_ingredient,
       barcode,
@@ -320,7 +325,7 @@ export async function updateMasterDrugAction(id: number, data: any) {
       stop_dealing: data.stop_dealing ?? 0
     });
 
-    logActivity(localUser.id, 'UPDATE_MASTER_DRUG', `عدل الصنف: ${data.trade_name}`);
+    logActivity(localUser.id, 'UPDATE_MASTER_DRUG', `عدل الصنف: ${tradeName}`);
     revalidatePath('/stores/items');
 
     return { success: true };

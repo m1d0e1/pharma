@@ -374,22 +374,29 @@ export default function ItemsManagementClient({ initialItems }: Props) {
    };
 
    const handleSave = async () => {
-      if (!editingItem.trade_name_en) {
-         toast.error('Please enter the English trade name');
+      const primaryName = (editingItem.trade_name_en || editingItem.trade_name || '').trim();
+      const secondaryName = (editingItem.trade_name || editingItem.trade_name_en || '').trim();
+      if (!primaryName) {
+         toast.error('يرجى إدخال اسم الصنف');
          return;
       }
+      const itemToSave = {
+         ...editingItem,
+         trade_name_en: primaryName,
+         trade_name: secondaryName
+      };
       setIsSaving(true);
 
       let res;
-      if (editingItem.id) {
-         res = await updateMasterDrugAction(editingItem.id, editingItem);
+      if (itemToSave.id) {
+         res = await updateMasterDrugAction(itemToSave.id, itemToSave);
       } else {
-         res = await addMasterDrugAction(editingItem);
+         res = await addMasterDrugAction(itemToSave);
       }
 
       setIsSaving(false);
       if (res.success) {
-         toast.success(editingItem.id ? 'تم تحديث الصنف بنجاح' : 'تم إضافة الصنف بنجاح');
+         toast.success(itemToSave.id ? 'تم تحديث الصنف بنجاح' : 'تم إضافة الصنف بنجاح');
          setIsModalOpen(false);
 
          // Refresh list

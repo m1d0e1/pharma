@@ -51,8 +51,10 @@ import {
   getUnusedDrugsAction,
 } from '@/app/actions-client/inventory';
 import {
+  addMasterDrugAction,
   deleteMasterDrugAction,
   getUnusedItemsAction,
+  updateMasterDrugAction,
 } from '@/app/actions-client/master-drugs';
 
 function applyCurrentMigrations(db: Database.Database, includeInitial = true) {
@@ -316,5 +318,55 @@ describe.each(databaseVariants)('$name deletion invariants', ({ initialize }) =>
     expect(mockDb.prepare('SELECT COUNT(*) AS count FROM master_drugs_fts WHERE rowid = 2001').get()).toEqual({ count: 0 });
     expect(mockDb.prepare(`SELECT COUNT(*) AS count FROM activity_log WHERE action = 'DELETE_MASTER_DRUG'`).get()).toEqual({ count: 1 });
     expect(mockDb.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+  });
+
+  it('edits drug card and synchronizes prices on both fresh and upgraded databases', async () => {
+    insertUserAndDrug(3001);
+    mockDb.prepare(`
+      INSERT INTO inventory (id, pharmacy_id, drug_id, quantity, local_selling_price, barcode)
+      VALUES ('inv-3001', 'local_default', 3001, 10, 10, 'BAR-OLD')
+    `).run();
+
+    // 1. Edit drug card with full fields
+    const editRes = await updateMasterDrugAction(3001, {
+      trade_name: 'بانادول اكسترا معدل',
+      trade_name_en: 'Panadol Extra Modified',
+      official_price: 25.5,
+      barcode: '6221234567890',
+      active_ingredient: 'Paracetamol 500mg + Caffeine 65mg',
+      category: 'Analgesics',
+      manufacturer: 'GSK',
+      large_unit: 'علبة',
+      medium_unit: 'شريط',
+      small_unit: 'قرص',
+      large_to_medium: 3,
+      medium_to_small: 10,
+      indications: 'Headache, fever',
+      side_effects: 'Insomnia',
+    });
+
+    expect(editRes).toEqual({ success: true });
+
+    const updated = mockDb.prepare('SELECT * FROM master_drugs WHERE id = 3001').get() as any;
+    expect(updated.trade_name).toBe('بانادول اكسترا معدل');
+    expect(updated.trade_name_en).toBe('Panadol Extra Modified');
+    expect(updated.official_price).toBe(25.5);
+    expect(updated.barcode).toBe('6221234567890');
+    expect(updated.active_ingredient).toBe('Paracetamol 500mg + Caffeine 65mg');
+
+    // 2. Verify inventory selling price synchronized
+    const invRow = mockDb.prepare('SELECT local_selling_price, barcode FROM inventory WHERE id = ?').get('inv-3001') as any;
+    expect(invRow.local_selling_price).toBe(25.5);
+
+    // 3. Edit drug card with English name only fallback
+    const editNameOnly = await updateMasterDrugAction(3001, {
+      trade_name_en: 'Panadol Extra Pure EN',
+      official_price: 30,
+    });
+    expect(editNameOnly).toEqual({ success: true });
+    const nameUpdated = mockDb.prepare('SELECT trade_name, trade_name_en, official_price FROM master_drugs WHERE id = 3001').get() as any;
+    expect(nameUpdated.trade_name).toBe('Panadol Extra Pure EN');
+    expect(nameUpdated.trade_name_en).toBe('Panadol Extra Pure EN');
+    expect(nameUpdated.official_price).toBe(30);
   });
 });

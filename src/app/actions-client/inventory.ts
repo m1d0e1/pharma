@@ -236,50 +236,52 @@ export async function updateInventoryAction(formData: UpdateInventoryInput) {
     const tradeName = drugRow2?.trade_name_en || drugRow2?.trade_name || drugRow2?.active_ingredient || `صنف #${current.drug_id}`;
 
     if (reason_id && quantity !== current.quantity) {
-      await db.prepare(`
-        INSERT INTO stock_adjustments (inventory_id, reason_id, old_quantity, new_quantity, user_id)
-        VALUES (?, ?, ?, ?, ?)
-      `).run(id, reason_id, current.quantity, quantity, localUser.id);
-
-      // Accounting for Adjustment
+      const adjustmentReason = await db.prepare('SELECT reason FROM adjustment_reasons WHERE id = ?').get(reason_id) as { reason: string };
+      const reasonText = adjustmentReason?.reason || 'تسوية مخزون';
       const journalId = generateId();
       const diff = Math.abs(quantity - current.quantity);
       const costPrice = await db.prepare('SELECT cost_price FROM inventory WHERE id = ?').get(id) as { cost_price: number };
       const totalValue = diff * (costPrice?.cost_price || 0);
 
       if (totalValue > 0) {
-        const adjDate = new Date().toISOString().split('T')[0];
+        const date = new Date().toISOString().split('T')[0];
         await db.prepare(`
           INSERT INTO daily_journals (id, date, description, created_by, total_amount)
           VALUES (?, ?, ?, ?, ?)
-        `).run(journalId, adjDate, `تسوية مخزنية: ${tradeName}`, localUser.id, totalValue);
+        `).run(journalId, date, `تسوية مخزون (${reasonText}) للصنف: ${tradeName}`, localUser.id, totalValue);
 
         const getAccountId = async (cat: string) => {
           const s = await db.prepare('SELECT account_id FROM trial_balance_settings WHERE category = ?').get(cat) as any;
           return s?.account_id;
         };
 
-        const invAcc = await getAccountId('inventory_asset') || 10;
-        const adjAcc = await getAccountId('inventory_adjustment') || 12;
+        const accounts = {
+          inventory: await getAccountId('inventory_asset') || 10,
+          inventoryExpense: await getAccountId('inventory_adjustment_expense') || 11,
+          inventoryRevenue: await getAccountId('inventory_adjustment_revenue') || 9
+        };
 
-        if (quantity < current.quantity) {
-          await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, adjAcc, 'debit', totalValue);
-          await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, invAcc, 'credit', totalValue);
+        if (quantity > current.quantity) {
+          await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, accounts.inventory, 'debit', totalValue);
+          await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, accounts.inventoryRevenue, 'credit', totalValue);
         } else {
-          await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, invAcc, 'debit', totalValue);
-          await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, adjAcc, 'credit', totalValue);
+          await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, accounts.inventoryExpense, 'debit', totalValue);
+          await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, accounts.inventory, 'credit', totalValue);
         }
       }
+      
+      await db.prepare(`
+        INSERT INTO stock_adjustments (inventory_id, reason_id, old_quantity, new_quantity, user_id)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(id, reason_id, current.quantity, quantity, localUser.id);
     }
 
-    logActivity(localUser.id, 'UPDATE_INVENTORY', `تحديث بيانات ${tradeName} (الكمية: ${quantity})`);
+    logActivity(localUser.id, 'UPDATE_INVENTORY', `عدل مخزون الصنف ${tradeName}: من ${current.quantity} إلى ${quantity}`);
 
     await secureCache.reload();
 
     revalidatePath('/inventory');
-    revalidatePath('/pos');
     revalidatePath('/');
-
     return { success: true };
   } catch (error: any) {
     console.error('Local Update Error:', error);
