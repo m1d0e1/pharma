@@ -63,6 +63,19 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
     );
   }
 
+  if (!data || !data.patient) {
+    return (
+      <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[250] flex items-center justify-center p-4">
+        <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl flex flex-col items-center gap-4 shadow-2xl border border-slate-200 dark:border-slate-800">
+          <p className="font-black text-rose-500 text-lg">فشل تحميل كشف حساب العميل</p>
+          <button onClick={onClose} className="px-6 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 rounded-xl font-bold transition-all">
+            إغلاق
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   const { patient, movements, items, notices, currentBalance } = data;
   let runningBalance = Number(patient.opening_balance || 0);
   const statementMovements = [...(movements || [])]

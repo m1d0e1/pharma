@@ -425,7 +425,14 @@ export async function updatePatientAction(id: string, formData: AddPatientInput)
 export async function getPatientStatementAction(patientId: string) {
   try {
     const user = await getLocalSession();
-    if (!canManagePatients(user)) return { success: false, error: 'غير مصرح' };
+    if (!user) return { success: false, error: 'غير مصرح' };
+
+    const { hasUserPermissionSync, isOwnerOrAdmin } = await import('@/lib/auth/local');
+    const allowed = isOwnerOrAdmin(user) ||
+      hasUserPermissionSync(user, 'can_view_patients') ||
+      hasUserPermissionSync(user, 'can_view_sales') ||
+      hasUserPermissionSync(user, 'can_sell');
+    if (!allowed) return { success: false, error: 'ليس لديك صلاحية عرض كشف الحساب' };
 
     // 1. Get Patient Details
     const patient = await db.prepare('SELECT * FROM patients WHERE id = ?').get(patientId) as any;
@@ -437,7 +444,7 @@ export async function getPatientStatementAction(patientId: string) {
              CAST(total_amount AS REAL) as value,
              CASE WHEN payment_method = 'credit' THEN CAST(total_amount AS REAL) ELSE 0 END as balance_effect,
              payment_method,
-             notes,
+             NULL as notes,
              (SELECT full_name FROM users WHERE id = user_id) as user_name
       FROM sales_invoices
       WHERE patient_id = ? AND status = 'completed'
@@ -448,7 +455,7 @@ export async function getPatientStatementAction(patientId: string) {
              -CAST(total_refund AS REAL) as value,
              CASE WHEN refund_method = 'patient_account' THEN -CAST(total_refund AS REAL) ELSE 0 END as balance_effect,
              refund_method as payment_method,
-             NULL as notes,
+             reason as notes,
              (SELECT full_name FROM users WHERE id = user_id) as user_name
       FROM returns
       WHERE status IN ('approved', 'completed')
@@ -539,14 +546,19 @@ export async function getPatientStatementAction(patientId: string) {
     });
 
     // 4. Get Financial Notices for this patient
-    const notices = await db.prepare(`
-      SELECT fn.id, fn.type, fn.amount, fn.reason, fn.notes, fn.date, fn.created_at,
-             u.full_name as user_name
-      FROM financial_notices fn
-      LEFT JOIN users u ON u.id = fn.user_id
-      WHERE fn.target_type = 'customer' AND fn.target_id = ?
-      ORDER BY fn.date DESC, fn.created_at DESC
-    `).all(patientId) as any[];
+    let notices: any[] = [];
+    try {
+      notices = await db.prepare(`
+        SELECT fn.id, fn.type, fn.amount, fn.reason, fn.notes, fn.date, fn.created_at,
+               u.full_name as user_name
+        FROM financial_notices fn
+        LEFT JOIN users u ON u.id = fn.user_id
+        WHERE fn.target_type = 'customer' AND fn.target_id = ?
+        ORDER BY fn.date DESC, fn.created_at DESC
+      `).all(patientId) as any[];
+    } catch (noticeErr) {
+      console.warn('financial_notices query skipped in statement:', noticeErr);
+    }
 
     // 5. Use the same balance definition as POS and checkout validation.
     const balance = await db.prepare(patientOutstandingBalanceQuery()).get(patientId) as any;

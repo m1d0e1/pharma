@@ -35,15 +35,17 @@ export function CustomerStatementContent({ patientId }: { patientId: string }) {
   }, [patientId]);
 
   if (loading) return <div className="p-20 text-center font-black animate-pulse">جاري تحميل كشف الحساب...</div>;
-  if (!data) return <div className="p-20 text-center font-black text-rose-500">فشل تحميل البيانات</div>;
+  if (!data || !data.patient) return <div className="p-20 text-center font-black text-rose-500">فشل تحميل البيانات</div>;
 
-  const { patient, movements, currentBalance } = data;
+  const patient = data.patient || {};
+  const movements = data.movements || [];
+  const currentBalance = Number(data.currentBalance ?? 0);
 
   // 1. Sort all movements chronologically (oldest first)
   const sortedMovements = [...movements].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
   // 2. Compute running balance for all movements
-  let running = patient.opening_balance || 0;
+  let running = Number(patient.opening_balance || 0);
   const movementsWithBalance = sortedMovements.map(mov => {
     const balanceEffect = Number(mov.balance_effect ?? 0);
     running += balanceEffect;

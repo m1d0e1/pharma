@@ -75,11 +75,14 @@ const addInventorySchema = z.object({
 // Zod schema for updating inventory
 const updateInventorySchema = z.object({
   id: z.string().min(1, 'معرف المخزون غير صالح'),
-  quantity: z.number().min(0, 'الكمية لا يمكن أن تكون سالبة'),
-  local_selling_price: z.number().positive('السعر يجب أن يكون رقم موجب'),
-  reason_id: z.number().optional().nullable(),
+  quantity: z.coerce.number().min(0, 'الكمية لا يمكن أن تكون سالبة'),
+  local_selling_price: z.coerce.number().min(0, 'السعر لا يمكن أن يكون سالباً'),
+  reason_id: z.coerce.number().optional().nullable(),
   large_to_medium: z.coerce.number().int().positive().optional().nullable(),
-  expiry_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'صيغة التاريخ غير صحيحة (YYYY-MM-DD)').optional().nullable(),
+  expiry_date: z.preprocess(
+    val => (typeof val === 'string' && val.trim() === '' ? null : val),
+    z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'صيغة التاريخ غير صحيحة (YYYY-MM-DD)').optional().nullable()
+  ),
 });
 
 // Zod schema for deleting inventory
@@ -236,8 +239,11 @@ export async function updateInventoryAction(formData: UpdateInventoryInput) {
     const tradeName = drugRow2?.trade_name_en || drugRow2?.trade_name || drugRow2?.active_ingredient || `صنف #${current.drug_id}`;
 
     if (reason_id && quantity !== current.quantity) {
-      const adjustmentReason = await db.prepare('SELECT reason FROM adjustment_reasons WHERE id = ?').get(reason_id) as { reason: string };
-      const reasonText = adjustmentReason?.reason || 'تسوية مخزون';
+      let reasonText = 'تسوية مخزون';
+      try {
+        const adjustmentReason = await db.prepare('SELECT * FROM adjustment_reasons WHERE id = ?').get(reason_id) as any;
+        reasonText = adjustmentReason?.name_ar || adjustmentReason?.reason || adjustmentReason?.name_en || 'تسوية مخزون';
+      } catch (e) {}
       const journalId = generateId();
       const diff = Math.abs(quantity - current.quantity);
       const costPrice = await db.prepare('SELECT cost_price FROM inventory WHERE id = ?').get(id) as { cost_price: number };
