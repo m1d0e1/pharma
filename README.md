@@ -68,9 +68,26 @@
 ## 🚀 البدء السريع
 
 ### المتطلبات الأساسية
-- Node.js 18+ 
+- Node.js 22
 - npm أو yarn أو pnpm
 - حساب Supabase (مجاني)
+
+### دعم تطبيق Windows
+
+- يستخدم الإصداران `x64` و`x86` نفس الواجهة وقاعدة البيانات ومنطق الأعمال، ويُبنيان باستخدام Rust 1.77.2 ذي خط الأساس المتوافق مع Windows 7 للعمل على Windows 7 SP1 وWindows 10 وWindows 11.
+- استخدم مثبت `x64` على أنظمة 64 بت ومثبت `x86` على أنظمة 32 بت. على Windows 7 يجب تثبيت تحديثات SHA-2 وTLS 1.2 وUniversal C Runtime ‏(KB2999226) قبل التثبيت.
+- يضم المثبت WebView2 bootstrapper ويفرض الإصدار الأدنى `109.0.1518.140`؛ يلزم اتصال بالإنترنت في أول تثبيت على Windows 7. هذا آخر WebView2 متوافق مع Windows 7.
+- Windows 11 ARM64 يعمل حالياً عبر محاكاة x64 فقط؛ لا يوجد مثبت ARM64 أصلي.
+- تختبر CI بناء MSI على Windows Server 2022، وبناء NSIS على Windows Server 2025، وتشغيل x64 التجريبي على Windows 11 ARM64. كما تبني وتختبر executable بنواة x86 باستخدام Rust 1.77.2، وتتحقق من نوع PE وإصدار Windows subsystem وعدم اعتماده على `VCRUNTIME` أو `MSVCP` ديناميكيين.
+- لأن GitHub لا يوفر runner مستضافاً لنظام Windows 7، يلزم اختبار تثبيت وقبول نهائي لمثبتَي `x64` و`x86` داخل أجهزة Windows 7 SP1 وWindows 10 وWindows 11 نظيفة قبل اعتماد الإصدار. WebView2 109 وWindows 7 منتهيا الدعم الأمني، لذلك يوصى باستخدام Windows 7 فقط للأجهزة القديمة المعزولة.
+
+لبناء المثبتين محلياً، ثبّت هدفي Rust ثم شغّل:
+
+```powershell
+rustup toolchain install 1.77.2-x86_64-pc-windows-msvc --profile minimal --target x86_64-pc-windows-msvc,i686-pc-windows-msvc
+npm run tauri:build
+npm run tauri:build:win7-x86
+```
 
 ### خطوات التثبيت
 

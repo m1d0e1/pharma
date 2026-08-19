@@ -14,6 +14,7 @@ import { Monitor, Bell, LogOut, Menu, ArrowRight } from 'lucide-react';
 import HeaderAlerts from '@/components/HeaderAlerts';
 import AuthGuard from '@/components/AuthGuard';
 import { isTauri as isTauriRuntime } from '@/lib/env';
+import packageInfo from '../../../package.json';
 
 export default function DashboardLayout({
   children,
@@ -138,7 +139,7 @@ export default function DashboardLayout({
               ).catch(() => toast.success(`نظام فارما تيك المتكامل - الإصدار ${version}`));
             } catch (e) {
               console.error('Failed to show about dialog', e);
-              toast.success('نظام فارما تيك المتكامل - الإصدار 0.1.9');
+              toast.success(`نظام فارما تيك المتكامل - الإصدار ${packageInfo.version}`);
             }
           }
           if (action === 'shortcuts') {
@@ -176,7 +177,7 @@ export default function DashboardLayout({
             let latestVersion: string | null = null;
 
             try {
-              update = await check();
+              update = await check({ timeout: 30_000 });
               if (update) latestVersion = update.version;
             } catch { /* Tauri updater threw — will fetch fallback below */ }
 
@@ -203,7 +204,7 @@ export default function DashboardLayout({
               if (yes) {
                 toast.loading('جاري التحميل والتثبيت...', { id: toastId });
                 try {
-                  await update.downloadAndInstall();
+                  await update.downloadAndInstall(undefined, { timeout: 5 * 60_000 });
                   toast.dismiss(toastId);
                   await message('تم التحديث بنجاح! سيتم إعادة تشغيل البرنامج الآن.', { title: 'نجاح التحديث', kind: 'info' }).catch(() => toast.success('تم التحديث بنجاح!'));
                   await relaunch();

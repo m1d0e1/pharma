@@ -7,15 +7,49 @@ use tauri::Manager;
 #[allow(dead_code)]
 struct ChecksumRepair {
     version: i64,
-    current: &'static str,
+    migration: &'static str,
+    current_lf: &'static str,
+    current_crlf: &'static str,
     legacy: &'static [&'static str],
+}
+
+fn current_checksum(repair: &ChecksumRepair) -> &'static str {
+    if repair
+        .migration
+        .as_bytes()
+        .windows(2)
+        .any(|bytes| bytes == b"\r\n")
+    {
+        repair.current_crlf
+    } else {
+        repair.current_lf
+    }
+}
+
+fn checksum_requires_repair(repair: &ChecksumRepair, checksum: &str) -> Result<bool, String> {
+    if checksum == current_checksum(repair) {
+        Ok(false)
+    } else if checksum == repair.current_lf
+        || checksum == repair.current_crlf
+        || repair.legacy.contains(&checksum)
+    {
+        Ok(true)
+    } else {
+        Err(format!(
+            "unrecognized checksum for migration {}",
+            repair.version
+        ))
+    }
 }
 
 const CHECKSUM_REPAIRS: &[ChecksumRepair] = &[
     ChecksumRepair {
         version: 1,
-        current: "6EF41382A6590B2E6A487DB0D9560F9F826E203BA07ED7065E71016C53083911A864F55EFA6C204DDA6272167F8E6BDC",
+        migration: include_str!("../migrations/001_initial.sql"),
+        current_lf: "0A8DCA8624A89F518DA7B2D5C08BC364F3B675242BD57CC105E8B610B194E093325389EBF974166C8B7B082BEA0C111A",
+        current_crlf: "00AEEB1683D8487B39C5B75AFACE44217DECC16A11A972E83E364A62A20F3AEA9126BCB2BCB6E3DBF4C368CF1E1162AA",
         legacy: &[
+            "6EF41382A6590B2E6A487DB0D9560F9F826E203BA07ED7065E71016C53083911A864F55EFA6C204DDA6272167F8E6BDC",
             "BEC57847DA8403B63C28258329D6F9EEEB7FC894B1496393DCBB6527AAB25D7045EFE661B6BE6473B68C6A579C49A153",
             "F82014A0B12E5F2148E15B27514F88C074C127EA08140C38889D59CAC54695EF9BA4194FC77168A621732F9627A20AA2",
             "78532E45F393BD746018E6EC48E3DD3D661145347E5A0716C28424B1347B2F3BD98F4C7B70C9562950286660AFA22B6C",
@@ -25,22 +59,33 @@ const CHECKSUM_REPAIRS: &[ChecksumRepair] = &[
     },
     ChecksumRepair {
         version: 2,
-        current: "1D375CF6D1CC6170CA5EC70CE930AD0F9F4D6E0355E5A7ED2637E683D5721A96D62D53C37E573E260B617513DF883375",
-        legacy: &["EB5B98F60883978153907406799C9010EE82FD3B6233E54E3EF0ABE66C182CC4B967378D5C2F431F4180AE8544F7B049"],
+        migration: include_str!("../migrations/002_performance.sql"),
+        current_lf: "8EE8A3F6C60E775A2E251D7566E966D8D23C6F3BFD43EBB6453C7C817B7B46C649D7D6C3611B1311B9BFF86922FFFD9C",
+        current_crlf: "AFF13C262E80C34FF3F115DD6FB5C463760D247EB8B7B6705D0C775DE426E85F70D055F9DBEF1D3EDFF157E3D981261C",
+        legacy: &[
+            "1D375CF6D1CC6170CA5EC70CE930AD0F9F4D6E0355E5A7ED2637E683D5721A96D62D53C37E573E260B617513DF883375",
+            "EB5B98F60883978153907406799C9010EE82FD3B6233E54E3EF0ABE66C182CC4B967378D5C2F431F4180AE8544F7B049",
+        ],
     },
     ChecksumRepair {
         version: 4,
-        current: "CF8CB76E3264BA762F3CC260B56FB253BEF65AD4C7B80D6E7DA2F950AB9AD5A88CB0DB45072EF2ECE5E3C553AD00D85F",
+        migration: include_str!("../migrations/004_return_items_patch.sql"),
+        current_lf: "CF8CB76E3264BA762F3CC260B56FB253BEF65AD4C7B80D6E7DA2F950AB9AD5A88CB0DB45072EF2ECE5E3C553AD00D85F",
+        current_crlf: "CCCC9C702E8C1C1D270BF2F43F4F7441C9FCAA3A83A074268BC8E1B52051B8B74E18BA70B79E6D8D1EC8E6948451CA3D",
         legacy: &["DC6E060272C078A60806DDBE5DBCC30F42837A45725E0A02163D72863B6F5523E2A51618D4215AEE0E3721748C90125D"],
     },
     ChecksumRepair {
         version: 5,
-        current: "06CDB339DAF88B9A19B495D4F48AEB5450A3AEA9EE02BB36E69C6C4ABE3F7FA6BA4C0657841FEE7F0102ABFCC2115DC7",
+        migration: include_str!("../migrations/005_purchase_return_details.sql"),
+        current_lf: "06CDB339DAF88B9A19B495D4F48AEB5450A3AEA9EE02BB36E69C6C4ABE3F7FA6BA4C0657841FEE7F0102ABFCC2115DC7",
+        current_crlf: "EF47F00BA64B2FA378D716E2AD3325AB6E1938B2A97A9F0AD2CE6F047224CA0896896805EB3213B23613F310619F58C3",
         legacy: &["5EDF8FB853589FF8E8C5DE39B9A3432B940C4DB1BC1F0A43438C2B14D376DB187063BDE0F6C55E34C4C2EE261AA3F5A7"],
     },
     ChecksumRepair {
         version: 7,
-        current: "ADD70A4E03CA17C0E204F600C91803410D880921B6C6A2504D39309E684CA58B2B7B2CA683BDF3E1EB7ABA6EE96C64AE",
+        migration: include_str!("../migrations/007_purchase_inventory_links.sql"),
+        current_lf: "ADD70A4E03CA17C0E204F600C91803410D880921B6C6A2504D39309E684CA58B2B7B2CA683BDF3E1EB7ABA6EE96C64AE",
+        current_crlf: "1AF436DBA20429D9EF69ECA504162C15D8DA72A70758C5B53AAEE9B33D46A699704D8DC5F11C425E3D2E9F4A09175A63",
         legacy: &["48DF50E8B76D93E61F77DEB39E7498CFA1D34B6A7AB76DC1E773320F1B1D448C43B191746F5958858AD1C6F75C6E6013"],
     },
 ];
@@ -330,7 +375,11 @@ async fn ensure_compatibility(
         ("master_drugs", "item_nature", "item_nature TEXT"),
         ("master_drugs", "scientific_group", "scientific_group TEXT"),
         ("master_drugs", "usage_method", "usage_method TEXT"),
-        ("master_drugs", "active_ingredient_ratio", "active_ingredient_ratio TEXT"),
+        (
+            "master_drugs",
+            "active_ingredient_ratio",
+            "active_ingredient_ratio TEXT",
+        ),
         ("master_drugs", "is_table", "is_table INTEGER DEFAULT 0"),
         ("master_drugs", "indications", "indications TEXT"),
         ("master_drugs", "side_effects", "side_effects TEXT"),
@@ -338,48 +387,132 @@ async fn ensure_compatibility(
         ("master_drugs", "barcode", "barcode TEXT"),
         ("master_drugs", "generic_name", "generic_name TEXT"),
         ("master_drugs", "manufacturer", "manufacturer TEXT"),
-        ("master_drugs", "is_medicine", "is_medicine INTEGER DEFAULT 1"),
+        (
+            "master_drugs",
+            "is_medicine",
+            "is_medicine INTEGER DEFAULT 1",
+        ),
         ("master_drugs", "is_service", "is_service INTEGER DEFAULT 0"),
-        ("master_drugs", "is_refrigerated", "is_refrigerated INTEGER DEFAULT 0"),
+        (
+            "master_drugs",
+            "is_refrigerated",
+            "is_refrigerated INTEGER DEFAULT 0",
+        ),
         ("master_drugs", "is_chronic", "is_chronic INTEGER DEFAULT 0"),
         ("master_drugs", "has_expiry", "has_expiry INTEGER DEFAULT 1"),
         ("master_drugs", "origin", "origin TEXT"),
         ("master_drugs", "notes", "notes TEXT"),
         ("master_drugs", "min_limit", "min_limit REAL DEFAULT 0"),
         ("master_drugs", "max_limit", "max_limit REAL DEFAULT 0"),
-        ("master_drugs", "reorder_point", "reorder_point REAL DEFAULT 0"),
-        ("master_drugs", "default_purchase_qty", "default_purchase_qty REAL DEFAULT 1"),
-        ("master_drugs", "prevent_fractions", "prevent_fractions INTEGER DEFAULT 0"),
+        (
+            "master_drugs",
+            "reorder_point",
+            "reorder_point REAL DEFAULT 0",
+        ),
+        (
+            "master_drugs",
+            "default_purchase_qty",
+            "default_purchase_qty REAL DEFAULT 1",
+        ),
+        (
+            "master_drugs",
+            "prevent_fractions",
+            "prevent_fractions INTEGER DEFAULT 0",
+        ),
         ("master_drugs", "tax_percent", "tax_percent REAL DEFAULT 0"),
-        ("master_drugs", "discount_percent", "discount_percent REAL DEFAULT 0"),
-        ("master_drugs", "stop_dealing", "stop_dealing INTEGER DEFAULT 0"),
-        ("inventory", "min_stock_level", "min_stock_level INTEGER DEFAULT 5"),
+        (
+            "master_drugs",
+            "discount_percent",
+            "discount_percent REAL DEFAULT 0",
+        ),
+        (
+            "master_drugs",
+            "stop_dealing",
+            "stop_dealing INTEGER DEFAULT 0",
+        ),
+        (
+            "inventory",
+            "min_stock_level",
+            "min_stock_level INTEGER DEFAULT 5",
+        ),
         ("inventory", "supplier", "supplier TEXT"),
         ("inventory", "unit_price", "unit_price REAL"),
         ("inventory", "barcode", "barcode TEXT"),
-        ("inventory", "strips_per_box", "strips_per_box INTEGER DEFAULT 1"),
+        (
+            "inventory",
+            "strips_per_box",
+            "strips_per_box INTEGER DEFAULT 1",
+        ),
         ("purchase_invoices", "expenses", "expenses REAL DEFAULT 0"),
-        ("purchase_invoices", "discount_value", "discount_value REAL DEFAULT 0"),
-        ("purchase_invoices", "discount_percent", "discount_percent REAL DEFAULT 0"),
+        (
+            "purchase_invoices",
+            "discount_value",
+            "discount_value REAL DEFAULT 0",
+        ),
+        (
+            "purchase_invoices",
+            "discount_percent",
+            "discount_percent REAL DEFAULT 0",
+        ),
         ("purchase_invoices", "updated_at", "updated_at DATETIME"),
-        ("sales_invoices", "paid_amount", "paid_amount REAL DEFAULT 0"),
-        ("sales_invoices", "remaining_amount", "remaining_amount REAL DEFAULT 0"),
+        (
+            "sales_invoices",
+            "paid_amount",
+            "paid_amount REAL DEFAULT 0",
+        ),
+        (
+            "sales_invoices",
+            "remaining_amount",
+            "remaining_amount REAL DEFAULT 0",
+        ),
         ("returns", "approved_by", "approved_by TEXT"),
         ("return_items", "drug_id", "drug_id INTEGER"),
         ("return_items", "total_price", "total_price REAL"),
         ("return_items", "sale_item_id", "sale_item_id INTEGER"),
         ("return_items", "unit", "unit TEXT DEFAULT 'large'"),
-        ("purchase_invoice_items", "strips_per_box", "strips_per_box INTEGER DEFAULT 1"),
-        ("purchase_invoice_items", "inventory_id", "inventory_id TEXT"),
+        (
+            "purchase_invoice_items",
+            "strips_per_box",
+            "strips_per_box INTEGER DEFAULT 1",
+        ),
+        (
+            "purchase_invoice_items",
+            "inventory_id",
+            "inventory_id TEXT",
+        ),
         ("purchase_invoice_items", "barcode", "barcode TEXT"),
-        ("purchase_returns", "purchase_invoice_id", "purchase_invoice_id TEXT"),
-        ("purchase_return_items", "purchase_invoice_item_id", "purchase_invoice_item_id INTEGER"),
+        (
+            "purchase_returns",
+            "purchase_invoice_id",
+            "purchase_invoice_id TEXT",
+        ),
+        (
+            "purchase_return_items",
+            "purchase_invoice_item_id",
+            "purchase_invoice_item_id INTEGER",
+        ),
         ("purchase_return_items", "unit", "unit TEXT DEFAULT 'large'"),
         ("patients", "name_en", "name_en TEXT"),
-        ("patients", "loyalty_level", "loyalty_level TEXT DEFAULT 'silver'"),
-        ("patients", "opening_balance", "opening_balance REAL DEFAULT 0"),
-        ("patients", "wallet_balance", "wallet_balance REAL DEFAULT 0"),
-        ("patients", "points_balance", "points_balance REAL DEFAULT 0"),
+        (
+            "patients",
+            "loyalty_level",
+            "loyalty_level TEXT DEFAULT 'silver'",
+        ),
+        (
+            "patients",
+            "opening_balance",
+            "opening_balance REAL DEFAULT 0",
+        ),
+        (
+            "patients",
+            "wallet_balance",
+            "wallet_balance REAL DEFAULT 0",
+        ),
+        (
+            "patients",
+            "points_balance",
+            "points_balance REAL DEFAULT 0",
+        ),
         ("financial_notices", "target_type", "target_type TEXT"),
         ("financial_notices", "target_id", "target_id TEXT"),
         ("shifts", "ending_cash", "ending_cash REAL"),
@@ -397,7 +530,11 @@ async fn ensure_compatibility(
         ("users", "role", "role TEXT DEFAULT 'cashier'"),
         ("users", "full_name", "full_name TEXT"),
         ("users", "pharmacy_id", "pharmacy_id TEXT"),
-        ("users", "permissions", "permissions TEXT DEFAULT '{\"can_sell\": true, \"can_manage_inventory\": false}'"),
+        (
+            "users",
+            "permissions",
+            "permissions TEXT DEFAULT '{\"can_sell\": true, \"can_manage_inventory\": false}'",
+        ),
         ("users", "is_active", "is_active INTEGER DEFAULT 1"),
         ("users", "job_id", "job_id INTEGER"),
         ("users", "qualification", "qualification TEXT"),
@@ -685,7 +822,7 @@ async fn prepare_connection(connection: &mut SqliteConnection) -> Result<(), Str
         else {
             continue;
         };
-        if checksum == repair.current {
+        if !checksum_requires_repair(repair, &checksum)? {
             continue;
         }
         repairs.push((repair, checksum));
@@ -697,7 +834,7 @@ async fn prepare_connection(connection: &mut SqliteConnection) -> Result<(), Str
     for (repair, checksum) in repairs {
         sqlx::query(&format!(
             "UPDATE _sqlx_migrations SET checksum = X'{}' WHERE version = ? AND hex(checksum) = ?",
-            repair.current
+            current_checksum(repair)
         ))
         .bind(repair.version)
         .bind(checksum)
@@ -735,6 +872,17 @@ pub fn ensure_schema_compatibility(app: tauri::AppHandle) -> Result<(), String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repairs_only_known_legacy_checksums() {
+        let repair = &CHECKSUM_REPAIRS[0];
+        assert_eq!(checksum_requires_repair(repair, repair.legacy[0]), Ok(true));
+        assert_eq!(
+            checksum_requires_repair(repair, current_checksum(repair)),
+            Ok(false)
+        );
+        assert!(checksum_requires_repair(repair, "UNKNOWN").is_err());
+    }
 
     #[tokio::test]
     async fn upgrades_v014_schema_and_normalizes_its_checksum() {
@@ -826,7 +974,7 @@ mod tests {
                     .fetch_one(&mut connection)
                     .await
                     .unwrap();
-            assert_eq!(checksum, repair.current);
+            assert_eq!(checksum, current_checksum(repair));
         }
 
         let mut transaction = connection.begin().await.unwrap();

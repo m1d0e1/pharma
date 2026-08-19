@@ -31,7 +31,7 @@ if (!isOpen || !drug) return null;
         </div>
         <h3 className="text-2xl font-black text-slate-950 dark:text-white">نفد المخزون!</h3>
         <p className="text-slate-500 font-bold text-sm">
-          لا يوجد كميات متوفرة من "{drug.trade_name}" حالياً. كيف ترغب في المتابعة؟
+          لا يوجد كميات متوفرة من &quot;{drug.trade_name}&quot; حالياً. كيف ترغب في المتابعة؟
         </p>
         <div className="flex flex-col gap-3">
           <div className="flex gap-4">

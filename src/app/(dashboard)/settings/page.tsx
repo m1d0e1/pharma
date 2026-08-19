@@ -99,7 +99,7 @@ export default function SettingsPage() {
             <div className="max-w-xl">
                <h4 className="text-2xl font-bold text-white mb-4">باقة الاشتراك (The Brain)</h4>
                <p className="text-slate-400 leading-relaxed">
-                 اشتراكك الحالي يتيح لك مزامنة عدد غير محدود من الأدوية والحصول على التحديثات الأمنية. في حالة انتهاء الاشتراك، سيظل "The Local Enforcer" يعمل محلياً ولكن لن تتمكن من المزامنة.
+                 اشتراكك الحالي يتيح لك مزامنة عدد غير محدود من الأدوية والحصول على التحديثات الأمنية. في حالة انتهاء الاشتراك، سيظل &quot;The Local Enforcer&quot; يعمل محلياً ولكن لن تتمكن من المزامنة.
                </p>
             </div>
             <div className="bg-white/5 border border-white/10 p-8 rounded-3xl text-center min-w-[240px]">

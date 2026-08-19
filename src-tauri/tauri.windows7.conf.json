@@ -1,0 +1,18 @@
+{
+  "build": {
+    "beforeBuildCommand": ""
+  },
+  "bundle": {
+    "targets": ["nsis"],
+    "createUpdaterArtifacts": false,
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper"
+      },
+      "minimumWebview2Version": "109.0.1518.140",
+      "nsis": {
+        "installMode": "both"
+      }
+    }
+  }
+}

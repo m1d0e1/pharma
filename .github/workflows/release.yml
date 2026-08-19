@@ -21,19 +21,65 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Windows 7-compatible Rust
+        uses: dtolnay/rust-toolchain@1.77.2
+        with:
+          targets: x86_64-pc-windows-msvc
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
+
+      - name: Run Tauri tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
 
       - name: Seed database
         run: npm run seed:db
 
+      - name: Import Windows code-signing certificate
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE) -or
+              [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) {
+            throw 'WINDOWS_CERTIFICATE and WINDOWS_CERTIFICATE_PASSWORD are required for signed releases.'
+          }
+
+          $certificatePath = Join-Path $env:RUNNER_TEMP 'pharma-code-signing.pfx'
+          [IO.File]::WriteAllBytes(
+            $certificatePath,
+            [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE)
+          )
+          $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+          $importedCertificates = Import-PfxCertificate `
+            -FilePath $certificatePath `
+            -CertStoreLocation Cert:\CurrentUser\My `
+            -Password $password
+          Remove-Item -LiteralPath $certificatePath -Force
+          $certificate = $importedCertificates |
+            Where-Object { $_.HasPrivateKey } |
+            Select-Object -First 1
+
+          if (-not $certificate -or [string]::IsNullOrWhiteSpace($certificate.Thumbprint)) {
+            throw 'The Windows code-signing certificate could not be imported.'
+          }
+          "WINDOWS_CERTIFICATE_THUMBPRINT=$($certificate.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          @{
+            bundle = @{
+              windows = @{
+                certificateThumbprint = $certificate.Thumbprint
+                digestAlgorithm = 'sha256'
+                timestampUrl = 'http://timestamp.digicert.com'
+              }
+            }
+          } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath 'src-tauri/tauri.signing.conf.json' -Encoding utf8
+
       - name: Build and publish Tauri release
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
@@ -41,8 +87,155 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: "Pharma App v__VERSION__"
-          releaseBody: "New update available! Download the .msi installer below."
+          releaseBody: "New update available. Use x64 on 64-bit Windows or the setup marked x86 on 32-bit Windows. Both use the same Windows 7 SP1/10/11 application baseline."
           releaseDraft: false
           prerelease: false
-          includeUpdaterJson: true
+          uploadUpdaterJson: true
           updaterJsonPreferNsis: true
+          args: --target x86_64-pc-windows-msvc --config src-tauri/tauri.signing.conf.json
+
+      - name: Verify Windows installer signatures
+        shell: pwsh
+        run: |
+          $installers = Get-ChildItem -LiteralPath 'src-tauri/target/x86_64-pc-windows-msvc/release/bundle' -Recurse -File |
+            Where-Object { $_.Extension -in '.exe', '.msi' }
+          if (-not $installers) {
+            throw 'No Windows installers were produced.'
+          }
+          foreach ($installer in $installers) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $installer.FullName
+            if ($signature.Status -ne 'Valid') {
+              throw "Invalid Authenticode signature for $($installer.FullName): $($signature.Status)"
+            }
+            if ($signature.SignerCertificate.Thumbprint -ne $env:WINDOWS_CERTIFICATE_THUMBPRINT) {
+              throw "Unexpected signer certificate for $($installer.FullName)."
+            }
+            if (-not $signature.TimeStamperCertificate) {
+              throw "Missing Authenticode timestamp for $($installer.FullName)."
+            }
+          }
+
+  publish-windows7-x86:
+    name: Publish shared Windows x86 installer
+    needs: publish-tauri
+    permissions:
+      contents: write
+    runs-on: windows-2022
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Windows 7-compatible Rust
+        uses: dtolnay/rust-toolchain@1.77.2
+        with:
+          targets: i686-pc-windows-msvc
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test 32-bit Rust backend
+        run: cargo test --manifest-path src-tauri/Cargo.toml --target i686-pc-windows-msvc --locked
+
+      - name: Seed database
+        run: npm run seed:db
+
+      - name: Build desktop frontend
+        run: npm run build:tauri
+
+      - name: Import certificate and create legacy build configuration
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE) -or
+              [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) {
+            throw 'WINDOWS_CERTIFICATE and WINDOWS_CERTIFICATE_PASSWORD are required for signed releases.'
+          }
+
+          $certificatePath = Join-Path $env:RUNNER_TEMP 'pharma-code-signing.pfx'
+          [IO.File]::WriteAllBytes(
+            $certificatePath,
+            [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE)
+          )
+          $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+          $importedCertificates = Import-PfxCertificate `
+            -FilePath $certificatePath `
+            -CertStoreLocation Cert:\CurrentUser\My `
+            -Password $password
+          Remove-Item -LiteralPath $certificatePath -Force
+          $certificate = $importedCertificates |
+            Where-Object { $_.HasPrivateKey } |
+            Select-Object -First 1
+
+          if (-not $certificate -or [string]::IsNullOrWhiteSpace($certificate.Thumbprint)) {
+            throw 'The Windows code-signing certificate could not be imported.'
+          }
+          "WINDOWS_CERTIFICATE_THUMBPRINT=$($certificate.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          $config = Get-Content -LiteralPath 'src-tauri/tauri.windows7.conf.json' -Raw | ConvertFrom-Json
+          $config.bundle.createUpdaterArtifacts = $true
+          $config.bundle.windows | Add-Member -NotePropertyName certificateThumbprint -NotePropertyValue $certificate.Thumbprint
+          $config.bundle.windows | Add-Member -NotePropertyName digestAlgorithm -NotePropertyValue 'sha256'
+          $config.bundle.windows | Add-Member -NotePropertyName timestampUrl -NotePropertyValue 'http://timestamp.digicert.com'
+          $config | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath 'src-tauri/tauri.windows7.signing.conf.json' -Encoding utf8
+
+      - name: Build and publish Windows 7 x86 installer
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
+        with:
+          tagName: v__VERSION__
+          uploadUpdaterJson: true
+          updaterJsonPreferNsis: true
+          args: --bundles nsis --target i686-pc-windows-msvc --config src-tauri/tauri.windows7.signing.conf.json
+
+      - name: Verify Windows 7 x86 installer signature
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -LiteralPath 'src-tauri/target/i686-pc-windows-msvc/release/bundle/nsis' -Filter '*-setup.exe' -File |
+            Select-Object -First 1
+          if (-not $installer) {
+            throw 'No Windows 7 x86 installer was produced.'
+          }
+
+          $signature = Get-AuthenticodeSignature -LiteralPath $installer.FullName
+          if ($signature.Status -ne 'Valid' -or
+              $signature.SignerCertificate.Thumbprint -ne $env:WINDOWS_CERTIFICATE_THUMBPRINT -or
+              -not $signature.TimeStamperCertificate) {
+            throw "Invalid Authenticode signature for $($installer.FullName)."
+          }
+
+      - name: Verify combined x64 and x86 updater manifest
+        shell: pwsh
+        run: |
+          $manifestUrl = "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/latest.json"
+          for ($attempt = 1; $attempt -le 12; $attempt++) {
+            try {
+              $manifest = Invoke-RestMethod -Uri $manifestUrl -TimeoutSec 30
+              $keys = @($manifest.platforms.PSObject.Properties.Name)
+              if ($keys -contains 'windows-x86_64-nsis' -and $keys -contains 'windows-i686-nsis') {
+                break
+              }
+            } catch {
+              if ($attempt -eq 12) { throw }
+            }
+            if ($attempt -eq 12) {
+              throw "Updater manifest is missing x64 or i686 NSIS entries: $($keys -join ', ')"
+            }
+            Start-Sleep -Seconds 5
+          }
+
+          foreach ($key in 'windows-x86_64-nsis', 'windows-i686-nsis') {
+            $entry = $manifest.platforms.$key
+            if ([string]::IsNullOrWhiteSpace($entry.url) -or [string]::IsNullOrWhiteSpace($entry.signature)) {
+              throw "Updater manifest entry '$key' is incomplete."
+            }
+          }

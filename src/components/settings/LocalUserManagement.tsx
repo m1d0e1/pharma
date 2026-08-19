@@ -28,7 +28,7 @@ export default function LocalUserManagement() {
       <div className="flex items-center justify-between mb-8">
         <div>
           <h4 className="text-xl font-bold text-slate-900 dark:text-white">إدارة المستخدمين المحليين</h4>
-          <p className="text-slate-500 text-xs mt-1">حسابات الصيادلة النشطة في "The Enforcer"</p>
+          <p className="text-slate-500 text-xs mt-1">حسابات الصيادلة النشطة في &quot;The Enforcer&quot;</p>
         </div>
         <button 
           onClick={() => router.push('/staff/manage?add=true')}

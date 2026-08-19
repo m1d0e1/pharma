@@ -1,5 +1,6 @@
 name: Tests
 on:
+  workflow_dispatch:
   push:
     branches: [ main, master ]
   pull_request:
@@ -17,11 +18,14 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Run ESLint
+        run: npm run lint
 
       - name: Run tests with coverage
         run: npm run test:ci
@@ -57,7 +61,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
 
       - name: Install dependencies
@@ -65,3 +69,272 @@ jobs:
 
       - name: TypeScript type check
         run: npx tsc --noEmit
+
+  windows-compatibility:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows Server 2022 x64 + MSI
+            runner: windows-2022
+            target: x86_64-pc-windows-msvc
+            build_args: --bundles msi
+            experimental: false
+          - name: Windows Server 2025 x64 + NSIS
+            runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            build_args: --bundles nsis
+            experimental: false
+          - name: Windows 11 ARM64 + x64 emulation
+            runner: windows-11-arm
+            target: x86_64-pc-windows-msvc
+            build_args: --no-bundle
+            experimental: true
+    continue-on-error: ${{ matrix.experimental }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install shared Windows-compatible Rust
+        uses: dtolnay/rust-toolchain@1.77.2
+        with:
+          components: clippy, rustfmt
+          targets: ${{ matrix.target }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check Rust formatting
+        if: matrix.runner == 'windows-2022'
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+
+      - name: Run Clippy
+        if: matrix.runner == 'windows-2022'
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --target ${{ matrix.target }} -- -D warnings
+
+      - name: Run Tauri tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }}
+
+      - name: Seed database
+        run: npm run seed:db
+
+      - name: Build desktop frontend
+        run: npm run build:tauri
+
+      - name: Build release executable and installer
+        run: npx tauri build ${{ matrix.build_args }} --target ${{ matrix.target }} --config src-tauri/tauri.local-build.conf.json
+
+      - name: Verify shared Windows 7+ x64 baseline
+        if: matrix.runner == 'windows-2022'
+        shell: pwsh
+        run: |
+          $executable = Resolve-Path -LiteralPath 'src-tauri/target/${{ matrix.target }}/release/pharma.exe'
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $dumpbin = & $vswhere `
+            -latest `
+            -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -find 'VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe' |
+            Select-Object -First 1
+          if (-not $dumpbin) {
+            throw 'dumpbin.exe was not found.'
+          }
+
+          $headers = (& $dumpbin /headers $executable) -join "`n"
+          if ($headers -notmatch '(?im)^\s*8664 machine \(x64\)\s*$' -or
+              $headers -notmatch '(?im)^\s*6\.00 subsystem version\s*$') {
+            throw "The x64 executable does not use the shared Windows 7+ PE baseline:`n$headers"
+          }
+
+          $dependencies = (& $dumpbin /dependents $executable) -join "`n"
+          if ($dependencies -match '(?im)^\s*(VCRUNTIME|MSVCP|bcryptprimitives|api-ms-win-core-synch-l1-2-0)[^\s]*\.dll\s*$') {
+            throw "The x64 executable imports a Windows 10-only or dynamic CRT dependency:`n$dependencies"
+          }
+
+      - name: Launch clean profile and restart
+        shell: pwsh
+        run: |
+          $executable = Resolve-Path -LiteralPath 'src-tauri/target/${{ matrix.target }}/release/pharma.exe'
+
+          function Test-Launch([string]$phase) {
+            $stdoutPath = Join-Path $env:RUNNER_TEMP "pharma-$phase.stdout.log"
+            $stderrPath = Join-Path $env:RUNNER_TEMP "pharma-$phase.stderr.log"
+            $appProcess = Start-Process `
+              -FilePath $executable `
+              -PassThru `
+              -WindowStyle Hidden `
+              -RedirectStandardOutput $stdoutPath `
+              -RedirectStandardError $stderrPath
+            try {
+              Start-Sleep -Seconds 15
+              $appProcess.Refresh()
+              if ($appProcess.HasExited) {
+                $errorLog = Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue
+                throw "$phase launch exited early with code $($appProcess.ExitCode): $errorLog"
+              }
+              if (-not (Get-Process -Id $appProcess.Id).Responding) {
+                throw "$phase launch is not responding."
+              }
+              if (-not $appProcess.CloseMainWindow() -or -not $appProcess.WaitForExit(15000)) {
+                throw "$phase launch did not close cleanly."
+              }
+              if ($appProcess.ExitCode -ne 0) {
+                throw "$phase launch closed with code $($appProcess.ExitCode)."
+              }
+            } finally {
+              if (-not $appProcess.HasExited) {
+                Stop-Process -Id $appProcess.Id -Force
+              }
+            }
+          }
+
+          Test-Launch 'first'
+          Test-Launch 'restart'
+
+          $databasePath = Join-Path $env:APPDATA 'com.pharma.system\pharma_local.db'
+          node -e "const Database=require('better-sqlite3');const db=new Database(process.argv[1],{readonly:true});const ok=db.pragma('integrity_check',{simple:true})==='ok'&&db.pragma('foreign_key_check').length===0&&db.prepare('SELECT COUNT(*) count FROM _sqlx_migrations').get().count===9;db.close();if(!ok)process.exit(1)" $databasePath
+
+      - name: Clean smoke profile
+        if: always()
+        shell: pwsh
+        run: |
+          foreach ($root in @($env:APPDATA, $env:LOCALAPPDATA)) {
+            $profile = Join-Path $root 'com.pharma.system'
+            if (Test-Path -LiteralPath $profile) {
+              Remove-Item -LiteralPath $profile -Recurse -Force
+            }
+          }
+
+  windows7-x86:
+    name: Windows 7 SP1 x86 legacy artifact
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install Windows 7-compatible Rust
+        uses: dtolnay/rust-toolchain@1.77.2
+        with:
+          targets: i686-pc-windows-msvc
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test 32-bit Rust backend
+        run: cargo test --manifest-path src-tauri/Cargo.toml --target i686-pc-windows-msvc --locked
+
+      - name: Seed database
+        run: npm run seed:db
+
+      - name: Build desktop frontend
+        run: npm run build:tauri
+
+      - name: Build Windows 7 x86 installer
+        run: npx tauri build --bundles nsis --target i686-pc-windows-msvc --config src-tauri/tauri.windows7.conf.json
+
+      - name: Verify x86 executable and static CRT
+        shell: pwsh
+        run: |
+          $executable = Resolve-Path -LiteralPath 'src-tauri/target/i686-pc-windows-msvc/release/pharma.exe'
+          $bytes = [IO.File]::ReadAllBytes($executable)
+          $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+          $machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
+          if ($machine -ne 0x014c) {
+            throw ('Expected an x86 PE binary, found machine type 0x{0:x4}.' -f $machine)
+          }
+
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $dumpbin = & $vswhere `
+            -latest `
+            -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -find 'VC\Tools\MSVC\**\bin\Hostx64\x86\dumpbin.exe' |
+            Select-Object -First 1
+          if (-not $dumpbin) {
+            throw 'dumpbin.exe was not found.'
+          }
+
+          $headers = (& $dumpbin /headers $executable) -join "`n"
+          if ($headers -notmatch '(?im)^\s*6\.00 subsystem version\s*$') {
+            throw "The legacy executable does not declare a Windows 7-compatible subsystem:`n$headers"
+          }
+
+          $dependencies = (& $dumpbin /dependents $executable) -join "`n"
+          if ($dependencies -match '(?im)^\s*(VCRUNTIME|MSVCP|bcryptprimitives|api-ms-win-core-synch-l1-2-0)[^\s]*\.dll\s*$') {
+            throw "The legacy executable imports a Windows 10-only or dynamic CRT dependency:`n$dependencies"
+          }
+
+      - name: Launch x86 build twice
+        shell: pwsh
+        run: |
+          $executable = Resolve-Path -LiteralPath 'src-tauri/target/i686-pc-windows-msvc/release/pharma.exe'
+
+          function Test-Launch([string]$phase) {
+            $stdoutPath = Join-Path $env:RUNNER_TEMP "pharma-win7-$phase.stdout.log"
+            $stderrPath = Join-Path $env:RUNNER_TEMP "pharma-win7-$phase.stderr.log"
+            $appProcess = Start-Process `
+              -FilePath $executable `
+              -PassThru `
+              -WindowStyle Hidden `
+              -RedirectStandardOutput $stdoutPath `
+              -RedirectStandardError $stderrPath
+            try {
+              Start-Sleep -Seconds 15
+              $appProcess.Refresh()
+              if ($appProcess.HasExited) {
+                $errorLog = Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue
+                throw "$phase launch exited early with code $($appProcess.ExitCode): $errorLog"
+              }
+              if (-not (Get-Process -Id $appProcess.Id).Responding) {
+                throw "$phase launch is not responding."
+              }
+              if (-not $appProcess.CloseMainWindow() -or -not $appProcess.WaitForExit(15000)) {
+                throw "$phase launch did not close cleanly."
+              }
+              if ($appProcess.ExitCode -ne 0) {
+                throw "$phase launch closed with code $($appProcess.ExitCode)."
+              }
+            } finally {
+              if (-not $appProcess.HasExited) {
+                Stop-Process -Id $appProcess.Id -Force
+              }
+            }
+          }
+
+          Test-Launch 'first'
+          Test-Launch 'restart'
+
+          $databasePath = Join-Path $env:APPDATA 'com.pharma.system\pharma_local.db'
+          node -e "const Database=require('better-sqlite3');const db=new Database(process.argv[1],{readonly:true});const ok=db.pragma('integrity_check',{simple:true})==='ok'&&db.pragma('foreign_key_check').length===0&&db.prepare('SELECT COUNT(*) count FROM _sqlx_migrations').get().count===9;db.close();if(!ok)process.exit(1)" $databasePath
+
+      - name: Upload Windows 7 x86 installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows7-x86-nsis
+          path: src-tauri/target/i686-pc-windows-msvc/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+
+      - name: Clean smoke profile
+        if: always()
+        shell: pwsh
+        run: |
+          foreach ($root in @($env:APPDATA, $env:LOCALAPPDATA)) {
+            $profile = Join-Path $root 'com.pharma.system'
+            if (Test-Path -LiteralPath $profile) {
+              Remove-Item -LiteralPath $profile -Recurse -Force
+            }
+          }

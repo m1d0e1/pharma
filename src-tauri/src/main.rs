@@ -3,11 +3,24 @@
 mod commands;
 mod schema;
 
-use std::fs;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Seek, SeekFrom};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{Emitter, Manager};
 use tauri_plugin_sql::{Migration, MigrationKind};
+
+// ponytail: Windows exposes readonly as a single flag; Unix needs only owner-write restored.
+#[allow(clippy::permissions_set_readonly_false)]
+fn make_writable(path: &Path, mut permissions: fs::Permissions) -> io::Result<()> {
+    #[cfg(windows)]
+    permissions.set_readonly(false);
+    #[cfg(unix)]
+    permissions.set_mode(permissions.mode() | 0o200);
+    fs::set_permissions(path, permissions)
+}
 
 #[tauri::command]
 fn log_frontend_error(message: String) {
@@ -383,16 +396,68 @@ fn validate_export_file(path: &str, data: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::validate_export_file;
-
-    #[test]
-    fn validates_xlsx_exports_only() {
-        assert!(validate_export_file("inventory.xlsx", b"PK\x03\x04").is_ok());
-        assert!(validate_export_file("inventory.txt", b"PK\x03\x04").is_err());
-        assert!(validate_export_file("inventory.xlsx", b"not xlsx").is_err());
+fn install_seed_database(source: &Path, destination: &Path) -> io::Result<()> {
+    match destination.metadata() {
+        Ok(metadata) if metadata.len() > 0 => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "refusing to replace an existing database",
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
     }
+
+    let source_len = source.metadata()?.len();
+    if source_len < 16 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "seed database is truncated",
+        ));
+    }
+
+    let mut source_file = File::open(source)?;
+    let mut header = [0_u8; 16];
+    source_file.read_exact(&mut header)?;
+    if &header != b"SQLite format 3\0" {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "seed database is not SQLite",
+        ));
+    }
+    source_file.seek(SeekFrom::Start(0))?;
+
+    let mut temp_name = destination.as_os_str().to_owned();
+    temp_name.push(".installing");
+    let temp_path = std::path::PathBuf::from(temp_name);
+    if temp_path.exists() {
+        fs::remove_file(&temp_path)?;
+    }
+
+    let copy_result = (|| {
+        let mut temp_file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp_path)?;
+        let copied = io::copy(&mut source_file, &mut temp_file)?;
+        if copied != source_len {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "seed database copy is incomplete",
+            ));
+        }
+        temp_file.sync_all()
+    })();
+    if let Err(error) = copy_result {
+        let _ = fs::remove_file(&temp_path);
+        return Err(error);
+    }
+
+    if destination.exists() {
+        fs::remove_file(destination)?; // destination is known to be empty
+    }
+    fs::rename(temp_path, destination)
 }
 
 fn main() {
@@ -469,22 +534,13 @@ fn main() {
             app.set_menu(menu)?;
 
             // Extract the seeded database from resources on first run
-            let app_data_dir = match app.path().app_data_dir() {
-                Ok(dir) => dir,
-                Err(e) => {
-                    eprintln!("Failed to get app data dir: {}", e);
-                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-                }
-            };
-
-            let _ = fs::create_dir_all(&app_data_dir);
+            let app_data_dir = app.path().app_data_dir()?;
+            fs::create_dir_all(&app_data_dir)?;
 
             let db_path = app_data_dir.join("pharma_local.db");
 
-            let should_copy_seed = !db_path.exists()
-                || fs::metadata(&db_path)
-                    .map(|m| m.len() == 0)
-                    .unwrap_or(true);
+            let should_copy_seed =
+                !db_path.exists() || fs::metadata(&db_path).map(|m| m.len() == 0).unwrap_or(true);
 
             if should_copy_seed {
                 let mut candidate_paths = Vec::new();
@@ -501,43 +557,48 @@ fn main() {
                     }
                 }
 
-                for candidate in candidate_paths {
-                    if candidate.exists() {
-                        if let Ok(meta) = fs::metadata(&candidate) {
-                            if meta.len() > 0 {
-                                match fs::copy(&candidate, &db_path) {
-                                    Ok(_) => {
-                                        println!("Copied seeded database from {:?} to {:?}", candidate, db_path);
-                                        break;
-                                    }
-                                    Err(err) => {
-                                        eprintln!("Failed copying database from {:?}: {}", candidate, err);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                let seed_path = candidate_paths
+                    .into_iter()
+                    .find(|candidate| {
+                        candidate
+                            .metadata()
+                            .map(|meta| meta.len() > 0)
+                            .unwrap_or(false)
+                    })
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::NotFound, "bundled seed database not found")
+                    })?;
+                install_seed_database(&seed_path, &db_path)?;
+                println!(
+                    "Copied seeded database from {:?} to {:?}",
+                    seed_path, db_path
+                );
             }
 
             // Ensure destination SQLite files are NOT marked read-only on Windows
-            for file_name in &["pharma_local.db", "pharma_local.db-wal", "pharma_local.db-shm"] {
+            for file_name in &[
+                "pharma_local.db",
+                "pharma_local.db-wal",
+                "pharma_local.db-shm",
+            ] {
                 let path = app_data_dir.join(file_name);
                 if let Ok(metadata) = fs::metadata(&path) {
-                    let mut perms = metadata.permissions();
+                    let perms = metadata.permissions();
                     if perms.readonly() {
-                        perms.set_readonly(false);
-                        let _ = fs::set_permissions(&path, perms);
+                        make_writable(&path, perms)?;
                     }
                 }
             }
 
-            if let Err(err) = schema::prepare_legacy_database(&db_path) {
-                eprintln!("Warning: prepare_legacy_database encountered error: {}", err);
-            }
+            schema::prepare_legacy_database(&db_path)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
 
-            let main_window = app.get_webview_window("main").unwrap();
-            main_window.maximize().unwrap();
+            let main_window = app
+                .get_webview_window("main")
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "main window not found"))?;
+            if let Err(error) = main_window.maximize() {
+                eprintln!("Failed to maximize main window: {error}");
+            }
 
             // Attach window-specific menu handler
             main_window.on_menu_event(|window, event| {
@@ -554,7 +615,6 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
             commands::auth::bcrypt_hash,
             commands::auth::bcrypt_compare,
@@ -660,4 +720,35 @@ fn handle_menu_event<R: tauri::Runtime>(window: &tauri::Window<R>, id: &str) {
 
     // Emit only to THIS window
     let _ = window.emit_to(window.label(), "menu-navigate", route);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{install_seed_database, validate_export_file};
+    use std::fs;
+
+    #[test]
+    fn validates_xlsx_exports_only() {
+        assert!(validate_export_file("inventory.xlsx", b"PK\x03\x04").is_ok());
+        assert!(validate_export_file("inventory.txt", b"PK\x03\x04").is_err());
+        assert!(validate_export_file("inventory.xlsx", b"not xlsx").is_err());
+    }
+
+    #[test]
+    fn installs_seed_atomically_in_unicode_path() {
+        let dir = std::env::temp_dir().join(format!("pharma صيدلية {}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("seed.db");
+        let destination = dir.join("app data.db");
+        let mut bytes = b"SQLite format 3\0".to_vec();
+        bytes.extend_from_slice(b"seed payload");
+        fs::write(&source, &bytes).unwrap();
+        fs::write(destination.with_extension("db.installing"), b"partial").unwrap();
+
+        install_seed_database(&source, &destination).unwrap();
+
+        assert_eq!(fs::read(&destination).unwrap(), bytes);
+        assert!(!destination.with_extension("db.installing").exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
 }

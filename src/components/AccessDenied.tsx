@@ -72,12 +72,6 @@ export default function AccessDenied({
             سيتم توجيهك إلى الرئيسية خلال {countdown} ثوان...
           </p>
           
-          <div className="pt-12 border-t border-slate-50 dark:border-slate-800">
-            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center justify-center gap-2">
-              <span className="w-2 h-2 bg-rose-500 rounded-full animate-pulse" />
-              تم تسجيل هذه المحاولة في سجل الرقابة
-            </p>
-          </div>
         </div>
       </div>
     </div>

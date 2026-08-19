@@ -35,7 +35,7 @@ export async function loginLocal(username: string, password?: string) {
     const user = await dbGet('SELECT * FROM users WHERE username = ?', [cleanUsername]);
 
     if (!user) {
-      await dbExecute("INSERT INTO activity_log (user_id, action, details) VALUES (?, 'LOGIN_FAILED', ?)", ['unknown', `محاولة دخول فاشلة: المستخدم ${cleanUsername} غير موجود`]);
+      await dbExecute("INSERT INTO activity_log (user_id, action, details) VALUES (?, 'LOGIN_FAILED', ?)", [null, `محاولة دخول فاشلة: المستخدم ${cleanUsername} غير موجود`]);
       return { success: false, error: 'المستخدم غير موجود' };
     }
 
@@ -108,7 +108,7 @@ export async function loginLocal(username: string, password?: string) {
   const user = await dbGet('SELECT * FROM users WHERE username = ?', [cleanUsername]);
 
   if (!user) {
-    await dbExecute("INSERT INTO activity_log (user_id, action, details) VALUES (?, 'LOGIN_FAILED', ?)", ['unknown', `محاولة دخول فاشلة: المستخدم ${cleanUsername} غير موجود`]);
+    await dbExecute("INSERT INTO activity_log (user_id, action, details) VALUES (?, 'LOGIN_FAILED', ?)", [null, `محاولة دخول فاشلة: المستخدم ${cleanUsername} غير موجود`]);
     return { success: false, error: 'المستخدم غير موجود' };
   }
 

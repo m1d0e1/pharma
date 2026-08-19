@@ -3,11 +3,11 @@
   "identifier": "default",
   "description": "Default capabilities for the pharmacy application",
   "windows": [
-    "*"
+    "main",
+    "window_*"
   ],
   "permissions": [
     "core:default",
-    "shell:allow-open",
     "sql:default",
     "sql:allow-select",
     "sql:allow-load",

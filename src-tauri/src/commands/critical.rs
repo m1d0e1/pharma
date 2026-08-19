@@ -249,7 +249,7 @@ async fn execute_guarded_on_connection(
     sql: &str,
     params: Vec<Value>,
 ) -> Result<DbExecuteResult, String> {
-    let mut query = sqlx::query(&sql);
+    let mut query = sqlx::query(sql);
     for param in params {
         query = bind_json_value(query, param);
     }
@@ -1126,6 +1126,19 @@ pub(crate) async fn save_purchase_invoice_tx(
             &effective_user_id,
         )
         .await?;
+
+        let action = if editing_completed {
+            "EDIT_COMPLETED_PURCHASE"
+        } else {
+            "COMPLETE_PURCHASE"
+        };
+        sqlx::query("INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)")
+            .bind(&effective_user_id)
+            .bind(action)
+            .bind(format!("Purchase {} value {}", invoice_id, final_total))
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| e.to_string())?;
     }
 
     Ok(PurchaseResult {
@@ -1444,7 +1457,11 @@ async fn process_checkout_tx(
         }
         if shift_id_to_use.is_none() {
             let auto_shift_id = uuid::Uuid::new_v4().to_string();
-            let auto_user_id = if payload.user_id.trim().is_empty() { "admin" } else { payload.user_id.trim() };
+            let auto_user_id = if payload.user_id.trim().is_empty() {
+                "admin"
+            } else {
+                payload.user_id.trim()
+            };
             if sqlx::query(
                 "INSERT INTO shifts (id, user_id, start_time, starting_cash, status) VALUES (?, ?, CURRENT_TIMESTAMP, 0, 'open')"
             )
@@ -1503,15 +1520,25 @@ async fn process_checkout_tx(
 
         let is_placeholder = |s: &str| {
             let t = s.trim();
-            t.is_empty() || (t.to_lowercase().starts_with("drug ") || t.to_lowercase().starts_with("drug #"))
+            t.is_empty()
+                || (t.to_lowercase().starts_with("drug ") || t.to_lowercase().starts_with("drug #"))
         };
 
         let drug_name = drug
             .as_ref()
             .and_then(|r| {
-                let trade_name = r.try_get::<String, _>("trade_name").ok().unwrap_or_default();
-                let trade_en = r.try_get::<String, _>("trade_name_en").ok().unwrap_or_default();
-                let active = r.try_get::<String, _>("active_ingredient").ok().unwrap_or_default();
+                let trade_name = r
+                    .try_get::<String, _>("trade_name")
+                    .ok()
+                    .unwrap_or_default();
+                let trade_en = r
+                    .try_get::<String, _>("trade_name_en")
+                    .ok()
+                    .unwrap_or_default();
+                let active = r
+                    .try_get::<String, _>("active_ingredient")
+                    .ok()
+                    .unwrap_or_default();
                 if !is_placeholder(&trade_en) {
                     Some(trade_en)
                 } else if !is_placeholder(&trade_name) {
@@ -1785,9 +1812,18 @@ async fn process_checkout_tx(
                     .bind(patient_id)
                     .execute(&mut **tx)
                     .await
-                    .map_err(|e| e.to_string())?;
+                .map_err(|e| e.to_string())?;
             }
         }
+
+        sqlx::query(
+            "INSERT INTO activity_log (user_id, action, details) VALUES (?, 'COMPLETE_SALE', ?)",
+        )
+        .bind(&payload.user_id)
+        .bind(format!("Sale {} value {}", sale_id, total_amount))
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| e.to_string())?;
     }
 
     Ok(CheckoutResult {
@@ -2152,6 +2188,8 @@ fn purchase_batch_number(invoice_number: Option<&str>, invoice_id: &str) -> Stri
         .unwrap_or_else(|| format!("BATCH-{}", &invoice_id[..invoice_id.len().min(8)]))
 }
 
+// ponytail: These parameters mirror one purchase-item row and keep call sites explicit.
+#[allow(clippy::too_many_arguments)]
 async fn add_purchase_inventory(
     tx: &mut Transaction<'_, Sqlite>,
     drug_id: i64,
@@ -3498,6 +3536,7 @@ mod tests {
             "CREATE TABLE trial_balance_settings (category TEXT, account_id INTEGER)",
             "CREATE TABLE cash_movements (id TEXT, user_id TEXT, shift_id TEXT, type TEXT, amount REAL, category TEXT, notes TEXT, date TEXT)",
             "CREATE TABLE shifts (id TEXT, user_id TEXT, status TEXT)",
+            "CREATE TABLE activity_log (user_id TEXT, action TEXT, details TEXT)",
         ] {
             sqlx::query(sql).execute(&mut conn).await.unwrap();
         }
@@ -4358,6 +4397,24 @@ mod tests {
             .unwrap();
         tx.commit().await.unwrap();
         assert!((edited.total_amount - 515.25).abs() < 0.001);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM activity_log WHERE action = 'COMPLETE_PURCHASE'",
+            )
+            .fetch_one(&mut conn)
+            .await
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM activity_log WHERE action = 'EDIT_COMPLETED_PURCHASE'",
+            )
+            .fetch_one(&mut conn)
+            .await
+            .unwrap(),
+            1
+        );
         let edited_cash_history = sqlx::query(
             "SELECT COUNT(*) AS rows, CAST(COALESCE(SUM(amount), 0) AS REAL) AS net, CAST(MAX(CASE WHEN type = 'invoice' THEN amount END) AS REAL) AS invoice_amount FROM supplier_transactions WHERE reference_id = 'fresh-cash'",
         )
@@ -5223,6 +5280,7 @@ mod tests {
             "CREATE TABLE returns (invoice_id TEXT, total_refund REAL, refund_method TEXT, status TEXT)",
             "CREATE TABLE patient_transactions (patient_id TEXT, type TEXT, amount REAL)",
             "CREATE TABLE refill_reminders (id TEXT, patient_id TEXT, drug_id INTEGER, last_sold_date TEXT, next_refill_date TEXT, created_at TEXT)",
+            "CREATE TABLE activity_log (user_id TEXT, action TEXT, details TEXT)",
         ] {
             sqlx::query(sql).execute(&mut conn).await.unwrap();
         }
@@ -5269,7 +5327,10 @@ mod tests {
                 .await
                 .unwrap_err();
         tx.rollback().await.unwrap();
-        assert!(location_error.contains("wrong drug/pharmacy or is expired") || location_error.contains("invalid or expired"));
+        assert!(
+            location_error.contains("wrong drug/pharmacy or is expired")
+                || location_error.contains("invalid or expired")
+        );
         let mut tx = conn.begin().await.unwrap();
         let expiry_error = process_checkout_tx(&mut tx, cash_payload(Some("expired")), 69.0)
             .await
@@ -5289,6 +5350,13 @@ mod tests {
             .await
             .unwrap();
         tx.commit().await.unwrap();
+
+        let sale_audits: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM activity_log WHERE action = 'COMPLETE_SALE'")
+                .fetch_one(&mut conn)
+                .await
+                .unwrap();
+        assert_eq!(sale_audits, 1);
 
         let full_qty: i64 = sqlx::query("SELECT quantity FROM inventory WHERE id = 'full'")
             .fetch_one(&mut conn)

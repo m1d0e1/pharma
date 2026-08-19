@@ -17,6 +17,7 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { logoutLocal } from '@/lib/auth/local'
+import packageInfo from '../../package.json'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -222,7 +223,7 @@ function AboutModal({ onClose }: { onClose: () => void }) {
       <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 p-8 w-full max-w-sm mx-4 text-center" onClick={e => e.stopPropagation()}>
         <div className="text-5xl mb-3">💊</div>
         <h2 className="text-lg font-bold text-slate-900 dark:text-white">نظام إدارة الصيدليات</h2>
-        <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">الإصدار 1.0.0</p>
+        <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">الإصدار {packageInfo.version}</p>
         <p className="text-xs font-bold text-slate-600 dark:text-slate-300 mt-2 mb-4">تم انشاؤه بواسطة محمد عصام لمجتمع الصيادلة</p>
         <button onClick={onClose} className="px-6 py-2 bg-blue-600 text-white rounded-lg font-bold text-sm hover:bg-blue-700 transition-colors">إغلاق</button>
       </div>

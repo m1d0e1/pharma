@@ -23,10 +23,10 @@ const customJestConfig = {
   ],
   coverageThreshold: {
     global: {
-      branches: 0,
-      functions: 0,
-      lines: 0,
-      statements: 0,
+      branches: 13,
+      functions: 12,
+      lines: 16,
+      statements: 15,
     },
   },
   testPathIgnorePatterns: ['<rootDir>/node_modules/', '<rootDir>/.next/', '<rootDir>/scratch/', '<rootDir>/.agents/'],

@@ -1,7 +1,7 @@
 'use client'
 
-import React, { useState } from 'react'
-import { Search, Trash2, Filter, AlertTriangle } from 'lucide-react'
+import React, { useMemo, useState } from 'react'
+import { Search, Trash2, AlertTriangle } from 'lucide-react'
 import { toast, Toaster } from 'react-hot-toast'
 // Removed server action import
 
@@ -19,20 +19,29 @@ interface Props {
   onDelete: (id: number) => Promise<{ success: boolean; error?: string }>;
 }
 
+export const DELETE_ITEMS_PAGE_SIZE = 100;
+
 export default function DeleteUnusedItemsClient({ initialItems, onDelete }: Props) {
   const [items, setItems] = useState<UnusedItem[]>(initialItems);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState<'all' | 'medicine' | 'other'>('all');
   const [isDeleting, setIsDeleting] = useState<number | null>(null);
+  const [page, setPage] = useState(1);
 
-  const filteredItems = items.filter(item => {
+  const filteredItems = useMemo(() => items.filter(item => {
     const matchesSearch = item.trade_name.includes(searchTerm) || 
                          (item.trade_name_en && item.trade_name_en.toLowerCase().includes(searchTerm.toLowerCase()));
     const matchesType = filterType === 'all' || 
                         (filterType === 'medicine' && item.is_medicine === 1) ||
                         (filterType === 'other' && item.is_medicine === 0);
     return matchesSearch && matchesType;
-  });
+  }), [items, searchTerm, filterType]);
+  const pageCount = Math.max(1, Math.ceil(filteredItems.length / DELETE_ITEMS_PAGE_SIZE));
+  const currentPage = Math.min(page, pageCount);
+  const visibleItems = filteredItems.slice(
+    (currentPage - 1) * DELETE_ITEMS_PAGE_SIZE,
+    currentPage * DELETE_ITEMS_PAGE_SIZE,
+  );
 
   const handleDelete = async (id: number) => {
     if (!confirm('هل أنت متأكد من حذف هذا الصنف نهائياً؟')) return;
@@ -42,7 +51,7 @@ export default function DeleteUnusedItemsClient({ initialItems, onDelete }: Prop
     setIsDeleting(null);
 
     if (res.success) {
-      setItems(items.filter(i => i.id !== id));
+      setItems(current => current.filter(i => i.id !== id));
       toast.success('تم حذف الصنف بنجاح');
     } else {
       toast.error(res.error || 'فشل الحذف');
@@ -62,21 +71,21 @@ export default function DeleteUnusedItemsClient({ initialItems, onDelete }: Prop
               placeholder="بحث بالكود أو الاسم..."
               className="w-full pr-12 pl-4 py-4 bg-slate-50 dark:bg-slate-800 rounded-2xl outline-none focus:ring-2 focus:ring-primary-500 font-bold dark:text-white"
               value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
+              onChange={(e) => { setSearchTerm(e.target.value); setPage(1); }}
             />
           </div>
           
           <div className="flex bg-slate-50 dark:bg-slate-800 p-1.5 rounded-2xl gap-2">
             <button 
-              onClick={() => setFilterType('all')}
+              onClick={() => { setFilterType('all'); setPage(1); }}
               className={`px-6 py-2.5 rounded-xl font-black transition-all ${filterType === 'all' ? 'bg-white dark:bg-slate-700 text-primary-600 shadow-sm' : 'text-slate-500 hover:bg-white/50'}`}
             >الكل</button>
             <button 
-              onClick={() => setFilterType('medicine')}
+              onClick={() => { setFilterType('medicine'); setPage(1); }}
               className={`px-6 py-2.5 rounded-xl font-black transition-all ${filterType === 'medicine' ? 'bg-white dark:bg-slate-700 text-primary-600 shadow-sm' : 'text-slate-500 hover:bg-white/50'}`}
             >أدوية</button>
             <button 
-              onClick={() => setFilterType('other')}
+              onClick={() => { setFilterType('other'); setPage(1); }}
               className={`px-6 py-2.5 rounded-xl font-black transition-all ${filterType === 'other' ? 'bg-white dark:bg-slate-700 text-primary-600 shadow-sm' : 'text-slate-500 hover:bg-white/50'}`}
             >غير أدوية</button>
           </div>
@@ -104,7 +113,7 @@ export default function DeleteUnusedItemsClient({ initialItems, onDelete }: Prop
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-bold">
-              {filteredItems.map((item) => (
+              {visibleItems.map((item) => (
                 <tr key={item.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
                   <td className="px-6 py-4 text-slate-400">#{item.id}</td>
                   <td className="px-6 py-4 text-slate-900 dark:text-white font-black">{item.trade_name_en || item.trade_name}</td>
@@ -120,6 +129,7 @@ export default function DeleteUnusedItemsClient({ initialItems, onDelete }: Prop
                       <button 
                         disabled={isDeleting === item.id}
                         onClick={() => handleDelete(item.id)}
+                        aria-label={`حذف ${item.trade_name_en || item.trade_name}`}
                         className="p-3 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-2xl transition-all disabled:opacity-50"
                       >
                         <Trash2 className={`w-6 h-6 ${isDeleting === item.id ? 'animate-pulse' : ''}`} />
@@ -142,6 +152,23 @@ export default function DeleteUnusedItemsClient({ initialItems, onDelete }: Prop
       
       <div className="flex justify-between items-center px-4 font-black text-slate-500">
         <span>عدد الأصناف القابلة للحذف: {filteredItems.length}</span>
+        {pageCount > 1 && (
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              disabled={currentPage === 1}
+              onClick={() => setPage(currentPage - 1)}
+              className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 disabled:opacity-40"
+            >السابق</button>
+            <span>صفحة {currentPage} من {pageCount}</span>
+            <button
+              type="button"
+              disabled={currentPage === pageCount}
+              onClick={() => setPage(currentPage + 1)}
+              className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 disabled:opacity-40"
+            >التالي</button>
+          </div>
+        )}
       </div>
     </div>
   )

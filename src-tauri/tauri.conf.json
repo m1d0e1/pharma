@@ -33,8 +33,9 @@
         ],
         "windows": {
             "webviewInstallMode": {
-                "type": "downloadBootstrapper"
+                "type": "embedBootstrapper"
             },
+            "minimumWebview2Version": "109.0.1518.140",
             "nsis": {
                 "installMode": "both"
             }

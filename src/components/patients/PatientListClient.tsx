@@ -220,7 +220,7 @@ export default function PatientListClient({ initialPatients, pharmacyId, canDele
               </div>
             </div>
             <p className="font-bold text-slate-700 dark:text-slate-300">
-              هل أنت متأكد من حذف المريض <span className="font-black text-rose-600">"{deletingPatient.full_name}"</span>؟
+              هل أنت متأكد من حذف المريض <span className="font-black text-rose-600">&quot;{deletingPatient.full_name}&quot;</span>؟
             </p>
             <div className="flex justify-end gap-3 pt-4 border-t border-slate-100 dark:border-slate-800">
               <button

@@ -411,7 +411,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                          {loadingData ? (
                             <tr><td colSpan={6} className="py-20 text-center text-slate-400 italic font-bold">جاري تحميل البيانات...</td></tr>
                          ) : pointsOfSale.length === 0 ? (
-                            <tr><td colSpan={6} className="py-20 text-center text-slate-400 italic font-bold">لا توجد نقاط بيع مسجلة. اضغط "تهيئة" لإضافة بيانات تجريبية.</td></tr>
+                            <tr><td colSpan={6} className="py-20 text-center text-slate-400 italic font-bold">لا توجد نقاط بيع مسجلة. اضغط &quot;تهيئة&quot; لإضافة بيانات تجريبية.</td></tr>
                          ) : pointsOfSale.map(pos => (
                             <tr key={`pos-${pos.id}`} className="hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
                                <td className="px-8 py-6 font-mono font-black text-blue-600">{pos.id}</td>
@@ -478,7 +478,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                          {loadingData ? (
                             <tr><td colSpan={5} className="py-20 text-center text-slate-400 italic font-bold">جاري تحميل البيانات...</td></tr>
                          ) : expenseDefinitions.length === 0 ? (
-                            <tr><td colSpan={5} className="py-20 text-center text-slate-400 italic font-bold">لا توجد تعريفات مسجلة. اضغط "تهيئة" لإضافة بيانات تجريبية.</td></tr>
+                            <tr><td colSpan={5} className="py-20 text-center text-slate-400 italic font-bold">لا توجد تعريفات مسجلة. اضغط &quot;تهيئة&quot; لإضافة بيانات تجريبية.</td></tr>
                          ) : expenseDefinitions.map(exp => (
                             <tr key={`exp-${exp.id}`} className="hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors group">
                                <td className="px-8 py-6 font-mono font-black text-amber-600">{exp.code}</td>
@@ -1295,7 +1295,7 @@ if (!show) return null;
                      className="w-6 h-6 rounded-lg text-blue-600 focus:ring-blue-500 transition-all cursor-pointer"
                   />
                   <div>
-                     <p className="font-black text-blue-700">هذا الحساب هو "حساب رئيسي" (Group)</p>
+                     <p className="font-black text-blue-700">هذا الحساب هو &quot;حساب رئيسي&quot; (Group)</p>
                      <p className="text-[10px] font-bold text-blue-600 opacity-70 italic">الحسابات الرئيسية لا تقبل قيود مباشرة، بل تحتوي على حسابات فرعية</p>
                   </div>
                </div>

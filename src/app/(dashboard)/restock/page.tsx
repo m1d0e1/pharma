@@ -97,7 +97,7 @@ export default function RestockPage() {
            
            <div className="bg-gradient-to-br from-purple-600 to-indigo-700 p-8 rounded-3xl text-white shadow-xl">
              <h4 className="text-xl font-bold mb-2">الذكاء الاصطناعي 🤖</h4>
-             <p className="text-purple-100 text-sm leading-relaxed">بناءً على مبيعات الشهر الماضي، نقترح عليك زيادة طلب "بانادول" بنسبة 20% لتجنب النقص المستقبلي.</p>
+             <p className="text-purple-100 text-sm leading-relaxed">بناءً على مبيعات الشهر الماضي، نقترح عليك زيادة طلب &quot;بانادول&quot; بنسبة 20% لتجنب النقص المستقبلي.</p>
            </div>
         </div>
       </div>

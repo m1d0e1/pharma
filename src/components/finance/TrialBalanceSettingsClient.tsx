@@ -177,7 +177,7 @@ export default function TrialBalanceSettingsClient() {
              <div className="p-8 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center">
                 <div>
                    <h3 className="text-2xl font-black">اختيار الحساب المحاسبي</h3>
-                   <p className="text-slate-500 font-bold">ربط "{showPicker.targetName}" بحساب من الشجرة</p>
+                   <p className="text-slate-500 font-bold">ربط &quot;{showPicker.targetName}&quot; بحساب من الشجرة</p>
                 </div>
                 <button onClick={() => setShowPicker(null)} className="w-12 h-12 bg-slate-100 dark:bg-slate-800 rounded-2xl flex items-center justify-center text-slate-500 hover:text-rose-500 transition-all">
                    <X className="w-6 h-6" />
