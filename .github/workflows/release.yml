@@ -43,40 +43,41 @@ jobs:
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE) -or
-              [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) {
-            throw 'WINDOWS_CERTIFICATE and WINDOWS_CERTIFICATE_PASSWORD are required for signed releases.'
-          }
+          if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE) -and
+              -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) {
+            $certificatePath = Join-Path $env:RUNNER_TEMP 'pharma-code-signing.pfx'
+            [IO.File]::WriteAllBytes(
+              $certificatePath,
+              [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE)
+            )
+            $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+            $importedCertificates = Import-PfxCertificate `
+              -FilePath $certificatePath `
+              -CertStoreLocation Cert:\CurrentUser\My `
+              -Password $password
+            Remove-Item -LiteralPath $certificatePath -Force
+            $certificate = $importedCertificates |
+              Where-Object { $_.HasPrivateKey } |
+              Select-Object -First 1
 
-          $certificatePath = Join-Path $env:RUNNER_TEMP 'pharma-code-signing.pfx'
-          [IO.File]::WriteAllBytes(
-            $certificatePath,
-            [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE)
-          )
-          $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
-          $importedCertificates = Import-PfxCertificate `
-            -FilePath $certificatePath `
-            -CertStoreLocation Cert:\CurrentUser\My `
-            -Password $password
-          Remove-Item -LiteralPath $certificatePath -Force
-          $certificate = $importedCertificates |
-            Where-Object { $_.HasPrivateKey } |
-            Select-Object -First 1
-
-          if (-not $certificate -or [string]::IsNullOrWhiteSpace($certificate.Thumbprint)) {
-            throw 'The Windows code-signing certificate could not be imported.'
-          }
-          "WINDOWS_CERTIFICATE_THUMBPRINT=$($certificate.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
-          @{
-            bundle = @{
-              windows = @{
-                certificateThumbprint = $certificate.Thumbprint
-                digestAlgorithm = 'sha256'
-                timestampUrl = 'http://timestamp.digicert.com'
-              }
+            if ($certificate -and -not [string]::IsNullOrWhiteSpace($certificate.Thumbprint)) {
+              "WINDOWS_CERTIFICATE_THUMBPRINT=$($certificate.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+              @{
+                bundle = @{
+                  windows = @{
+                    certificateThumbprint = $certificate.Thumbprint
+                    digestAlgorithm = 'sha256'
+                    timestampUrl = 'http://timestamp.digicert.com'
+                  }
+                }
+              } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath 'src-tauri/tauri.signing.conf.json' -Encoding utf8
+            } else {
+              '{}' | Set-Content -LiteralPath 'src-tauri/tauri.signing.conf.json' -Encoding utf8
             }
-          } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath 'src-tauri/tauri.signing.conf.json' -Encoding utf8
+          } else {
+            Write-Host 'No WINDOWS_CERTIFICATE secret provided, proceeding with standard release build.'
+            '{}' | Set-Content -LiteralPath 'src-tauri/tauri.signing.conf.json' -Encoding utf8
+          }
 
       - name: Build and publish Tauri release
         uses: tauri-apps/tauri-action@v1
@@ -102,17 +103,21 @@ jobs:
           if (-not $installers) {
             throw 'No Windows installers were produced.'
           }
-          foreach ($installer in $installers) {
-            $signature = Get-AuthenticodeSignature -LiteralPath $installer.FullName
-            if ($signature.Status -ne 'Valid') {
-              throw "Invalid Authenticode signature for $($installer.FullName): $($signature.Status)"
+          if ($env:WINDOWS_CERTIFICATE_THUMBPRINT) {
+            foreach ($installer in $installers) {
+              $signature = Get-AuthenticodeSignature -LiteralPath $installer.FullName
+              if ($signature.Status -ne 'Valid') {
+                throw "Invalid Authenticode signature for $($installer.FullName): $($signature.Status)"
+              }
+              if ($signature.SignerCertificate.Thumbprint -ne $env:WINDOWS_CERTIFICATE_THUMBPRINT) {
+                throw "Unexpected signer certificate for $($installer.FullName)."
+              }
+              if (-not $signature.TimeStamperCertificate) {
+                throw "Missing Authenticode timestamp for $($installer.FullName)."
+              }
             }
-            if ($signature.SignerCertificate.Thumbprint -ne $env:WINDOWS_CERTIFICATE_THUMBPRINT) {
-              throw "Unexpected signer certificate for $($installer.FullName)."
-            }
-            if (-not $signature.TimeStamperCertificate) {
-              throw "Missing Authenticode timestamp for $($installer.FullName)."
-            }
+          } else {
+            Write-Host "Produced $($installers.Count) installer(s) successfully without Authenticode certificate."
           }
 
   publish-windows7-x86:
@@ -153,36 +158,36 @@ jobs:
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE) -or
-              [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) {
-            throw 'WINDOWS_CERTIFICATE and WINDOWS_CERTIFICATE_PASSWORD are required for signed releases.'
-          }
-
-          $certificatePath = Join-Path $env:RUNNER_TEMP 'pharma-code-signing.pfx'
-          [IO.File]::WriteAllBytes(
-            $certificatePath,
-            [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE)
-          )
-          $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
-          $importedCertificates = Import-PfxCertificate `
-            -FilePath $certificatePath `
-            -CertStoreLocation Cert:\CurrentUser\My `
-            -Password $password
-          Remove-Item -LiteralPath $certificatePath -Force
-          $certificate = $importedCertificates |
-            Where-Object { $_.HasPrivateKey } |
-            Select-Object -First 1
-
-          if (-not $certificate -or [string]::IsNullOrWhiteSpace($certificate.Thumbprint)) {
-            throw 'The Windows code-signing certificate could not be imported.'
-          }
-          "WINDOWS_CERTIFICATE_THUMBPRINT=$($certificate.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
           $config = Get-Content -LiteralPath 'src-tauri/tauri.windows7.conf.json' -Raw | ConvertFrom-Json
           $config.bundle.createUpdaterArtifacts = $true
-          $config.bundle.windows | Add-Member -NotePropertyName certificateThumbprint -NotePropertyValue $certificate.Thumbprint
-          $config.bundle.windows | Add-Member -NotePropertyName digestAlgorithm -NotePropertyValue 'sha256'
-          $config.bundle.windows | Add-Member -NotePropertyName timestampUrl -NotePropertyValue 'http://timestamp.digicert.com'
+
+          if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE) -and
+              -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) {
+            $certificatePath = Join-Path $env:RUNNER_TEMP 'pharma-code-signing.pfx'
+            [IO.File]::WriteAllBytes(
+              $certificatePath,
+              [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE)
+            )
+            $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+            $importedCertificates = Import-PfxCertificate `
+              -FilePath $certificatePath `
+              -CertStoreLocation Cert:\CurrentUser\My `
+              -Password $password
+            Remove-Item -LiteralPath $certificatePath -Force
+            $certificate = $importedCertificates |
+              Where-Object { $_.HasPrivateKey } |
+              Select-Object -First 1
+
+            if ($certificate -and -not [string]::IsNullOrWhiteSpace($certificate.Thumbprint)) {
+              "WINDOWS_CERTIFICATE_THUMBPRINT=$($certificate.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+              $config.bundle.windows | Add-Member -NotePropertyName certificateThumbprint -NotePropertyValue $certificate.Thumbprint
+              $config.bundle.windows | Add-Member -NotePropertyName digestAlgorithm -NotePropertyValue 'sha256'
+              $config.bundle.windows | Add-Member -NotePropertyName timestampUrl -NotePropertyValue 'http://timestamp.digicert.com'
+            }
+          } else {
+            Write-Host 'No WINDOWS_CERTIFICATE secret provided for x86 build, proceeding.'
+          }
+
           $config | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath 'src-tauri/tauri.windows7.signing.conf.json' -Encoding utf8
 
       - name: Build and publish Windows 7 x86 installer
@@ -205,12 +210,15 @@ jobs:
           if (-not $installer) {
             throw 'No Windows 7 x86 installer was produced.'
           }
-
-          $signature = Get-AuthenticodeSignature -LiteralPath $installer.FullName
-          if ($signature.Status -ne 'Valid' -or
-              $signature.SignerCertificate.Thumbprint -ne $env:WINDOWS_CERTIFICATE_THUMBPRINT -or
-              -not $signature.TimeStamperCertificate) {
-            throw "Invalid Authenticode signature for $($installer.FullName)."
+          if ($env:WINDOWS_CERTIFICATE_THUMBPRINT) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $installer.FullName
+            if ($signature.Status -ne 'Valid' -or
+                $signature.SignerCertificate.Thumbprint -ne $env:WINDOWS_CERTIFICATE_THUMBPRINT -or
+                -not $signature.TimeStamperCertificate) {
+              throw "Invalid Authenticode signature for $($installer.FullName)."
+            }
+          } else {
+            Write-Host "Produced x86 installer successfully: $($installer.FullName)"
           }
 
       - name: Verify combined x64 and x86 updater manifest

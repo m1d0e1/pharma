@@ -174,7 +174,13 @@ fn create_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Menu<
                 true,
                 None::<&str>,
             )?,
-            &MenuItem::with_id(app, "stores_delete_items", "حذف الأصناف", true, None::<&str>)?,
+            &MenuItem::with_id(
+                app,
+                "stores_delete_items",
+                "حذف الأصناف",
+                true,
+                None::<&str>,
+            )?,
         ],
     )?;
 
@@ -292,7 +298,13 @@ fn create_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Menu<
         true,
         &[
             &MenuItem::with_id(app, "patients", "المرضى", true, None::<&str>)?,
-            &MenuItem::with_id(app, "interactions", "التفاعلات الدوائية", true, None::<&str>)?,
+            &MenuItem::with_id(
+                app,
+                "interactions",
+                "التفاعلات الدوائية",
+                true,
+                None::<&str>,
+            )?,
         ],
     )?;
 
