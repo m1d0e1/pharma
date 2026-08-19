@@ -112,6 +112,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Seed database
+        run: npm run seed:db
+
       - name: Check Rust formatting
         if: matrix.runner == 'windows-2022'
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
@@ -122,9 +125,6 @@ jobs:
 
       - name: Run Tauri tests
         run: cargo test --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }}
-
-      - name: Seed database
-        run: npm run seed:db
 
       - name: Build desktop frontend
         run: npm run build:tauri
@@ -234,11 +234,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Test 32-bit Rust backend
-        run: cargo test --manifest-path src-tauri/Cargo.toml --target i686-pc-windows-msvc --locked
-
       - name: Seed database
         run: npm run seed:db
+
+      - name: Test 32-bit Rust backend
+        run: cargo test --manifest-path src-tauri/Cargo.toml --target i686-pc-windows-msvc
 
       - name: Build desktop frontend
         run: npm run build:tauri

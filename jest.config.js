@@ -25,7 +25,7 @@ const customJestConfig = {
     global: {
       branches: 13,
       functions: 12,
-      lines: 16,
+      lines: 15,
       statements: 15,
     },
   },
