@@ -155,8 +155,11 @@ describe('Patient Statement, Inventory Amount Editing, and Credit Returns', () =
     expect(res.data?.movements.length).toBeGreaterThanOrEqual(2);
     expect(res.data?.items.length).toBeGreaterThanOrEqual(1);
 
-    // Initial 100 + 200 (credit sale) - 50 (payment) = 250 EGP
-    expect(res.data?.currentBalance).toBe(250);
+    // Initial 100 + credit sale 200 - payment 50 + imported debit notice 20.
+    expect(res.data?.currentBalance).toBe(270);
+    expect(res.data?.movements).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'إشعار مدين (إضافة)', balance_effect: 20 }),
+    ]));
   });
 
   it('correctly calculates patient balance when returning a drug from a debit/credit sale', async () => {
@@ -196,18 +199,34 @@ describe('Patient Statement, Inventory Amount Editing, and Credit Returns', () =
     expect(returnRes.success).toBe(true);
     expect(returnRes.totalRefund).toBe(40);
 
-    // 3. Verify balance after return: 300 - 40 = 260 EGP
-    const afterBal = mockDb.prepare(patientOutstandingBalanceQuery()).get('pat-1') as any;
-    expect(afterBal.outstanding_balance).toBe(260);
+    // 3. Add an imported debit notice and a normally mirrored credit notice.
+    mockDb.prepare(`
+      INSERT INTO financial_notices (id, target_type, target_id, type, amount, reason, date, user_id)
+      VALUES
+        ('fn-imported-debit', 'customer', 'pat-1', 'debit', 15, 'فرق مرتجعات', '2026-08-11', 'admin'),
+        ('fn-paired-credit', 'customer', 'pat-1', 'credit', 5, 'خصم إضافي', '2026-08-12', 'admin')
+    `).run();
+    mockDb.prepare(`
+      INSERT INTO patient_transactions (id, patient_id, type, amount, notes, date, user_id)
+      VALUES ('pt-paired-credit', 'pat-1', 'adjustment', -5, 'خصم إضافي', '2026-08-12', 'admin')
+    `).run();
 
-    // 4. Verify patient statement includes the return movement with balance_effect = -40
+    // Opening 100 + sale 200 - return 40 + debit notice 15 - credit notice 5.
+    const afterBal = mockDb.prepare(patientOutstandingBalanceQuery()).get('pat-1') as any;
+    expect(afterBal.outstanding_balance).toBe(270);
+
+    // 4. The mirrored notice is counted once; return and notices keep their signs.
     const statementRes = await getPatientStatementAction('pat-1');
     expect(statementRes.success).toBe(true);
-    expect(statementRes.data?.currentBalance).toBe(260);
+    expect(statementRes.data?.currentBalance).toBe(270);
 
     const returnMovement = statementRes.data?.movements.find((m: any) => m.type === 'مرتجع بيع');
     expect(returnMovement).toBeDefined();
     expect(returnMovement.balance_effect).toBe(-40);
+    expect(statementRes.data?.movements).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'إشعار مدين (إضافة)', balance_effect: 15 }),
+      expect.objectContaining({ type: 'إشعار دائن (خصم)', balance_effect: -5 }),
+    ]));
   });
 
   it('works with legacy schema (adjustment_reasons with reason column and cashier permissions)', async () => {
@@ -238,4 +257,3 @@ describe('Patient Statement, Inventory Amount Editing, and Credit Returns', () =
     expect(statementRes.data?.patient.full_name).toBe('الحاجه مجده');
   });
 });
-

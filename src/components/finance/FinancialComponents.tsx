@@ -56,7 +56,7 @@ export function CustomerStatementContent({ patientId }: { patientId: string }) {
   const fromDate = appliedFilter.from ? new Date(appliedFilter.from + 'T00:00:00') : null;
   const toDate = appliedFilter.to ? new Date(appliedFilter.to + 'T23:59:59') : null;
 
-  let periodOpeningBalance = patient.opening_balance || 0;
+  let periodOpeningBalance = Number(patient.opening_balance || 0);
   if (fromDate) {
     const beforePeriod = movementsWithBalance.filter(mov => new Date(mov.date).getTime() < fromDate.getTime());
     if (beforePeriod.length > 0) {
@@ -132,8 +132,8 @@ export function CustomerStatementContent({ patientId }: { patientId: string }) {
                 <tr className="bg-amber-50/30 dark:bg-amber-900/5">
                    <td className="px-6 py-4 font-bold text-slate-400">---</td>
                    <td className="px-6 py-4 font-black text-amber-600 italic">رصيد افتتاحي</td>
-                   <td className="px-6 py-4">0.00</td>
-                   <td className="px-6 py-4">0.00</td>
+                   <td className="px-6 py-4 font-black text-blue-600">{periodOpeningBalance > 0 ? periodOpeningBalance.toLocaleString('en-US') : '0.00'}</td>
+                   <td className="px-6 py-4 font-black text-emerald-600">{periodOpeningBalance < 0 ? Math.abs(periodOpeningBalance).toLocaleString('en-US') : '0.00'}</td>
                    <td className="px-6 py-4 font-black">{periodOpeningBalance.toLocaleString('en-US')}</td>
                 </tr>
                 {visibleMovements.map((mov: any, i: number) => (

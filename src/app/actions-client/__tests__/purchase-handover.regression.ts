@@ -41,7 +41,7 @@ import {
 } from '@/app/actions-client/purchases';
 import { barcodeLookupAction, processCheckoutAction, searchDrugsAction } from '@/app/actions-client/sales';
 import { addOpeningBalanceAction } from '@/app/actions-client/inventory';
-import { getHandoverDetailsAction, getOpenShiftHandoverAction } from '@/app/actions-client/handover';
+import { getHandoverDetailsAction, getOpenShiftHandoverAction, getShiftCreditSalesAction } from '@/app/actions-client/handover';
 
 describe('purchase reports and drawer handover regressions', () => {
   beforeEach(() => {
@@ -157,6 +157,13 @@ describe('purchase reports and drawer handover regressions', () => {
     const openShift = await getOpenShiftHandoverAction();
     expect(openShift).toMatchObject({ success: true, data: { id: 'shift-1' } });
 
+    mockDb.exec(`
+      INSERT INTO shifts (id, user_id, start_time, starting_cash, status)
+      VALUES ('shift-2', 'admin', '2020-01-02 00:00:00', 50, 'closed');
+      INSERT INTO sales_invoices (id, user_id, shift_id, total_amount, payment_method, status)
+      VALUES ('other-shift-credit', 'admin', 'shift-2', 90, 'credit', 'completed');
+    `);
+
     const details = await getHandoverDetailsAction('shift-1');
     expect(details).toMatchObject({
       success: true,
@@ -170,6 +177,24 @@ describe('purchase reports and drawer handover regressions', () => {
         disbursements: 3,
         expected_cash: 157,
       },
+    });
+
+    const shift1Credit = await getShiftCreditSalesAction('shift-1');
+    expect(shift1Credit.success).toBe(true);
+    expect(shift1Credit.data).toHaveLength(1);
+    expect(shift1Credit.data[0]).toMatchObject({
+      id: 'credit-sale',
+      total_amount: 40,
+      credit_amount: 40,
+    });
+
+    const shift2Credit = await getShiftCreditSalesAction('shift-2');
+    expect(shift2Credit.success).toBe(true);
+    expect(shift2Credit.data).toHaveLength(1);
+    expect(shift2Credit.data[0]).toMatchObject({
+      id: 'other-shift-credit',
+      total_amount: 90,
+      credit_amount: 90,
     });
   });
 

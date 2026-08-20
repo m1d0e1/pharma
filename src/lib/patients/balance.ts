@@ -33,6 +33,32 @@ export function patientOutstandingBalanceExpression(patientAlias = 'p'): string 
       ), 0)
       FROM patient_transactions pt
       WHERE pt.patient_id = ${patientAlias}.id
+    ) +
+    (
+      SELECT COALESCE(SUM(
+        CASE
+          WHEN fn.type = 'debit' THEN ABS(CAST(fn.amount AS REAL))
+          WHEN fn.type = 'credit' THEN -ABS(CAST(fn.amount AS REAL))
+          ELSE 0
+        END
+      ), 0)
+      FROM financial_notices fn
+      WHERE fn.target_type = 'customer'
+        AND fn.target_id = ${patientAlias}.id
+        AND NOT EXISTS (
+          SELECT 1
+          FROM patient_transactions mirrored
+          WHERE mirrored.patient_id = fn.target_id
+            AND mirrored.type = 'adjustment'
+            AND ABS(CAST(mirrored.amount AS REAL) - CASE
+              WHEN fn.type = 'debit' THEN ABS(CAST(fn.amount AS REAL))
+              WHEN fn.type = 'credit' THEN -ABS(CAST(fn.amount AS REAL))
+              ELSE 0
+            END) < 0.000001
+            AND COALESCE(mirrored.date, '') = COALESCE(fn.date, '')
+            AND COALESCE(mirrored.user_id, '') = COALESCE(fn.user_id, '')
+            AND COALESCE(mirrored.notes, '') = COALESCE(fn.reason, '')
+        )
     )
   )`;
 }

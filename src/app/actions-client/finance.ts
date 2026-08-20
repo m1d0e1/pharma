@@ -74,7 +74,6 @@ export async function addFinancialNoticeAction(rawData: z.infer<typeof noticeSch
     if (!user || (user.role !== 'owner' && user.role !== 'admin')) {
       return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
     }
-    if (!user || !hasUserPermissionSync(user, 'rep_can_view_financial')) return { success: false, error: 'غير مصرح' };
 
     if (data.target_type !== 'pharmacy' && !data.target_id) {
       return { success: false, error: 'يجب اختيار الحساب المستهدف' };
@@ -148,6 +147,7 @@ export async function addFinancialNoticeAction(rawData: z.infer<typeof noticeSch
 
 const paymentSchema = z.object({
   patient_id: z.string().min(1),
+  shift_id: z.string().optional(),
   amount: z.number().positive(),
   payment_method: z.enum(['cash', 'bank']),
   notes: z.string().optional(),
@@ -184,9 +184,9 @@ export async function addPatientPaymentAction(rawData: z.infer<typeof paymentSch
       if (data.payment_method === 'cash') {
         await db.prepare(`
           INSERT INTO cash_movements (
-            id, user_id, type, category, amount, source_type, target_name, notes, date
-          ) VALUES (?, ?, 'receipt', 'accounts_receivable', ?, 'patient_payment', ?, ?, ?)
-        `).run(generateId(), user.id, data.amount, data.patient_id, `دفعة من المريض ${patient.full_name}: ${data.notes || ''}`, data.date);
+            id, user_id, shift_id, type, category, amount, source_type, target_name, notes, date
+          ) VALUES (?, ?, ?, 'receipt', 'accounts_receivable', ?, 'patient_payment', ?, ?, ?)
+        `).run(generateId(), user.id, data.shift_id || null, data.amount, data.patient_id, `دفعة من المريض ${patient.full_name}: ${data.notes || ''}`, data.date);
       }
 
       const getAccount = async (category: string, fallback: number) => {

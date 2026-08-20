@@ -747,6 +747,9 @@ CREATE INDEX IF NOT EXISTS idx_sales_invoices_patient_id ON sales_invoices(patie
 CREATE INDEX IF NOT EXISTS idx_sales_invoices_created_at ON sales_invoices(created_at);
 CREATE INDEX IF NOT EXISTS idx_master_drugs_barcode ON master_drugs(barcode);
 CREATE INDEX IF NOT EXISTS idx_master_drugs_trade_name_en ON master_drugs(trade_name_en);
+CREATE INDEX IF NOT EXISTS idx_sales_invoices_shift_status_pay ON sales_invoices(shift_id, status, payment_method);
+CREATE INDEX IF NOT EXISTS idx_cash_movements_shift_type ON cash_movements(shift_id, type);
+CREATE INDEX IF NOT EXISTS idx_returns_shift_status_refund ON returns(shift_id, status, refund_method);
 
 -- 14. Seed Default Admin User (username: admin, password: admin)
 INSERT OR IGNORE INTO users (id, username, password_hash, role, full_name, permissions)

@@ -1167,10 +1167,23 @@ async fn patient_outstanding_debt(
           (SELECT COALESCE(SUM(CAST(total_amount AS REAL)), 0) FROM sales_invoices WHERE patient_id = ? AND payment_method = 'credit' AND status = 'completed') -
           (SELECT COALESCE(SUM(CAST(r.total_refund AS REAL)), 0) FROM returns r JOIN sales_invoices si ON r.invoice_id = si.id WHERE si.patient_id = ? AND (r.status = 'approved' OR r.status = 'completed') AND r.refund_method = 'patient_account') -
           (SELECT COALESCE(SUM(ABS(CAST(amount AS REAL))), 0) FROM patient_transactions WHERE patient_id = ? AND type = 'payment') +
-          (SELECT COALESCE(SUM(CAST(amount AS REAL)), 0) FROM patient_transactions WHERE patient_id = ? AND type = 'adjustment')
+          (SELECT COALESCE(SUM(CAST(amount AS REAL)), 0) FROM patient_transactions WHERE patient_id = ? AND type = 'adjustment') +
+          (SELECT COALESCE(SUM(CASE WHEN fn.type = 'debit' THEN ABS(CAST(fn.amount AS REAL)) WHEN fn.type = 'credit' THEN -ABS(CAST(fn.amount AS REAL)) ELSE 0 END), 0)
+             FROM financial_notices fn
+            WHERE fn.target_type = 'customer' AND fn.target_id = ?
+              AND NOT EXISTS (
+                SELECT 1 FROM patient_transactions mirrored
+                 WHERE mirrored.patient_id = fn.target_id
+                   AND mirrored.type = 'adjustment'
+                   AND ABS(CAST(mirrored.amount AS REAL) - CASE WHEN fn.type = 'debit' THEN ABS(CAST(fn.amount AS REAL)) WHEN fn.type = 'credit' THEN -ABS(CAST(fn.amount AS REAL)) ELSE 0 END) < 0.000001
+                   AND COALESCE(mirrored.date, '') = COALESCE(fn.date, '')
+                   AND COALESCE(mirrored.user_id, '') = COALESCE(fn.user_id, '')
+                   AND COALESCE(mirrored.notes, '') = COALESCE(fn.reason, '')
+              ))
         AS REAL) AS outstanding_balance
         "#,
     )
+    .bind(patient_id)
     .bind(patient_id)
     .bind(patient_id)
     .bind(patient_id)
@@ -3282,7 +3295,8 @@ mod tests {
             "CREATE TABLE patients (id TEXT PRIMARY KEY, opening_balance INTEGER)",
             "CREATE TABLE sales_invoices (id TEXT PRIMARY KEY, patient_id TEXT, total_amount INTEGER, payment_method TEXT, status TEXT)",
             "CREATE TABLE returns (invoice_id TEXT, total_refund INTEGER, refund_method TEXT, status TEXT)",
-            "CREATE TABLE patient_transactions (patient_id TEXT, type TEXT, amount INTEGER)",
+            "CREATE TABLE patient_transactions (patient_id TEXT, type TEXT, amount INTEGER, date TEXT, user_id TEXT, notes TEXT)",
+            "CREATE TABLE financial_notices (target_type TEXT, target_id TEXT, type TEXT, amount INTEGER, date TEXT, user_id TEXT, reason TEXT)",
         ] {
             sqlx::query(sql).execute(&mut conn).await.unwrap();
         }
@@ -3298,7 +3312,11 @@ mod tests {
             .execute(&mut conn)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO patient_transactions VALUES ('p1', 'payment', 30), ('p1', 'adjustment', -10), ('p1', 'adjustment', 5)")
+        sqlx::query("INSERT INTO patient_transactions VALUES ('p1', 'payment', 30, '2026-08-01', 'u1', NULL), ('p1', 'adjustment', -10, '2026-08-02', 'u1', 'legacy'), ('p1', 'adjustment', 5, '2026-08-03', 'u1', 'legacy'), ('p1', 'adjustment', -7, '2026-08-04', 'u1', 'paired')")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO financial_notices VALUES ('customer', 'p1', 'credit', 7, '2026-08-04', 'u1', 'paired'), ('customer', 'p1', 'debit', 12, '2026-08-05', 'u1', 'imported')")
             .execute(&mut conn)
             .await
             .unwrap();
@@ -3306,7 +3324,7 @@ mod tests {
         let mut tx = conn.begin().await.unwrap();
         let debt = patient_outstanding_debt(&mut tx, "p1").await.unwrap();
         tx.rollback().await.unwrap();
-        assert_eq!(debt, 95.0);
+        assert_eq!(debt, 100.0);
     }
 
     #[test]

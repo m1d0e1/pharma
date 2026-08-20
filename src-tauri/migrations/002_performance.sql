@@ -40,12 +40,15 @@ CREATE INDEX IF NOT EXISTS idx_shifts_status ON shifts(status);
 CREATE INDEX IF NOT EXISTS idx_shifts_user_status ON shifts(user_id, status) WHERE status = 'open';
 CREATE INDEX IF NOT EXISTS idx_returns_status ON returns(status);
 CREATE INDEX IF NOT EXISTS idx_returns_created_at ON returns(created_at);
+CREATE INDEX IF NOT EXISTS idx_returns_shift_status_refund ON returns(shift_id, status, refund_method);
+CREATE INDEX IF NOT EXISTS idx_sales_invoices_shift_status_pay ON sales_invoices(shift_id, status, payment_method);
 
 -- ============================================
 -- CASH / FINANCIAL
 -- ============================================
 CREATE INDEX IF NOT EXISTS idx_cash_movements_shift_id ON cash_movements(shift_id);
 CREATE INDEX IF NOT EXISTS idx_cash_movements_date ON cash_movements(date);
+CREATE INDEX IF NOT EXISTS idx_cash_movements_shift_type ON cash_movements(shift_id, type);
 
 -- ============================================
 -- PATIENTS

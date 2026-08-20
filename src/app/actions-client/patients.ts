@@ -486,9 +486,53 @@ export async function getPatientStatementAction(patientId: string) {
         (SELECT full_name FROM users WHERE id = user_id) as user_name
       FROM patient_transactions
       WHERE patient_id = ?
+
+      UNION ALL
+
+      SELECT
+        CASE
+          WHEN fn.type = 'debit' THEN 'إشعار مدين (إضافة)'
+          WHEN fn.type = 'credit' THEN 'إشعار دائن (خصم)'
+          ELSE 'إشعار مالي'
+        END as type,
+        fn.id as doc_no,
+        COALESCE(fn.date, fn.created_at) as date,
+        CASE
+          WHEN fn.type = 'debit' THEN ABS(CAST(fn.amount AS REAL))
+          WHEN fn.type = 'credit' THEN -ABS(CAST(fn.amount AS REAL))
+          ELSE 0
+        END as value,
+        CASE
+          WHEN fn.type = 'debit' THEN ABS(CAST(fn.amount AS REAL))
+          WHEN fn.type = 'credit' THEN -ABS(CAST(fn.amount AS REAL))
+          ELSE 0
+        END as balance_effect,
+        'notice' as payment_method,
+        TRIM(COALESCE(fn.reason, '') || CASE
+          WHEN COALESCE(fn.notes, '') <> '' THEN ' - ' || fn.notes
+          ELSE ''
+        END) as notes,
+        (SELECT full_name FROM users WHERE id = fn.user_id) as user_name
+      FROM financial_notices fn
+      WHERE fn.target_type = 'customer'
+        AND fn.target_id = ?
+        AND NOT EXISTS (
+          SELECT 1
+          FROM patient_transactions mirrored
+          WHERE mirrored.patient_id = fn.target_id
+            AND mirrored.type = 'adjustment'
+            AND ABS(CAST(mirrored.amount AS REAL) - CASE
+              WHEN fn.type = 'debit' THEN ABS(CAST(fn.amount AS REAL))
+              WHEN fn.type = 'credit' THEN -ABS(CAST(fn.amount AS REAL))
+              ELSE 0
+            END) < 0.000001
+            AND COALESCE(mirrored.date, '') = COALESCE(fn.date, '')
+            AND COALESCE(mirrored.user_id, '') = COALESCE(fn.user_id, '')
+            AND COALESCE(mirrored.notes, '') = COALESCE(fn.reason, '')
+        )
       
       ORDER BY date DESC
-    `).all(patientId, patientId, patientId) as any[];
+    `).all(patientId, patientId, patientId, patientId) as any[];
 
     // 3. Get Items purchased by this patient
     const rawItems = await db.prepare(`

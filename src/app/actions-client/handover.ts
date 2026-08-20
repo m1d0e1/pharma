@@ -71,12 +71,8 @@ const HANDOVER_DETAILS_SQL = `
           (
             (si.shift_id IS NULL OR TRIM(si.shift_id) = '') AND
             (CAST(si.user_id AS TEXT) = CAST(s.user_id AS TEXT) OR si.user_id IS NULL OR s.user_id IS NULL) AND
-            (
-              datetime(si.created_at) >= datetime(s.start_time, '-12 hours') OR
-              si.created_at >= s.start_time OR
-              date(si.created_at) = date(s.start_time)
-            ) AND
-            (s.end_time IS NULL OR datetime(si.created_at) <= datetime(s.end_time, '+12 hours') OR si.created_at <= s.end_time)
+            datetime(si.created_at) >= datetime(s.start_time) AND
+            (s.end_time IS NULL OR datetime(si.created_at) <= datetime(s.end_time))
           )
         )
     ) AS cash_sales,
@@ -89,17 +85,19 @@ const HANDOVER_DETAILS_SQL = `
           (
             (si.shift_id IS NULL OR TRIM(si.shift_id) = '') AND
             (CAST(si.user_id AS TEXT) = CAST(s.user_id AS TEXT) OR si.user_id IS NULL OR s.user_id IS NULL) AND
-            (
-              datetime(si.created_at) >= datetime(s.start_time, '-12 hours') OR
-              si.created_at >= s.start_time OR
-              date(si.created_at) = date(s.start_time)
-            ) AND
-            (s.end_time IS NULL OR datetime(si.created_at) <= datetime(s.end_time, '+12 hours') OR si.created_at <= s.end_time)
+            datetime(si.created_at) >= datetime(s.start_time) AND
+            (s.end_time IS NULL OR datetime(si.created_at) <= datetime(s.end_time))
           )
         )
     ) AS visa_sales,
     (
-      SELECT COALESCE(SUM(CASE WHEN si.payment_method = 'credit' THEN CAST(si.total_amount AS REAL) ELSE 0 END), 0)
+      SELECT COALESCE(SUM(
+        CASE
+          WHEN si.payment_method = 'credit' THEN (CAST(si.total_amount AS REAL) - CAST(COALESCE(si.paid_amount, 0) AS REAL))
+          WHEN (si.remaining_amount IS NOT NULL AND CAST(si.remaining_amount AS REAL) > 0) THEN CAST(si.remaining_amount AS REAL)
+          ELSE 0
+        END
+      ), 0)
       FROM sales_invoices si
       WHERE (si.status IS NULL OR si.status = '' OR si.status = 'completed' OR si.status = 'approved')
         AND (
@@ -107,12 +105,8 @@ const HANDOVER_DETAILS_SQL = `
           (
             (si.shift_id IS NULL OR TRIM(si.shift_id) = '') AND
             (CAST(si.user_id AS TEXT) = CAST(s.user_id AS TEXT) OR si.user_id IS NULL OR s.user_id IS NULL) AND
-            (
-              datetime(si.created_at) >= datetime(s.start_time, '-12 hours') OR
-              si.created_at >= s.start_time OR
-              date(si.created_at) = date(s.start_time)
-            ) AND
-            (s.end_time IS NULL OR datetime(si.created_at) <= datetime(s.end_time, '+12 hours') OR si.created_at <= s.end_time)
+            datetime(si.created_at) >= datetime(s.start_time) AND
+            (s.end_time IS NULL OR datetime(si.created_at) <= datetime(s.end_time))
           )
         )
     ) AS credit_sales,
@@ -126,12 +120,8 @@ const HANDOVER_DETAILS_SQL = `
           (
             (r.shift_id IS NULL OR TRIM(r.shift_id) = '') AND
             (CAST(r.user_id AS TEXT) = CAST(s.user_id AS TEXT) OR r.user_id IS NULL OR s.user_id IS NULL) AND
-            (
-              datetime(r.created_at) >= datetime(s.start_time, '-12 hours') OR
-              r.created_at >= s.start_time OR
-              date(r.created_at) = date(s.start_time)
-            ) AND
-            (s.end_time IS NULL OR datetime(r.created_at) <= datetime(s.end_time, '+12 hours') OR r.created_at <= s.end_time)
+            datetime(r.created_at) >= datetime(s.start_time) AND
+            (s.end_time IS NULL OR datetime(r.created_at) <= datetime(s.end_time))
           )
         )
     ) AS returns,
@@ -142,12 +132,8 @@ const HANDOVER_DETAILS_SQL = `
         (
           (cm.shift_id IS NULL OR TRIM(cm.shift_id) = '') AND
           (CAST(cm.user_id AS TEXT) = CAST(s.user_id AS TEXT) OR cm.user_id IS NULL OR s.user_id IS NULL) AND
-          (
-            datetime(cm.created_at) >= datetime(s.start_time, '-12 hours') OR
-            cm.created_at >= s.start_time OR
-            date(cm.created_at) = date(s.start_time)
-          ) AND
-          (s.end_time IS NULL OR datetime(cm.created_at) <= datetime(s.end_time, '+12 hours') OR cm.created_at <= s.end_time)
+          datetime(cm.created_at) >= datetime(s.start_time) AND
+          (s.end_time IS NULL OR datetime(cm.created_at) <= datetime(s.end_time))
         )
     ) AS receipts,
     (
@@ -157,12 +143,8 @@ const HANDOVER_DETAILS_SQL = `
         (
           (cm.shift_id IS NULL OR TRIM(cm.shift_id) = '') AND
           (CAST(cm.user_id AS TEXT) = CAST(s.user_id AS TEXT) OR cm.user_id IS NULL OR s.user_id IS NULL) AND
-          (
-            datetime(cm.created_at) >= datetime(s.start_time, '-12 hours') OR
-            cm.created_at >= s.start_time OR
-            date(cm.created_at) = date(s.start_time)
-          ) AND
-          (s.end_time IS NULL OR datetime(cm.created_at) <= datetime(s.end_time, '+12 hours') OR cm.created_at <= s.end_time)
+          datetime(cm.created_at) >= datetime(s.start_time) AND
+          (s.end_time IS NULL OR datetime(cm.created_at) <= datetime(s.end_time))
         )
     ) AS disbursements
   FROM shifts s
@@ -350,7 +332,10 @@ export async function getShiftCreditSalesAction(shiftId?: string) {
         si.id as invoice_number,
         CAST(si.total_amount AS REAL) as total_amount,
         CAST(COALESCE(si.paid_amount, 0) AS REAL) as paid_amount,
-        (CAST(si.total_amount AS REAL) - CAST(COALESCE(si.paid_amount, 0) AS REAL)) as credit_amount,
+        CASE 
+          WHEN (si.remaining_amount IS NOT NULL AND CAST(si.remaining_amount AS REAL) > 0) THEN CAST(si.remaining_amount AS REAL)
+          ELSE (CAST(si.total_amount AS REAL) - CAST(COALESCE(si.paid_amount, 0) AS REAL))
+        END as credit_amount,
         si.created_at,
         si.check_number as notes,
         si.patient_id,
@@ -365,12 +350,8 @@ export async function getShiftCreditSalesAction(shiftId?: string) {
           (
             (si.shift_id IS NULL OR TRIM(si.shift_id) = '') AND
             (CAST(si.user_id AS TEXT) = CAST(? AS TEXT) OR si.user_id IS NULL OR ? IS NULL) AND
-            (
-              datetime(si.created_at) >= datetime(?, '-12 hours') OR
-              si.created_at >= ? OR
-              date(si.created_at) = date(?)
-            ) AND
-            (? IS NULL OR datetime(si.created_at) <= datetime(?, '+12 hours') OR si.created_at <= ?)
+            datetime(si.created_at) >= datetime(?) AND
+            (? IS NULL OR datetime(si.created_at) <= datetime(?))
           )
         )
       ORDER BY si.created_at DESC
@@ -379,9 +360,6 @@ export async function getShiftCreditSalesAction(shiftId?: string) {
       shift.user_id,
       shift.user_id,
       shift.start_time,
-      shift.start_time,
-      shift.start_time,
-      shift.end_time || null,
       shift.end_time || null,
       shift.end_time || null
     ) as any[];
