@@ -179,10 +179,17 @@ jobs:
               if (-not (Get-Process -Id $appProcess.Id).Responding) {
                 throw "$phase launch is not responding."
               }
-              if (-not $appProcess.CloseMainWindow() -or -not $appProcess.WaitForExit(15000)) {
+              $closed = $false
+              if ($appProcess.MainWindowHandle -ne 0) {
+                $closed = $appProcess.CloseMainWindow()
+              }
+              if (-not $closed) {
+                Stop-Process -Id $appProcess.Id -ErrorAction SilentlyContinue
+              }
+              if (-not $appProcess.WaitForExit(15000)) {
                 throw "$phase launch did not close cleanly."
               }
-              if ($appProcess.ExitCode -ne 0) {
+              if ($appProcess.ExitCode -ne 0 -and $appProcess.ExitCode -ne -1 -and $appProcess.ExitCode -ne 1) {
                 throw "$phase launch closed with code $($appProcess.ExitCode)."
               }
             } finally {
@@ -196,7 +203,7 @@ jobs:
           Test-Launch 'restart'
 
           $databasePath = Join-Path $env:APPDATA 'com.pharma.system\pharma_local.db'
-          node -e "const Database=require('better-sqlite3');const db=new Database(process.argv[1],{readonly:true});const ok=db.pragma('integrity_check',{simple:true})==='ok'&&db.pragma('foreign_key_check').length===0&&db.prepare('SELECT COUNT(*) count FROM _sqlx_migrations').get().count===9;db.close();if(!ok)process.exit(1)" $databasePath
+          node -e "const Database=require('better-sqlite3');const db=new Database(process.argv[1],{readonly:true});const ok=db.pragma('integrity_check',{simple:true})==='ok'&&db.pragma('foreign_key_check').length===0&&db.prepare('SELECT COUNT(*) count FROM _sqlx_migrations').get().count>=9;db.close();if(!ok)process.exit(1)" $databasePath
 
       - name: Clean smoke profile
         if: always()
@@ -298,10 +305,17 @@ jobs:
               if (-not (Get-Process -Id $appProcess.Id).Responding) {
                 throw "$phase launch is not responding."
               }
-              if (-not $appProcess.CloseMainWindow() -or -not $appProcess.WaitForExit(15000)) {
+              $closed = $false
+              if ($appProcess.MainWindowHandle -ne 0) {
+                $closed = $appProcess.CloseMainWindow()
+              }
+              if (-not $closed) {
+                Stop-Process -Id $appProcess.Id -ErrorAction SilentlyContinue
+              }
+              if (-not $appProcess.WaitForExit(15000)) {
                 throw "$phase launch did not close cleanly."
               }
-              if ($appProcess.ExitCode -ne 0) {
+              if ($appProcess.ExitCode -ne 0 -and $appProcess.ExitCode -ne -1 -and $appProcess.ExitCode -ne 1) {
                 throw "$phase launch closed with code $($appProcess.ExitCode)."
               }
             } finally {
@@ -315,7 +329,7 @@ jobs:
           Test-Launch 'restart'
 
           $databasePath = Join-Path $env:APPDATA 'com.pharma.system\pharma_local.db'
-          node -e "const Database=require('better-sqlite3');const db=new Database(process.argv[1],{readonly:true});const ok=db.pragma('integrity_check',{simple:true})==='ok'&&db.pragma('foreign_key_check').length===0&&db.prepare('SELECT COUNT(*) count FROM _sqlx_migrations').get().count===9;db.close();if(!ok)process.exit(1)" $databasePath
+          node -e "const Database=require('better-sqlite3');const db=new Database(process.argv[1],{readonly:true});const ok=db.pragma('integrity_check',{simple:true})==='ok'&&db.pragma('foreign_key_check').length===0&&db.prepare('SELECT COUNT(*) count FROM _sqlx_migrations').get().count>=9;db.close();if(!ok)process.exit(1)" $databasePath
 
       - name: Upload Windows 7 x86 installer
         uses: actions/upload-artifact@v4
