@@ -137,8 +137,8 @@ describe('Patient Statement, Inventory Amount Editing, and Credit Returns', () =
 
     // 2. Add customer payment
     mockDb.prepare(`
-      INSERT INTO patient_transactions (id, patient_id, type, amount, payment_method, user_id, date)
-      VALUES ('pt-1', 'pat-1', 'payment', 50, 'cash', 'admin', '2026-08-05 12:00:00')
+      INSERT INTO patient_transactions (id, patient_id, type, amount, payment_method, notes, user_id, date)
+      VALUES ('pt-1', 'pat-1', 'payment', 50, 'cash', 'دفعة من الفرع الرئيسي', 'admin', '2026-08-05 12:00:00')
     `).run();
 
     // 3. Add financial notice
@@ -158,6 +158,7 @@ describe('Patient Statement, Inventory Amount Editing, and Credit Returns', () =
     // Initial 100 + credit sale 200 - payment 50 + imported debit notice 20.
     expect(res.data?.currentBalance).toBe(270);
     expect(res.data?.movements).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'توريد نقدية', notes: 'دفعة من الفرع الرئيسي' }),
       expect.objectContaining({ type: 'إشعار مدين (إضافة)', balance_effect: 20 }),
     ]));
   });
@@ -201,10 +202,10 @@ describe('Patient Statement, Inventory Amount Editing, and Credit Returns', () =
 
     // 3. Add an imported debit notice and a normally mirrored credit notice.
     mockDb.prepare(`
-      INSERT INTO financial_notices (id, target_type, target_id, type, amount, reason, date, user_id)
+      INSERT INTO financial_notices (id, target_type, target_id, type, amount, reason, notes, date, user_id)
       VALUES
-        ('fn-imported-debit', 'customer', 'pat-1', 'debit', 15, 'فرق مرتجعات', '2026-08-11', 'admin'),
-        ('fn-paired-credit', 'customer', 'pat-1', 'credit', 5, 'خصم إضافي', '2026-08-12', 'admin')
+        ('fn-imported-debit', 'customer', 'pat-1', 'debit', 15, 'فرق مرتجعات', NULL, '2026-08-11', 'admin'),
+        ('fn-paired-credit', 'customer', 'pat-1', 'credit', 5, 'خصم إضافي', 'موافقة الإدارة', '2026-08-12', 'admin')
     `).run();
     mockDb.prepare(`
       INSERT INTO patient_transactions (id, patient_id, type, amount, notes, date, user_id)
@@ -225,7 +226,7 @@ describe('Patient Statement, Inventory Amount Editing, and Credit Returns', () =
     expect(returnMovement.balance_effect).toBe(-40);
     expect(statementRes.data?.movements).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: 'إشعار مدين (إضافة)', balance_effect: 15 }),
-      expect.objectContaining({ type: 'إشعار دائن (خصم)', balance_effect: -5 }),
+      expect.objectContaining({ type: 'إشعار دائن (خصم)', balance_effect: -5, notes: 'خصم إضافي - موافقة الإدارة' }),
     ]));
   });
 

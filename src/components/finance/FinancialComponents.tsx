@@ -147,8 +147,13 @@ export function CustomerStatementContent({ patientId }: { patientId: string }) {
                              )}>
                                 {mov.balanceEffect > 0 ? <ArrowUpRight className="w-4 h-4" /> : <ArrowDownLeft className="w-4 h-4" />}
                             </div>
-                            <span className="font-black text-slate-800 dark:text-white">{mov.type}</span>
-                            <span className="text-[10px] font-bold text-slate-400">#{mov.doc_no.slice(0, 6)}</span>
+                            <div className="min-w-0">
+                               <div className="flex items-center gap-2">
+                                  <span className="font-black text-slate-800 dark:text-white">{mov.type}</span>
+                                  <span className="text-[10px] font-bold text-slate-400">#{mov.doc_no.slice(0, 6)}</span>
+                               </div>
+                               {mov.notes && <p className="mt-1 text-xs font-bold text-slate-500 break-words">{mov.notes}</p>}
+                            </div>
                          </div>
                       </td>
                        <td className="px-6 py-4 font-black text-blue-600">{mov.balanceEffect > 0 ? mov.balanceEffect.toLocaleString('en-US') : '0.00'}</td>

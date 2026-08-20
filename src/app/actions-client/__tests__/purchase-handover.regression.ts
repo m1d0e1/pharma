@@ -138,6 +138,7 @@ describe('purchase reports and drawer handover regressions', () => {
       VALUES
         ('visa-sale', 'admin', 'shift-1', 30, 'visa', 'completed'),
         ('credit-sale', 'admin', 'shift-1', 40, 'credit', 'completed'),
+        ('unlinked-credit', 'admin', NULL, 500, 'credit', 'completed'),
         ('draft-sale', 'admin', 'shift-1', 999, 'cash', 'draft');
 
       INSERT INTO returns (id, invoice_id, user_id, shift_id, total_refund, refund_method, status)

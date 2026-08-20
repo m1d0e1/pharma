@@ -41,6 +41,7 @@ scratch/
 .agents/
 .claude/
 .roo/
+.codex-remote-attachments/
 .mcp.json
 
 # OS and editor artifacts

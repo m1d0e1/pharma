@@ -465,27 +465,41 @@ export async function getPatientStatementAction(patientId: string) {
 
       SELECT 
         CASE 
-          WHEN type = 'payment' THEN 'توريد نقدية'
-          WHEN type = 'adjustment' AND amount < 0 THEN 'إشعار دائن (خصم)'
-          WHEN type = 'adjustment' AND amount >= 0 THEN 'إشعار مدين (إضافة)'
-          ELSE type 
+          WHEN pt.type = 'payment' THEN 'توريد نقدية'
+          WHEN pt.type = 'adjustment' AND pt.amount < 0 THEN 'إشعار دائن (خصم)'
+          WHEN pt.type = 'adjustment' AND pt.amount >= 0 THEN 'إشعار مدين (إضافة)'
+          ELSE pt.type
         END as type, 
-        id as doc_no, date,
+        pt.id as doc_no, pt.date,
         CASE
-          WHEN type = 'payment' THEN -ABS(CAST(amount AS REAL))
-          WHEN type = 'adjustment' THEN CAST(amount AS REAL)
+          WHEN pt.type = 'payment' THEN -ABS(CAST(pt.amount AS REAL))
+          WHEN pt.type = 'adjustment' THEN CAST(pt.amount AS REAL)
           ELSE 0
         END as value,
         CASE
-          WHEN type = 'payment' THEN -ABS(CAST(amount AS REAL))
-          WHEN type = 'adjustment' THEN CAST(amount AS REAL)
+          WHEN pt.type = 'payment' THEN -ABS(CAST(pt.amount AS REAL))
+          WHEN pt.type = 'adjustment' THEN CAST(pt.amount AS REAL)
           ELSE 0
         END as balance_effect,
-        payment_method,
-        notes,
-        (SELECT full_name FROM users WHERE id = user_id) as user_name
-      FROM patient_transactions
-      WHERE patient_id = ?
+        pt.payment_method,
+        COALESCE((
+          SELECT TRIM(COALESCE(fn.reason, '') || CASE
+            WHEN COALESCE(fn.notes, '') <> '' THEN ' - ' || fn.notes
+            ELSE ''
+          END)
+          FROM financial_notices fn
+          WHERE pt.type = 'adjustment'
+            AND fn.target_type = 'customer'
+            AND fn.target_id = pt.patient_id
+            AND ABS(CAST(pt.amount AS REAL) - CASE WHEN fn.type = 'debit' THEN ABS(CAST(fn.amount AS REAL)) ELSE -ABS(CAST(fn.amount AS REAL)) END) < 0.000001
+            AND COALESCE(pt.date, '') = COALESCE(fn.date, '')
+            AND COALESCE(pt.user_id, '') = COALESCE(fn.user_id, '')
+            AND COALESCE(pt.notes, '') = COALESCE(fn.reason, '')
+          LIMIT 1
+        ), pt.notes) as notes,
+        (SELECT full_name FROM users WHERE id = pt.user_id) as user_name
+      FROM patient_transactions pt
+      WHERE pt.patient_id = ?
 
       UNION ALL
 

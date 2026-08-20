@@ -100,15 +100,7 @@ const HANDOVER_DETAILS_SQL = `
       ), 0)
       FROM sales_invoices si
       WHERE (si.status IS NULL OR si.status = '' OR si.status = 'completed' OR si.status = 'approved')
-        AND (
-          si.shift_id = s.id OR
-          (
-            (si.shift_id IS NULL OR TRIM(si.shift_id) = '') AND
-            (CAST(si.user_id AS TEXT) = CAST(s.user_id AS TEXT) OR si.user_id IS NULL OR s.user_id IS NULL) AND
-            datetime(si.created_at) >= datetime(s.start_time) AND
-            (s.end_time IS NULL OR datetime(si.created_at) <= datetime(s.end_time))
-          )
-        )
+        AND si.shift_id = s.id
     ) AS credit_sales,
     (
       SELECT COALESCE(SUM(CAST(r.total_refund AS REAL)), 0)
@@ -323,7 +315,7 @@ export async function getShiftCreditSalesAction(shiftId?: string) {
 
     if (!targetShiftId) return { success: true, data: [] };
 
-    const shift = await db.prepare('SELECT id, user_id, start_time, end_time FROM shifts WHERE id = ?').get(targetShiftId) as any;
+    const shift = await db.prepare('SELECT id FROM shifts WHERE id = ?').get(targetShiftId) as any;
     if (!shift) return { success: false, error: 'الوردية غير موجودة', data: [] };
 
     const items = await db.prepare(`
@@ -345,24 +337,9 @@ export async function getShiftCreditSalesAction(shiftId?: string) {
       LEFT JOIN patients p ON CAST(si.patient_id AS TEXT) = CAST(p.id AS TEXT)
       WHERE (si.payment_method = 'credit' OR (si.remaining_amount IS NOT NULL AND CAST(si.remaining_amount AS REAL) > 0))
         AND (si.status IS NULL OR si.status = '' OR si.status = 'completed' OR si.status = 'approved')
-        AND (
-          si.shift_id = ? OR
-          (
-            (si.shift_id IS NULL OR TRIM(si.shift_id) = '') AND
-            (CAST(si.user_id AS TEXT) = CAST(? AS TEXT) OR si.user_id IS NULL OR ? IS NULL) AND
-            datetime(si.created_at) >= datetime(?) AND
-            (? IS NULL OR datetime(si.created_at) <= datetime(?))
-          )
-        )
+        AND si.shift_id = ?
       ORDER BY si.created_at DESC
-    `).all(
-      shift.id,
-      shift.user_id,
-      shift.user_id,
-      shift.start_time,
-      shift.end_time || null,
-      shift.end_time || null
-    ) as any[];
+    `).all(shift.id) as any[];
 
     return { success: true, data: items || [] };
   } catch (error) {
