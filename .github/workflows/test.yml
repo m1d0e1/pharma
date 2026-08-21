@@ -209,10 +209,19 @@ jobs:
         if: always()
         shell: pwsh
         run: |
+          Get-Process -Name 'pharma', 'msedgewebview2' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 1
           foreach ($root in @($env:APPDATA, $env:LOCALAPPDATA)) {
             $profile = Join-Path $root 'com.pharma.system'
             if (Test-Path -LiteralPath $profile) {
-              Remove-Item -LiteralPath $profile -Recurse -Force
+              for ($attempt = 1; $attempt -le 5; $attempt++) {
+                try {
+                  Remove-Item -LiteralPath $profile -Recurse -Force -ErrorAction Stop
+                  break
+                } catch {
+                  Start-Sleep -Milliseconds 500
+                }
+              }
             }
           }
 
@@ -342,9 +351,18 @@ jobs:
         if: always()
         shell: pwsh
         run: |
+          Get-Process -Name 'pharma', 'msedgewebview2' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 1
           foreach ($root in @($env:APPDATA, $env:LOCALAPPDATA)) {
             $profile = Join-Path $root 'com.pharma.system'
             if (Test-Path -LiteralPath $profile) {
-              Remove-Item -LiteralPath $profile -Recurse -Force
+              for ($attempt = 1; $attempt -le 5; $attempt++) {
+                try {
+                  Remove-Item -LiteralPath $profile -Recurse -Force -ErrorAction Stop
+                  break
+                } catch {
+                  Start-Sleep -Milliseconds 500
+                }
+              }
             }
           }
