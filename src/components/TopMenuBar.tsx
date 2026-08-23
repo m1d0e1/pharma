@@ -114,10 +114,12 @@ const MENUS: Menu[] = [
   },
   {
     id: 'finance', label: 'المالية',
-    ownerRoutes: ['/accounts','/accounts/cash-transactions','/finance/handover','/finance/banks','/finance/cards','/finance/pos-management','/finance/accounts','/accounts/settings/trial-balance'],
+    ownerRoutes: ['/accounts','/accounts/cash-transactions','/finance/handover','/shifts','/finance/banks','/finance/cards','/finance/pos-management','/finance/accounts','/accounts/settings/trial-balance'],
     items: [
       { type: 'link', label: 'الحسابات والمالية',       href: '/accounts',                        icon: Wallet,     roles: ['owner','admin'], permission: 'acc_can_view_general' },
       { type: 'link', label: 'حركة النقدية',            href: '/accounts/cash-transactions',      icon: DollarSign, roles: ['owner','admin','pharmacist'], permission: 'acc_can_process_cash_flow' },
+      { type: 'link', label: 'الورديات النقدية',         href: '/shifts',                          icon: Calendar,   roles: ['owner','admin','pharmacist'], permission: 'can_view_shifts' },
+      { type: 'link', label: 'تسليم الدرج',              href: '/finance/handover',                icon: Handshake,  roles: ['owner','admin','pharmacist'], permission: 'acc_can_view_handover' },
       { type: 'separator' },
       { type: 'link', label: 'البنوك',                  href: '/finance/banks',                   icon: Landmark,   roles: ['owner','admin'], permission: 'acc_can_view_bank_accounts' },
       { type: 'link', label: 'البطاقات والماكينات',     href: '/finance/cards',                   icon: CreditCard, roles: ['owner','admin'], permission: 'acc_can_collect_credit_cards' },
@@ -154,7 +156,7 @@ const MENUS: Menu[] = [
   },
   {
     id: 'reports', label: 'التقارير',
-    ownerRoutes: ['/reports','/reports/sales','/reports/trial-balance','/expenses','/shifts'],
+    ownerRoutes: ['/reports','/reports/sales','/reports/trial-balance','/expenses'],
     items: [
       { type: 'link', label: 'التقارير',          href: '/reports',               icon: BarChart3,  roles: ['owner','admin'] },
       { type: 'link', label: 'تقارير المبيعات',  href: '/reports/sales',         icon: TrendingUp, roles: ['owner','admin'], permission: 'rep_can_view_sales' },

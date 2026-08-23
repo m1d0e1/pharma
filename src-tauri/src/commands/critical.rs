@@ -1455,38 +1455,30 @@ async fn process_checkout_tx(
         }
     }
 
-    let mut shift_id_to_use = payload.shift_id.clone().filter(|s| !s.trim().is_empty());
-    if shift_id_to_use.is_none() {
-        if !payload.user_id.trim().is_empty() {
-            if let Ok(Some(open_shift_id)) = sqlx::query_scalar::<_, String>(
-                "SELECT id FROM shifts WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open' ORDER BY start_time DESC LIMIT 1"
-            )
-            .bind(&payload.user_id)
-            .fetch_optional(&mut **tx)
-            .await
-            {
-                shift_id_to_use = Some(open_shift_id);
-            }
-        }
-        if shift_id_to_use.is_none() {
-            let auto_shift_id = uuid::Uuid::new_v4().to_string();
-            let auto_user_id = if payload.user_id.trim().is_empty() {
-                "admin"
-            } else {
-                payload.user_id.trim()
-            };
-            if sqlx::query(
-                "INSERT INTO shifts (id, user_id, start_time, starting_cash, status) VALUES (?, ?, CURRENT_TIMESTAMP, 0, 'open')"
-            )
-            .bind(&auto_shift_id)
-            .bind(auto_user_id)
-            .execute(&mut **tx)
-            .await
-            .is_ok()
-            {
-                shift_id_to_use = Some(auto_shift_id);
-            }
-        }
+    let requested_shift_id = payload.shift_id.as_deref().filter(|s| !s.trim().is_empty());
+    let mut shift_id_to_use = if let Some(shift_id) = requested_shift_id {
+        sqlx::query_scalar::<_, String>(
+            "SELECT id FROM shifts WHERE id = ? AND CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'",
+        )
+        .bind(shift_id)
+        .bind(&payload.user_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|e| e.to_string())?
+    } else {
+        None
+    };
+    if shift_id_to_use.is_none() && !payload.user_id.trim().is_empty() {
+        shift_id_to_use = sqlx::query_scalar::<_, String>(
+            "SELECT id FROM shifts WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open' ORDER BY start_time DESC LIMIT 1",
+        )
+        .bind(&payload.user_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+    if payload.status != "draft" && shift_id_to_use.is_none() {
+        return Err("Open shift required before checkout".into());
     }
 
     sqlx::query(
@@ -1752,6 +1744,39 @@ async fn process_checkout_tx(
             total_cogs += cost_price * deduct;
             remaining -= deduct;
         }
+
+        sqlx::query(
+            r#"
+            INSERT INTO shortages (drug_id, pharmacy_id, requested_quantity, status)
+            SELECT
+                md.id,
+                ?,
+                MAX(1, COALESCE(NULLIF(md.default_purchase_qty, 0), NULLIF(md.reorder_point, 0), NULLIF(md.min_limit, 0), 1)),
+                'pending'
+            FROM master_drugs md
+            WHERE md.id = ?
+              AND COALESCE((
+                  SELECT SUM(i.quantity)
+                  FROM inventory i
+                  WHERE i.drug_id = md.id
+                    AND (i.pharmacy_id IS ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
+                    AND (i.expiry_date IS NULL OR i.expiry_date >= DATE('now', 'localtime'))
+              ), 0) <= 0.0001
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM shortages s
+                  WHERE s.drug_id = md.id AND s.pharmacy_id = ? AND s.status IN ('pending', 'ordered')
+              )
+            "#,
+        )
+        .bind(&payload.pharmacy_id)
+        .bind(item.drug_id)
+        .bind(&payload.pharmacy_id)
+        .bind(&payload.pharmacy_id)
+        .bind(&payload.pharmacy_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| e.to_string())?;
     }
 
     if payload.status == "completed" {
@@ -3188,6 +3213,9 @@ mod tests {
             include_str!("../../migrations/007_purchase_inventory_links.sql"),
             include_str!("../../migrations/008_patient_accounting.sql"),
             include_str!("../../migrations/009_rebuild_master_drugs_fts.sql"),
+            include_str!("../../migrations/010_shift_handover_indexes.sql"),
+            include_str!("../../migrations/011_shift_cash_difference_account.sql"),
+            include_str!("../../migrations/012_shortages_pharmacy_scope.sql"),
         ] {
             sqlx::raw_sql(migration)
                 .execute(&mut connection)
@@ -5286,7 +5314,7 @@ mod tests {
     async fn checkout_handles_batch_fallback_and_wallet_accounting() {
         let mut conn = SqliteConnection::connect("sqlite::memory:").await.unwrap();
         for sql in [
-            "CREATE TABLE master_drugs (id INTEGER PRIMARY KEY, trade_name TEXT, trade_name_en TEXT, active_ingredient TEXT, large_to_medium INTEGER, medium_to_small INTEGER, medium_unit TEXT, small_unit TEXT)",
+            "CREATE TABLE master_drugs (id INTEGER PRIMARY KEY, trade_name TEXT, trade_name_en TEXT, active_ingredient TEXT, large_to_medium INTEGER, medium_to_small INTEGER, medium_unit TEXT, small_unit TEXT, min_limit REAL, reorder_point REAL, default_purchase_qty REAL)",
             "CREATE TABLE inventory (id TEXT PRIMARY KEY, drug_id INTEGER, pharmacy_id TEXT, quantity INTEGER, cost_price REAL, expiry_date TEXT, created_at TEXT, updated_at TEXT, strips_per_box INTEGER)",
             "CREATE TABLE sales_invoices (id TEXT PRIMARY KEY, pharmacy_id TEXT, user_id TEXT, patient_id TEXT, shift_id TEXT, total_amount REAL, payment_method TEXT, check_number TEXT, status TEXT, discount_amount REAL, created_at TEXT)",
             "CREATE TABLE sales_items (id INTEGER PRIMARY KEY AUTOINCREMENT, invoice_id TEXT, inventory_id TEXT, drug_id INTEGER, quantity_sold REAL, unit_price REAL, unit TEXT, is_negative INTEGER, cost_price REAL, created_at TEXT)",
@@ -5295,14 +5323,16 @@ mod tests {
             "CREATE TABLE trial_balance_settings (category TEXT, account_id INTEGER)",
             "CREATE TABLE accounts (id INTEGER PRIMARY KEY, code TEXT)",
             "CREATE TABLE patients (id TEXT PRIMARY KEY, credit_limit INTEGER, wallet_balance INTEGER, loyalty_level TEXT, points_balance INTEGER)",
+            "CREATE TABLE shifts (id TEXT PRIMARY KEY, user_id TEXT, start_time TEXT, status TEXT)",
             "CREATE TABLE returns (invoice_id TEXT, total_refund REAL, refund_method TEXT, status TEXT)",
             "CREATE TABLE patient_transactions (patient_id TEXT, type TEXT, amount REAL)",
             "CREATE TABLE refill_reminders (id TEXT, patient_id TEXT, drug_id INTEGER, last_sold_date TEXT, next_refill_date TEXT, created_at TEXT)",
+            "CREATE TABLE shortages (id INTEGER PRIMARY KEY AUTOINCREMENT, drug_id INTEGER, pharmacy_id TEXT NOT NULL DEFAULT 'local_default', requested_quantity REAL, status TEXT)",
             "CREATE TABLE activity_log (user_id TEXT, action TEXT, details TEXT)",
         ] {
             sqlx::query(sql).execute(&mut conn).await.unwrap();
         }
-        sqlx::query("INSERT INTO master_drugs (id, trade_name, large_to_medium, medium_to_small) VALUES (4463, 'COLONA', 10, 1)")
+        sqlx::query("INSERT INTO master_drugs (id, trade_name, large_to_medium, medium_to_small, default_purchase_qty) VALUES (4463, 'COLONA', 10, 1, 8)")
             .execute(&mut conn)
             .await
             .unwrap();
@@ -5338,6 +5368,18 @@ mod tests {
             total_discount: 0.0,
             additional_fees: 0.0,
         };
+
+        let mut tx = conn.begin().await.unwrap();
+        let shift_error = process_checkout_tx(&mut tx, cash_payload(Some("full")), 69.0)
+            .await
+            .unwrap_err();
+        tx.rollback().await.unwrap();
+        assert!(shift_error.contains("Open shift required"));
+
+        sqlx::query("INSERT INTO shifts (id, user_id, start_time, status) VALUES ('shift-1', 'admin', CURRENT_TIMESTAMP, 'open')")
+            .execute(&mut conn)
+            .await
+            .unwrap();
 
         let mut tx = conn.begin().await.unwrap();
         let location_error =
@@ -5437,5 +5479,45 @@ mod tests {
             .unwrap();
         assert_eq!(wallet, 31.0);
         assert_eq!(wallet_debit, 69.0);
+
+        sqlx::query("UPDATE inventory SET quantity = 1 WHERE id = 'full'")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        let mut tx = conn.begin().await.unwrap();
+        process_checkout_tx(&mut tx, cash_payload(Some("full")), 69.0)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let shortage = sqlx::query(
+            "SELECT drug_id, CAST(requested_quantity AS REAL) AS requested_quantity, status FROM shortages",
+        )
+        .fetch_one(&mut conn)
+        .await
+        .unwrap();
+        assert_eq!(shortage.try_get::<i64, _>("drug_id").unwrap(), 4463);
+        assert_eq!(
+            shortage.try_get::<f64, _>("requested_quantity").unwrap(),
+            8.0
+        );
+        assert_eq!(shortage.try_get::<String, _>("status").unwrap(), "pending");
+
+        sqlx::query("UPDATE inventory SET quantity = 1 WHERE id = 'full'")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        let mut tx = conn.begin().await.unwrap();
+        process_checkout_tx(&mut tx, cash_payload(Some("full")), 69.0)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let shortage_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM shortages WHERE drug_id = 4463 AND status IN ('pending', 'ordered')",
+        )
+        .fetch_one(&mut conn)
+        .await
+        .unwrap();
+        assert_eq!(shortage_count, 1);
     }
 }

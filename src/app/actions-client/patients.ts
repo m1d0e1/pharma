@@ -50,6 +50,7 @@ const db = {
 
 
 import { z } from 'zod';
+import { format } from 'date-fns';
 
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 
@@ -59,6 +60,7 @@ import {
   patientOutstandingBalanceExpression,
   patientOutstandingBalanceQuery,
 } from '@/lib/patients/balance';
+import { requireOpenShiftId } from './finance';
 
 const patientSchema = z.object({
   full_name: z.string().min(3, 'الاسم يجب أن يكون 3 أحرف على الأقل'),
@@ -650,6 +652,7 @@ export async function updatePatientWalletAction(patientId: string, amount: numbe
 
     let newBalance = 0;
     await dbTransaction(async () => {
+      const shiftId = await requireOpenShiftId(user.id);
       const patient = await db.prepare('SELECT full_name, CAST(wallet_balance AS REAL) AS wallet_balance FROM patients WHERE id = ?')
         .get(patientId) as any;
       if (!patient) throw new Error('المريض غير موجود');
@@ -660,11 +663,11 @@ export async function updatePatientWalletAction(patientId: string, amount: numbe
 
       const cashMovementId = generateId();
       const journalId = generateId();
-      const date = new Date().toISOString().slice(0, 10);
+      const date = format(new Date(), 'yyyy-MM-dd');
       await db.prepare(`
-        INSERT INTO cash_movements (id, user_id, type, category, amount, source_type, target_name, notes, date)
-        VALUES (?, ?, 'receipt', 'patient_wallet', ?, 'patient_wallet', ?, ?, ?)
-      `).run(cashMovementId, user.id, amount, patientId, `شحن محفظة ${patient.full_name}: ${notes || ''}`, date);
+        INSERT INTO cash_movements (id, user_id, shift_id, type, category, amount, source_type, target_name, notes, date)
+        VALUES (?, ?, ?, 'receipt', 'patient_wallet', ?, 'patient_wallet', ?, ?, ?)
+      `).run(cashMovementId, user.id, shiftId, amount, patientId, `شحن محفظة ${patient.full_name}: ${notes || ''}`, date);
 
       const cashSetting = await db.prepare("SELECT account_id FROM trial_balance_settings WHERE category = 'cash_drawer' LIMIT 1").get() as any;
       const walletSetting = await db.prepare("SELECT account_id FROM trial_balance_settings WHERE category = 'patient_wallet_liability' LIMIT 1").get() as any;

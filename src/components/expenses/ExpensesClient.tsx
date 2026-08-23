@@ -79,6 +79,8 @@ export default function ExpensesClient() {
 
   useEffect(() => {
     loadExpenses();
+    // Filtering is the only value consumed by the loader that changes over time.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filterCategory]);
 
   const getCategoryLabel = (catCode: string) => {

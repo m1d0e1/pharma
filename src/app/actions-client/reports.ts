@@ -78,6 +78,7 @@ export async function getShiftReportAction(shiftId: string) {
         SUM(COALESCE(remaining_amount, 0)) as remaining
       FROM sales_invoices
       WHERE shift_id = ?
+        AND (status IS NULL OR status = '' OR status IN ('completed', 'approved'))
       GROUP BY payment_method
     `).all(shiftId) as any[];
 
@@ -89,6 +90,7 @@ export async function getShiftReportAction(shiftId: string) {
         SUM(total_refund) as total
       FROM returns
       WHERE shift_id = ?
+        AND (status IS NULL OR status = '' OR status IN ('approved', 'completed'))
       GROUP BY refund_method
     `).all(shiftId) as any[];
 
@@ -104,11 +106,11 @@ export async function getShiftReportAction(shiftId: string) {
     `).all(shiftId) as any[];
 
     // 5. Calculate Expected Cash (Only Cash & Delivery)
-    const cashSales = sales.filter(s => ['cash', 'delivery'].includes(s.payment_method)).reduce((sum, s) => sum + (s.paid || s.total || 0), 0);
+    const cashSales = sales.filter(s => s.payment_method === 'cash').reduce((sum, s) => sum + (s.total || 0), 0);
     const cashReturns = returns.find(r => r.refund_method === 'cash')?.total || 0;
-    const cashReceipts = movements.filter(m => m.type === 'receipt').reduce((sum, m) => sum + (m.total || 0), 0);
-    const cashHandover = movements.filter(m => m.type === 'disbursement' && m.category === 'handover').reduce((sum, m) => sum + (m.total || 0), 0);
-    const cashDisbursements = movements.filter(m => m.type === 'disbursement').reduce((sum, m) => sum + (m.total || 0), 0);
+    const cashReceipts = movements.filter(m => ['receipt', 'in'].includes(m.type)).reduce((sum, m) => sum + (m.total || 0), 0);
+    const cashHandover = movements.filter(m => ['disbursement', 'out'].includes(m.type) && m.category === 'handover').reduce((sum, m) => sum + (m.total || 0), 0);
+    const cashDisbursements = movements.filter(m => ['disbursement', 'out'].includes(m.type)).reduce((sum, m) => sum + (m.total || 0), 0);
 
     const expectedCash = (shift.starting_cash || 0) + cashSales - cashReturns + cashReceipts - cashDisbursements;
 
@@ -127,7 +129,7 @@ export async function getShiftReportAction(shiftId: string) {
           cashHandover,
           expectedCash,
           actualCash: shift.ending_cash,
-          difference: shift.ending_cash ? (shift.ending_cash - expectedCash) : 0
+          difference: shift.ending_cash !== null ? (shift.ending_cash - expectedCash) : 0
         }
       }
     };

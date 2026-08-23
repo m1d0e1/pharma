@@ -1,16 +1,16 @@
 # Tauri application test plan
 
-Status: repository-derived plan for v0.2.54. This document describes tests; it does not change production behavior.
+Status: repository-derived plan for v0.2.58. This document describes tests; it does not change production behavior.
 
 ## Review basis
 
-The plan was built from the current implementation, including the uncommitted Windows-hardening changes present during review. The inspected surface comprised 67 `page.tsx` routes, 93 React components, 27 desktop action modules, 15 registered Tauri commands, nine Rust migrations, the bundled seed database, build/seeding scripts, capabilities, installer/updater configuration, 58 Jest suites, 28 Rust tests, and both GitHub workflows.
+The plan was built from the current implementation, including the uncommitted Windows-hardening changes present during review. The inspected surface comprised 67 `page.tsx` routes (71 generated static pages), 96 React components, 27 desktop action modules, 15 registered Tauri commands, twelve Rust migrations, the bundled seed database, build/seeding scripts, capabilities, installer/updater configuration, 64 Jest suites, 28 Rust tests, and both GitHub workflows.
 
 Current executable baseline:
 
-- Jest: 58 suites passed; 663 tests passed and one skipped.
-- Rust: 28 tests passed.
-- Jest coverage: 15.92% statements, 13.58% branches, 12.50% functions, and 16.11% lines. The configured thresholds are all zero.
+- Jest: 64 suites passed; 678 tests passed and one skipped.
+- Rust: 28 tests passed on each of x64 and i686.
+- Jest coverage: 19.71% statements, 16.88% branches, 15.89% functions, and 20.05% lines. Configured minimums are 15% statements/lines, 13% branches, and 12% functions.
 - Bundled seed: approximately 53 MiB, about 25,000 master drugs and 191,000 interactions. The root development database is separate and approximately 96 MiB.
 
 ## 1. Application architecture summary
@@ -20,7 +20,7 @@ The desktop product is a Tauri 2 shell around a statically exported Next.js 15/R
 The principal layers are:
 
 1. **Desktop lifecycle:** `src-tauri/src/main.rs`, `src-tauri/tauri.conf.json`, and `src-tauri/capabilities/default.json`. One configured main window can create additional dashboard windows. Native menus emit window-scoped navigation/action events. There is no tray, single-instance plugin, autostart, notification plugin, clipboard plugin, window-state persistence, service, or background process.
-2. **Persistence:** `src-tauri/migrations/001_initial.sql` through `009_rebuild_master_drugs_fts.sql`, `src-tauri/src/schema.rs`, and the bundled `src-tauri/pharma_local.db`. SQLite WAL, foreign keys, and a 5-second busy timeout are used by Rust connections. First launch copies the seed into Tauri app data.
+2. **Persistence:** `src-tauri/migrations/001_initial.sql` through `012_shortages_pharmacy_scope.sql`, `src-tauri/src/schema.rs`, and the bundled `src-tauri/pharma_local.db`. SQLite WAL, foreign keys, and a 5-second busy timeout are used by Rust connections. First launch copies the seed into Tauri app data.
 3. **Database bridge:** `src/lib/db/tauri.ts` selects through the SQL plugin and serializes TypeScript transactions through `db_transaction_begin`, `db_execute_guarded`, and `db_transaction_finish`. Web/test mode instead uses `better-sqlite3`, so both adapters must be tested independently.
 4. **Critical Rust workflows:** `src-tauri/src/commands/critical.rs` handles checkout, purchase create/update/delete, sales return, negative-stock settlement, and guarded SQL. `purchase_returns.rs` handles supplier returns under `BEGIN IMMEDIATE`. `auth.rs` supplies bcrypt.
 5. **Frontend state:** component state, `secureCache` for master-drug metadata, persisted Zustand POS state (`pharma_pos_draft_v1`), session/local preferences in `localStorage`, and SQLite for business state.
@@ -236,7 +236,7 @@ Test both NSIS per-user/per-machine choices and MSI on clean snapshots.
 
 ### Version matrix
 
-| Source | Direct to v0.2.54 | Sequential path | Data fixture |
+| Source | Direct to v0.2.58 | Sequential path | Data fixture |
 |---|---|---|---|
 | No prior install | clean baseline | n/a | empty app data |
 | v0.1.9 | required | 0.1.9 → available intermediate → latest | repository installers plus populated copy |
@@ -361,7 +361,7 @@ Status values: **A** existing meaningful automation, **P** partial/adapter-only 
 | ID | Feature → implementation | Expected behavior and explicit tests | Type/status | Priority |
 |---|---|---|---|---|
 | LIF-01 | startup/seed → `main.rs` | atomic first copy, stale partial recovery, permissions, Unicode path, missing/corrupt seed | Rust A + VM N | P0 |
-| LIF-02 | migrations → `schema.rs`, migrations 1–9 | blank/current/v0.2.14/v0.2.39/untracked/unknown checksum; idempotence and rollback | Rust A; install N | P0 |
+| LIF-02 | migrations → `schema.rs`, migrations 1–12 | blank/current/v0.2.14/v0.2.39/untracked/unknown checksum; idempotence and rollback | Rust A; install N | P0 |
 | DB-01 | read bridge → `db/tauri.ts`, SQL plugin | parameter parity, plugin load singleton/retry, schema initialization | Jest P + Tauri N | P0 |
 | DB-02 | write/transaction bridge → guarded commands | verb security, nested/global queue, two windows, lock/commit/rollback/shutdown | Rust P + Tauri N | P0 |
 | AUTH-01 | login/session/bcrypt | first password, invalid/inactive/deleted, corrupt storage, restart/logout | Jest/Rust A; UI N | P0 |

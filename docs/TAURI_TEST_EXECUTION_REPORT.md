@@ -1,10 +1,45 @@
 # Tauri application test execution report
 
 **Baseline:** `docs/TAURI_TEST_PLAN.md`  
-**Execution date:** 2026-08-18  
-**Application:** Pharmacy Local Enforcer 0.2.54  
+**Execution date:** 2026-08-23
+**Application:** Pharmacy Local Enforcer 0.2.58
 **Host:** Windows 11 Pro x64, kernel 10.0.26200; WebView2 151.0.4129.86  
 **Toolchains:** Node 25.6.0/npm 11.8.0; Rust 1.77.2 for both Windows x64 and i686 release baselines
+
+## Current continuation result (v0.2.58)
+
+This continuation supersedes the dated test counts in the retained v0.2.54 evidence below.
+
+| Layer | Executed result |
+|---|---|
+| Frontend regressions | 64/64 Jest suites passed: 678 passed, 1 skipped. Coverage passed at 19.71% statements, 16.88% branches, 15.89% functions, and 20.05% lines. |
+| Frontend production checks | TypeScript and ESLint passed. The Tauri static build compiled and generated all 71 pages. |
+| Rust x64 | Rust 1.77.2 `cargo test`: 28/28 passed. Stable Clippy with warnings denied and formatting checks passed. |
+| Rust i686 | Rust 1.77.2 `cargo test --target i686-pc-windows-msvc`: 28/28 passed under WoW64. Stable i686 Clippy with warnings denied passed. |
+| Seed and persistence | `integrity_check=ok`, zero foreign-key failures, 25,092 master drugs, 191,272 interactions, and the expected pharmacy-scoped shortage columns/index. The source, x64, and i686 release seeds have matching SHA-256 `B798711D753970964007C6D288457E3DF9C0448BB33B9EEC407113F8C3FDBC67`. |
+| Real x64 application | A fresh isolated Tauri profile passed login, schema compatibility, bcrypt positive/negative cases, guarded-SQL and binary-writer rejection, invalid checkout rejection, and the packaged purchase → checkout → full customer return business flow. Stock, supplier balance, audit actions, and balanced journals were verified in SQLite. |
+| Real i686 application | A fresh isolated profile passed the same packaged IPC/business flow. It also opened the x64-created database and passed the same behavior, proving cross-architecture serialization and persistence parity on the host. |
+| Upgrade regression | The i686 application upgraded a preserved database whose migration ledger stopped at 11. It repaired the migration-1 checksum, recorded migration 12, retained all seed/business data, and finished with integrity OK, zero foreign-key failures, and balanced journals. |
+| Architecture artifacts | Current raw production executables are PE `0x8664` x64 (20,980,736 bytes; SHA-256 `E33864315B87939641D83C9035347D4048A1C27C39E808FD7BBB78B1A5D7119F`) and PE `0x014c` i686 (16,783,872 bytes; SHA-256 `104628AC495170A8F663568C8CD479D0BDC426FBD857D8D237C92D9053C60C35`). No application-bundled wrong-architecture DLL was found. |
+
+### Defects fixed and covered
+
+- Fixed fresh-install migration 12 failing when migration 1 already supplied the new shortage columns. Migration 12 is now an idempotent ledger marker, while startup compatibility adds missing fields/indexes for older databases and repairs known checksums.
+- Shift ownership now gates checkout, handover, wallet/notices/expenses/supplier/delivery cash movements, and debit-detail reporting. Delivery cash is attributed when collected, not when the invoice is created; zero-cash handover remains valid.
+- System time is stored consistently in UTC and rendered once in local time. Customer debit calculations include sale returns and financial notices, and user notes appear in supplies/notices.
+- Reorder alerts, low stock, and the shortage notebook are pharmacy-scoped and inventory-backed; draft/expired/foreign stock is excluded, notes persist, and selling the last valid unit adds the drug automatically.
+- Patient credit limits are editable, patient deletion is covered, and purchase returns search by barcode or drug name while preserving the original invoice-item identity.
+
+### Release boundary
+
+- Both architectures behave the same in the executed Windows 11/WoW64 paths. A clean Windows 10 machine and Windows 7 x64/x86 machines were not available, so identical behavior on every Windows build is not proven.
+- The executables import Universal CRT API sets. Windows 7 therefore needs its UCRT prerequisite, and it also needs a fixed compatible WebView2 109 runtime. The current `embedBootstrapper` configuration does not itself pin WebView2 to 109.
+- Current 0.2.58 installers could not be rebundled locally because the environment blocked the WebView2 bootstrapper download. Existing 0.2.54 installers are historical and must not be released as current artifacts. The tagged GitHub workflow must produce and verify the x64/x86 installers; clean-VM upgrade/uninstall, fixed-runtime, signing, and updater tests remain release gates.
+- Broad route rendering and regression coverage passed, but measured source coverage remains about 20%; unautomated control combinations and external cloud/update/WhatsApp dependencies remain coverage gaps. Consequently, x64/i686 core application builds are verified on this host, but neither architecture is yet safe to advertise as compatible with every Windows version, especially Windows 7.
+
+---
+
+## Retained v0.2.54 execution evidence (2026-08-18)
 
 ## 1. Executive result
 

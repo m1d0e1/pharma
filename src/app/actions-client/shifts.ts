@@ -61,6 +61,9 @@ export async function openShiftAction(data: { starting_cash_amount: number; open
   try {
     const user = await getLocalSession();
     if (!user) return { success: false, error: 'غير مصرح' };
+    if (!Number.isFinite(data.starting_cash_amount) || data.starting_cash_amount < 0) {
+      return { success: false, error: 'الرصيد الافتتاحي غير صالح' };
+    }
 
     // Check if there's already an open shift for this user
     const existingShift = await db.prepare("SELECT id FROM shifts WHERE user_id = ? AND status = 'open'").get(user.id) as any;
@@ -91,6 +94,9 @@ export async function closeShiftAction(data: { shift_id?: string; ending_cash_am
   try {
     const user = await getLocalSession();
     if (!user) return { success: false, error: 'غير مصرح' };
+    if (!Number.isFinite(data.ending_cash_amount) || data.ending_cash_amount < 0) {
+      return { success: false, error: 'الرصيد الختامي غير صالح' };
+    }
 
     let shiftId = data.shift_id;
     if (!shiftId || shiftId === 'auto') {
@@ -101,47 +107,60 @@ export async function closeShiftAction(data: { shift_id?: string; ending_cash_am
 
     const transaction = db.transaction(async () => {
       // 1. Calculate reconciliation difference
-      const shift = await db.prepare('SELECT COALESCE(starting_cash, 0) as starting_cash FROM shifts WHERE id = ?').get(shiftId) as any;
+      const shift = await db.prepare(`
+        SELECT CAST(COALESCE(starting_cash, 0) AS REAL) as starting_cash
+        FROM shifts
+        WHERE id = ? AND CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
+      `).get(shiftId, user.id) as any;
+      if (!shift) throw new Error('الوردية غير مفتوحة أو لا تخص المستخدم الحالي');
       
       const sales = await db.prepare(`
-        SELECT COALESCE(SUM(total_amount), 0) as total 
+        SELECT CAST(COALESCE(SUM(total_amount), 0) AS REAL) as total
         FROM sales_invoices 
-        WHERE shift_id = ? AND status = 'completed' AND payment_method IN ('cash', 'delivery')
+        WHERE shift_id = ?
+          AND (status IS NULL OR status = '' OR status IN ('completed', 'approved'))
+          AND payment_method = 'cash'
       `).get(shiftId) as any;
 
       const returns = await db.prepare(`
-        SELECT COALESCE(SUM(total_refund), 0) as total 
+        SELECT CAST(COALESCE(SUM(total_refund), 0) AS REAL) as total
         FROM returns 
-        WHERE shift_id = ? AND status = 'approved' AND refund_method = 'cash'
+        WHERE shift_id = ?
+          AND (status IS NULL OR status = '' OR status IN ('approved', 'completed'))
+          AND refund_method = 'cash'
       `).get(shiftId) as any;
 
       const movements = await db.prepare(`
-        SELECT COALESCE(SUM(CASE WHEN type='receipt' THEN amount ELSE -amount END), 0) as net 
+        SELECT CAST(COALESCE(SUM(
+          CASE WHEN type IN ('receipt', 'in') THEN amount
+               WHEN type IN ('disbursement', 'out') THEN -amount
+               ELSE 0 END
+        ), 0) AS REAL) as net
         FROM cash_movements 
         WHERE shift_id = ?
       `).get(shiftId) as any;
 
-      const expectedCash = shift.starting_cash + sales.total - returns.total + movements.net;
+      const expectedCash = Number(shift.starting_cash) + Number(sales.total) - Number(returns.total) + Number(movements.net);
       const difference = data.ending_cash_amount - expectedCash;
 
       // Determine status based on discrepancy (> 5 EGP)
       const status = Math.abs(difference) > 5 ? 'discrepancy' : 'closed';
 
       // 2. Update shift record
-      await db.prepare(`
+      const shiftUpdate = await db.prepare(`
         UPDATE shifts 
         SET end_time = CURRENT_TIMESTAMP, ending_cash = ?, notes = ?, status = ?
-        WHERE id = ?
-      `).run(data.ending_cash_amount, data.closing_notes || null, status, shiftId);
+        WHERE id = ? AND CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
+      `).run(data.ending_cash_amount, data.closing_notes || null, status, shiftId, user.id);
+      if (shiftUpdate.changes !== 1) throw new Error('تم إغلاق الوردية أو تعديلها بالفعل');
 
       // 3. Accounting Reconciliation (Journal Entry)
       if (Math.abs(difference) > 0.01) {
         const journalId = generateId();
-        const date = new Date().toISOString().split('T')[0];
         await db.prepare(`
           INSERT INTO daily_journals (id, date, description, created_by, total_amount)
-          VALUES (?, ?, ?, ?, ?)
-        `).run(journalId, date, `تسوية وردية: عجز/زيادة نقدية`, user.id, Math.abs(difference));
+          VALUES (?, date('now', 'localtime'), ?, ?, ?)
+        `).run(journalId, `تسوية وردية: عجز/زيادة نقدية`, user.id, Math.abs(difference));
 
         const getAccountId = async (cat: string) => {
           const s = await db.prepare('SELECT account_id FROM trial_balance_settings WHERE category = ?').get(cat) as any;
@@ -149,7 +168,8 @@ export async function closeShiftAction(data: { shift_id?: string; ending_cash_am
         };
 
         const cashAcc = await getAccountId('cash_drawer') || 6;
-        const diffAcc = await getAccountId('cash_difference') || 13;
+        const diffAcc = await getAccountId('cash_difference') || (await db.prepare("SELECT id FROM accounts WHERE code = '4.3'").get() as any)?.id;
+        if (!diffAcc) throw new Error('حساب عجز وزيادة الخزينة غير مهيأ');
 
         if (difference > 0) {
           // Overage: Debit Cash (Asset), Credit Difference (Income/Gain)
@@ -162,7 +182,7 @@ export async function closeShiftAction(data: { shift_id?: string; ending_cash_am
         }
       }
 
-      logActivity(user.id, 'END_SHIFT', `أنهى الوردية بمبلغ ${data.ending_cash_amount}. الفرق: ${difference.toFixed(2)}`);
+      await logActivity(user.id, 'END_SHIFT', `أنهى الوردية بمبلغ ${data.ending_cash_amount}. الفرق: ${difference.toFixed(2)}`);
     });
 
     await transaction();
@@ -170,7 +190,7 @@ export async function closeShiftAction(data: { shift_id?: string; ending_cash_am
     return { success: true };
   } catch (error) {
     console.error('End shift error:', error);
-    return { success: false, error: 'فشل إنهاء الوردية' };
+    return { success: false, error: error instanceof Error ? error.message : 'فشل إنهاء الوردية' };
   }
 }
 
@@ -196,17 +216,23 @@ export async function getShiftsAction(filter: { status: string }) {
       LEFT JOIN (
         SELECT shift_id, SUM(total_amount) as total_sales
         FROM sales_invoices
-        WHERE payment_method IN ('cash', 'delivery') AND status = 'completed'
+        WHERE payment_method = 'cash'
+          AND (status IS NULL OR status = '' OR status IN ('completed', 'approved'))
         GROUP BY shift_id
       ) sales ON s.id = sales.shift_id
       LEFT JOIN (
         SELECT shift_id, SUM(total_refund) as total_refunds
         FROM returns
-        WHERE refund_method = 'cash' AND status = 'approved'
+        WHERE refund_method = 'cash'
+          AND (status IS NULL OR status = '' OR status IN ('approved', 'completed'))
         GROUP BY shift_id
       ) rets ON s.id = rets.shift_id
       LEFT JOIN (
-        SELECT shift_id, SUM(CASE WHEN type='receipt' THEN amount ELSE -amount END) as net_movements
+        SELECT shift_id, SUM(
+          CASE WHEN type IN ('receipt', 'in') THEN amount
+               WHEN type IN ('disbursement', 'out') THEN -amount
+               ELSE 0 END
+        ) as net_movements
         FROM cash_movements
         GROUP BY shift_id
       ) moves ON s.id = moves.shift_id
@@ -216,7 +242,7 @@ export async function getShiftsAction(filter: { status: string }) {
     
     const shifts = rawShifts.map(s => {
       const expectedCash = s.starting_cash_amount + s.total_sales - s.total_refunds + s.net_movements;
-      const difference = s.status === 'closed' && s.ending_cash_amount !== null 
+      const difference = s.status !== 'open' && s.ending_cash_amount !== null
         ? (s.ending_cash_amount - expectedCash) 
         : 0;
 
@@ -246,40 +272,12 @@ export async function getCurrentShiftAction() {
     const user = await getLocalSession();
     if (!user) return { success: false, error: 'غير مصرح' };
 
-    let shift = await db.prepare(`
+    const shift = await db.prepare(`
       SELECT id, user_id, start_time as shift_start, starting_cash as starting_cash_amount, status
       FROM shifts 
       WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
       ORDER BY start_time DESC LIMIT 1
     `).get(user.id) as any;
-
-    if (!shift) {
-      shift = await db.prepare(`
-        SELECT id, user_id, start_time as shift_start, starting_cash as starting_cash_amount, status
-        FROM shifts 
-        WHERE status = 'open'
-        ORDER BY start_time DESC LIMIT 1
-      `).get() as any;
-    }
-
-    if (!shift) {
-      const firstSale = await db.prepare(`
-        SELECT created_at FROM sales_invoices 
-        WHERE (CAST(user_id AS TEXT) = CAST(? AS TEXT) OR user_id IS NULL) 
-          AND DATE(created_at) = DATE('now', 'localtime')
-        ORDER BY created_at ASC LIMIT 1
-      `).get(user.id) as any;
-
-      const newShiftId = generateId();
-      const startTime = firstSale?.created_at || new Date().toISOString().replace('T', ' ').substring(0, 19);
-
-      await db.prepare(`
-        INSERT INTO shifts (id, user_id, start_time, starting_cash, status)
-        VALUES (?, ?, ?, 0, 'open')
-      `).run(newShiftId, user.id, startTime);
-
-      shift = { id: newShiftId, user_id: user.id, shift_start: startTime, starting_cash_amount: 0, status: 'open' };
-    }
 
     return { 
       success: true, 
@@ -312,33 +310,41 @@ export async function getCurrentShiftStatsAction() {
     const countStats = await db.prepare(`
       SELECT COUNT(*) as transactions
       FROM sales_invoices
-      WHERE shift_id = ? AND status = 'completed'
+      WHERE shift_id = ? AND (status IS NULL OR status = '' OR status IN ('completed', 'approved'))
     `).get(shift.id) as any;
 
     // 2. Total sales revenue (all payment methods)
     const salesStats = await db.prepare(`
       SELECT COALESCE(SUM(total_amount), 0) as total_revenue
       FROM sales_invoices
-      WHERE shift_id = ? AND status = 'completed'
+      WHERE shift_id = ? AND (status IS NULL OR status = '' OR status IN ('completed', 'approved'))
     `).get(shift.id) as any;
 
     // 3. Cash-drawer sales revenue (cash & delivery)
     const cashSalesStats = await db.prepare(`
       SELECT COALESCE(SUM(total_amount), 0) as total_cash_revenue
       FROM sales_invoices
-      WHERE shift_id = ? AND status = 'completed' AND payment_method IN ('cash', 'delivery')
+      WHERE shift_id = ?
+        AND (status IS NULL OR status = '' OR status IN ('completed', 'approved'))
+        AND payment_method = 'cash'
     `).get(shift.id) as any;
 
     // 4. Cash returns
     const returnStats = await db.prepare(`
       SELECT COALESCE(SUM(total_refund), 0) as total_refunds
       FROM returns
-      WHERE shift_id = ? AND status = 'approved' AND refund_method = 'cash'
+      WHERE shift_id = ?
+        AND (status IS NULL OR status = '' OR status IN ('approved', 'completed'))
+        AND refund_method = 'cash'
     `).get(shift.id) as any;
 
     // 5. Cash movements (manual)
     const movementsStats = await db.prepare(`
-      SELECT COALESCE(SUM(CASE WHEN type='receipt' THEN amount ELSE -amount END), 0) as net
+      SELECT COALESCE(SUM(
+        CASE WHEN type IN ('receipt', 'in') THEN amount
+             WHEN type IN ('disbursement', 'out') THEN -amount
+             ELSE 0 END
+      ), 0) as net
       FROM cash_movements
       WHERE shift_id = ?
     `).get(shift.id) as any;

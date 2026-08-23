@@ -18,6 +18,21 @@ let tauriDbPromise: Promise<any> | null = null;
 let tauriTransactionQueue: Promise<unknown> = Promise.resolve();
 let activeTauriTransactionId: string | null = null;
 
+const sqliteUtcTimestamp = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/;
+const utcTimestampColumn = /(?:_at|_time|_on|^shift_start$|^shift_end$|^last_login$)$/;
+
+export function normalizeDatabaseTimestamps<T>(rows: T[]): T[] {
+  return rows.map(row => {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
+    return Object.fromEntries(Object.entries(row as Record<string, unknown>).map(([key, value]) => [
+      key,
+      utcTimestampColumn.test(key) && typeof value === 'string' && sqliteUtcTimestamp.test(value)
+        ? `${value.replace(' ', 'T')}Z`
+        : value,
+    ])) as T;
+  });
+}
+
 async function executeTauri(
   sql: string,
   params: any[] = []
@@ -47,19 +62,19 @@ export async function dbSelect<T = any>(sql: string, params: any[] = []): Promis
   if (isServer) {
     // Server-side: import and query better-sqlite3 directly (web dev mode)
     const { query } = require('./client');
-    return query(sql, safeParams);
+    return normalizeDatabaseTimestamps(query(sql, safeParams));
   }
 
   if (isTauriEnv) {
     const db = await getTauriDb();
-    return db.select(sql, safeParams);
+    return normalizeDatabaseTimestamps(await db.select(sql, safeParams));
   }
 
   // Web client-side: call database server action
   const { serverDbSelect } = await import('@/app/actions-client/db');
   const result = await serverDbSelect(sql, safeParams);
   if (!result.success) throw new Error(result.error || 'Database query failed');
-  return result.data || [];
+  return normalizeDatabaseTimestamps((result.data || []) as T[]);
 }
 
 export async function dbGet<T = any>(sql: string, params: any[] = []): Promise<T | null> {

@@ -46,9 +46,11 @@ const CHECKSUM_REPAIRS: &[ChecksumRepair] = &[
     ChecksumRepair {
         version: 1,
         migration: include_str!("../migrations/001_initial.sql"),
-        current_lf: "0A8DCA8624A89F518DA7B2D5C08BC364F3B675242BD57CC105E8B610B194E093325389EBF974166C8B7B082BEA0C111A",
-        current_crlf: "00AEEB1683D8487B39C5B75AFACE44217DECC16A11A972E83E364A62A20F3AEA9126BCB2BCB6E3DBF4C368CF1E1162AA",
+        current_lf: "BFCAAC7B5A1CEFC3C3C01F8E7DCC3CDB0D83447A39799B4FEAE46D97702BAF1FCD121650AF47C362BA020C4A83F99279",
+        current_crlf: "42525F4D4569F70C306E310A9FA815167E3FFA7A8292BD5C2C4E403C49A30B8FFE42EC6DF1ECEA833E510D2843B6DCB7",
         legacy: &[
+            "0A8DCA8624A89F518DA7B2D5C08BC364F3B675242BD57CC105E8B610B194E093325389EBF974166C8B7B082BEA0C111A",
+            "00AEEB1683D8487B39C5B75AFACE44217DECC16A11A972E83E364A62A20F3AEA9126BCB2BCB6E3DBF4C368CF1E1162AA",
             "6EF41382A6590B2E6A487DB0D9560F9F826E203BA07ED7065E71016C53083911A864F55EFA6C204DDA6272167F8E6BDC",
             "BEC57847DA8403B63C28258329D6F9EEEB7FC894B1496393DCBB6527AAB25D7045EFE661B6BE6473B68C6A579C49A153",
             "F82014A0B12E5F2148E15B27514F88C074C127EA08140C38889D59CAC54695EF9BA4194FC77168A621732F9627A20AA2",
@@ -87,6 +89,16 @@ const CHECKSUM_REPAIRS: &[ChecksumRepair] = &[
         current_lf: "ADD70A4E03CA17C0E204F600C91803410D880921B6C6A2504D39309E684CA58B2B7B2CA683BDF3E1EB7ABA6EE96C64AE",
         current_crlf: "1AF436DBA20429D9EF69ECA504162C15D8DA72A70758C5B53AAEE9B33D46A699704D8DC5F11C425E3D2E9F4A09175A63",
         legacy: &["48DF50E8B76D93E61F77DEB39E7498CFA1D34B6A7AB76DC1E773320F1B1D448C43B191746F5958858AD1C6F75C6E6013"],
+    },
+    ChecksumRepair {
+        version: 12,
+        migration: include_str!("../migrations/012_shortages_pharmacy_scope.sql"),
+        current_lf: "9B61A35D24740028564415DEBDAAFAC4034BE186059935E7E953102758B57FCF46493EED076DFCB3C4F4D4F6438E7FBE",
+        current_crlf: "53A4E46FF6E3475A2E1CED2A37AB65C6F41B3066B07C7A1E4FD7A5499902B0C76B656359EAA13C76BA36609EBB5C71A0",
+        legacy: &[
+            "390BDCB64ED1FBE1C12E844281BB50251DED58D07B2B1AFB54F80BCE2B179E6C8E1026153452274980FC2271C2B6C1C6",
+            "439E557C6F5CF1D421B704D34066717BDD3FF61D6FFA77B13BF51638F6FD4FD7FB70BBF6F32E4534E921A985E909B01A",
+        ],
     },
 ];
 
@@ -315,15 +327,15 @@ async fn ensure_compatibility(
         );
 
         CREATE TABLE IF NOT EXISTS shortages (
-          id TEXT PRIMARY KEY,
-          drug_id INTEGER,
-          drug_name TEXT NOT NULL,
-          quantity_needed INTEGER DEFAULT 1,
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          drug_id INTEGER NOT NULL,
+          pharmacy_id TEXT NOT NULL DEFAULT 'local_default',
+          requested_quantity REAL DEFAULT 1,
           priority TEXT DEFAULT 'normal',
           status TEXT DEFAULT 'pending',
           notes TEXT,
-          user_id TEXT,
-          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (drug_id) REFERENCES master_drugs (id)
         );
 
         CREATE TABLE IF NOT EXISTS config (
@@ -368,6 +380,47 @@ async fn ensure_compatibility(
     )
     .execute(&mut **transaction)
     .await?;
+
+    // Older fallback databases used an incompatible shortage shape. Rebuild it once so
+    // every UI path can use the same auto-increment id and requested_quantity columns.
+    if !has_column(transaction, "shortages", "requested_quantity").await?
+        && has_column(transaction, "shortages", "quantity_needed").await?
+    {
+        sqlx::raw_sql(
+            r#"
+            CREATE TABLE shortages_compat (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              drug_id INTEGER NOT NULL,
+              pharmacy_id TEXT NOT NULL DEFAULT 'local_default',
+              requested_quantity REAL DEFAULT 1,
+              priority TEXT DEFAULT 'normal',
+              status TEXT DEFAULT 'pending',
+              notes TEXT,
+              created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+              FOREIGN KEY (drug_id) REFERENCES master_drugs (id)
+            );
+
+            INSERT INTO shortages_compat (
+              drug_id, pharmacy_id, requested_quantity, priority, status, notes, created_at
+            )
+            SELECT
+              drug_id,
+              'local_default',
+              MAX(1, COALESCE(quantity_needed, 1)),
+              COALESCE(priority, 'normal'),
+              COALESCE(status, 'pending'),
+              notes,
+              COALESCE(created_at, CURRENT_TIMESTAMP)
+            FROM shortages
+            WHERE drug_id IS NOT NULL;
+
+            DROP TABLE shortages;
+            ALTER TABLE shortages_compat RENAME TO shortages;
+            "#,
+        )
+        .execute(&mut **transaction)
+        .await?;
+    }
 
     for (table, column, definition) in [
         ("master_drugs", "base_price", "base_price REAL DEFAULT 0"),
@@ -521,6 +574,13 @@ async fn ensure_compatibility(
         ("cash_movements", "actual_date", "actual_date TEXT"),
         ("cash_movements", "source_type", "source_type TEXT"),
         ("cash_movements", "target_name", "target_name TEXT"),
+        ("shortages", "priority", "priority TEXT DEFAULT 'normal'"),
+        ("shortages", "notes", "notes TEXT"),
+        (
+            "shortages",
+            "pharmacy_id",
+            "pharmacy_id TEXT NOT NULL DEFAULT 'local_default'",
+        ),
         ("suppliers", "balance", "balance REAL DEFAULT 0"),
         ("suppliers", "phone", "phone TEXT"),
         ("suppliers", "address", "address TEXT"),
@@ -554,6 +614,12 @@ async fn ensure_compatibility(
     ] {
         add_column(transaction, table, column, definition).await?;
     }
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_shortages_pharmacy_drug_status ON shortages(pharmacy_id, drug_id, status)",
+    )
+    .execute(&mut **transaction)
+    .await?;
 
     let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
         .fetch_one(&mut **transaction)
@@ -959,6 +1025,8 @@ mod tests {
             VALUES (5, 'purchase_return_details', 1, X'5EDF8FB853589FF8E8C5DE39B9A3432B940C4DB1BC1F0A43438C2B14D376DB187063BDE0F6C55E34C4C2EE261AA3F5A7', 0);
             INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
             VALUES (7, 'purchase_inventory_links', 1, X'48DF50E8B76D93E61F77DEB39E7498CFA1D34B6A7AB76DC1E773320F1B1D448C43B191746F5958858AD1C6F75C6E6013', 0);
+            INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
+            VALUES (12, 'shortages_pharmacy_scope', 1, X'390BDCB64ED1FBE1C12E844281BB50251DED58D07B2B1AFB54F80BCE2B179E6C8E1026153452274980FC2271C2B6C1C6', 0);
             "#,
         )
         .execute(&mut connection)
@@ -994,6 +1062,9 @@ mod tests {
             ("financial_notices", "target_id"),
             ("cash_movements", "source_type"),
             ("cash_movements", "target_name"),
+            ("shortages", "pharmacy_id"),
+            ("shortages", "priority"),
+            ("shortages", "notes"),
         ] {
             let rows = sqlx::query(&format!("PRAGMA table_info({table})"))
                 .fetch_one(&mut connection)

@@ -2,8 +2,8 @@
 import { useHotkeys } from 'react-hotkeys-hook';
 
 
-import { getShiftsAction, getCurrentShiftAction } from '@/app/actions-client/shifts';
 import React, { useState, useEffect } from 'react';
+import Link from 'next/link';
 import { 
   DollarSign, Landmark, Receipt, FileStack, AlertCircle, 
   CreditCard, TrendingUp, Wallet, ArrowRightLeft, PieChart,
@@ -16,10 +16,8 @@ import { FinancialNoticeForm } from './FinancialComponents';
 import TrialBalanceSettingsClient from './TrialBalanceSettingsClient';
 import TrialBalanceReport from '@/components/reports/TrialBalanceReport';
 import CashTransactionsClient from './CashTransactionsClient';
-import ShiftManagementClient from '../shifts/ShiftManagementClient';
 import { getExpensesAction } from '@/app/actions-client/expenses';
 import { getClientSession } from '@/lib/auth/local';
-import { getStaffAction } from '@/app/actions-client/users';
 import { 
   createCashMovementAction, 
   getCashMovementsAction,
@@ -93,7 +91,6 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
   const [cards, setCards] = useState<any[]>([]);
   const [accounts, setAccounts] = useState<any[]>([]);
   const [journals, setJournals] = useState<any[]>([]);
-  const [shifts, setShifts] = useState<any[]>([]);
   const [loadingData, setLoadingData] = useState(false);
   const [coaViewMode, setCoaViewMode] = useState<'table' | 'tree'>('tree');
   const [showAddAccount, setShowAddAccount] = useState<{ show: boolean, parentId: number | null }>({ show: false, parentId: null });
@@ -103,16 +100,19 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
   const [activityLogs, setActivityLogs] = useState<any[]>([]);
   const [expensesList, setExpensesList] = useState<any[]>([]);
   
-  const [currentShift, setCurrentShift] = useState<any>(null);
-  const [hasOpenShift, setHasOpenShift] = useState(false);
-  const [staffList, setStaffList] = useState<any[]>([]);
   const [userRole, setUserRole] = useState<string>('pharmacist');
   const [isMounted, setIsMounted] = useState(false);
 
   useEffect(() => {
      setIsMounted(true);
      loadTabData();
+     // The active tab is the loader's only changing input.
+     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
+
+  useEffect(() => {
+     getClientSession().then(user => setUserRole(user?.role || 'pharmacist'));
+  }, []);
 
   const loadTabData = async () => {
      setLoadingData(true);
@@ -157,26 +157,6 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
         } else if (activeTab === 'audit_logs') {
            const res = await getActivityLogsAction();
            if (res.success) setActivityLogs(res.data as any[]);
-        } else if (activeTab === 'daily_reports') {
-           const res = await getShiftsAction({ status: 'all' });
-           if (res.success) setShifts(res.data as any[]);
-           
-           const curShiftRes = await getCurrentShiftAction();
-           if (curShiftRes.success) {
-              setCurrentShift(curShiftRes.data || null);
-              setHasOpenShift(!!curShiftRes.data);
-           }
-
-           const userObj = await getClientSession();
-           if (userObj) {
-              setUserRole(userObj.role);
-              if (userObj.role === 'admin' || userObj.role === 'owner') {
-                 const staffRes = await getStaffAction();
-                 if (staffRes.success) {
-                    setStaffList(staffRes.data || []);
-                 }
-              }
-           }
         }
      } catch (error) {
         console.error('Load data error:', error);
@@ -304,6 +284,12 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                       <p className="text-slate-500 font-bold">متابعة جميع المبالغ الداخلة والخارجة من الخزينة</p>
                    </div>
                    <div className="flex items-center gap-4">
+                     <Link
+                       href="/finance/handover"
+                       className="px-6 py-5 bg-blue-600 text-white rounded-[24px] font-black hover:bg-blue-700 transition-all shadow-xl shadow-blue-500/20"
+                     >
+                       تسليم الدرج
+                     </Link>
                      <button onClick={() => window.print()} className="p-4 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-[24px] hover:bg-slate-200 transition-all no-print">
                        <Printer className="w-6 h-6" />
                      </button>
@@ -783,14 +769,17 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
           )}
 
            {activeTab === 'daily_reports' && (
-              <div className="space-y-8 animate-in fade-in slide-in-from-left-4">
-                 <ShiftManagementClient 
-                    initialShifts={shifts}
-                    currentShift={currentShift}
-                    hasOpenShift={hasOpenShift}
-                    userRole={userRole}
-                    staffList={staffList}
-                 />
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 animate-in fade-in slide-in-from-left-4">
+                 <Link href="/shifts" className="p-8 bg-white dark:bg-slate-900 rounded-[32px] border border-slate-100 dark:border-slate-800 shadow-sm hover:border-blue-300 transition-all">
+                    <BarChart3 className="w-10 h-10 text-blue-600 mb-5" />
+                    <h3 className="text-xl font-black text-slate-800 dark:text-white">إدارة وتقارير الورديات</h3>
+                    <p className="text-sm font-bold text-slate-500 mt-2">فتح الوردية ومراجعة سجلها والفروقات من مصدر واحد.</p>
+                 </Link>
+                 <Link href="/finance/handover" className="p-8 bg-white dark:bg-slate-900 rounded-[32px] border border-slate-100 dark:border-slate-800 shadow-sm hover:border-emerald-300 transition-all">
+                    <ArrowRightLeft className="w-10 h-10 text-emerald-600 mb-5" />
+                    <h3 className="text-xl font-black text-slate-800 dark:text-white">تسليم الدرج وإغلاق الوردية</h3>
+                    <p className="text-sm font-bold text-slate-500 mt-2">مطابقة التوريدات والمصروفات وتحويل النقدية وإغلاق الوردية.</p>
+                 </Link>
               </div>
            )}
 

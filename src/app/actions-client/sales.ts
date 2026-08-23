@@ -52,6 +52,7 @@ const db = {
 
 import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { z } from 'zod';
+import { format } from 'date-fns';
 import { secureCache } from '@/lib/cache/secure_cache';
 import { calculateCheckoutTotal, calculateLoyaltyPoints } from '@/lib/pos/checkout-calculation';
 import { isTauri } from '@/lib/env';
@@ -168,7 +169,7 @@ export async function searchDrugsAction(searchTerm: string, limit = 20, searchBy
     const candidates = rawMatchedDrugs.slice(0, 500);
     const candidateIds = candidates.map((d: any) => d.id);
     const placeholders = candidateIds.map(() => '?').join(',');
-    const today = new Date().toISOString().split('T')[0];
+    const today = format(new Date(), 'yyyy-MM-dd');
 
     const inventoryAgg = await db.prepare(`
       SELECT drug_id, 
@@ -303,7 +304,7 @@ export async function barcodeLookupAction(barcode: string) {
       return { success: false, error: 'الباركود مطلوب' };
     }
 
-    const today = new Date().toISOString().split('T')[0];
+    const today = format(new Date(), 'yyyy-MM-dd');
     const drug = await db.prepare(`
       SELECT
         md.id,
@@ -470,11 +471,21 @@ export async function processCheckoutAction(data: any) {
     const userId = localUser.id;
 
     const validatedData = CheckoutRequestSchema.parse(data);
-    const shiftId = validatedData.shift_id
-      ? String(validatedData.shift_id)
-      : ((await db.prepare(
-          "SELECT id FROM shifts WHERE user_id = ? AND status = 'open' ORDER BY start_time DESC LIMIT 1"
-        ).get(userId) as any)?.id || null);
+    const requestedShiftId = validatedData.shift_id ? String(validatedData.shift_id) : null;
+    const openShift = requestedShiftId
+      ? await db.prepare(`
+          SELECT id FROM shifts
+          WHERE id = ? AND CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
+        `).get(requestedShiftId, userId) as any
+      : await db.prepare(`
+          SELECT id FROM shifts
+          WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
+          ORDER BY start_time DESC LIMIT 1
+        `).get(userId) as any;
+    const shiftId = openShift?.id ? String(openShift.id) : null;
+    if (validatedData.status === 'completed' && !shiftId) {
+      return { success: false, error: 'يجب فتح وردية قبل إتمام البيع' };
+    }
 
     if (isTauri) {
       const { invoke } = await import('@tauri-apps/api/core');
@@ -542,7 +553,7 @@ export async function processCheckoutAction(data: any) {
     let pointsEarned = 0;
 
     await dbTransaction(async () => {
-      const today = new Date().toISOString().split('T')[0];
+      const today = format(new Date(), 'yyyy-MM-dd');
       let totalCogs = 0;
 
       await db.prepare(`
@@ -666,6 +677,29 @@ export async function processCheckoutAction(data: any) {
             totalCogs += (batch.cost_price || 0) * deductFromThisBatch;
             remainingToDeduct -= deductFromThisBatch;
           }
+
+          await db.prepare(`
+            INSERT INTO shortages (drug_id, pharmacy_id, requested_quantity, status)
+            SELECT
+              md.id,
+              ?,
+              MAX(1, COALESCE(NULLIF(md.default_purchase_qty, 0), NULLIF(md.reorder_point, 0), NULLIF(md.min_limit, 0), 1)),
+              'pending'
+            FROM master_drugs md
+            WHERE md.id = ?
+              AND COALESCE((
+                SELECT SUM(i.quantity)
+                FROM inventory i
+                WHERE i.drug_id = md.id
+                  AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
+                  AND (i.expiry_date IS NULL OR i.expiry_date >= ?)
+              ), 0) <= 0.0001
+              AND NOT EXISTS (
+                SELECT 1
+                FROM shortages s
+                WHERE s.drug_id = md.id AND s.pharmacy_id = ? AND s.status IN ('pending', 'ordered')
+              )
+          `).run(pharmacyId, item.drug_id, pharmacyId, pharmacyId, today, pharmacyId);
         } else {
           await db.prepare(`
             INSERT INTO sales_items (invoice_id, inventory_id, drug_id, quantity_sold, unit_price, unit, is_negative, cost_price, created_at)
@@ -676,7 +710,7 @@ export async function processCheckoutAction(data: any) {
 
       if (validatedData.status === 'completed') {
         const journalId = generateId();
-        const saleDate = new Date().toISOString().split('T')[0];
+        const saleDate = format(new Date(), 'yyyy-MM-dd');
         
         await db.prepare(`
           INSERT INTO daily_journals (id, date, description, created_by, total_amount)
@@ -717,7 +751,7 @@ export async function processCheckoutAction(data: any) {
 
       if (validatedData.status === 'completed' && validatedData.patient_id) {
         const patient = await db.prepare('SELECT credit_limit, wallet_balance, loyalty_level FROM patients WHERE id = ?').get(validatedData.patient_id) as any;
-        const today = new Date().toISOString().split('T')[0];
+        const today = format(new Date(), 'yyyy-MM-dd');
 
         for (const item of validatedData.items) {
           const reminderId = generateId();
@@ -728,7 +762,7 @@ export async function processCheckoutAction(data: any) {
           await db.prepare(`
             INSERT INTO refill_reminders (id, patient_id, drug_id, last_sold_date, next_refill_date, created_at)
             VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-          `).run(reminderId, validatedData.patient_id, item.drug_id, today, nextRefillDate.toISOString().split('T')[0]);
+          `).run(reminderId, validatedData.patient_id, item.drug_id, today, format(nextRefillDate, 'yyyy-MM-dd'));
         }
 
         pointsEarned = calculateLoyaltyPoints(totalAmount, patient?.loyalty_level || patientLoyaltyLevel);

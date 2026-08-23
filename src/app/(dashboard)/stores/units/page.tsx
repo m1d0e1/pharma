@@ -33,7 +33,7 @@ export default function UnitsPage() {
       await loadData();
     }
     checkAuthAndLoad();
-  }, []);
+  }, [router]);
 
   const handleAdd = async (item: { name_ar: string, name_en?: string }) => {
     try {

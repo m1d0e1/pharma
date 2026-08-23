@@ -145,6 +145,10 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
       toast.error('مبلغ التحويل يجب أن يكون أكبر من أو يساوي 0');
       return;
     }
+    if (form.transferAmount > form.actualCash) {
+      toast.error('مبلغ التحويل أكبر من النقدية الفعلية في الدرج');
+      return;
+    }
     if (!form.receiverUsername) {
       toast.error('يرجى اختيار المستلم');
       return;
@@ -153,6 +157,7 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
     setProcessing(true);
     const res = await processHandoverAction({
       shiftId,
+      actualCash: form.actualCash,
       transferAmount: form.transferAmount,
       transferTargetId: form.transferTargetId,
       transferTargetType: form.transferTargetType,
@@ -162,7 +167,7 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
     });
 
     if (res.success) {
-      toast.success('تمت عملية تسليم الدرج بنجاح');
+      toast.success('تم تسليم الدرج وإغلاق الوردية بنجاح');
       onClose();
     } else {
       toast.error(res.error || 'فشل تسليم الدرج');

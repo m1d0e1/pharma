@@ -104,6 +104,8 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
 
   useEffect(() => {
     fetchProfile()
+    // patientId is the only changing input that should trigger a profile reload.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [patientId])
 
   const fetchProfile = async () => {
@@ -434,7 +436,7 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                   </div>
                </div>
 
-               <div className="bg-white dark:bg-slate-900 p-10 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-sm space-y-8">
+               <form onSubmit={handleUpdate} className="bg-white dark:bg-slate-900 p-10 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-sm space-y-8">
                   <h3 className="text-xl font-black text-slate-800 dark:text-white flex items-center gap-3">
                      <ShieldCheck className="w-8 h-8 text-blue-500" /> إعدادات التعاقد والتحصيل
                   </h3>
@@ -455,6 +457,8 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                         <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-2">الحد الأقصى للرصيد (الحد الائتماني)</label>
                         <input
                           type="number"
+                          min="0"
+                          step="0.01"
                           value={formData.credit_limit}
                           onChange={(e) => setFormData({...formData, credit_limit: parseFloat(e.target.value) || 0})}
                           className="w-full bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-blue-500 p-4 rounded-2xl outline-none font-bold transition-all"
@@ -479,7 +483,15 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                         />
                      </div>
                   </div>
-               </div>
+                  <button
+                    type="submit"
+                    disabled={isSubmitting}
+                    className="bg-blue-600 text-white px-8 py-4 rounded-2xl font-black hover:bg-blue-700 transition-all flex items-center gap-2 shadow-lg shadow-blue-500/20 disabled:opacity-50"
+                  >
+                    <Save className="w-5 h-5" />
+                    {isSubmitting ? 'جاري الحفظ...' : 'حفظ حد الائتمان والإعدادات'}
+                  </button>
+               </form>
             </div>
           )}
 

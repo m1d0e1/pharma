@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import Link from 'next/link';
-import { openShiftAction, closeShiftAction, getShiftsAction, forceCloseAllShiftsAction } from '@/app/actions-client/shifts';
+import { openShiftAction, getShiftsAction, forceCloseAllShiftsAction } from '@/app/actions-client/shifts';
 import { Button } from '@/components/ui/button';
 import { Calendar, Clock, DollarSign, User, AlertCircle, CheckCircle, XCircle, TrendingUp, TrendingDown } from 'lucide-react';
 
@@ -23,34 +23,23 @@ interface Shift {
   };
 }
 
-interface StaffMember {
-  id: string;
-  full_name: string;
-  role: string;
-}
-
 interface ShiftManagementClientProps {
   initialShifts: Shift[];
   currentShift: Shift | null;
   hasOpenShift: boolean;
   userRole: string;
-  staffList: StaffMember[];
 }
 
 export default function ShiftManagementClient({
   initialShifts,
   currentShift,
   hasOpenShift,
-  userRole,
-  staffList
+  userRole
 }: ShiftManagementClientProps) {
   const [shifts, setShifts] = useState<Shift[]>(initialShifts);
   const [isOpeningShift, setIsOpeningShift] = useState(false);
-  const [isClosingShift, setIsClosingShift] = useState(false);
   const [startingCash, setStartingCash] = useState('');
   const [openingNotes, setOpeningNotes] = useState('');
-  const [endingCash, setEndingCash] = useState('');
-  const [closingNotes, setClosingNotes] = useState('');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -100,7 +89,7 @@ export default function ShiftManagementClient({
   };
 
   const handleOpenShift = async () => {
-    if (!startingCash || parseFloat(startingCash) <= 0) {
+    if (startingCash === '' || !Number.isFinite(parseFloat(startingCash)) || parseFloat(startingCash) < 0) {
       setError('يرجى إدخال مبلغ نقدي افتتاحي صحيح');
       return;
     }
@@ -120,11 +109,6 @@ export default function ShiftManagementClient({
         setStartingCash('');
         setOpeningNotes('');
         
-        // Save to localStorage for POS
-        if (result.shiftId) {
-          localStorage.setItem('currentShiftId', result.shiftId);
-        }
-        
         // Refresh shifts list
         const shiftsResult = await getShiftsAction({ status: 'all' });
         if (shiftsResult.success) {
@@ -143,57 +127,6 @@ export default function ShiftManagementClient({
       console.error(err);
     } finally {
       setIsOpeningShift(false);
-    }
-  };
-
-  const handleCloseShift = async () => {
-    if (!endingCash || parseFloat(endingCash) < 0) {
-      setError('يرجى إدخال مبلغ نقدي ختامي صحيح');
-      return;
-    }
-
-    if (!currentShift) {
-      setError('لا يوجد شفت مفتوح للإغلاق');
-      return;
-    }
-
-    setIsClosingShift(true);
-    setError('');
-    setSuccess('');
-
-    try {
-      const result = await closeShiftAction({
-        shift_id: currentShift.id,
-        ending_cash_amount: parseFloat(endingCash),
-        closing_notes: closingNotes || undefined,
-      });
-
-      if (result.success) {
-        setSuccess('تم إغلاق الشفت بنجاح!');
-        setEndingCash('');
-        setClosingNotes('');
-        
-        // Clear from localStorage
-        localStorage.removeItem('currentShiftId');
-        
-        // Refresh shifts list
-        const shiftsResult = await getShiftsAction({ status: 'all' });
-        if (shiftsResult.success) {
-          setShifts(shiftsResult.data);
-        }
-        
-        // Reload page after 2 seconds
-        setTimeout(() => {
-          window.location.reload();
-        }, 2000);
-      } else {
-        setError(result.error || 'فشل إغلاق الشفت');
-      }
-    } catch (err) {
-      setError('حدث خطأ غير متوقع');
-      console.error(err);
-    } finally {
-      setIsClosingShift(false);
     }
   };
 
@@ -275,7 +208,7 @@ export default function ShiftManagementClient({
 
         {/* Close Shift Card */}
         <div className="p-6 bg-white dark:bg-slate-800 rounded-3xl border-2 border-slate-100 dark:border-slate-700 shadow-lg">
-          <h3 className="text-xl font-bold text-slate-800 dark:text-white mb-4">إغلاق الشفت الحالي</h3>
+          <h3 className="text-xl font-bold text-slate-800 dark:text-white mb-4">تسليم وإغلاق الشفت الحالي</h3>
           
           {!hasOpenShift ? (
             <div className="p-4 bg-slate-50 dark:bg-slate-700/50 rounded-2xl border border-slate-200 dark:border-slate-600">
@@ -294,55 +227,17 @@ export default function ShiftManagementClient({
                 </p>
               </div>
 
-              <div className="mb-4 p-4 bg-emerald-50 dark:bg-emerald-900/20 rounded-2xl border border-emerald-200 dark:border-emerald-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="p-5 bg-emerald-50 dark:bg-emerald-900/20 rounded-2xl border border-emerald-200 dark:border-emerald-800 space-y-4">
                 <div>
-                  <p className="font-bold text-sm text-emerald-800 dark:text-emerald-300">هل ترغب في تسليم الدرج لموظف آخر أو إيداع النقدية؟</p>
-                  <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-0.5">تحويل النقدية إلى الخزينة/البنك أو تسليمها للمستلم التالي</p>
+                  <p className="font-bold text-emerald-800 dark:text-emerald-300">الإغلاق يتم من شاشة تسليم الدرج</p>
+                  <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-1">تجمع المبيعات والتوريدات والمصروفات، تسجل العجز أو الزيادة، ثم تغلق الوردية في عملية واحدة.</p>
                 </div>
                 <Link
                   href="/finance/handover"
-                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-sm transition-all text-center whitespace-nowrap"
+                  className="block w-full px-4 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow-sm transition-all text-center"
                 >
-                  🤝 تسليم الدرج والمناوبة
+                  🤝 فتح التسليم وإغلاق الوردية
                 </Link>
-              </div>
-              
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
-                    الرصيد الختامي الفعلي (ج.م)
-                  </label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    value={endingCash}
-                    onChange={(e) => setEndingCash(e.target.value)}
-                    className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-2xl text-slate-800 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                    placeholder="أدخل المبلغ النقدي الختامي"
-                  />
-                </div>
-                
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
-                    ملاحظات الإغلاق (اختياري)
-                  </label>
-                  <textarea
-                    value={closingNotes}
-                    onChange={(e) => setClosingNotes(e.target.value)}
-                    className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-2xl text-slate-800 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                    rows={3}
-                    placeholder="أي ملاحظات حول الإغلاق..."
-                  />
-                </div>
-                
-                <Button
-                  onClick={handleCloseShift}
-                  disabled={isClosingShift}
-                  className="w-full py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-2xl"
-                >
-                  {isClosingShift ? 'جاري إغلاق الشفت...' : 'إغلاق الشفت'}
-                </Button>
               </div>
             </>
           ) : null}

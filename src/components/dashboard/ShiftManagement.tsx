@@ -1,24 +1,24 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Clock, Play, StopCircle, DollarSign, Loader2, ArrowRightLeft, TrendingUp } from 'lucide-react';
+import Link from 'next/link';
+import { Clock, Play, DollarSign, Loader2, ArrowRightLeft } from 'lucide-react';
 import { toast } from 'react-hot-toast';
-import { startShiftAction, getCurrentShiftAction, getCurrentShiftStatsAction, endShiftAction } from '@/app/actions-client/shifts';
+import { startShiftAction, getCurrentShiftAction, getCurrentShiftStatsAction } from '@/app/actions-client/shifts';
 
 export default function ShiftManagement() {
   const [currentShift, setCurrentShift] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [showStartModal, setShowStartModal] = useState(false);
-  const [showEndModal, setShowEndModal] = useState(false);
   const [startingCash, setStartingCash] = useState('');
-  const [endingCash, setEndingCash] = useState('');
   const [isStarting, setIsStarting] = useState(false);
-  const [isEnding, setIsEnding] = useState(false);
   const [shiftStats, setShiftStats] = useState<any>(null);
   const [statsLoading, setStatsLoading] = useState(false);
 
   useEffect(() => {
     fetchShift();
+    // The loader reads only stable action functions and state setters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const fetchShift = async () => {
@@ -27,10 +27,8 @@ export default function ShiftManagement() {
     if (result.success) {
       setCurrentShift(result.data);
       if (result.data?.id) {
-        localStorage.setItem('currentShiftId', result.data.id);
         fetchStats();
       } else {
-        localStorage.removeItem('currentShiftId');
         setShiftStats(null);
       }
     }
@@ -55,35 +53,12 @@ export default function ShiftManagement() {
     
     if (result.success) {
       toast.success('Shift started successfully');
-      if (result.shiftId) {
-        localStorage.setItem('currentShiftId', result.shiftId);
-      }
       setShowStartModal(false);
       fetchShift();
     } else {
       toast.error(result.error || 'Failed to start shift');
     }
     setIsStarting(false);
-  };
-
-  const handleEndShift = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsEnding(true);
-    
-    const cash = parseFloat(endingCash) || 0;
-    const result = await endShiftAction(cash);
-    
-    if (result.success) {
-      toast.success('Shift closed successfully');
-      localStorage.removeItem('currentShiftId');
-      setShowEndModal(false);
-      setCurrentShift(null);
-      setShiftStats(null);
-      fetchShift();
-    } else {
-      toast.error(result.error || 'Failed to close shift');
-    }
-    setIsEnding(false);
   };
 
   if (loading) {
@@ -138,16 +113,13 @@ export default function ShiftManagement() {
               )}
             </div>
             
-            <button
-              onClick={() => {
-                setEndingCash(shiftStats?.expected_cash?.toString() || '');
-                setShowEndModal(true);
-              }}
+            <Link
+              href="/finance/handover"
               className="w-full bg-slate-900 dark:bg-white text-white dark:text-slate-900 py-4 rounded-2xl font-black text-lg transition-all shadow-lg hover:bg-slate-800 dark:hover:bg-slate-100 flex items-center justify-center gap-2 group-hover:scale-[1.02] transform"
             >
-              <StopCircle className="w-5 h-5" />
-              End & Close Shift
-            </button>
+              <ArrowRightLeft className="w-5 h-5" />
+              تسليم الدرج وإغلاق الوردية
+            </Link>
           </div>
         ) : (
           <div className="space-y-6">
@@ -207,74 +179,6 @@ export default function ShiftManagement() {
                   <>
                     <span>🚀</span>
                     <span>Confirm & Start Work</span>
-                  </>
-                )}
-              </button>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* End Shift Modal */}
-      {showEndModal && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-[150] p-4">
-          <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl max-w-md w-full overflow-hidden border border-slate-200 dark:border-slate-800 animate-in zoom-in duration-300">
-            <div className="bg-gradient-to-r from-red-600 to-rose-600 p-6 text-white flex justify-between items-center">
-              <div>
-                <h3 className="text-xl font-black">Close Shift</h3>
-                <p className="text-rose-100 text-xs mt-1">Verify physical cash in drawer</p>
-              </div>
-              <button onClick={() => setShowEndModal(false)} className="text-2xl font-bold">&times;</button>
-            </div>
-
-            <form onSubmit={handleEndShift} className="p-8 space-y-6">
-              {shiftStats && (
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="p-4 bg-slate-50 dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700">
-                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Sales</p>
-                    <p className="text-lg font-black text-blue-600">EGP {shiftStats.revenue}</p>
-                  </div>
-                  <div className="p-4 bg-slate-50 dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700">
-                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Transactions</p>
-                    <p className="text-lg font-black text-emerald-600">{shiftStats.transactions}</p>
-                  </div>
-                </div>
-              )}
-
-              <div className="space-y-2">
-                <label className="text-sm font-black text-slate-700 dark:text-slate-300 ml-2">Final Cash (Actual in Drawer)</label>
-                <div className="relative">
-                  <DollarSign className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    required
-                    autoFocus
-                    value={endingCash}
-                    onChange={(e) => setEndingCash(e.target.value)}
-                    className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 pl-12 pr-4 py-4 rounded-2xl focus:ring-2 focus:ring-red-500 outline-none transition-all font-black text-lg"
-                    placeholder="0.00"
-                  />
-                </div>
-                {shiftStats && (
-                   <p className="text-[10px] font-bold text-slate-500 mt-2 text-center">
-                     Expected System Balance: <span className="text-slate-900 dark:text-white">EGP {shiftStats.expected_cash}</span>
-                   </p>
-                )}
-              </div>
-
-              <button
-                type="submit"
-                disabled={isEnding}
-                className="w-full bg-red-600 text-white py-4 rounded-2xl font-black text-lg hover:bg-red-700 transition-all shadow-xl shadow-red-500/20 disabled:opacity-50 flex items-center justify-center gap-2"
-              >
-                {isEnding ? (
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                ) : (
-                  <>
-                    <span>🔒</span>
-                    <span>Confirm Closure & Post</span>
                   </>
                 )}
               </button>

@@ -517,6 +517,24 @@ fn main() {
             sql: include_str!("../migrations/009_rebuild_master_drugs_fts.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 10,
+            description: "shift_handover_indexes",
+            sql: include_str!("../migrations/010_shift_handover_indexes.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 11,
+            description: "shift_cash_difference_account",
+            sql: include_str!("../migrations/011_shift_cash_difference_account.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 12,
+            description: "shortages_pharmacy_scope",
+            sql: include_str!("../migrations/012_shortages_pharmacy_scope.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()

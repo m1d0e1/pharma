@@ -464,7 +464,7 @@ export default function POSPage() {
     };
     window.addEventListener('keydown', handleGlobalKeyDown);
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
-  }, [selectedRowCartId]);
+  }, [selectedRowCartId, setCart]);
 
   // Handle Patient Search Debounce
   useEffect(() => {
@@ -500,7 +500,7 @@ export default function POSPage() {
         }
       });
     }
-  }, [selectedPatient]);
+  }, [selectedPatient, setSelectedPatient]);
 
   const addToCart = useCallback((drug: DrugItem) => {
     if (drug.is_expired) {
@@ -542,7 +542,7 @@ export default function POSPage() {
         needsRefill: false 
       }];
     });
-  }, []);
+  }, [setCart]);
 
   const addAnotherUnitRow = useCallback((item: CartItem) => {
     const nextUnit = item.selectedUnit === 'large' && item.units.medium 
@@ -565,7 +565,7 @@ export default function POSPage() {
       price: Number(newPrice.toFixed(2))
     }]);
     toast.success(`تمت إضافة وحدة جديدة (${nextUnit === 'medium' ? item.units.medium || 'شريط' : (nextUnit === 'small' ? item.units.small || 'قرص' : item.units.large || 'علبة')})`);
-  }, []);
+  }, [setCart]);
 
   const handleUnitChange = useCallback((cartItemId: string, unit: string) => {
     setCart(prev => prev.map(item => {
@@ -580,7 +580,7 @@ export default function POSPage() {
       
       return { ...item, selectedUnit: unit as any, price: Number(newPrice.toFixed(2)) };
     }));
-  }, []);
+  }, [setCart]);
 
   const handleBatchChange = useCallback((cartItemId: string, inventoryId: string) => {
     setCart(prev => prev.map(item => {
@@ -604,7 +604,7 @@ export default function POSPage() {
       
       return { ...item, inventory_id: batchId, price: Number(newPrice.toFixed(2)) };
     }));
-  }, []);
+  }, [setCart]);
 
   const stockInSelectedUnit = (item: CartItem) => {
     const l2m = item.units.large_to_medium || 1;
@@ -624,9 +624,6 @@ export default function POSPage() {
     setIsProcessing(true);
 
     try {
-      const token = localStorage.getItem('token');
-      const currentShiftId = localStorage.getItem('current_shift_id');
-
       let interactionRes: any = { interactions: [] };
       let clinicalAlerts: any[] = [];
 
@@ -664,7 +661,6 @@ export default function POSPage() {
       const result = await processCheckoutAction({
         items: formattedCart,
         patient_id: selectedPatient?.id,
-        shift_id: currentShiftId || undefined,
         payment_method: paymentMethod,
         check_number: paymentMethod === 'check' ? checkNumber : undefined,
         status,

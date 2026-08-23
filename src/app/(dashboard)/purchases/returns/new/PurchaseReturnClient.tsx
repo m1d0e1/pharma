@@ -2,13 +2,13 @@
 
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { searchMasterDrugsAction } from '@/app/actions-client/master-drugs';
 import { getSuppliersAction, createPurchaseReturnAction, getPurchasesReportsAction, getPurchaseInvoiceDetailsAction } from '@/app/actions-client/purchases';
-import { Search, Save, Trash2, ArrowRight, FileText } from 'lucide-react';
+import { Search, Save, ArrowRight, FileText } from 'lucide-react';
 import Link from 'next/link';
 import { toast } from 'react-hot-toast';
 import {
   PurchaseReturnUnit,
+  purchaseReturnMatchesSearch,
   purchaseReturnPriceForUnit,
   purchaseReturnQuantityForUnit,
 } from '@/lib/purchases/return-units';
@@ -28,6 +28,7 @@ export default function PurchaseReturnClient() {
   const [refundMethod, setRefundMethod] = useState<'cash' | 'credit'>('credit');
   const [items, setItems] = useState<any[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [itemSearch, setItemSearch] = useState('');
 
   const [selectedIndex, setSelectedIndex] = useState<number>(-1);
 
@@ -111,6 +112,7 @@ export default function PurchaseReturnClient() {
       setItems([]);
       return;
     }
+    setItemSearch('');
     
     setIsLoadingInvoices(true);
     const res = await getPurchaseInvoiceDetailsAction(invId);
@@ -122,7 +124,9 @@ export default function PurchaseReturnClient() {
         purchase_invoice_item_id: item.id,
         inventory_id: item.inventory_id,
         drug_id: item.drug_id,
-        drug_name: item.trade_name,
+        drug_name: item.trade_name || item.trade_name_en,
+        drug_name_en: item.trade_name_en,
+        barcode: item.barcode || '',
         quantity: 0, // This is the return quantity
         original_quantity: Number(item.quantity || 0),
         returned_large_quantity: Number(item.returned_large_quantity || 0),
@@ -186,6 +190,9 @@ export default function PurchaseReturnClient() {
   // Only consider items with quantity > 0
   const activeItems = items.filter(i => i.quantity > 0);
   const totalAmount = activeItems.reduce((sum, item) => sum + (item.quantity * item.unit_price), 0);
+  const visibleItems = items
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => purchaseReturnMatchesSearch(item, itemSearch));
 
   const handleSubmit = async () => {
     if (!selectedSupplierId) {
@@ -315,6 +322,17 @@ export default function PurchaseReturnClient() {
                     </div>
                   )}
                 </div>
+
+                <div className="relative mb-4">
+                  <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                  <input
+                    type="search"
+                    value={itemSearch}
+                    onChange={(e) => setItemSearch(e.target.value)}
+                    placeholder="ابحث باسم الصنف أو امسح الباركود..."
+                    className="w-full pr-10 pl-4 py-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white font-bold outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                  />
+                </div>
                 
                 <div className="overflow-x-auto">
                   <table className="w-full text-right text-sm">
@@ -328,9 +346,15 @@ export default function PurchaseReturnClient() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
-                      {items.map((item, idx) => (
-                        <tr key={idx} className="group">
-                          <td className="p-3 font-medium text-slate-800 dark:text-slate-200">{item.drug_name}</td>
+                      {visibleItems.map(({ item, index }) => (
+                        <tr key={item.purchase_invoice_item_id || index} className="group">
+                          <td className="p-3 font-medium text-slate-800 dark:text-slate-200">
+                            <div>{item.drug_name}</div>
+                            {item.drug_name_en && item.drug_name_en !== item.drug_name && (
+                              <div className="text-[10px] text-slate-400 mt-1">{item.drug_name_en}</div>
+                            )}
+                            {item.barcode && <div className="text-[10px] font-mono text-blue-600 mt-1">{item.barcode}</div>}
+                          </td>
                           <td className="p-3 text-slate-500">
                             <div>{item.original_quantity} علبة</div>
                             <div className="mt-1 text-[10px] font-bold text-emerald-600">
@@ -354,12 +378,12 @@ export default function PurchaseReturnClient() {
                               )}
                               className="w-20 p-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-white focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                               value={item.quantity}
-                              onChange={(e) => updateItem(idx, 'quantity', Number(e.target.value))}
+                              onChange={(e) => updateItem(index, 'quantity', Number(e.target.value))}
                             />
                             <select
                               className="w-24 p-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-white text-sm"
                               value={item.unit || 'large'}
-                              onChange={(e) => updateItem(idx, 'unit', e.target.value)}
+                              onChange={(e) => updateItem(index, 'unit', e.target.value)}
                             >
                               <option value="large">علبة</option>
                               <option value="medium">شريط</option>
@@ -376,6 +400,13 @@ export default function PurchaseReturnClient() {
                           </td>
                         </tr>
                       ))}
+                      {visibleItems.length === 0 && (
+                        <tr>
+                          <td colSpan={5} className="p-10 text-center text-slate-400 font-bold">
+                            لا يوجد صنف يطابق الاسم أو الباركود
+                          </td>
+                        </tr>
+                      )}
                     </tbody>
                   </table>
                 </div>

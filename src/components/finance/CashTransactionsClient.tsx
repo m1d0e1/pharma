@@ -2,6 +2,7 @@
 import { useHotkeys } from 'react-hotkeys-hook';
 
 import React, { useState, useEffect } from 'react';
+import Link from 'next/link';
 import { 
   Plus, Search, ArrowRightLeft, X, Save, Activity, DollarSign,
   ArrowUpRight, ArrowDownLeft
@@ -57,9 +58,21 @@ export default function CashTransactionsClient({
       <div className="bg-white dark:bg-slate-900 p-8 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-sm flex justify-between items-center">
         <div>
           <h2 className="text-2xl font-black text-slate-800 dark:text-white">حركة النقدية (صرف / توريد)</h2>
-          <p className="text-slate-500 font-bold">إدارة جميع حركات السيولة النقدية اليدوية</p>
+          <p className="text-slate-500 font-bold">كل حركة تُربط تلقائياً بالوردية المفتوحة وتظهر في تسليم الدرج</p>
         </div>
-        <div className="flex gap-4">
+        <div className="flex flex-wrap gap-3">
+          <Link
+            href="/shifts"
+            className="px-5 py-4 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-2xl font-black hover:bg-slate-200 transition-all"
+          >
+            الورديات
+          </Link>
+          <Link
+            href="/finance/handover"
+            className="px-5 py-4 bg-blue-600 text-white rounded-2xl font-black hover:bg-blue-700 transition-all"
+          >
+            تسليم الدرج
+          </Link>
           <button 
             onClick={() => setShowForm({ show: true, type: 'disbursement' })}
             className="px-8 py-4 bg-rose-600 text-white rounded-2xl font-black hover:bg-rose-700 transition-all shadow-xl shadow-rose-500/20 flex items-center gap-2"
@@ -105,7 +118,7 @@ export default function CashTransactionsClient({
               <th className="px-8 py-5 text-xs font-black text-slate-400 uppercase text-center">النوع</th>
               <th className="px-8 py-5 text-xs font-black text-slate-400 uppercase">البيان / التصنيف</th>
               <th className="px-8 py-5 text-xs font-black text-slate-400 uppercase">القيمة</th>
-              <th className="px-8 py-5 text-xs font-black text-slate-400 uppercase">المستخدم</th>
+              <th className="px-8 py-5 text-xs font-black text-slate-400 uppercase">المستخدم / الوردية</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -140,7 +153,12 @@ export default function CashTransactionsClient({
                     {m.type === 'disbursement' ? '-' : '+'}{m.amount.toLocaleString('en-US')} <span className="text-xs">ج.م</span>
                   </p>
                 </td>
-                <td className="px-8 py-5 font-bold text-slate-400 italic">SYSTEM</td>
+                <td className="px-8 py-5">
+                  <p className="font-bold text-slate-600 dark:text-slate-300">{m.user_name || m.user_id}</p>
+                  <p className="text-[10px] font-mono text-blue-500">
+                    {m.shift_id ? `وردية #${String(m.shift_id).slice(0, 8)}` : 'غير مرتبطة بورديّة'}
+                  </p>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -190,11 +208,9 @@ function CashMovementForm({ type, onClose }: { type: 'disbursement' | 'receipt',
         return;
      }
      setLoading(true);
-     const shiftId = typeof window !== 'undefined' ? localStorage.getItem('current_shift_id') : null;
      const res = await createCashMovementAction({
         ...formData,
-        type,
-        shift_id: shiftId || undefined
+        type
      });
      
      if (res.success) {

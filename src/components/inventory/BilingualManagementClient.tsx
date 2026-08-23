@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import * as LucideIcons from 'lucide-react'
 import { Plus, Trash2, Search, Save, X, Activity, Edit } from 'lucide-react'
 import { toast, Toaster } from 'react-hot-toast'
@@ -65,7 +65,7 @@ export default function BilingualManagementClient({
     setIsModalOpen(true);
   };
 
-  const handleSave = async () => {
+  const handleSave = useCallback(async () => {
     if (!formData.name_ar) {
       toast.error('يرجى إدخال الاسم بالعربي');
       return;
@@ -92,7 +92,7 @@ export default function BilingualManagementClient({
       }
     }
     setIsSaving(false);
-  };
+  }, [editingItem, formData, items, onAdd, onUpdate, title]);
 
   const handleDelete = async (id: number) => {
     if (!onDelete) return;
@@ -120,7 +120,7 @@ export default function BilingualManagementClient({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isModalOpen, formData, editingItem, items, isSaving]);
+  }, [isModalOpen, handleSave]);
 
   return (
     <div className="space-y-6" dir="rtl">

@@ -100,6 +100,7 @@ describe('Finance Module Server Actions', () => {
     it('should create a cash movement, daily journal, and balanced double-entry journals', async () => {
       (dbExecute as jest.Mock).mockResolvedValue({ rowsAffected: 1 });
       (dbGet as jest.Mock)
+        .mockResolvedValueOnce({ id: 'shift-open' })
         .mockResolvedValueOnce({ account_id: 6 }) // Main Cash Account
         .mockResolvedValueOnce({ account_id: 11 }); // Category Account (Expense)
 
@@ -156,6 +157,7 @@ describe('Finance Module Server Actions', () => {
       (dbGet as jest.Mock)
         .mockResolvedValueOnce({ id: 'patient-1', full_name: 'Test Patient' })
         .mockResolvedValueOnce({ outstanding_balance: 300 })
+        .mockResolvedValueOnce({ id: 'shift-open' })
         .mockResolvedValueOnce({ account_id: 6 })
         .mockResolvedValueOnce({ account_id: 8 });
 

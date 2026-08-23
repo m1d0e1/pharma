@@ -341,6 +341,8 @@ export default function PurchaseInvoiceClient() {
         toast.error('حدث خطأ أثناء تحميل الفاتورة')
       })
     }
+  // Route parameters are intentionally handled only when they or the supplier list change.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams, suppliers])
 
   const handleDrugSearch = async (query: string, byActive = searchByActive) => {

@@ -672,11 +672,17 @@ CREATE TABLE IF NOT EXISTS opening_balance_items (
 CREATE TABLE IF NOT EXISTS shortages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   drug_id INTEGER NOT NULL,
+  pharmacy_id TEXT NOT NULL DEFAULT 'local_default',
   requested_quantity INTEGER DEFAULT 1,
   status TEXT DEFAULT 'pending',
+  priority TEXT DEFAULT 'normal',
+  notes TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (drug_id) REFERENCES master_drugs (id)
 );
+
+CREATE INDEX IF NOT EXISTS idx_shortages_pharmacy_drug_status
+ON shortages(pharmacy_id, drug_id, status);
 
 CREATE TABLE IF NOT EXISTS stock_adjustments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -416,6 +416,7 @@ export function initLocalDb() {
     CREATE TABLE IF NOT EXISTS shortages (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       drug_id INTEGER NOT NULL,
+      pharmacy_id TEXT NOT NULL DEFAULT 'local_default',
       requested_quantity INTEGER DEFAULT 1,
       status TEXT DEFAULT 'pending',
       priority TEXT DEFAULT 'normal',
@@ -868,6 +869,8 @@ export function initLocalDb() {
 
   addColumnSafely('master_drugs', 'has_expiry', 'INTEGER DEFAULT 1');
   addColumnSafely('sales_items', 'cost_price', 'REAL DEFAULT 0');
+  addColumnSafely('shortages', 'pharmacy_id', "TEXT NOT NULL DEFAULT 'local_default'");
+  db.exec('CREATE INDEX IF NOT EXISTS idx_shortages_pharmacy_drug_status ON shortages(pharmacy_id, drug_id, status)');
 
   // Migration: Add shift_id to sales_invoices if missing
   const salesColumns = db.prepare("PRAGMA table_info(sales_invoices)").all() as any[];
@@ -1032,6 +1035,7 @@ export function initLocalDb() {
         [13, '2.2',   'أرصدة محافظ العملاء',             'Patient Wallet Liability',  'liability', 0],
         [14, '4.2',   'تسويات حسابات العملاء',           'Customer Adjustments',      'expense',   0],
         [15, '3.9',   'حقوق ملكية الأرصدة الافتتاحية',  'Opening Balance Equity',    'equity',    0],
+        [16, '4.3',   'عجز وزيادة الخزينة',              'Cash Shortage/Overage',     'expense',   0],
       ];
       const seedAccounts = db.transaction((list: typeof defaultAccounts) => {
         for (const a of list) insertAccount.run(a[0], a[1], a[2], a[3], a[4], a[5]);
@@ -1056,7 +1060,8 @@ export function initLocalDb() {
         ('bank_clearing',           '1.1.4'),
         ('patient_wallet_liability','2.2'),
         ('customer_adjustments',    '4.2'),
-        ('opening_balance_equity',  '3.9')
+        ('opening_balance_equity',  '3.9'),
+        ('cash_difference',         '4.3')
       )
       INSERT OR IGNORE INTO trial_balance_settings (category, target_type, account_id)
       SELECT r.category, 'account', a.id
@@ -1078,7 +1083,8 @@ export function initLocalDb() {
         ('1.1.4', 'تسويات البنوك', 'Bank Clearing', 'asset', 0),
         ('2.2', 'أرصدة محافظ العملاء', 'Patient Wallet Liability', 'liability', 0),
         ('4.2', 'تسويات حسابات العملاء', 'Customer Adjustments', 'expense', 0),
-        ('3.9', 'حقوق ملكية الأرصدة الافتتاحية', 'Opening Balance Equity', 'equity', 0);
+        ('3.9', 'حقوق ملكية الأرصدة الافتتاحية', 'Opening Balance Equity', 'equity', 0),
+        ('4.3', 'عجز وزيادة الخزينة', 'Cash Shortage/Overage', 'expense', 0);
 
       INSERT OR IGNORE INTO trial_balance_settings (category, target_type, account_id)
       SELECT 'bank_clearing', 'account', id FROM accounts WHERE code = '1.1.4';
@@ -1091,6 +1097,9 @@ export function initLocalDb() {
 
       INSERT OR IGNORE INTO trial_balance_settings (category, target_type, account_id)
       SELECT 'opening_balance_equity', 'account', id FROM accounts WHERE code = '3.9';
+
+      INSERT OR IGNORE INTO trial_balance_settings (category, target_type, account_id)
+      SELECT 'cash_difference', 'account', id FROM accounts WHERE code = '4.3';
     `);
   } catch (e) {
     console.warn('Failed to ensure patient accounting mappings:', e);

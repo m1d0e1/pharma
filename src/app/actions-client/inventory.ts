@@ -558,27 +558,64 @@ export async function getLowStockAction(threshold?: number) {
     if (!user) return { success: false, error: 'غير مصرح' };
 
     const defaultLimit = Number(threshold) > 0 ? Number(threshold) : 10;
+    const pharmacyId = user.pharmacy_id || 'local_default';
 
     const items = await db.prepare(`
-      WITH DrugStock AS (
+      WITH Params AS (
+        SELECT ? AS pharmacy_id, ? AS default_limit
+      ),
+      DrugStock AS (
         SELECT 
-          drug_id,
-          SUM(quantity) AS current_stock,
-          MIN(local_selling_price) AS local_selling_price,
-          MIN(expiry_date) AS nearest_expiry,
-          MAX(barcode) AS lot_barcode
-        FROM inventory
-        WHERE quantity > 0
-        GROUP BY drug_id
+          i.drug_id,
+          SUM(COALESCE(i.quantity, 0)) AS current_stock,
+          MIN(i.local_selling_price) AS local_selling_price,
+          MIN(CASE WHEN i.quantity > 0 THEN i.expiry_date END) AS nearest_expiry,
+          MAX(i.barcode) AS lot_barcode
+        FROM inventory i
+        CROSS JOIN Params p
+        WHERE (i.pharmacy_id = p.pharmacy_id OR (i.pharmacy_id IS NULL AND p.pharmacy_id = 'local_default'))
+          AND (i.expiry_date IS NULL OR i.expiry_date >= date('now', 'localtime'))
+        GROUP BY i.drug_id
+      ),
+      UnitFactors AS (
+        SELECT
+          m.id AS drug_id,
+          CASE
+            WHEN MAX(COALESCE(NULLIF(i.strips_per_box, 0), 1)) > 1
+              THEN MAX(COALESCE(NULLIF(i.strips_per_box, 0), 1))
+            ELSE COALESCE(NULLIF(m.large_to_medium, 0), 1)
+          END AS large_to_medium,
+          COALESCE(NULLIF(m.medium_to_small, 0), 1) AS medium_to_small,
+          m.medium_unit,
+          m.small_unit
+        FROM master_drugs m
+        CROSS JOIN Params p
+        LEFT JOIN inventory i
+          ON CAST(i.drug_id AS TEXT) = CAST(m.id AS TEXT)
+         AND (i.pharmacy_id = p.pharmacy_id OR (i.pharmacy_id IS NULL AND p.pharmacy_id = 'local_default'))
+         AND (i.expiry_date IS NULL OR i.expiry_date >= date('now', 'localtime'))
+        GROUP BY m.id
       ),
       MonthlySales AS (
         SELECT 
           si.drug_id,
-          SUM(si.quantity_sold) AS avg_monthly_usage
+          SUM(
+            CASE
+              WHEN si.unit IN ('medium', 'strip', 'شريط') OR si.unit = uf.medium_unit
+                THEN si.quantity_sold / uf.large_to_medium
+              WHEN si.unit = 'small' OR si.unit = uf.small_unit
+                THEN si.quantity_sold / (uf.large_to_medium * uf.medium_to_small)
+              ELSE si.quantity_sold
+            END
+          ) AS avg_monthly_usage
         FROM sales_items si
         JOIN sales_invoices inv ON si.invoice_id = inv.id
+        JOIN UnitFactors uf ON CAST(uf.drug_id AS TEXT) = CAST(si.drug_id AS TEXT)
+        CROSS JOIN Params p
         WHERE si.is_negative = 0 
-          AND inv.created_at >= datetime('now', '-30 days', 'localtime')
+          AND (inv.status IS NULL OR inv.status = '' OR inv.status IN ('completed', 'approved'))
+          AND (inv.pharmacy_id = p.pharmacy_id OR (inv.pharmacy_id IS NULL AND p.pharmacy_id = 'local_default'))
+          AND inv.created_at >= datetime('now', '-30 days')
         GROUP BY si.drug_id
       )
       SELECT 
@@ -595,20 +632,38 @@ export async function getLowStockAction(threshold?: number) {
         m.category,
         COALESCE(NULLIF(m.barcode, ''), NULLIF(ds.lot_barcode, '')) AS barcode,
         COALESCE(m.official_price, 0) AS official_price,
-        COALESCE(NULLIF(m.reorder_point, 0), NULLIF(m.min_limit, 0), ?) AS reorder_point,
+        MAX(
+          COALESCE(NULLIF(m.reorder_point, 0), NULLIF(m.min_limit, 0), p.default_limit),
+          COALESCE(ms.avg_monthly_usage, 0)
+        ) AS reorder_point,
         COALESCE(NULLIF(m.default_purchase_qty, 0), 1) AS default_purchase_qty,
         COALESCE(ms.avg_monthly_usage, 0) AS avg_monthly_usage,
-        MAX(0, COALESCE(NULLIF(m.reorder_point, 0), NULLIF(m.min_limit, 0), ?) - COALESCE(ds.current_stock, 0)) AS deficit,
+        MAX(
+          0,
+          MAX(
+            COALESCE(NULLIF(m.reorder_point, 0), NULLIF(m.min_limit, 0), p.default_limit),
+            COALESCE(ms.avg_monthly_usage, 0)
+          ) - COALESCE(ds.current_stock, 0)
+        ) AS deficit,
         CASE 
           WHEN COALESCE(ds.current_stock, 0) <= 0 THEN 'out_of_stock'
-          WHEN COALESCE(ds.current_stock, 0) <= (COALESCE(NULLIF(m.reorder_point, 0), NULLIF(m.min_limit, 0), ?) / 2) THEN 'critical'
+          WHEN COALESCE(ds.current_stock, 0) <= (
+            MAX(
+              COALESCE(NULLIF(m.reorder_point, 0), NULLIF(m.min_limit, 0), p.default_limit),
+              COALESCE(ms.avg_monthly_usage, 0)
+            ) / 2
+          ) THEN 'critical'
           ELSE 'low'
         END AS status
       FROM master_drugs m
+      CROSS JOIN Params p
       LEFT JOIN DrugStock ds ON CAST(m.id AS TEXT) = CAST(ds.drug_id AS TEXT)
       LEFT JOIN MonthlySales ms ON CAST(m.id AS TEXT) = CAST(ms.drug_id AS TEXT)
       WHERE (
-        (ds.current_stock IS NOT NULL AND ds.current_stock <= COALESCE(NULLIF(m.reorder_point, 0), NULLIF(m.min_limit, 0), ?))
+        (ds.current_stock IS NOT NULL AND ds.current_stock <= MAX(
+          COALESCE(NULLIF(m.reorder_point, 0), NULLIF(m.min_limit, 0), p.default_limit),
+          COALESCE(ms.avg_monthly_usage, 0)
+        ))
         OR (ds.current_stock IS NULL AND (m.reorder_point > 0 OR m.min_limit > 0 OR ms.avg_monthly_usage > 0))
       )
       ORDER BY 
@@ -616,7 +671,7 @@ export async function getLowStockAction(threshold?: number) {
         deficit DESC,
         quantity ASC
       LIMIT 250
-    `).all(defaultLimit, defaultLimit, defaultLimit, defaultLimit) as any[];
+    `).all(pharmacyId, defaultLimit) as any[];
 
     return { success: true, data: items };
   } catch (error) {

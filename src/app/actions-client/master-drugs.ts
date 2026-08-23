@@ -1053,44 +1053,6 @@ export async function completeOpeningBalanceAction(obId: string) {
   }
 }
 
-// Shortages
-export async function getShortagesAction() {
-  try {
-    const items = await db.prepare(`
-      SELECT s.*, 
-             m.trade_name, m.trade_name_en,
-             m.generic_name
-      FROM shortages s
-      LEFT JOIN master_drugs m ON s.drug_id = m.id
-      WHERE s.status != 'received'
-      ORDER BY s.created_at DESC
-    `).all();
-    return { success: true, data: items };
-  } catch (error: any) {
-    return { success: false, error: error.message };
-  }
-}
-
-export async function addShortageAction(drugId: number, quantity: number = 1) {
-  try {
-    await db.prepare('INSERT INTO shortages (drug_id, requested_quantity) VALUES (?, ?)').run(drugId, quantity);
-    revalidatePath('/stores/shortages');
-    return { success: true };
-  } catch (error: any) {
-    return { success: false, error: error.message };
-  }
-}
-
-export async function updateShortageStatusAction(id: number, status: string) {
-  try {
-    await db.prepare('UPDATE shortages SET status = ? WHERE id = ?').run(status, id);
-    revalidatePath('/stores/shortages');
-    return { success: true };
-  } catch (error: any) {
-    return { success: false, error: error.message };
-  }
-}
-
 // Stock Adjustments
 export async function createStockAdjustmentAction(inventoryId: string, data: { reason_id: number, old_quantity: number, new_quantity: number, notes?: string }) {
   try {

@@ -51,6 +51,8 @@ const db = {
 
 
 import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
+import { format } from 'date-fns';
+import { requireOpenShiftId } from './finance';
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 
 export async function getPendingDeliveriesAction() {
@@ -80,14 +82,18 @@ export async function closeDeliveryInvoiceAction(invoiceId: string, deliveryFee:
   try {
     const user = await getLocalSession();
     if (!user || !hasUserPermissionSync(user, 'can_view_delivery')) return { success: false, error: 'غير مصرح' };
+    if (!Number.isFinite(deliveryFee) || deliveryFee < 0) return { success: false, error: 'رسوم التوصيل غير صالحة' };
 
     const transaction = db.transaction(async () => {
       // 1. Fetch invoice info to get total
-      const invoice = await db.prepare('SELECT total_amount, shift_id FROM sales_invoices WHERE id = ?').get(invoiceId) as any;
-      const totalCollected = (invoice?.total_amount || 0) + deliveryFee;
+      const invoice = await db.prepare("SELECT total_amount FROM sales_invoices WHERE id = ? AND payment_method = 'delivery' AND status = 'completed'").get(invoiceId) as any;
+      if (!invoice) throw new Error('فاتورة التوصيل غير موجودة أو تم تحصيلها بالفعل');
+      const shiftId = await requireOpenShiftId(user.id);
+      const totalCollected = Number(invoice.total_amount || 0) + deliveryFee;
 
       // 2. Update invoice status and total
-      await db.prepare("UPDATE sales_invoices SET status = 'delivered', total_amount = ? WHERE id = ?").run(totalCollected, invoiceId);
+      const updated = await db.prepare("UPDATE sales_invoices SET status = 'delivered', total_amount = ? WHERE id = ? AND status = 'completed'").run(totalCollected, invoiceId);
+      if (updated.changes !== 1) throw new Error('تم تحصيل فاتورة التوصيل بالفعل');
 
       // 3. Automatically record cash receipt (Handover from driver)
       const receiptId = generateId();
@@ -96,9 +102,9 @@ export async function closeDeliveryInvoiceAction(invoiceId: string, deliveryFee:
           id, user_id, shift_id, type, category, amount, notes, date
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
-        receiptId, user.id, invoice.shift_id || null, 'receipt', 'delivery', 
+        receiptId, user.id, shiftId, 'receipt', 'delivery',
         totalCollected, `Delivery Closed: Invoice #${invoiceId.substring(0, 8)} (incl. Fee: ${deliveryFee})`,
-        new Date().toISOString().split('T')[0]
+        format(new Date(), 'yyyy-MM-dd')
       );
 
       // 4. Log Activity
@@ -109,7 +115,7 @@ export async function closeDeliveryInvoiceAction(invoiceId: string, deliveryFee:
     revalidatePath('/sales/delivery');
     return { success: true };
   } catch (error) {
-    return { success: false, error: 'فشل إغلاق فاتورة التوصيل' };
+    return { success: false, error: error instanceof Error ? error.message : 'فشل إغلاق فاتورة التوصيل' };
   }
 }
 

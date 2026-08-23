@@ -69,25 +69,28 @@ export async function addExpenseAction(data: {
     if (!user || (user.role !== 'owner' && user.role !== 'admin')) {
       return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
     }
-    if (!user) return { success: false, error: 'غير مصرح' };
+    if (!Number.isFinite(data.amount) || data.amount <= 0) return { success: false, error: 'مبلغ المصروف غير صالح' };
+    if (!data.category.trim() || !data.date) return { success: false, error: 'بيانات المصروف غير مكتملة' };
 
     const id = generateId();
-    await db.prepare(`
-      INSERT INTO expenses (id, user_id, category, amount, description, date)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(id, user.id, data.category, data.amount, data.description, data.date);
+    await dbTransaction(async () => {
+      await db.prepare(`
+        INSERT INTO expenses (id, user_id, category, amount, description, date)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(id, user.id, data.category, data.amount, data.description, data.date);
 
-    logActivity(user.id, 'ADD_EXPENSE', `${data.category}: ${data.amount} ج.م - ${data.description}`);
-
-    // Create a cash movement to ensure double-entry accounting updates
-    await createCashMovementAction({
-      type: 'disbursement',
-      category: 'operating_expenses',
-      sub_category: data.category,
-      amount: data.amount,
-      notes: data.description,
-      date: data.date,
+      const cashMovement = await createCashMovementAction({
+        type: 'disbursement',
+        category: 'operating_expenses',
+        sub_category: data.category,
+        amount: data.amount,
+        notes: data.description,
+        date: data.date,
+      });
+      if (!cashMovement.success) throw new Error(cashMovement.error || 'فشل تسجيل حركة المصروف النقدية');
     });
+
+    await logActivity(user.id, 'ADD_EXPENSE', `${data.category}: ${data.amount} ج.م - ${data.description}`);
 
     revalidatePath('/expenses');
     return { success: true, id };

@@ -50,7 +50,7 @@ const db = {
 
 
 
-import { getLocalSession, verifyPassword } from '@/lib/auth/local';
+import { getLocalSession, hasUserPermissionSync, verifyPassword } from '@/lib/auth/local';
 
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 
@@ -60,35 +60,20 @@ const HANDOVER_DETAILS_SQL = `
     s.user_id,
     s.start_time,
     s.end_time,
+    s.status,
     CAST(COALESCE(s.starting_cash, 0) AS REAL) AS starting_cash,
     COALESCE(u.full_name, u.username, s.user_id) AS user_name,
     (
       SELECT COALESCE(SUM(CASE WHEN si.payment_method = 'cash' THEN CAST(si.total_amount AS REAL) ELSE 0 END), 0)
       FROM sales_invoices si
       WHERE (si.status IS NULL OR si.status = '' OR si.status = 'completed' OR si.status = 'approved')
-        AND (
-          si.shift_id = s.id OR
-          (
-            (si.shift_id IS NULL OR TRIM(si.shift_id) = '') AND
-            (CAST(si.user_id AS TEXT) = CAST(s.user_id AS TEXT) OR si.user_id IS NULL OR s.user_id IS NULL) AND
-            datetime(si.created_at) >= datetime(s.start_time) AND
-            (s.end_time IS NULL OR datetime(si.created_at) <= datetime(s.end_time))
-          )
-        )
+        AND si.shift_id = s.id
     ) AS cash_sales,
     (
       SELECT COALESCE(SUM(CASE WHEN si.payment_method = 'visa' THEN CAST(si.total_amount AS REAL) ELSE 0 END), 0)
       FROM sales_invoices si
       WHERE (si.status IS NULL OR si.status = '' OR si.status = 'completed' OR si.status = 'approved')
-        AND (
-          si.shift_id = s.id OR
-          (
-            (si.shift_id IS NULL OR TRIM(si.shift_id) = '') AND
-            (CAST(si.user_id AS TEXT) = CAST(s.user_id AS TEXT) OR si.user_id IS NULL OR s.user_id IS NULL) AND
-            datetime(si.created_at) >= datetime(s.start_time) AND
-            (s.end_time IS NULL OR datetime(si.created_at) <= datetime(s.end_time))
-          )
-        )
+        AND si.shift_id = s.id
     ) AS visa_sales,
     (
       SELECT COALESCE(SUM(
@@ -107,37 +92,17 @@ const HANDOVER_DETAILS_SQL = `
       FROM returns r
       WHERE r.refund_method = 'cash'
         AND (r.status IS NULL OR r.status = '' OR r.status IN ('approved', 'completed'))
-        AND (
-          r.shift_id = s.id OR
-          (
-            (r.shift_id IS NULL OR TRIM(r.shift_id) = '') AND
-            (CAST(r.user_id AS TEXT) = CAST(s.user_id AS TEXT) OR r.user_id IS NULL OR s.user_id IS NULL) AND
-            datetime(r.created_at) >= datetime(s.start_time) AND
-            (s.end_time IS NULL OR datetime(r.created_at) <= datetime(s.end_time))
-          )
-        )
+        AND r.shift_id = s.id
     ) AS returns,
     (
       SELECT COALESCE(SUM(CASE WHEN cm.type IN ('receipt', 'in') THEN CAST(cm.amount AS REAL) ELSE 0 END), 0)
       FROM cash_movements cm
-      WHERE cm.shift_id = s.id OR
-        (
-          (cm.shift_id IS NULL OR TRIM(cm.shift_id) = '') AND
-          (CAST(cm.user_id AS TEXT) = CAST(s.user_id AS TEXT) OR cm.user_id IS NULL OR s.user_id IS NULL) AND
-          datetime(cm.created_at) >= datetime(s.start_time) AND
-          (s.end_time IS NULL OR datetime(cm.created_at) <= datetime(s.end_time))
-        )
+      WHERE cm.shift_id = s.id
     ) AS receipts,
     (
       SELECT COALESCE(SUM(CASE WHEN cm.type IN ('disbursement', 'out') THEN CAST(cm.amount AS REAL) ELSE 0 END), 0)
       FROM cash_movements cm
-      WHERE cm.shift_id = s.id OR
-        (
-          (cm.shift_id IS NULL OR TRIM(cm.shift_id) = '') AND
-          (CAST(cm.user_id AS TEXT) = CAST(s.user_id AS TEXT) OR cm.user_id IS NULL OR s.user_id IS NULL) AND
-          datetime(cm.created_at) >= datetime(s.start_time) AND
-          (s.end_time IS NULL OR datetime(cm.created_at) <= datetime(s.end_time))
-        )
+      WHERE cm.shift_id = s.id
     ) AS disbursements
   FROM shifts s
   LEFT JOIN users u ON u.id = s.user_id
@@ -167,7 +132,10 @@ async function loadHandoverDetails(shiftId: string) {
 
 export async function getHandoverDetailsAction(shiftId: string) {
   try {
-    if (!await getLocalSession()) return { success: false, error: 'غير مصرح' };
+    const user = await getLocalSession();
+    if (!user || (!hasUserPermissionSync(user, 'acc_can_view_handover') && !hasUserPermissionSync(user, 'can_view_shifts'))) {
+      return { success: false, error: 'غير مصرح' };
+    }
     return { success: true, data: await loadHandoverDetails(shiftId) };
   } catch (error) {
     console.error('Get handover details error:', error);
@@ -177,6 +145,7 @@ export async function getHandoverDetailsAction(shiftId: string) {
 
 export async function processHandoverAction(data: {
   shiftId: string;
+  actualCash: number;
   transferAmount: number;
   transferTargetId: string;
   transferTargetType: 'bank' | 'pos' | 'treasury';
@@ -186,18 +155,21 @@ export async function processHandoverAction(data: {
 }) {
   try {
     const user = await getLocalSession();
-    if (!user) return { success: false, error: 'غير مصرح' };
+    if (!user || !hasUserPermissionSync(user, 'acc_can_view_handover')) {
+      return { success: false, error: 'غير مصرح' };
+    }
+    if (!Number.isFinite(data.actualCash) || data.actualCash < 0) {
+      return { success: false, error: 'النقدية الفعلية غير صالحة' };
+    }
     if (!Number.isFinite(data.transferAmount) || data.transferAmount < 0) {
       return { success: false, error: 'مبلغ التحويل غير صالح' };
     }
-
-    const details = await loadHandoverDetails(data.shiftId);
-    if (data.transferAmount > details.expected_cash + 0.005) {
-      return { success: false, error: 'مبلغ التحويل أكبر من النقدية المتاحة في الدرج' };
+    if (data.transferAmount > data.actualCash + 0.005) {
+      return { success: false, error: 'مبلغ التحويل أكبر من النقدية الفعلية في الدرج' };
     }
 
     // Validate receiver
-    const receiver = await db.prepare('SELECT id, password_hash FROM users WHERE username = ?').get(data.receiverUsername) as any;
+    const receiver = await db.prepare('SELECT id, password_hash FROM users WHERE username = ? AND is_active = 1').get(data.receiverUsername) as any;
     if (!receiver) return { success: false, error: 'المستلم غير موجود' };
     if (!data.receiverPasswordHash || !receiver.password_hash || !await verifyPassword(data.receiverPasswordHash, receiver.password_hash)) {
       return { success: false, error: 'كلمة مرور المستلم غير صحيحة' };
@@ -210,51 +182,84 @@ export async function processHandoverAction(data: {
 
     const cashDrawerAcc = await getAccount('cash_drawer') || (await db.prepare("SELECT id FROM accounts WHERE code = '1.1.1'").get() as any)?.id || 6;
     const bankAcc = await getAccount('bank_clearing') || (await db.prepare("SELECT id FROM accounts WHERE code = '1.1.4'").get() as any)?.id;
+    const cashDifferenceAcc = await getAccount('cash_difference') || (await db.prepare("SELECT id FROM accounts WHERE code = '4.3'").get() as any)?.id;
 
     const transaction = db.transaction(async () => {
-      // 1. Create a cash movement for the transfer
-      const movementId = generateId();
-      await db.prepare(`
-        INSERT INTO cash_movements (id, user_id, shift_id, type, category, amount, target_name, notes, date)
-        VALUES (?, ?, ?, 'disbursement', 'handover', ?, ?, ?, CURRENT_TIMESTAMP)
-      `).run(movementId, user.id, data.shiftId, data.transferAmount, data.receiverUsername, data.notes || 'تسليم درج');
-
-      // 2. Update the target balance if it's a bank or POS
-      if (data.transferTargetType === 'bank') {
-        await db.prepare('UPDATE banks SET current_balance = current_balance + ? WHERE id = ?').run(data.transferAmount, data.transferTargetId);
-      } else if (data.transferTargetType === 'pos') {
-        await db.prepare('UPDATE points_of_sale SET current_balance = current_balance + ? WHERE id = ?').run(data.transferAmount, data.transferTargetId);
+      const details = await loadHandoverDetails(data.shiftId);
+      if (String(details.user_id) !== String(user.id) || details.status !== 'open') {
+        throw new Error('الوردية غير مفتوحة أو لا تخص المستخدم الحالي');
       }
 
-      // 3. Mark the shift as handed over or just log it
-      await db.prepare('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)').run(user.id, 'HANDOVER', `Handed over ${data.transferAmount} to ${data.receiverUsername}`);
+      const difference = data.actualCash - details.expected_cash;
+      const remainingCash = Math.max(0, data.actualCash - data.transferAmount);
+      const shiftStatus = Math.abs(difference) > 5 ? 'discrepancy' : 'closed';
 
-      // 4. Post double-entry journal entries for handover
-      const journalId = generateId();
-      const date = new Date().toISOString().split('T')[0];
-      const targetText = data.transferTargetType === 'bank' ? 'البنك' : 'الخزينة الرئيسية';
-      await db.prepare(`
-        INSERT INTO daily_journals (id, date, description, created_by, total_amount)
-        VALUES (?, ?, ?, ?, ?)
-      `).run(journalId, date, `تسليم درج: تحويل إلى ${targetText}`, user.id, data.transferAmount);
+      if (data.transferAmount > 0) {
+        const movementId = generateId();
+        await db.prepare(`
+          INSERT INTO cash_movements (id, user_id, shift_id, type, category, amount, target_name, notes, date)
+          VALUES (?, ?, ?, 'disbursement', 'handover', ?, ?, ?, datetime('now', 'localtime'))
+        `).run(movementId, user.id, data.shiftId, data.transferAmount, data.receiverUsername, data.notes || 'تسليم درج');
+      }
 
-      if (data.transferTargetType === 'bank' && !bankAcc) throw new Error('حساب البنك غير مهيأ');
-      const targetAcc = data.transferTargetType === 'bank' ? bankAcc : cashDrawerAcc;
-      
-      // Debit the receiving account (Bank or Main Treasury), Credit the Cash Drawer (which represents the drawer cash)
-      await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, targetAcc, 'debit', data.transferAmount);
-      await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, cashDrawerAcc, 'credit', data.transferAmount);
+      if (data.transferAmount > 0 && data.transferTargetType === 'bank') {
+        const bankUpdate = await db.prepare('UPDATE banks SET current_balance = current_balance + ? WHERE id = ?').run(data.transferAmount, data.transferTargetId);
+        if (bankUpdate.changes !== 1) throw new Error('الحساب البنكي المحدد غير موجود');
+      } else if (data.transferAmount > 0 && data.transferTargetType === 'pos') {
+        const posUpdate = await db.prepare('UPDATE points_of_sale SET current_balance = current_balance + ? WHERE id = ?').run(data.transferAmount, data.transferTargetId);
+        if (posUpdate.changes !== 1) throw new Error('نقطة البيع المحددة غير موجودة');
+      }
+
+      // A treasury handover remains in the same cash account, so only bank transfers need a ledger transfer.
+      if (data.transferTargetType === 'bank' && data.transferAmount > 0) {
+        if (!bankAcc) throw new Error('حساب البنك غير مهيأ');
+        const journalId = generateId();
+        await db.prepare(`
+          INSERT INTO daily_journals (id, date, description, created_by, total_amount)
+          VALUES (?, date('now', 'localtime'), 'تسليم درج: تحويل إلى البنك', ?, ?)
+        `).run(journalId, user.id, data.transferAmount);
+        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, bankAcc, 'debit', data.transferAmount);
+        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, cashDrawerAcc, 'credit', data.transferAmount);
+      }
+
+      if (Math.abs(difference) > 0.01) {
+        if (!cashDifferenceAcc) throw new Error('حساب عجز وزيادة الخزينة غير مهيأ');
+        const journalId = generateId();
+        await db.prepare(`
+          INSERT INTO daily_journals (id, date, description, created_by, total_amount)
+          VALUES (?, date('now', 'localtime'), 'تسوية وردية: عجز/زيادة نقدية', ?, ?)
+        `).run(journalId, user.id, Math.abs(difference));
+        const debitAccount = difference > 0 ? cashDrawerAcc : cashDifferenceAcc;
+        const creditAccount = difference > 0 ? cashDifferenceAcc : cashDrawerAcc;
+        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, debitAccount, 'debit', Math.abs(difference));
+        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, creditAccount, 'credit', Math.abs(difference));
+      }
+
+      const shiftUpdate = await db.prepare(`
+        UPDATE shifts
+        SET end_time = CURRENT_TIMESTAMP, ending_cash = ?, notes = ?, status = ?
+        WHERE id = ? AND CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
+      `).run(remainingCash, data.notes || null, shiftStatus, data.shiftId, user.id);
+      if (shiftUpdate.changes !== 1) throw new Error('تم إغلاق الوردية أو تعديلها بالفعل');
+
+      await db.prepare('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)').run(
+        user.id,
+        'HANDOVER',
+        `Handed over ${data.transferAmount} to ${data.receiverUsername}; difference ${difference.toFixed(2)}`
+      );
+
+      return { difference, remainingCash, status: shiftStatus };
     });
 
-    await transaction();
+    const result = await transaction();
 
     revalidatePath('/finance');
     revalidatePath('/shifts');
 
-    return { success: true };
+    return { success: true, ...result };
   } catch (error) {
     console.error('Handover error:', error);
-    return { success: false, error: 'فشل إتمام عملية التسليم' };
+    return { success: false, error: error instanceof Error ? error.message : 'فشل إتمام عملية التسليم' };
   }
 }
 
@@ -262,40 +267,13 @@ export async function getOpenShiftHandoverAction() {
   try {
     const user = await getLocalSession();
     if (!user) return { success: false, error: 'غير مصرح', data: null };
-    let shift = await db.prepare(`
+    const shift = await db.prepare(`
       SELECT id, user_id, start_time, starting_cash, status
       FROM shifts
       WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
       ORDER BY start_time DESC
       LIMIT 1
     `).get(user.id);
-    if (!shift) {
-      shift = await db.prepare(`
-        SELECT id, user_id, start_time, starting_cash, status
-        FROM shifts
-        WHERE status = 'open'
-        ORDER BY start_time DESC
-        LIMIT 1
-      `).get();
-    }
-    if (!shift) {
-      const firstSale = await db.prepare(`
-        SELECT created_at FROM sales_invoices 
-        WHERE (CAST(user_id AS TEXT) = CAST(? AS TEXT) OR user_id IS NULL) 
-          AND DATE(created_at) = DATE('now', 'localtime')
-        ORDER BY created_at ASC LIMIT 1
-      `).get(user.id) as any;
-
-      const newShiftId = generateId();
-      const startTime = firstSale?.created_at || new Date().toISOString().replace('T', ' ').substring(0, 19);
-
-      await db.prepare(`
-        INSERT INTO shifts (id, user_id, start_time, starting_cash, status)
-        VALUES (?, ?, ?, 0, 'open')
-      `).run(newShiftId, user.id, startTime);
-
-      shift = { id: newShiftId, user_id: user.id, start_time: startTime, starting_cash: 0, status: 'open' };
-    }
     return { success: true, data: shift || null };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : 'فشل جلب الوردية المفتوحة', data: null };
@@ -305,11 +283,13 @@ export async function getOpenShiftHandoverAction() {
 export async function getShiftCreditSalesAction(shiftId?: string) {
   try {
     const user = await getLocalSession();
-    if (!user) return { success: false, error: 'غير مصرح', data: [] };
+    if (!user || (!hasUserPermissionSync(user, 'acc_can_view_handover') && !hasUserPermissionSync(user, 'can_view_shifts'))) {
+      return { success: false, error: 'غير مصرح', data: [] };
+    }
 
     let targetShiftId = shiftId;
     if (!targetShiftId) {
-      const openShift = await db.prepare("SELECT id FROM shifts WHERE status = 'open' ORDER BY start_time DESC LIMIT 1").get() as any;
+      const openShift = await db.prepare("SELECT id FROM shifts WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open' ORDER BY start_time DESC LIMIT 1").get(user.id) as any;
       targetShiftId = openShift?.id;
     }
 

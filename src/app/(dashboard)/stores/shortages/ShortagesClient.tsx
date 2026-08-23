@@ -1,30 +1,57 @@
 'use client'
 
 import React, { useState } from 'react'
-import { FileText, Search, Plus, Trash2, CheckCircle2, Clock, AlertCircle, Package, Printer } from 'lucide-react'
+import { FileText, Search, CheckCircle2, Clock, AlertCircle, Package, Printer, RefreshCw, Loader2, Warehouse } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { dbSelect, dbExecute } from '@/lib/db/tauri'
 import { toast } from 'react-hot-toast'
+import Link from 'next/link'
+import { getShortagesAction, syncLowStockToShortagesAction, updateShortageStatusAction } from '@/app/actions-client/shortages'
 
 export default function ShortagesClient({ initialData }: { initialData: any[] }) {
   const [data, setData] = useState(initialData)
   const [search, setSearch] = useState('')
-  const [isAdding, setIsAdding] = useState(false)
+  const [isSyncing, setIsSyncing] = useState(false)
 
   const filtered = data.filter(item => 
-    item.trade_name.toLowerCase().includes(search.toLowerCase()) ||
+    (item.trade_name || '').toLowerCase().includes(search.toLowerCase()) ||
     (item.trade_name_en && item.trade_name_en.toLowerCase().includes(search.toLowerCase())) ||
     (item.generic_name && item.generic_name.toLowerCase().includes(search.toLowerCase()))
   )
 
+  const reload = async () => {
+    const result = await getShortagesAction()
+    if (!result.success) throw new Error(result.error || 'فشل تحميل النواقص')
+    setData(result.data || [])
+  }
+
   const handleStatusUpdate = async (id: number, newStatus: string) => {
     try {
-      await dbExecute('UPDATE shortages SET status = ? WHERE id = ?', [newStatus, id]);
-      setData(prev => prev.map(item => item.id === id ? { ...item, status: newStatus } : item))
+      const result = await updateShortageStatusAction(id, newStatus)
+      if (!result.success) throw new Error(result.error || 'فشل تحديث الحالة')
+      setData(prev => newStatus === 'received'
+        ? prev.filter(item => item.id !== id)
+        : prev.map(item => item.id === id ? { ...item, status: newStatus } : item))
       toast.success('تم تحديث الحالة بنجاح')
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      toast.error('فشل تحديث الحالة')
+      toast.error(err.message || 'فشل تحديث الحالة')
+    }
+  }
+
+  const handleSync = async () => {
+    setIsSyncing(true)
+    try {
+      const result = await syncLowStockToShortagesAction()
+      if (!result.success) throw new Error(result.error || 'فشل مزامنة المخزون')
+      await reload()
+      const summary = result.data as any
+      if (summary.total === 0) toast.success('المخزون بحالة جيدة، لا توجد نواقص جديدة')
+      else toast.success(`تمت مزامنة ${summary.total} صنف مع المخزون`)
+    } catch (err: any) {
+      console.error(err)
+      toast.error(err.message || 'فشل مزامنة المخزون')
+    } finally {
+      setIsSyncing(false)
     }
   }
 
@@ -59,63 +86,14 @@ export default function ShortagesClient({ initialData }: { initialData: any[] })
           />
         </div>
         
-        <div className="flex gap-4">
-           <button 
-             onClick={async () => {
-               try {
-                 const results = await dbSelect(`
-                   SELECT 
-                     m.id, 
-                     m.trade_name,
-                     m.trade_name_en,
-                     m.reorder_point,
-                     COALESCE((SELECT SUM(quantity) FROM inventory WHERE drug_id = m.id), 0) as total_stock,
-                     COALESCE((
-                       SELECT SUM(si.quantity_sold) 
-                       FROM sales_items si 
-                       JOIN sales_invoices sin ON si.invoice_id = sin.id
-                       WHERE si.drug_id = m.id AND sin.created_at >= date('now', '-30 days')
-                     ), 0) as sales_30d
-                   FROM master_drugs m
-                 `);
-
-                 const predictions = results.map((r: any) => {
-                   const dailyAvg = r.sales_30d / 30;
-                   const daysLeft = dailyAvg > 0 ? Math.floor(r.total_stock / dailyAvg) : 999;
-                   
-                   return {
-                     ...r,
-                     daily_avg: dailyAvg.toFixed(2),
-                     days_left: daysLeft,
-                     recommendation: daysLeft < 7 ? 'Urgent Order' : (r.total_stock < (r.reorder_point || 5) ? 'Low Stock' : 'Safe')
-                   };
-                 }).filter((p: any) => p.days_left < 14 || p.total_stock < (p.reorder_point || 5));
-
-                 if (predictions.length === 0) {
-                   toast.success('المخزون بحالة ممتازة، لا توجد نواقص متوقعة قريباً');
-                   return;
-                 }
-
-                 toast.success(`تم اكتشاف ${predictions.length} صنف يتوقع نفاده قريباً`);
-                 const newShortages = predictions.map((p: any) => ({
-                   id: -p.id,
-                   trade_name: p.trade_name,
-                   trade_name_en: p.trade_name_en,
-                   generic_name: p.days_left === 999 ? 'توقع: بدون بيانات مبيعات كافية' : `توقع: ينفد خلال ${p.days_left} أيام`,
-                   requested_quantity: p.reorder_point || 5,
-                   status: 'predicted',
-                   created_at: new Date().toISOString()
-                 }));
-                 setData(prev => [...newShortages, ...prev.filter(x => x.id > 0)]);
-               } catch (err) {
-                 console.error('Smart shortages calculation error:', err);
-                 toast.error('فشل توقع النواقص الذكية');
-               }
-             }}
-             className="bg-purple-50 text-purple-600 hover:bg-purple-600 hover:text-white px-8 py-4 rounded-3xl font-black shadow-lg transition-all flex items-center gap-3 active:scale-95"
+        <div className="flex flex-wrap gap-4">
+           <button
+             onClick={handleSync}
+             disabled={isSyncing}
+             className="bg-purple-50 text-purple-600 hover:bg-purple-600 hover:text-white px-8 py-4 rounded-3xl font-black shadow-lg transition-all flex items-center gap-3 active:scale-95 disabled:opacity-50"
            >
-             <Clock className="w-5 h-5" />
-             توقعات النواقص الذكية
+             {isSyncing ? <Loader2 className="w-5 h-5 animate-spin" /> : <RefreshCw className="w-5 h-5" />}
+             مزامنة مع المخزون
            </button>
 
            <button 
@@ -126,13 +104,13 @@ export default function ShortagesClient({ initialData }: { initialData: any[] })
              طباعة النواقص
            </button>
 
-           <button 
-             onClick={() => toast('يرجى إضافة النواقص من صفحة الأصناف مباشرة', { icon: 'ℹ️' })}
+           <Link
+             href="/inventory/low-stock"
              className="bg-primary-600 hover:bg-primary-700 text-white px-8 py-4 rounded-3xl font-black shadow-lg shadow-primary-500/20 transition-all flex items-center gap-3 active:scale-95"
            >
-             <Plus className="w-5 h-5" />
-             إضافة صنف ناقص
-           </button>
+             <Warehouse className="w-5 h-5" />
+             عرض نواقص المخزون
+           </Link>
         </div>
       </div>
 
@@ -159,7 +137,24 @@ export default function ShortagesClient({ initialData }: { initialData: any[] })
                 </div>
               </div>
 
-              <div className="flex items-center gap-4 text-slate-500 text-xs font-bold py-2 border-y border-slate-50 dark:border-slate-800">
+              <div className="grid grid-cols-3 gap-2 py-3 border-y border-slate-50 dark:border-slate-800 text-center">
+                <div className="rounded-xl bg-slate-50 dark:bg-slate-800 p-2">
+                  <span className="block text-[9px] font-black text-slate-400">الرصيد الحالي</span>
+                  <span className={cn('text-sm font-black', Number(item.current_stock) <= 0 ? 'text-red-600' : 'text-slate-700 dark:text-slate-200')}>
+                    {Number(item.current_stock || 0).toLocaleString('ar-EG')}
+                  </span>
+                </div>
+                <div className="rounded-xl bg-slate-50 dark:bg-slate-800 p-2">
+                  <span className="block text-[9px] font-black text-slate-400">حد إعادة الطلب</span>
+                  <span className="text-sm font-black text-amber-600">{Number(item.reorder_point || 0).toLocaleString('ar-EG')}</span>
+                </div>
+                <div className="rounded-xl bg-red-50 dark:bg-red-900/10 p-2">
+                  <span className="block text-[9px] font-black text-slate-400">العجز</span>
+                  <span className="text-sm font-black text-red-600">{Number(item.deficit || 0).toLocaleString('ar-EG')}</span>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-4 text-slate-500 text-xs font-bold">
                 <div className="flex items-center gap-1.5">
                   <Package className="w-4 h-4 text-primary-500" />
                   <span>الكمية المطلوبة: {item.requested_quantity}</span>
@@ -168,6 +163,16 @@ export default function ShortagesClient({ initialData }: { initialData: any[] })
                   <Clock className="w-4 h-4 text-slate-400" />
                   <span>{new Date(item.created_at).toLocaleDateString('ar-EG')}</span>
                 </div>
+                <span className={cn(
+                  'mr-auto px-2 py-1 rounded-lg text-[9px] font-black',
+                  item.inventory_status === 'sufficient'
+                    ? 'bg-green-100 text-green-700 dark:bg-green-900/20 dark:text-green-400'
+                    : item.inventory_status === 'out_of_stock'
+                      ? 'bg-red-100 text-red-700 dark:bg-red-900/20 dark:text-red-400'
+                      : 'bg-amber-100 text-amber-700 dark:bg-amber-900/20 dark:text-amber-400'
+                )}>
+                  {item.inventory_status === 'sufficient' ? 'تم توفير المخزون' : item.inventory_status === 'out_of_stock' ? 'نافد' : 'أقل من الحد'}
+                </span>
               </div>
 
               <div className="flex gap-2 mt-2 no-print">

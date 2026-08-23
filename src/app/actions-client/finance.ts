@@ -57,6 +57,21 @@ import { format } from 'date-fns';
 import { z } from 'zod';
 import { patientOutstandingBalanceQuery } from '@/lib/patients/balance';
 
+export async function requireOpenShiftId(userId: string, requestedShiftId?: string) {
+  const shift = requestedShiftId
+    ? await db.prepare(`
+        SELECT id FROM shifts
+        WHERE id = ? AND CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
+      `).get(requestedShiftId, userId) as any
+    : await db.prepare(`
+        SELECT id FROM shifts
+        WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
+        ORDER BY start_time DESC LIMIT 1
+      `).get(userId) as any;
+  if (!shift?.id) throw new Error('يجب فتح وردية نقدية قبل تسجيل الحركة');
+  return String(shift.id);
+}
+
 const noticeSchema = z.object({
   target_type: z.enum(['customer', 'supplier', 'pharmacy']),
   target_id: z.string().optional(),
@@ -182,11 +197,12 @@ export async function addPatientPaymentAction(rawData: z.infer<typeof paymentSch
       `).run(id, data.patient_id, user.id, data.amount, data.payment_method, data.notes || null, data.date);
 
       if (data.payment_method === 'cash') {
+        const shiftId = await requireOpenShiftId(user.id, data.shift_id);
         await db.prepare(`
           INSERT INTO cash_movements (
             id, user_id, shift_id, type, category, amount, source_type, target_name, notes, date
           ) VALUES (?, ?, ?, 'receipt', 'accounts_receivable', ?, 'patient_payment', ?, ?, ?)
-        `).run(generateId(), user.id, data.shift_id || null, data.amount, data.patient_id, `دفعة من المريض ${patient.full_name}: ${data.notes || ''}`, data.date);
+        `).run(generateId(), user.id, shiftId, data.amount, data.patient_id, `دفعة من المريض ${patient.full_name}: ${data.notes || ''}`, data.date);
       }
 
       const getAccount = async (category: string, fallback: number) => {
@@ -240,17 +256,18 @@ export async function createCashMovementAction(rawData: z.infer<typeof cashMovem
   try {
     const data = cashMovementSchema.parse(rawData);
     const user = await getLocalSession();
-    if (!user || !hasUserPermissionSync(user, 'rep_can_view_financial')) return { success: false, error: 'غير مصرح' };
+    if (!user || !hasUserPermissionSync(user, 'acc_can_process_cash_flow')) return { success: false, error: 'غير مصرح' };
 
     const cashMovementId = generateId();
     const transaction = db.transaction(async () => {
+      const shiftId = await requireOpenShiftId(user.id, data.shift_id);
       await db.prepare(`
         INSERT INTO cash_movements (
           id, user_id, shift_id, type, category, sub_category, 
           amount, source_type, target_name, notes, date, actual_date
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
-        cashMovementId, user.id, data.shift_id || null, data.type, data.category, data.sub_category || null,
+        cashMovementId, user.id, shiftId, data.type, data.category, data.sub_category || null,
         data.amount, data.source_type || null, data.target_name || null, data.notes || null, 
         data.date, data.actual_date || null
       );
@@ -303,7 +320,7 @@ export async function createCashMovementAction(rawData: z.infer<typeof cashMovem
     return { success: true, id: cashMovementId };
   } catch (error) {
     console.error('Create cash movement error:', error);
-    return { success: false, error: 'فشل تنفيذ حركة النقدية' };
+    return { success: false, error: error instanceof Error ? error.message : 'فشل تنفيذ حركة النقدية' };
   }
 }
 
@@ -314,25 +331,32 @@ export async function getCashMovementsAction(filters?: {
 }) {
   try {
     const user = await getLocalSession();
-    if (!user || !hasUserPermissionSync(user, 'rep_can_view_financial')) return { success: false, error: 'غير مصرح' };
+    if (!user || !hasUserPermissionSync(user, 'acc_can_process_cash_flow')) return { success: false, error: 'غير مصرح' };
 
-    let query = `SELECT * FROM cash_movements WHERE 1=1`;
+    let query = `
+      SELECT cm.*, COALESCE(u.full_name, u.username, cm.user_id) AS user_name,
+             s.status AS shift_status
+      FROM cash_movements cm
+      LEFT JOIN users u ON u.id = cm.user_id
+      LEFT JOIN shifts s ON s.id = cm.shift_id
+      WHERE 1=1
+    `;
     const params: any[] = [];
 
     if (filters?.type) {
-      query += ` AND type = ?`;
+      query += ` AND cm.type = ?`;
       params.push(filters.type);
     }
     if (filters?.dateFrom) {
-      query += ` AND date >= ?`;
+      query += ` AND cm.date >= ?`;
       params.push(filters.dateFrom);
     }
     if (filters?.dateTo) {
-      query += ` AND date <= ?`;
+      query += ` AND cm.date <= ?`;
       params.push(filters.dateTo);
     }
 
-    query += ` ORDER BY created_at DESC`;
+    query += ` ORDER BY cm.created_at DESC`;
     const results = await db.prepare(query).all(...params);
     return { success: true, data: results };
   } catch (error) {
@@ -675,7 +699,7 @@ export async function seedFinanceTestDataAction() {
 
 export async function generateDailySnapshotAction(targetDate?: string) {
   try {
-    const date = targetDate || new Date().toISOString().split('T')[0];
+    const date = targetDate || format(new Date(), 'yyyy-MM-dd');
     
     const sales = await db.prepare('SELECT COALESCE(SUM(total_amount), 0) as total FROM sales_invoices WHERE date(created_at) = ? AND status = ?').get(date, 'completed') as any;
     const returns = await db.prepare('SELECT COALESCE(SUM(total_refund), 0) as total FROM returns WHERE date(created_at) = ? AND status = ?').get(date, 'approved') as any;

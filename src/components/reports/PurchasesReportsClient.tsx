@@ -104,6 +104,8 @@ export default function PurchasesReportsClient({ userRole }: { userRole?: string
       handleSearch();
     }
     loadData();
+    // Initial load uses the default filters; edited filters run only when Search is pressed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleSearch = async () => {

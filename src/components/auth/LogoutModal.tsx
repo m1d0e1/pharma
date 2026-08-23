@@ -3,10 +3,10 @@ import { useHotkeys } from 'react-hotkeys-hook';
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { LogOut, DollarSign, Clock, X, AlertTriangle } from 'lucide-react';
+import { LogOut, X, AlertTriangle } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { logoutLocalAction } from '@/app/actions-client/auth';
-import { endShiftAction, getCurrentShiftAction } from '@/app/actions-client/shifts';
+import { getCurrentShiftAction } from '@/app/actions-client/shifts';
 
 interface LogoutModalProps {
   isOpen: boolean;
@@ -17,12 +17,8 @@ export default function LogoutModal({ isOpen, onClose }: LogoutModalProps) {
   const router = useRouter();
   
   useHotkeys('esc', () => { if(typeof onClose === 'function') onClose(); }, { enableOnFormTags: true });
-const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [currentShift, setCurrentShift] = useState<any>(null);
-  const [formData, setFormData] = useState({
-    endingCashAmount: 0,
-    closingNotes: '',
-  });
 
   // Load current shift info when modal opens
   useEffect(() => {
@@ -36,38 +32,6 @@ const [loading, setLoading] = useState(false);
       fetchShift();
     }
   }, [isOpen]);
-
-  const handleCloseShiftAndLogout = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-
-    try {
-      // 1. End Shift locally
-      const shiftResult = await endShiftAction(formData.endingCashAmount, formData.closingNotes);
-      if (!shiftResult.success) {
-        throw new Error(shiftResult.error || 'فشل إغلاق الوردية');
-      }
-
-      toast.success('تم إغلاق الوردية بنجاح');
-
-      // 2. Logout locally
-      await logoutLocalAction();
-      
-      // 3. Clear any leftovers
-      localStorage.clear();
-      
-      toast.success('تم تسجيل الخروج بنجاح');
-      onClose();
-      
-      // Force a full reload to clear all states and catch new auth status
-      window.location.href = '/login';
-    } catch (error: any) {
-      console.error('Logout error:', error);
-      toast.error(error.message || 'حدث خطأ أثناء تسجيل الخروج');
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const handleQuickLogout = async () => {
     setLoading(true);
@@ -118,62 +82,26 @@ const [loading, setLoading] = useState(false);
 
         <div className="p-8">
           {hasOpenShift ? (
-            <form onSubmit={handleCloseShiftAndLogout} className="space-y-6">
+            <div className="space-y-6">
               <div className="p-4 bg-amber-50 dark:bg-amber-900/10 rounded-2xl border border-amber-200 dark:border-amber-800 flex gap-3">
                 <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-500 shrink-0 mt-0.5" />
                 <div>
                   <p className="text-sm font-black text-amber-800 dark:text-amber-200 leading-tight">وردية مفتوحة قيد التشغيل</p>
-                  <p className="text-xs text-amber-700 dark:text-amber-300 mt-1 font-bold">يرجى تسجيل إجمالي النقدية الموجدة في الخزنة حالياً لإغلاق الوردية.</p>
+                  <p className="text-xs text-amber-700 dark:text-amber-300 mt-1 font-bold">أكمل تسليم النقدية وإغلاق الوردية الموحد قبل تسجيل الخروج.</p>
                 </div>
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-sm font-black text-slate-700 dark:text-slate-300 mr-2">إجمالي النقدية بالخزنة (ج.م)</label>
-                <div className="relative">
-                  <DollarSign className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    required
-                    autoFocus
-                    value={formData.endingCashAmount}
-                    onChange={(e) => setFormData({ ...formData, endingCashAmount: parseFloat(e.target.value) || 0 })}
-                    className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 pr-12 pl-4 py-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all font-black text-lg"
-                    placeholder="0.00"
-                  />
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-sm font-black text-slate-700 dark:text-slate-300 mr-2">ملاحظات الإغلاق (اختياري)</label>
-                <textarea
-                  value={formData.closingNotes}
-                  onChange={(e) => setFormData({ ...formData, closingNotes: e.target.value })}
-                  rows={3}
-                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-4 py-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all font-bold resize-none"
-                  placeholder="أي ملاحظات بخصوص عجز أو زيادة أو أحداث..."
-                />
               </div>
 
               <button
-                type="submit"
-                disabled={loading}
-                className="w-full bg-red-600 text-white py-4 rounded-2xl font-black text-lg hover:bg-red-700 transition-all shadow-xl shadow-red-500/20 transform active:scale-95 disabled:opacity-50 flex items-center justify-center gap-2"
+                type="button"
+                onClick={() => {
+                  onClose();
+                  router.push('/finance/handover');
+                }}
+                className="w-full bg-blue-600 text-white py-4 rounded-2xl font-black text-lg hover:bg-blue-700 transition-all shadow-xl shadow-blue-500/20 transform active:scale-95"
               >
-                {loading ? (
-                  <>
-                    <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
-                    <span>جاري الإغلاق...</span>
-                  </>
-                ) : (
-                  <>
-                    <span>🔒</span>
-                    <span>إغلاق الوردية وتسجيل الخروج</span>
-                  </>
-                )}
+                الانتقال إلى تسليم الوردية
               </button>
-            </form>
+            </div>
           ) : (
             <div className="space-y-4">
               <div className="p-6 text-center">

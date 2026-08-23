@@ -76,7 +76,7 @@ export default function ReceiptDetailsModal({ invoice, onClose, autoPrint = fals
       }
     }
     loadInfo()
-  }, [])
+  }, [autoPrint, invoice])
 
   const formatDate = (dateStr: string) => {
     if (!mounted) return '---'

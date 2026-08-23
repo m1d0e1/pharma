@@ -62,6 +62,8 @@ const navItems = [
   // Finance
   { category: 'المالية', href: '/accounts', label: 'الحسابات والمالية', icon: Wallet, roles: ['owner', 'admin'], permission: 'acc_can_view_general' },
   { category: 'المالية', href: '/accounts/cash-transactions', label: 'حركة النقدية', icon: ArrowLeftRight, roles: ['owner', 'admin', 'pharmacist'], permission: 'acc_can_process_cash_flow' },
+  { category: 'المالية', href: '/shifts', label: 'الورديات النقدية', icon: Calendar, roles: ['owner', 'admin', 'pharmacist'], permission: 'can_view_shifts' },
+  { category: 'المالية', href: '/finance/handover', label: 'تسليم الدرج', icon: UserCheck, roles: ['owner', 'admin', 'pharmacist'], permission: 'acc_can_view_handover' },
   { category: 'المالية', href: '/finance/banks', label: 'البنوك', icon: Landmark, roles: ['owner', 'admin'], permission: 'acc_can_view_bank_accounts' },
   { category: 'المالية', href: '/finance/cards', label: 'البطاقات', icon: CreditCard, roles: ['owner', 'admin'], permission: 'acc_can_collect_credit_cards' },
   { category: 'المالية', href: '/finance/pos-management', label: 'نقاط البيع', icon: Monitor, roles: ['owner', 'admin'], permission: 'acc_can_view_pos' },

@@ -29,7 +29,7 @@ export default function DrugIndicationsPage() {
       }
     }
     checkAuthAndLoad();
-  }, []);
+  }, [router]);
 
   if (loading) {
     return (

@@ -1,9 +1,11 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { PackageSearch, AlertTriangle, ShoppingCart, ArrowRight, Loader2, RefreshCw } from 'lucide-react'
+import { PackageSearch, AlertTriangle, ShoppingCart, ArrowRight, Loader2, RefreshCw, ClipboardList, Warehouse } from 'lucide-react'
 import Link from 'next/link'
-import { dbSelect } from '@/lib/db/tauri'
+import { toast } from 'react-hot-toast'
+import { getLowStockAction } from '@/app/actions-client/inventory'
+import { addToShortagesAction } from '@/app/actions-client/shortages'
 
 interface ReorderItem {
   drug_id: number
@@ -18,78 +20,51 @@ interface ReorderItem {
 export default function ReorderAlerts() {
   const [items, setItems] = useState<ReorderItem[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const [savingDrugId, setSavingDrugId] = useState<number | null>(null)
 
   const loadReorderItems = async () => {
     setIsLoading(true)
     try {
-      const results = await dbSelect(`
-        WITH MonthlySales AS (
-          SELECT 
-            si.drug_id, 
-            SUM(si.quantity_sold) as avg_monthly_usage
-          FROM sales_items si
-          JOIN sales_invoices inv ON si.invoice_id = inv.id
-          WHERE si.is_negative = 0 
-            AND inv.created_at >= datetime('now', '-30 days')
-          GROUP BY si.drug_id
-        ),
-        RelevantDrugs AS (
-          SELECT id as drug_id, reorder_point 
-          FROM master_drugs 
-          WHERE reorder_point > 0
-          UNION
-          SELECT drug_id, 0 as reorder_point 
-          FROM MonthlySales
-        ),
-        StockInfo AS (
-          SELECT drug_id, SUM(quantity) as current_stock
-          FROM inventory
-          GROUP BY drug_id
+      const result = await getLowStockAction(10)
+      if (!result.success) throw new Error(result.error || 'فشل تحميل تنبيهات إعادة الطلب')
+
+      const mapped = (result.data || []).map((item: any) => {
+        const deficit = Number(item.deficit || 0)
+        const suggestedQty = Math.max(
+          Number(item.default_purchase_qty || 1),
+          deficit,
+          Math.ceil(Number(item.avg_monthly_usage || 0)),
         )
-        SELECT 
-          rd.drug_id,
-          md.trade_name, md.trade_name_en,
-          md.active_ingredient, md.generic_name, md.manufacturer,
-          md.reorder_point as manual_reorder_point,
-          MAX(COALESCE(md.reorder_point, 0), COALESCE(ms.avg_monthly_usage, 0)) as dynamic_reorder_point,
-          COALESCE(si.current_stock, 0) as current_stock,
-          COALESCE(ms.avg_monthly_usage, 0) as avg_monthly_usage,
-          (MAX(COALESCE(md.reorder_point, 0), COALESCE(ms.avg_monthly_usage, 0)) - COALESCE(si.current_stock, 0)) as deficit
-        FROM RelevantDrugs rd
-        JOIN master_drugs md ON rd.drug_id = md.id
-        LEFT JOIN MonthlySales ms ON rd.drug_id = ms.drug_id
-        LEFT JOIN StockInfo si ON rd.drug_id = si.drug_id
-        WHERE COALESCE(si.current_stock, 0) <= MAX(COALESCE(md.reorder_point, 0), COALESCE(ms.avg_monthly_usage, 0))
-          AND MAX(COALESCE(md.reorder_point, 0), COALESCE(ms.avg_monthly_usage, 0)) > 0
-        ORDER BY deficit DESC
-        LIMIT 50
-      `);
-
-      const { secureCache } = require('@/lib/cache/secure_cache');
-      await secureCache.load();
-
-      const enriched = secureCache.enrich(results.map((r: any) => ({ ...r, id: r.drug_id })));
-      const mapped = results.map((item: any, idx: number) => {
-        const limit = item.dynamic_reorder_point;
-        const deficit = item.deficit;
-        const suggestedQty = Math.max(limit * 2, deficit + limit);
 
         return {
           drug_id: item.drug_id,
-          trade_name: enriched[idx]?.trade_name || item.trade_name || item.trade_name_en || item.active_ingredient || `صنف #${item.drug_id}`,
-          current_stock: item.current_stock,
-          reorder_point: limit,
-          deficit: deficit,
-          avg_monthly_usage: item.avg_monthly_usage,
-          suggested_qty: suggestedQty
-        };
-      });
+          trade_name: item.trade_name_en || item.trade_name || item.active_ingredient || `صنف #${item.drug_id}`,
+          current_stock: Number(item.quantity || 0),
+          reorder_point: Number(item.reorder_point || 10),
+          deficit,
+          avg_monthly_usage: Number(item.avg_monthly_usage || 0),
+          suggested_qty: Math.ceil(suggestedQty),
+        }
+      })
 
       setItems(mapped)
     } catch (e) {
       console.error('Failed to load reorder alerts', e)
     } finally {
       setIsLoading(false)
+    }
+  }
+
+  const addToNotebook = async (item: ReorderItem) => {
+    setSavingDrugId(item.drug_id)
+    try {
+      const result = await addToShortagesAction({ drug_id: item.drug_id, qty: item.suggested_qty })
+      if (!result.success) throw new Error(result.error || 'فشل الإضافة')
+      toast.success((result.data as any)?.created ? 'تمت الإضافة إلى كشكول النواقص' : 'تم تحديث الكمية في كشكول النواقص')
+    } catch (error: any) {
+      toast.error(error.message || 'فشل الإضافة إلى كشكول النواقص')
+    } finally {
+      setSavingDrugId(null)
     }
   }
 
@@ -163,26 +138,50 @@ export default function ReorderAlerts() {
                 )}
               </div>
             </div>
-            <Link 
-              href={`/purchases/new?drugId=${item.drug_id}`}
-              className="shrink-0 flex items-center gap-1 px-3 py-1.5 bg-amber-100 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 rounded-xl text-[10px] font-black hover:bg-amber-200 dark:hover:bg-amber-900/40 transition-colors"
-            >
-              <ShoppingCart className="w-3 h-3" />
-              طلب شراء
-            </Link>
+            <div className="shrink-0 flex items-center gap-1.5">
+              <Link
+                href={`/inventory?search=${encodeURIComponent(item.trade_name)}`}
+                className="p-2 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"
+                title="عرض في المخزون"
+              >
+                <Warehouse className="w-3.5 h-3.5" />
+              </Link>
+              <button
+                onClick={() => addToNotebook(item)}
+                disabled={savingDrugId === item.drug_id}
+                className="flex items-center gap-1 px-3 py-2 bg-purple-100 dark:bg-purple-900/20 text-purple-700 dark:text-purple-400 rounded-xl text-[10px] font-black hover:bg-purple-200 dark:hover:bg-purple-900/40 transition-colors disabled:opacity-50"
+              >
+                {savingDrugId === item.drug_id ? <Loader2 className="w-3 h-3 animate-spin" /> : <ClipboardList className="w-3 h-3" />}
+                كشكول
+              </button>
+              <Link
+                href={`/purchases/new?drugId=${item.drug_id}`}
+                className="flex items-center gap-1 px-3 py-2 bg-amber-100 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 rounded-xl text-[10px] font-black hover:bg-amber-200 dark:hover:bg-amber-900/40 transition-colors"
+              >
+                <ShoppingCart className="w-3 h-3" />
+                شراء
+              </Link>
+            </div>
           </div>
         ))}
       </div>
 
-      {items.length > 8 && (
+      <div className="grid grid-cols-2 bg-slate-50 dark:bg-slate-800/50">
         <Link 
           href="/inventory/low-stock" 
-          className="flex items-center justify-center gap-2 p-4 bg-slate-50 dark:bg-slate-800/50 text-sm font-black text-slate-500 hover:text-amber-600 transition-colors"
+          className="flex items-center justify-center gap-2 p-4 text-sm font-black text-slate-500 hover:text-amber-600 transition-colors"
         >
           عرض الكل ({items.length} صنف)
           <ArrowRight className="w-4 h-4 rtl:rotate-180" />
         </Link>
-      )}
+        <Link
+          href="/stores/shortages"
+          className="flex items-center justify-center gap-2 p-4 border-r border-slate-200 dark:border-slate-700 text-sm font-black text-slate-500 hover:text-purple-600 transition-colors"
+        >
+          <ClipboardList className="w-4 h-4" />
+          كشكول النواقص
+        </Link>
+      </div>
     </div>
   )
 }

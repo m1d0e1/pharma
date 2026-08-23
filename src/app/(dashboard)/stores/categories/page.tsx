@@ -32,7 +32,7 @@ export default function CategoriesPage() {
       await loadData();
     }
     checkAuthAndLoad();
-  }, []);
+  }, [router]);
 
   const handleAdd = async (data: { name_ar: string, name_en?: string, parent_id?: number }) => {
     try {

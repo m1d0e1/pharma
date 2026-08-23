@@ -203,7 +203,7 @@ jobs:
           Test-Launch 'restart'
 
           $databasePath = Join-Path $env:APPDATA 'com.pharma.system\pharma_local.db'
-          node -e "const Database=require('better-sqlite3');const db=new Database(process.argv[1],{readonly:true});const ok=db.pragma('integrity_check',{simple:true})==='ok'&&db.pragma('foreign_key_check').length===0&&db.prepare('SELECT COUNT(*) count FROM _sqlx_migrations').get().count>=9;db.close();if(!ok)process.exit(1)" $databasePath
+          node -e "const Database=require('better-sqlite3');const db=new Database(process.argv[1],{readonly:true});const ok=db.pragma('integrity_check',{simple:true})==='ok'&&db.pragma('foreign_key_check').length===0&&db.prepare('SELECT COUNT(*) count FROM _sqlx_migrations').get().count>=12;db.close();if(!ok)process.exit(1)" $databasePath
 
       - name: Clean smoke profile
         if: always()
@@ -338,7 +338,7 @@ jobs:
           Test-Launch 'restart'
 
           $databasePath = Join-Path $env:APPDATA 'com.pharma.system\pharma_local.db'
-          node -e "const Database=require('better-sqlite3');const db=new Database(process.argv[1],{readonly:true});const ok=db.pragma('integrity_check',{simple:true})==='ok'&&db.pragma('foreign_key_check').length===0&&db.prepare('SELECT COUNT(*) count FROM _sqlx_migrations').get().count>=9;db.close();if(!ok)process.exit(1)" $databasePath
+          node -e "const Database=require('better-sqlite3');const db=new Database(process.argv[1],{readonly:true});const ok=db.pragma('integrity_check',{simple:true})==='ok'&&db.pragma('foreign_key_check').length===0&&db.prepare('SELECT COUNT(*) count FROM _sqlx_migrations').get().count>=12;db.close();if(!ok)process.exit(1)" $databasePath
 
       - name: Upload Windows 7 x86 installer
         uses: actions/upload-artifact@v4

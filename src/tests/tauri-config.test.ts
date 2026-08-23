@@ -78,4 +78,14 @@ describe('Tauri Configuration', () => {
     expect(icons).toContain('icons/icon.icns');
     expect(icons).toContain('icons/icon.ico');
   });
+
+  it('registers every SQL migration with the Tauri database plugin', () => {
+    const migrationsDir = path.resolve(__dirname, '../../src-tauri/migrations');
+    const mainSource = fs.readFileSync(path.resolve(__dirname, '../../src-tauri/src/main.rs'), 'utf-8');
+    const migrationFiles = fs.readdirSync(migrationsDir).filter((name) => name.endsWith('.sql'));
+
+    for (const migrationFile of migrationFiles) {
+      expect(mainSource).toContain(`include_str!("../migrations/${migrationFile}")`);
+    }
+  });
 });

@@ -1,5 +1,14 @@
 export type PurchaseReturnUnit = 'large' | 'medium' | 'small';
 
+export function purchaseReturnMatchesSearch(
+  item: { drug_name?: string; drug_name_en?: string; barcode?: string },
+  search: string
+) {
+  const term = search.trim().toLowerCase();
+  return !term || [item.drug_name, item.drug_name_en, item.barcode]
+    .some(value => String(value || '').toLowerCase().includes(term));
+}
+
 export function purchaseReturnUnitFactor(
   unit: PurchaseReturnUnit,
   largeToMedium: number,

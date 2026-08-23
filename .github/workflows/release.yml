@@ -88,7 +88,7 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: "Pharma App v__VERSION__"
-          releaseBody: "New update available. Use x64 on 64-bit Windows or the setup marked x86 on 32-bit Windows. Both use the same Windows 7 SP1/10/11 application baseline."
+          releaseBody: "Shift-scoped handover and debit details, corrected customer balances and notes, inventory-backed reorder/shortage alerts, purchase-return search, and patient-management fixes. Includes x64 and x86 installers. Windows 7 requires UCRT and WebView2 109; clean Windows 7 validation remains pending."
           releaseDraft: false
           prerelease: false
           uploadUpdaterJson: true

@@ -19,7 +19,7 @@ export default function AlternativesPage() {
       setLoading(false);
     }
     checkAuth();
-  }, []);
+  }, [router]);
 
   if (loading) {
     return (

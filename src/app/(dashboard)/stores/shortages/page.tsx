@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { dbSelect } from '@/lib/db/tauri';
+import { getShortagesAction } from '@/app/actions-client/shortages';
 import ShortagesClient from "./ShortagesClient";
 
 export default function ShortagesPage() {
@@ -11,16 +11,9 @@ export default function ShortagesPage() {
   useEffect(() => {
     async function loadShortages() {
       try {
-        const data = await dbSelect(`
-          SELECT s.*, 
-                 m.trade_name, m.trade_name_en,
-                 m.generic_name
-          FROM shortages s
-          JOIN master_drugs m ON s.drug_id = m.id
-          WHERE s.status != 'received'
-          ORDER BY s.created_at DESC
-        `);
-        setShortages(data);
+        const result = await getShortagesAction();
+        if (!result.success) throw new Error(result.error || 'فشل تحميل كشكول النواقص');
+        setShortages(result.data || []);
       } catch (err) {
         console.error('Failed to load shortages:', err);
       } finally {

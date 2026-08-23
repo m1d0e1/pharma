@@ -10,10 +10,12 @@ import {
   Printer,
   Package,
   AlertCircle,
-  Clock,
-  RefreshCw
+  ClipboardList,
+  Loader2
 } from 'lucide-react';
 import Link from 'next/link';
+import { toast } from 'react-hot-toast';
+import { addToShortagesAction } from '@/app/actions-client/shortages';
 
 export interface LowStockItem {
   id: string | number;
@@ -41,6 +43,7 @@ interface Props {
 export default function LowStockClient({ initialItems }: Props) {
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<'all' | 'out_of_stock' | 'critical' | 'low'>('all');
+  const [savingDrugId, setSavingDrugId] = useState<number | null>(null);
 
   const filteredItems = useMemo(() => {
     return initialItems.filter(item => {
@@ -66,6 +69,25 @@ export default function LowStockClient({ initialItems }: Props) {
 
   const handlePrint = () => {
     window.print();
+  };
+
+  const addToNotebook = async (item: LowStockItem) => {
+    const suggestedQuantity = Math.ceil(Math.max(
+      Number(item.default_purchase_qty || 1),
+      Number(item.deficit || 0),
+      Number(item.avg_monthly_usage || 0),
+    ));
+
+    setSavingDrugId(item.drug_id);
+    try {
+      const result = await addToShortagesAction({ drug_id: item.drug_id, qty: suggestedQuantity });
+      if (!result.success) throw new Error(result.error || 'فشل الإضافة');
+      toast.success((result.data as any)?.created ? 'تمت الإضافة إلى كشكول النواقص' : 'الصنف موجود وتم تحديث كميته');
+    } catch (error: any) {
+      toast.error(error.message || 'فشل الإضافة إلى كشكول النواقص');
+    } finally {
+      setSavingDrugId(null);
+    }
   };
 
   return (
@@ -197,6 +219,14 @@ export default function LowStockClient({ initialItems }: Props) {
               </div>
 
               <div className="mt-6 flex gap-2 no-print">
+                <button
+                  onClick={() => addToNotebook(item)}
+                  disabled={savingDrugId === item.drug_id}
+                  className="flex-1 bg-purple-100 hover:bg-purple-200 dark:bg-purple-900/20 dark:hover:bg-purple-900/40 text-purple-700 dark:text-purple-400 py-2.5 rounded-xl font-black text-xs transition-all flex items-center justify-center gap-1.5 disabled:opacity-50"
+                >
+                  {savingDrugId === item.drug_id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ClipboardList className="w-3.5 h-3.5" />}
+                  <span>إضافة للكشكول</span>
+                </button>
                 <Link 
                   href={`/purchases/new?drugId=${item.drug_id}`}
                   className="flex-1 bg-primary-600 hover:bg-primary-700 text-white py-2.5 rounded-xl font-black text-xs transition-all flex items-center justify-center gap-1.5 shadow-md shadow-primary-500/20 active:scale-95"

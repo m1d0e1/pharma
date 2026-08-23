@@ -32,22 +32,32 @@ jest.mock('@/lib/cache/secure_cache', () => ({
 
 jest.mock('@/lib/env', () => ({ isTauri: false }));
 jest.unmock('@/app/actions-client/inventory');
+jest.unmock('@/app/actions-client/patients');
 
 import {
   createPurchaseReturnAction,
   createPurchaseInvoiceAction,
+  addSupplierPaymentAction,
   getPurchaseInvoiceDetailsAction,
   getPurchasesReportsAction,
 } from '@/app/actions-client/purchases';
 import { barcodeLookupAction, processCheckoutAction, searchDrugsAction } from '@/app/actions-client/sales';
 import { addOpeningBalanceAction } from '@/app/actions-client/inventory';
-import { getHandoverDetailsAction, getOpenShiftHandoverAction, getShiftCreditSalesAction } from '@/app/actions-client/handover';
+import { getHandoverDetailsAction, getOpenShiftHandoverAction, getShiftCreditSalesAction, processHandoverAction } from '@/app/actions-client/handover';
+import { createCashMovementAction } from '@/app/actions-client/finance';
+import { getCurrentShiftAction, getShiftsAction } from '@/app/actions-client/shifts';
+import { getShiftReportAction } from '@/app/actions-client/reports';
+import { updatePatientWalletAction } from '@/app/actions-client/patients';
+import { closeDeliveryInvoiceAction } from '@/app/actions-client/delivery';
+import { addExpenseAction } from '@/app/actions-client/expenses';
 
 describe('purchase reports and drawer handover regressions', () => {
   beforeEach(() => {
     mockId = 0;
     mockDb = new Database(':memory:');
     mockDb.exec(readFileSync('src-tauri/migrations/001_initial.sql', 'utf8'));
+    mockDb.exec(readFileSync('src-tauri/migrations/011_shift_cash_difference_account.sql', 'utf8'));
+    mockDb.exec(readFileSync('src-tauri/migrations/012_shortages_pharmacy_scope.sql', 'utf8'));
     const purchaseItemColumns = mockDb.prepare('PRAGMA table_info(purchase_invoice_items)').all() as any[];
     if (!purchaseItemColumns.some(column => column.name === 'barcode')) {
       mockDb.exec('ALTER TABLE purchase_invoice_items ADD COLUMN barcode TEXT');
@@ -139,20 +149,24 @@ describe('purchase reports and drawer handover regressions', () => {
         ('visa-sale', 'admin', 'shift-1', 30, 'visa', 'completed'),
         ('credit-sale', 'admin', 'shift-1', 40, 'credit', 'completed'),
         ('unlinked-credit', 'admin', NULL, 500, 'credit', 'completed'),
+        ('unlinked-cash', 'admin', NULL, 600, 'cash', 'completed'),
+        ('unlinked-visa', 'admin', NULL, 700, 'visa', 'completed'),
         ('draft-sale', 'admin', 'shift-1', 999, 'cash', 'draft');
 
       INSERT INTO returns (id, invoice_id, user_id, shift_id, total_refund, refund_method, status)
       VALUES
         ('cash-return', '${saleId}', 'admin', 'shift-1', 10, 'cash', 'approved'),
         ('pending-return', '${saleId}', 'admin', 'shift-1', 100, 'cash', 'pending'),
-        ('account-return', '${saleId}', 'admin', 'shift-1', 7, 'patient_account', 'approved');
+        ('account-return', '${saleId}', 'admin', 'shift-1', 7, 'patient_account', 'approved'),
+        ('unlinked-return', '${saleId}', 'admin', NULL, 800, 'cash', 'approved');
 
       INSERT INTO cash_movements (id, user_id, shift_id, type, category, amount, date)
       VALUES
         ('receipt', 'admin', 'shift-1', 'receipt', 'manual', 5, '2026-07-24'),
         ('legacy-receipt', 'admin', 'shift-1', 'in', 'purchase_return', 11, '2026-07-24'),
         ('expense', 'admin', 'shift-1', 'disbursement', 'expense', 3, '2026-07-24'),
-        ('unlinked-receipt', 'admin', NULL, 'receipt', 'manual', 4, '2026-07-24');
+        ('unlinked-receipt', 'admin', NULL, 'receipt', 'manual', 4, '2026-07-24'),
+        ('unlinked-expense', 'admin', NULL, 'disbursement', 'expense', 900, '2026-07-24');
     `);
 
     const openShift = await getOpenShiftHandoverAction();
@@ -174,9 +188,9 @@ describe('purchase reports and drawer handover regressions', () => {
         visa_sales: 30,
         credit_sales: 40,
         returns: 10,
-        receipts: 20,
+        receipts: 16,
         disbursements: 3,
-        expected_cash: 157,
+        expected_cash: 153,
       },
     });
 
@@ -197,6 +211,211 @@ describe('purchase reports and drawer handover regressions', () => {
       total_amount: 90,
       credit_amount: 90,
     });
+  });
+
+  it('rejects completed checkout without creating a hidden shift', async () => {
+    mockDb.prepare(`
+      INSERT INTO inventory (id, drug_id, quantity, local_selling_price, cost_price, expiry_date)
+      VALUES ('no-shift-stock', 9001, 2, 15, 10, '2099-12-31')
+    `).run();
+
+    const checkout = await processCheckoutAction({
+      items: [{
+        drug_id: 9001,
+        inventory_id: 'no-shift-stock',
+        quantity_sold: 1,
+        unit_price: 15,
+        selected_unit: 'large',
+      }],
+      payment_method: 'cash',
+      status: 'completed',
+    });
+
+    expect(checkout).toMatchObject({ success: false, error: expect.stringContaining('فتح وردية') });
+    expect((mockDb.prepare('SELECT COUNT(*) AS total FROM shifts').get() as any).total).toBe(0);
+    expect((mockDb.prepare('SELECT COUNT(*) AS total FROM sales_invoices').get() as any).total).toBe(0);
+  });
+
+  it('links cash movements to the open shift and closes it through one reconciled handover', async () => {
+    mockDb.exec(`
+      INSERT INTO users (id, username, password_hash, role, full_name)
+      VALUES ('receiver', 'receiver', 'hash', 'admin', 'Receiver');
+      INSERT INTO shifts (id, user_id, start_time, starting_cash, status)
+      VALUES ('cash-shift', 'admin', '2026-08-22 08:00:00', 100, 'open');
+      INSERT INTO sales_invoices (id, user_id, shift_id, total_amount, payment_method, status)
+      VALUES
+        ('cash-sale', 'admin', 'cash-shift', 50, 'cash', 'completed'),
+        ('delivery-sale', 'admin', 'cash-shift', 30, 'delivery', 'approved'),
+        ('visa-sale', 'admin', 'cash-shift', 99, 'visa', 'completed');
+      INSERT INTO returns (id, invoice_id, user_id, shift_id, total_refund, refund_method, status)
+      VALUES ('cash-return', 'cash-sale', 'admin', 'cash-shift', 10, 'cash', 'approved');
+    `);
+
+    const receipt = await createCashMovementAction({
+      type: 'receipt',
+      category: 'pharmacy',
+      amount: 5,
+      date: '2026-08-22',
+      notes: 'وردية حالية',
+    });
+    expect(receipt.success).toBe(true);
+    expect((mockDb.prepare('SELECT shift_id FROM cash_movements WHERE id = ?').get(receipt.id) as any).shift_id)
+      .toBe('cash-shift');
+
+    mockDb.exec(`
+      INSERT INTO cash_movements (id, user_id, shift_id, type, category, amount, date)
+      VALUES
+        ('legacy-in', 'admin', 'cash-shift', 'in', 'other', 2, '2026-08-22'),
+        ('legacy-out', 'admin', 'cash-shift', 'out', 'other', 1, '2026-08-22');
+    `);
+    const before = await getHandoverDetailsAction('cash-shift');
+    expect(before).toMatchObject({
+      success: true,
+      data: {
+        cash_sales: 50,
+        returns: 10,
+        receipts: 7,
+        disbursements: 1,
+        expected_cash: 146,
+      },
+    });
+
+    const handover = await processHandoverAction({
+      shiftId: 'cash-shift',
+      actualCash: 136,
+      transferAmount: 130,
+      transferTargetId: '',
+      transferTargetType: 'treasury',
+      receiverUsername: 'receiver',
+      receiverPasswordHash: 'password',
+      notes: 'نهاية الوردية',
+    });
+    expect(handover).toMatchObject({ success: true, difference: -10, remainingCash: 6, status: 'discrepancy' });
+    expect(mockDb.prepare('SELECT ending_cash, status FROM shifts WHERE id = ?').get('cash-shift'))
+      .toMatchObject({ ending_cash: 6, status: 'discrepancy' });
+    expect((mockDb.prepare("SELECT COUNT(*) AS total FROM cash_movements WHERE shift_id = ? AND category = 'handover'").get('cash-shift') as any).total)
+      .toBe(1);
+    expect((mockDb.prepare("SELECT COUNT(*) AS total FROM daily_journals WHERE description LIKE 'تسليم درج:%'").get() as any).total)
+      .toBe(0);
+
+    const shifts = await getShiftsAction({ status: 'all' });
+    expect(shifts.data?.find((shift: any) => shift.id === 'cash-shift')).toMatchObject({
+      expected_cash_amount: 16,
+      cash_difference: -10,
+    });
+    expect(await getShiftReportAction('cash-shift')).toMatchObject({
+      success: true,
+      data: {
+        summary: {
+          cashSales: 50,
+          cashReturns: 10,
+          cashReceipts: 7,
+          cashDisbursements: 131,
+          cashHandover: 130,
+          expectedCash: 16,
+          actualCash: 6,
+          difference: -10,
+        },
+      },
+    });
+    const shiftCount = (mockDb.prepare('SELECT COUNT(*) AS total FROM shifts').get() as any).total;
+    expect(await getCurrentShiftAction()).toMatchObject({ success: true, data: null, has_open_shift: false });
+    expect((mockDb.prepare('SELECT COUNT(*) AS total FROM shifts').get() as any).total).toBe(shiftCount);
+
+    const afterClose = await createCashMovementAction({
+      type: 'receipt',
+      category: 'pharmacy',
+      amount: 1,
+      date: '2026-08-22',
+    });
+    expect(afterClose).toMatchObject({ success: false, error: expect.stringContaining('فتح وردية') });
+  });
+
+  it('links every user-triggered cash path to the collecting shift', async () => {
+    mockDb.exec(`
+      INSERT INTO patients (id, full_name, wallet_balance)
+      VALUES ('wallet-patient', 'Wallet Patient', 0);
+      INSERT INTO shifts (id, user_id, start_time, ending_cash, status)
+      VALUES ('delivery-origin-shift', 'admin', '2026-08-21 08:00:00', 0, 'closed');
+      INSERT INTO shifts (id, user_id, start_time, starting_cash, status)
+      VALUES ('collecting-shift', 'admin', '2026-08-22 08:00:00', 0, 'open');
+      INSERT INTO sales_invoices (
+        id, user_id, patient_id, shift_id, total_amount, payment_method, status
+      ) VALUES (
+        'delivery-invoice', 'admin', 'wallet-patient', 'delivery-origin-shift', 20, 'delivery', 'completed'
+      );
+    `);
+
+    expect(await updatePatientWalletAction('wallet-patient', 25, 'cash top-up')).toMatchObject({ success: true, balance: 25 });
+    expect(await addSupplierPaymentAction({ supplier_id: 1, amount: 10, payment_method: 'cash' })).toMatchObject({ success: true });
+    expect(await addExpenseAction({ category: 'rent', amount: 3, description: 'cash expense', date: '2026-08-22' })).toMatchObject({ success: true });
+    expect(await closeDeliveryInvoiceAction('delivery-invoice', 2)).toMatchObject({ success: true });
+    expect(await closeDeliveryInvoiceAction('delivery-invoice', 2)).toMatchObject({ success: false });
+
+    expect(mockDb.prepare(`
+      SELECT category, type, amount, shift_id
+      FROM cash_movements
+      ORDER BY category
+    `).all()).toEqual([
+      { category: 'accounts_payable', type: 'disbursement', amount: 10, shift_id: 'collecting-shift' },
+      { category: 'delivery', type: 'receipt', amount: 22, shift_id: 'collecting-shift' },
+      { category: 'operating_expenses', type: 'disbursement', amount: 3, shift_id: 'collecting-shift' },
+      { category: 'patient_wallet', type: 'receipt', amount: 25, shift_id: 'collecting-shift' },
+    ]);
+
+    expect(await getHandoverDetailsAction('collecting-shift')).toMatchObject({
+      success: true,
+      data: {
+        cash_sales: 0,
+        receipts: 47,
+        disbursements: 13,
+        expected_cash: 34,
+      },
+    });
+  });
+
+  it('adds a drug to shortages when checkout sells its last valid unit without duplicates', async () => {
+    mockDb.prepare(`
+      INSERT INTO shifts (id, user_id, start_time, starting_cash, status)
+      VALUES ('shortage-shift', 'admin', CURRENT_TIMESTAMP, 0, 'open')
+    `).run();
+    mockDb.prepare('UPDATE master_drugs SET default_purchase_qty = 6 WHERE id = 9001').run();
+    mockDb.exec(`
+      INSERT INTO inventory (id, pharmacy_id, drug_id, quantity, local_selling_price, cost_price, expiry_date)
+      VALUES
+        ('last-valid-unit', NULL, 9001, 1, 15, 10, '2099-12-31'),
+        ('expired-stock', NULL, 9001, 12, 15, 10, '2020-01-01'),
+        ('other-pharmacy-stock', 'other-pharmacy', 9001, 12, 15, 10, '2099-12-31');
+    `);
+
+    const checkout = () => processCheckoutAction({
+      items: [{
+        drug_id: 9001,
+        inventory_id: 'last-valid-unit',
+        quantity_sold: 1,
+        unit_price: 15,
+        selected_unit: 'large',
+      }],
+      payment_method: 'cash',
+      status: 'completed',
+    });
+
+    expect((await checkout()).success).toBe(true);
+    expect((mockDb.prepare('SELECT quantity FROM inventory WHERE id = ?').get('last-valid-unit') as any).quantity)
+      .toBe(0);
+    expect(mockDb.prepare(`
+      SELECT drug_id, requested_quantity, status
+      FROM shortages
+      WHERE drug_id = 9001
+    `).all()).toEqual([{ drug_id: 9001, requested_quantity: 6, status: 'pending' }]);
+
+    mockDb.prepare('UPDATE inventory SET quantity = 1 WHERE id = ?').run('last-valid-unit');
+    expect((await checkout()).success).toBe(true);
+    expect((mockDb.prepare(`
+      SELECT COUNT(*) AS total
+      FROM shortages
+      WHERE drug_id = 9001 AND status IN ('pending', 'ordered')
+    `).get() as any).total).toBe(1);
   });
 
   it('keeps purchase lots separate by pharmacy, expiry, and batch and links each invoice line', async () => {
@@ -246,6 +465,10 @@ describe('purchase reports and drawer handover regressions', () => {
   });
 
   it('excludes expired and other-pharmacy lots from search, barcode lookup, and checkout', async () => {
+    mockDb.prepare(`
+      INSERT INTO shifts (id, user_id, start_time, starting_cash, status)
+      VALUES ('inventory-shift', 'admin', CURRENT_TIMESTAMP, 0, 'open')
+    `).run();
     mockDb.exec(`
       INSERT INTO inventory (id, pharmacy_id, drug_id, quantity, local_selling_price, cost_price, expiry_date)
       VALUES

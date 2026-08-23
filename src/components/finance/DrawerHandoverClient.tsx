@@ -97,8 +97,12 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (form.transferAmount <= 0) {
-      toast.error('يرجى تحديد مبلغ التحويل');
+    if (form.transferAmount < 0) {
+      toast.error('مبلغ التحويل غير صالح');
+      return;
+    }
+    if (form.transferAmount > form.actualCash) {
+      toast.error('مبلغ التحويل أكبر من النقدية الفعلية في الدرج');
       return;
     }
     if (!form.receiverUsername) {
@@ -114,7 +118,7 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
     });
 
     if (res.success) {
-      toast.success('تمت عملية تسليم الدرج بنجاح');
+      toast.success('تم تسليم الدرج وإغلاق الوردية بنجاح');
       if (onClose) {
         onClose();
       } else {

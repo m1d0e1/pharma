@@ -2,6 +2,8 @@ import { secureCache } from '@/lib/cache/secure_cache';
 import { dbSelect, dbExecute, dbGet, dbTransaction, generateId } from '@/lib/db/tauri';
 import { isTauri } from '@/lib/env';
 import { purchaseReturnRemainingLargeQuantity } from '@/lib/purchases/return-units';
+import { format } from 'date-fns';
+import { requireOpenShiftId } from './finance';
 const logActivity = async (userId, action, details) => {
   try {
     await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [userId, action, details]);
@@ -251,7 +253,7 @@ export async function addSupplierPaymentAction(rawData: {
     if (!Number.isFinite(amount) || amount <= 0) return { success: false, error: 'يرجى إدخال مبلغ صحيح أكبر من الصفر' };
 
     const paymentMethod = rawData.payment_method || 'cash';
-    const paymentDate = rawData.date || new Date().toISOString().split('T')[0];
+    const paymentDate = rawData.date || format(new Date(), 'yyyy-MM-dd');
     const notes = rawData.notes ? String(rawData.notes).trim() : '';
 
     let remainingBalance = 0;
@@ -278,14 +280,16 @@ export async function addSupplierPaymentAction(rawData: {
 
       // 3. Record in cash_movements if cash
       if (paymentMethod === 'cash') {
+        const shiftId = await requireOpenShiftId(session.id);
         const movementId = generateId();
         await db.prepare(`
           INSERT INTO cash_movements (
-            id, user_id, type, category, amount, source_type, target_name, notes, date
-          ) VALUES (?, ?, 'disbursement', 'accounts_payable', ?, 'supplier_payment', ?, ?, ?)
+            id, user_id, shift_id, type, category, amount, source_type, target_name, notes, date
+          ) VALUES (?, ?, ?, 'disbursement', 'accounts_payable', ?, 'supplier_payment', ?, ?, ?)
         `).run(
           movementId,
           session.id,
+          shiftId,
           amount,
           String(supplierId),
           `سداد دفعة للمورد ${supplier.name_ar}: ${notes}`,
