@@ -133,7 +133,8 @@ describe('inventory read models preserve pharmacy boundaries', () => {
     const exactList = await getInventoryListAction('Scoped inventory drug', 9201);
 
     expect(exactList.success).toBe(true);
-    expect(exactList.data?.map((item: any) => item.drug_id)).toEqual([9201, 9201]);
-    expect(exactList.data?.map((item: any) => item.quantity).sort()).toEqual([0, 3]);
+    // After the rebuy-alert fix, drugId filter also excludes qty=0 lots
+    expect(exactList.data?.map((item: any) => item.drug_id)).toEqual([9201]);
+    expect(exactList.data?.map((item: any) => item.quantity)).toEqual([3]);
   });
 });

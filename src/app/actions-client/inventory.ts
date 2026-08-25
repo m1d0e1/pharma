@@ -574,6 +574,7 @@ export async function getLowStockAction(threshold?: number) {
         FROM inventory i
         CROSS JOIN Params p
         WHERE (i.pharmacy_id = p.pharmacy_id OR (i.pharmacy_id IS NULL AND p.pharmacy_id = 'local_default'))
+          AND i.quantity > 0
           AND (i.expiry_date IS NULL OR i.expiry_date >= date('now', 'localtime'))
         GROUP BY i.drug_id
       ),
@@ -1013,7 +1014,7 @@ export async function getInventoryListAction(search?: string, drugId?: number) {
     const user = await getLocalSession();
     if (!user) return { success: false, error: 'غير مصرح' };
     const pharmacyId = normalizePharmacyId(user.pharmacy_id);
-    const inventoryFilter = drugId === undefined ? 'i.quantity > 0' : 'i.drug_id = ?';
+    const inventoryFilter = drugId === undefined ? 'i.quantity > 0' : '(i.drug_id = ? AND i.quantity > 0)';
 
     let queryStr = `
       SELECT 

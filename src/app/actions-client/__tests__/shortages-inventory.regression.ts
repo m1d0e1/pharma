@@ -120,7 +120,9 @@ describe('inventory-linked reorder and shortage notebook regression', () => {
   it('flows from live stock through reorder alerts into a duplicate-safe shortage workflow', async () => {
     const lowStock = await getLowStockAction(10);
     expect(lowStock.success).toBe(true);
-    expect(lowStock.data?.map((item: any) => item.drug_id)).toEqual([9102, 9101]);
+    // Drug 9102 (qty=0, no reorder_point, no sales) is now correctly excluded —
+    // it was the phantom zero-stock entry the rebuy-alert fix targets.
+    expect(lowStock.data?.map((item: any) => item.drug_id)).toEqual([9101]);
     expect(lowStock.data?.find((item: any) => item.drug_id === 9101)).toMatchObject({
       quantity: 2,
       reorder_point: 5,
@@ -128,26 +130,19 @@ describe('inventory-linked reorder and shortage notebook regression', () => {
       avg_monthly_usage: 2,
       status: 'critical',
     });
-    expect(lowStock.data?.find((item: any) => item.drug_id === 9102)).toMatchObject({
-      quantity: 0,
-      reorder_point: 10,
-      deficit: 10,
-      status: 'out_of_stock',
-    });
 
     const firstSync = await syncLowStockToShortagesAction();
     expect(mockDb.prepare('SELECT id, drug_id, requested_quantity, status FROM shortages ORDER BY drug_id').all()).toEqual([
       expect.objectContaining({ drug_id: 9101, requested_quantity: 8, status: 'pending' }),
-      expect.objectContaining({ drug_id: 9102, requested_quantity: 10, status: 'pending' }),
     ]);
     mockDb.prepare(`
       INSERT INTO shortages (drug_id, requested_quantity, status)
       VALUES (9101, 6, 'pending')
     `).run();
     const secondSync = await syncLowStockToShortagesAction();
-    expect(firstSync).toMatchObject({ success: true, data: { total: 2, created: 2, updated: 0 } });
-    expect(secondSync).toMatchObject({ success: true, data: { total: 2, created: 0, updated: 2 } });
-    expect((mockDb.prepare('SELECT COUNT(*) AS count FROM shortages').get() as any).count).toBe(2);
+    expect(firstSync).toMatchObject({ success: true, data: { total: 1, created: 1, updated: 0 } });
+    expect(secondSync).toMatchObject({ success: true, data: { total: 1, created: 0, updated: 1 } });
+    expect((mockDb.prepare('SELECT COUNT(*) AS count FROM shortages').get() as any).count).toBe(1);
     expect((mockDb.prepare('SELECT requested_quantity FROM shortages WHERE drug_id = 9101').get() as any).requested_quantity).toBe(8);
 
     await addToShortagesAction({ drug_id: 9101, qty: 12, notes: 'ملاحظة الفرع المحلي' });
@@ -168,7 +163,10 @@ describe('inventory-linked reorder and shortage notebook regression', () => {
       deficit: 3,
       inventory_status: 'low',
     });
-    const zeroItem = notebook.data?.find((item: any) => item.drug_id === 9102);
+    // Drug 9102 is no longer auto-synced (qty=0 phantom fix), so add manually
+    // to verify the "can't receive zero-stock" guard
+    await addToShortagesAction({ drug_id: 9102, qty: 10 });
+    const zeroItem = (await getShortagesAction()).data?.find((item: any) => item.drug_id === 9102);
     expect(await updateShortageStatusAction(zeroItem.id, 'received')).toMatchObject({
       success: false,
       error: expect.stringContaining('إضافة الكمية'),
