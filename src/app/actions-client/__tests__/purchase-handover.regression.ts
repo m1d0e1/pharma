@@ -45,7 +45,8 @@ import { barcodeLookupAction, processCheckoutAction, searchDrugsAction } from '@
 import { addOpeningBalanceAction } from '@/app/actions-client/inventory';
 import { getHandoverDetailsAction, getOpenShiftHandoverAction, getShiftCreditSalesAction, processHandoverAction } from '@/app/actions-client/handover';
 import { createCashMovementAction } from '@/app/actions-client/finance';
-import { getCurrentShiftAction, getShiftsAction } from '@/app/actions-client/shifts';
+import { getCurrentShiftAction, getShiftsAction, openShiftAction } from '@/app/actions-client/shifts';
+import { createReturnAction } from '@/app/actions-client/returns';
 import { getShiftReportAction } from '@/app/actions-client/reports';
 import { updatePatientWalletAction } from '@/app/actions-client/patients';
 import { closeDeliveryInvoiceAction } from '@/app/actions-client/delivery';
@@ -56,6 +57,7 @@ describe('purchase reports and drawer handover regressions', () => {
     mockId = 0;
     mockDb = new Database(':memory:');
     mockDb.exec(readFileSync('src-tauri/migrations/001_initial.sql', 'utf8'));
+    mockDb.exec(readFileSync('src-tauri/migrations/008_patient_accounting.sql', 'utf8'));
     mockDb.exec(readFileSync('src-tauri/migrations/011_shift_cash_difference_account.sql', 'utf8'));
     mockDb.exec(readFileSync('src-tauri/migrations/012_shortages_pharmacy_scope.sql', 'utf8'));
     const purchaseItemColumns = mockDb.prepare('PRAGMA table_info(purchase_invoice_items)').all() as any[];
@@ -143,11 +145,32 @@ describe('purchase reports and drawer handover regressions', () => {
     expect((mockDb.prepare('SELECT shift_id FROM sales_invoices WHERE id = ?').get(saleId) as any).shift_id)
       .toBe('shift-1');
 
+    const visaCheckout = await processCheckoutAction({
+      items: [{
+        drug_id: 9001,
+        inventory_id: 'stock-1',
+        quantity_sold: 1,
+        unit_price: 30,
+        selected_unit: 'large',
+      }],
+      payment_method: 'visa',
+      status: 'completed',
+    });
+    expect(visaCheckout.success).toBe(true);
+    expect(mockDb.prepare(`
+      SELECT a.code
+      FROM journal_entries je
+      JOIN accounts a ON a.id = je.account_id
+      WHERE je.journal_id = (SELECT id FROM daily_journals ORDER BY rowid DESC LIMIT 1)
+        AND je.type = 'debit' AND je.amount = 30
+    `).get()).toEqual({ code: '1.1.4' });
+
     mockDb.exec(`
       INSERT INTO sales_invoices (id, user_id, shift_id, total_amount, payment_method, status)
       VALUES
-        ('visa-sale', 'admin', 'shift-1', 30, 'visa', 'completed'),
         ('credit-sale', 'admin', 'shift-1', 40, 'credit', 'completed'),
+        ('partial-credit', 'admin', 'shift-1', 100, 'credit', 'completed'),
+        ('paid-credit', 'admin', 'shift-1', 50, 'credit', 'completed'),
         ('unlinked-credit', 'admin', NULL, 500, 'credit', 'completed'),
         ('unlinked-cash', 'admin', NULL, 600, 'cash', 'completed'),
         ('unlinked-visa', 'admin', NULL, 700, 'visa', 'completed'),
@@ -167,6 +190,9 @@ describe('purchase reports and drawer handover regressions', () => {
         ('expense', 'admin', 'shift-1', 'disbursement', 'expense', 3, '2026-07-24'),
         ('unlinked-receipt', 'admin', NULL, 'receipt', 'manual', 4, '2026-07-24'),
         ('unlinked-expense', 'admin', NULL, 'disbursement', 'expense', 900, '2026-07-24');
+
+      UPDATE sales_invoices SET paid_amount = 30, remaining_amount = 70 WHERE id = 'partial-credit';
+      UPDATE sales_invoices SET paid_amount = 50, remaining_amount = 0 WHERE id = 'paid-credit';
     `);
 
     const openShift = await getOpenShiftHandoverAction();
@@ -186,7 +212,7 @@ describe('purchase reports and drawer handover regressions', () => {
         starting_cash: 100,
         cash_sales: 50,
         visa_sales: 30,
-        credit_sales: 40,
+        credit_sales: 110,
         returns: 10,
         receipts: 16,
         disbursements: 3,
@@ -196,21 +222,161 @@ describe('purchase reports and drawer handover regressions', () => {
 
     const shift1Credit = await getShiftCreditSalesAction('shift-1');
     expect(shift1Credit.success).toBe(true);
-    expect(shift1Credit.data).toHaveLength(1);
-    expect(shift1Credit.data[0]).toMatchObject({
+    expect(shift1Credit.data).toHaveLength(3);
+    expect(shift1Credit.data.find((invoice: any) => invoice.id === 'credit-sale')).toMatchObject({
       id: 'credit-sale',
       total_amount: 40,
       credit_amount: 40,
     });
+    expect(shift1Credit.data.find((invoice: any) => invoice.id === 'partial-credit')).toMatchObject({
+      total_amount: 100,
+      credit_amount: 70,
+    });
+    expect(shift1Credit.data.find((invoice: any) => invoice.id === 'paid-credit')).toMatchObject({
+      total_amount: 50,
+      credit_amount: 0,
+    });
 
     const shift2Credit = await getShiftCreditSalesAction('shift-2');
-    expect(shift2Credit.success).toBe(true);
-    expect(shift2Credit.data).toHaveLength(1);
-    expect(shift2Credit.data[0]).toMatchObject({
-      id: 'other-shift-credit',
-      total_amount: 90,
-      credit_amount: 90,
+    expect(shift2Credit).toMatchObject({ success: false, data: [] });
+  });
+
+  it('keeps mixed-lot balances exact and exposes debit receipts only for the current open shift', async () => {
+    mockDb.exec(`
+      UPDATE master_drugs
+      SET large_to_medium = 12, medium_to_small = 2, medium_unit = 'strip', small_unit = 'tablet'
+      WHERE id = 9001;
+      INSERT INTO users (id, username, password_hash, role, full_name, is_active)
+      VALUES ('receiver', 'receiver', 'hash', 'admin', 'Receiver', 1);
+      INSERT INTO patients (id, full_name, credit_limit, wallet_balance, loyalty_level, points_balance)
+      VALUES ('patient-1', 'Credit Patient', 1000, 0, 'bronze', 0);
+      INSERT INTO inventory (
+        id, drug_id, quantity, local_selling_price, cost_price,
+        expiry_date, strips_per_box, created_at
+      ) VALUES
+        ('lot-10', 9001, 1, 60, 100, '2099-01-01', 10, '2026-01-01'),
+        ('lot-12', 9001, 1, 60, 120, '2099-02-01', 12, '2026-01-02');
+    `);
+
+    const openedA = await openShiftAction({ starting_cash_amount: 100 });
+    expect(openedA.success).toBe(true);
+    const shiftA = openedA.shiftId!;
+    expect(await openShiftAction({ starting_cash_amount: 999 })).toMatchObject({
+      success: false,
+      error: expect.stringContaining('وردية مفتوحة'),
     });
+    expect((mockDb.prepare("SELECT COUNT(*) AS total FROM shifts WHERE user_id = 'admin' AND status = 'open'").get() as any).total)
+      .toBe(1);
+
+    const checkoutA = await processCheckoutAction({
+      items: [{
+        drug_id: 9001,
+        inventory_id: null,
+        quantity_sold: 12,
+        unit_price: 5,
+        selected_unit: 'medium',
+      }],
+      patient_id: 'patient-1',
+      payment_method: 'credit',
+      status: 'completed',
+    });
+    expect(checkoutA.success).toBe(true);
+    const saleA = checkoutA.data!.sale_id;
+
+    const splitA = mockDb.prepare(`
+      SELECT inventory_id, quantity_sold
+      FROM sales_items
+      WHERE invoice_id = ?
+      ORDER BY id
+    `).all(saleA) as any[];
+    expect(splitA).toEqual([
+      expect.objectContaining({ inventory_id: 'lot-10', quantity_sold: 10 }),
+      expect.objectContaining({ inventory_id: 'lot-12', quantity_sold: 2 }),
+    ]);
+    expect((mockDb.prepare('SELECT quantity FROM inventory WHERE id = ?').get('lot-10') as any).quantity).toBe(0);
+    expect((mockDb.prepare('SELECT quantity FROM inventory WHERE id = ?').get('lot-12') as any).quantity).toBeCloseTo(5 / 6, 8);
+    expect(await getHandoverDetailsAction(shiftA)).toMatchObject({
+      success: true,
+      data: { credit_sales: 60, expected_cash: 100 },
+    });
+    expect(await getShiftCreditSalesAction()).toMatchObject({
+      success: true,
+      data: [expect.objectContaining({ id: saleA, credit_amount: 60 })],
+    });
+
+    expect(await processHandoverAction({
+      shiftId: shiftA,
+      actualCash: 100,
+      transferAmount: 0,
+      transferTargetId: '',
+      transferTargetType: 'treasury',
+      receiverUsername: 'receiver',
+      receiverPasswordHash: 'password',
+    })).toMatchObject({ success: true, difference: 0 });
+
+    const openedB = await openShiftAction({ starting_cash_amount: 20 });
+    expect(openedB.success).toBe(true);
+    const shiftB = openedB.shiftId!;
+    const checkoutB = await processCheckoutAction({
+      items: [{
+        drug_id: 9001,
+        inventory_id: null,
+        quantity_sold: 4,
+        unit_price: 1,
+        selected_unit: 'small',
+      }],
+      patient_id: 'patient-1',
+      payment_method: 'credit',
+      status: 'completed',
+    });
+    expect(checkoutB.success).toBe(true);
+    const saleB = checkoutB.data!.sale_id;
+
+    expect((mockDb.prepare('SELECT quantity FROM inventory WHERE id = ?').get('lot-12') as any).quantity).toBeCloseTo(2 / 3, 8);
+    expect(mockDb.prepare('SELECT inventory_id, quantity_sold FROM sales_items WHERE invoice_id = ?').all(saleB))
+      .toEqual([expect.objectContaining({ inventory_id: 'lot-12', quantity_sold: 4 })]);
+
+    const returnedA = await createReturnAction({
+      invoice_id: saleA,
+      shift_id: shiftB,
+      refund_method: 'patient_account',
+      reason: 'mixed-lot balance regression',
+      patient_id: 'patient-1',
+      items: splitA.map((line: any) => ({
+        sale_item_id: Number((mockDb.prepare(`
+          SELECT id FROM sales_items WHERE invoice_id = ? AND inventory_id = ?
+        `).get(saleA, line.inventory_id) as any).id),
+        inventory_id: line.inventory_id,
+        drug_name: 'Test Drug',
+        quantity: line.quantity_sold,
+        unit_price: 5,
+        unit: line.inventory_id === 'lot-10' ? 'strip' : 'medium',
+      })),
+    });
+    expect(returnedA.success).toBe(true);
+    expect((mockDb.prepare('SELECT quantity FROM inventory WHERE id = ?').get('lot-10') as any).quantity).toBeCloseTo(1, 8);
+    expect((mockDb.prepare('SELECT quantity FROM inventory WHERE id = ?').get('lot-12') as any).quantity).toBeCloseTo(5 / 6, 8);
+
+    expect(await getShiftCreditSalesAction()).toMatchObject({
+      success: true,
+      data: [expect.objectContaining({ id: saleB, credit_amount: 4 })],
+    });
+    expect(await getShiftCreditSalesAction(shiftB)).toMatchObject({
+      success: true,
+      data: [expect.objectContaining({ id: saleB })],
+    });
+    expect(await getShiftCreditSalesAction(shiftA)).toMatchObject({ success: false, data: [] });
+
+    expect(await processHandoverAction({
+      shiftId: shiftB,
+      actualCash: 20,
+      transferAmount: 0,
+      transferTargetId: '',
+      transferTargetType: 'treasury',
+      receiverUsername: 'receiver',
+      receiverPasswordHash: 'password',
+    })).toMatchObject({ success: true, difference: 0 });
+    expect(await getShiftCreditSalesAction()).toMatchObject({ success: true, data: [] });
   });
 
   it('rejects completed checkout without creating a hidden shift', async () => {
@@ -470,11 +636,11 @@ describe('purchase reports and drawer handover regressions', () => {
       VALUES ('inventory-shift', 'admin', CURRENT_TIMESTAMP, 0, 'open')
     `).run();
     mockDb.exec(`
-      INSERT INTO inventory (id, pharmacy_id, drug_id, quantity, local_selling_price, cost_price, expiry_date)
+      INSERT INTO inventory (id, pharmacy_id, drug_id, quantity, local_selling_price, cost_price, expiry_date, strips_per_box)
       VALUES
-        ('default-valid', NULL, 9001, 3, 15, 10, '2099-12-31'),
-        ('default-expired', NULL, 9001, 7, 14, 9, '2020-01-01'),
-        ('other-valid', 'other-pharmacy', 9001, 20, 13, 8, '2099-12-31');
+        ('default-valid', NULL, 9001, 3, 15, 10, '2099-12-31', 10),
+        ('default-expired', NULL, 9001, 7, 14, 9, '2020-01-01', 12),
+        ('other-valid', 'other-pharmacy', 9001, 20, 13, 8, '2099-12-31', 20);
     `);
 
     const search = await searchDrugsAction('Test Drug');
@@ -483,14 +649,18 @@ describe('purchase reports and drawer handover regressions', () => {
       data: [expect.objectContaining({
         id: 9001,
         total_stock: 3,
-        batches: [expect.objectContaining({ inventory_id: 'default-valid', quantity: 3 })],
+        batches: [expect.objectContaining({ inventory_id: 'default-valid', quantity: 3, strips_per_box: 10 })],
       })],
     });
 
     const barcode = await barcodeLookupAction('6220000000001');
     expect(barcode).toMatchObject({
       success: true,
-      data: expect.objectContaining({ inventory_id: 'default-valid', quantity: 3 }),
+      data: expect.objectContaining({
+        inventory_id: 'default-valid',
+        quantity: 3,
+        batches: [expect.objectContaining({ inventory_id: 'default-valid', strips_per_box: 10 })],
+      }),
     });
 
     const checkout = await processCheckoutAction({

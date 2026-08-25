@@ -140,7 +140,7 @@ export default function ReorderAlerts() {
             </div>
             <div className="shrink-0 flex items-center gap-1.5">
               <Link
-                href={`/inventory?search=${encodeURIComponent(item.trade_name)}`}
+                href={`/inventory?drugId=${item.drug_id}&search=${encodeURIComponent(item.trade_name)}`}
                 className="p-2 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"
                 title="عرض في المخزون"
               >

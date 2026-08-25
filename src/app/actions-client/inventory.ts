@@ -591,7 +591,7 @@ export async function getLowStockAction(threshold?: number) {
         FROM master_drugs m
         CROSS JOIN Params p
         LEFT JOIN inventory i
-          ON CAST(i.drug_id AS TEXT) = CAST(m.id AS TEXT)
+          ON i.drug_id = m.id
          AND (i.pharmacy_id = p.pharmacy_id OR (i.pharmacy_id IS NULL AND p.pharmacy_id = 'local_default'))
          AND (i.expiry_date IS NULL OR i.expiry_date >= date('now', 'localtime'))
         GROUP BY m.id
@@ -610,7 +610,7 @@ export async function getLowStockAction(threshold?: number) {
           ) AS avg_monthly_usage
         FROM sales_items si
         JOIN sales_invoices inv ON si.invoice_id = inv.id
-        JOIN UnitFactors uf ON CAST(uf.drug_id AS TEXT) = CAST(si.drug_id AS TEXT)
+        JOIN UnitFactors uf ON uf.drug_id = si.drug_id
         CROSS JOIN Params p
         WHERE si.is_negative = 0 
           AND (inv.status IS NULL OR inv.status = '' OR inv.status IN ('completed', 'approved'))
@@ -657,8 +657,8 @@ export async function getLowStockAction(threshold?: number) {
         END AS status
       FROM master_drugs m
       CROSS JOIN Params p
-      LEFT JOIN DrugStock ds ON CAST(m.id AS TEXT) = CAST(ds.drug_id AS TEXT)
-      LEFT JOIN MonthlySales ms ON CAST(m.id AS TEXT) = CAST(ms.drug_id AS TEXT)
+      LEFT JOIN DrugStock ds ON m.id = ds.drug_id
+      LEFT JOIN MonthlySales ms ON m.id = ms.drug_id
       WHERE (
         (ds.current_stock IS NOT NULL AND ds.current_stock <= MAX(
           COALESCE(NULLIF(m.reorder_point, 0), NULLIF(m.min_limit, 0), p.default_limit),
@@ -754,6 +754,8 @@ const _lowStockStmt = db.prepare(`
          m.trade_name, m.active_ingredient, m.manufacturer, m.trade_name_en
   FROM master_drugs m
   JOIN inventory i ON m.id = i.drug_id
+  WHERE (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
+    AND (i.expiry_date IS NULL OR i.expiry_date >= date('now', 'localtime'))
   GROUP BY m.id
   HAVING SUM(i.quantity) <= 10
   LIMIT 10
@@ -764,6 +766,7 @@ const _expiringStmt = db.prepare(`
   FROM inventory i
   JOIN master_drugs m ON i.drug_id = m.id
   WHERE i.expiry_date > ? AND i.expiry_date <= ? AND i.quantity > 0
+    AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
   LIMIT 10
 `);
 const _expiredStmt = db.prepare(`
@@ -772,17 +775,18 @@ const _expiredStmt = db.prepare(`
   FROM inventory i
   JOIN master_drugs m ON i.drug_id = m.id
   WHERE i.expiry_date <= ? AND i.quantity > 0
+    AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
   LIMIT 10
 `);
 
 const _getAlertsData = unstable_cache(
-  async (today: string, threeMonthsStr: string) => {
-    const lowStock = await _lowStockStmt.all() as any[];
-    const expiring = await _expiringStmt.all(today, threeMonthsStr) as any[];
-    const expired = await _expiredStmt.all(today) as any[];
+  async (today: string, threeMonthsStr: string, pharmacyId: string) => {
+    const lowStock = await _lowStockStmt.all(pharmacyId, pharmacyId) as any[];
+    const expiring = await _expiringStmt.all(today, threeMonthsStr, pharmacyId, pharmacyId) as any[];
+    const expired = await _expiredStmt.all(today, pharmacyId, pharmacyId) as any[];
     return { lowStock, expiring, expired };
   },
-  ['inventory-alerts'],
+  ['inventory-alerts-by-pharmacy'],
   { revalidate: 60 } // Cache for 60 seconds — alerts don't need real-time precision
 );
 
@@ -793,13 +797,14 @@ export async function getInventoryAlertsAction() {
   try {
     const user = await getLocalSession();
     if (!user) return { success: false, error: 'غير مصرح' };
+    const pharmacyId = normalizePharmacyId(user.pharmacy_id);
 
     const today = new Date().toISOString().split('T')[0];
     const threeMonthsLater = new Date();
     threeMonthsLater.setMonth(threeMonthsLater.getMonth() + 3);
     const threeMonthsStr = threeMonthsLater.toISOString().split('T')[0];
 
-    const { lowStock, expiring, expired } = await _getAlertsData(today, threeMonthsStr);
+    const { lowStock, expiring, expired } = await _getAlertsData(today, threeMonthsStr, pharmacyId);
 
     // Queries already JOIN master_drugs - no cache enrichment needed
     const allAlerts = [...expired, ...expiring, ...lowStock];
@@ -829,6 +834,7 @@ export async function getDrugDetailsFullAction(drugId: number | string) {
   try {
     const user = await getLocalSession();
     if (!user) return { success: false, error: 'غير مصرح' };
+    const pharmacyId = normalizePharmacyId(user.pharmacy_id);
 
     // Get basic drug info
     const drug = await db.prepare(`
@@ -844,7 +850,8 @@ export async function getDrugDetailsFullAction(drugId: number | string) {
       SELECT MIN(local_selling_price) as local_price 
       FROM inventory 
       WHERE drug_id = ? AND quantity > 0
-    `).get(drugId) as { local_price: number | null };
+        AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+    `).get(drugId, pharmacyId, pharmacyId) as { local_price: number | null };
 
     drug.min_price = minPriceRow?.local_price !== null && minPriceRow?.local_price !== undefined
       ? minPriceRow.local_price 
@@ -858,7 +865,12 @@ export async function getDrugDetailsFullAction(drugId: number | string) {
     }
 
     // Get total stock
-    const stockRow = await db.prepare('SELECT SUM(quantity) as total FROM inventory WHERE drug_id = ?').get(drugId) as { total: number };
+    const stockRow = await db.prepare(`
+      SELECT SUM(quantity) as total
+      FROM inventory
+      WHERE drug_id = ?
+        AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+    `).get(drugId, pharmacyId, pharmacyId) as { total: number };
     drug.total_stock = stockRow?.total || 0;
 
     // Get expiry batches
@@ -866,8 +878,9 @@ export async function getDrugDetailsFullAction(drugId: number | string) {
       SELECT batch_number, expiry_date, quantity
       FROM inventory
       WHERE drug_id = ? AND quantity > 0
+        AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
       ORDER BY expiry_date ASC
-    `).all(drugId) as any[];
+    `).all(drugId, pharmacyId, pharmacyId) as any[];
 
     const today = new Date();
     drug.expiry_batches = batches.map(b => ({
@@ -877,14 +890,16 @@ export async function getDrugDetailsFullAction(drugId: number | string) {
 
     // Get Consumption Stats (Last 6 months)
     const consumption = await db.prepare(`
-      SELECT strftime('%Y', created_at) as year, strftime('%m', created_at) as month, 
-             SUM(quantity_sold) as net_sales, COUNT(*) as transactions
-      FROM sales_items
-      WHERE drug_id = ?
+      SELECT strftime('%Y', si.created_at) as year, strftime('%m', si.created_at) as month,
+             SUM(si.quantity_sold) as net_sales, COUNT(*) as transactions
+      FROM sales_items si
+      JOIN sales_invoices invoice ON invoice.id = si.invoice_id
+      WHERE si.drug_id = ?
+        AND (invoice.pharmacy_id = ? OR (invoice.pharmacy_id IS NULL AND ? = 'local_default'))
       GROUP BY year, month
       ORDER BY year DESC, month DESC
       LIMIT 6
-    `).all(drugId) as any[];
+    `).all(drugId, pharmacyId, pharmacyId) as any[];
     drug.consumption_stats = consumption;
 
     // Get Conflicts (Interactions)
@@ -951,7 +966,11 @@ export async function getDrugDetailsFullAction(drugId: number | string) {
     // Get alternatives (same active ingredient + manually linked)
     const alternatives = await db.prepare(`
       SELECT md.id, md.trade_name, md.active_ingredient, md.official_price as min_price, md.manufacturer,
-             (SELECT SUM(quantity) FROM inventory WHERE drug_id = md.id) as total_stock
+             (SELECT SUM(i.quantity)
+                FROM inventory i
+               WHERE i.drug_id = md.id
+                 AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
+             ) as total_stock
       FROM master_drugs md
       WHERE (md.active_ingredient = ? 
              AND md.active_ingredient IS NOT NULL 
@@ -961,7 +980,7 @@ export async function getDrugDetailsFullAction(drugId: number | string) {
              UNION
              SELECT drug_id FROM drug_alternatives WHERE alternative_id = ?
          )
-    `).all(drug.active_ingredient, drugId, drugId) as any[];
+    `).all(pharmacyId, pharmacyId, drug.active_ingredient, drugId, drugId) as any[];
     
     // Filter out the current drug itself
     drug.alternatives = alternatives.filter(a => a.id !== drugId).slice(0, 10);
@@ -974,8 +993,9 @@ export async function getDrugDetailsFullAction(drugId: number | string) {
       JOIN purchase_invoices pi ON pii.invoice_id = pi.id
       JOIN suppliers s ON pi.supplier_id = s.id
       WHERE pii.drug_id = ?
+        AND (pi.pharmacy_id = ? OR (pi.pharmacy_id IS NULL AND ? = 'local_default'))
       ORDER BY pi.invoice_date DESC
-    `).all(drugId);
+    `).all(drugId, pharmacyId, pharmacyId);
     drug.supplier_history = supplierHistory;
 
     return { success: true, data: drug };
@@ -988,10 +1008,12 @@ export async function getDrugDetailsFullAction(drugId: number | string) {
 /**
  * Get all inventory items (replaces client-side dbSelect on Web)
  */
-export async function getInventoryListAction(search?: string) {
+export async function getInventoryListAction(search?: string, drugId?: number) {
   try {
     const user = await getLocalSession();
     if (!user) return { success: false, error: 'غير مصرح' };
+    const pharmacyId = normalizePharmacyId(user.pharmacy_id);
+    const inventoryFilter = drugId === undefined ? 'i.quantity > 0' : 'i.drug_id = ?';
 
     let queryStr = `
       SELECT 
@@ -1012,14 +1034,18 @@ export async function getInventoryListAction(search?: string) {
         m.large_to_medium
       FROM inventory i
       JOIN master_drugs m ON i.drug_id = m.id
+      WHERE ${inventoryFilter}
+        AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
     `;
-    const params: any[] = [];
+    const params: any[] = drugId === undefined
+      ? [pharmacyId, pharmacyId]
+      : [drugId, pharmacyId, pharmacyId];
 
-    if (search && search.trim().length > 0) {
+    if (drugId === undefined && search && search.trim().length > 0) {
       const trimmed = search.trim();
       const searchPattern = `%${trimmed}%`;
       queryStr += `
-        WHERE i.quantity > 0 AND (
+        AND (
           m.trade_name LIKE ? 
           OR m.trade_name_en LIKE ? 
           OR m.generic_name LIKE ? 
@@ -1037,8 +1063,6 @@ export async function getInventoryListAction(search?: string) {
         searchPattern, searchPattern, searchPattern, searchPattern, 
         trimmed, trimmed
       );
-    } else {
-      queryStr += ` WHERE i.quantity > 0`;
     }
 
     // ponytail: LIMIT 2000 caps initial load; paginated on client anyway
@@ -1072,14 +1096,19 @@ export async function getInventoryListAction(search?: string) {
 export async function getMovementsAction() { return { success: false, data: [] }; }
 export async function getOpeningBalancesAction() {
   try {
+    const user = await getLocalSession();
+    if (!user) return { success: false, error: 'غير مصرح' };
+    const pharmacyId = normalizePharmacyId(user.pharmacy_id);
+
     const data = await db.prepare(`
       SELECT i.*, md.trade_name, md.trade_name_en
       FROM inventory i
       JOIN master_drugs md ON i.drug_id = md.id
       WHERE i.batch_number LIKE 'OPEN-%'
+        AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
       ORDER BY i.created_at DESC
       LIMIT 100
-    `).all() as any[];
+    `).all(pharmacyId, pharmacyId) as any[];
     return { success: true, data };
   } catch (err: any) {
     return { success: false, error: err.message || (typeof err === 'string' ? err : 'Error fetching balances') };

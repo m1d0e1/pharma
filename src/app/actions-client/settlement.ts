@@ -26,12 +26,25 @@ export async function getNegativeStockInvoicesAction() {
 
     const items = await dbSelect(
       `
+        WITH approved_returns AS (
+          SELECT ri.sale_item_id, r.invoice_id,
+                 SUM(CAST(ri.quantity_returned AS REAL)) AS returned_quantity
+          FROM return_items ri
+          JOIN returns r ON r.id = ri.return_id
+          WHERE LOWER(COALESCE(r.status, '')) IN ('approved', 'completed')
+          GROUP BY ri.sale_item_id, r.invoice_id
+        )
         SELECT
           si.id,
           si.id AS item_id,
           si.invoice_id,
           si.drug_id,
           si.quantity_sold,
+          CAST(COALESCE(ar.returned_quantity, 0) AS REAL) AS returned_quantity,
+          MAX(
+            CAST(si.quantity_sold AS REAL) - CAST(COALESCE(ar.returned_quantity, 0) AS REAL),
+            0
+          ) AS net_unreturned_quantity,
           si.unit,
           si.unit_price,
           md.trade_name,
@@ -41,6 +54,8 @@ export async function getNegativeStockInvoicesAction() {
         FROM sales_items si
         LEFT JOIN master_drugs md ON md.id = si.drug_id
         JOIN sales_invoices s ON s.id = si.invoice_id
+        LEFT JOIN approved_returns ar
+          ON ar.sale_item_id = si.id AND ar.invoice_id = si.invoice_id
         WHERE si.is_negative = 1
           AND (s.pharmacy_id = ? OR (s.pharmacy_id IS NULL AND ? = 'local_default'))
         ORDER BY s.created_at DESC
@@ -74,10 +89,23 @@ export async function getUnsettledSalesAction() {
 
     const items = await dbSelect(
       `
+        WITH approved_returns AS (
+          SELECT ri.sale_item_id, r.invoice_id,
+                 SUM(CAST(ri.quantity_returned AS REAL)) AS returned_quantity
+          FROM return_items ri
+          JOIN returns r ON r.id = ri.return_id
+          WHERE LOWER(COALESCE(r.status, '')) IN ('approved', 'completed')
+          GROUP BY ri.sale_item_id, r.invoice_id
+        )
         SELECT
           si.id AS item_id,
           si.invoice_id,
           si.quantity_sold,
+          CAST(COALESCE(ar.returned_quantity, 0) AS REAL) AS returned_quantity,
+          MAX(
+            CAST(si.quantity_sold AS REAL) - CAST(COALESCE(ar.returned_quantity, 0) AS REAL),
+            0
+          ) AS net_unreturned_quantity,
           si.unit,
           si.unit_price,
           md.trade_name,
@@ -96,6 +124,8 @@ export async function getUnsettledSalesAction() {
         FROM sales_items si
         LEFT JOIN master_drugs md ON md.id = si.drug_id
         JOIN sales_invoices s ON s.id = si.invoice_id
+        LEFT JOIN approved_returns ar
+          ON ar.sale_item_id = si.id AND ar.invoice_id = si.invoice_id
         WHERE si.is_negative = 1
           AND (s.pharmacy_id = ? OR (s.pharmacy_id IS NULL AND ? = 'local_default'))
         ORDER BY s.created_at DESC

@@ -57,8 +57,8 @@ export default function LabelDesigner() {
               {t.is_default === 1 && <CheckCircle2 className="w-4 h-4" />}
             </button>
           ))}
-          <button className="w-full p-4 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-2xl text-slate-400 font-bold hover:bg-slate-50 transition-all">
-            + إضافة قالب جديد
+          <button disabled title="غير متاح في هذا الإصدار" className="w-full p-4 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-2xl text-slate-400 font-bold opacity-60 cursor-not-allowed">
+            + إضافة قالب جديد (قريباً)
           </button>
         </div>
       </div>
@@ -139,18 +139,18 @@ export default function LabelDesigner() {
       <div className="lg:col-span-3 space-y-6">
          <h3 className="text-xl font-black text-slate-800 dark:text-white">الأدوات</h3>
          <div className="grid grid-cols-1 gap-3">
-            <button className="flex items-center gap-3 p-4 bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl font-bold hover:border-primary-500 transition-all">
-               <Type className="w-5 h-5 text-primary-500" /> إضافة نص
+            <button disabled title="غير متاح في هذا الإصدار" className="flex items-center gap-3 p-4 bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl font-bold opacity-60 cursor-not-allowed">
+               <Type className="w-5 h-5 text-primary-500" /> إضافة نص (قريباً)
             </button>
-            <button className="flex items-center gap-3 p-4 bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl font-bold hover:border-primary-500 transition-all">
-               <Barcode className="w-5 h-5 text-primary-500" /> إضافة باركود
+            <button disabled title="غير متاح في هذا الإصدار" className="flex items-center gap-3 p-4 bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl font-bold opacity-60 cursor-not-allowed">
+               <Barcode className="w-5 h-5 text-primary-500" /> إضافة باركود (قريباً)
             </button>
-            <button className="flex items-center gap-3 p-4 bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl font-bold hover:border-primary-500 transition-all">
-               <Maximize2 className="w-5 h-5 text-primary-500" /> إضافة إطار
+            <button disabled title="غير متاح في هذا الإصدار" className="flex items-center gap-3 p-4 bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl font-bold opacity-60 cursor-not-allowed">
+               <Maximize2 className="w-5 h-5 text-primary-500" /> إضافة إطار (قريباً)
             </button>
             <hr className="border-slate-100 dark:border-slate-800 my-4" />
-            <button className="flex items-center gap-3 p-4 bg-rose-50 text-rose-600 rounded-2xl font-bold hover:bg-rose-600 hover:text-white transition-all">
-               <Trash2 className="w-5 h-5" /> حذف القالب
+            <button disabled title="غير متاح في هذا الإصدار" className="flex items-center gap-3 p-4 bg-rose-50 text-rose-600 rounded-2xl font-bold opacity-60 cursor-not-allowed">
+               <Trash2 className="w-5 h-5" /> حذف القالب (قريباً)
             </button>
          </div>
       </div>

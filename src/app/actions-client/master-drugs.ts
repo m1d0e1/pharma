@@ -181,6 +181,7 @@ export async function searchInventoryAction(query: string) {
     const searchLower = query.toLowerCase().trim();
     
     // Find matching drugs from RAM cache and sort by relevance score
+    await secureCache.load();
     const matchedDrugsRaw = secureCache.getAllDrugs().filter((d: any) => 
       (d.trade_name && d.trade_name.toLowerCase().includes(searchLower)) ||
       (d.trade_name_en && d.trade_name_en.toLowerCase().includes(searchLower)) ||

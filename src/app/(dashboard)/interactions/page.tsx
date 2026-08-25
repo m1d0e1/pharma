@@ -84,7 +84,7 @@ export default function InteractionsPage() {
           <div className="space-y-2">
             <div className="w-10 h-10 bg-blue-200 dark:bg-blue-800 rounded-xl flex items-center justify-center text-lg font-black text-blue-700">1</div>
             <h4 className="font-bold text-blue-900 dark:text-blue-200">عند إضافة دواء للسلة</h4>
-            <p className="text-sm text-blue-700 dark:text-blue-400">يفحص النظام تلقائياً المادة الفعالة مع باقي أدوية السلة وتاريخ المريض</p>
+            <p className="text-sm text-blue-700 dark:text-blue-400">يفحص النظام تلقائياً المواد الفعالة للأدوية الموجودة حالياً في السلة</p>
           </div>
           <div className="space-y-2">
             <div className="w-10 h-10 bg-blue-200 dark:bg-blue-800 rounded-xl flex items-center justify-center text-lg font-black text-blue-700">2</div>

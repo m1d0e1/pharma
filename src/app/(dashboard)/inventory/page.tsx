@@ -11,6 +11,10 @@ function InventoryPageContent() {
   const searchParams = useSearchParams();
   const [items, setItems] = useState<any[]>([]);
   const [searchTerm, setSearchTerm] = useState(searchParams.get('search') || '');
+  const [selectedDrugId, setSelectedDrugId] = useState<number | undefined>(() => {
+    const value = Number(searchParams.get('drugId'));
+    return Number.isSafeInteger(value) && value > 0 ? value : undefined;
+  });
   const [pharmacyId, setPharmacyId] = useState<string>('local_default');
   const [loading, setLoading] = useState(true);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
@@ -26,7 +30,7 @@ function InventoryPageContent() {
           setPharmacyId(localUser.pharmacy_id || 'local_default');
         }
 
-        const res = await getInventoryListAction(searchTerm);
+        const res = await getInventoryListAction(searchTerm, selectedDrugId);
         if (res.success && active) {
           setItems(res.data);
         } else if (!res.success && active) {
@@ -47,7 +51,12 @@ function InventoryPageContent() {
       active = false;
       clearTimeout(delayDebounceFn);
     };
-  }, [searchTerm, refreshTrigger]);
+  }, [searchTerm, selectedDrugId, refreshTrigger]);
+
+  const updateSearchTerm = (value: string) => {
+    setSelectedDrugId(undefined);
+    setSearchTerm(value);
+  };
 
   if (loading && items.length === 0) {
     return (
@@ -69,7 +78,7 @@ function InventoryPageContent() {
       <InventoryTable 
         items={items} 
         searchTerm={searchTerm} 
-        setSearchTerm={setSearchTerm} 
+        setSearchTerm={updateSearchTerm}
         onRefresh={refreshInventory} 
         pharmacyId={pharmacyId}
       />

@@ -1226,7 +1226,15 @@ async fn settle_negative_sale_item_tx(
                CAST(si.quantity_sold AS REAL) AS quantity_sold,
                si.unit,
                COALESCE(si.is_negative, 0) AS is_negative,
-               s.pharmacy_id
+               s.pharmacy_id,
+               COALESCE((
+                   SELECT SUM(CAST(ri.quantity_returned AS REAL))
+                   FROM return_items ri
+                   JOIN returns r ON r.id = ri.return_id
+                   WHERE ri.sale_item_id = si.id
+                     AND r.invoice_id = si.invoice_id
+                     AND LOWER(COALESCE(r.status, '')) IN ('approved', 'completed')
+               ), 0) AS approved_returned_quantity
         FROM sales_items si
         JOIN sales_invoices s ON s.id = si.invoice_id
         WHERE si.id = ?
@@ -1249,6 +1257,14 @@ async fn settle_negative_sale_item_tx(
     if !quantity_sold.is_finite() || quantity_sold <= 0.0 {
         return Err("Negative sale item has an invalid quantity".into());
     }
+    let approved_returned_quantity = sale_item
+        .try_get::<f64, _>("approved_returned_quantity")
+        .unwrap_or(0.0);
+    if !approved_returned_quantity.is_finite() || approved_returned_quantity < 0.0 {
+        return Err("Negative sale item has an invalid returned quantity".into());
+    }
+    let net_unreturned_quantity =
+        (quantity_sold - approved_returned_quantity).clamp(0.0, quantity_sold);
     let sold_unit = sale_item
         .try_get::<Option<String>, _>("unit")
         .unwrap_or(None)
@@ -1323,7 +1339,15 @@ async fn settle_negative_sale_item_tx(
     if !cost_price.is_finite() || cost_price < 0.0 {
         return Err("Selected inventory batch has an invalid cost price".into());
     }
-    let cogs_amount = cost_price * deduction_quantity;
+    let cogs_quantity = sale_stock_qty(
+        net_unreturned_quantity,
+        &sold_unit,
+        large_to_medium,
+        medium_to_small,
+        medium_unit.as_deref(),
+        small_unit.as_deref(),
+    );
+    let cogs_amount = cost_price * cogs_quantity;
     if !cogs_amount.is_finite() {
         return Err("Negative-stock settlement cost is invalid".into());
     }
@@ -1368,24 +1392,26 @@ async fn settle_negative_sale_item_tx(
         return Err("Selected inventory batch no longer has sufficient stock".into());
     }
 
-    let journal_id = uuid::Uuid::new_v4().to_string();
-    sqlx::query(
-        "INSERT INTO daily_journals (id, date, description, created_by, total_amount) VALUES (?, DATE('now', 'localtime'), ?, ?, ?)",
-    )
-    .bind(&journal_id)
-    .bind(format!(
-        "Negative stock settlement item {}",
-        payload.sale_item_id
-    ))
-    .bind(&payload.user_id)
-    .bind(cogs_amount)
-    .execute(&mut **tx)
-    .await
-    .map_err(|e| e.to_string())?;
-    let inventory_account = account_id(tx, "inventory_asset", "1.1.3").await?;
-    let cogs_account = account_id(tx, "cogs_expense", "4.1").await?;
-    insert_journal_entry(tx, &journal_id, cogs_account, "debit", cogs_amount).await?;
-    insert_journal_entry(tx, &journal_id, inventory_account, "credit", cogs_amount).await?;
+    if cogs_amount > 0.0 {
+        let journal_id = uuid::Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO daily_journals (id, date, description, created_by, total_amount) VALUES (?, DATE('now', 'localtime'), ?, ?, ?)",
+        )
+        .bind(&journal_id)
+        .bind(format!(
+            "Negative stock settlement item {}",
+            payload.sale_item_id
+        ))
+        .bind(&payload.user_id)
+        .bind(cogs_amount)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| e.to_string())?;
+        let inventory_account = account_id(tx, "inventory_asset", "1.1.3").await?;
+        let cogs_account = account_id(tx, "cogs_expense", "4.1").await?;
+        insert_journal_entry(tx, &journal_id, cogs_account, "debit", cogs_amount).await?;
+        insert_journal_entry(tx, &journal_id, inventory_account, "credit", cogs_amount).await?;
+    }
 
     sqlx::query(
         "INSERT INTO activity_log (user_id, action, details) VALUES (?, 'SETTLE_NEGATIVE_STOCK', ?)",
@@ -1506,18 +1532,11 @@ async fn process_checkout_tx(
     for item in &payload.items {
         let drug = sqlx::query(
             r#"
-            SELECT md.trade_name, md.trade_name_en, md.active_ingredient, md.large_to_medium, md.medium_to_small, md.medium_unit, md.small_unit,
-                   COALESCE(MAX(i.strips_per_box), 1) as max_strips
+            SELECT md.trade_name, md.trade_name_en, md.active_ingredient, md.large_to_medium, md.medium_to_small, md.medium_unit, md.small_unit
             FROM master_drugs md
-            LEFT JOIN inventory i ON CAST(i.drug_id AS TEXT) = CAST(md.id AS TEXT)
-              AND (i.pharmacy_id IS ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
-              AND (i.expiry_date IS NULL OR i.expiry_date >= DATE('now', 'localtime'))
             WHERE CAST(md.id AS TEXT) = CAST(? AS TEXT)
-            GROUP BY md.id
             "#,
         )
-        .bind(&payload.pharmacy_id)
-        .bind(&payload.pharmacy_id)
         .bind(item.drug_id)
         .fetch_optional(&mut **tx)
         .await
@@ -1569,31 +1588,12 @@ async fn process_checkout_tx(
             .and_then(|r| r.try_get::<i64, _>("medium_to_small").ok())
             .unwrap_or(1)
             .max(1) as f64;
-        let max_strips = drug
-            .as_ref()
-            .and_then(|r| r.try_get::<i64, _>("max_strips").ok())
-            .unwrap_or(1)
-            .max(1) as f64;
         let medium_unit = drug
             .as_ref()
             .and_then(|r| r.try_get::<String, _>("medium_unit").ok());
         let small_unit = drug
             .as_ref()
             .and_then(|r| r.try_get::<String, _>("small_unit").ok());
-
-        let actual_large_to_medium = if max_strips > 1.0 {
-            max_strips
-        } else {
-            large_to_medium
-        };
-        let fallback_deduction_qty = sale_stock_qty(
-            item.quantity_sold,
-            &item.selected_unit,
-            actual_large_to_medium,
-            medium_to_small,
-            medium_unit.as_deref(),
-            small_unit.as_deref(),
-        );
 
         if payload.status != "completed" {
             insert_sale_item(
@@ -1614,86 +1614,29 @@ async fn process_checkout_tx(
             continue;
         }
 
-        let selected_batch = if let Some(inventory_id) = &item.inventory_id {
-            Some(
-                sqlx::query(
-                    "SELECT CAST(quantity AS REAL) AS quantity, strips_per_box FROM inventory WHERE id = ? AND drug_id = ? AND (pharmacy_id IS ? OR (pharmacy_id IS NULL AND ? = 'local_default')) AND (expiry_date IS NULL OR expiry_date >= DATE('now', 'localtime'))",
-                )
-                .bind(inventory_id)
-                .bind(item.drug_id)
-                .bind(&payload.pharmacy_id)
-                .bind(&payload.pharmacy_id)
-                .fetch_optional(&mut **tx)
-                .await
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| "Selected inventory batch is invalid or expired".to_string())?,
-            )
-        } else {
-            None
-        };
-        let selected_stock = selected_batch
-            .as_ref()
-            .and_then(|row| row.try_get::<f64, _>("quantity").ok())
-            .unwrap_or(0.0);
-        let selected_large_to_medium = selected_batch
-            .as_ref()
-            .and_then(|row| row.try_get::<i64, _>("strips_per_box").ok())
-            .filter(|value| *value > 0)
-            .map(|value| value as f64)
-            .unwrap_or(actual_large_to_medium);
-        let selected_deduction_qty = sale_stock_qty(
-            item.quantity_sold,
-            &item.selected_unit,
-            selected_large_to_medium,
-            medium_to_small,
-            medium_unit.as_deref(),
-            small_unit.as_deref(),
-        );
-        if item.inventory_id.is_some() && selected_stock + 0.005 < selected_deduction_qty {
-            return Err(format!(
-                "Selected inventory batch has insufficient stock for \"{}\" (available: {:.2})",
-                drug_name, selected_stock
-            ));
-        }
         let selected_inventory_id = item.inventory_id.as_deref();
-        let deduction_qty = if selected_inventory_id.is_some() {
-            selected_deduction_qty
-        } else {
-            fallback_deduction_qty
-        };
-
-        let stock_total: f64 = if selected_inventory_id.is_some() {
-            selected_stock
-        } else {
+        let batches = if let Some(inventory_id) = selected_inventory_id {
             sqlx::query(
-                "SELECT CAST(COALESCE(SUM(quantity), 0) AS REAL) as total FROM inventory WHERE drug_id = ? AND (pharmacy_id IS ? OR (pharmacy_id IS NULL AND ? = 'local_default')) AND (expiry_date IS NULL OR expiry_date >= DATE('now', 'localtime'))",
+                r#"
+                SELECT id, CAST(quantity AS REAL) AS quantity, cost_price, strips_per_box
+                FROM inventory
+                WHERE id = ? AND drug_id = ?
+                  AND (pharmacy_id IS ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+                  AND quantity > 0
+                  AND (expiry_date IS NULL OR expiry_date >= DATE('now', 'localtime'))
+                "#,
             )
+            .bind(inventory_id)
             .bind(item.drug_id)
             .bind(&payload.pharmacy_id)
             .bind(&payload.pharmacy_id)
-            .fetch_one(&mut **tx)
+            .fetch_all(&mut **tx)
             .await
             .map_err(|e| e.to_string())?
-            .try_get("total")
-            .unwrap_or(0.0)
-        };
-        if stock_total + 0.005 < deduction_qty {
-            return Err(format!(
-                "Insufficient stock for \"{}\" (available: {:.2})",
-                drug_name, stock_total
-            ));
-        }
-
-        let batches = if let Some(inventory_id) = selected_inventory_id {
-            sqlx::query("SELECT id, CAST(quantity AS REAL) as quantity, cost_price FROM inventory WHERE id = ?")
-                .bind(inventory_id)
-                .fetch_all(&mut **tx)
-                .await
-                .map_err(|e| e.to_string())?
         } else {
             sqlx::query(
                 r#"
-                SELECT id, CAST(quantity AS REAL) as quantity, cost_price
+                SELECT id, CAST(quantity AS REAL) AS quantity, cost_price, strips_per_box
                 FROM inventory
                 WHERE drug_id = ? AND (pharmacy_id IS ? OR (pharmacy_id IS NULL AND ? = 'local_default')) AND quantity > 0 AND (expiry_date IS NULL OR expiry_date >= DATE('now', 'localtime'))
                 ORDER BY CASE WHEN expiry_date IS NULL THEN 1 ELSE 0 END, expiry_date ASC, created_at ASC
@@ -1707,29 +1650,78 @@ async fn process_checkout_tx(
             .map_err(|e| e.to_string())?
         };
 
-        let mut remaining = deduction_qty;
+        if selected_inventory_id.is_some() && batches.is_empty() {
+            return Err(
+                "Selected inventory batch has insufficient stock, is for the wrong drug/pharmacy or is expired"
+                    .to_string(),
+            );
+        }
+
+        let selected_unit_capacity = batches.iter().fold(0.0_f64, |total, batch| {
+            let batch_qty = batch.try_get::<f64, _>("quantity").unwrap_or(0.0);
+            let batch_large_to_medium = batch
+                .try_get::<i64, _>("strips_per_box")
+                .ok()
+                .filter(|value| *value > 0)
+                .map(|value| value as f64)
+                .unwrap_or(large_to_medium);
+            let stock_per_selected_unit = sale_stock_qty(
+                1.0,
+                &item.selected_unit,
+                batch_large_to_medium,
+                medium_to_small,
+                medium_unit.as_deref(),
+                small_unit.as_deref(),
+            );
+            total + batch_qty / stock_per_selected_unit
+        });
+        if selected_unit_capacity + 0.000001 < item.quantity_sold {
+            return Err(format!(
+                "Insufficient stock for \"{}\" (available: {:.2} {})",
+                drug_name, selected_unit_capacity, item.selected_unit
+            ));
+        }
+
+        let mut remaining_selected_units = item.quantity_sold;
         for batch in batches {
-            if remaining <= 0.0001 {
+            if remaining_selected_units <= 0.000001 {
                 break;
             }
             let batch_id: String = batch.try_get("id").map_err(|e| e.to_string())?;
             let batch_qty: f64 = batch.try_get("quantity").unwrap_or(0.0);
             let cost_price: f64 = batch.try_get("cost_price").unwrap_or(0.0);
-            let deduct = if batch_qty + 0.005 >= remaining {
-                remaining.min(batch_qty)
-            } else {
-                batch_qty
-            };
-            let batch_prop = deduct / deduction_qty;
-            let quantity_in_selected_unit = item.quantity_sold * batch_prop;
+            let batch_large_to_medium = batch
+                .try_get::<i64, _>("strips_per_box")
+                .ok()
+                .filter(|value| *value > 0)
+                .map(|value| value as f64)
+                .unwrap_or(large_to_medium);
+            let stock_per_selected_unit = sale_stock_qty(
+                1.0,
+                &item.selected_unit,
+                batch_large_to_medium,
+                medium_to_small,
+                medium_unit.as_deref(),
+                small_unit.as_deref(),
+            );
+            let batch_capacity = batch_qty / stock_per_selected_unit;
+            let quantity_in_selected_unit = remaining_selected_units.min(batch_capacity);
+            let deduct = quantity_in_selected_unit * stock_per_selected_unit;
 
-            sqlx::query("UPDATE inventory SET quantity = CASE WHEN quantity - ? < 0.0001 THEN 0 ELSE quantity - ? END, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+            let stock_update = sqlx::query("UPDATE inventory SET quantity = CASE WHEN quantity - ? < 0.000001 THEN 0 ELSE quantity - ? END, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND quantity + 0.000001 >= ?")
                 .bind(deduct)
                 .bind(deduct)
                 .bind(&batch_id)
+                .bind(deduct)
                 .execute(&mut **tx)
                 .await
                 .map_err(|e| e.to_string())?;
+            if stock_update.rows_affected() != 1 {
+                return Err(format!(
+                    "Inventory changed while processing \"{}\"; please retry",
+                    drug_name
+                ));
+            }
             insert_sale_item(
                 tx,
                 &sale_id,
@@ -1742,7 +1734,14 @@ async fn process_checkout_tx(
             .await?;
 
             total_cogs += cost_price * deduct;
-            remaining -= deduct;
+            remaining_selected_units -= quantity_in_selected_unit;
+        }
+
+        if remaining_selected_units > 0.000001 {
+            return Err(format!(
+                "Inventory changed while processing \"{}\"; please retry",
+                drug_name
+            ));
         }
 
         sqlx::query(
@@ -1800,6 +1799,7 @@ async fn process_checkout_tx(
         let debit = match payload.payment_method.as_str() {
             "credit" => receivable,
             "wallet" => account_id(tx, "patient_wallet_liability", "2.2").await?,
+            "visa" | "check" => account_id(tx, "bank_clearing", "1.1.4").await?,
             _ => cash,
         };
 
@@ -2990,11 +2990,13 @@ async fn return_restock_qty(
         .and_then(|r| r.try_get::<i64, _>("medium_to_small").ok())
         .unwrap_or(1)
         .max(1) as f64;
-    Ok(match unit {
-        "medium" | "شريط" => quantity / large_to_medium,
-        "small" => quantity / (large_to_medium * medium_to_small),
-        _ => quantity,
-    })
+    if unit == "medium" || unit == "strip" || unit == "شريط" {
+        Ok(quantity / large_to_medium)
+    } else if unit == "small" {
+        Ok(quantity / (large_to_medium * medium_to_small))
+    } else {
+        Ok(quantity)
+    }
 }
 
 async fn return_quantity_in_sale_unit(
@@ -4767,6 +4769,9 @@ mod tests {
         let restock = return_restock_qty(&mut tx, Some(4463), None, 1.0, "medium")
             .await
             .unwrap();
+        let restock_strip = return_restock_qty(&mut tx, Some(4463), None, 1.0, "strip")
+            .await
+            .unwrap();
         let returned_in_box =
             return_quantity_in_sale_unit(&mut tx, Some(4463), None, 1.0, "medium", "large")
                 .await
@@ -4774,6 +4779,7 @@ mod tests {
         tx.commit().await.unwrap();
 
         assert_eq!(restock, 0.1);
+        assert_eq!(restock_strip, 0.1);
         assert_eq!(returned_in_box, 0.1);
     }
 
@@ -5159,6 +5165,8 @@ mod tests {
             "CREATE TABLE inventory (id TEXT PRIMARY KEY, drug_id INTEGER, pharmacy_id TEXT, quantity REAL, cost_price REAL, expiry_date TEXT, strips_per_box INTEGER, updated_at TEXT)",
             "CREATE TABLE sales_invoices (id TEXT PRIMARY KEY, pharmacy_id TEXT)",
             "CREATE TABLE sales_items (id INTEGER PRIMARY KEY, invoice_id TEXT, inventory_id TEXT, drug_id INTEGER, quantity_sold REAL, unit TEXT, is_negative INTEGER, cost_price REAL)",
+            "CREATE TABLE returns (id TEXT PRIMARY KEY, invoice_id TEXT, status TEXT)",
+            "CREATE TABLE return_items (return_id TEXT, sale_item_id INTEGER, quantity_returned REAL)",
             "CREATE TABLE daily_journals (id TEXT PRIMARY KEY, date TEXT, description TEXT, created_by TEXT, total_amount REAL)",
             "CREATE TABLE journal_entries (journal_id TEXT, account_id INTEGER, type TEXT, amount REAL)",
             "CREATE TABLE trial_balance_settings (category TEXT, account_id INTEGER)",
@@ -5183,17 +5191,27 @@ mod tests {
             "INSERT INTO inventory VALUES ('expired', 1, 'ph-1', 5, 40, '2000-01-01', 10, NULL)",
             "INSERT INTO inventory VALUES ('insufficient', 1, 'ph-1', 0.1, 40, '2099-01-01', 10, NULL)",
             "INSERT INTO inventory VALUES ('valid', 1, 'ph-1', 1, 40, '2099-01-01', 10, NULL)",
+            "INSERT INTO inventory VALUES ('return-aware', 1, 'ph-1', 0.5, 40, '2099-01-01', 10, NULL)",
+            "INSERT INTO inventory VALUES ('fully-returned', 1, 'ph-1', 0.2, 40, '2099-01-01', 10, NULL)",
             "INSERT INTO inventory VALUES ('legacy-local', 1, NULL, 2, 25, '2099-01-01', 10, NULL)",
         ] {
             sqlx::query(sql).execute(&mut conn).await.unwrap();
         }
         sqlx::query(
-            "INSERT INTO sales_invoices VALUES ('sale-ph-1', 'ph-1'), ('sale-local', NULL)",
+            "INSERT INTO sales_invoices VALUES ('sale-ph-1', 'ph-1'), ('sale-local', NULL), ('sale-return-aware', 'ph-1'), ('sale-fully-returned', 'ph-1')",
         )
         .execute(&mut conn)
         .await
         .unwrap();
-        sqlx::query("INSERT INTO sales_items VALUES (1, 'sale-ph-1', NULL, 1, 4, 'small', 1, 0), (2, 'sale-local', NULL, 1, 1, 'large', 1, 0)")
+        sqlx::query("INSERT INTO sales_items VALUES (1, 'sale-ph-1', NULL, 1, 4, 'small', 1, 0), (2, 'sale-local', NULL, 1, 1, 'large', 1, 0), (3, 'sale-return-aware', NULL, 1, 4, 'small', 1, 0), (4, 'sale-fully-returned', NULL, 1, 4, 'small', 1, 0)")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO returns VALUES ('approved-return', 'sale-return-aware', 'APPROVED'), ('completed-return', 'sale-return-aware', 'completed'), ('pending-return', 'sale-return-aware', 'pending'), ('full-return', 'sale-fully-returned', 'approved')")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO return_items VALUES ('approved-return', 3, 1), ('completed-return', 3, 1), ('pending-return', 3, 1), ('full-return', 4, 4)")
             .execute(&mut conn)
             .await
             .unwrap();
@@ -5292,6 +5310,67 @@ mod tests {
         assert_eq!(unchanged_journals, 1);
 
         let mut tx = conn.begin().await.unwrap();
+        let return_aware =
+            settle_negative_sale_item_tx(&mut tx, &payload(3, "return-aware", "ph-1"))
+                .await
+                .unwrap();
+        tx.commit().await.unwrap();
+        assert!((return_aware.deducted_quantity - 0.2).abs() < 0.000_001);
+        assert!((return_aware.cogs_amount - 4.0).abs() < 0.000_001);
+        let return_aware_stock: f64 = sqlx::query(
+            "SELECT CAST(quantity AS REAL) AS quantity FROM inventory WHERE id = 'return-aware'",
+        )
+        .fetch_one(&mut conn)
+        .await
+        .unwrap()
+        .try_get("quantity")
+        .unwrap();
+        assert!((return_aware_stock - 0.3).abs() < 0.000_001);
+        let return_aware_entries = sqlx::query(
+            "SELECT je.account_id, je.type, CAST(je.amount AS REAL) AS amount FROM journal_entries je JOIN daily_journals dj ON dj.id = je.journal_id WHERE dj.description = 'Negative stock settlement item 3'",
+        )
+        .fetch_all(&mut conn)
+        .await
+        .unwrap();
+        assert_eq!(return_aware_entries.len(), 2);
+        assert!(return_aware_entries
+            .iter()
+            .all(|row| { (row.try_get::<f64, _>("amount").unwrap() - 4.0).abs() < 0.000_001 }));
+
+        let mut tx = conn.begin().await.unwrap();
+        let fully_returned =
+            settle_negative_sale_item_tx(&mut tx, &payload(4, "fully-returned", "ph-1"))
+                .await
+                .unwrap();
+        tx.commit().await.unwrap();
+        assert!((fully_returned.deducted_quantity - 0.2).abs() < 0.000_001);
+        assert_eq!(fully_returned.cogs_amount, 0.0);
+        let fully_returned_stock: f64 = sqlx::query(
+            "SELECT CAST(quantity AS REAL) AS quantity FROM inventory WHERE id = 'fully-returned'",
+        )
+        .fetch_one(&mut conn)
+        .await
+        .unwrap()
+        .try_get("quantity")
+        .unwrap();
+        assert_eq!(fully_returned_stock, 0.0);
+        let fully_returned_journals: i64 = sqlx::query("SELECT COUNT(*) AS total FROM daily_journals WHERE description = 'Negative stock settlement item 4'")
+            .fetch_one(&mut conn)
+            .await
+            .unwrap()
+            .try_get("total")
+            .unwrap();
+        assert_eq!(fully_returned_journals, 0);
+        let fully_returned_status: i64 =
+            sqlx::query("SELECT is_negative FROM sales_items WHERE id = 4")
+                .fetch_one(&mut conn)
+                .await
+                .unwrap()
+                .try_get("is_negative")
+                .unwrap();
+        assert_eq!(fully_returned_status, 0);
+
+        let mut tx = conn.begin().await.unwrap();
         let legacy =
             settle_negative_sale_item_tx(&mut tx, &payload(2, "legacy-local", "local_default"))
                 .await
@@ -5336,7 +5415,7 @@ mod tests {
             .execute(&mut conn)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO accounts (id, code) VALUES (6, '1.1.1'), (8, '1.1.2'), (9, '3.1'), (10, '1.1.3'), (11, '4.1'), (12, '2.2')")
+        sqlx::query("INSERT INTO accounts (id, code) VALUES (6, '1.1.1'), (8, '1.1.2'), (9, '3.1'), (10, '1.1.3'), (11, '4.1'), (12, '2.2'), (13, '1.1.4')")
             .execute(&mut conn)
             .await
             .unwrap();
@@ -5387,16 +5466,13 @@ mod tests {
                 .await
                 .unwrap_err();
         tx.rollback().await.unwrap();
-        assert!(
-            location_error.contains("wrong drug/pharmacy or is expired")
-                || location_error.contains("invalid or expired")
-        );
+        assert!(location_error.contains("Selected inventory batch"));
         let mut tx = conn.begin().await.unwrap();
         let expiry_error = process_checkout_tx(&mut tx, cash_payload(Some("expired")), 69.0)
             .await
             .unwrap_err();
         tx.rollback().await.unwrap();
-        assert!(expiry_error.contains("invalid or expired"));
+        assert!(expiry_error.contains("Selected inventory batch"));
 
         let mut tx = conn.begin().await.unwrap();
         let selected_empty_error = process_checkout_tx(&mut tx, cash_payload(Some("empty")), 69.0)
@@ -5519,5 +5595,108 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(shortage_count, 1);
+
+        sqlx::query("INSERT INTO master_drugs (id, trade_name, large_to_medium, medium_to_small, medium_unit, small_unit) VALUES (5000, 'MIXED LOT', 12, 2, 'strip', 'tablet')")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO inventory (id, drug_id, pharmacy_id, quantity, cost_price, expiry_date, created_at, strips_per_box) VALUES ('mixed-10', 5000, NULL, 1, 100, '2999-01-01', '2026-01-01', 10), ('mixed-12', 5000, NULL, 1, 120, '2999-02-01', '2026-01-02', 12)")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        let mixed_payload = CheckoutPayload {
+            pharmacy_id: "local_default".into(),
+            user_id: "admin".into(),
+            items: vec![CheckoutItem {
+                drug_id: 5000,
+                inventory_id: None,
+                quantity_sold: 12.0,
+                unit_price: 5.0,
+                selected_unit: "medium".into(),
+                is_negative: false,
+            }],
+            patient_id: None,
+            shift_id: None,
+            payment_method: "cash".into(),
+            check_number: None,
+            status: "completed".into(),
+            total_discount: 0.0,
+            additional_fees: 0.0,
+        };
+        let mut tx = conn.begin().await.unwrap();
+        let mixed_sale = process_checkout_tx(&mut tx, mixed_payload, 60.0)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let mixed_10_qty: f64 = sqlx::query_scalar(
+            "SELECT CAST(quantity AS REAL) FROM inventory WHERE id = 'mixed-10'",
+        )
+        .fetch_one(&mut conn)
+        .await
+        .unwrap();
+        let mixed_12_qty: f64 = sqlx::query_scalar(
+            "SELECT CAST(quantity AS REAL) FROM inventory WHERE id = 'mixed-12'",
+        )
+        .fetch_one(&mut conn)
+        .await
+        .unwrap();
+        assert!(mixed_10_qty.abs() < 0.000_001);
+        assert!((mixed_12_qty - (5.0 / 6.0)).abs() < 0.000_001);
+
+        let mixed_lines = sqlx::query(
+            "SELECT inventory_id, CAST(quantity_sold AS REAL) AS quantity_sold FROM sales_items WHERE invoice_id = ? ORDER BY id",
+        )
+        .bind(&mixed_sale.sale_id)
+        .fetch_all(&mut conn)
+        .await
+        .unwrap();
+        assert_eq!(mixed_lines.len(), 2);
+        assert_eq!(
+            mixed_lines[0].try_get::<String, _>("inventory_id").unwrap(),
+            "mixed-10"
+        );
+        assert!(
+            (mixed_lines[0].try_get::<f64, _>("quantity_sold").unwrap() - 10.0).abs() < 0.000_001
+        );
+        assert_eq!(
+            mixed_lines[1].try_get::<String, _>("inventory_id").unwrap(),
+            "mixed-12"
+        );
+        assert!(
+            (mixed_lines[1].try_get::<f64, _>("quantity_sold").unwrap() - 2.0).abs() < 0.000_001
+        );
+
+        let visa_payload = CheckoutPayload {
+            pharmacy_id: "local_default".into(),
+            user_id: "admin".into(),
+            items: vec![CheckoutItem {
+                drug_id: 5000,
+                inventory_id: Some("mixed-12".into()),
+                quantity_sold: 1.0,
+                unit_price: 1.0,
+                selected_unit: "small".into(),
+                is_negative: false,
+            }],
+            patient_id: None,
+            shift_id: None,
+            payment_method: "visa".into(),
+            check_number: None,
+            status: "completed".into(),
+            total_discount: 0.0,
+            additional_fees: 0.0,
+        };
+        let mut tx = conn.begin().await.unwrap();
+        process_checkout_tx(&mut tx, visa_payload, 1.0)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let bank_debit: f64 = sqlx::query_scalar(
+            "SELECT CAST(COALESCE(SUM(amount), 0) AS REAL) FROM journal_entries WHERE account_id = 13 AND type = 'debit'",
+        )
+        .fetch_one(&mut conn)
+        .await
+        .unwrap();
+        assert!((bank_debit - 1.0).abs() < 0.000_001);
     }
 }

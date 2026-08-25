@@ -80,6 +80,43 @@ describe('inventory-linked reorder and shortage notebook regression', () => {
 
   afterEach(() => mockDb.close());
 
+  it('keeps inventory and shortage drug joins indexable', () => {
+    const inventorySource = readFileSync('src/app/actions-client/inventory.ts', 'utf8');
+    const dashboardSource = readFileSync('src/app/(dashboard)/page.tsx', 'utf8');
+    const shortagesSource = readFileSync('src/app/actions-client/shortages.ts', 'utf8');
+
+    for (const [source, directJoins, castJoins] of [
+      [inventorySource, [
+        'i.drug_id = m.id',
+        'uf.drug_id = si.drug_id',
+        'm.id = ds.drug_id',
+        'm.id = ms.drug_id',
+      ], [
+        'CAST(i.drug_id AS TEXT) = CAST(m.id AS TEXT)',
+        'CAST(uf.drug_id AS TEXT) = CAST(si.drug_id AS TEXT)',
+        'CAST(m.id AS TEXT) = CAST(ds.drug_id AS TEXT)',
+        'CAST(m.id AS TEXT) = CAST(ms.drug_id AS TEXT)',
+      ]],
+      [dashboardSource, [
+        'm.id = ds.drug_id',
+        'm.id = ms.drug_id',
+      ], [
+        'CAST(m.id AS TEXT) = CAST(ds.drug_id AS TEXT)',
+        'CAST(m.id AS TEXT) = CAST(ms.drug_id AS TEXT)',
+      ]],
+      [shortagesSource, [
+        'm.id = s.drug_id',
+        'ds.drug_id = s.drug_id',
+      ], [
+        'CAST(m.id AS TEXT) = CAST(s.drug_id AS TEXT)',
+        'CAST(ds.drug_id AS TEXT) = CAST(s.drug_id AS TEXT)',
+      ]],
+    ] as const) {
+      for (const join of directJoins) expect(source).toContain(join);
+      for (const join of castJoins) expect(source).not.toContain(join);
+    }
+  });
+
   it('flows from live stock through reorder alerts into a duplicate-safe shortage workflow', async () => {
     const lowStock = await getLowStockAction(10);
     expect(lowStock.success).toBe(true);

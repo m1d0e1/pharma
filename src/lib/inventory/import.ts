@@ -37,10 +37,35 @@ const shiftedBarcode = (value: unknown) => {
   return barcode.length >= 12 && barcode.length <= 14 ? barcode : null;
 };
 
+const isPlaceholderDrugName = (value: string, id: number) =>
+  new RegExp(`^drug\\s*#?\\s*${id}$`, 'i').test(value.trim());
+
+const normalizedDrugName = (value: unknown) => {
+  const name = text(value);
+  return name
+    ? name.normalize('NFKC').replace(/\s+/g, ' ').toUpperCase()
+    : null;
+};
+
+const identityNames = (row: ExcelRow, id: number) => new Set(
+  [row.trade_name, row.trade_name_en]
+    .map(text)
+    .filter((name): name is string => Boolean(name) && !isPlaceholderDrugName(name!, id))
+    .map(normalizedDrugName)
+    .filter((name): name is string => Boolean(name)),
+);
+
+const matchingIdentityMetadata = (incoming: ExcelRow, existing: ExcelRow) =>
+  ['active_ingredient', 'category', 'manufacturer'].filter(field => {
+    const incomingValue = normalizedDrugName(incoming[field]);
+    const existingValue = normalizedDrugName(existing[field]);
+    return Boolean(incomingValue && existingValue && incomingValue === existingValue);
+  }).length;
+
 const drugName = (row: ExcelRow, id: number) => {
   for (const value of [row.trade_name, row.trade_name_en]) {
     const name = text(value);
-    if (name && name.toLowerCase() !== `drug ${id}`) return name;
+    if (name && !isPlaceholderDrugName(name, id)) return name;
   }
   return null;
 };
@@ -108,7 +133,7 @@ export async function importInventoryWorkbookRows(
       id: text(row.id) || database.generateId(),
       drug_id: id,
       pharmacy_id: pharmacyId,
-      strips_per_box: conversion(row.strips_per_box) || 1,
+      strips_per_box: conversion(row.strips_per_box) || conversion(sourceDrugs.get(id)?.large_to_medium) || 1,
     };
     const displacedBarcode = shiftedBarcode(row.strips_per_box);
     const swappedConversion = conversion(row.barcode);
@@ -136,18 +161,74 @@ export async function importInventoryWorkbookRows(
   const masterColumns = await columns(database, 'master_drugs');
   const inventoryColumns = await columns(database, 'inventory');
   await database.transaction(async () => {
-    await upsertRows(database, 'master_drugs', [...sourceDrugs.values(), ...fallbackDrugs.values()], masterColumns);
-
-    const importedDrugIds = new Set([...sourceDrugs.keys(), ...fallbackDrugs.keys()]);
-    for (const id of new Set(inventory.map(row => Number(row.drug_id)))) {
-      if (importedDrugIds.has(id)) continue;
-      const existing = await database.select<{ trade_name: string }>(
-        'SELECT trade_name FROM master_drugs WHERE id = ?',
-        [id],
-      );
-      if (!existing[0] || !drugName(existing[0] as ExcelRow, id)) {
-        throw new Error(`Missing drug name for inventory drug ${id}`);
+    const importedDrugs = new Map<number, ExcelRow>([
+      ...sourceDrugs.entries(),
+      ...fallbackDrugs.entries(),
+    ]);
+    const relevantIds = [...new Set([
+      ...importedDrugs.keys(),
+      ...inventory.map(row => Number(row.drug_id)),
+    ])].filter(id => Number.isSafeInteger(id) && id > 0);
+    const existingById = new Map<number, ExcelRow>();
+    for (let offset = 0; offset < relevantIds.length; offset += 500) {
+      const ids = relevantIds.slice(offset, offset + 500);
+      const rows = await database.select<ExcelRow>(`
+        SELECT id, trade_name, trade_name_en, active_ingredient, category, manufacturer
+        FROM master_drugs
+        WHERE id IN (${ids.map(() => '?').join(',')})
+      `, ids);
+      for (const row of rows) {
+        const id = drugId(row.id);
+        if (id) existingById.set(id, row);
       }
+    }
+
+    const preserveExistingNames = new Set<number>();
+
+    for (const [sourceId, row] of importedDrugs) {
+      const incomingNames = identityNames(row, sourceId);
+      const existingAtSource = existingById.get(sourceId);
+      const existingNames = existingAtSource
+        ? identityNames(existingAtSource, sourceId)
+        : new Set<string>();
+      const sameIdentity = [...incomingNames].some(name => existingNames.has(name));
+
+      if (existingAtSource && existingNames.size > 0 && !sameIdentity) {
+        // Never merge inventory balances by display name. If multiple stable
+        // metadata fields prove that the workbook row still belongs to this
+        // numeric ID, keep the ID and discard only its shifted name fields.
+        if (matchingIdentityMetadata(row, existingAtSource) >= 2) {
+          preserveExistingNames.add(sourceId);
+        } else {
+          const incomingName = drugName(row, sourceId) || `drug ${sourceId}`;
+          const existingName = drugName(existingAtSource, sourceId) || `drug ${sourceId}`;
+          throw new Error(
+            `Drug identity conflict for source drug ${sourceId}: ` +
+            `workbook name "${incomingName}" does not match existing "${existingName}"; ` +
+            'the import was rolled back',
+          );
+        }
+      }
+    }
+
+    // Preserve the canonical names at a proven same-ID conflict while allowing
+    // all other partial and legitimate-new-ID imports to behave as before.
+    const masterRowsToUpsert = [...importedDrugs.entries()]
+      .map(([sourceId, row]) => {
+        if (!preserveExistingNames.has(sourceId)) return row;
+        const existing = existingById.get(sourceId)!;
+        return {
+          ...row,
+          trade_name: existing.trade_name,
+          trade_name_en: existing.trade_name_en,
+        };
+      });
+    await upsertRows(database, 'master_drugs', masterRowsToUpsert, masterColumns);
+
+    const plannedMasterIds = new Set(masterRowsToUpsert.map(row => Number(row.id)));
+    for (const id of new Set(inventory.map(row => Number(row.drug_id)))) {
+      if (plannedMasterIds.has(id) || existingById.has(id)) continue;
+      throw new Error(`Missing drug name for inventory drug ${id}`);
     }
 
     for (const row of inventory) {

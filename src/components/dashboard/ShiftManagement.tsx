@@ -2,16 +2,12 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { Clock, Play, DollarSign, Loader2, ArrowRightLeft } from 'lucide-react';
-import { toast } from 'react-hot-toast';
-import { startShiftAction, getCurrentShiftAction, getCurrentShiftStatsAction } from '@/app/actions-client/shifts';
+import { Clock, Play, Loader2, ArrowRightLeft } from 'lucide-react';
+import { getCurrentShiftAction, getCurrentShiftStatsAction } from '@/app/actions-client/shifts';
 
 export default function ShiftManagement() {
   const [currentShift, setCurrentShift] = useState<any>(null);
   const [loading, setLoading] = useState(true);
-  const [showStartModal, setShowStartModal] = useState(false);
-  const [startingCash, setStartingCash] = useState('');
-  const [isStarting, setIsStarting] = useState(false);
   const [shiftStats, setShiftStats] = useState<any>(null);
   const [statsLoading, setStatsLoading] = useState(false);
 
@@ -44,23 +40,6 @@ export default function ShiftManagement() {
     setStatsLoading(false);
   };
 
-  const handleStartShift = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsStarting(true);
-    
-    const cash = parseFloat(startingCash) || 0;
-    const result = await startShiftAction(cash);
-    
-    if (result.success) {
-      toast.success('Shift started successfully');
-      setShowStartModal(false);
-      fetchShift();
-    } else {
-      toast.error(result.error || 'Failed to start shift');
-    }
-    setIsStarting(false);
-  };
-
   if (loading) {
     return (
       <div className="card-glass p-8 flex items-center justify-center">
@@ -80,9 +59,9 @@ export default function ShiftManagement() {
               <Clock className="w-6 h-6" />
             </div>
             <div>
-              <h2 className="text-xl font-black">Shift Management</h2>
+              <h2 className="text-xl font-black">إدارة الورديات</h2>
               <p className="text-xs text-slate-500 font-bold mt-0.5">
-                {currentShift ? 'Active shift in progress' : 'No active shift'}
+                {currentShift ? 'توجد وردية مفتوحة' : 'لا توجد وردية مفتوحة'}
               </p>
             </div>
           </div>
@@ -124,68 +103,18 @@ export default function ShiftManagement() {
         ) : (
           <div className="space-y-6">
             <p className="text-sm text-slate-600 dark:text-slate-400 font-medium leading-relaxed">
-              You must start a new shift before recording any sales or cash transactions.
+              يجب فتح وردية جديدة قبل تسجيل أي مبيعات أو حركات نقدية.
             </p>
-            <button
-              onClick={() => setShowStartModal(true)}
+            <Link
+              href="/shifts"
               className="w-full bg-blue-600 hover:bg-blue-700 text-white py-4 rounded-2xl font-black text-lg transition-all shadow-lg shadow-blue-500/20 flex items-center justify-center gap-2 group-hover:scale-[1.02] transform"
             >
               <Play className="w-5 h-5 fill-current" />
-              Start New Shift
-            </button>
+              فتح وردية جديدة
+            </Link>
           </div>
         )}
       </div>
-
-      {/* Start Shift Modal */}
-      {showStartModal && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-[150] p-4">
-          <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl max-w-md w-full overflow-hidden border border-slate-200 dark:border-slate-800 animate-in zoom-in duration-300">
-            <div className="bg-gradient-to-r from-blue-600 to-indigo-600 p-6 text-white flex justify-between items-center">
-              <div>
-                <h3 className="text-xl font-black">Start New Shift</h3>
-                <p className="text-blue-100 text-xs mt-1">Enter the current cash in drawer</p>
-              </div>
-              <button onClick={() => setShowStartModal(false)} className="text-2xl font-bold">&times;</button>
-            </div>
-
-            <form onSubmit={handleStartShift} className="p-8 space-y-6">
-              <div className="space-y-2">
-                <label className="text-sm font-black text-slate-700 dark:text-slate-300 ml-2">Opening Cash (EGP)</label>
-                <div className="relative">
-                  <DollarSign className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    required
-                    autoFocus
-                    value={startingCash}
-                    onChange={(e) => setStartingCash(e.target.value)}
-                    className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 pl-12 pr-4 py-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all font-black text-lg"
-                    placeholder="0.00"
-                  />
-                </div>
-              </div>
-
-              <button
-                type="submit"
-                disabled={isStarting}
-                className="w-full bg-emerald-600 text-white py-4 rounded-2xl font-black text-lg hover:bg-emerald-700 transition-all shadow-xl shadow-emerald-500/20 disabled:opacity-50 flex items-center justify-center gap-2"
-              >
-                {isStarting ? (
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                ) : (
-                  <>
-                    <span>🚀</span>
-                    <span>Confirm & Start Work</span>
-                  </>
-                )}
-              </button>
-            </form>
-          </div>
-        </div>
-      )}
     </>
   );
 }

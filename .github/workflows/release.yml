@@ -88,7 +88,7 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: "Pharma App v__VERSION__"
-          releaseBody: "Shift-scoped handover and debit details, corrected customer balances and notes, inventory-backed reorder/shortage alerts, purchase-return search, and patient-management fixes. Includes x64 and x86 installers. Windows 7 requires UCRT and WebView2 109; clean Windows 7 validation remains pending."
+          releaseBody: "Improved shift-scoped handover and debit receipts, inventory and shortage reconciliation, reorder alerts, customer financial notes, purchase and sales returns, interaction checks, startup performance, permissions, printing, and cross-architecture regression coverage. Includes x64 and x86 installers. Windows 7 requires UCRT and WebView2 109; clean Windows 7 validation remains pending."
           releaseDraft: false
           prerelease: false
           uploadUpdaterJson: true

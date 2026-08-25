@@ -549,11 +549,17 @@ export default function POSPage() {
       ? 'medium' 
       : (item.selectedUnit === 'medium' && item.units.small ? 'small' : 'large');
 
-    let newPrice = item.basePrice;
+    const selectedBatch = item.inventory_id
+      ? item.batches?.find((batch: any) => String(batch.inventory_id) === String(item.inventory_id))
+      : null;
+    const largeToMedium = Number(selectedBatch?.strips_per_box) > 0
+      ? Number(selectedBatch.strips_per_box)
+      : (item.units.large_to_medium || 1);
+    let newPrice = selectedBatch?.unit_price || item.basePrice;
     if (nextUnit === item.units.medium || nextUnit === 'medium') {
-      newPrice = item.basePrice / (item.units.large_to_medium || 1);
+      newPrice /= largeToMedium;
     } else if (nextUnit === item.units.small || nextUnit === 'small') {
-      newPrice = item.basePrice / ((item.units.large_to_medium || 1) * (item.units.medium_to_small || 1));
+      newPrice /= largeToMedium * (item.units.medium_to_small || 1);
     }
 
     const newItemId = `${item.drug_id}-${nextUnit}-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
@@ -571,11 +577,17 @@ export default function POSPage() {
     setCart(prev => prev.map(item => {
       if (item.id !== cartItemId) return item;
       
-      let newPrice = item.basePrice;
+      const selectedBatch = item.inventory_id
+        ? item.batches?.find((batch: any) => String(batch.inventory_id) === String(item.inventory_id))
+        : null;
+      const largeToMedium = Number(selectedBatch?.strips_per_box) > 0
+        ? Number(selectedBatch.strips_per_box)
+        : (item.units.large_to_medium || 1);
+      let newPrice = selectedBatch?.unit_price || item.basePrice;
       if (unit === item.units.medium || unit === 'medium') {
-        newPrice = item.basePrice / (item.units.large_to_medium || 1);
+        newPrice /= largeToMedium;
       } else if (unit === item.units.small || unit === 'small') {
-        newPrice = item.basePrice / ((item.units.large_to_medium || 1) * (item.units.medium_to_small || 1));
+        newPrice /= largeToMedium * (item.units.medium_to_small || 1);
       }
       
       return { ...item, selectedUnit: unit as any, price: Number(newPrice.toFixed(2)) };
@@ -593,10 +605,13 @@ export default function POSPage() {
         const batch = item.batches.find((b: any) => String(b.inventory_id) === String(batchId));
         if (batch && batch.unit_price) {
           let basePrice = batch.unit_price;
+          const largeToMedium = Number(batch.strips_per_box) > 0
+            ? Number(batch.strips_per_box)
+            : (item.units.large_to_medium || 1);
           if (item.selectedUnit === item.units.medium || item.selectedUnit === 'medium') {
-            basePrice = basePrice / (item.units.large_to_medium || 1);
+            basePrice /= largeToMedium;
           } else if (item.selectedUnit === item.units.small || item.selectedUnit === 'small') {
-            basePrice = basePrice / ((item.units.large_to_medium || 1) * (item.units.medium_to_small || 1));
+            basePrice /= largeToMedium * (item.units.medium_to_small || 1);
           }
           newPrice = basePrice;
         }
@@ -607,11 +622,23 @@ export default function POSPage() {
   }, [setCart]);
 
   const stockInSelectedUnit = (item: CartItem) => {
-    const l2m = item.units.large_to_medium || 1;
     const m2s = item.units.medium_to_small || 1;
-    if (item.selectedUnit === item.units.medium || item.selectedUnit === 'medium') return item.total_stock * l2m;
-    if (item.selectedUnit === item.units.small || item.selectedUnit === 'small') return item.total_stock * l2m * m2s;
-    return item.total_stock;
+    const selectedBatches = item.inventory_id
+      ? item.batches?.filter((batch: any) => String(batch.inventory_id) === String(item.inventory_id)) || []
+      : item.batches || [];
+    if (selectedBatches.length === 0) {
+      const l2m = item.units.large_to_medium || 1;
+      if (item.selectedUnit === item.units.medium || item.selectedUnit === 'medium') return item.total_stock * l2m;
+      if (item.selectedUnit === item.units.small || item.selectedUnit === 'small') return item.total_stock * l2m * m2s;
+      return item.total_stock;
+    }
+    return selectedBatches.reduce((total: number, batch: any) => {
+      const quantity = Number(batch.quantity) || 0;
+      const l2m = Number(batch.strips_per_box) > 0 ? Number(batch.strips_per_box) : (item.units.large_to_medium || 1);
+      if (item.selectedUnit === item.units.medium || item.selectedUnit === 'medium') return total + quantity * l2m;
+      if (item.selectedUnit === item.units.small || item.selectedUnit === 'small') return total + quantity * l2m * m2s;
+      return total + quantity;
+    }, 0);
   };
 
   const resetCart = useCallback(() => {
@@ -696,7 +723,26 @@ export default function POSPage() {
         resetPOS();
       } else {
         setAutoPrintReceipt(false);
-        toast.error(result.error || 'فشلت العملية');
+        const checkoutError = result.error || 'فشلت العملية';
+        if (checkoutError.includes('فتح وردية')) {
+          toast((notification) => (
+            <div className="flex items-center gap-3" dir="rtl">
+              <span>{checkoutError}</span>
+              <button
+                type="button"
+                onClick={() => {
+                  toast.dismiss(notification.id);
+                  router.push('/shifts');
+                }}
+                className="shrink-0 rounded-lg bg-blue-600 px-3 py-2 font-bold text-white hover:bg-blue-700"
+              >
+                فتح وردية
+              </button>
+            </div>
+          ), { duration: 10000, icon: '🕒' });
+        } else {
+          toast.error(checkoutError);
+        }
       }
     } catch (error) {
       setAutoPrintReceipt(false);

@@ -33,15 +33,9 @@ async fn open_new_window<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<
 }
 
 fn open_new_window_for_app<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis()
-        .to_string();
-
     let url = new_window_url(app);
 
-    let w = tauri::WebviewWindowBuilder::new(app, format!("window_{}", timestamp), url)
+    let w = tauri::WebviewWindowBuilder::new(app, new_window_label(), url)
         .title("Pharma Dashboard")
         .inner_size(1280.0, 800.0)
         .min_inner_size(800.0, 600.0)
@@ -57,6 +51,10 @@ fn open_new_window_for_app<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Resu
     });
 
     Ok(())
+}
+
+fn new_window_label() -> String {
+    format!("window_{}", uuid::Uuid::new_v4().simple())
 }
 
 fn create_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Menu<R>, tauri::Error> {
@@ -560,33 +558,29 @@ fn main() {
             let should_copy_seed =
                 !db_path.exists() || fs::metadata(&db_path).map(|m| m.len() == 0).unwrap_or(true);
 
+            let mut seed_candidates = Vec::new();
+            if let Ok(res_dir) = app.path().resource_dir() {
+                seed_candidates.push(res_dir.join("pharma_local.db"));
+                seed_candidates.push(res_dir.join("resources").join("pharma_local.db"));
+            }
+            if let Ok(exe_path) = std::env::current_exe() {
+                if let Some(exe_dir) = exe_path.parent() {
+                    seed_candidates.push(exe_dir.join("pharma_local.db"));
+                    seed_candidates.push(exe_dir.join("resources").join("pharma_local.db"));
+                }
+            }
+            let seed_path = seed_candidates.into_iter().find(|candidate| {
+                candidate
+                    .metadata()
+                    .map(|meta| meta.len() > 0)
+                    .unwrap_or(false)
+            });
+
             if should_copy_seed {
-                let mut candidate_paths = Vec::new();
-
-                if let Ok(res_dir) = app.path().resource_dir() {
-                    candidate_paths.push(res_dir.join("pharma_local.db"));
-                    candidate_paths.push(res_dir.join("resources").join("pharma_local.db"));
-                }
-
-                if let Ok(exe_path) = std::env::current_exe() {
-                    if let Some(exe_dir) = exe_path.parent() {
-                        candidate_paths.push(exe_dir.join("pharma_local.db"));
-                        candidate_paths.push(exe_dir.join("resources").join("pharma_local.db"));
-                    }
-                }
-
-                let seed_path = candidate_paths
-                    .into_iter()
-                    .find(|candidate| {
-                        candidate
-                            .metadata()
-                            .map(|meta| meta.len() > 0)
-                            .unwrap_or(false)
-                    })
-                    .ok_or_else(|| {
-                        io::Error::new(io::ErrorKind::NotFound, "bundled seed database not found")
-                    })?;
-                install_seed_database(&seed_path, &db_path)?;
+                let seed_path = seed_path.as_ref().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::NotFound, "bundled seed database not found")
+                })?;
+                install_seed_database(seed_path, &db_path)?;
                 println!(
                     "Copied seeded database from {:?} to {:?}",
                     seed_path, db_path
@@ -610,6 +604,16 @@ fn main() {
 
             schema::prepare_legacy_database(&db_path)
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+
+            if let Some(seed_path) = seed_path {
+                match schema::repair_catalog_name_drift(&db_path, &seed_path) {
+                    Ok(repaired) if repaired > 0 => {
+                        println!("Repaired {repaired} catalog or inventory identity issue(s)");
+                    }
+                    Ok(_) => {}
+                    Err(error) => eprintln!("Catalog identity repair skipped: {error}"),
+                }
+            }
 
             let main_window = app
                 .get_webview_window("main")
@@ -742,7 +746,7 @@ fn handle_menu_event<R: tauri::Runtime>(window: &tauri::Window<R>, id: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{install_seed_database, validate_export_file};
+    use super::{install_seed_database, new_window_label, validate_export_file};
     use std::fs;
 
     #[test]
@@ -750,6 +754,14 @@ mod tests {
         assert!(validate_export_file("inventory.xlsx", b"PK\x03\x04").is_ok());
         assert!(validate_export_file("inventory.txt", b"PK\x03\x04").is_err());
         assert!(validate_export_file("inventory.xlsx", b"not xlsx").is_err());
+    }
+
+    #[test]
+    fn creates_unique_native_window_labels() {
+        let first = new_window_label();
+        let second = new_window_label();
+        assert!(first.starts_with("window_"));
+        assert_ne!(first, second);
     }
 
     #[test]

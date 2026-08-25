@@ -22,14 +22,31 @@ const sqliteUtcTimestamp = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$
 const utcTimestampColumn = /(?:_at|_time|_on|^shift_start$|^shift_end$|^last_login$)$/;
 
 export function normalizeDatabaseTimestamps<T>(rows: T[]): T[] {
+  const sample = rows.find(
+    row => row !== null && typeof row === 'object' && !Array.isArray(row)
+  ) as Record<string, unknown> | undefined;
+
+  // Every row in a SQL result has the same columns. Most large lookups contain no
+  // timestamps, so avoid walking and cloning every value in those result sets.
+  const timestampKeys = sample
+    ? Object.keys(sample).filter(key => utcTimestampColumn.test(key))
+    : [];
+  if (timestampKeys.length === 0) return rows;
+
   return rows.map(row => {
     if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
-    return Object.fromEntries(Object.entries(row as Record<string, unknown>).map(([key, value]) => [
-      key,
-      utcTimestampColumn.test(key) && typeof value === 'string' && sqliteUtcTimestamp.test(value)
-        ? `${value.replace(' ', 'T')}Z`
-        : value,
-    ])) as T;
+    const record = row as Record<string, unknown>;
+    let normalized: Record<string, unknown> | null = null;
+
+    for (const key of timestampKeys) {
+      const value = record[key];
+      if (typeof value === 'string' && sqliteUtcTimestamp.test(value)) {
+        normalized ??= { ...record };
+        normalized[key] = `${value.replace(' ', 'T')}Z`;
+      }
+    }
+
+    return (normalized ?? row) as T;
   });
 }
 
@@ -46,8 +63,6 @@ async function getTauriDb() {
     tauriDbPromise = (async () => {
       const DatabasePlugin = (await import('@tauri-apps/plugin-sql')).default;
       const database = await DatabasePlugin.load('sqlite:pharma_local.db');
-      const { invoke } = await import('@tauri-apps/api/core');
-      await invoke('ensure_schema_compatibility');
       return database;
     })().catch(error => {
       tauriDbPromise = null;

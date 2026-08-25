@@ -384,6 +384,8 @@ export default function PurchaseInvoiceClient() {
         bonus_quantity: 0,
         cost_price: purchasePrice,
         selling_price: officialPrice,
+        expiry_date: '',
+        batch_number: drug.batch_number || '',
         tax_percent: 0,
         discount_percent: 0,
         large_unit: drug.large_unit,

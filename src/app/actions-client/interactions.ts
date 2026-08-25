@@ -70,7 +70,8 @@ async function getDbIngredients() {
 
 
 /**
- * Check for drug interactions between items in the cart and patient's history
+ * Check for drug interactions between items currently in the cart.
+ * Patient sales history is not an active-medication list and must not be treated as one.
  */
 export async function checkDrugInteractions(cartIngredients: string[], patientId?: string) {
   try {
@@ -85,33 +86,6 @@ export async function checkDrugInteractions(cartIngredients: string[], patientId
     cartIngredients.forEach(i => {
       parseIngredients(i).forEach(ing => cartIngs.push(ing));
     });
-
-    const pastIngs: string[] = [];
-
-    // If patient is linked, also get their past purchase ingredients
-    if (patientId) {
-      const pastSales = await db.prepare(`
-        SELECT DISTINCT i.drug_id
-        FROM sales_items si
-        JOIN sales_invoices inv ON si.invoice_id = inv.id
-        JOIN inventory i ON si.inventory_id = i.id
-        WHERE inv.patient_id = ?
-          AND inv.created_at >= datetime('now', '-90 days')
-      `).all(patientId) as any[];
-
-      // Look up active ingredients from master_drugs via SQL JOIN
-      const pastDrugIds = pastSales.map((item: any) => item.drug_id).filter(Boolean);
-      if (pastDrugIds.length > 0) {
-        const placeholdersPast = pastDrugIds.map(() => '?').join(',');
-        const drugRows = await dbSelect<{ active_ingredient: string }>(
-          `SELECT active_ingredient FROM master_drugs WHERE id IN (${placeholdersPast}) AND active_ingredient IS NOT NULL AND active_ingredient != ''`,
-          pastDrugIds
-        );
-        drugRows.forEach(row => {
-          parseIngredients(row.active_ingredient).forEach(ing => pastIngs.push(ing));
-        });
-      }
-    }
 
     // Check patient allergies (only against current cart ingredients)
     const allergies: any[] = [];
@@ -134,17 +108,13 @@ export async function checkDrugInteractions(cartIngredients: string[], patientId
       }
     }
 
-    // Combine all ingredients for the database lookup
-    const allIngs = [...cartIngs, ...pastIngs];
-
     // Check drug-drug interactions
-    if (allIngs.length < 2) {
+    if (cartIngs.length < 2) {
       return { success: true, data: { interactions: [], allergies, hasCritical: allergies.length > 0, hasMajor: false } };
     }
 
     const dbIngredients = await getDbIngredients();
     const matched = new Set<string>();
-    const matchedFromCart = new Set<string>();
 
     const cleanStr = (s: string) => {
       let cleaned = s
@@ -186,15 +156,6 @@ export async function checkDrugInteractions(cartIngredients: string[], patientId
       for (const dbIng of dbIngredients) {
         if (matchIngredients(cartIng, dbIng)) {
           matched.add(dbIng);
-          matchedFromCart.add(dbIng);
-        }
-      }
-    }
-
-    for (const pastIng of pastIngs) {
-      for (const dbIng of dbIngredients) {
-        if (matchIngredients(pastIng, dbIng)) {
-          matched.add(dbIng);
         }
       }
     }
@@ -225,11 +186,6 @@ export async function checkDrugInteractions(cartIngredients: string[], patientId
     const results: any[] = [];
 
     for (const p of pairs) {
-      // Only include interactions if at least one ingredient is from the current cart
-      if (!matchedFromCart.has(p.ingredient_a) && !matchedFromCart.has(p.ingredient_b)) {
-        continue;
-      }
-      
       const key = `${p.ingredient_a}_${p.ingredient_b}`;
       if (!interactionsFound.has(key)) {
         interactionsFound.add(key);

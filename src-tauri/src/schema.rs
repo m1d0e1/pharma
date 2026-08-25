@@ -155,6 +155,84 @@ async fn add_column(
     Ok(())
 }
 
+async fn repair_unambiguous_shift_links(
+    transaction: &mut Transaction<'_, Sqlite>,
+) -> Result<u64, sqlx::Error> {
+    let shifts_ready = has_column(transaction, "shifts", "user_id").await?
+        && has_column(transaction, "shifts", "start_time").await?
+        && has_column(transaction, "shifts", "end_time").await?;
+    if !shifts_ready {
+        return Ok(0);
+    }
+
+    let mut repaired = 0;
+    if has_column(transaction, "sales_invoices", "user_id").await?
+        && has_column(transaction, "sales_invoices", "shift_id").await?
+        && has_column(transaction, "sales_invoices", "status").await?
+        && has_column(transaction, "sales_invoices", "created_at").await?
+    {
+        repaired += sqlx::query(
+            r#"
+            UPDATE sales_invoices AS invoice
+            SET shift_id = (
+              SELECT MIN(shift.id)
+              FROM shifts shift
+              WHERE shift.user_id = invoice.user_id
+                AND datetime(invoice.created_at) >= datetime(shift.start_time)
+                AND (shift.end_time IS NULL OR datetime(invoice.created_at) <= datetime(shift.end_time))
+              HAVING COUNT(*) = 1
+            )
+            WHERE invoice.shift_id IS NULL
+              AND LOWER(COALESCE(invoice.status, '')) IN ('completed', 'delivered')
+              AND (
+                SELECT COUNT(*)
+                FROM shifts shift
+                WHERE shift.user_id = invoice.user_id
+                  AND datetime(invoice.created_at) >= datetime(shift.start_time)
+                  AND (shift.end_time IS NULL OR datetime(invoice.created_at) <= datetime(shift.end_time))
+              ) = 1
+            "#,
+        )
+        .execute(&mut **transaction)
+        .await?
+        .rows_affected();
+    }
+
+    if has_column(transaction, "returns", "user_id").await?
+        && has_column(transaction, "returns", "shift_id").await?
+        && has_column(transaction, "returns", "status").await?
+        && has_column(transaction, "returns", "created_at").await?
+    {
+        repaired += sqlx::query(
+            r#"
+            UPDATE returns AS customer_return
+            SET shift_id = (
+              SELECT MIN(shift.id)
+              FROM shifts shift
+              WHERE shift.user_id = customer_return.user_id
+                AND datetime(customer_return.created_at) >= datetime(shift.start_time)
+                AND (shift.end_time IS NULL OR datetime(customer_return.created_at) <= datetime(shift.end_time))
+              HAVING COUNT(*) = 1
+            )
+            WHERE customer_return.shift_id IS NULL
+              AND LOWER(COALESCE(customer_return.status, '')) IN ('approved', 'completed')
+              AND (
+                SELECT COUNT(*)
+                FROM shifts shift
+                WHERE shift.user_id = customer_return.user_id
+                  AND datetime(customer_return.created_at) >= datetime(shift.start_time)
+                  AND (shift.end_time IS NULL OR datetime(customer_return.created_at) <= datetime(shift.end_time))
+              ) = 1
+            "#,
+        )
+        .execute(&mut **transaction)
+        .await?
+        .rows_affected();
+    }
+
+    Ok(repaired)
+}
+
 async fn ensure_compatibility(
     transaction: &mut Transaction<'_, Sqlite>,
 ) -> Result<(), sqlx::Error> {
@@ -615,6 +693,9 @@ async fn ensure_compatibility(
         add_column(transaction, table, column, definition).await?;
     }
 
+    // ponytail: only one matching user/time window is safe to repair automatically.
+    repair_unambiguous_shift_links(transaction).await?;
+
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_shortages_pharmacy_drug_status ON shortages(pharmacy_id, drug_id, status)",
     )
@@ -918,6 +999,263 @@ pub fn prepare_legacy_database(path: &Path) -> Result<(), String> {
     })
 }
 
+async fn repair_catalog_name_drift_on_connection(
+    connection: &mut SqliteConnection,
+    seed_path: &Path,
+) -> Result<u64, String> {
+    let seed_path = seed_path
+        .to_string_lossy()
+        .replace('\\', "/")
+        .replace('\'', "''");
+    sqlx::query(&format!("ATTACH DATABASE '{seed_path}' AS bundled_catalog"))
+        .execute(&mut *connection)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let repair_result = async {
+        let mut transaction = connection.begin().await.map_err(|e| e.to_string())?;
+        sqlx::raw_sql(
+            r#"
+            CREATE TEMP TABLE catalog_identity_repairs (
+              source_id INTEGER PRIMARY KEY,
+              target_id INTEGER NOT NULL UNIQUE,
+              trade_name TEXT NOT NULL,
+              trade_name_en TEXT
+            );
+
+            INSERT OR IGNORE INTO catalog_identity_repairs (
+              source_id, target_id, trade_name, trade_name_en
+            )
+            SELECT live.id, duplicate.id, seed.trade_name, seed.trade_name_en
+            FROM main.master_drugs live
+            JOIN bundled_catalog.master_drugs seed ON seed.id = live.id
+            JOIN bundled_catalog.master_drugs duplicate
+              ON duplicate.id != seed.id
+             AND live.trade_name = duplicate.trade_name COLLATE NOCASE
+            JOIN main.master_drugs live_duplicate ON live_duplicate.id = duplicate.id
+            WHERE TRIM(COALESCE(seed.trade_name, '')) != ''
+              AND TRIM(COALESCE(live.trade_name, '')) != ''
+              AND live.trade_name != seed.trade_name COLLATE NOCASE
+              AND TRIM(COALESCE(live.active_ingredient, '')) != ''
+              AND TRIM(COALESCE(live.category, '')) != ''
+              AND TRIM(COALESCE(live.manufacturer, '')) != ''
+              AND live.active_ingredient = seed.active_ingredient COLLATE NOCASE
+              AND live.category = seed.category COLLATE NOCASE
+              AND live.manufacturer = seed.manufacturer COLLATE NOCASE
+              AND (
+                TRIM(COALESCE(live.trade_name_en, '')) = ''
+                OR live.trade_name_en = duplicate.trade_name COLLATE NOCASE
+                OR (
+                  TRIM(COALESCE(duplicate.trade_name_en, '')) != ''
+                  AND live.trade_name_en = duplicate.trade_name_en COLLATE NOCASE
+                )
+              )
+              AND live_duplicate.active_ingredient = duplicate.active_ingredient COLLATE NOCASE
+              AND live_duplicate.category = duplicate.category COLLATE NOCASE
+              AND live_duplicate.manufacturer = duplicate.manufacturer COLLATE NOCASE
+              AND (
+                seed.active_ingredient != duplicate.active_ingredient COLLATE NOCASE
+                OR seed.category != duplicate.category COLLATE NOCASE
+                OR seed.manufacturer != duplicate.manufacturer COLLATE NOCASE
+              );
+
+            -- The legacy import attached the next visible catalog name to the old numeric ID.
+            -- Move every business reference to that name's canonical ID before restoring names.
+            UPDATE inventory
+            SET drug_id = (SELECT target_id FROM catalog_identity_repairs WHERE source_id = inventory.drug_id)
+            WHERE drug_id IN (SELECT source_id FROM catalog_identity_repairs);
+
+            UPDATE sales_items
+            SET drug_id = (SELECT target_id FROM catalog_identity_repairs WHERE source_id = sales_items.drug_id)
+            WHERE drug_id IN (SELECT source_id FROM catalog_identity_repairs);
+
+            UPDATE refill_reminders
+            SET drug_id = (SELECT target_id FROM catalog_identity_repairs WHERE source_id = refill_reminders.drug_id)
+            WHERE drug_id IN (SELECT source_id FROM catalog_identity_repairs);
+
+            UPDATE return_items
+            SET drug_id = (SELECT target_id FROM catalog_identity_repairs WHERE source_id = return_items.drug_id)
+            WHERE drug_id IN (SELECT source_id FROM catalog_identity_repairs);
+
+            UPDATE purchase_invoice_items
+            SET drug_id = (SELECT target_id FROM catalog_identity_repairs WHERE source_id = purchase_invoice_items.drug_id)
+            WHERE drug_id IN (SELECT source_id FROM catalog_identity_repairs);
+
+            UPDATE purchase_order_items
+            SET drug_id = (SELECT target_id FROM catalog_identity_repairs WHERE source_id = purchase_order_items.drug_id)
+            WHERE drug_id IN (SELECT source_id FROM catalog_identity_repairs);
+
+            UPDATE purchase_return_items
+            SET drug_id = (SELECT target_id FROM catalog_identity_repairs WHERE source_id = purchase_return_items.drug_id)
+            WHERE drug_id IN (SELECT source_id FROM catalog_identity_repairs);
+
+            UPDATE opening_balance_items
+            SET drug_id = (SELECT target_id FROM catalog_identity_repairs WHERE source_id = opening_balance_items.drug_id)
+            WHERE drug_id IN (SELECT source_id FROM catalog_identity_repairs);
+
+            UPDATE shortages
+            SET drug_id = (SELECT target_id FROM catalog_identity_repairs WHERE source_id = shortages.drug_id)
+            WHERE drug_id IN (SELECT source_id FROM catalog_identity_repairs);
+
+            UPDATE master_drugs
+            SET
+              trade_name = (
+                SELECT repair.trade_name
+                FROM catalog_identity_repairs repair
+                WHERE repair.source_id = master_drugs.id
+              ),
+              trade_name_en = (
+                SELECT repair.trade_name_en
+                FROM catalog_identity_repairs repair
+                WHERE repair.source_id = master_drugs.id
+              )
+            WHERE id IN (SELECT source_id FROM catalog_identity_repairs);
+            "#,
+        )
+        .execute(&mut *transaction)
+        .await
+        .map_err(|e| e.to_string())?;
+
+        if has_column(&mut transaction, "drug_indications", "indication_id")
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            sqlx::raw_sql(
+                r#"
+                CREATE TEMP TABLE repaired_drug_indications AS
+                SELECT
+                  COALESCE(repair.target_id, relation.drug_id) AS drug_id,
+                  relation.indication_id
+                FROM drug_indications relation
+                LEFT JOIN catalog_identity_repairs repair ON repair.source_id = relation.drug_id;
+                DELETE FROM drug_indications;
+                INSERT OR IGNORE INTO drug_indications (drug_id, indication_id)
+                SELECT drug_id, indication_id FROM repaired_drug_indications;
+                DROP TABLE repaired_drug_indications;
+                "#,
+            )
+            .execute(&mut *transaction)
+            .await
+            .map_err(|e| e.to_string())?;
+        } else {
+            sqlx::query(
+                r#"
+                UPDATE drug_indications
+                SET drug_id = (
+                  SELECT target_id FROM catalog_identity_repairs
+                  WHERE source_id = drug_indications.drug_id
+                )
+                WHERE drug_id IN (SELECT source_id FROM catalog_identity_repairs)
+                "#,
+            )
+            .execute(&mut *transaction)
+            .await
+            .map_err(|e| e.to_string())?;
+        }
+
+        if has_column(&mut transaction, "drug_alternatives", "alternative_id")
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            sqlx::raw_sql(
+                r#"
+                CREATE TEMP TABLE repaired_drug_alternatives AS
+                SELECT
+                  COALESCE(drug_repair.target_id, relation.drug_id) AS drug_id,
+                  COALESCE(alternative_repair.target_id, relation.alternative_id) AS alternative_id
+                FROM drug_alternatives relation
+                LEFT JOIN catalog_identity_repairs drug_repair
+                  ON drug_repair.source_id = relation.drug_id
+                LEFT JOIN catalog_identity_repairs alternative_repair
+                  ON alternative_repair.source_id = relation.alternative_id;
+                DELETE FROM drug_alternatives;
+                INSERT OR IGNORE INTO drug_alternatives (drug_id, alternative_id)
+                SELECT drug_id, alternative_id FROM repaired_drug_alternatives;
+                DROP TABLE repaired_drug_alternatives;
+                "#,
+            )
+            .execute(&mut *transaction)
+            .await
+            .map_err(|e| e.to_string())?;
+        } else {
+            sqlx::raw_sql(
+                r#"
+                UPDATE drug_alternatives
+                SET drug_id = (
+                  SELECT target_id FROM catalog_identity_repairs
+                  WHERE source_id = drug_alternatives.drug_id
+                )
+                WHERE drug_id IN (SELECT source_id FROM catalog_identity_repairs);
+
+                UPDATE drug_alternatives
+                SET alternative_drug_id = (
+                  SELECT target_id FROM catalog_identity_repairs
+                  WHERE source_id = drug_alternatives.alternative_drug_id
+                )
+                WHERE alternative_drug_id IN (SELECT source_id FROM catalog_identity_repairs);
+                "#,
+            )
+            .execute(&mut *transaction)
+            .await
+            .map_err(|e| e.to_string())?;
+        }
+
+        let repaired: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM catalog_identity_repairs")
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // Legacy workbooks wrote 1 when the per-lot pack factor was blank. Repair only
+        // untouched lots; any transactional history makes the lot value authoritative.
+        let unit_repairs = sqlx::query(
+            r#"
+            UPDATE inventory
+            SET strips_per_box = (
+              SELECT md.large_to_medium FROM master_drugs md WHERE md.id = inventory.drug_id
+            )
+            WHERE COALESCE(strips_per_box, 1) = 1
+              AND COALESCE((
+                SELECT md.large_to_medium FROM master_drugs md WHERE md.id = inventory.drug_id
+              ), 1) > 1
+              AND NOT EXISTS (SELECT 1 FROM sales_items WHERE inventory_id = inventory.id)
+              AND NOT EXISTS (SELECT 1 FROM return_items WHERE inventory_id = inventory.id)
+              AND NOT EXISTS (SELECT 1 FROM purchase_invoice_items WHERE inventory_id = inventory.id)
+              AND NOT EXISTS (SELECT 1 FROM purchase_return_items WHERE inventory_id = inventory.id)
+              AND NOT EXISTS (SELECT 1 FROM stock_adjustments WHERE inventory_id = inventory.id)
+            "#,
+        )
+        .execute(&mut *transaction)
+        .await
+        .map_err(|e| e.to_string())?
+        .rows_affected() as i64;
+        sqlx::query("DROP TABLE catalog_identity_repairs")
+            .execute(&mut *transaction)
+            .await
+            .map_err(|e| e.to_string())?;
+        transaction.commit().await.map_err(|e| e.to_string())?;
+        Ok::<u64, String>((repaired + unit_repairs) as u64)
+    }
+    .await;
+
+    let detach_result = sqlx::query("DETACH DATABASE bundled_catalog")
+        .execute(&mut *connection)
+        .await
+        .map_err(|e| e.to_string());
+
+    match (repair_result, detach_result) {
+        (Ok(repaired), Ok(_)) => Ok(repaired),
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+    }
+}
+
+pub fn repair_catalog_name_drift(path: &Path, seed_path: &Path) -> Result<u64, String> {
+    tauri::async_runtime::block_on(async {
+        let mut connection = connect(path).await?;
+        repair_catalog_name_drift_on_connection(&mut connection, seed_path).await
+    })
+}
+
 #[tauri::command]
 pub fn ensure_schema_compatibility(app: tauri::AppHandle) -> Result<(), String> {
     let path = app
@@ -948,6 +1286,323 @@ mod tests {
             Ok(false)
         );
         assert!(checksum_requires_repair(repair, "UNKNOWN").is_err());
+    }
+
+    #[tokio::test]
+    async fn repairs_only_unambiguous_historical_shift_links() {
+        let mut connection = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        sqlx::raw_sql(
+            r#"
+            CREATE TABLE shifts (
+              id TEXT PRIMARY KEY, user_id TEXT, start_time TEXT, end_time TEXT
+            );
+            CREATE TABLE sales_invoices (
+              id TEXT PRIMARY KEY, user_id TEXT, shift_id TEXT, status TEXT, created_at TEXT
+            );
+            CREATE TABLE returns (
+              id TEXT PRIMARY KEY, user_id TEXT, shift_id TEXT, status TEXT, created_at TEXT
+            );
+            INSERT INTO shifts VALUES
+              ('shift-one', 'user-one', '2026-08-14 10:00:00', '2026-08-14 12:00:00'),
+              ('shift-overlap', 'user-one', '2026-08-14 11:00:00', '2026-08-14 13:00:00'),
+              ('shift-two', 'user-two', '2026-08-14 10:00:00', '2026-08-14 12:00:00');
+            INSERT INTO sales_invoices VALUES
+              ('unique-sale', 'user-one', NULL, 'completed', '2026-08-14 10:30:00'),
+              ('ambiguous-sale', 'user-one', NULL, 'completed', '2026-08-14 11:30:00'),
+              ('outside-sale', 'user-one', NULL, 'completed', '2026-08-14 09:30:00'),
+              ('draft-sale', 'user-one', NULL, 'draft', '2026-08-14 10:30:00'),
+              ('other-user-sale', 'user-two', NULL, 'delivered', '2026-08-14 10:30:00'),
+              ('existing-sale', 'user-one', 'manual-shift', 'completed', '2026-08-14 10:30:00');
+            INSERT INTO returns VALUES
+              ('unique-return', 'user-two', NULL, 'approved', '2026-08-14 10:45:00'),
+              ('pending-return', 'user-two', NULL, 'pending', '2026-08-14 10:45:00');
+            "#,
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+
+        let mut transaction = connection.begin().await.unwrap();
+        assert_eq!(
+            repair_unambiguous_shift_links(&mut transaction)
+                .await
+                .unwrap(),
+            3
+        );
+        transaction.commit().await.unwrap();
+
+        let links: Vec<(String, Option<String>)> =
+            sqlx::query_as("SELECT id, shift_id FROM sales_invoices ORDER BY id")
+                .fetch_all(&mut connection)
+                .await
+                .unwrap();
+        assert_eq!(
+            links,
+            vec![
+                ("ambiguous-sale".into(), None),
+                ("draft-sale".into(), None),
+                ("existing-sale".into(), Some("manual-shift".into())),
+                ("other-user-sale".into(), Some("shift-two".into())),
+                ("outside-sale".into(), None),
+                ("unique-sale".into(), Some("shift-one".into())),
+            ]
+        );
+        let return_links: Vec<(String, Option<String>)> =
+            sqlx::query_as("SELECT id, shift_id FROM returns ORDER BY id")
+                .fetch_all(&mut connection)
+                .await
+                .unwrap();
+        assert_eq!(
+            return_links,
+            vec![
+                ("pending-return".into(), None),
+                ("unique-return".into(), Some("shift-two".into())),
+            ]
+        );
+
+        let mut transaction = connection.begin().await.unwrap();
+        assert_eq!(
+            repair_unambiguous_shift_links(&mut transaction)
+                .await
+                .unwrap(),
+            0
+        );
+        transaction.rollback().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn repairs_only_high_confidence_duplicate_catalog_name_drift() {
+        let seed_path =
+            std::env::temp_dir().join(format!("pharma-catalog-seed-{}.db", uuid::Uuid::new_v4()));
+        let live_path =
+            std::env::temp_dir().join(format!("pharma-catalog-live-{}.db", uuid::Uuid::new_v4()));
+        let mut seed = connect(&seed_path).await.unwrap();
+        sqlx::raw_sql(
+            r#"
+            CREATE TABLE master_drugs (
+              id INTEGER PRIMARY KEY,
+              trade_name TEXT,
+              trade_name_en TEXT,
+              active_ingredient TEXT,
+              category TEXT,
+              manufacturer TEXT,
+              official_price REAL,
+              large_to_medium INTEGER
+            );
+            INSERT INTO master_drugs VALUES
+              (417, 'AGIOLAX', NULL, 'ISPAGHULA', 'laxative', 'VIATRIS', 150, NULL),
+              (429, 'AIG ESOMEPRAZOLE', NULL, 'ESOMEPRAZOLE', 'ppi', 'PLANET CURE', 296, NULL),
+              (500, 'ORIGINAL CUSTOM', NULL, 'CUSTOM ACTIVE', 'custom', 'CUSTOM MAKER', 10, NULL),
+              (501, 'ORIGINAL TWO', NULL, 'SECOND ACTIVE', 'second', 'SECOND MAKER', 20, NULL),
+              (502, 'ORIGINAL THREE', NULL, 'THIRD ACTIVE', 'third', 'THIRD MAKER', 30, NULL),
+              (600, 'ALPHA', NULL, 'ACTIVE A', 'category a', 'MAKER A', 40, NULL),
+              (601, 'BETA', NULL, 'ACTIVE B', 'category b', 'MAKER B', 50, NULL),
+              (602, 'GAMMA', NULL, 'ACTIVE C', 'category c', 'MAKER C', 60, NULL);
+            CREATE INDEX idx_seed_master_drugs_trade_name ON master_drugs(trade_name COLLATE NOCASE);
+            "#,
+        )
+        .execute(&mut seed)
+        .await
+        .unwrap();
+        seed.close().await.unwrap();
+
+        let mut live = connect(&live_path).await.unwrap();
+        sqlx::raw_sql(
+            r#"
+            CREATE TABLE master_drugs (
+              id INTEGER PRIMARY KEY,
+              trade_name TEXT,
+              trade_name_en TEXT,
+              active_ingredient TEXT,
+              category TEXT,
+              manufacturer TEXT,
+              official_price REAL,
+              large_to_medium INTEGER
+            );
+            CREATE TABLE inventory (
+              id TEXT PRIMARY KEY,
+              drug_id INTEGER,
+              quantity REAL,
+              strips_per_box INTEGER
+            );
+            CREATE TABLE sales_items (id INTEGER PRIMARY KEY, drug_id INTEGER, inventory_id TEXT);
+            CREATE TABLE refill_reminders (id TEXT PRIMARY KEY, drug_id INTEGER);
+            CREATE TABLE return_items (id INTEGER PRIMARY KEY, drug_id INTEGER, inventory_id TEXT);
+            CREATE TABLE purchase_invoice_items (id INTEGER PRIMARY KEY, drug_id INTEGER, inventory_id TEXT);
+            CREATE TABLE purchase_order_items (id INTEGER PRIMARY KEY, drug_id INTEGER);
+            CREATE TABLE purchase_return_items (id INTEGER PRIMARY KEY, drug_id INTEGER, inventory_id TEXT);
+            CREATE TABLE stock_adjustments (id INTEGER PRIMARY KEY, inventory_id TEXT);
+            CREATE TABLE opening_balance_items (id INTEGER PRIMARY KEY, drug_id INTEGER);
+            CREATE TABLE shortages (id INTEGER PRIMARY KEY, drug_id INTEGER);
+            CREATE TABLE drug_indications (
+              drug_id INTEGER,
+              indication_id INTEGER,
+              PRIMARY KEY (drug_id, indication_id)
+            );
+            CREATE TABLE drug_alternatives (
+              drug_id INTEGER,
+              alternative_id INTEGER,
+              PRIMARY KEY (drug_id, alternative_id)
+            );
+            CREATE VIRTUAL TABLE master_drugs_fts USING fts5(
+              trade_name,
+              trade_name_en,
+              content='master_drugs',
+              content_rowid='id'
+            );
+            CREATE TRIGGER master_drugs_au AFTER UPDATE ON master_drugs BEGIN
+              INSERT INTO master_drugs_fts(master_drugs_fts, rowid, trade_name, trade_name_en)
+              VALUES ('delete', OLD.id, OLD.trade_name, OLD.trade_name_en);
+              INSERT INTO master_drugs_fts(rowid, trade_name, trade_name_en)
+              VALUES (NEW.id, NEW.trade_name, NEW.trade_name_en);
+            END;
+            INSERT INTO master_drugs VALUES
+              (417, 'AIG ESOMEPRAZOLE', 'AIG ESOMEPRAZOLE', 'ISPAGHULA', 'laxative', 'VIATRIS', 292, 1),
+              (429, 'AIG ESOMEPRAZOLE', 'AIG ESOMEPRAZOLE', 'ESOMEPRAZOLE', 'ppi', 'PLANET CURE', 292, 2),
+              (500, 'USER LABEL', 'USER LABEL EN', 'CUSTOM ACTIVE', 'custom', 'CUSTOM MAKER', 11, 3),
+              (501, 'AIG ESOMEPRAZOLE', 'AIG ESOMEPRAZOLE', 'SECOND ACTIVE', 'second', 'USER MAKER', 21, 4),
+              (502, 'AIG ESOMEPRAZOLE', 'Custom English Translation', 'THIRD ACTIVE', 'third', 'THIRD MAKER', 31, 5),
+              (600, 'BETA', 'BETA', 'ACTIVE A', 'category a', 'MAKER A', 41, 6),
+              (601, 'GAMMA', 'GAMMA', 'ACTIVE B', 'category b', 'MAKER B', 51, 7),
+              (602, 'GAMMA', 'GAMMA', 'ACTIVE C', 'category c', 'MAKER C', 61, 8);
+            INSERT INTO master_drugs_fts(rowid, trade_name, trade_name_en)
+            SELECT id, trade_name, trade_name_en FROM master_drugs;
+            INSERT INTO inventory VALUES
+              ('lot-417', 417, 0.5, 2),
+              ('lot-600', 600, 1, 7),
+              ('lot-601', 601, 2, 8),
+              ('lot-unit', 500, 1, 1);
+            INSERT INTO sales_items VALUES (1, 417, 'lot-417');
+            INSERT INTO refill_reminders VALUES ('refill-1', 417);
+            INSERT INTO return_items VALUES (1, 417, 'lot-417');
+            INSERT INTO purchase_invoice_items VALUES (1, 417, 'lot-417');
+            INSERT INTO purchase_order_items VALUES (1, 417);
+            INSERT INTO purchase_return_items VALUES (1, 417, 'lot-417');
+            INSERT INTO opening_balance_items VALUES (1, 417);
+            INSERT INTO shortages VALUES (1, 417);
+            INSERT INTO drug_indications VALUES (417, 1), (429, 1);
+            INSERT INTO drug_alternatives VALUES (417, 600), (429, 601);
+            "#,
+        )
+        .execute(&mut live)
+        .await
+        .unwrap();
+
+        let repaired = repair_catalog_name_drift_on_connection(&mut live, &seed_path)
+            .await
+            .unwrap();
+        assert_eq!(repaired, 4);
+
+        let repaired_row = sqlx::query(
+            "SELECT trade_name, trade_name_en, official_price, large_to_medium FROM master_drugs WHERE id = 417",
+        )
+        .fetch_one(&mut live)
+        .await
+        .unwrap();
+        assert_eq!(repaired_row.get::<String, _>("trade_name"), "AGIOLAX");
+        assert_eq!(repaired_row.get::<Option<String>, _>("trade_name_en"), None);
+        assert_eq!(repaired_row.get::<f64, _>("official_price"), 292.0);
+        assert_eq!(repaired_row.get::<i64, _>("large_to_medium"), 1);
+
+        for (id, expected_name) in [
+            (429, "AIG ESOMEPRAZOLE"),
+            (500, "USER LABEL"),
+            (501, "AIG ESOMEPRAZOLE"),
+            (502, "AIG ESOMEPRAZOLE"),
+            (600, "ALPHA"),
+            (601, "BETA"),
+            (602, "GAMMA"),
+        ] {
+            let actual: String =
+                sqlx::query_scalar("SELECT trade_name FROM master_drugs WHERE id = ?")
+                    .bind(id)
+                    .fetch_one(&mut live)
+                    .await
+                    .unwrap();
+            assert_eq!(actual, expected_name);
+        }
+        let inventory: (i64, f64) =
+            sqlx::query_as("SELECT drug_id, quantity FROM inventory WHERE id = 'lot-417'")
+                .fetch_one(&mut live)
+                .await
+                .unwrap();
+        assert_eq!(inventory, (429, 0.5));
+
+        let repaired_unit_factor: i64 =
+            sqlx::query_scalar("SELECT strips_per_box FROM inventory WHERE id = 'lot-unit'")
+                .fetch_one(&mut live)
+                .await
+                .unwrap();
+        assert_eq!(repaired_unit_factor, 3);
+
+        let chained_inventory: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT id, drug_id FROM inventory WHERE id IN ('lot-600', 'lot-601') ORDER BY id",
+        )
+        .fetch_all(&mut live)
+        .await
+        .unwrap();
+        assert_eq!(
+            chained_inventory,
+            vec![("lot-600".into(), 601), ("lot-601".into(), 602)]
+        );
+
+        for table in [
+            "sales_items",
+            "refill_reminders",
+            "return_items",
+            "purchase_invoice_items",
+            "purchase_order_items",
+            "purchase_return_items",
+            "opening_balance_items",
+            "shortages",
+        ] {
+            let remapped: i64 = sqlx::query_scalar(&format!("SELECT drug_id FROM {table} LIMIT 1"))
+                .fetch_one(&mut live)
+                .await
+                .unwrap();
+            assert_eq!(remapped, 429, "{table} kept the drifted catalog ID");
+        }
+
+        let indication_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM drug_indications WHERE drug_id = 429 AND indication_id = 1",
+        )
+        .fetch_one(&mut live)
+        .await
+        .unwrap();
+        assert_eq!(indication_rows, 1);
+        let alternative_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM drug_alternatives WHERE drug_id = 429 AND alternative_id = 601",
+        )
+        .fetch_one(&mut live)
+        .await
+        .unwrap();
+        assert_eq!(alternative_rows, 1);
+
+        let display_name: String = sqlx::query_scalar(
+            "SELECT COALESCE(NULLIF(TRIM(trade_name_en), ''), trade_name) FROM master_drugs WHERE id = 417",
+        )
+        .fetch_one(&mut live)
+        .await
+        .unwrap();
+        assert_eq!(display_name, "AGIOLAX");
+        let fts_matches: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM master_drugs_fts WHERE master_drugs_fts MATCH 'AGIOLAX' AND rowid = 417",
+        )
+        .fetch_one(&mut live)
+        .await
+        .unwrap();
+        assert_eq!(fts_matches, 1);
+
+        assert_eq!(
+            repair_catalog_name_drift_on_connection(&mut live, &seed_path)
+                .await
+                .unwrap(),
+            0
+        );
+
+        live.close().await.unwrap();
+        std::fs::remove_file(seed_path).unwrap();
+        std::fs::remove_file(live_path).unwrap();
     }
 
     #[tokio::test]

@@ -164,8 +164,8 @@ export async function getShortagesAction() {
         END AS inventory_status
       FROM shortages s
       CROSS JOIN Params p
-      JOIN master_drugs m ON CAST(m.id AS TEXT) = CAST(s.drug_id AS TEXT)
-      LEFT JOIN DrugStock ds ON CAST(ds.drug_id AS TEXT) = CAST(s.drug_id AS TEXT)
+      JOIN master_drugs m ON m.id = s.drug_id
+      LEFT JOIN DrugStock ds ON ds.drug_id = s.drug_id
       WHERE s.pharmacy_id = p.pharmacy_id
         AND COALESCE(s.status, 'pending') != 'received'
       ORDER BY

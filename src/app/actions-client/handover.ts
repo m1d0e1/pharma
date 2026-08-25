@@ -78,8 +78,8 @@ const HANDOVER_DETAILS_SQL = `
     (
       SELECT COALESCE(SUM(
         CASE
-          WHEN si.payment_method = 'credit' THEN (CAST(si.total_amount AS REAL) - CAST(COALESCE(si.paid_amount, 0) AS REAL))
           WHEN (si.remaining_amount IS NOT NULL AND CAST(si.remaining_amount AS REAL) > 0) THEN CAST(si.remaining_amount AS REAL)
+          WHEN si.payment_method = 'credit' THEN MAX(CAST(si.total_amount AS REAL) - CAST(COALESCE(si.paid_amount, 0) AS REAL), 0)
           ELSE 0
         END
       ), 0)
@@ -295,8 +295,14 @@ export async function getShiftCreditSalesAction(shiftId?: string) {
 
     if (!targetShiftId) return { success: true, data: [] };
 
-    const shift = await db.prepare('SELECT id FROM shifts WHERE id = ?').get(targetShiftId) as any;
-    if (!shift) return { success: false, error: 'الوردية غير موجودة', data: [] };
+    const shift = await db.prepare(`
+      SELECT id
+      FROM shifts
+      WHERE id = ?
+        AND CAST(user_id AS TEXT) = CAST(? AS TEXT)
+        AND status = 'open'
+    `).get(targetShiftId, user.id) as any;
+    if (!shift) return { success: false, error: 'الوردية غير مفتوحة أو لا تخص المستخدم الحالي', data: [] };
 
     const items = await db.prepare(`
       SELECT 
@@ -306,7 +312,7 @@ export async function getShiftCreditSalesAction(shiftId?: string) {
         CAST(COALESCE(si.paid_amount, 0) AS REAL) as paid_amount,
         CASE 
           WHEN (si.remaining_amount IS NOT NULL AND CAST(si.remaining_amount AS REAL) > 0) THEN CAST(si.remaining_amount AS REAL)
-          ELSE (CAST(si.total_amount AS REAL) - CAST(COALESCE(si.paid_amount, 0) AS REAL))
+          ELSE MAX(CAST(si.total_amount AS REAL) - CAST(COALESCE(si.paid_amount, 0) AS REAL), 0)
         END as credit_amount,
         si.created_at,
         si.check_number as notes,

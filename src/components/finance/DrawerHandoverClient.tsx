@@ -39,7 +39,7 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
     actualCash: 0,
     transferAmount: 0,
     transferTargetId: '',
-    transferTargetType: 'bank' as 'bank' | 'pos' | 'treasury',
+    transferTargetType: 'treasury' as 'bank' | 'pos' | 'treasury',
     receiverUsername: '',
     receiverPassword: '',
     notes: ''
@@ -79,12 +79,21 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
   const handleOpenCreditDetails = async () => {
     setShowCreditModal(true);
     const targetShiftId = shiftId || details?.id;
+    setCreditSalesList([]);
     setLoadingCredit(true);
-    const res = await getShiftCreditSalesAction(targetShiftId || undefined);
-    if (res.success && res.data) {
-      setCreditSalesList(res.data);
+    try {
+      const res = await getShiftCreditSalesAction(targetShiftId || undefined);
+      if (res.success && res.data) {
+        setCreditSalesList(res.data);
+      } else {
+        toast.error(res.error || 'فشل تحميل تفاصيل مبيعات الآجل');
+      }
+    } catch {
+      setCreditSalesList([]);
+      toast.error('فشل تحميل تفاصيل مبيعات الآجل');
+    } finally {
+      setLoadingCredit(false);
     }
-    setLoadingCredit(false);
   };
 
   const handleOpenOwnerAudit = () => {
@@ -416,7 +425,7 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
                           {inv.created_at ? format(new Date(inv.created_at), 'HH:mm - dd/MM') : '---'}
                         </td>
                         <td className="py-3 px-2 text-center font-black text-emerald-600 dark:text-emerald-400">
-                          {Number(inv.credit_amount || inv.total_amount || 0).toLocaleString('ar-EG')} ج.م
+                          {Number(inv.credit_amount ?? inv.total_amount ?? 0).toLocaleString('ar-EG')} ج.م
                         </td>
                         <td className="py-3 px-2 text-slate-400 max-w-[150px] truncate text-[11px]">
                           {inv.notes || '---'}

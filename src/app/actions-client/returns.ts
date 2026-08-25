@@ -189,7 +189,7 @@ export async function createReturnAction(data: {
       if (!soldItem) continue;
 
       const returned = alreadyReturned.find(ar => ar.sale_item_id === returnItem.sale_item_id)?.total || 0;
-      if (returnItem.quantity > (soldItem.quantity_sold - returned + 0.005)) {
+      if (returnItem.quantity > (soldItem.quantity_sold - returned + 0.000001)) {
         return { success: false, error: `كمية المرتجع تتجاوز الكمية المتبقية للصنف "${returnItem.drug_name}"` };
       }
     }
@@ -249,12 +249,23 @@ export async function createReturnAction(data: {
           VALUES (?, ?, ?, ?, ?, ?, ?)
         `).run(returnId, finalInventoryId, item.drug_name, item.quantity, item.unit_price, item.sale_item_id || null, item.unit || 'large');
 
-        const drugInfo = await db.prepare('SELECT large_to_medium, medium_to_small FROM master_drugs WHERE id = ?').get(drugId) as any;
+        const drugInfo = await db.prepare(`
+          SELECT
+            md.large_to_medium,
+            md.medium_to_small,
+            i.strips_per_box
+          FROM master_drugs md
+          LEFT JOIN inventory i ON i.id = ? AND i.drug_id = md.id
+          WHERE md.id = ?
+        `).get(finalInventoryId, drugId) as any;
+        const batchLargeToMedium = Number(drugInfo?.strips_per_box) > 0
+          ? Number(drugInfo.strips_per_box)
+          : (Number(drugInfo?.large_to_medium) || 1);
         let restockQty = item.quantity;
-        if (item.unit === 'medium') {
-          restockQty = item.quantity / (drugInfo?.large_to_medium || 1);
+        if (item.unit === 'medium' || item.unit === 'strip' || item.unit === 'شريط') {
+          restockQty = item.quantity / batchLargeToMedium;
         } else if (item.unit === 'small') {
-          restockQty = item.quantity / ((drugInfo?.large_to_medium || 1) * (drugInfo?.medium_to_small || 1));
+          restockQty = item.quantity / (batchLargeToMedium * (drugInfo?.medium_to_small || 1));
         }
 
         await db.prepare('UPDATE inventory SET quantity = quantity + ? WHERE id = ?').run(restockQty, finalInventoryId);

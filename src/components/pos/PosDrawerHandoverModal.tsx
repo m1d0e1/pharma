@@ -43,27 +43,51 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
   });
 
   useEffect(() => {
+    setShiftId(null);
+    setDetails(null);
+    setActiveUserDisplay('');
+    setCreditSalesList([]);
+    setShowCreditModal(false);
+    setLoadingCredit(false);
+    setShowOwnerAuditModal(false);
+    setLoading(true);
+    setProcessing(false);
+    setForm({
+      actualCash: 0,
+      transferAmount: 0,
+      transferTargetId: '',
+      transferTargetType: 'treasury',
+      receiverUsername: '',
+      receiverPassword: '',
+      notes: ''
+    });
+
     if (!isOpen) return;
+    let cancelled = false;
 
     async function loadData() {
       setLoading(true);
 
       const { getClientSession } = await import('@/lib/auth/local');
       const sessionUser = await getClientSession();
+      if (cancelled) return;
       const activeUserName = sessionUser?.full_name || sessionUser?.username || 'المستخدم الحالي';
       setActiveUserDisplay(activeUserName);
       setUserRole(sessionUser?.role || 'pharmacist');
 
       const shiftRes = await getCurrentShiftAction();
+      if (cancelled) return;
       let activeShiftId = shiftRes.data?.id;
       if (!activeShiftId) {
         const openShiftRes = await getOpenShiftHandoverAction();
+        if (cancelled) return;
         activeShiftId = openShiftRes.data?.id;
       }
 
       if (activeShiftId) {
         setShiftId(activeShiftId);
         const detailsRes = await getHandoverDetailsAction(activeShiftId);
+        if (cancelled) return;
         if (detailsRes.success && detailsRes.data) {
           setDetails({
             ...detailsRes.data,
@@ -77,9 +101,11 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
       }
 
       const banksRes = await getBanksAction();
+      if (cancelled) return;
       if (banksRes.success) setBanks(banksRes.data || []);
 
       const staffRes = await getStaffAction();
+      if (cancelled) return;
       if (staffRes.success) {
         setStaff(staffRes.data || []);
         if (staffRes.data && staffRes.data.length > 0) {
@@ -91,17 +117,35 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
     }
 
     loadData();
+    return () => {
+      cancelled = true;
+    };
   }, [isOpen]);
 
   const handleOpenCreditDetails = async () => {
     setShowCreditModal(true);
     const targetShiftId = shiftId || details?.id;
+    setCreditSalesList([]);
     setLoadingCredit(true);
-    const res = await getShiftCreditSalesAction(targetShiftId || undefined);
-    if (res.success && res.data) {
-      setCreditSalesList(res.data);
+    if (!targetShiftId) {
+      setLoadingCredit(false);
+      toast.error('لا توجد وردية مفتوحة');
+      return;
     }
-    setLoadingCredit(false);
+
+    try {
+      const res = await getShiftCreditSalesAction(targetShiftId);
+      if (res.success && res.data) {
+        setCreditSalesList(res.data);
+      } else {
+        toast.error(res.error || 'فشل تحميل تفاصيل مبيعات الآجل');
+      }
+    } catch {
+      setCreditSalesList([]);
+      toast.error('فشل تحميل تفاصيل مبيعات الآجل');
+    } finally {
+      setLoadingCredit(false);
+    }
   };
 
   const handleOpenOwnerAudit = () => {
@@ -476,7 +520,7 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
                           {inv.created_at ? format(new Date(inv.created_at), 'HH:mm - dd/MM') : '---'}
                         </td>
                         <td className="py-3 px-2 text-center font-black text-emerald-600 dark:text-emerald-400">
-                          {Number(inv.credit_amount || inv.total_amount || 0).toLocaleString('ar-EG')} ج.م
+                          {Number(inv.credit_amount ?? inv.total_amount ?? 0).toLocaleString('ar-EG')} ج.م
                         </td>
                         <td className="py-3 px-2 text-slate-400 max-w-[150px] truncate text-[11px]">
                           {inv.notes || '---'}

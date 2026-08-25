@@ -16,7 +16,7 @@ export default function PosManagementPage() {
           </div>
         </div>
 
-        <AccountsManagementClient initialTab="pos" />
+        <AccountsManagementClient initialTab="pos_management" />
       </div>
     </PermissionGuard>
   );

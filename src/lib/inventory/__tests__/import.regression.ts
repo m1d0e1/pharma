@@ -1,7 +1,6 @@
 import Database from 'better-sqlite3';
-import { existsSync, readFileSync, readdirSync } from 'fs';
+import { readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
-import * as XLSX from 'xlsx';
 
 jest.mock('@/lib/db/tauri', () => ({
   dbSelect: jest.fn(),
@@ -106,41 +105,192 @@ describe.each(variants)('%s inventory workbook import', (_name, initialize) => {
     expect(db.prepare('SELECT barcode FROM master_drugs WHERE id = 100013').get()).toEqual({ barcode: '6223000000000' });
     expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
   });
-});
 
-const workbookPath = join(process.cwd(), 'inventory_export (6).xlsx');
-(existsSync(workbookPath) ? it : it.skip)('imports the supplied inventory_export (6).xlsx without generated drug names', async () => {
-  const workbook = XLSX.readFile(workbookPath);
-  const inventory = XLSX.utils.sheet_to_json<Record<string, unknown>>(workbook.Sheets.inventory, { raw: true });
-  const drugs = XLSX.utils.sheet_to_json<Record<string, unknown>>(workbook.Sheets.master_drugs, { raw: true });
+  it('uses the master pack factor when the inventory workbook leaves it blank', async () => {
+    await importInventoryWorkbookRows(
+      [{ id: 'lot-pack', drug_id: 9902, quantity: 1 }],
+      [{ id: 9902, trade_name: 'PACKED DRUG', large_to_medium: 3 }],
+      'active-pharmacy',
+      adapter(db),
+    );
 
-  for (const initialize of variants.map(([, setup]) => setup)) {
-    const db = new Database(':memory:');
-    initialize(db);
-    db.pragma('foreign_keys = ON');
-    await importInventoryWorkbookRows(inventory, drugs, 'active-pharmacy', adapter(db));
-
-    expect(db.prepare('SELECT COUNT(*) AS count FROM inventory').get()).toEqual({ count: 1458 });
-    expect(db.prepare(`SELECT COUNT(*) AS count FROM master_drugs WHERE trade_name GLOB 'Drug [0-9]*'`).get()).toEqual({ count: 0 });
-    expect(db.prepare('SELECT trade_name, barcode, large_to_medium FROM master_drugs WHERE id = 14598').get()).toEqual({
-      trade_name: 'MOXEN 7.5 MG 20 TABS.',
-      barcode: '6223003930264',
-      large_to_medium: null,
-    });
-    expect(db.prepare('SELECT barcode, strips_per_box FROM inventory WHERE id = ?').get('584e3f17-d7eb-4038-a0d8-c3c11f4c3070')).toEqual({
-      barcode: '6223003930264',
-      strips_per_box: 1,
-    });
-    expect(db.prepare(`SELECT COUNT(*) AS count FROM inventory WHERE pharmacy_id != 'active-pharmacy'`).get()).toEqual({ count: 0 });
-    expect(db.prepare('SELECT barcode, strips_per_box FROM inventory WHERE id = ?').get('b01be38d-65b8-49ab-8b0a-2d588112b161')).toEqual({
-      barcode: '6224010000000',
-      strips_per_box: 1,
-    });
-    expect(db.prepare('SELECT barcode, strips_per_box FROM inventory WHERE id = ?').get('db52f47f-086a-4ed7-a931-03a7f64f2c2c')).toEqual({
-      barcode: '6223000000000',
+    expect(db.prepare('SELECT strips_per_box FROM inventory WHERE id = ?').get('lot-pack')).toEqual({
       strips_per_box: 3,
     });
-    expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
-    db.close();
-  }
-}, 30_000);
+  });
+});
+
+describe('inventory workbook drug identity preflight', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    freshDatabase(db);
+    db.pragma('foreign_keys = ON');
+  });
+
+  afterEach(() => db.close());
+
+  it('rejects a shifted display name at an existing canonical ID and rolls back every row', async () => {
+    db.exec(`
+      INSERT INTO master_drugs (id, trade_name, trade_name_en, active_ingredient)
+      VALUES
+        (417, 'AGIOLAX 12 GRANULES IN SACHETS', 'AGIOLAX 12 GRANULES IN SACHETS', 'ISPAGHULA HUSK'),
+        (429, 'AIG ESOMEPRAZOLE 40 MG 28 CAPS.', 'AIG ESOMEPRAZOLE 40 MG 28 CAPS.', 'ESOMEPRAZOLE');
+    `);
+
+    const importPromise = importInventoryWorkbookRows(
+      [
+        { id: 'shifted-lot', drug_id: 417, quantity: 0, strips_per_box: 4 },
+        { id: 'new-lot', drug_id: 9901, quantity: 2, strips_per_box: 1 },
+      ],
+      [
+        {
+          id: 417,
+          trade_name: 'Drug 417',
+          trade_name_en: 'AIG ESOMEPRAZOLE 40 MG 28 CAPS.',
+          active_ingredient: 'ISPAGHULA HUSK',
+        },
+        { id: 9901, trade_name: 'Legitimate new workbook drug' },
+      ],
+      'active-pharmacy',
+      adapter(db),
+    );
+
+    await expect(importPromise).rejects.toThrow(/Drug identity conflict for source drug 417/);
+    expect(db.prepare('SELECT trade_name, active_ingredient FROM master_drugs WHERE id = 417').get()).toEqual({
+      trade_name: 'AGIOLAX 12 GRANULES IN SACHETS',
+      active_ingredient: 'ISPAGHULA HUSK',
+    });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM master_drugs WHERE id = 9901').get()).toEqual({ count: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM inventory').get()).toEqual({ count: 0 });
+  });
+
+  it('keeps a same-ID canonical drug when multiple non-name fields prove the shifted workbook row identity', async () => {
+    db.exec(`
+      INSERT INTO master_drugs (
+        id, trade_name, trade_name_en, active_ingredient, category, manufacturer
+      ) VALUES
+        (
+          417, 'AGIOLAX 12 GRANULES IN SACHETS', 'AGIOLAX 12 GRANULES IN SACHETS',
+          'ISPAGHULA HUSK + PLANTAGO SEED + SENNA', 'laxative', 'VIATRIS HEALTHCARE'
+        ),
+        (
+          429, 'AIG ESOMEPRAZOLE 40 MG 28 CAPS.', 'AIG ESOMEPRAZOLE 40 MG 28 CAPS.',
+          'ESOMEPRAZOLE', 'peptic ulcer.proton pump inhibitor', 'PLANET CURE'
+        );
+    `);
+
+    await importInventoryWorkbookRows(
+      [
+        { id: 'legacy-zero-lot', drug_id: 417, quantity: 0, strips_per_box: 4 },
+        { id: 'canonical-aig-lot', drug_id: 429, quantity: 0.5, strips_per_box: 2 },
+      ],
+      [
+        {
+          id: 417,
+          trade_name: 'Drug 417',
+          trade_name_en: 'AIG ESOMEPRAZOLE 40 MG 28 CAPS.',
+          active_ingredient: 'ISPAGHULA HUSK + PLANTAGO SEED + SENNA',
+          category: 'laxative',
+          manufacturer: 'VIATRIS HEALTHCARE',
+        },
+        {
+          id: 429,
+          trade_name: 'AIG ESOMEPRAZOLE 40 MG 28 CAPS.',
+          trade_name_en: 'AIG ESOMEPRAZOLE 40 MG 28 CAPS.',
+          active_ingredient: 'ESOMEPRAZOLE',
+          category: 'peptic ulcer.proton pump inhibitor',
+          manufacturer: 'PLANET CURE',
+        },
+      ],
+      'active-pharmacy',
+      adapter(db),
+    );
+
+    expect(db.prepare(`
+      SELECT id, trade_name, trade_name_en, active_ingredient, category, manufacturer
+      FROM master_drugs WHERE id IN (417, 429) ORDER BY id
+    `).all()).toEqual([
+      {
+        id: 417,
+        trade_name: 'AGIOLAX 12 GRANULES IN SACHETS',
+        trade_name_en: 'AGIOLAX 12 GRANULES IN SACHETS',
+        active_ingredient: 'ISPAGHULA HUSK + PLANTAGO SEED + SENNA',
+        category: 'laxative',
+        manufacturer: 'VIATRIS HEALTHCARE',
+      },
+      {
+        id: 429,
+        trade_name: 'AIG ESOMEPRAZOLE 40 MG 28 CAPS.',
+        trade_name_en: 'AIG ESOMEPRAZOLE 40 MG 28 CAPS.',
+        active_ingredient: 'ESOMEPRAZOLE',
+        category: 'peptic ulcer.proton pump inhibitor',
+        manufacturer: 'PLANET CURE',
+      },
+    ]);
+    expect(db.prepare('SELECT id, drug_id, quantity, strips_per_box FROM inventory ORDER BY id').all()).toEqual([
+      { id: 'canonical-aig-lot', drug_id: 429, quantity: 0.5, strips_per_box: 2 },
+      { id: 'legacy-zero-lot', drug_id: 417, quantity: 0, strips_per_box: 4 },
+    ]);
+  });
+
+  it('keeps legitimate new IDs and partial existing-ID rows without name-based balance merging', async () => {
+    db.exec(`
+      INSERT INTO master_drugs (id, trade_name, trade_name_en, active_ingredient)
+      VALUES (429, 'AIG ESOMEPRAZOLE 40 MG 28 CAPS.', 'AIG ESOMEPRAZOLE 40 MG 28 CAPS.', 'ESOMEPRAZOLE');
+    `);
+
+    await importInventoryWorkbookRows(
+      [
+        { id: 'new-duplicate-name-lot', drug_id: 9000, quantity: 0.5, strips_per_box: 2 },
+        { id: 'partial-lot', drug_id: 429, quantity: 1, strips_per_box: 2 },
+        { id: 'new-lot', drug_id: 9001, quantity: 3, strips_per_box: 1 },
+      ],
+      [
+        {
+          id: 9000,
+          trade_name: '  aig   esomeprazole 40 mg 28 caps. ',
+          active_ingredient: 'A DISTINCT NEW SOURCE ROW',
+        },
+        { id: 9001, trade_name: 'Legitimate new workbook drug' },
+      ],
+      'active-pharmacy',
+      adapter(db),
+    );
+
+    expect(db.prepare('SELECT active_ingredient FROM master_drugs WHERE id = 9000').get()).toEqual({
+      active_ingredient: 'A DISTINCT NEW SOURCE ROW',
+    });
+    expect(db.prepare('SELECT active_ingredient FROM master_drugs WHERE id = 429').get()).toEqual({
+      active_ingredient: 'ESOMEPRAZOLE',
+    });
+    expect(db.prepare('SELECT trade_name FROM master_drugs WHERE id = 9001').get()).toEqual({
+      trade_name: 'Legitimate new workbook drug',
+    });
+    expect(db.prepare('SELECT id, drug_id, pharmacy_id FROM inventory ORDER BY id').all()).toEqual([
+      { id: 'new-duplicate-name-lot', drug_id: 9000, pharmacy_id: 'active-pharmacy' },
+      { id: 'new-lot', drug_id: 9001, pharmacy_id: 'active-pharmacy' },
+      { id: 'partial-lot', drug_id: 429, pharmacy_id: 'active-pharmacy' },
+    ]);
+  });
+
+  it('rejects an ambiguous placeholder/barcode row without partially writing valid rows', async () => {
+    await expect(importInventoryWorkbookRows(
+      [
+        { id: 'placeholder-lot', drug_id: 100002, quantity: 1, barcode: '6221025003843' },
+        { id: 'valid-lot', drug_id: 9002, quantity: 1, barcode: '6221025003843' },
+      ],
+      [
+        { id: 100002, trade_name: 'Drug 100002', barcode: '6221025003843' },
+        { id: 9002, trade_name: 'Valid named row', barcode: '6221025003843' },
+      ],
+      'active-pharmacy',
+      adapter(db),
+    )).rejects.toThrow(/Missing drug name for inventory drug 100002/);
+
+    expect(db.prepare('SELECT COUNT(*) AS count FROM master_drugs WHERE id = 100002').get()).toEqual({ count: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM master_drugs WHERE id = 9002').get()).toEqual({ count: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM inventory').get()).toEqual({ count: 0 });
+  });
+});

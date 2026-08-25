@@ -152,8 +152,8 @@ export default function DashboardPage() {
           )
           SELECT COUNT(*) as count
           FROM master_drugs m
-          LEFT JOIN DrugStock ds ON CAST(m.id AS TEXT) = CAST(ds.drug_id AS TEXT)
-          LEFT JOIN MonthlySales ms ON CAST(m.id AS TEXT) = CAST(ms.drug_id AS TEXT)
+          LEFT JOIN DrugStock ds ON m.id = ds.drug_id
+          LEFT JOIN MonthlySales ms ON m.id = ms.drug_id
           WHERE (
             (ds.current_stock IS NOT NULL AND ds.current_stock <= COALESCE(NULLIF(m.reorder_point, 0), NULLIF(m.min_limit, 0), 10))
             OR (ds.current_stock IS NULL AND (m.reorder_point > 0 OR m.min_limit > 0 OR ms.avg_monthly_usage > 0))

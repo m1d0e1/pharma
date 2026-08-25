@@ -372,11 +372,12 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                      <button onClick={() => window.print()} className="p-4 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-[24px] hover:bg-slate-200 transition-all no-print">
                        <Printer className="w-6 h-6" />
                      </button>
-                     <button 
-                       onClick={() => toast.success('قريباً: إضافة نقطة بيع جديدة')}
-                       className="px-10 py-5 bg-purple-600 text-white rounded-[24px] font-black hover:bg-purple-700 transition-all shadow-xl shadow-purple-500/20 flex items-center gap-3"
+                     <button
+                       disabled
+                       title="غير متاح في هذا الإصدار"
+                       className="px-10 py-5 bg-purple-600 text-white rounded-[24px] font-black opacity-50 cursor-not-allowed flex items-center gap-3"
                      >
-                        <Plus className="w-6 h-6" /> إضافة نقطة بيع
+                        <Plus className="w-6 h-6" /> إضافة نقطة بيع (قريباً)
                      </button>
                    </div>
                 </div>
@@ -412,15 +413,17 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                                </td>
                                <td className="px-8 py-6">
                                   <div className="flex gap-2">
-                                     <button 
-                                       onClick={() => toast('جاري فتح بيانات نقطة البيع للتعديل')}
-                                       className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-500 rounded-xl hover:text-blue-600 transition-all"
+                                     <button
+                                       disabled
+                                       title="التعديل غير متاح في هذا الإصدار"
+                                       className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-500 rounded-xl opacity-50 cursor-not-allowed"
                                      >
                                         <Edit className="w-4 h-4" />
                                      </button>
-                                     <button 
-                                       onClick={() => toast.error('لا يمكن حذف نقطة البيع الأساسية')}
-                                       className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-500 rounded-xl hover:text-rose-600 transition-all"
+                                     <button
+                                       disabled
+                                       title="الحذف غير متاح في هذا الإصدار"
+                                       className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-500 rounded-xl opacity-50 cursor-not-allowed"
                                      >
                                         <Trash2 className="w-4 h-4" />
                                      </button>
@@ -441,11 +444,12 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                       <h2 className="text-2xl font-black">تعريف المصروفات</h2>
                       <p className="text-slate-500 font-bold">تكويد وتصنيف أنواع المصاريف المختلفة</p>
                    </div>
-                   <button 
-                     onClick={() => toast.success('قريباً: إضافة تصنيف مصروفات جديد')}
-                     className="px-10 py-5 bg-amber-600 text-white rounded-[24px] font-black hover:bg-amber-700 transition-all shadow-xl shadow-amber-500/20 flex items-center gap-3"
+                   <button
+                     disabled
+                     title="غير متاح في هذا الإصدار"
+                     className="px-10 py-5 bg-amber-600 text-white rounded-[24px] font-black opacity-50 cursor-not-allowed flex items-center gap-3"
                    >
-                      <Plus className="w-6 h-6" /> إضافة نوع مصروف
+                      <Plus className="w-6 h-6" /> إضافة نوع مصروف (قريباً)
                    </button>
                 </div>
 
@@ -473,15 +477,17 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                                <td className="px-8 py-6 font-bold text-slate-400">{safeFormat(exp.created_at, 'yyyy/MM/dd')}</td>
                                <td className="px-8 py-6">
                                   <div className="flex gap-2">
-                                     <button 
-                                       onClick={() => toast('جاري تعديل تعريف المصروف')}
-                                       className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-500 rounded-xl hover:text-blue-600 transition-all"
+                                     <button
+                                       disabled
+                                       title="التعديل غير متاح في هذا الإصدار"
+                                       className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-500 rounded-xl opacity-50 cursor-not-allowed"
                                      >
                                         <Edit className="w-4 h-4" />
                                      </button>
-                                     <button 
-                                       onClick={() => toast.error('لا يمكن حذف تعريفات المصروفات الأساسية')}
-                                       className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-500 rounded-xl hover:text-rose-600 transition-all"
+                                     <button
+                                       disabled
+                                       title="الحذف غير متاح في هذا الإصدار"
+                                       className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-500 rounded-xl opacity-50 cursor-not-allowed"
                                      >
                                         <Trash2 className="w-4 h-4" />
                                      </button>
@@ -559,11 +565,12 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                      <button onClick={() => window.print()} className="p-4 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-[24px] hover:bg-slate-200 transition-all no-print">
                        <Printer className="w-6 h-6" />
                      </button>
-                     <button 
-                       onClick={() => toast.success('قريباً: إضافة حساب بنكي جديد')}
-                       className="px-10 py-5 bg-blue-600 text-white rounded-[24px] font-black hover:bg-blue-700 transition-all shadow-xl shadow-blue-500/20 flex items-center gap-3"
+                     <button
+                       disabled
+                       title="غير متاح في هذا الإصدار"
+                       className="px-10 py-5 bg-blue-600 text-white rounded-[24px] font-black opacity-50 cursor-not-allowed flex items-center gap-3"
                      >
-                        <Plus className="w-6 h-6" /> إضافة حساب بنكي
+                        <Plus className="w-6 h-6" /> إضافة حساب بنكي (قريباً)
                      </button>
                    </div>
                 </div>
@@ -588,7 +595,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                          <p className="text-slate-400 font-bold mb-4 italic">{bank.name_en}</p>
                          <div className="pt-6 border-t border-slate-50 dark:border-slate-800 flex justify-between items-center">
                             <span className="text-xs font-black text-slate-500 uppercase tracking-widest">رقم الحساب: {bank.account_number}</span>
-                            <button className="text-blue-600 font-black text-xs hover:underline">عرض الحركات</button>
+                            <button disabled title="غير متاح في هذا الإصدار" className="text-slate-400 font-black text-xs cursor-not-allowed">عرض الحركات (قريباً)</button>
                          </div>
                       </div>
                    ))}
@@ -604,17 +611,19 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                       <p className="text-slate-500 font-bold">متابعة استحقاقات الشيكات الصادرة والواردة</p>
                    </div>
                    <div className="flex gap-4">
-                      <button 
-                        onClick={() => toast.success('قريباً: إضافة شيك صادر')}
-                        className="px-8 py-4 bg-purple-600 text-white rounded-2xl font-black hover:bg-purple-700 transition-all flex items-center gap-2"
+                      <button
+                        disabled
+                        title="غير متاح في هذا الإصدار"
+                        className="px-8 py-4 bg-purple-600 text-white rounded-2xl font-black opacity-50 cursor-not-allowed flex items-center gap-2"
                       >
-                         <Plus className="w-5 h-5" /> شيك صادر
+                         <Plus className="w-5 h-5" /> شيك صادر (قريباً)
                       </button>
-                      <button 
-                        onClick={() => toast.success('قريباً: إضافة شيك وارد')}
-                        className="px-8 py-4 bg-indigo-600 text-white rounded-2xl font-black hover:bg-indigo-700 transition-all flex items-center gap-2"
+                      <button
+                        disabled
+                        title="غير متاح في هذا الإصدار"
+                        className="px-8 py-4 bg-indigo-600 text-white rounded-2xl font-black opacity-50 cursor-not-allowed flex items-center gap-2"
                       >
-                         <Plus className="w-5 h-5" /> شيك وارد
+                         <Plus className="w-5 h-5" /> شيك وارد (قريباً)
                       </button>
                    </div>
                 </div>
@@ -665,11 +674,12 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                       <h2 className="text-2xl font-black text-slate-800 dark:text-white">ماكينات وبطاقات الائتمان</h2>
                       <p className="text-slate-500 font-bold">إدارة عُهد نقاط التحصيل الإلكتروني</p>
                    </div>
-                   <button 
-                     onClick={() => toast.success('قريباً: إضافة ماكينة دفع أو بطاقة')}
-                     className="px-10 py-5 bg-indigo-600 text-white rounded-[24px] font-black hover:bg-indigo-700 transition-all flex items-center gap-3"
+                   <button
+                     disabled
+                     title="غير متاح في هذا الإصدار"
+                     className="px-10 py-5 bg-indigo-600 text-white rounded-[24px] font-black opacity-50 cursor-not-allowed flex items-center gap-3"
                    >
-                      <Plus className="w-6 h-6" /> إضافة ماكينة / كارت
+                      <Plus className="w-6 h-6" /> إضافة ماكينة / كارت (قريباً)
                    </button>
                 </div>
 
@@ -803,9 +813,10 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                       <p className="text-slate-500 font-bold">تتبع جميع العمليات الحساسة التي تمت على النظام</p>
                    </div>
                    <div className="flex gap-4">
-                      <button 
-                        onClick={() => toast('جاري البحث في سجل الرقابة...')}
-                        className="p-5 bg-slate-50 dark:bg-slate-800 text-slate-500 rounded-2xl border border-slate-100 dark:border-slate-700 hover:bg-slate-100 transition-all"
+                      <button
+                        disabled
+                        title="البحث غير متاح في هذا الإصدار"
+                        className="p-5 bg-slate-50 dark:bg-slate-800 text-slate-500 rounded-2xl border border-slate-100 dark:border-slate-700 opacity-50 cursor-not-allowed"
                       >
                          <Search className="w-6 h-6" />
                       </button>
@@ -926,9 +937,10 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                                          >
                                             <Plus className="w-4 h-4" />
                                          </button>
-                                         <button 
-                                           onClick={() => toast('جاري فتح بيانات الحساب للتعديل')}
-                                           className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-500 rounded-xl hover:text-blue-600 transition-all"
+                                         <button
+                                           disabled
+                                           title="التعديل غير متاح في هذا الإصدار"
+                                           className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-500 rounded-xl opacity-50 cursor-not-allowed"
                                          >
                                             <Edit className="w-4 h-4" />
                                          </button>
@@ -962,11 +974,12 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                        <h2 className="text-2xl font-black text-slate-800 dark:text-white">القيود اليومية (Daily Journals)</h2>
                        <p className="text-slate-500 font-bold">تسجيل الحركات المالية المزدوجة</p>
                     </div>
-                    <button 
-                       onClick={() => toast.success('قريباً: شاشة تسجيل القيود اليومية')}
-                       className="px-10 py-5 bg-blue-600 text-white rounded-[24px] font-black hover:bg-blue-700 transition-all shadow-xl shadow-blue-500/20 flex items-center gap-3"
+                    <button
+                       disabled
+                       title="غير متاح في هذا الإصدار"
+                       className="px-10 py-5 bg-blue-600 text-white rounded-[24px] font-black opacity-50 cursor-not-allowed flex items-center gap-3"
                     >
-                       <Plus className="w-6 h-6" /> قيد يومي جديد
+                       <Plus className="w-6 h-6" /> قيد يومي جديد (قريباً)
                     </button>
                  </div>
 

@@ -65,17 +65,17 @@ export async function openShiftAction(data: { starting_cash_amount: number; open
       return { success: false, error: 'الرصيد الافتتاحي غير صالح' };
     }
 
-    // Check if there's already an open shift for this user
-    const existingShift = await db.prepare("SELECT id FROM shifts WHERE user_id = ? AND status = 'open'").get(user.id) as any;
-    if (existingShift) {
+    const shiftId = generateId();
+    const inserted = await db.prepare(`
+      INSERT INTO shifts (id, user_id, starting_cash, notes, status)
+      SELECT ?, ?, ?, ?, 'open'
+      WHERE NOT EXISTS (
+        SELECT 1 FROM shifts WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
+      )
+    `).run(shiftId, user.id, data.starting_cash_amount, data.opening_notes || null, user.id);
+    if (inserted.changes !== 1) {
       return { success: false, error: 'لديك وردية مفتوحة بالفعل' };
     }
-
-    const shiftId = generateId();
-    await db.prepare(`
-      INSERT INTO shifts (id, user_id, starting_cash, notes, status)
-      VALUES (?, ?, ?, ?, 'open')
-    `).run(shiftId, user.id, data.starting_cash_amount, data.opening_notes || null);
 
     logActivity(user.id, 'START_SHIFT', `بدأ وردية جديدة بمبلغ ${data.starting_cash_amount}`);
 

@@ -28,15 +28,14 @@ export default function SubscriptionStatus() {
 
   const handleManualActivate = async () => {
     setIsActivating(true);
-    // Manually activate for a year or indefinitely locally
     const result = await updateConfigAction('subscription_status', 'activated');
     if (result.success) {
-      toast.success('تم تفعيل الاشتراك محلياً!');
+      toast.success('تم تفعيل وضع العمل المحلي');
       setStatus('activated');
       // Set the cookie too so middleware is happy
       document.cookie = 'subscriptionActivated=true; path=/; max-age=31536000';
     } else {
-      toast.error('فشل التفعيل المحلي');
+      toast.error('فشل تفعيل وضع العمل المحلي');
     }
     setIsActivating(false);
   };
@@ -53,9 +52,9 @@ export default function SubscriptionStatus() {
             {status === 'activated' ? <ShieldCheck className="w-6 h-6" /> : <ShieldAlert className="w-6 h-6" />}
           </div>
           <div>
-            <h2 className="text-xl font-black">حالة الاشتراك</h2>
+            <h2 className="text-xl font-black">وضع التشغيل</h2>
             <p className="text-xs text-slate-500 font-bold mt-0.5">
-              {status === 'activated' ? 'الترخيص الكامل مفعل' : 'مطلوب التفعيل'}
+              {status === 'activated' ? 'العمل المحلي مفعل' : 'العمل المحلي غير مفعل'}
             </p>
           </div>
         </div>
@@ -70,14 +69,14 @@ export default function SubscriptionStatus() {
         ) : (
           <div className="space-y-4">
              <p className="text-sm text-slate-600 dark:text-slate-400 font-medium leading-relaxed">
-              لم يتم العثور على اشتراك مفعل على هذا الجهاز. يمكنك التفعيل يدوياً للعمل بدون اتصال.
+              يمكنك تفعيل وضع العمل المحلي دون ادعاء وجود ترخيص تم التحقق منه عبر الخادم.
             </p>
             <button
               onClick={handleManualActivate}
               disabled={isActivating}
               className="w-full bg-gradient-to-r from-amber-500 to-orange-600 text-white py-4 rounded-2xl font-black text-lg transition-all shadow-lg shadow-amber-500/20 flex items-center justify-center gap-2 hover:opacity-90 transform active:scale-95 disabled:opacity-50"
             >
-              {isActivating ? <Loader2 className="w-5 h-5 animate-spin" /> : 'تفعيل يدوي 🔓'}
+              {isActivating ? <Loader2 className="w-5 h-5 animate-spin" /> : 'تفعيل العمل المحلي'}
             </button>
           </div>
         )}
