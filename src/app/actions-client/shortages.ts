@@ -138,6 +138,19 @@ export async function getShortagesAction() {
         WHERE (i.pharmacy_id = p.pharmacy_id OR (i.pharmacy_id IS NULL AND p.pharmacy_id = 'local_default'))
           AND (i.expiry_date IS NULL OR i.expiry_date >= date('now', 'localtime'))
         GROUP BY i.drug_id
+      ),
+      LastPurchases AS (
+        SELECT 
+          pii.drug_id,
+          s.name_ar AS last_supplier_name,
+          pii.cost_price AS last_cost_price
+        FROM purchase_invoice_items pii
+        JOIN purchase_invoices pi ON pii.invoice_id = pi.id
+        JOIN suppliers s ON pi.supplier_id = s.id
+        CROSS JOIN Params p
+        WHERE (pi.status IS NULL OR pi.status = '' OR pi.status = 'completed')
+          AND (pi.pharmacy_id = p.pharmacy_id OR (pi.pharmacy_id IS NULL AND p.pharmacy_id = 'local_default'))
+        GROUP BY pii.drug_id
       )
       SELECT
         s.id,
@@ -150,6 +163,11 @@ export async function getShortagesAction() {
         m.trade_name,
         m.trade_name_en,
         m.generic_name,
+        COALESCE(m.official_price, 0) AS official_price,
+        COALESCE(m.large_to_medium, 1) AS large_to_medium,
+        COALESCE(NULLIF(m.barcode, ''), '') AS barcode,
+        lp.last_supplier_name,
+        lp.last_cost_price,
         COALESCE(ds.current_stock, 0) AS current_stock,
         COALESCE(NULLIF(m.reorder_point, 0), NULLIF(m.min_limit, 0), ?) AS reorder_point,
         MAX(
@@ -166,6 +184,7 @@ export async function getShortagesAction() {
       CROSS JOIN Params p
       JOIN master_drugs m ON m.id = s.drug_id
       LEFT JOIN DrugStock ds ON ds.drug_id = s.drug_id
+      LEFT JOIN LastPurchases lp ON lp.drug_id = s.drug_id
       WHERE s.pharmacy_id = p.pharmacy_id
         AND COALESCE(s.status, 'pending') != 'received'
       ORDER BY
@@ -177,6 +196,64 @@ export async function getShortagesAction() {
     return { success: true, data: items };
   } catch (error: any) {
     console.error('Get shortages error:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+export async function updateShortageQuantityAction(id: number | string, qty: number, notes?: string) {
+  try {
+    const user = await getLocalSession();
+    if (!user || !hasUserPermissionSync(user, 'can_view_restock')) return { success: false, error: 'غير مصرح' };
+    const quantity = requestedQuantity(qty);
+    const pharmacyId = user.pharmacy_id || 'local_default';
+
+    const result = await db.prepare(`
+      UPDATE shortages
+      SET requested_quantity = ?, notes = COALESCE(?, notes)
+      WHERE id = ? AND pharmacy_id = ?
+    `).run(quantity, notes !== undefined ? (notes?.trim() || null) : null, id, pharmacyId);
+
+    if (result.changes === 0) return { success: false, error: 'بند النواقص غير موجود' };
+    return { success: true, requested_quantity: quantity };
+  } catch (error: any) {
+    console.error('Update shortage quantity error:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+export async function deleteShortageAction(id: number | string) {
+  try {
+    const user = await getLocalSession();
+    if (!user || !hasUserPermissionSync(user, 'can_view_restock')) return { success: false, error: 'غير مصرح' };
+    const pharmacyId = user.pharmacy_id || 'local_default';
+
+    const result = await db.prepare(`
+      DELETE FROM shortages WHERE id = ? AND pharmacy_id = ?
+    `).run(id, pharmacyId);
+
+    if (result.changes === 0) return { success: false, error: 'بند النواقص غير موجود' };
+    return { success: true };
+  } catch (error: any) {
+    console.error('Delete shortage error:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+export async function deleteShortagesBulkAction(ids: (number | string)[]) {
+  try {
+    const user = await getLocalSession();
+    if (!user || !hasUserPermissionSync(user, 'can_view_restock')) return { success: false, error: 'غير مصرح' };
+    if (!Array.isArray(ids) || ids.length === 0) return { success: true, count: 0 };
+
+    const pharmacyId = user.pharmacy_id || 'local_default';
+    const placeholders = ids.map(() => '?').join(',');
+    const result = await db.prepare(`
+      DELETE FROM shortages WHERE id IN (${placeholders}) AND pharmacy_id = ?
+    `).run(...ids, pharmacyId);
+
+    return { success: true, count: result.changes };
+  } catch (error: any) {
+    console.error('Delete shortages bulk error:', error);
     return { success: false, error: error.message };
   }
 }
@@ -217,6 +294,51 @@ export async function updateShortageStatusAction(id: number | string, status: st
     return { success: true };
   } catch (error: any) {
     console.error('Update shortage status error:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+export async function updateShortagesStatusBulkAction(ids: (number | string)[], status: string) {
+  try {
+    const user = await getLocalSession();
+    if (!user || !hasUserPermissionSync(user, 'can_view_restock')) return { success: false, error: 'غير مصرح' };
+    if (!['pending', 'ordered', 'received'].includes(status)) {
+      return { success: false, error: 'حالة الطلب غير صالحة' };
+    }
+    if (!Array.isArray(ids) || ids.length === 0) return { success: true, count: 0 };
+
+    const pharmacyId = user.pharmacy_id || 'local_default';
+    let updatedCount = 0;
+    await dbTransaction(async () => {
+      for (const id of ids) {
+        if (status === 'received') {
+          const shortage = await db.prepare(`
+            SELECT drug_id FROM shortages WHERE id = ? AND pharmacy_id = ?
+          `).get(id, pharmacyId) as any;
+          if (!shortage) continue;
+
+          const stock = await db.prepare(`
+            SELECT COALESCE(SUM(quantity), 0) AS quantity
+            FROM inventory
+            WHERE drug_id = ?
+              AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+              AND (expiry_date IS NULL OR expiry_date >= date('now', 'localtime'))
+          `).get(shortage.drug_id, pharmacyId, pharmacyId) as any;
+          if (Number(stock?.quantity || 0) <= 0) {
+            continue;
+          }
+        }
+
+        const res = await db.prepare(`
+          UPDATE shortages SET status = ? WHERE id = ? AND pharmacy_id = ?
+        `).run(status, id, pharmacyId);
+        if (res.changes > 0) updatedCount += res.changes;
+      }
+    });
+
+    return { success: true, count: updatedCount };
+  } catch (error: any) {
+    console.error('Update shortages status bulk error:', error);
     return { success: false, error: error.message };
   }
 }

@@ -11,10 +11,12 @@ import { cn } from '@/lib/utils';
 import { getShiftReportAction } from '@/app/actions-client/reports';
 import { format } from 'date-fns';
 import { ar } from 'date-fns/locale';
+import ShiftReceiptsModal from '@/components/shifts/ShiftReceiptsModal';
 
 export default function ShiftReportClient({ shiftId }: { shiftId: string }) {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [showReceiptsModal, setShowReceiptsModal] = useState(false);
 
   useEffect(() => {
     async function load() {
@@ -44,7 +46,14 @@ export default function ShiftReportClient({ shiftId }: { shiftId: string }) {
             <p className="text-xs font-bold text-slate-400">#{shift.id.slice(0, 12).toUpperCase()}</p>
           </div>
         </div>
-        <div className="flex gap-3">
+        <div className="flex gap-3 items-center">
+          <button 
+            onClick={() => setShowReceiptsModal(true)} 
+            className="px-5 py-3 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300 rounded-2xl font-black text-xs flex items-center gap-2 hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-all border border-blue-100 dark:border-blue-800 shadow-sm"
+          >
+            <Receipt className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+            <span>عرض فواتير الوردية</span>
+          </button>
           <button onClick={() => window.print()} className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black flex items-center gap-2 hover:bg-slate-800 transition-all shadow-lg">
             <Printer className="w-5 h-5" /> طباعة
           </button>
@@ -67,7 +76,14 @@ export default function ShiftReportClient({ shiftId }: { shiftId: string }) {
            <StatBox label="إجمالي المبيعات" value={sales.reduce((s: any, a: any) => s + a.total, 0)} icon={ShoppingBag} color="blue" />
            <StatBox label="إجمالي المرتجعات" value={returns.reduce((s: any, a: any) => s + a.total, 0)} icon={RotateCcw} color="rose" />
            <StatBox label="صافي النقدية" value={summary.cashSales - summary.cashReturns} icon={DollarSign} color="emerald" />
-           <StatBox label="عدد الفواتير" value={sales.reduce((s: any, a: any) => s + a.count, 0)} icon={Receipt} color="purple" />
+           <StatBox 
+             label="عدد الفواتير" 
+             value={sales.reduce((s: any, a: any) => s + a.count, 0)} 
+             icon={Receipt} 
+             color="purple" 
+             onClick={() => setShowReceiptsModal(true)}
+             clickableHint="اضغط لعرض الفواتير"
+           />
         </div>
         <div className={cn(
           "p-8 rounded-[40px] flex flex-col justify-center border-2",
@@ -142,6 +158,14 @@ export default function ShiftReportClient({ shiftId }: { shiftId: string }) {
            </div>
         </div>
       </div>
+
+      {/* Shift Receipts Modal */}
+      <ShiftReceiptsModal
+        isOpen={showReceiptsModal}
+        shiftId={shiftId}
+        shiftTitle={`تقرير إغلاق الوردية #${shift.id.slice(0, 12).toUpperCase()}`}
+        onClose={() => setShowReceiptsModal(false)}
+      />
     </div>
   );
 }
@@ -161,7 +185,7 @@ function InfoCard({ icon: Icon, label, value, subValue }: any) {
   );
 }
 
-function StatBox({ label, value, icon: Icon, color }: any) {
+function StatBox({ label, value, icon: Icon, color, onClick, clickableHint }: any) {
   const colors: any = {
     blue: "bg-blue-50 text-blue-600",
     rose: "bg-rose-50 text-rose-600",
@@ -169,12 +193,23 @@ function StatBox({ label, value, icon: Icon, color }: any) {
     purple: "bg-purple-50 text-purple-600"
   };
   return (
-    <div className="bg-white dark:bg-slate-900 p-6 rounded-[32px] border border-slate-100 dark:border-slate-800 shadow-sm text-center">
-      <div className={cn("w-12 h-12 rounded-xl flex items-center justify-center mx-auto mb-4", colors[color])}>
+    <div 
+      onClick={onClick}
+      className={cn(
+        "bg-white dark:bg-slate-900 p-6 rounded-[32px] border border-slate-100 dark:border-slate-800 shadow-sm text-center transition-all",
+        onClick && "cursor-pointer hover:shadow-md hover:border-blue-300 dark:hover:border-blue-700 active:scale-95 group"
+      )}
+    >
+      <div className={cn("w-12 h-12 rounded-xl flex items-center justify-center mx-auto mb-4 transition-transform group-hover:scale-110", colors[color])}>
         <Icon className="w-6 h-6" />
       </div>
       <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">{label}</p>
       <p className="text-2xl font-black text-slate-800 dark:text-white">{value.toLocaleString()}</p>
+      {clickableHint && (
+        <p className="text-[9px] font-bold text-blue-500 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          {clickableHint}
+        </p>
+      )}
     </div>
   );
 }

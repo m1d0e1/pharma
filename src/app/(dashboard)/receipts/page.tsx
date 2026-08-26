@@ -1,12 +1,15 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import ReceiptListClient from '@/components/receipts/ReceiptListClient';
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { dbSelect } from '@/lib/db/tauri';
 import AccessDenied from '@/components/AccessDenied';
 
 export default function ReceiptsPage() {
+  const searchParams = useSearchParams();
+  const shiftId = searchParams?.get('shiftId');
   const [invoices, setInvoices] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState<any>(null);
@@ -23,26 +26,47 @@ export default function ReceiptsPage() {
 
           if (isAllowed) {
             setAllowed(true);
-            // Query 1: Fetch invoices
-            const invoicesData = await dbSelect(`
-          SELECT 
-            si.id,
-            si.total_amount,
-            si.paid_amount,
-            si.payment_method,
-            si.discount_amount,
-            si.created_at,
-            si.user_id,
-            si.patient_id,
-            u.full_name as staff_name,
-            p.full_name as patient_name,
-            p.phone as patient_phone
-          FROM sales_invoices si
-          LEFT JOIN users u ON si.user_id = u.id
-          LEFT JOIN patients p ON si.patient_id = p.id
-          ORDER BY si.created_at DESC
-          LIMIT 200
-        `);
+            // Query 1: Fetch invoices (optionally filtered by shift_id)
+            const sql = shiftId
+              ? `
+                SELECT 
+                  si.id,
+                  si.total_amount,
+                  si.paid_amount,
+                  si.payment_method,
+                  si.discount_amount,
+                  si.created_at,
+                  si.user_id,
+                  si.patient_id,
+                  u.full_name as staff_name,
+                  p.full_name as patient_name,
+                  p.phone as patient_phone
+                FROM sales_invoices si
+                LEFT JOIN users u ON si.user_id = u.id
+                LEFT JOIN patients p ON si.patient_id = p.id
+                WHERE si.shift_id = ?
+                ORDER BY si.created_at DESC
+              `
+              : `
+                SELECT 
+                  si.id,
+                  si.total_amount,
+                  si.paid_amount,
+                  si.payment_method,
+                  si.discount_amount,
+                  si.created_at,
+                  si.user_id,
+                  si.patient_id,
+                  u.full_name as staff_name,
+                  p.full_name as patient_name,
+                  p.phone as patient_phone
+                FROM sales_invoices si
+                LEFT JOIN users u ON si.user_id = u.id
+                LEFT JOIN patients p ON si.patient_id = p.id
+                ORDER BY si.created_at DESC
+                LIMIT 200
+              `;
+            const invoicesData = await dbSelect(sql, shiftId ? [shiftId] : []);
 
         if (invoicesData.length === 0) {
           setInvoices([]);

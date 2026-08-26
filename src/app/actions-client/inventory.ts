@@ -578,40 +578,21 @@ export async function getLowStockAction(threshold?: number) {
           AND (i.expiry_date IS NULL OR i.expiry_date >= date('now', 'localtime'))
         GROUP BY i.drug_id
       ),
-      UnitFactors AS (
-        SELECT
-          m.id AS drug_id,
-          CASE
-            WHEN MAX(COALESCE(NULLIF(i.strips_per_box, 0), 1)) > 1
-              THEN MAX(COALESCE(NULLIF(i.strips_per_box, 0), 1))
-            ELSE COALESCE(NULLIF(m.large_to_medium, 0), 1)
-          END AS large_to_medium,
-          COALESCE(NULLIF(m.medium_to_small, 0), 1) AS medium_to_small,
-          m.medium_unit,
-          m.small_unit
-        FROM master_drugs m
-        CROSS JOIN Params p
-        LEFT JOIN inventory i
-          ON i.drug_id = m.id
-         AND (i.pharmacy_id = p.pharmacy_id OR (i.pharmacy_id IS NULL AND p.pharmacy_id = 'local_default'))
-         AND (i.expiry_date IS NULL OR i.expiry_date >= date('now', 'localtime'))
-        GROUP BY m.id
-      ),
       MonthlySales AS (
         SELECT 
           si.drug_id,
           SUM(
             CASE
-              WHEN si.unit IN ('medium', 'strip', 'شريط') OR si.unit = uf.medium_unit
-                THEN si.quantity_sold / uf.large_to_medium
-              WHEN si.unit = 'small' OR si.unit = uf.small_unit
-                THEN si.quantity_sold / (uf.large_to_medium * uf.medium_to_small)
+              WHEN si.unit IN ('medium', 'strip', 'شريط') OR si.unit = m.medium_unit
+                THEN si.quantity_sold / COALESCE(NULLIF(m.large_to_medium, 0), 1)
+              WHEN si.unit = 'small' OR si.unit = m.small_unit
+                THEN si.quantity_sold / (COALESCE(NULLIF(m.large_to_medium, 0), 1) * COALESCE(NULLIF(m.medium_to_small, 0), 1))
               ELSE si.quantity_sold
             END
           ) AS avg_monthly_usage
         FROM sales_items si
         JOIN sales_invoices inv ON si.invoice_id = inv.id
-        JOIN UnitFactors uf ON uf.drug_id = si.drug_id
+        JOIN master_drugs m ON m.id = si.drug_id
         CROSS JOIN Params p
         WHERE si.is_negative = 0 
           AND (inv.status IS NULL OR inv.status = '' OR inv.status IN ('completed', 'approved'))
@@ -1044,30 +1025,57 @@ export async function getInventoryListAction(search?: string, drugId?: number) {
 
     if (drugId === undefined && search && search.trim().length > 0) {
       const trimmed = search.trim();
-      const searchPattern = `%${trimmed}%`;
-      queryStr += `
-        AND (
-          m.trade_name LIKE ? 
-          OR m.trade_name_en LIKE ? 
-          OR m.generic_name LIKE ? 
-          OR m.active_ingredient LIKE ?
-          OR m.category LIKE ?
-          OR m.manufacturer LIKE ?
-          OR m.barcode LIKE ?
-          OR i.barcode LIKE ?
-          OR m.barcode = ?
-          OR i.barcode = ?
-        )
-      `;
-      params.push(
-        searchPattern, searchPattern, searchPattern, searchPattern, 
-        searchPattern, searchPattern, searchPattern, searchPattern, 
-        trimmed, trimmed
-      );
+      const searchLower = trimmed.toLowerCase();
+
+      // Fast match in RAM cache (<2ms)
+      let candidateDrugIds: number[] = [];
+      try {
+        await secureCache.load();
+        const allDrugs = secureCache.getAllDrugs();
+        const matched = allDrugs.filter((d: any) =>
+          (d.trade_name && d.trade_name.toLowerCase().includes(searchLower)) ||
+          (d.trade_name_en && d.trade_name_en.toLowerCase().includes(searchLower)) ||
+          (d.generic_name && d.generic_name.toLowerCase().includes(searchLower)) ||
+          (d.active_ingredient && d.active_ingredient.toLowerCase().includes(searchLower)) ||
+          (d.category && d.category.toLowerCase().includes(searchLower)) ||
+          (d.manufacturer && d.manufacturer.toLowerCase().includes(searchLower)) ||
+          d.barcode === trimmed ||
+          String(d.id) === trimmed
+        );
+        candidateDrugIds = matched.slice(0, 300).map((d: any) => d.id);
+      } catch (e) {
+        // fallback
+      }
+
+      if (candidateDrugIds.length > 0) {
+        const placeholders = candidateDrugIds.map(() => '?').join(',');
+        queryStr += ` AND (i.drug_id IN (${placeholders}) OR i.barcode = ? OR i.barcode LIKE ?)`;
+        params.push(...candidateDrugIds, trimmed, `%${trimmed}%`);
+      } else {
+        const searchPattern = `%${trimmed}%`;
+        queryStr += `
+          AND (
+            i.barcode = ? 
+            OR i.barcode LIKE ? 
+            OR m.trade_name LIKE ? 
+            OR m.trade_name_en LIKE ?
+            OR m.generic_name LIKE ?
+            OR m.active_ingredient LIKE ?
+            OR m.category LIKE ?
+            OR m.manufacturer LIKE ?
+            OR m.barcode = ?
+          )
+        `;
+        params.push(
+          trimmed, searchPattern, searchPattern, searchPattern,
+          searchPattern, searchPattern, searchPattern, searchPattern,
+          trimmed
+        );
+      }
     }
 
-    // ponytail: LIMIT 2000 caps initial load; paginated on client anyway
-    queryStr += ` ORDER BY i.expiry_date ASC LIMIT 2000`;
+    // ponytail: LIMIT 1000 caps initial load; paginated on client anyway
+    queryStr += ` ORDER BY i.expiry_date ASC LIMIT 1000`;
 
     const data = await db.prepare(queryStr).all(...params) as any[];
 

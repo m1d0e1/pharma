@@ -648,6 +648,11 @@ async fn ensure_compatibility(
         ("financial_notices", "target_id", "target_id TEXT"),
         ("shifts", "ending_cash", "ending_cash REAL"),
         ("shifts", "notes", "notes TEXT"),
+        ("shifts", "actual_cash", "actual_cash REAL"),
+        ("shifts", "transfer_amount", "transfer_amount REAL DEFAULT 0"),
+        ("shifts", "transfer_target", "transfer_target TEXT"),
+        ("shifts", "cash_difference", "cash_difference REAL DEFAULT 0"),
+        ("shifts", "receiver_id", "receiver_id TEXT"),
         ("cash_movements", "sub_category", "sub_category TEXT"),
         ("cash_movements", "actual_date", "actual_date TEXT"),
         ("cash_movements", "source_type", "source_type TEXT"),
@@ -749,6 +754,7 @@ async fn ensure_compatibility(
         CREATE INDEX IF NOT EXISTS idx_purchase_items_inventory_id ON purchase_invoice_items(inventory_id);
         CREATE INDEX IF NOT EXISTS idx_inventory_barcode ON inventory(barcode) WHERE barcode IS NOT NULL;
         CREATE INDEX IF NOT EXISTS idx_inventory_drug_qty_expiry ON inventory(drug_id, quantity, expiry_date) WHERE quantity > 0;
+        CREATE INDEX IF NOT EXISTS idx_inventory_pharmacy_qty_exp ON inventory(pharmacy_id, quantity, expiry_date) WHERE quantity > 0;
 
         -- Old completed receipts predate inventory_id. Prefer their exact receipt
         -- batch; otherwise link only one unambiguous, sufficiently stocked lot.

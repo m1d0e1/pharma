@@ -128,6 +128,37 @@ export default function PurchaseInvoiceClient() {
 
   useEffect(() => {
     try { localStorage.removeItem('pharma_purchase_draft_v1'); } catch {}
+
+    try {
+      const stored = sessionStorage.getItem('shortages_to_purchase');
+      if (stored) {
+        sessionStorage.removeItem('shortages_to_purchase');
+        const items = JSON.parse(stored);
+        if (Array.isArray(items) && items.length > 0) {
+          const newItems: PurchaseItem[] = items.map((item: any) => ({
+            id: item.drug_id,
+            cart_line_id: newCartLineId(item.drug_id),
+            trade_name: item.trade_name_en || item.trade_name || '',
+            barcode: item.barcode || '',
+            quantity: item.requested_quantity || 1,
+            bonus_quantity: 0,
+            discount_percent: 0,
+            discount_value: 0,
+            tax_percent: 0,
+            cost_price: Number(item.last_cost_price) > 0 ? Number(item.last_cost_price) : (Number(item.official_price) || 0),
+            selling_price: Number(item.official_price) || 0,
+            official_price: Number(item.official_price) || 0,
+            batch_number: '',
+            expiry_date: '',
+            strips_per_box: Number(item.large_to_medium) || 1
+          }));
+          setCart(newItems);
+          toast.success(`تم استيراد ${newItems.length} صنف من كشكول النواقص`);
+        }
+      }
+    } catch (e) {
+      console.error('Failed to load shortages into purchase invoice:', e);
+    }
   }, []);
 
   const [suppliers, setSuppliers] = useState<Supplier[]>([])

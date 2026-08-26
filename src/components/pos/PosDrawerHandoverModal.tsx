@@ -29,14 +29,11 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
   const [creditSalesList, setCreditSalesList] = useState<any[]>([]);
   const [loadingCredit, setLoadingCredit] = useState(false);
 
-  // Owner Audit details popup state
-  const [showOwnerAuditModal, setShowOwnerAuditModal] = useState(false);
-
   const [form, setForm] = useState({
     actualCash: 0,
     transferAmount: 0,
     transferTargetId: '',
-    transferTargetType: 'treasury' as 'treasury' | 'bank',
+    transferTargetType: 'treasury' as 'treasury' | 'next_shift' | 'bank',
     receiverUsername: '',
     receiverPassword: '',
     notes: ''
@@ -49,7 +46,6 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
     setCreditSalesList([]);
     setShowCreditModal(false);
     setLoadingCredit(false);
-    setShowOwnerAuditModal(false);
     setLoading(true);
     setProcessing(false);
     setForm({
@@ -148,22 +144,12 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
     }
   };
 
-  const handleOpenOwnerAudit = () => {
-    if (userRole !== 'owner' && userRole !== 'admin') {
-      toast.error('عرض تفاصيل حسابات النظام والعجز/الزيادة متاح فقط لمالك الصيدلية');
-      return;
-    }
-    setShowOwnerAuditModal(true);
-  };
-
   useEffect(() => {
     if (!isOpen) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         if (showCreditModal) {
           setShowCreditModal(false);
-        } else if (showOwnerAuditModal) {
-          setShowOwnerAuditModal(false);
         } else {
           onClose();
         }
@@ -171,12 +157,10 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, onClose, showCreditModal, showOwnerAuditModal]);
+  }, [isOpen, onClose, showCreditModal]);
 
   if (!isOpen) return null;
 
-  const expectedCash = details?.expected_cash || 0;
-  const discrepancy = (form.actualCash || 0) - expectedCash;
   const remainingCash = (form.actualCash || 0) - (form.transferAmount || 0);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -318,20 +302,9 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
 
             {/* Section 2: النقدية */}
             <div className="border border-slate-400 dark:border-slate-700 rounded-xl p-4 bg-slate-100/80 dark:bg-slate-800/60 relative pt-3">
-              <div className="flex justify-between items-center -mt-6 mb-2">
-                <span className="px-2 bg-slate-200 dark:bg-slate-900 font-bold text-xs text-slate-700 dark:text-slate-300 rounded">
-                  النقدية
-                </span>
-                <button
-                  type="button"
-                  onClick={handleOpenOwnerAudit}
-                  className="px-2 py-0.5 rounded bg-purple-100 hover:bg-purple-200 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300 text-[10px] font-bold flex items-center gap-1 transition-all border border-purple-200 dark:border-purple-800"
-                  title="عرض تفاصيل حسابات النظام والعجز/الزيادة (خاص بالمالك)"
-                >
-                  <ShieldCheck className="w-3.5 h-3.5 text-purple-600" />
-                  <span>تفاصيل النظام والعجز/الزيادة (للمالك)</span>
-                </button>
-              </div>
+              <span className="absolute -top-3 right-4 px-2 bg-slate-200 dark:bg-slate-900 font-bold text-xs text-slate-700 dark:text-slate-300">
+                النقدية
+              </span>
 
               <div className="space-y-2 text-xs font-bold">
                 <div className="grid grid-cols-3 items-center gap-2">
@@ -359,11 +332,13 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
                     />
                     <span className="text-slate-600 dark:text-slate-400 font-bold">إلى</span>
                     <select 
-                      value={form.transferTargetType === 'bank' ? form.transferTargetId : 'treasury'}
+                      value={form.transferTargetType === 'bank' ? form.transferTargetId : (form.transferTargetType || 'treasury')}
                       onChange={(e) => {
                         const val = e.target.value;
                         if (val === 'treasury') {
                           setForm({ ...form, transferTargetType: 'treasury', transferTargetId: '' });
+                        } else if (val === 'next_shift') {
+                          setForm({ ...form, transferTargetType: 'next_shift', transferTargetId: '' });
                         } else {
                           setForm({ ...form, transferTargetType: 'bank', transferTargetId: val });
                         }
@@ -371,8 +346,9 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
                       className="w-1/2 px-2 py-1.5 bg-white dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded font-bold text-xs text-slate-900 dark:text-white"
                     >
                       <option value="treasury">الخزينة الرئيسية</option>
+                      <option value="next_shift">الوردية التالية (ترحيل بالدرج)</option>
                       {banks.map(b => (
-                        <option key={b.id} value={b.id}>{b.name_ar}</option>
+                        <option key={b.id} value={b.id}>بنك: {b.name_ar}</option>
                       ))}
                     </select>
                   </div>
@@ -390,15 +366,15 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
               </div>
             </div>
 
-            {/* Section 3: المسلم */}
+            {/* Section 3: المستلم / مستخدم الوردية التالية */}
             <div className="border border-slate-400 dark:border-slate-700 rounded-xl p-4 bg-slate-100/80 dark:bg-slate-800/60 relative pt-3">
               <span className="absolute -top-3 right-4 px-2 bg-slate-200 dark:bg-slate-900 font-bold text-xs text-slate-700 dark:text-slate-300">
-                المسلم
+                المستلم / مستخدم الوردية التالية
               </span>
 
               <div className="space-y-2 text-xs font-bold">
                 <div className="grid grid-cols-3 items-center gap-2">
-                  <label className="col-span-1 text-slate-700 dark:text-slate-300">إسم المستخدم</label>
+                  <label className="col-span-1 text-slate-700 dark:text-slate-300">إسم المستلم</label>
                   <select 
                     value={form.receiverUsername}
                     onChange={(e) => setForm({ ...form, receiverUsername: e.target.value })}
@@ -456,217 +432,78 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
         )}
       </div>
 
-      {/* Credit Sales Details Sub-Modal */}
+      {/* Credit Details Breakdown Sub-Modal */}
       {showCreditModal && (
-        <div className="fixed inset-0 z-[210] flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-sm animate-in fade-in" dir="rtl">
+        <div className="fixed inset-0 z-[210] flex items-center justify-center p-4 bg-slate-950/75 backdrop-blur-sm animate-in fade-in" dir="rtl">
           <div className="w-full max-w-2xl bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col max-h-[85vh]">
-            
-            {/* Header */}
-            <div className="p-5 bg-gradient-to-r from-blue-900 via-indigo-900 to-slate-900 text-white flex justify-between items-center shrink-0">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-2xl bg-blue-500/20 flex items-center justify-center border border-blue-400/30">
-                  <Receipt className="w-5 h-5 text-blue-300" />
-                </div>
-                <div>
-                  <h3 className="font-black text-base">تفاصيل مبيعات الآجل للوردية</h3>
-                  <p className="text-xs text-blue-200 font-bold">
-                    إجمالي الآجل: {(details?.credit_sales || 0).toLocaleString('ar-EG')} ج.م
-                  </p>
-                </div>
+            <div className="p-4 bg-slate-100 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 flex justify-between items-center shrink-0">
+              <div className="flex items-center gap-2 text-slate-800 dark:text-white font-black text-base">
+                <Receipt className="w-5 h-5 text-blue-600" />
+                <span>تفاصيل فواتير الآجل للوردية (#{shiftId ? shiftId.substring(0, 8) : '---'})</span>
               </div>
               <button 
                 onClick={() => setShowCreditModal(false)}
-                className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors"
+                className="w-8 h-8 rounded-full bg-slate-200 dark:bg-slate-700 flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-rose-500 hover:text-white transition-colors"
               >
-                <X className="w-5 h-5 text-white" />
+                <X className="w-4 h-4" />
               </button>
             </div>
 
-            {/* Content Table */}
-            <div className="p-6 overflow-y-auto flex-1 divide-y divide-slate-100 dark:divide-slate-800">
+            <div className="p-4 overflow-y-auto flex-1">
               {loadingCredit ? (
-                <div className="py-16 text-center text-slate-400 font-bold animate-pulse">
-                  جاري تحميل فواتير الآجل...
+                <div className="py-12 text-center text-slate-500 font-bold animate-pulse">
+                  جاري تحميل تفاصيل فواتير الآجل...
                 </div>
               ) : creditSalesList.length === 0 ? (
-                <div className="py-16 text-center text-slate-400 space-y-2">
-                  <AlertCircle className="w-12 h-12 mx-auto text-slate-300 dark:text-slate-600" />
-                  <p className="font-black text-base text-slate-600 dark:text-slate-300">لا توجد مبيعات آجل مسجلة في هذه الوردية</p>
+                <div className="py-12 text-center text-slate-400 font-bold">
+                  لا توجد مبيعات آجل مسجلة في هذه الوردية
                 </div>
               ) : (
-                <table className="w-full text-right text-xs">
-                  <thead>
-                    <tr className="text-slate-400 font-black border-b border-slate-100 dark:border-slate-800 pb-2">
-                      <th className="pb-3 px-2">الفاتورة</th>
-                      <th className="pb-3 px-2">العميل / المريض</th>
-                      <th className="pb-3 px-2">الوقت</th>
-                      <th className="pb-3 px-2 text-center">المبلغ الآجل</th>
-                      <th className="pb-3 px-2">ملاحظات</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-medium">
-                    {creditSalesList.map((inv) => (
-                      <tr key={inv.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
-                        <td className="py-3 px-2 font-mono font-bold text-blue-600 dark:text-blue-400">
-                          #{inv.invoice_number || inv.id.substring(0, 8)}
-                        </td>
-                        <td className="py-3 px-2">
-                          <div className="font-bold text-slate-900 dark:text-white">{inv.patient_name}</div>
-                          {inv.patient_phone && (
-                            <div className="text-[10px] text-slate-400 font-mono">{inv.patient_phone}</div>
-                          )}
-                        </td>
-                        <td className="py-3 px-2 text-slate-500 font-mono dir-ltr text-right">
-                          {inv.created_at ? format(new Date(inv.created_at), 'HH:mm - dd/MM') : '---'}
-                        </td>
-                        <td className="py-3 px-2 text-center font-black text-emerald-600 dark:text-emerald-400">
-                          {Number(inv.credit_amount ?? inv.total_amount ?? 0).toLocaleString('ar-EG')} ج.م
-                        </td>
-                        <td className="py-3 px-2 text-slate-400 max-w-[150px] truncate text-[11px]">
-                          {inv.notes || '---'}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <div className="divide-y divide-slate-100 dark:divide-slate-800 border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden">
+                  <div className="grid grid-cols-12 bg-slate-50 dark:bg-slate-800/80 p-3 text-xs font-black text-slate-500">
+                    <span className="col-span-2 text-center">رقم الفاتورة</span>
+                    <span className="col-span-4">اسم العميل</span>
+                    <span className="col-span-3 text-center">التاريخ والوقت</span>
+                    <span className="col-span-3 text-left">المبلغ</span>
+                  </div>
+                  {creditSalesList.map((item) => (
+                    <div key={item.id} className="grid grid-cols-12 p-3 text-xs font-bold items-center hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition-colors">
+                      <span className="col-span-2 text-center font-mono text-slate-600 dark:text-slate-400">
+                        #{item.invoice_number || item.id}
+                      </span>
+                      <div className="col-span-4">
+                        <span className="font-black text-slate-900 dark:text-slate-100 block truncate">
+                          {item.patient_name || item.customer_name || 'عميل غير مسجل'}
+                        </span>
+                        {(item.patient_phone || item.customer_phone) && (
+                          <span className="text-[10px] text-slate-400 font-mono block">
+                            {item.patient_phone || item.customer_phone}
+                          </span>
+                        )}
+                      </div>
+                      <span className="col-span-3 text-center text-slate-500 text-[11px]">
+                        {item.created_at ? format(new Date(item.created_at), 'HH:mm dd/MM') : '---'}
+                      </span>
+                      <span className="col-span-3 text-left font-mono font-black text-amber-600 dark:text-amber-400 text-sm">
+                        {Number(item.credit_amount ?? item.total_amount ?? 0).toFixed(2)} ج.م
+                      </span>
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
 
-            {/* Footer */}
-            <div className="p-4 bg-slate-50 dark:bg-slate-800/50 border-t border-slate-100 dark:border-slate-800 flex justify-between items-center shrink-0">
-              <span className="text-xs font-bold text-slate-500">
-                عدد الفواتير: {creditSalesList.length}
+            <div className="p-3 bg-slate-50 dark:bg-slate-800/50 border-t border-slate-200 dark:border-slate-700 flex justify-between items-center shrink-0">
+              <span className="font-black text-xs text-slate-600 dark:text-slate-400">
+                إجمالي الآجل: {creditSalesList.reduce((sum, item) => sum + Number(item.total_amount || 0), 0).toFixed(2)} ج.م
               </span>
-              <button
-                type="button"
+              <button 
                 onClick={() => setShowCreditModal(false)}
-                className="px-6 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-bold transition-all shadow"
+                className="px-6 py-1.5 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-bold transition-all shadow"
               >
                 إغلاق
               </button>
             </div>
-
-          </div>
-        </div>
-      )}
-
-      {/* Owner Audit & Discrepancy Sub-Modal */}
-      {showOwnerAuditModal && (
-        <div className="fixed inset-0 z-[210] flex items-center justify-center p-4 bg-slate-950/75 backdrop-blur-sm animate-in fade-in" dir="rtl">
-          <div className="w-full max-w-xl bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-purple-200 dark:border-purple-900/50 overflow-hidden flex flex-col max-h-[90vh]">
-            
-            {/* Header */}
-            <div className="p-5 bg-gradient-to-r from-purple-900 via-indigo-900 to-slate-900 text-white flex justify-between items-center shrink-0">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-2xl bg-purple-500/20 flex items-center justify-center border border-purple-400/30">
-                  <ShieldCheck className="w-6 h-6 text-purple-300" />
-                </div>
-                <div>
-                  <h3 className="font-black text-base flex items-center gap-2">
-                    <span>تقرير مطابقة الحسابات والعجز / الزيادة</span>
-                    <span className="text-[10px] bg-purple-500/30 border border-purple-400/40 px-2 py-0.5 rounded-full font-bold">خاص بالمالك</span>
-                  </h3>
-                  <p className="text-xs text-purple-200 font-bold">
-                    الوردية: #{shiftId ? shiftId.substring(0, 8) : '---'} | الموظف: {activeUserDisplay || details?.user_name}
-                  </p>
-                </div>
-              </div>
-              <button 
-                onClick={() => setShowOwnerAuditModal(false)}
-                className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors"
-              >
-                <X className="w-5 h-5 text-white" />
-              </button>
-            </div>
-
-            {/* Audit Breakdown List */}
-            <div className="p-6 overflow-y-auto flex-1 space-y-5">
-              
-              {/* Discrepancy Status Hero Banner */}
-              <div className={`p-5 rounded-2xl border flex items-center justify-between gap-4 ${
-                Math.abs(discrepancy) < 0.01 
-                  ? 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300'
-                  : discrepancy > 0
-                    ? 'bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-800 text-blue-800 dark:text-blue-300'
-                    : 'bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-300'
-              }`}>
-                <div>
-                  <p className="text-xs font-bold uppercase tracking-wider opacity-80">حالة المطابقة المالية</p>
-                  <p className="text-lg font-black mt-0.5">
-                    {Math.abs(discrepancy) < 0.01 
-                      ? 'الدرج مطابق تماماً للحسابات النظامية'
-                      : discrepancy > 0
-                        ? `يوجد زيادة في الدرج بمقدار +${discrepancy.toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م`
-                        : `يوجد عجز في الدرج بمقدار -${Math.abs(discrepancy).toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م`
-                    }
-                  </p>
-                </div>
-                <div className="text-left font-mono font-black text-2xl">
-                  {discrepancy > 0 ? `+${discrepancy.toFixed(2)}` : discrepancy.toFixed(2)} <span className="text-xs font-sans">ج.م</span>
-                </div>
-              </div>
-
-              {/* Detailed Breakdown Grid */}
-              <div className="bg-slate-50 dark:bg-slate-800/60 rounded-2xl p-4 divide-y divide-slate-200/60 dark:divide-slate-700/60 text-xs font-bold">
-                <div className="flex justify-between items-center py-2.5">
-                  <span className="text-slate-600 dark:text-slate-400">💵 الرصيد الإفتتاحي للوردية</span>
-                  <span className="font-mono text-slate-800 dark:text-slate-200 font-black">{(details?.starting_cash || 0).toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م</span>
-                </div>
-
-                <div className="flex justify-between items-center py-2.5">
-                  <span className="text-slate-600 dark:text-slate-400">📈 إجمالي مبيعات نقدي (كاش) (+)</span>
-                  <span className="font-mono text-emerald-600 dark:text-emerald-400 font-black">+{(details?.cash_sales || 0).toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م</span>
-                </div>
-
-                <div className="flex justify-between items-center py-2.5">
-                  <span className="text-slate-600 dark:text-slate-400">💳 مبيعات البطاقات (فيزا / دفع إلكتروني)</span>
-                  <span className="font-mono text-indigo-600 dark:text-indigo-400 font-black">{(details?.visa_sales || 0).toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م</span>
-                </div>
-
-                <div className="flex justify-between items-center py-2.5">
-                  <span className="text-slate-600 dark:text-slate-400">📑 مبيعات الآجل (حسابات عملاء)</span>
-                  <span className="font-mono text-amber-600 dark:text-amber-400 font-black">{(details?.credit_sales || 0).toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م</span>
-                </div>
-
-                <div className="flex justify-between items-center py-2.5">
-                  <span className="text-slate-600 dark:text-slate-400">📥 إيداعات وتوريدات نقدية (+)</span>
-                  <span className="font-mono text-emerald-600 dark:text-emerald-400 font-black">+{(details?.receipts || 0).toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م</span>
-                </div>
-
-                <div className="flex justify-between items-center py-2.5">
-                  <span className="text-slate-600 dark:text-slate-400">📤 مسحوبات ومصروفات نقدية (-)</span>
-                  <span className="font-mono text-rose-600 dark:text-rose-400 font-black">-{(details?.disbursements || 0).toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م</span>
-                </div>
-
-                <div className="flex justify-between items-center py-2.5">
-                  <span className="text-slate-600 dark:text-slate-400">🔄 مرتجعات مبيعات نقدية مستردة (-)</span>
-                  <span className="font-mono text-rose-600 dark:text-rose-400 font-black">-{(details?.returns || 0).toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م</span>
-                </div>
-
-                <div className="flex justify-between items-center py-3 bg-slate-200/50 dark:bg-slate-700/50 -mx-4 px-4 rounded-xl mt-2 text-sm">
-                  <span className="font-black text-slate-900 dark:text-white">🧮 النقدية المتوقعة دفترياً بالدرج</span>
-                  <span className="font-mono text-blue-600 dark:text-blue-400 font-black text-base">{expectedCash.toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م</span>
-                </div>
-
-                <div className="flex justify-between items-center py-3 bg-purple-50/50 dark:bg-purple-900/20 -mx-4 px-4 rounded-xl mt-2 text-sm">
-                  <span className="font-black text-purple-900 dark:text-purple-200">💰 النقدية الفعلية المدخلة من الموظف</span>
-                  <span className="font-mono text-purple-700 dark:text-purple-300 font-black text-base">{(form.actualCash || 0).toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م</span>
-                </div>
-              </div>
-
-            </div>
-
-            {/* Footer */}
-            <div className="p-4 bg-slate-50 dark:bg-slate-800/50 border-t border-slate-100 dark:border-slate-800 flex justify-end items-center shrink-0">
-              <button
-                type="button"
-                onClick={() => setShowOwnerAuditModal(false)}
-                className="px-6 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-bold transition-all shadow"
-              >
-                إغلاق التقرير
-              </button>
-            </div>
-
           </div>
         </div>
       )}

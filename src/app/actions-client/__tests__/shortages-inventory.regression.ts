@@ -35,9 +35,13 @@ jest.unmock('@/app/actions-client/shortages');
 import { getLowStockAction } from '@/app/actions-client/inventory';
 import {
   addToShortagesAction,
+  deleteShortageAction,
+  deleteShortagesBulkAction,
   getShortagesAction,
   syncLowStockToShortagesAction,
+  updateShortageQuantityAction,
   updateShortageStatusAction,
+  updateShortagesStatusBulkAction,
 } from '@/app/actions-client/shortages';
 
 describe('inventory-linked reorder and shortage notebook regression', () => {
@@ -46,6 +50,7 @@ describe('inventory-linked reorder and shortage notebook regression', () => {
     mockDb = new Database(':memory:');
     mockDb.exec(readFileSync('src-tauri/migrations/001_initial.sql', 'utf8'));
     mockDb.exec(readFileSync('src-tauri/migrations/012_shortages_pharmacy_scope.sql', 'utf8'));
+    mockDb.exec(readFileSync('src-tauri/migrations/013_shift_handover_details.sql', 'utf8'));
     mockDb.pragma('foreign_keys = ON');
     mockDb.exec(`
       INSERT INTO master_drugs (
@@ -88,12 +93,12 @@ describe('inventory-linked reorder and shortage notebook regression', () => {
     for (const [source, directJoins, castJoins] of [
       [inventorySource, [
         'i.drug_id = m.id',
-        'uf.drug_id = si.drug_id',
+        'm.id = si.drug_id',
         'm.id = ds.drug_id',
         'm.id = ms.drug_id',
       ], [
         'CAST(i.drug_id AS TEXT) = CAST(m.id AS TEXT)',
-        'CAST(uf.drug_id AS TEXT) = CAST(si.drug_id AS TEXT)',
+        'CAST(m.id AS TEXT) = CAST(si.drug_id AS TEXT)',
         'CAST(m.id AS TEXT) = CAST(ds.drug_id AS TEXT)',
         'CAST(m.id AS TEXT) = CAST(ms.drug_id AS TEXT)',
       ]],
@@ -172,6 +177,18 @@ describe('inventory-linked reorder and shortage notebook regression', () => {
       error: expect.stringContaining('إضافة الكمية'),
     });
 
+    // Test inline edit of quantity and notes
+    const editResult = await updateShortageQuantityAction(zeroItem.id, 25, 'تعديل كمية وملاحظة');
+    expect(editResult).toMatchObject({ success: true, requested_quantity: 25 });
+    const updatedZeroItem = (await getShortagesAction()).data?.find((item: any) => item.drug_id === 9102);
+    expect(updatedZeroItem.requested_quantity).toBe(25);
+    expect(updatedZeroItem.notes).toBe('تعديل كمية وملاحظة');
+
+    // Test deleting a shortage item
+    const deleteResult = await deleteShortageAction(zeroItem.id);
+    expect(deleteResult).toMatchObject({ success: true });
+    expect((await getShortagesAction()).data?.some((item: any) => item.drug_id === 9102)).toBe(false);
+
     mockDb.prepare('UPDATE inventory SET quantity = 7 WHERE drug_id = 9101').run();
     const replenished = await getShortagesAction();
     const replenishedItem = replenished.data?.find((item: any) => item.drug_id === 9101);
@@ -180,5 +197,32 @@ describe('inventory-linked reorder and shortage notebook regression', () => {
     const received = await updateShortageStatusAction(replenishedItem.id, 'received');
     expect(received.success).toBe(true);
     expect((await getShortagesAction()).data?.some((item: any) => item.drug_id === 9101)).toBe(false);
+  });
+
+  it('supports bulk status update and bulk delete on several shortage items', async () => {
+    await addToShortagesAction({ drug_id: 9101, qty: 5 });
+    await addToShortagesAction({ drug_id: 9102, qty: 10 });
+    await addToShortagesAction({ drug_id: 9103, qty: 15 });
+
+    let list = (await getShortagesAction()).data || [];
+    expect(list).toHaveLength(3);
+
+    const ids = list.map((i: any) => i.id);
+
+    // Bulk status update to 'ordered'
+    const bulkStatusRes = await updateShortagesStatusBulkAction(ids, 'ordered');
+    expect(bulkStatusRes).toMatchObject({ success: true, count: 3 });
+
+    list = (await getShortagesAction()).data || [];
+    expect(list.every((i: any) => i.status === 'ordered')).toBe(true);
+
+    // Bulk delete 2 items
+    const toDelete = [ids[0], ids[1]];
+    const bulkDeleteRes = await deleteShortagesBulkAction(toDelete);
+    expect(bulkDeleteRes).toMatchObject({ success: true, count: 2 });
+
+    list = (await getShortagesAction()).data || [];
+    expect(list).toHaveLength(1);
+    expect(list[0].id).toBe(ids[2]);
   });
 });

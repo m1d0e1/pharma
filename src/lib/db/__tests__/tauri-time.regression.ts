@@ -28,7 +28,7 @@ it('stores shift closures as UTC and normalizes them exactly once outside UTC', 
     'src/app/actions-client/handover.ts',
   ]) {
     const source = readFileSync(join(process.cwd(), relativePath), 'utf8');
-    expect(source).toContain('SET end_time = CURRENT_TIMESTAMP, ending_cash = ?, notes = ?, status = ?');
+    expect(source).toMatch(/SET\s+end_time\s*=\s*CURRENT_TIMESTAMP/);
   }
 
   const [once] = normalizeDatabaseTimestamps([{

@@ -870,6 +870,8 @@ export function initLocalDb() {
   addColumnSafely('master_drugs', 'has_expiry', 'INTEGER DEFAULT 1');
   addColumnSafely('sales_items', 'cost_price', 'REAL DEFAULT 0');
   addColumnSafely('shortages', 'pharmacy_id', "TEXT NOT NULL DEFAULT 'local_default'");
+  addColumnSafely('shortages', 'notes', 'TEXT');
+  addColumnSafely('shortages', 'priority', "TEXT DEFAULT 'normal'");
   db.exec('CREATE INDEX IF NOT EXISTS idx_shortages_pharmacy_drug_status ON shortages(pharmacy_id, drug_id, status)');
 
   // Migration: Add shift_id to sales_invoices if missing
@@ -959,6 +961,33 @@ export function initLocalDb() {
       SET drug_id = (SELECT drug_id FROM inventory WHERE inventory.id = sales_items.inventory_id)
       WHERE drug_id IS NULL AND inventory_id IS NOT NULL
     `);
+  }
+
+  // Migration: Add handover audit columns to shifts
+  const shiftColumns = db.prepare("PRAGMA table_info(shifts)").all() as any[];
+  if (!shiftColumns.some(c => c.name === 'actual_cash')) {
+    addColumnSafely('shifts', 'actual_cash', "REAL");
+  }
+  if (!shiftColumns.some(c => c.name === 'transfer_amount')) {
+    addColumnSafely('shifts', 'transfer_amount', "REAL DEFAULT 0");
+  }
+  if (!shiftColumns.some(c => c.name === 'transfer_target')) {
+    addColumnSafely('shifts', 'transfer_target', "TEXT");
+  }
+  if (!shiftColumns.some(c => c.name === 'cash_difference')) {
+    addColumnSafely('shifts', 'cash_difference', "REAL DEFAULT 0");
+  }
+  if (!shiftColumns.some(c => c.name === 'receiver_id')) {
+    addColumnSafely('shifts', 'receiver_id', "TEXT");
+  }
+
+  // Performance Indexes for Inventory
+  try {
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_inventory_pharmacy_qty_exp ON inventory(pharmacy_id, quantity, expiry_date) WHERE quantity > 0;
+    `);
+  } catch (e) {
+    // Ignore index creation errors
   }
 
   // Seed drug interactions if table is empty or has very few records (missing CSV data)

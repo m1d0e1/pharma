@@ -12,6 +12,7 @@ export default function ShiftsPage() {
   const [shifts, setShifts] = useState<any[]>([]);
   const [currentShift, setCurrentShift] = useState<any>(null);
   const [hasOpenShift, setHasOpenShift] = useState(false);
+  const [suggestedStartingCash, setSuggestedStartingCash] = useState<number>(0);
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState<any>(null);
   const [allowed, setAllowed] = useState(false);
@@ -35,6 +36,9 @@ export default function ShiftsPage() {
           const shift = currentResult.success ? currentResult.data : null;
           setCurrentShift(shift || null);
           setHasOpenShift(!!shift);
+          if (currentResult.success && typeof (currentResult as any).suggested_starting_cash === 'number') {
+            setSuggestedStartingCash((currentResult as any).suggested_starting_cash);
+          }
           if (shiftsResult.success) setShifts(shiftsResult.data || []);
         }
       } catch (err) {
@@ -113,6 +117,7 @@ export default function ShiftsPage() {
         currentShift={currentShift}
         hasOpenShift={hasOpenShift}
         userRole={userRole}
+        suggestedStartingCash={suggestedStartingCash}
       />
 
       {/* Information Box */}

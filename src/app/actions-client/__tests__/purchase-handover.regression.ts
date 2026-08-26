@@ -15,8 +15,10 @@ jest.mock('@/lib/db/tauri', () => ({
   generateId: jest.fn(() => `test-id-${++mockId}`),
 }));
 
+let mockSession: any = { id: 'admin', role: 'owner', pharmacy_id: null };
+
 jest.mock('@/lib/auth/local', () => ({
-  getLocalSession: jest.fn(async () => ({ id: 'admin', role: 'owner', pharmacy_id: null })),
+  getLocalSession: jest.fn(async () => mockSession),
   hasUserPermissionSync: jest.fn(() => true),
   verifyPassword: jest.fn(async () => true),
 }));
@@ -45,7 +47,7 @@ import { barcodeLookupAction, processCheckoutAction, searchDrugsAction } from '@
 import { addOpeningBalanceAction } from '@/app/actions-client/inventory';
 import { getHandoverDetailsAction, getOpenShiftHandoverAction, getShiftCreditSalesAction, processHandoverAction } from '@/app/actions-client/handover';
 import { createCashMovementAction } from '@/app/actions-client/finance';
-import { getCurrentShiftAction, getShiftsAction, openShiftAction } from '@/app/actions-client/shifts';
+import { getCurrentShiftAction, getShiftsAction, openShiftAction, getShiftReceiptsAction } from '@/app/actions-client/shifts';
 import { createReturnAction } from '@/app/actions-client/returns';
 import { getShiftReportAction } from '@/app/actions-client/reports';
 import { updatePatientWalletAction } from '@/app/actions-client/patients';
@@ -55,11 +57,13 @@ import { addExpenseAction } from '@/app/actions-client/expenses';
 describe('purchase reports and drawer handover regressions', () => {
   beforeEach(() => {
     mockId = 0;
+    mockSession = { id: 'admin', role: 'owner', pharmacy_id: null };
     mockDb = new Database(':memory:');
     mockDb.exec(readFileSync('src-tauri/migrations/001_initial.sql', 'utf8'));
     mockDb.exec(readFileSync('src-tauri/migrations/008_patient_accounting.sql', 'utf8'));
     mockDb.exec(readFileSync('src-tauri/migrations/011_shift_cash_difference_account.sql', 'utf8'));
     mockDb.exec(readFileSync('src-tauri/migrations/012_shortages_pharmacy_scope.sql', 'utf8'));
+    mockDb.exec(readFileSync('src-tauri/migrations/013_shift_handover_details.sql', 'utf8'));
     const purchaseItemColumns = mockDb.prepare('PRAGMA table_info(purchase_invoice_items)').all() as any[];
     if (!purchaseItemColumns.some(column => column.name === 'barcode')) {
       mockDb.exec('ALTER TABLE purchase_invoice_items ADD COLUMN barcode TEXT');
@@ -762,4 +766,185 @@ describe('purchase reports and drawer handover regressions', () => {
     expect((mockDb.prepare('SELECT quantity FROM inventory WHERE id = ?').get(source.inventory_id) as any).quantity).toBe(1);
     expect((mockDb.prepare('SELECT COUNT(*) AS count FROM purchase_returns').get() as any).count).toBe(1);
   });
+
+  it('links handover to shifts with audit columns and carry-over balance for next shift', async () => {
+    // 1. Setup users: cashier, receiver (pharmacist), admin/owner
+    mockDb.prepare(`
+      INSERT INTO users (id, username, password_hash, role, full_name, is_active)
+      VALUES
+        ('user-cashier', 'cashier1', '$2b$10$hashedpass', 'cashier', 'كاشير الفرع', 1),
+        ('user-receiver', 'receiver1', '$2b$10$hashedpass', 'pharmacist', 'المستلم الصيدلي', 1)
+    `).run();
+
+    // 2. Open a shift with 50 starting cash
+    mockSession = { id: 'user-cashier', role: 'cashier', pharmacy_id: null };
+    const openRes = await openShiftAction({ starting_cash_amount: 50, opening_notes: 'بداية الوردية' });
+    expect(openRes.success).toBe(true);
+    const shiftId = openRes.shiftId!;
+
+    // 3. Perform a sale in this shift (100 cash)
+    mockDb.prepare(`
+      INSERT INTO sales_invoices (id, shift_id, user_id, payment_method, total_amount, paid_amount, remaining_amount, status)
+      VALUES ('inv-test-1', ?, 'user-cashier', 'cash', 100, 100, 0, 'completed')
+    `).run(shiftId);
+
+    // Expected cash = 50 + 100 = 150
+    const details = await getHandoverDetailsAction(shiftId);
+    expect(details.success).toBe(true);
+    expect(details.data.expected_cash).toBe(150);
+
+    // 4. Process handover: Actual counted = 155 (overage +5), transfer to treasury = 120, leaving 35 in drawer
+    const handoverRes = await processHandoverAction({
+      shiftId,
+      actualCash: 155,
+      transferAmount: 120,
+      transferTargetId: '',
+      transferTargetType: 'treasury',
+      receiverUsername: 'receiver1',
+      receiverPasswordHash: 'password',
+      notes: 'تسليم الخزينة والمناوبة',
+    });
+    expect(handoverRes.success).toBe(true);
+    expect(handoverRes.difference).toBe(5); // +5 overage
+    expect(handoverRes.remainingCash).toBe(35); // 155 - 120 = 35
+
+    // 5. Verify database columns are stored in shifts
+    const savedShift = mockDb.prepare('SELECT actual_cash, transfer_amount, transfer_target, cash_difference, receiver_id, ending_cash, status FROM shifts WHERE id = ?').get(shiftId) as any;
+    expect(savedShift).toMatchObject({
+      actual_cash: 155,
+      transfer_amount: 120,
+      transfer_target: 'treasury',
+      cash_difference: 5,
+      receiver_id: 'user-receiver',
+      ending_cash: 35,
+      status: 'closed',
+    });
+
+    // 6. Test Owner / Admin access to audit columns
+    mockSession = { id: 'admin', role: 'owner', pharmacy_id: null };
+    const ownerView = await getShiftsAction({ status: 'all' });
+    expect(ownerView.success).toBe(true);
+    const ownerShift = ownerView.data?.find((s: any) => s.id === shiftId);
+    expect(ownerShift).toMatchObject({
+      starting_cash_amount: 50,
+      ending_cash_amount: 35,
+      actual_cash: 155,
+      transfer_amount: 120,
+      transfer_target: 'treasury',
+      cash_difference: 5,
+      receiver_name: 'المستلم الصيدلي',
+      expected_cash_amount: 30,
+    });
+
+    // 7. Test Non-privileged user (pharmacist/cashier) does NOT see audit columns
+    mockSession = { id: 'user-cashier', role: 'cashier', pharmacy_id: null };
+    const cashierView = await getShiftsAction({ status: 'all' });
+    expect(cashierView.success).toBe(true);
+    const cashierShift = cashierView.data?.find((s: any) => s.id === shiftId);
+    expect(cashierShift).toMatchObject({
+      starting_cash_amount: 50,
+      ending_cash_amount: 35,
+      actual_cash: null,
+      transfer_amount: null,
+      transfer_target: null,
+      cash_difference: null,
+      receiver_name: null,
+      expected_cash_amount: null,
+    });
+
+    // 8. Test suggested starting cash for the next shift carries over the 35 remaining cash
+    const currentShiftInfo = await getCurrentShiftAction();
+    expect(currentShiftInfo.success).toBe(true);
+    expect(currentShiftInfo.has_open_shift).toBe(false);
+    expect((currentShiftInfo as any).suggested_starting_cash).toBe(35);
+
+    // 9. Open new shift using the carry-over balance
+    const nextShift = await openShiftAction({ starting_cash_amount: (currentShiftInfo as any).suggested_starting_cash });
+    expect(nextShift.success).toBe(true);
+    const nextSaved = mockDb.prepare('SELECT starting_cash, status FROM shifts WHERE id = ?').get(nextShift.shiftId!) as any;
+    expect(nextSaved.starting_cash).toBe(35);
+  });
+
+  it('accepts any cash value and next_shift target even if trial balance cash_difference account is unconfigured', async () => {
+    // 1. Delete cash_difference settings and accounts to simulate unconfigured accounts
+    mockDb.exec("DELETE FROM trial_balance_settings WHERE category = 'cash_difference'");
+    mockDb.exec("DELETE FROM accounts WHERE code = '4.3'");
+
+    mockDb.exec(`
+      INSERT INTO users (id, username, password_hash, role, full_name)
+      VALUES ('user-next-cashier', 'next_cashier', 'hash', 'pharmacist', 'كاشير الوردية التالية');
+      INSERT INTO shifts (id, user_id, start_time, starting_cash, status)
+      VALUES ('shift-unconfigured-tb', 'admin', '2026-08-26 08:00:00', 100, 'open');
+      INSERT INTO sales_invoices (id, user_id, shift_id, total_amount, payment_method, status)
+      VALUES ('sale-unconfigured', 'admin', 'shift-unconfigured-tb', 200, 'cash', 'completed');
+    `);
+
+    // Expected cash: 100 + 200 = 300
+    // User enters actual cash: 150 (shortage of -150), transfers 100 to next_shift
+    mockSession = { id: 'admin', role: 'owner', pharmacy_id: null };
+    const handoverRes = await processHandoverAction({
+      shiftId: 'shift-unconfigured-tb',
+      actualCash: 150,
+      transferAmount: 100,
+      transferTargetId: '',
+      transferTargetType: 'next_shift' as any,
+      receiverUsername: 'next_cashier',
+      receiverPasswordHash: 'password',
+      notes: 'تسليم الوردية التالية مع عجز',
+    });
+
+    expect(handoverRes.success).toBe(true);
+    expect(handoverRes.difference).toBe(-150);
+    expect(handoverRes.remainingCash).toBe(50);
+    expect(handoverRes.status).toBe('discrepancy');
+
+    const saved = mockDb.prepare('SELECT actual_cash, transfer_amount, transfer_target, cash_difference, receiver_id, ending_cash, status FROM shifts WHERE id = ?').get('shift-unconfigured-tb') as any;
+    expect(saved).toMatchObject({
+      actual_cash: 150,
+      transfer_amount: 100,
+      transfer_target: 'next_shift',
+      cash_difference: -150,
+      receiver_id: 'user-next-cashier',
+      ending_cash: 50,
+      status: 'discrepancy',
+    });
+  });
+
+  it('fetches receipts belonging to a shift with item details, payment methods, and patient info', async () => {
+    mockDb.exec(`
+      INSERT OR REPLACE INTO users (id, username, full_name, role) VALUES ('pharmacist-1', 'ph1', 'د. صيدلي 1', 'pharmacist');
+      INSERT OR REPLACE INTO patients (id, full_name, phone) VALUES ('patient-101', 'أحمد محمود', '01012345678');
+      INSERT OR REPLACE INTO master_drugs (id, trade_name, trade_name_en, official_price, large_unit, medium_unit, small_unit) 
+      VALUES (999, 'Panadol Extra', 'Panadol Extra', 50.0, 'علبة', 'شريط', 'قرص');
+
+      INSERT INTO shifts (id, user_id, start_time, starting_cash, status)
+      VALUES ('shift-rec-1', 'pharmacist-1', '2026-08-26 08:00:00', 100, 'closed');
+
+      INSERT INTO sales_invoices (id, user_id, patient_id, total_amount, paid_amount, payment_method, shift_id, status, created_at)
+      VALUES ('inv-rec-1', 'pharmacist-1', 'patient-101', 100, 100, 'cash', 'shift-rec-1', 'completed', '2026-08-26 09:00:00');
+
+      INSERT INTO sales_items (invoice_id, drug_id, quantity_sold, unit_price, unit)
+      VALUES ('inv-rec-1', 999, 2, 50.0, 'large');
+    `);
+
+    mockSession = { id: 'pharmacist-1', role: 'pharmacist', pharmacy_id: null };
+    const res = await getShiftReceiptsAction('shift-rec-1');
+
+    expect(res.success).toBe(true);
+    expect(res.data).toHaveLength(1);
+    expect(res.data[0]).toMatchObject({
+      id: 'inv-rec-1',
+      total_amount: 100,
+      payment_method: 'cash',
+      patient_name: 'أحمد محمود',
+      patient_phone: '01012345678',
+    });
+    expect(res.data[0].sales_items).toHaveLength(1);
+    expect(res.data[0].sales_items[0]).toMatchObject({
+      quantity_sold: 2,
+      unit_price: 50,
+      trade_name: 'Panadol Extra',
+    });
+  });
 });
+

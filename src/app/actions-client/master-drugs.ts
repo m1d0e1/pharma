@@ -387,23 +387,28 @@ export async function searchMasterDrugsAction(queryOrOptions: string | {
       return true;
     });
 
-    // 2. Search in local SQLite database (for custom added drugs)
-    const likePattern = `%${searchLower}%`;
-    const dbQuery = searchByActiveIngredient
-      ? `SELECT * FROM master_drugs 
-         WHERE (active_ingredient LIKE ? OR generic_name LIKE ?)
-           AND (trade_name IS NULL OR trade_name != 'SECURE')
-           AND (trade_name_en IS NULL OR trade_name_en != 'SECURE')`
-      : `SELECT * FROM master_drugs 
-         WHERE (trade_name LIKE ? OR trade_name_en LIKE ? OR barcode = ?)
-           AND (trade_name IS NULL OR trade_name != 'SECURE')
-           AND (trade_name_en IS NULL OR trade_name_en != 'SECURE')`;
+    // 2. Search in local SQLite database (for custom added drugs or when cache unavailable)
+    let dbMatched: any[] = [];
+    if (allDrugs.length === 0 || cacheMatched.length < 20) {
+      const likePattern = `%${searchLower}%`;
+      const dbQuery = searchByActiveIngredient
+        ? `SELECT * FROM master_drugs 
+           WHERE (active_ingredient LIKE ? OR generic_name LIKE ?)
+             AND (trade_name IS NULL OR trade_name != 'SECURE')
+             AND (trade_name_en IS NULL OR trade_name_en != 'SECURE')
+           LIMIT 50`
+        : `SELECT * FROM master_drugs 
+           WHERE (trade_name LIKE ? OR trade_name_en LIKE ? OR barcode = ?)
+             AND (trade_name IS NULL OR trade_name != 'SECURE')
+             AND (trade_name_en IS NULL OR trade_name_en != 'SECURE')
+           LIMIT 50`;
 
-    const dbParams = searchByActiveIngredient 
-      ? [likePattern, likePattern] 
-      : [likePattern, likePattern, searchLower];
+      const dbParams = searchByActiveIngredient 
+        ? [likePattern, likePattern] 
+        : [likePattern, likePattern, searchLower];
 
-    const dbMatched = await db.prepare(dbQuery).all(...dbParams) as any[];
+      dbMatched = await db.prepare(dbQuery).all(...dbParams) as any[];
+    }
 
     const dbFiltered = dbMatched.filter((m: any) => {
       if (type === 'medicine' && (!m.is_medicine || m.is_service)) return false;

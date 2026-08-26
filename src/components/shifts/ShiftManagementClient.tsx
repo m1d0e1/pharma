@@ -1,10 +1,11 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { openShiftAction, getShiftsAction, forceCloseAllShiftsAction } from '@/app/actions-client/shifts';
 import { Button } from '@/components/ui/button';
-import { Calendar, Clock, DollarSign, User, AlertCircle, CheckCircle, XCircle, TrendingUp, TrendingDown } from 'lucide-react';
+import { Calendar, Clock, DollarSign, User, AlertCircle, CheckCircle, XCircle, TrendingUp, TrendingDown, ShieldAlert, ArrowRightLeft, Receipt } from 'lucide-react';
+import ShiftReceiptsModal from '@/components/shifts/ShiftReceiptsModal';
 
 interface Shift {
   id: string;
@@ -12,11 +13,16 @@ interface Shift {
   shift_end: string | null;
   starting_cash_amount: number;
   ending_cash_amount: number | null;
+  actual_cash?: number | null;
+  transfer_amount?: number | null;
+  transfer_target?: string | null;
+  receiver_id?: string | null;
+  receiver_name?: string | null;
   expected_cash_amount: number | null;
   cash_difference: number | null;
   status: 'open' | 'closed' | 'pending_review' | 'discrepancy';
-  opening_notes: string | null;
-  closing_notes: string | null;
+  opening_notes?: string | null;
+  closing_notes?: string | null;
   profiles: {
     full_name: string;
     role: string;
@@ -28,22 +34,35 @@ interface ShiftManagementClientProps {
   currentShift: Shift | null;
   hasOpenShift: boolean;
   userRole: string;
+  suggestedStartingCash?: number;
 }
 
 export default function ShiftManagementClient({
   initialShifts,
   currentShift,
   hasOpenShift,
-  userRole
+  userRole,
+  suggestedStartingCash = 0
 }: ShiftManagementClientProps) {
   const [shifts, setShifts] = useState<Shift[]>(initialShifts);
   const [isOpeningShift, setIsOpeningShift] = useState(false);
-  const [startingCash, setStartingCash] = useState('');
+  const [startingCash, setStartingCash] = useState(() => {
+    return suggestedStartingCash > 0 ? String(suggestedStartingCash) : '';
+  });
   const [openingNotes, setOpeningNotes] = useState('');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [isForceClosing, setIsForceClosing] = useState(false);
+  const [viewingReceiptsShift, setViewingReceiptsShift] = useState<{ id: string; title: string } | null>(null);
+
+  const isOwnerOrAdmin = userRole === 'owner' || userRole === 'admin';
+
+  useEffect(() => {
+    if (!startingCash && suggestedStartingCash > 0 && !hasOpenShift) {
+      setStartingCash(String(suggestedStartingCash));
+    }
+  }, [suggestedStartingCash, hasOpenShift]);
 
   const handleFilterChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
     const status = e.target.value;
@@ -167,18 +186,34 @@ export default function ShiftManagementClient({
             <>
               <div className="space-y-4">
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
-                    الرصيد الافتتاحي (ج.م)
-                  </label>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
+                      الرصيد الافتتاحي (ج.م)
+                    </label>
+                    {suggestedStartingCash > 0 && (
+                      <span className="text-xs text-blue-600 dark:text-blue-400 font-bold bg-blue-50 dark:bg-blue-900/20 px-2 py-0.5 rounded-lg">
+                        المرحل من الوردية السابقة: {formatCurrency(suggestedStartingCash)} ج.م
+                      </span>
+                    )}
+                  </div>
                   <input
                     type="number"
                     step="0.01"
                     min="0"
                     value={startingCash}
                     onChange={(e) => setStartingCash(e.target.value)}
-                    className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-2xl text-slate-800 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-2xl text-slate-800 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent font-bold text-lg"
                     placeholder="أدخل المبلغ النقدي الافتتاحي"
                   />
+                  {suggestedStartingCash > 0 && startingCash !== String(suggestedStartingCash) && (
+                    <button
+                      type="button"
+                      onClick={() => setStartingCash(String(suggestedStartingCash))}
+                      className="text-xs text-blue-600 dark:text-blue-400 hover:underline mt-1 font-medium"
+                    >
+                      ↺ استعادة الرصيد المرحل ({formatCurrency(suggestedStartingCash)} ج.م)
+                    </button>
+                  )}
                 </div>
                 
                 <div>
@@ -229,14 +264,17 @@ export default function ShiftManagementClient({
 
               <div className="p-5 bg-emerald-50 dark:bg-emerald-900/20 rounded-2xl border border-emerald-200 dark:border-emerald-800 space-y-4">
                 <div>
-                  <p className="font-bold text-emerald-800 dark:text-emerald-300">الإغلاق يتم من شاشة تسليم الدرج</p>
-                  <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-1">تجمع المبيعات والتوريدات والمصروفات، تسجل العجز أو الزيادة، ثم تغلق الوردية في عملية واحدة.</p>
+                  <p className="font-bold text-emerald-800 dark:text-emerald-300">الإغلاق والتسليم المالي</p>
+                  <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-1">
+                    أدخل النقدية الفعلية بالدرج، وحدد المبلغ المحول للخزينة، وسيتم ترحيل المتبقي كرصيد افتتاحي للوردية القادمة مع تسجيل العجز أو الزيادة تلقائياً.
+                  </p>
                 </div>
                 <Link
                   href="/finance/handover"
-                  className="block w-full px-4 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow-sm transition-all text-center"
+                  className="block w-full px-4 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow-sm transition-all text-center flex items-center justify-center gap-2"
                 >
-                  🤝 فتح التسليم وإغلاق الوردية
+                  <span>🤝</span>
+                  <span>فتح شاشة تسليم الدرج والمناوبة</span>
                 </Link>
               </div>
             </>
@@ -259,10 +297,23 @@ export default function ShiftManagementClient({
 
       {/* Shifts History */}
       <div className="p-6 bg-white dark:bg-slate-800 rounded-3xl border-2 border-slate-100 dark:border-slate-700 shadow-lg">
-        <div className="flex items-center justify-between mb-6">
-          <h3 className="text-xl font-bold text-slate-800 dark:text-white">سجل الشفتات</h3>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+          <div>
+            <h3 className="text-xl font-bold text-slate-800 dark:text-white flex items-center gap-2">
+              <span>سجل الشفتات النقدية</span>
+              {isOwnerOrAdmin && (
+                <span className="text-xs font-bold px-2 py-0.5 bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300 rounded-lg flex items-center gap-1">
+                  <ShieldAlert className="w-3 h-3" />
+                  عرض تفاصيل الرقابة المالية
+                </span>
+              )}
+            </h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+              متابعة الورديات والمبالغ المحولة للخزينة والرصيد المرحل
+            </p>
+          </div>
           <div className="flex items-center gap-3">
-            {(userRole === 'owner' || userRole === 'admin') && (
+            {isOwnerOrAdmin && (
               <Button
                 onClick={handleForceCloseAll}
                 disabled={isForceClosing}
@@ -275,7 +326,7 @@ export default function ShiftManagementClient({
             <select
               value={statusFilter}
               onChange={handleFilterChange}
-              className="px-4 py-2 bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-2xl text-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-blue-500 font-bold"
+              className="px-4 py-2 bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-2xl text-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-blue-500 font-bold text-sm"
             >
               <option value="all">جميع الشفتات</option>
               <option value="open">المفتوحة</option>
@@ -292,78 +343,125 @@ export default function ShiftManagementClient({
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-slate-200 dark:border-slate-700">
-                  <th className="text-right py-3 px-4 text-slate-600 dark:text-slate-400 font-medium">الصيدلي</th>
-                  <th className="text-right py-3 px-4 text-slate-600 dark:text-slate-400 font-medium">وقت البدء</th>
-                  <th className="text-right py-3 px-4 text-slate-600 dark:text-slate-400 font-medium">وقت الانتهاء</th>
-                  <th className="text-right py-3 px-4 text-slate-600 dark:text-slate-400 font-medium">الرصيد الافتتاحي</th>
-                  <th className="text-right py-3 px-4 text-slate-600 dark:text-slate-400 font-medium">الرصيد الختامي</th>
-                   <th className="text-right py-3 px-4 text-slate-600 dark:text-slate-400 font-medium">الفرق</th>
-                  <th className="text-right py-3 px-4 text-slate-600 dark:text-slate-400 font-medium">الحالة</th>
-                  <th className="text-right py-3 px-4 text-slate-600 dark:text-slate-400 font-medium">تقرير</th>
+            <table className="w-full text-right">
+              <thead className="bg-slate-50 dark:bg-slate-700/50">
+                <tr className="border-b border-slate-200 dark:border-slate-700 text-xs font-bold">
+                  <th className="py-3 px-4 text-slate-600 dark:text-slate-400">الصيدلي</th>
+                  <th className="py-3 px-4 text-slate-600 dark:text-slate-400">وقت البدء</th>
+                  <th className="py-3 px-4 text-slate-600 dark:text-slate-400">وقت الانتهاء</th>
+                  <th className="py-3 px-4 text-slate-600 dark:text-slate-400">الرصيد الافتتاحي</th>
+                  {isOwnerOrAdmin && (
+                    <>
+                      <th className="py-3 px-4 text-slate-600 dark:text-slate-400">نقدية الدرج الفعلية</th>
+                      <th className="py-3 px-4 text-slate-600 dark:text-slate-400">المحول للخزينة</th>
+                      <th className="py-3 px-4 text-slate-600 dark:text-slate-400">المستلم</th>
+                      <th className="py-3 px-4 text-slate-600 dark:text-slate-400">العجز / الزيادة</th>
+                    </>
+                  )}
+                  <th className="py-3 px-4 text-slate-600 dark:text-slate-400">المتبقي بالدرج (الختامي)</th>
+                  <th className="py-3 px-4 text-slate-600 dark:text-slate-400">الحالة</th>
+                  <th className="py-3 px-4 text-slate-600 dark:text-slate-400 text-center">الخيارات والتقارير</th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                 {shifts.map((shift) => (
-                  <tr key={shift.id} className="border-b border-slate-100 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/50">
-                    <td className="py-3 px-4">
-                      <div className="font-medium text-slate-800 dark:text-white">
+                  <tr key={shift.id} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/50 text-sm transition-colors">
+                    <td className="py-3.5 px-4">
+                      <div className="font-bold text-slate-800 dark:text-white">
                         {shift.profiles?.full_name || 'غير معروف'}
                       </div>
-                      <div className="text-sm text-slate-500 dark:text-slate-400">
-                        {shift.profiles?.role === 'admin' ? 'مدير' : 'صيدلي'}
+                      <div className="text-xs text-slate-500 dark:text-slate-400">
+                        {shift.profiles?.role === 'admin' ? 'مدير' : shift.profiles?.role === 'owner' ? 'مالك' : 'صيدلي'}
                       </div>
                     </td>
-                    <td className="py-3 px-4 text-slate-700 dark:text-slate-300">
+                    <td className="py-3.5 px-4 text-slate-700 dark:text-slate-300 whitespace-nowrap text-xs">
                       {formatDate(shift.shift_start)}
                     </td>
-                    <td className="py-3 px-4 text-slate-700 dark:text-slate-300">
+                    <td className="py-3.5 px-4 text-slate-700 dark:text-slate-300 whitespace-nowrap text-xs">
                       {shift.shift_end ? formatDate(shift.shift_end) : '--'}
                     </td>
-                    <td className="py-3 px-4">
-                      <div className="font-bold text-slate-800 dark:text-white">
-                        {formatCurrency(shift.starting_cash_amount)} ج.م
-                      </div>
+                    <td className="py-3.5 px-4 font-bold text-slate-800 dark:text-white whitespace-nowrap">
+                      {formatCurrency(shift.starting_cash_amount)} ج.م
                     </td>
-                    <td className="py-3 px-4">
-                      <div className="font-bold text-slate-800 dark:text-white">
-                        {shift.ending_cash_amount ? `${formatCurrency(shift.ending_cash_amount)} ج.م` : '--'}
-                      </div>
+                    
+                    {isOwnerOrAdmin && (
+                      <>
+                        <td className="py-3.5 px-4 text-slate-800 dark:text-white font-medium whitespace-nowrap">
+                          {shift.actual_cash !== null && shift.actual_cash !== undefined
+                            ? `${formatCurrency(shift.actual_cash)} ج.م`
+                            : '--'}
+                        </td>
+                        <td className="py-3.5 px-4 text-blue-600 dark:text-blue-400 font-bold whitespace-nowrap">
+                          {shift.transfer_amount !== null && shift.transfer_amount !== undefined && shift.transfer_amount > 0
+                            ? `${formatCurrency(shift.transfer_amount)} ج.م`
+                            : '--'}
+                        </td>
+                        <td className="py-3.5 px-4 text-slate-600 dark:text-slate-300 whitespace-nowrap text-xs">
+                          {shift.receiver_name || '--'}
+                        </td>
+                        <td className="py-3.5 px-4 whitespace-nowrap">
+                          {shift.cash_difference !== null && shift.cash_difference !== undefined ? (
+                            <div className={`font-black text-xs px-2.5 py-1 rounded-lg inline-block ${
+                              shift.cash_difference > 0
+                                ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400'
+                                : shift.cash_difference < 0
+                                ? 'bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-400'
+                                : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400'
+                            }`}>
+                              {shift.cash_difference > 0
+                                ? `+${formatCurrency(shift.cash_difference)} ج.م (زيادة)`
+                                : shift.cash_difference < 0
+                                ? `-${formatCurrency(Math.abs(shift.cash_difference))} ج.م (عجز)`
+                                : '0.00 ج.م (مطابق)'}
+                            </div>
+                          ) : (
+                            '--'
+                          )}
+                        </td>
+                      </>
+                    )}
+
+                    <td className="py-3.5 px-4 font-bold text-slate-800 dark:text-white whitespace-nowrap">
+                      {shift.ending_cash_amount !== null ? `${formatCurrency(shift.ending_cash_amount)} ج.م` : '--'}
                     </td>
-                    <td className="py-3 px-4">
-                      {shift.cash_difference !== null ? (
-                        <div className={`font-bold ${shift.cash_difference >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
-                          {shift.cash_difference >= 0 ? '+' : ''}{formatCurrency(shift.cash_difference)} ج.م
-                        </div>
-                      ) : (
-                        '--'
-                      )}
-                    </td>
-                    <td className="py-3 px-4">
-                      <span className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-medium ${
+                    <td className="py-3.5 px-4 whitespace-nowrap">
+                      <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-bold ${
                         shift.status === 'open' 
-                          ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300'
+                          ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300'
                           : shift.status === 'closed'
                           ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300'
-                          : 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300'
+                          : 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300'
                       }`}>
                         {shift.status === 'open' && 'مفتوح'}
                         {shift.status === 'closed' && 'مغلق'}
                         {shift.status === 'pending_review' && 'قيد المراجعة'}
-                        {shift.status === 'discrepancy' && 'فرق'}
+                        {shift.status === 'discrepancy' && 'يوجد فرق'}
                       </span>
                     </td>
-                    <td className="py-3 px-4">
-                      <Button 
-                        variant="outline" 
-                        size="sm"
-                        onClick={() => window.location.href = `/shifts/report?id=${shift.id}`}
-                        className="rounded-xl border-slate-200 hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800"
-                      >
-                        عرض التقرير
-                      </Button>
+                    <td className="py-3.5 px-4 whitespace-nowrap">
+                      <div className="flex items-center justify-center gap-1.5">
+                        <Button 
+                          variant="outline" 
+                          size="sm"
+                          onClick={() => setViewingReceiptsShift({ 
+                            id: shift.id, 
+                            title: `وردية ${shift.profiles?.full_name || ''} (${formatDate(shift.shift_start)})` 
+                          })}
+                          className="rounded-xl border-blue-200 text-blue-700 hover:bg-blue-50 dark:border-blue-800 dark:text-blue-300 dark:hover:bg-blue-900/30 text-xs font-bold flex items-center gap-1 shadow-sm"
+                          title="عرض فواتير وإيصالات هذه الوردية"
+                        >
+                          <Receipt className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                          <span>فواتير الوردية</span>
+                        </Button>
+                        <Button 
+                          variant="outline" 
+                          size="sm"
+                          onClick={() => window.location.href = `/shifts/report?id=${shift.id}`}
+                          className="rounded-xl border-slate-200 hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800 text-xs font-bold"
+                        >
+                          تقرير الإغلاق
+                        </Button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -372,6 +470,16 @@ export default function ShiftManagementClient({
           </div>
         )}
       </div>
+
+      {/* Shift Receipts Modal */}
+      {viewingReceiptsShift && (
+        <ShiftReceiptsModal
+          isOpen={!!viewingReceiptsShift}
+          shiftId={viewingReceiptsShift.id}
+          shiftTitle={viewingReceiptsShift.title}
+          onClose={() => setViewingReceiptsShift(null)}
+        />
+      )}
     </div>
   );
 }

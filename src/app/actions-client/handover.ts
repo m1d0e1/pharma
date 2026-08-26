@@ -148,7 +148,7 @@ export async function processHandoverAction(data: {
   actualCash: number;
   transferAmount: number;
   transferTargetId: string;
-  transferTargetType: 'bank' | 'pos' | 'treasury';
+  transferTargetType: 'bank' | 'pos' | 'treasury' | 'next_shift';
   receiverUsername: string;
   receiverPasswordHash: string;
   notes?: string;
@@ -182,7 +182,13 @@ export async function processHandoverAction(data: {
 
     const cashDrawerAcc = await getAccount('cash_drawer') || (await db.prepare("SELECT id FROM accounts WHERE code = '1.1.1'").get() as any)?.id || 6;
     const bankAcc = await getAccount('bank_clearing') || (await db.prepare("SELECT id FROM accounts WHERE code = '1.1.4'").get() as any)?.id;
-    const cashDifferenceAcc = await getAccount('cash_difference') || (await db.prepare("SELECT id FROM accounts WHERE code = '4.3'").get() as any)?.id;
+    let cashDifferenceAcc = await getAccount('cash_difference') || (await db.prepare("SELECT id FROM accounts WHERE code = '4.3' OR name_ar LIKE '%عجز%' LIMIT 1").get() as any)?.id;
+    if (!cashDifferenceAcc) {
+      try {
+        const ins = await db.prepare("INSERT OR IGNORE INTO accounts (code, name_ar, name_en, type, is_group) VALUES ('4.3', 'عجز وزيادة الخزينة', 'Cash Shortage/Overage', 'expense', 0)").run();
+        cashDifferenceAcc = (await db.prepare("SELECT id FROM accounts WHERE code = '4.3' LIMIT 1").get() as any)?.id || ins.lastInsertRowid;
+      } catch {}
+    }
 
     const transaction = db.transaction(async () => {
       const details = await loadHandoverDetails(data.shiftId);
@@ -210,36 +216,63 @@ export async function processHandoverAction(data: {
         if (posUpdate.changes !== 1) throw new Error('نقطة البيع المحددة غير موجودة');
       }
 
-      // A treasury handover remains in the same cash account, so only bank transfers need a ledger transfer.
+      // A treasury or next shift handover remains in the cash drawer or main treasury, so only bank transfers need a ledger transfer.
       if (data.transferTargetType === 'bank' && data.transferAmount > 0) {
-        if (!bankAcc) throw new Error('حساب البنك غير مهيأ');
-        const journalId = generateId();
-        await db.prepare(`
-          INSERT INTO daily_journals (id, date, description, created_by, total_amount)
-          VALUES (?, date('now', 'localtime'), 'تسليم درج: تحويل إلى البنك', ?, ?)
-        `).run(journalId, user.id, data.transferAmount);
-        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, bankAcc, 'debit', data.transferAmount);
-        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, cashDrawerAcc, 'credit', data.transferAmount);
+        if (bankAcc && cashDrawerAcc) {
+          try {
+            const journalId = generateId();
+            await db.prepare(`
+              INSERT INTO daily_journals (id, date, description, created_by, total_amount)
+              VALUES (?, date('now', 'localtime'), 'تسليم درج: تحويل إلى البنك', ?, ?)
+            `).run(journalId, user.id, data.transferAmount);
+            await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, bankAcc, 'debit', data.transferAmount);
+            await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, cashDrawerAcc, 'credit', data.transferAmount);
+          } catch (bErr) {
+            console.warn('Could not post bank transfer journal entry:', bErr);
+          }
+        }
       }
 
-      if (Math.abs(difference) > 0.01) {
-        if (!cashDifferenceAcc) throw new Error('حساب عجز وزيادة الخزينة غير مهيأ');
-        const journalId = generateId();
-        await db.prepare(`
-          INSERT INTO daily_journals (id, date, description, created_by, total_amount)
-          VALUES (?, date('now', 'localtime'), 'تسوية وردية: عجز/زيادة نقدية', ?, ?)
-        `).run(journalId, user.id, Math.abs(difference));
-        const debitAccount = difference > 0 ? cashDrawerAcc : cashDifferenceAcc;
-        const creditAccount = difference > 0 ? cashDifferenceAcc : cashDrawerAcc;
-        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, debitAccount, 'debit', Math.abs(difference));
-        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, creditAccount, 'credit', Math.abs(difference));
+      if (Math.abs(difference) > 0.01 && cashDifferenceAcc && cashDrawerAcc) {
+        try {
+          const journalId = generateId();
+          await db.prepare(`
+            INSERT INTO daily_journals (id, date, description, created_by, total_amount)
+            VALUES (?, date('now', 'localtime'), 'تسوية وردية: عجز/زيادة نقدية', ?, ?)
+          `).run(journalId, user.id, Math.abs(difference));
+          const debitAccount = difference > 0 ? cashDrawerAcc : cashDifferenceAcc;
+          const creditAccount = difference > 0 ? cashDifferenceAcc : cashDrawerAcc;
+          await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, debitAccount, 'debit', Math.abs(difference));
+          await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, creditAccount, 'credit', Math.abs(difference));
+        } catch (dErr) {
+          console.warn('Could not post difference journal entry:', dErr);
+        }
       }
 
       const shiftUpdate = await db.prepare(`
         UPDATE shifts
-        SET end_time = CURRENT_TIMESTAMP, ending_cash = ?, notes = ?, status = ?
+        SET end_time = CURRENT_TIMESTAMP,
+            ending_cash = ?,
+            actual_cash = ?,
+            transfer_amount = ?,
+            transfer_target = ?,
+            cash_difference = ?,
+            receiver_id = ?,
+            notes = ?,
+            status = ?
         WHERE id = ? AND CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
-      `).run(remainingCash, data.notes || null, shiftStatus, data.shiftId, user.id);
+      `).run(
+        remainingCash,
+        data.actualCash,
+        data.transferAmount,
+        data.transferTargetType || 'treasury',
+        difference,
+        receiver.id,
+        data.notes || null,
+        shiftStatus,
+        data.shiftId,
+        user.id
+      );
       if (shiftUpdate.changes !== 1) throw new Error('تم إغلاق الوردية أو تعديلها بالفعل');
 
       await db.prepare('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)').run(

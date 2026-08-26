@@ -32,14 +32,11 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
   const [creditSalesList, setCreditSalesList] = useState<any[]>([]);
   const [loadingCredit, setLoadingCredit] = useState(false);
 
-  // Owner audit modal
-  const [showOwnerAuditModal, setShowOwnerAuditModal] = useState(false);
-
   const [form, setForm] = useState({
     actualCash: 0,
     transferAmount: 0,
     transferTargetId: '',
-    transferTargetType: 'treasury' as 'bank' | 'pos' | 'treasury',
+    transferTargetType: 'treasury' as 'bank' | 'pos' | 'treasury' | 'next_shift',
     receiverUsername: '',
     receiverPassword: '',
     notes: ''
@@ -94,14 +91,6 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
     } finally {
       setLoadingCredit(false);
     }
-  };
-
-  const handleOpenOwnerAudit = () => {
-    if (userRole !== 'owner' && userRole !== 'admin') {
-      toast.error('عرض تفاصيل حسابات النظام والعجز/الزيادة متاح فقط لمالك الصيدلية');
-      return;
-    }
-    setShowOwnerAuditModal(true);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -167,21 +156,6 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
             </div>
           </div>
           <div className="flex items-center gap-4">
-            <button
-              type="button"
-              onClick={handleOpenOwnerAudit}
-              className="px-4 py-2.5 rounded-2xl bg-purple-600/30 hover:bg-purple-600/50 text-purple-200 border border-purple-400/30 font-black text-xs flex items-center gap-2 transition-all no-print"
-              title="تقرير المطابقة والعجز/الزيادة (خاص بالمالك)"
-            >
-              <ShieldCheck className="w-4 h-4 text-purple-300" />
-              <span>تفاصيل النظام والعجز/الزيادة (للمالك)</span>
-            </button>
-            <div className="text-left">
-              <p className="text-[10px] font-black uppercase text-white/40 mb-1">الرصيد المتوقع في الدرج</p>
-              <p className="text-4xl font-black text-emerald-400">
-                {details?.expected_cash?.toLocaleString('en-US') ?? '0'} <span className="text-sm">ج.م</span>
-              </p>
-            </div>
             <button onClick={() => window.print()} className="p-3 bg-white/10 hover:bg-white/20 rounded-xl transition-all no-print" title="طباعة">
               <Printer className="w-6 h-6 text-white" />
             </button>
@@ -281,6 +255,7 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
                       onChange={(e) => setForm({...form, transferTargetType: e.target.value as any})}
                     >
                       <option value="treasury">الخزينة الرئيسية</option>
+                      <option value="next_shift">الوردية التالية (ترحيل بالدرج)</option>
                       <option value="bank">حساب بنكي</option>
                     </select>
                   </div>
@@ -310,6 +285,7 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
                       value={form.receiverUsername}
                       onChange={(e) => setForm({...form, receiverUsername: e.target.value})}
                     >
+                      <option value="">-- اختر المستلم --</option>
                       {staff.map(s => (
                         <option key={s.id} value={s.username}>{s.full_name || s.username}</option>
                       ))}
@@ -448,136 +424,6 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
                 className="px-6 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-bold transition-all shadow"
               >
                 إغلاق
-              </button>
-            </div>
-
-          </div>
-        </div>
-      )}
-
-      {/* Owner Audit & Discrepancy Sub-Modal */}
-      {showOwnerAuditModal && (
-        <div className="fixed inset-0 z-[210] flex items-center justify-center p-4 bg-slate-950/75 backdrop-blur-sm animate-in fade-in" dir="rtl">
-          <div className="w-full max-w-xl bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-purple-200 dark:border-purple-900/50 overflow-hidden flex flex-col max-h-[90vh]">
-            
-            {/* Header */}
-            <div className="p-5 bg-gradient-to-r from-purple-900 via-indigo-900 to-slate-900 text-white flex justify-between items-center shrink-0">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-2xl bg-purple-500/20 flex items-center justify-center border border-purple-400/30">
-                  <ShieldCheck className="w-6 h-6 text-purple-300" />
-                </div>
-                <div>
-                  <h3 className="font-black text-base flex items-center gap-2">
-                    <span>تقرير مطابقة الحسابات والعجز / الزيادة</span>
-                    <span className="text-[10px] bg-purple-500/30 border border-purple-400/40 px-2 py-0.5 rounded-full font-bold">خاص بالمالك</span>
-                  </h3>
-                  <p className="text-xs text-purple-200 font-bold">
-                    الوردية: #{shiftId ? shiftId.substring(0, 8) : '---'} | الموظف: {details?.user_name}
-                  </p>
-                </div>
-              </div>
-              <button 
-                onClick={() => setShowOwnerAuditModal(false)}
-                className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors"
-              >
-                <X className="w-5 h-5 text-white" />
-              </button>
-            </div>
-
-            {/* Audit Breakdown List */}
-            <div className="p-6 overflow-y-auto flex-1 space-y-5">
-              
-              {/* Discrepancy Status Hero Banner */}
-              {(() => {
-                const exp = details?.expected_cash || 0;
-                const act = form.actualCash || 0;
-                const diff = act - exp;
-                const isExact = Math.abs(diff) < 0.01;
-
-                return (
-                  <div className={`p-5 rounded-2xl border flex items-center justify-between gap-4 ${
-                    isExact 
-                      ? 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300'
-                      : diff > 0
-                        ? 'bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-800 text-blue-800 dark:text-blue-300'
-                        : 'bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-300'
-                  }`}>
-                    <div>
-                      <p className="text-xs font-bold uppercase tracking-wider opacity-80">حالة المطابقة المالية</p>
-                      <p className="text-lg font-black mt-0.5">
-                        {isExact 
-                          ? 'الدرج مطابق تماماً للحسابات النظامية'
-                          : diff > 0
-                            ? `يوجد زيادة في الدرج بمقدار +${diff.toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م`
-                            : `يوجد عجز في الدرج بمقدار -${Math.abs(diff).toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م`
-                        }
-                      </p>
-                    </div>
-                    <div className="text-left font-mono font-black text-2xl">
-                      {diff > 0 ? `+${diff.toFixed(2)}` : diff.toFixed(2)} <span className="text-xs font-sans">ج.م</span>
-                    </div>
-                  </div>
-                );
-              })()}
-
-              {/* Detailed Breakdown Grid */}
-              <div className="bg-slate-50 dark:bg-slate-800/60 rounded-2xl p-4 divide-y divide-slate-200/60 dark:divide-slate-700/60 text-xs font-bold">
-                <div className="flex justify-between items-center py-2.5">
-                  <span className="text-slate-600 dark:text-slate-400">💵 الرصيد الإفتتاحي للوردية</span>
-                  <span className="font-mono text-slate-800 dark:text-slate-200 font-black">{(details?.starting_cash || 0).toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م</span>
-                </div>
-
-                <div className="flex justify-between items-center py-2.5">
-                  <span className="text-slate-600 dark:text-slate-400">📈 إجمالي مبيعات نقدي (كاش) (+)</span>
-                  <span className="font-mono text-emerald-600 dark:text-emerald-400 font-black">+{(details?.cash_sales || 0).toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م</span>
-                </div>
-
-                <div className="flex justify-between items-center py-2.5">
-                  <span className="text-slate-600 dark:text-slate-400">💳 مبيعات البطاقات (فيزا / دفع إلكتروني)</span>
-                  <span className="font-mono text-indigo-600 dark:text-indigo-400 font-black">{(details?.visa_sales || 0).toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م</span>
-                </div>
-
-                <div className="flex justify-between items-center py-2.5">
-                  <span className="text-slate-600 dark:text-slate-400">📑 مبيعات الآجل (حسابات عملاء)</span>
-                  <span className="font-mono text-amber-600 dark:text-amber-400 font-black">{(details?.credit_sales || 0).toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م</span>
-                </div>
-
-                <div className="flex justify-between items-center py-2.5">
-                  <span className="text-slate-600 dark:text-slate-400">📥 إيداعات وتوريدات نقدية (+)</span>
-                  <span className="font-mono text-emerald-600 dark:text-emerald-400 font-black">+{(details?.receipts || 0).toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م</span>
-                </div>
-
-                <div className="flex justify-between items-center py-2.5">
-                  <span className="text-slate-600 dark:text-slate-400">📤 مسحوبات ومصروفات نقدية (-)</span>
-                  <span className="font-mono text-rose-600 dark:text-rose-400 font-black">-{(details?.disbursements || 0).toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م</span>
-                </div>
-
-                <div className="flex justify-between items-center py-2.5">
-                  <span className="text-slate-600 dark:text-slate-400">🔄 مرتجعات مبيعات نقدية مستردة (-)</span>
-                  <span className="font-mono text-rose-600 dark:text-rose-400 font-black">-{(details?.returns || 0).toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م</span>
-                </div>
-
-                <div className="flex justify-between items-center py-3 bg-slate-200/50 dark:bg-slate-700/50 -mx-4 px-4 rounded-xl mt-2 text-sm">
-                  <span className="font-black text-slate-900 dark:text-white">🧮 النقدية المتوقعة دفترياً بالدرج</span>
-                  <span className="font-mono text-blue-600 dark:text-blue-400 font-black text-base">{(details?.expected_cash || 0).toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م</span>
-                </div>
-
-                <div className="flex justify-between items-center py-3 bg-purple-50/50 dark:bg-purple-900/20 -mx-4 px-4 rounded-xl mt-2 text-sm">
-                  <span className="font-black text-purple-900 dark:text-purple-200">💰 النقدية الفعلية المدخلة من الموظف</span>
-                  <span className="font-mono text-purple-700 dark:text-purple-300 font-black text-base">{(form.actualCash || 0).toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م</span>
-                </div>
-              </div>
-
-            </div>
-
-            {/* Footer */}
-            <div className="p-4 bg-slate-50 dark:bg-slate-800/50 border-t border-slate-100 dark:border-slate-800 flex justify-end items-center shrink-0">
-              <button
-                type="button"
-                onClick={() => setShowOwnerAuditModal(false)}
-                className="px-6 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-bold transition-all shadow"
-              >
-                إغلاق التقرير
               </button>
             </div>
 

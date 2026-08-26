@@ -100,7 +100,7 @@ export async function closeShiftAction(data: { shift_id?: string; ending_cash_am
 
     let shiftId = data.shift_id;
     if (!shiftId || shiftId === 'auto') {
-      const openShift = await db.prepare("SELECT id FROM shifts WHERE user_id = ? AND status = 'open'").get(user.id) as any;
+      const openShift = await db.prepare("SELECT id FROM shifts WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'").get(user.id) as any;
       if (!openShift) return { success: false, error: 'لا توجد وردية مفتوحة لإغلاقها' };
       shiftId = openShift.id;
     }
@@ -149,9 +149,14 @@ export async function closeShiftAction(data: { shift_id?: string; ending_cash_am
       // 2. Update shift record
       const shiftUpdate = await db.prepare(`
         UPDATE shifts 
-        SET end_time = CURRENT_TIMESTAMP, ending_cash = ?, notes = ?, status = ?
+        SET end_time = CURRENT_TIMESTAMP,
+            ending_cash = ?,
+            actual_cash = ?,
+            cash_difference = ?,
+            notes = ?,
+            status = ?
         WHERE id = ? AND CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
-      `).run(data.ending_cash_amount, data.closing_notes || null, status, shiftId, user.id);
+      `).run(data.ending_cash_amount, data.ending_cash_amount, difference, data.closing_notes || null, status, shiftId, user.id);
       if (shiftUpdate.changes !== 1) throw new Error('تم إغلاق الوردية أو تعديلها بالفعل');
 
       // 3. Accounting Reconciliation (Journal Entry)
@@ -167,18 +172,29 @@ export async function closeShiftAction(data: { shift_id?: string; ending_cash_am
           return s?.account_id;
         };
 
-        const cashAcc = await getAccountId('cash_drawer') || 6;
-        const diffAcc = await getAccountId('cash_difference') || (await db.prepare("SELECT id FROM accounts WHERE code = '4.3'").get() as any)?.id;
-        if (!diffAcc) throw new Error('حساب عجز وزيادة الخزينة غير مهيأ');
+        const cashAcc = await getAccountId('cash_drawer') || (await db.prepare("SELECT id FROM accounts WHERE code = '1.1.1'").get() as any)?.id || 6;
+        let diffAcc = await getAccountId('cash_difference') || (await db.prepare("SELECT id FROM accounts WHERE code = '4.3' OR name_ar LIKE '%عجز%' LIMIT 1").get() as any)?.id;
+        if (!diffAcc) {
+          try {
+            const ins = await db.prepare("INSERT OR IGNORE INTO accounts (code, name_ar, name_en, type, is_group) VALUES ('4.3', 'عجز وزيادة الخزينة', 'Cash Shortage/Overage', 'expense', 0)").run();
+            diffAcc = (await db.prepare("SELECT id FROM accounts WHERE code = '4.3' LIMIT 1").get() as any)?.id || ins.lastInsertRowid;
+          } catch {}
+        }
 
-        if (difference > 0) {
-          // Overage: Debit Cash (Asset), Credit Difference (Income/Gain)
-          await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, cashAcc, 'debit', difference);
-          await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, diffAcc, 'credit', difference);
-        } else {
-          // Shortage: Debit Difference (Loss/Expense), Credit Cash (Asset)
-          await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, diffAcc, 'debit', Math.abs(difference));
-          await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, cashAcc, 'credit', Math.abs(difference));
+        if (diffAcc && cashAcc) {
+          try {
+            if (difference > 0) {
+              // Overage: Debit Cash (Asset), Credit Difference (Income/Gain)
+              await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, cashAcc, 'debit', difference);
+              await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, diffAcc, 'credit', difference);
+            } else {
+              // Shortage: Debit Difference (Loss/Expense), Credit Cash (Asset)
+              await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, diffAcc, 'debit', Math.abs(difference));
+              await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, cashAcc, 'credit', Math.abs(difference));
+            }
+          } catch (jErr) {
+            console.warn('Could not post difference journal entry in closeShiftAction:', jErr);
+          }
         }
       }
 
@@ -199,6 +215,8 @@ export async function getShiftsAction(filter: { status: string }) {
     const user = await getLocalSession();
     if (!user || !hasUserPermissionSync(user, 'can_view_shifts')) return { success: false, error: 'غير مصرح' };
 
+    const isOwnerOrAdmin = user.role === 'owner' || user.role === 'admin';
+
     const params: any[] = [];
     if (filter.status !== 'all') {
       params.push(filter.status);
@@ -207,12 +225,15 @@ export async function getShiftsAction(filter: { status: string }) {
     const rawShifts = await db.prepare(`
       SELECT s.id, s.start_time as shift_start, s.end_time as shift_end, 
              s.starting_cash as starting_cash_amount, s.ending_cash as ending_cash_amount,
+             s.actual_cash, s.transfer_amount, s.transfer_target, s.cash_difference,
+             s.receiver_id, ru.full_name as receiver_name,
              s.status, s.notes as opening_notes, u.full_name, u.role,
              COALESCE(sales.total_sales, 0) as total_sales,
              COALESCE(rets.total_refunds, 0) as total_refunds,
              COALESCE(moves.net_movements, 0) as net_movements
       FROM shifts s
       JOIN users u ON s.user_id = u.id
+      LEFT JOIN users ru ON s.receiver_id = ru.id
       LEFT JOIN (
         SELECT shift_id, SUM(total_amount) as total_sales
         FROM sales_invoices
@@ -242,14 +263,26 @@ export async function getShiftsAction(filter: { status: string }) {
     
     const shifts = rawShifts.map(s => {
       const expectedCash = s.starting_cash_amount + s.total_sales - s.total_refunds + s.net_movements;
-      const difference = s.status !== 'open' && s.ending_cash_amount !== null
-        ? (s.ending_cash_amount - expectedCash) 
-        : 0;
+      const difference = (s.cash_difference !== null && s.cash_difference !== undefined)
+        ? Number(s.cash_difference)
+        : (s.status !== 'open' && s.ending_cash_amount !== null ? (s.ending_cash_amount - expectedCash) : 0);
 
       return {
-        ...s,
-        expected_cash_amount: expectedCash,
-        cash_difference: difference,
+        id: s.id,
+        shift_start: s.shift_start,
+        shift_end: s.shift_end,
+        starting_cash_amount: s.starting_cash_amount,
+        ending_cash_amount: s.ending_cash_amount,
+        actual_cash: isOwnerOrAdmin ? s.actual_cash : null,
+        transfer_amount: isOwnerOrAdmin ? (s.transfer_amount || 0) : null,
+        transfer_target: isOwnerOrAdmin ? s.transfer_target : null,
+        receiver_id: isOwnerOrAdmin ? s.receiver_id : null,
+        receiver_name: isOwnerOrAdmin ? (s.receiver_name || null) : null,
+        expected_cash_amount: isOwnerOrAdmin ? expectedCash : null,
+        cash_difference: isOwnerOrAdmin ? difference : null,
+        status: s.status,
+        opening_notes: s.opening_notes || null,
+        closing_notes: s.closing_notes || s.notes || null,
         profiles: {
           full_name: s.full_name,
           role: s.role
@@ -279,10 +312,23 @@ export async function getCurrentShiftAction() {
       ORDER BY start_time DESC LIMIT 1
     `).get(user.id) as any;
 
+    const lastClosed = await db.prepare(`
+      SELECT ending_cash
+      FROM shifts
+      WHERE status != 'open' AND ending_cash IS NOT NULL
+      ORDER BY COALESCE(end_time, start_time) DESC
+      LIMIT 1
+    `).get() as any;
+
+    const suggestedStartingCash = lastClosed && lastClosed.ending_cash !== null && lastClosed.ending_cash !== undefined
+      ? Number(lastClosed.ending_cash)
+      : 0;
+
     return { 
       success: true, 
       data: shift || null,
-      has_open_shift: !!shift 
+      has_open_shift: !!shift,
+      suggested_starting_cash: suggestedStartingCash
     };
   } catch (error) {
     console.error('Get current shift error:', error);
@@ -301,7 +347,7 @@ export async function getCurrentShiftStatsAction() {
     const shift = await db.prepare(`
       SELECT id, start_time, starting_cash
       FROM shifts 
-      WHERE user_id = ? AND status = 'open'
+      WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
     `).get(user.id) as any;
 
     if (!shift) return { success: false, error: 'لا توجد وردية مفتوحة' };
@@ -410,5 +456,108 @@ export async function forceCloseAllShiftsAction() {
   } catch (error) {
     console.error('Force close error:', error);
     return { success: false, error: 'فشل الإغلاق الاضطراري' };
+  }
+}
+
+/**
+ * Get all receipts / invoices belonging to a specific shift
+ */
+export async function getShiftReceiptsAction(shiftId: string) {
+  try {
+    const user = await getLocalSession();
+    if (!user || (!hasUserPermissionSync(user, 'can_view_shifts') && !hasUserPermissionSync(user, 'can_view_receipts') && !hasUserPermissionSync(user, 'rep_can_view_shifts'))) {
+      return { success: false, error: 'غير مصرح' };
+    }
+
+    const invoicesData = await db.prepare(`
+      SELECT 
+        si.id,
+        si.total_amount,
+        si.paid_amount,
+        si.remaining_amount,
+        si.payment_method,
+        si.discount_amount,
+        si.created_at,
+        si.status,
+        si.user_id,
+        si.patient_id,
+        u.full_name as staff_name,
+        p.full_name as patient_name,
+        p.phone as patient_phone
+      FROM sales_invoices si
+      LEFT JOIN users u ON si.user_id = u.id
+      LEFT JOIN patients p ON si.patient_id = p.id
+      WHERE si.shift_id = ?
+        AND (si.status IS NULL OR si.status = '' OR si.status IN ('completed', 'approved'))
+      ORDER BY si.created_at DESC
+    `).all(shiftId) as any[];
+
+    if (!invoicesData || invoicesData.length === 0) {
+      return { success: true, data: [] };
+    }
+
+    const invoiceIds = invoicesData.map(inv => `'${inv.id}'`).join(',');
+    const itemsData = await db.prepare(`
+      SELECT 
+        si.invoice_id,
+        si.quantity_sold,
+        si.unit_price,
+        si.unit,
+        si.drug_id,
+        COALESCE(
+          NULLIF(NULLIF(md.trade_name, ''), 'Drug ' || md.id),
+          NULLIF(NULLIF(md.trade_name_en, ''), 'Drug ' || md.id),
+          md.trade_name,
+          md.trade_name_en,
+          'صنف #' || si.drug_id
+        ) AS trade_name,
+        COALESCE(
+          NULLIF(NULLIF(md.trade_name_en, ''), 'Drug ' || md.id),
+          NULLIF(NULLIF(md.trade_name, ''), 'Drug ' || md.id),
+          md.trade_name_en,
+          md.trade_name,
+          'صنف #' || si.drug_id
+        ) AS trade_name_en,
+        md.active_ingredient,
+        md.large_unit,
+        md.medium_unit,
+        md.small_unit
+      FROM sales_items si
+      LEFT JOIN master_drugs md ON si.drug_id = md.id
+      WHERE si.invoice_id IN (${invoiceIds})
+    `).all() as any[];
+
+    const fullInvoices = invoicesData.map(invoice => {
+      const items = (itemsData || []).filter((item: any) => item.invoice_id === invoice.id);
+      return {
+        ...invoice,
+        profiles: { full_name: invoice.staff_name || 'موظف' },
+        patients: invoice.patient_name ? { full_name: invoice.patient_name, phone: invoice.patient_phone } : null,
+        payment_method: invoice.payment_method || 'cash',
+        sales_items: items.map((item: any) => ({
+          quantity_sold: Number(item.quantity_sold || 0),
+          unit_price: Number(item.unit_price || 0),
+          unit: item.unit,
+          units: {
+            large: item.large_unit || 'علبة',
+            medium: item.medium_unit,
+            small: item.small_unit
+          },
+          trade_name: item.trade_name,
+          trade_name_en: item.trade_name_en,
+          inventory: {
+            master_drugs: {
+              trade_name: item.trade_name || 'صنف غير معروف',
+              trade_name_en: item.trade_name_en || ''
+            }
+          }
+        }))
+      };
+    });
+
+    return { success: true, data: fullInvoices };
+  } catch (error) {
+    console.error('Get shift receipts error:', error);
+    return { success: false, error: 'فشل جلب فواتير الوردية' };
   }
 }

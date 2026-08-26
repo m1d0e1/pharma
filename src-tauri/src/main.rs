@@ -533,6 +533,12 @@ fn main() {
             sql: include_str!("../migrations/012_shortages_pharmacy_scope.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 13,
+            description: "shift_handover_details",
+            sql: include_str!("../migrations/013_shift_handover_details.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()
