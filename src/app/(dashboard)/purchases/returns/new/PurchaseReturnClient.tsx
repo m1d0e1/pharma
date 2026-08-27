@@ -282,8 +282,8 @@ export default function PurchaseReturnClient() {
                   >
                     <div className="flex justify-between items-center w-full">
                       <span className="font-black text-xs text-slate-800 dark:text-slate-100">رقم الفاتورة: {inv.invoice_number || inv.id.slice(0, 8)}</span>
-                      <span className="text-[10px] text-slate-500 font-bold bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded">
-                        {inv.created_at ? new Date(inv.created_at).toLocaleString('ar-EG', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: true }) : inv.invoice_date || ''}
+                      <span dir="ltr" className="text-[10px] text-slate-500 font-bold bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded">
+                        {inv.created_at ? new Date(inv.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit' }) + ' - ' + new Date(inv.created_at).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', hour12: true }) : inv.invoice_date || ''}
                       </span>
                     </div>
                     <div className="flex justify-between items-center w-full mt-1">
@@ -316,7 +316,7 @@ export default function PurchaseReturnClient() {
                   {invoices[selectedIndex] && (
                     <div className="text-xs text-slate-500 flex gap-3 flex-wrap items-center">
                       <span className="bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 px-2.5 py-1 rounded-lg font-bold border border-blue-200/50 dark:border-blue-800/50">
-                        📅 تاريخ ووقت الفاتورة: {invoices[selectedIndex].created_at ? new Date(invoices[selectedIndex].created_at).toLocaleString('ar-EG', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: true }) : invoices[selectedIndex].invoice_date || 'غير محدد'}
+                        📅 تاريخ ووقت الفاتورة: <span dir="ltr">{invoices[selectedIndex].created_at ? new Date(invoices[selectedIndex].created_at).toLocaleDateString('en-GB') + ' - ' + new Date(invoices[selectedIndex].created_at).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', hour12: true }) : invoices[selectedIndex].invoice_date || 'غير محدد'}</span>
                       </span>
                       <span>المستلم: {invoices[selectedIndex].staff_name || 'غير محدد'}</span>
                     </div>

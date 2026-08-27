@@ -7,10 +7,40 @@ import { Search, Save, Trash2, ArrowRight, Calendar, FileText } from 'lucide-rea
 import Link from 'next/link';
 import { toast } from 'react-hot-toast';
 
+const getLocalTodayDate = () => {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
+const formatInvoiceDateTime = (dateStr?: string | null, includeYear = false) => {
+  if (!dateStr) return '';
+  try {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return dateStr;
+    const day = String(d.getDate()).padStart(2, '0');
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const year = d.getFullYear();
+    let hours = d.getHours();
+    const minutes = String(d.getMinutes()).padStart(2, '0');
+    const isPM = hours >= 12;
+    hours = hours % 12 || 12;
+    const hoursStr = String(hours).padStart(2, '0');
+    const ampm = isPM ? 'م' : 'ص';
+    return includeYear 
+      ? `${day}/${month}/${year} - ${hoursStr}:${minutes} ${ampm}`
+      : `${day}/${month} - ${hoursStr}:${minutes} ${ampm}`;
+  } catch {
+    return dateStr;
+  }
+};
+
 export default function SalesReturnClient() {
   const router = useRouter();
   const listRef = React.useRef<HTMLDivElement>(null);
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+  const [selectedDate, setSelectedDate] = useState(getLocalTodayDate);
   const [searchTerm, setSearchTerm] = useState('');
   const [invoicesByDate, setInvoicesByDate] = useState<any[]>([]);
   const [invoiceId, setInvoiceId] = useState('');
@@ -265,8 +295,8 @@ export default function SalesReturnClient() {
                   >
                     <div className="flex justify-between items-center w-full">
                       <span className="font-black text-xs text-slate-800 dark:text-slate-100">رقم الفاتورة: {inv.id.slice(0, 8)}</span>
-                      <span className="text-[10px] text-slate-500 font-bold bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded">
-                        {inv.created_at ? new Date(inv.created_at).toLocaleString('ar-EG', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: true }) : ''}
+                      <span dir="ltr" className="text-[10px] text-slate-500 font-bold bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded">
+                        {formatInvoiceDateTime(inv.created_at)}
                       </span>
                     </div>
                     <div className="flex justify-between items-center w-full mt-1">
@@ -301,7 +331,7 @@ export default function SalesReturnClient() {
                   <h2 className="text-lg font-bold text-slate-800 dark:text-white">أصناف الفاتورة</h2>
                   <div className="text-xs text-slate-500 flex gap-3 flex-wrap items-center">
                     <span className="bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 px-2.5 py-1 rounded-lg font-bold border border-blue-200/50 dark:border-blue-800/50">
-                      📅 تاريخ ووقت الفاتورة: {invoice.created_at ? new Date(invoice.created_at).toLocaleString('ar-EG', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: true }) : 'غير محدد'}
+                      📅 تاريخ ووقت الفاتورة: <span dir="ltr">{formatInvoiceDateTime(invoice.created_at, true) || 'غير محدد'}</span>
                     </span>
                     <span>المريض: {invoice.patient_name || 'غير محدد'}</span>
                     <span>البائع: {invoice.user_name || 'غير محدد'}</span>
