@@ -981,10 +981,17 @@ export function initLocalDb() {
     addColumnSafely('shifts', 'receiver_id', "TEXT");
   }
 
-  // Performance Indexes for Inventory
+  // Performance Indexes for Inventory, Shortages, and Purchases
   try {
     db.exec(`
       CREATE INDEX IF NOT EXISTS idx_inventory_pharmacy_qty_exp ON inventory(pharmacy_id, quantity, expiry_date) WHERE quantity > 0;
+      CREATE INDEX IF NOT EXISTS idx_inventory_pharmacy_drug_qty ON inventory(pharmacy_id, drug_id, quantity);
+      CREATE INDEX IF NOT EXISTS idx_shortages_pharmacy_status ON shortages(pharmacy_id, status);
+      CREATE INDEX IF NOT EXISTS idx_shortages_drug_id ON shortages(drug_id);
+      CREATE INDEX IF NOT EXISTS idx_purchase_invoices_pharmacy_status ON purchase_invoices(pharmacy_id, status);
+      CREATE INDEX IF NOT EXISTS idx_purchase_invoice_items_drug_id ON purchase_invoice_items(drug_id);
+      CREATE INDEX IF NOT EXISTS idx_sales_invoices_pharmacy_created ON sales_invoices(pharmacy_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_sales_items_drug_neg ON sales_items(drug_id, is_negative);
     `);
   } catch (e) {
     // Ignore index creation errors

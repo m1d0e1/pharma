@@ -11,9 +11,10 @@ import { X, Save, ShoppingCart, Plus, Trash2, Search, Loader2 } from 'lucide-rea
 interface Props {
   initialItems: any[];
   onClose: () => void;
+  onSuccess?: () => void;
 }
 
-export default function PurchaseOrderModal({ initialItems, onClose }: Props) {
+export default function PurchaseOrderModal({ initialItems, onClose, onSuccess }: Props) {
   useHotkeys('esc', () => { if(typeof onClose === 'function') onClose(); }, { enableOnFormTags: true });
 
   const [supplier, setSupplier] = useState('');
@@ -21,15 +22,29 @@ export default function PurchaseOrderModal({ initialItems, onClose }: Props) {
   const [items, setItems] = useState(
     initialItems
       .filter(item => {
-        const qty = item.suggested_order !== undefined ? item.suggested_order : Math.max(0, (item.min_stock_level * 2) - item.quantity);
+        const qty = item.requested_quantity !== undefined 
+          ? Number(item.requested_quantity)
+          : item.suggested_order !== undefined 
+            ? Number(item.suggested_order) 
+            : Math.max(0, (Number(item.min_stock_level || 0) * 2) - Number(item.quantity || 0));
         return qty > 0;
       })
       .map(item => ({
-        drug_id: item.master_drugs.id,
-        trade_name: item.master_drugs.trade_name_en || item.master_drugs.trade_name,
-        quantity: item.suggested_order !== undefined ? item.suggested_order : Math.max(0, (item.min_stock_level * 2) - item.quantity),
-        expected_price: item.cost_price || item.master_drugs.base_price || 0,
-        available_quantity: Number(item.quantity || 0),
+        drug_id: item.drug_id || item.master_drugs?.id || item.id,
+        trade_name: item.trade_name_en || item.trade_name || item.master_drugs?.trade_name_en || item.master_drugs?.trade_name,
+        quantity: item.requested_quantity !== undefined 
+          ? Number(item.requested_quantity)
+          : item.suggested_order !== undefined 
+            ? Number(item.suggested_order) 
+            : Math.max(1, (Number(item.min_stock_level || 0) * 2) - Number(item.quantity || 0)),
+        expected_price: Number(item.last_cost_price) > 0 
+          ? Number(item.last_cost_price) 
+          : Number(item.cost_price) > 0 
+            ? Number(item.cost_price) 
+            : Number(item.official_price) > 0 
+              ? Number(item.official_price) 
+              : (item.master_drugs?.base_price || 0),
+        available_quantity: Number(item.current_stock ?? item.quantity ?? 0),
       }))
   );
 
@@ -103,6 +118,7 @@ export default function PurchaseOrderModal({ initialItems, onClose }: Props) {
 
       if (result.success) {
         toast.success('تم إنشاء أمر الشراء بنجاح: ' + result.po_id);
+        if (typeof onSuccess === 'function') onSuccess();
         onClose();
       } else {
         toast.error(result.error || 'فشل إنشاء الطلب');

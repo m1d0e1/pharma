@@ -81,7 +81,7 @@ export default function ReceiptDetailsModal({ invoice, onClose, autoPrint = fals
   const formatDate = (dateStr: string) => {
     if (!mounted) return '---'
     try {
-      return new Date(dateStr).toLocaleString('ar-EG', {
+      return new Date(dateStr).toLocaleString('ar-EG-u-nu-latn', {
         year: 'numeric',
         month: '2-digit',
         day: '2-digit',

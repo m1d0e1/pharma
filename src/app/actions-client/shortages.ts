@@ -128,30 +128,6 @@ export async function getShortagesAction() {
     const pharmacyId = user.pharmacy_id || 'local_default';
 
     const items = await db.prepare(`
-      WITH Params AS (
-        SELECT ? AS pharmacy_id
-      ),
-      DrugStock AS (
-        SELECT i.drug_id, SUM(COALESCE(i.quantity, 0)) AS current_stock
-        FROM inventory i
-        CROSS JOIN Params p
-        WHERE (i.pharmacy_id = p.pharmacy_id OR (i.pharmacy_id IS NULL AND p.pharmacy_id = 'local_default'))
-          AND (i.expiry_date IS NULL OR i.expiry_date >= date('now', 'localtime'))
-        GROUP BY i.drug_id
-      ),
-      LastPurchases AS (
-        SELECT 
-          pii.drug_id,
-          s.name_ar AS last_supplier_name,
-          pii.cost_price AS last_cost_price
-        FROM purchase_invoice_items pii
-        JOIN purchase_invoices pi ON pii.invoice_id = pi.id
-        JOIN suppliers s ON pi.supplier_id = s.id
-        CROSS JOIN Params p
-        WHERE (pi.status IS NULL OR pi.status = '' OR pi.status = 'completed')
-          AND (pi.pharmacy_id = p.pharmacy_id OR (pi.pharmacy_id IS NULL AND p.pharmacy_id = 'local_default'))
-        GROUP BY pii.drug_id
-      )
       SELECT
         s.id,
         s.drug_id,
@@ -166,8 +142,27 @@ export async function getShortagesAction() {
         COALESCE(m.official_price, 0) AS official_price,
         COALESCE(m.large_to_medium, 1) AS large_to_medium,
         COALESCE(NULLIF(m.barcode, ''), '') AS barcode,
-        lp.last_supplier_name,
-        lp.last_cost_price,
+        (
+          SELECT sup.name_ar 
+          FROM purchase_invoice_items pii
+          JOIN purchase_invoices pi ON pii.invoice_id = pi.id
+          JOIN suppliers sup ON pi.supplier_id = sup.id
+          WHERE pii.drug_id = s.drug_id
+            AND (pi.status IS NULL OR pi.status = '' OR pi.status = 'completed')
+            AND (pi.pharmacy_id = ? OR (pi.pharmacy_id IS NULL AND ? = 'local_default'))
+          ORDER BY pi.created_at DESC, pii.id DESC
+          LIMIT 1
+        ) AS last_supplier_name,
+        (
+          SELECT pii.cost_price 
+          FROM purchase_invoice_items pii
+          JOIN purchase_invoices pi ON pii.invoice_id = pi.id
+          WHERE pii.drug_id = s.drug_id
+            AND (pi.status IS NULL OR pi.status = '' OR pi.status = 'completed')
+            AND (pi.pharmacy_id = ? OR (pi.pharmacy_id IS NULL AND ? = 'local_default'))
+          ORDER BY pi.created_at DESC, pii.id DESC
+          LIMIT 1
+        ) AS last_cost_price,
         COALESCE(ds.current_stock, 0) AS current_stock,
         COALESCE(NULLIF(m.reorder_point, 0), NULLIF(m.min_limit, 0), ?) AS reorder_point,
         MAX(
@@ -176,22 +171,33 @@ export async function getShortagesAction() {
         ) AS deficit,
         CASE
           WHEN COALESCE(ds.current_stock, 0) <= 0 THEN 'out_of_stock'
+          WHEN COALESCE(ds.current_stock, 0) <= (COALESCE(NULLIF(m.reorder_point, 0), NULLIF(m.min_limit, 0), ?) / 2) THEN 'critical'
           WHEN COALESCE(ds.current_stock, 0) <= COALESCE(NULLIF(m.reorder_point, 0), NULLIF(m.min_limit, 0), ?)
             THEN 'low'
           ELSE 'sufficient'
         END AS inventory_status
       FROM shortages s
-      CROSS JOIN Params p
       JOIN master_drugs m ON m.id = s.drug_id
-      LEFT JOIN DrugStock ds ON ds.drug_id = s.drug_id
-      LEFT JOIN LastPurchases lp ON lp.drug_id = s.drug_id
-      WHERE s.pharmacy_id = p.pharmacy_id
+      LEFT JOIN (
+        SELECT i.drug_id, SUM(COALESCE(i.quantity, 0)) AS current_stock
+        FROM inventory i
+        WHERE (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
+          AND (i.expiry_date IS NULL OR i.expiry_date >= date('now', 'localtime'))
+        GROUP BY i.drug_id
+      ) ds ON ds.drug_id = s.drug_id
+      WHERE (s.pharmacy_id = ? OR (s.pharmacy_id IS NULL AND ? = 'local_default'))
         AND COALESCE(s.status, 'pending') != 'received'
       ORDER BY
         CASE WHEN COALESCE(ds.current_stock, 0) <= 0 THEN 0 ELSE 1 END,
         deficit DESC,
         s.created_at DESC
-    `).all(pharmacyId, DEFAULT_REORDER_LIMIT, DEFAULT_REORDER_LIMIT, DEFAULT_REORDER_LIMIT) as any[];
+    `).all(
+      pharmacyId, pharmacyId,
+      pharmacyId, pharmacyId,
+      DEFAULT_REORDER_LIMIT, DEFAULT_REORDER_LIMIT, DEFAULT_REORDER_LIMIT, DEFAULT_REORDER_LIMIT,
+      pharmacyId, pharmacyId,
+      pharmacyId, pharmacyId
+    ) as any[];
 
     return { success: true, data: items };
   } catch (error: any) {

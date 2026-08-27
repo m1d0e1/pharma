@@ -946,5 +946,49 @@ describe('purchase reports and drawer handover regressions', () => {
       trade_name: 'Panadol Extra',
     });
   });
+
+  it('automatically opens a new shift when autoOpenNewShift is true in processHandoverAction', async () => {
+    mockDb.exec(`
+      INSERT OR REPLACE INTO users (id, username, password_hash, full_name, role)
+      VALUES ('cashier-auto-1', 'cauto1', '$2b$10$123456789012345678901u8v7w6x5y4z3a2b1c', 'Cashier Auto', 'pharmacist'),
+             ('cashier-auto-2', 'cauto2', '$2b$10$123456789012345678901u8v7w6x5y4z3a2b1c', 'Cashier Next', 'pharmacist');
+
+      INSERT INTO shifts (id, user_id, start_time, starting_cash, status)
+      VALUES ('shift-auto-1', 'cashier-auto-1', '2026-08-26 10:00:00', 500, 'open');
+
+      INSERT INTO sales_invoices (id, user_id, total_amount, paid_amount, payment_method, shift_id, status)
+      VALUES ('inv-auto-1', 'cashier-auto-1', 200, 200, 'cash', 'shift-auto-1', 'completed');
+    `);
+
+    mockSession = { id: 'cashier-auto-1', role: 'pharmacist', pharmacy_id: null };
+
+    // Handover with autoOpenNewShift: true
+    const handoverRes = await processHandoverAction({
+      shiftId: 'shift-auto-1',
+      actualCash: 700,
+      transferAmount: 500, // 500 transferred to treasury, 200 remaining in drawer
+      transferTargetId: '',
+      transferTargetType: 'treasury',
+      receiverUsername: 'cauto2',
+      receiverPasswordHash: 'password',
+      notes: 'تسليم وفتح تلقائي',
+      autoOpenNewShift: true,
+    });
+
+    expect(handoverRes.success).toBe(true);
+    expect(handoverRes.remainingCash).toBe(200);
+    expect(handoverRes.startingCash).toBe(200);
+    expect(handoverRes.newShiftId).toBeTruthy();
+
+    // Check that current cashier immediately has a new open shift with 200 starting cash
+    const currentShift = await getCurrentShiftAction();
+    expect(currentShift.success).toBe(true);
+    expect(currentShift.has_open_shift).toBe(true);
+    expect(currentShift.data).toMatchObject({
+      starting_cash_amount: 200,
+      status: 'open',
+      user_id: 'cashier-auto-1',
+    });
+  });
 });
 

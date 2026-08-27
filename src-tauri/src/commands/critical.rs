@@ -1097,6 +1097,17 @@ pub(crate) async fn save_purchase_invoice_tx(
                 .execute(&mut **tx)
                 .await
                 .map_err(|e| e.to_string())?;
+
+            let pharmacy_scope = payload.pharmacy_id.as_deref().unwrap_or("local_default");
+            sqlx::query(
+                "UPDATE shortages SET status = 'received' WHERE drug_id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default')) AND status IN ('pending', 'ordered')",
+            )
+            .bind(item.id)
+            .bind(pharmacy_scope)
+            .bind(pharmacy_scope)
+            .execute(&mut **tx)
+            .await
+            .ok();
         }
     }
 

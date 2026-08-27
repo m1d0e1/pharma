@@ -238,6 +238,12 @@ export function applyIndexes(): void {
       CREATE INDEX IF NOT EXISTS idx_drug_indications_drug ON drug_indications(drug_id);
       CREATE INDEX IF NOT EXISTS idx_drug_alternatives_drug ON drug_alternatives(drug_id);
 
+      -- Shortages & Reordering
+      CREATE INDEX IF NOT EXISTS idx_shortages_pharmacy_status ON shortages(pharmacy_id, status);
+      CREATE INDEX IF NOT EXISTS idx_shortages_drug_id ON shortages(drug_id);
+      CREATE INDEX IF NOT EXISTS idx_purchase_invoices_pharmacy_status ON purchase_invoices(pharmacy_id, status);
+      CREATE INDEX IF NOT EXISTS idx_inventory_pharmacy_drug_qty ON inventory(pharmacy_id, drug_id, quantity);
+
       -- Patient Transactions & Notices
       CREATE INDEX IF NOT EXISTS idx_patient_transactions_patient ON patient_transactions(patient_id);
       CREATE INDEX IF NOT EXISTS idx_financial_notices_target ON financial_notices(target_type, target_id) WHERE target_id IS NOT NULL;

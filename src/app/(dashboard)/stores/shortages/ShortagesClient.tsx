@@ -19,39 +19,59 @@ import {
   deleteShortagesBulkAction,
   updateShortagesStatusBulkAction
 } from '@/app/actions-client/shortages'
+import PurchaseOrderModal from '@/components/inventory/PurchaseOrderModal'
 
 export default function ShortagesClient({ initialData }: { initialData: any[] }) {
   const router = useRouter()
   const [data, setData] = useState(initialData)
   const [search, setSearch] = useState('')
-  const [activeTab, setActiveTab] = useState<'all' | 'pending' | 'ordered'>('all')
+  const [activeTab, setActiveTab] = useState<'all' | 'out_of_stock' | 'pending' | 'ordered'>('all')
   const [isSyncing, setIsSyncing] = useState(false)
   const [editingId, setEditingId] = useState<number | null>(null)
   const [editQty, setEditQty] = useState<number>(1)
   const [editNotes, setEditNotes] = useState<string>('')
   const [selectedIds, setSelectedIds] = useState<number[]>([])
+  const [isPoModalOpen, setIsPoModalOpen] = useState(false)
+  const [poItems, setPoItems] = useState<any[]>([])
 
-  const pendingCount = data.filter(i => i.status === 'pending').length
-  const orderedCount = data.filter(i => i.status === 'ordered').length
+  const { pendingCount, orderedCount, outOfStockCount } = React.useMemo(() => {
+    let pending = 0;
+    let ordered = 0;
+    let outOfStock = 0;
+    for (const item of data) {
+      if (item.status === 'pending') pending++;
+      else if (item.status === 'ordered') ordered++;
 
-  const filtered = data.filter(item => {
-    // Status tab filter
-    if (activeTab !== 'all' && item.status !== activeTab) return false
+      if (Number(item.current_stock || 0) <= 0 || item.inventory_status === 'out_of_stock' || item.inventory_status === 'critical') {
+        outOfStock++;
+      }
+    }
+    return { pendingCount: pending, orderedCount: ordered, outOfStockCount: outOfStock };
+  }, [data]);
 
-    // Search query filter
-    if (!search.trim()) return true
-    const q = search.toLowerCase().trim()
-    return (
-      (item.trade_name || '').toLowerCase().includes(q) ||
-      (item.trade_name_en && item.trade_name_en.toLowerCase().includes(q)) ||
-      (item.generic_name && item.generic_name.toLowerCase().includes(q)) ||
-      (item.notes && item.notes.toLowerCase().includes(q)) ||
-      (item.last_supplier_name && item.last_supplier_name.toLowerCase().includes(q))
-    )
-  })
+  const filtered = React.useMemo(() => {
+    const q = search.toLowerCase().trim();
+    return data.filter(item => {
+      if (activeTab === 'pending' && item.status !== 'pending') return false;
+      if (activeTab === 'ordered' && item.status !== 'ordered') return false;
+      if (activeTab === 'out_of_stock') {
+        const isUrgent = Number(item.current_stock || 0) <= 0 || item.inventory_status === 'out_of_stock' || item.inventory_status === 'critical';
+        if (!isUrgent) return false;
+      }
 
-  const filteredIds = filtered.map(item => item.id)
-  const isAllFilteredSelected = filteredIds.length > 0 && filteredIds.every(id => selectedIds.includes(id))
+      if (!q) return true;
+      return (
+        (item.trade_name || '').toLowerCase().includes(q) ||
+        (item.trade_name_en && item.trade_name_en.toLowerCase().includes(q)) ||
+        (item.generic_name && item.generic_name.toLowerCase().includes(q)) ||
+        (item.notes && item.notes.toLowerCase().includes(q)) ||
+        (item.last_supplier_name && item.last_supplier_name.toLowerCase().includes(q))
+      );
+    });
+  }, [data, activeTab, search]);
+
+  const filteredIds = React.useMemo(() => filtered.map(item => item.id), [filtered]);
+  const isAllFilteredSelected = filteredIds.length > 0 && filteredIds.every(id => selectedIds.includes(id));
 
   const handleToggleSelect = (id: number) => {
     setSelectedIds(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id])
@@ -201,7 +221,7 @@ export default function ShortagesClient({ initialData }: { initialData: any[] })
     })
   }
 
-  const handleConvertToPurchase = (useSelectedOnly = false) => {
+  const handleConvertToPurchase = async (useSelectedOnly = false) => {
     const itemsToConvert = useSelectedOnly && selectedIds.length > 0
       ? data.filter(i => selectedIds.includes(i.id))
       : filtered
@@ -213,12 +233,32 @@ export default function ShortagesClient({ initialData }: { initialData: any[] })
 
     try {
       sessionStorage.setItem('shortages_to_purchase', JSON.stringify(itemsToConvert))
-      toast.success(`جاري تحويل ${itemsToConvert.length} صنف إلى فاتورة مشتريات...`)
+      toast.success(`جاري تحويل ${itemsToConvert.length} صنف وتحديث حالتها إلى (قيد الطلب)...`)
       router.push('/purchases/new')
+
+      const idsToUpdate = itemsToConvert.filter(i => i.status === 'pending').map(i => i.id);
+      if (idsToUpdate.length > 0) {
+        updateShortagesStatusBulkAction(idsToUpdate, 'ordered').catch(console.error);
+        setData(prev => prev.map(item => idsToUpdate.includes(item.id) ? { ...item, status: 'ordered' } : item));
+      }
     } catch (e) {
       console.error(e)
       toast.error('فشل تحويل الأصناف')
     }
+  }
+
+  const handleOpenPurchaseOrderModal = (useSelectedOnly = false) => {
+    const itemsToOrder = useSelectedOnly && selectedIds.length > 0
+      ? data.filter(i => selectedIds.includes(i.id))
+      : filtered
+
+    if (itemsToOrder.length === 0) {
+      toast.error('لا توجد أصناف لإنشاء أمر الشراء')
+      return
+    }
+
+    setPoItems(itemsToOrder)
+    setIsPoModalOpen(true)
   }
 
   return (
@@ -238,13 +278,41 @@ export default function ShortagesClient({ initialData }: { initialData: any[] })
         </div>
 
         {/* Quick Stats Badges */}
-        <div className="flex items-center gap-3 relative z-10">
-          <div className="px-5 py-3 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/40 text-amber-700 dark:text-amber-300 font-black text-sm">
+        <div className="flex items-center gap-3 relative z-10 flex-wrap">
+          <button
+            onClick={() => setActiveTab(activeTab === 'out_of_stock' ? 'all' : 'out_of_stock')}
+            className={cn(
+              "px-5 py-3 rounded-2xl border font-black text-sm transition-all flex items-center gap-2 cursor-pointer active:scale-95",
+              activeTab === 'out_of_stock'
+                ? "bg-rose-600 text-white border-rose-600 shadow-md shadow-rose-500/20"
+                : "bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-900/40 text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-900/50"
+            )}
+          >
+            <AlertCircle className="w-4 h-4" />
+            منتهي / حرج: {outOfStockCount} صنف
+          </button>
+          <button
+            onClick={() => setActiveTab(activeTab === 'pending' ? 'all' : 'pending')}
+            className={cn(
+              "px-5 py-3 rounded-2xl border font-black text-sm transition-all flex items-center gap-2 cursor-pointer active:scale-95",
+              activeTab === 'pending'
+                ? "bg-amber-600 text-white border-amber-600 shadow-md shadow-amber-500/20"
+                : "bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-900/40 text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/50"
+            )}
+          >
             مطلوب: {pendingCount} صنف
-          </div>
-          <div className="px-5 py-3 rounded-2xl bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-900/40 text-blue-700 dark:text-blue-300 font-black text-sm">
+          </button>
+          <button
+            onClick={() => setActiveTab(activeTab === 'ordered' ? 'all' : 'ordered')}
+            className={cn(
+              "px-5 py-3 rounded-2xl border font-black text-sm transition-all flex items-center gap-2 cursor-pointer active:scale-95",
+              activeTab === 'ordered'
+                ? "bg-blue-600 text-white border-blue-600 shadow-md shadow-blue-500/20"
+                : "bg-blue-50 dark:bg-blue-950/40 border-blue-200 dark:border-blue-900/40 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/50"
+            )}
+          >
             قيد الطلب: {orderedCount} صنف
-          </div>
+          </button>
         </div>
 
         <div className="absolute left-[-20px] top-[-20px] w-64 h-64 bg-primary-500/5 rounded-full blur-3xl" />
@@ -255,7 +323,7 @@ export default function ShortagesClient({ initialData }: { initialData: any[] })
         {/* Tabs & Search Row */}
         <div className="flex flex-col md:flex-row gap-4 items-center justify-between">
           {/* Tabs */}
-          <div className="flex bg-slate-100 dark:bg-slate-800 p-1.5 rounded-3xl w-full md:w-auto">
+          <div className="flex bg-slate-100 dark:bg-slate-800 p-1.5 rounded-3xl w-full md:w-auto flex-wrap">
             <button
               onClick={() => setActiveTab('all')}
               className={cn(
@@ -266,6 +334,18 @@ export default function ShortagesClient({ initialData }: { initialData: any[] })
               )}
             >
               الكل ({data.length})
+            </button>
+            <button
+              onClick={() => setActiveTab('out_of_stock')}
+              className={cn(
+                "flex-1 md:flex-none px-6 py-2.5 rounded-2xl font-black text-xs transition-all flex items-center justify-center gap-1.5",
+                activeTab === 'out_of_stock'
+                  ? "bg-rose-600 text-white shadow-sm"
+                  : "text-rose-600 hover:text-rose-700 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30"
+              )}
+            >
+              <AlertCircle className="w-3.5 h-3.5" />
+              منتهي / حرج ({outOfStockCount})
             </button>
             <button
               onClick={() => setActiveTab('pending')}
@@ -326,6 +406,14 @@ export default function ShortagesClient({ initialData }: { initialData: any[] })
           >
             {isSyncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
             مزامنة مع المخزون
+          </button>
+
+          <button
+            onClick={() => handleOpenPurchaseOrderModal(false)}
+            className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-2xl font-black text-xs shadow-md shadow-blue-500/20 transition-all flex items-center gap-2 active:scale-95"
+          >
+            <Package className="w-4 h-4" />
+            إنشاء أمر شراء ({filtered.length})
           </button>
 
           <button
@@ -408,6 +496,14 @@ export default function ShortagesClient({ initialData }: { initialData: any[] })
               </button>
 
               <button
+                onClick={() => handleOpenPurchaseOrderModal(true)}
+                className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-xl font-black text-xs transition-all flex items-center gap-1.5 active:scale-95 shadow-md shadow-blue-600/20"
+              >
+                <Package className="w-3.5 h-3.5" />
+                <span>إنشاء أمر شراء ({selectedIds.length})</span>
+              </button>
+
+              <button
                 onClick={() => handleConvertToPurchase(true)}
                 className="bg-primary-600 hover:bg-primary-700 text-white px-4 py-2.5 rounded-xl font-black text-xs transition-all flex items-center gap-1.5 active:scale-95"
               >
@@ -479,7 +575,19 @@ export default function ShortagesClient({ initialData }: { initialData: any[] })
                     </div>
                   </div>
                   
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                    {Number(item.current_stock || 0) <= 0 ? (
+                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-400 border border-rose-200 dark:border-rose-900/60 flex items-center gap-1">
+                        <AlertCircle className="w-3 h-3 text-rose-600" />
+                        منتهي
+                      </span>
+                    ) : item.inventory_status === 'critical' ? (
+                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black bg-orange-100 text-orange-700 dark:bg-orange-950/60 dark:text-orange-400 border border-orange-200 dark:border-orange-900/60 flex items-center gap-1">
+                        <AlertCircle className="w-3 h-3 text-orange-600" />
+                        حرج
+                      </span>
+                    ) : null}
+
                     <span className={cn(
                       "px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider",
                       item.status === 'pending' ? "bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-400" : "bg-blue-100 text-blue-700 dark:bg-blue-950/60 dark:text-blue-400"
@@ -639,6 +747,18 @@ export default function ShortagesClient({ initialData }: { initialData: any[] })
           </div>
         )}
       </div>
+
+      {/* Purchase Order Modal */}
+      {isPoModalOpen && (
+        <PurchaseOrderModal
+          initialItems={poItems}
+          onClose={() => setIsPoModalOpen(false)}
+          onSuccess={async () => {
+            await reload();
+            setSelectedIds([]);
+          }}
+        />
+      )}
 
       {/* Print styles */}
       <style jsx global>{`

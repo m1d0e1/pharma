@@ -88,7 +88,7 @@ export default function ShiftsPage() {
             <div>
               <h2 className="text-xl font-bold text-green-800 dark:text-green-300">✅ لديك شفت مفتوح حالياً</h2>
               <p className="text-green-600 dark:text-green-400 mt-1">
-                تم فتح الشفت الساعة {new Date(currentShift.shift_start).toLocaleTimeString('ar-EG')}
+                تم فتح الشفت الساعة {new Date(currentShift.shift_start).toLocaleTimeString('ar-EG-u-nu-latn', { hour: '2-digit', minute: '2-digit', hour12: true })}
               </p>
               <p className="text-green-700 dark:text-green-300 font-bold mt-2">
                 الرصيد الافتتاحي: {currentShift.starting_cash_amount.toLocaleString('ar-EG')} ج.م

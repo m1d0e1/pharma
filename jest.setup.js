@@ -19,6 +19,11 @@ jest.mock('next/navigation', () => ({
   },
 }));
 
+// Mock react-hotkeys-hook
+jest.mock('react-hotkeys-hook', () => ({
+  useHotkeys: jest.fn(),
+}));
+
 // Mock Supabase client
 jest.mock('@/lib/supabase', () => ({
   getSupabaseBrowserClient: jest.fn(() => ({

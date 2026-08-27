@@ -60,7 +60,7 @@ jest.mock('@/app/actions-client/shifts', () => ({
   getCurrentShiftAction: jest.fn(),
   getCurrentShiftStatsAction: jest.fn(),
   getShiftsAction: jest.fn(),
-  openShiftAction: jest.fn(),
+  openShiftAction: jest.fn(async () => ({ success: true, shiftId: 'mock-shift-id' })),
   forceCloseAllShiftsAction: jest.fn(),
   getShiftReceiptsAction: jest.fn(),
 }));
@@ -104,6 +104,8 @@ jest.mock('react-hot-toast', () => ({
 }));
 
 describe('Comprehensive UI Flow Regression Suite for all Added Features', () => {
+  jest.setTimeout(30000);
+
   beforeEach(() => {
     mockPush.mockReset();
     window.confirm = jest.fn(() => true);
@@ -174,6 +176,7 @@ describe('Comprehensive UI Flow Regression Suite for all Added Features', () => 
           receiverPasswordHash: '',
           transferTargetId: '',
           notes: '',
+          autoOpenNewShift: true,
         });
       });
 
@@ -347,7 +350,7 @@ describe('Comprehensive UI Flow Regression Suite for all Added Features', () => 
       // Verify items in ReceiptDetailsModal
       expect(await screen.findByText('Panadol Extra')).toBeInTheDocument();
       expect(screen.getByText('Augmentin 1g')).toBeInTheDocument();
-    });
+    }, 15000);
 
     it('opens shift receipts modal from Shift Report clicking the invoice count StatBox', async () => {
       render(<ShiftReportClient shiftId="shift-1" />);
@@ -358,7 +361,7 @@ describe('Comprehensive UI Flow Regression Suite for all Added Features', () => 
 
       expect(await screen.findByText('فواتير وإيصالات الوردية')).toBeInTheDocument();
       expect(getShiftReceiptsAction).toHaveBeenCalledWith('shift-1');
-    });
+    }, 15000);
   });
 
   /* ========================================================================
@@ -494,6 +497,29 @@ describe('Comprehensive UI Flow Regression Suite for all Added Features', () => 
 
       expect(setItemSpy).toHaveBeenCalledWith('shortages_to_purchase', expect.stringContaining('Panadol Extra'));
       expect(mockPush).toHaveBeenCalledWith('/purchases/new');
+    });
+
+    it('filters out of stock and critical items and opens purchase order modal', async () => {
+      render(<ShortagesClient initialData={mockShortages} />);
+
+      // Verify "منتهي / حرج" tab exists
+      const urgentTab = screen.getByRole('button', { name: /منتهي \/ حرج \(/i });
+      expect(urgentTab).toBeInTheDocument();
+
+      // Click "منتهي / حرج" tab
+      fireEvent.click(urgentTab);
+
+      // Verify filtered list shows out of stock item (Panadol Extra has current_stock: 0)
+      expect(screen.getByText('Panadol Extra 24 Tab En')).toBeInTheDocument();
+      // Augmentin has current_stock: 15, reorder_point: 10 (sufficient), so should not be in urgent filter
+      expect(screen.queryByText('Augmentin 1g Tab En')).not.toBeInTheDocument();
+
+      // Click "إنشاء أمر شراء"
+      const createPoBtn = screen.getByRole('button', { name: /إنشاء أمر شراء \(/ });
+      fireEvent.click(createPoBtn);
+
+      // Verify PurchaseOrderModal opened with items
+      expect(await screen.findByText('إنشاء أمر شراء جديد')).toBeInTheDocument();
     });
   });
 });

@@ -31,6 +31,7 @@ jest.mock('@/lib/cache/secure_cache', () => ({
 
 jest.unmock('@/app/actions-client/inventory');
 jest.unmock('@/app/actions-client/shortages');
+jest.unmock('@/app/actions-client/purchases');
 
 import { getLowStockAction } from '@/app/actions-client/inventory';
 import {
@@ -43,6 +44,10 @@ import {
   updateShortageStatusAction,
   updateShortagesStatusBulkAction,
 } from '@/app/actions-client/shortages';
+import {
+  createPurchaseOrderAction,
+  updatePurchaseOrderStatusAction,
+} from '@/app/actions-client/purchases';
 
 describe('inventory-linked reorder and shortage notebook regression', () => {
   beforeEach(() => {
@@ -166,7 +171,7 @@ describe('inventory-linked reorder and shortage notebook regression', () => {
       current_stock: 2,
       reorder_point: 5,
       deficit: 3,
-      inventory_status: 'low',
+      inventory_status: 'critical',
     });
     // Drug 9102 is no longer auto-synced (qty=0 phantom fix), so add manually
     // to verify the "can't receive zero-stock" guard
@@ -224,5 +229,56 @@ describe('inventory-linked reorder and shortage notebook regression', () => {
     list = (await getShortagesAction()).data || [];
     expect(list).toHaveLength(1);
     expect(list[0].id).toBe(ids[2]);
+  });
+
+  it('classifies out_of_stock and critical items and updates shortage balance upon purchase order lifecycle', async () => {
+    // Insert user for PO creation
+    mockDb.exec(`INSERT OR IGNORE INTO users (id, username, role, pharmacy_id) VALUES ('admin', 'admin', 'owner', NULL)`);
+
+    // Add zero stock drug and low stock drug to shortages
+    await addToShortagesAction({ drug_id: 9102, qty: 10 }); // zero stock (out_of_stock)
+    await addToShortagesAction({ drug_id: 9101, qty: 5 });  // current_stock = 2, reorder = 5 -> 2 <= 2.5 (critical)
+
+    const listBeforePO = (await getShortagesAction()).data || [];
+    const zeroItem = listBeforePO.find((i: any) => i.drug_id === 9102);
+    const criticalItem = listBeforePO.find((i: any) => i.drug_id === 9101);
+
+    expect(zeroItem.inventory_status).toBe('out_of_stock');
+    expect(criticalItem.inventory_status).toBe('critical');
+    expect(zeroItem.status).toBe('pending');
+    expect(criticalItem.status).toBe('pending');
+
+    // Create Purchase Order for these items
+    const poResult = await createPurchaseOrderAction({
+      supplier_name: 'المورد الرئيسي',
+      notes: 'طلبية عاجلة للنواقص',
+      items: [
+        { drug_id: 9102, quantity: 10, expected_price: 15 },
+        { drug_id: 9101, quantity: 5, expected_price: 25 },
+      ]
+    });
+    expect(poResult.success).toBe(true);
+
+    // Status in shortages should now be 'ordered'
+    const listAfterPO = (await getShortagesAction()).data || [];
+    const zeroAfterPO = listAfterPO.find((i: any) => i.drug_id === 9102);
+    const criticalAfterPO = listAfterPO.find((i: any) => i.drug_id === 9101);
+    expect(zeroAfterPO.status).toBe('ordered');
+    expect(criticalAfterPO.status).toBe('ordered');
+
+    // Complete the PO (order received)
+    const completeResult = await updatePurchaseOrderStatusAction(poResult.po_id!, 'completed');
+    expect(completeResult.success).toBe(true);
+
+    // Upon completion, shortages status transitions to 'received' and items leave active notebook
+    const listAfterReceived = (await getShortagesAction()).data || [];
+    expect(listAfterReceived.some((i: any) => i.drug_id === 9102)).toBe(false);
+    expect(listAfterReceived.some((i: any) => i.drug_id === 9101)).toBe(false);
+
+    // Verify in db that status is indeed 'received'
+    const row9102 = mockDb.prepare('SELECT status FROM shortages WHERE drug_id = 9102').get() as any;
+    const row9101 = mockDb.prepare('SELECT status FROM shortages WHERE drug_id = 9101').get() as any;
+    expect(row9102.status).toBe('received');
+    expect(row9101.status).toBe('received');
   });
 });

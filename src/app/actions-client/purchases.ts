@@ -655,6 +655,16 @@ export async function createPurchaseInvoiceAction(data: {
               inventoryId,
               purchaseItemResult.lastInsertRowid
             );
+
+            // Automatically resolve shortages for received drugs
+            const pharmacyScope = session.pharmacy_id || 'local_default';
+            await db.prepare(`
+              UPDATE shortages 
+              SET status = 'received' 
+              WHERE drug_id = ? 
+                AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+                AND status IN ('pending', 'ordered')
+            `).run(item.id, pharmacyScope, pharmacyScope);
           }
         }
       }
@@ -729,6 +739,7 @@ export async function createPurchaseInvoiceAction(data: {
     revalidatePath('/purchases');
     revalidatePath('/inventory');
     revalidatePath('/purchases/suppliers');
+    revalidatePath('/stores/shortages');
     
     return { success: true, id: invoiceId };
   } catch (error: any) {
@@ -958,6 +969,18 @@ export async function createPurchaseOrderAction(data: { supplier_name: string; n
         ]);
       }
 
+      // Mark items as ordered in shortages
+      const pharmacyId = user.pharmacy_id || 'local_default';
+      for (const item of data.items) {
+        await dbExecute(`
+          UPDATE shortages 
+          SET status = 'ordered' 
+          WHERE drug_id = ? 
+            AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+            AND status = 'pending'
+        `, [item.drug_id, pharmacyId, pharmacyId]);
+      }
+
       await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [
         user.id,
         'Create PO',
@@ -965,6 +988,8 @@ export async function createPurchaseOrderAction(data: { supplier_name: string; n
       ]);
     });
     
+    revalidatePath('/stores/shortages');
+    revalidatePath('/purchase-orders');
     return { success: true, po_id };
   } catch (error: any) {
     console.error('createPurchaseOrderAction error:', error);
@@ -1010,6 +1035,21 @@ export async function updatePurchaseOrderStatusAction(poId: string, status: stri
         )
     `).run(status, poId, pharmacyId, pharmacyId);
     if (result.changes !== 1) return { success: false, error: 'Purchase order is missing or no longer pending' };
+
+    if (status === 'completed') {
+      const poItems = await db.prepare('SELECT drug_id FROM purchase_order_items WHERE po_id = ?').all(poId) as any[];
+      for (const item of poItems) {
+        await db.prepare(`
+          UPDATE shortages 
+          SET status = 'received' 
+          WHERE drug_id = ? 
+            AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+            AND status IN ('pending', 'ordered')
+        `).run(item.drug_id, pharmacyId, pharmacyId);
+      }
+      revalidatePath('/stores/shortages');
+    }
+
     return { success: true };
   } catch (error) {
     return { success: false, error: 'Failed' };

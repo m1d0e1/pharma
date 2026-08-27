@@ -1025,53 +1025,25 @@ export async function getInventoryListAction(search?: string, drugId?: number) {
 
     if (drugId === undefined && search && search.trim().length > 0) {
       const trimmed = search.trim();
-      const searchLower = trimmed.toLowerCase();
-
-      // Fast match in RAM cache (<2ms)
-      let candidateDrugIds: number[] = [];
-      try {
-        await secureCache.load();
-        const allDrugs = secureCache.getAllDrugs();
-        const matched = allDrugs.filter((d: any) =>
-          (d.trade_name && d.trade_name.toLowerCase().includes(searchLower)) ||
-          (d.trade_name_en && d.trade_name_en.toLowerCase().includes(searchLower)) ||
-          (d.generic_name && d.generic_name.toLowerCase().includes(searchLower)) ||
-          (d.active_ingredient && d.active_ingredient.toLowerCase().includes(searchLower)) ||
-          (d.category && d.category.toLowerCase().includes(searchLower)) ||
-          (d.manufacturer && d.manufacturer.toLowerCase().includes(searchLower)) ||
-          d.barcode === trimmed ||
-          String(d.id) === trimmed
-        );
-        candidateDrugIds = matched.slice(0, 300).map((d: any) => d.id);
-      } catch (e) {
-        // fallback
-      }
-
-      if (candidateDrugIds.length > 0) {
-        const placeholders = candidateDrugIds.map(() => '?').join(',');
-        queryStr += ` AND (i.drug_id IN (${placeholders}) OR i.barcode = ? OR i.barcode LIKE ?)`;
-        params.push(...candidateDrugIds, trimmed, `%${trimmed}%`);
-      } else {
-        const searchPattern = `%${trimmed}%`;
-        queryStr += `
-          AND (
-            i.barcode = ? 
-            OR i.barcode LIKE ? 
-            OR m.trade_name LIKE ? 
-            OR m.trade_name_en LIKE ?
-            OR m.generic_name LIKE ?
-            OR m.active_ingredient LIKE ?
-            OR m.category LIKE ?
-            OR m.manufacturer LIKE ?
-            OR m.barcode = ?
-          )
-        `;
-        params.push(
-          trimmed, searchPattern, searchPattern, searchPattern,
-          searchPattern, searchPattern, searchPattern, searchPattern,
-          trimmed
-        );
-      }
+      const searchPattern = `%${trimmed}%`;
+      queryStr += `
+        AND (
+          i.barcode = ? 
+          OR i.barcode LIKE ? 
+          OR m.barcode = ?
+          OR m.trade_name LIKE ? 
+          OR m.trade_name_en LIKE ?
+          OR m.generic_name LIKE ?
+          OR m.active_ingredient LIKE ?
+          OR m.category LIKE ?
+          OR m.manufacturer LIKE ?
+        )
+      `;
+      params.push(
+        trimmed, searchPattern, trimmed,
+        searchPattern, searchPattern, searchPattern,
+        searchPattern, searchPattern, searchPattern
+      );
     }
 
     // ponytail: LIMIT 1000 caps initial load; paginated on client anyway

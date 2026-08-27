@@ -57,13 +57,15 @@ import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 /**
  * Start a new shift (Alias for openShiftAction for compatibility)
  */
-export async function openShiftAction(data: { starting_cash_amount: number; opening_notes?: string }) {
+export async function openShiftAction(data: { starting_cash_amount: number; opening_notes?: string; user_id?: string | number }) {
   try {
     const user = await getLocalSession();
     if (!user) return { success: false, error: 'غير مصرح' };
     if (!Number.isFinite(data.starting_cash_amount) || data.starting_cash_amount < 0) {
       return { success: false, error: 'الرصيد الافتتاحي غير صالح' };
     }
+
+    const targetUserId = data.user_id || user.id;
 
     const shiftId = generateId();
     const inserted = await db.prepare(`
@@ -72,12 +74,12 @@ export async function openShiftAction(data: { starting_cash_amount: number; open
       WHERE NOT EXISTS (
         SELECT 1 FROM shifts WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
       )
-    `).run(shiftId, user.id, data.starting_cash_amount, data.opening_notes || null, user.id);
+    `).run(shiftId, targetUserId, data.starting_cash_amount, data.opening_notes || null, targetUserId);
     if (inserted.changes !== 1) {
       return { success: false, error: 'لديك وردية مفتوحة بالفعل' };
     }
 
-    logActivity(user.id, 'START_SHIFT', `بدأ وردية جديدة بمبلغ ${data.starting_cash_amount}`);
+    logActivity(targetUserId, 'START_SHIFT', `بدأ وردية جديدة بمبلغ ${data.starting_cash_amount}`);
 
     revalidatePath('/');
     return { success: true, shiftId };

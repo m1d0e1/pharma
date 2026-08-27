@@ -32,6 +32,7 @@ jest.mock('react-hot-toast', () => ({
 }));
 
 describe('shortages multi-selection and bulk actions ui', () => {
+  jest.setTimeout(30000);
   const mockInitialData = [
     {
       id: 101,

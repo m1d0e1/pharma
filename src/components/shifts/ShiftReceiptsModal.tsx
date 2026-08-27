@@ -223,7 +223,7 @@ export default function ShiftReceiptsModal({
                   </span>
 
                   <span className="col-span-2 text-center text-slate-500 text-[11px] font-mono">
-                    {inv.created_at ? new Date(inv.created_at).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }) : '---'}
+                    {inv.created_at ? new Date(inv.created_at).toLocaleTimeString('ar-EG-u-nu-latn', { hour: '2-digit', minute: '2-digit', hour12: true }) : '---'}
                   </span>
 
                   <div className="col-span-3">

@@ -60,7 +60,12 @@ export default function ReceiptListClient({ initialInvoices }: Props) {
 
   const formatDate = (dateStr: string) => {
     if (!mounted) return '' // Return empty or placeholder during SSR
-    return new Date(dateStr).toLocaleString('ar-EG')
+    try {
+      return new Date(dateStr).toLocaleString('ar-EG-u-nu-latn', {
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', hour12: true
+      })
+    } catch { return dateStr }
   }
 
   const handleDirectPrint = (inv: Invoice) => {

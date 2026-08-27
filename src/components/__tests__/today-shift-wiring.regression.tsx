@@ -18,7 +18,10 @@ jest.mock('next/navigation', () => ({
 
 jest.mock('@/app/actions-client/auth', () => ({ logoutLocalAction: jest.fn() }));
 jest.mock('react-hotkeys-hook', () => ({ useHotkeys: jest.fn() }));
-jest.mock('@/app/actions-client/shifts', () => ({ getCurrentShiftAction: jest.fn() }));
+jest.mock('@/app/actions-client/shifts', () => ({
+  getCurrentShiftAction: jest.fn(),
+  openShiftAction: jest.fn(async () => ({ success: true, shiftId: 'mock-shift-id' })),
+}));
 jest.mock('@/app/actions-client/handover', () => ({
   getHandoverDetailsAction: jest.fn(),
   getOpenShiftHandoverAction: jest.fn(),

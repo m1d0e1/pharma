@@ -152,6 +152,7 @@ export async function processHandoverAction(data: {
   receiverUsername: string;
   receiverPasswordHash: string;
   notes?: string;
+  autoOpenNewShift?: boolean;
 }) {
   try {
     const user = await getLocalSession();
@@ -281,11 +282,57 @@ export async function processHandoverAction(data: {
         `Handed over ${data.transferAmount} to ${data.receiverUsername}; difference ${difference.toFixed(2)}`
       );
 
-      return { difference, remainingCash, status: shiftStatus };
+      // 2. Determine next shift starting cash
+      const nextShiftCash = data.transferTargetType === 'next_shift'
+        ? (data.transferAmount > 0 && remainingCash === 0 ? data.transferAmount : remainingCash > 0 ? remainingCash : data.actualCash)
+        : remainingCash;
+
+      // 3. Auto-open next shift atomically in the database if requested
+      let nextShiftId: string | null = null;
+      if (data.autoOpenNewShift) {
+        nextShiftId = generateId();
+        await db.prepare(`
+          INSERT INTO shifts (id, user_id, starting_cash, notes, status)
+          SELECT ?, ?, ?, ?, 'open'
+          WHERE NOT EXISTS (
+            SELECT 1 FROM shifts WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
+          )
+        `).run(nextShiftId, user.id, nextShiftCash, 'وردية جديدة تلقائية بعد تسليم الدرج', user.id);
+
+        // If next_shift handover was to a different staff member, also open a shift ready for them
+        if (data.transferTargetType === 'next_shift' && receiver.id && String(receiver.id) !== String(user.id)) {
+          const receiverShiftId = generateId();
+          await db.prepare(`
+            INSERT INTO shifts (id, user_id, starting_cash, notes, status)
+            SELECT ?, ?, ?, ?, 'open'
+            WHERE NOT EXISTS (
+              SELECT 1 FROM shifts WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
+            )
+          `).run(receiverShiftId, receiver.id, nextShiftCash, 'وردية جديدة تلقائية للمستلم بعد تسليم الدرج', receiver.id);
+        }
+
+        await db.prepare('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)').run(
+          user.id,
+          'START_SHIFT',
+          `بدأ وردية جديدة تلقائياً بمبلغ ${nextShiftCash}`
+        );
+      }
+
+      return { 
+        difference, 
+        remainingCash, 
+        status: shiftStatus,
+        newShiftId: nextShiftId,
+        startingCash: nextShiftCash,
+        receiverId: receiver.id,
+        transferTargetType: data.transferTargetType
+      };
     });
 
     const result = await transaction();
 
+    revalidatePath('/');
+    revalidatePath('/pos');
     revalidatePath('/finance');
     revalidatePath('/shifts');
 

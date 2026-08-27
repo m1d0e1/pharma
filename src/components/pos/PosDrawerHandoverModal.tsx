@@ -191,11 +191,12 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
       transferTargetType: form.transferTargetType,
       receiverUsername: form.receiverUsername,
       receiverPasswordHash: form.receiverPassword,
-      notes: form.notes
+      notes: form.notes,
+      autoOpenNewShift: true
     });
 
     if (res.success) {
-      toast.success('تم تسليم الدرج وإغلاق الوردية بنجاح');
+      toast.success(`تم تسليم الدرج وفتح الوردية الجديدة بنجاح (رصيد ${Number(res.startingCash ?? res.remainingCash ?? 0).toFixed(2)} ج.م)`);
       onClose();
     } else {
       toast.error(res.error || 'فشل تسليم الدرج');

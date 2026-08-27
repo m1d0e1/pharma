@@ -90,26 +90,43 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
   }
 
   // Items are pre-filtered on the database side
-  const filteredItems = items;
+  const filteredItems = items || [];
+  const arCollator = useMemo(() => new Intl.Collator('ar', { sensitivity: 'base' }), []);
+
   const sortedItems = useMemo(() => {
     if (!sort) return filteredItems;
+    const key = sort.key;
+    const isAsc = sort.dir === 'asc';
+
     return [...filteredItems].sort((a: any, b: any) => {
-      const value = (item: any) => {
-        if (sort.key === 'name') return item.master_drugs.trade_name_en || item.master_drugs.trade_name || '';
-        if (sort.key === 'category') return item.master_drugs.category || '';
-        if (sort.key === 'quantity') return item.quantity || 0;
-        if (sort.key === 'expiry') return item.expiry_date || '';
-        if (sort.key === 'price') return item.local_selling_price || 0;
-        return '';
-      };
-      const av = value(a);
-      const bv = value(b);
-      const result = typeof av === 'number' && typeof bv === 'number'
-        ? av - bv
-        : String(av).localeCompare(String(bv), 'ar');
-      return sort.dir === 'asc' ? result : -result;
+      let av: any;
+      let bv: any;
+      if (key === 'name') {
+        av = a.master_drugs?.trade_name_en || a.master_drugs?.trade_name || '';
+        bv = b.master_drugs?.trade_name_en || b.master_drugs?.trade_name || '';
+      } else if (key === 'category') {
+        av = a.master_drugs?.category || '';
+        bv = b.master_drugs?.category || '';
+      } else if (key === 'quantity') {
+        av = a.quantity || 0;
+        bv = b.quantity || 0;
+      } else if (key === 'expiry') {
+        av = a.expiry_date || '';
+        bv = b.expiry_date || '';
+      } else if (key === 'price') {
+        av = a.local_selling_price || 0;
+        bv = b.local_selling_price || 0;
+      } else {
+        return 0;
+      }
+
+      if (typeof av === 'number' && typeof bv === 'number') {
+        return isAsc ? av - bv : bv - av;
+      }
+      const comp = arCollator.compare(String(av), String(bv));
+      return isAsc ? comp : -comp;
     });
-  }, [filteredItems, sort]);
+  }, [filteredItems, sort, arCollator]);
 
   const sortBy = (key: string) => {
     setSort(prev => prev?.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' });

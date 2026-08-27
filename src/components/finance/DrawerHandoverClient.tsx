@@ -112,11 +112,12 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
     const res = await processHandoverAction({
       shiftId,
       ...form,
-      receiverPasswordHash: form.receiverPassword
+      receiverPasswordHash: form.receiverPassword,
+      autoOpenNewShift: true
     });
 
     if (res.success) {
-      toast.success('تم تسليم الدرج وإغلاق الوردية بنجاح');
+      toast.success(`تم تسليم الدرج وفتح الوردية الجديدة بنجاح (رصيد ${Number(res.startingCash ?? res.remainingCash ?? 0).toFixed(2)} ج.م)`);
       if (onClose) {
         onClose();
       } else {
@@ -151,7 +152,7 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
             <div>
               <h2 className="text-2xl font-black">تسليم درج الوردية</h2>
               <p className="text-xs font-bold text-slate-400 mt-1">
-                الموظف الحالي: {details?.user_name} | بداية الوردية: {details?.start_time ? new Date(details.start_time).toLocaleTimeString('ar-EG') : '---'}
+                الموظف الحالي: {details?.user_name} | بداية الوردية: {details?.start_time ? new Date(details.start_time).toLocaleTimeString('ar-EG-u-nu-latn', { hour: '2-digit', minute: '2-digit', hour12: true }) : '---'}
               </p>
             </div>
           </div>
