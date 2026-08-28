@@ -1522,7 +1522,7 @@ export async function createPurchaseReturnAction(data: PurchaseReturnRequest) {
           await db.prepare(`
             INSERT INTO cash_movements (id, user_id, shift_id, type, category, amount, notes, date)
             VALUES (?, ?, ?, 'in', 'purchase_return', ?, ?, ?)
-          `).run(generateId(), session.id, openShift.id, totalAmount, `مرتجع مشتريات نقدي للمورد رقم ${data.supplier_id}`, new Date().toISOString().split('T')[0]);
+          `).run(generateId(), session.id, openShift.id, totalAmount, `مرتجع مشتريات نقدي للمورد رقم ${data.supplier_id}`, new Date().toLocaleDateString('en-CA'));
         }
         
         await db.prepare(`

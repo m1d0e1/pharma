@@ -1025,25 +1025,47 @@ export async function getInventoryListAction(search?: string, drugId?: number) {
 
     if (drugId === undefined && search && search.trim().length > 0) {
       const trimmed = search.trim();
-      const searchPattern = `%${trimmed}%`;
-      queryStr += `
-        AND (
-          i.barcode = ? 
-          OR i.barcode LIKE ? 
-          OR m.barcode = ?
-          OR m.trade_name LIKE ? 
-          OR m.trade_name_en LIKE ?
-          OR m.generic_name LIKE ?
-          OR m.active_ingredient LIKE ?
-          OR m.category LIKE ?
-          OR m.manufacturer LIKE ?
-        )
-      `;
-      params.push(
-        trimmed, searchPattern, trimmed,
-        searchPattern, searchPattern, searchPattern,
-        searchPattern, searchPattern, searchPattern
-      );
+      const sanitizedFts = trimmed.replace(/["'*^()?:[\]{}]/g, ' ').trim();
+      const ftsQuery = sanitizedFts
+        ? sanitizedFts.split(/\s+/).filter(Boolean).map(t => `"${t}"*`).join(' ')
+        : '';
+      const prefixPattern = `${trimmed}%`;
+      const likePattern = `%${trimmed}%`;
+
+      let useFts = false;
+      if (ftsQuery) {
+        try {
+          await db.prepare('SELECT rowid FROM master_drugs_fts WHERE master_drugs_fts MATCH ? LIMIT 1').get(ftsQuery);
+          useFts = true;
+        } catch {
+          useFts = false;
+        }
+      }
+
+      if (useFts) {
+        queryStr += `
+          AND (
+            i.barcode = ?
+            OR m.barcode = ?
+            OR m.id IN (SELECT rowid FROM master_drugs_fts WHERE master_drugs_fts MATCH ?)
+            OR m.trade_name LIKE ?
+            OR m.trade_name_en LIKE ?
+          )
+        `;
+        params.push(trimmed, trimmed, ftsQuery, prefixPattern, prefixPattern);
+      } else {
+        queryStr += `
+          AND (
+            i.barcode = ? 
+            OR m.barcode = ?
+            OR m.trade_name LIKE ? 
+            OR m.trade_name_en LIKE ?
+            OR m.generic_name LIKE ?
+            OR m.active_ingredient LIKE ?
+          )
+        `;
+        params.push(trimmed, trimmed, likePattern, likePattern, likePattern, likePattern);
+      }
     }
 
     // ponytail: LIMIT 1000 caps initial load; paginated on client anyway

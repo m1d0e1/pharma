@@ -31,6 +31,7 @@ export function applyIndexes(): void {
       CREATE INDEX IF NOT EXISTS idx_inventory_created_at ON inventory(created_at);
       CREATE INDEX IF NOT EXISTS idx_inventory_pharmacy_quantity ON inventory(pharmacy_id, quantity);
       CREATE INDEX IF NOT EXISTS idx_inventory_pharmacy_expiry ON inventory(pharmacy_id, expiry_date);
+      CREATE INDEX IF NOT EXISTS idx_inventory_pharmacy_qty_exp ON inventory(pharmacy_id, quantity, expiry_date) WHERE quantity > 0;
       CREATE INDEX IF NOT EXISTS idx_inventory_barcode ON inventory(barcode) WHERE barcode IS NOT NULL;
     `);
 

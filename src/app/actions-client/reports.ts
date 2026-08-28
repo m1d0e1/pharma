@@ -142,9 +142,18 @@ export async function getShiftReportAction(shiftId: string) {
 // Pre-compiled prepared statements for reports actions
 const getSalesTodayStmt = db.prepare(`
   SELECT COALESCE(SUM(total_amount), 0) as total,
-         (SELECT COALESCE(SUM(quantity_sold * cost_price), 0) 
-          FROM sales_items 
-          WHERE invoice_id IN (SELECT id FROM sales_invoices WHERE created_at >= ? AND created_at <= ? AND status = 'completed')) as total_cogs
+         (SELECT COALESCE(SUM(
+            CASE 
+              WHEN si.unit IN ('medium', 'strip', 'شريط') AND COALESCE(md.large_to_medium, 1) > 0 
+                THEN (si.quantity_sold / md.large_to_medium) * si.cost_price
+              WHEN si.unit = 'small' AND (COALESCE(md.large_to_medium, 1) * COALESCE(md.medium_to_small, 1)) > 0 
+                THEN (si.quantity_sold / (md.large_to_medium * md.medium_to_small)) * si.cost_price
+              ELSE si.quantity_sold * si.cost_price
+            END
+          ), 0) 
+          FROM sales_items si
+          LEFT JOIN master_drugs md ON si.drug_id = md.id
+          WHERE si.invoice_id IN (SELECT id FROM sales_invoices WHERE created_at >= ? AND created_at <= ? AND status = 'completed')) as total_cogs
   FROM sales_invoices
   WHERE created_at >= ? AND created_at <= ? AND status = 'completed'
 `);

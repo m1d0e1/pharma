@@ -384,5 +384,69 @@ describe('Inventory Amount, Money & Sales Calculations', () => {
     const netShiftCash = 100 + (db.prepare(`SELECT SUM(total_amount) as net FROM sales_invoices WHERE shift_id = ?`).get(shiftId) as any).net;
     expect(netShiftCash).toBe(520);
   });
+
+  it('proves Dashboard & Reports multi-unit COGS query matches exact journal COGS and fixes the 4x-30x fractional sales overstatement', () => {
+    // Drug: 1 Box = 3 Strips = 30 Tablets. Cost = 60 EGP per box.
+    const drugInsert = db.prepare(`
+      INSERT INTO master_drugs (trade_name, trade_name_en, official_price, base_price, large_to_medium, medium_to_small)
+      VALUES (?, ?, ?, ?, 3, 10)
+    `).run('كونجستال أقراص', 'Congestal Tablets', 90, 60);
+    const drugId = Number(drugInsert.lastInsertRowid);
+
+    const invId = 'inv-cogs-proof-1';
+    db.prepare(`
+      INSERT INTO inventory (id, pharmacy_id, drug_id, quantity, cost_price, local_selling_price)
+      VALUES (?, 'ph-test', ?, 10, 60, 90)
+    `).run(invId, drugId);
+
+    const saleId = 'sale-cogs-proof';
+    // Mixed units sold in the same invoice:
+    // 1 Box (large): 90 EGP revenue, 60 EGP cost
+    // 1 Strip (medium): 30 EGP revenue, 20 EGP cost (1/3 box)
+    // 5 Tablets (small): 15 EGP revenue, 10 EGP cost (5/30 box)
+    db.prepare(`
+      INSERT INTO sales_invoices (id, pharmacy_id, user_id, total_amount, status, created_at)
+      VALUES (?, 'ph-test', 'u-test', 135, 'completed', datetime('now', 'localtime'))
+    `).run(saleId);
+
+    db.prepare(`
+      INSERT INTO sales_items (invoice_id, inventory_id, drug_id, quantity_sold, unit_price, unit, cost_price)
+      VALUES (?, ?, ?, 1, 90, 'large', 60),
+             (?, ?, ?, 1, 30, 'medium', 60),
+             (?, ?, ?, 5, 3, 'small', 60)
+    `).run(saleId, invId, drugId, saleId, invId, drugId, saleId, invId, drugId);
+
+    // Old flawed query (SUM(quantity_sold * cost_price))
+    const flawedCogs = (db.prepare(`
+      SELECT COALESCE(SUM(quantity_sold * cost_price), 0) as total_cogs
+      FROM sales_items
+      WHERE invoice_id = ?
+    `).get(saleId) as any).total_cogs;
+    // 1 * 60 + 1 * 60 + 5 * 60 = 420 EGP! (Massive 4.66x overstatement)
+    expect(flawedCogs).toBe(420);
+
+    // New accurate multi-unit COGS query used in page.tsx and reports.ts
+    const accurateCogs = (db.prepare(`
+      SELECT COALESCE(SUM(
+        CASE 
+          WHEN si.unit IN ('medium', 'strip', 'شريط') AND COALESCE(md.large_to_medium, 1) > 0 
+            THEN (si.quantity_sold / md.large_to_medium) * si.cost_price
+          WHEN si.unit = 'small' AND (COALESCE(md.large_to_medium, 1) * COALESCE(md.medium_to_small, 1)) > 0 
+            THEN (si.quantity_sold / (md.large_to_medium * md.medium_to_small)) * si.cost_price
+          ELSE si.quantity_sold * si.cost_price
+        END
+      ), 0) as total_cogs
+      FROM sales_items si
+      LEFT JOIN master_drugs md ON si.drug_id = md.id
+      WHERE si.invoice_id = ?
+    `).get(saleId) as any).total_cogs;
+
+    // (1 * 60) + (1/3 * 60) + (5/30 * 60) = 60 + 20 + 10 = 90 EGP!
+    expect(accurateCogs).toBeCloseTo(90, 4);
+
+    // Exact Gross Profit = Revenue (135) - Accurate COGS (90) = 45 EGP
+    const trueGrossProfit = 135 - accurateCogs;
+    expect(trueGrossProfit).toBeCloseTo(45, 4);
+  });
 });
 

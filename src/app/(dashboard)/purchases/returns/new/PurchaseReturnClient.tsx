@@ -13,6 +13,26 @@ import {
   purchaseReturnQuantityForUnit,
 } from '@/lib/purchases/return-units';
 
+const formatInvoiceDateTime = (dateStr?: string | null, includeYear = false) => {
+  if (!dateStr) return '';
+  try {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return dateStr;
+    const day = String(d.getDate()).padStart(2, '0');
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const year = d.getFullYear();
+    let hours = d.getHours();
+    const minutes = String(d.getMinutes()).padStart(2, '0');
+    const isPM = hours >= 12;
+    hours = hours % 12 || 12;
+    const hoursStr = String(hours).padStart(2, '0');
+    const timePart = `${hoursStr}:${minutes} ${isPM ? 'م' : 'ص'}`;
+    return includeYear ? `${day}/${month}/${year} - ${timePart}` : `${day}/${month} - ${timePart}`;
+  } catch {
+    return dateStr;
+  }
+};
+
 export default function PurchaseReturnClient() {
   const router = useRouter();
   const listRef = React.useRef<HTMLDivElement>(null);
@@ -283,7 +303,7 @@ export default function PurchaseReturnClient() {
                     <div className="flex justify-between items-center w-full">
                       <span className="font-black text-xs text-slate-800 dark:text-slate-100">رقم الفاتورة: {inv.invoice_number || inv.id.slice(0, 8)}</span>
                       <span dir="ltr" className="text-[10px] text-slate-500 font-bold bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded">
-                        {inv.created_at ? new Date(inv.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit' }) + ' - ' + new Date(inv.created_at).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', hour12: true }) : inv.invoice_date || ''}
+                        {inv.created_at ? formatInvoiceDateTime(inv.created_at) : inv.invoice_date || ''}
                       </span>
                     </div>
                     <div className="flex justify-between items-center w-full mt-1">
@@ -316,7 +336,7 @@ export default function PurchaseReturnClient() {
                   {invoices[selectedIndex] && (
                     <div className="text-xs text-slate-500 flex gap-3 flex-wrap items-center">
                       <span className="bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 px-2.5 py-1 rounded-lg font-bold border border-blue-200/50 dark:border-blue-800/50">
-                        📅 تاريخ ووقت الفاتورة: <span dir="ltr">{invoices[selectedIndex].created_at ? new Date(invoices[selectedIndex].created_at).toLocaleDateString('en-GB') + ' - ' + new Date(invoices[selectedIndex].created_at).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', hour12: true }) : invoices[selectedIndex].invoice_date || 'غير محدد'}</span>
+                        📅 تاريخ ووقت الفاتورة: <span dir="ltr">{invoices[selectedIndex].created_at ? formatInvoiceDateTime(invoices[selectedIndex].created_at, true) : invoices[selectedIndex].invoice_date || 'غير محدد'}</span>
                       </span>
                       <span>المستلم: {invoices[selectedIndex].staff_name || 'غير محدد'}</span>
                     </div>

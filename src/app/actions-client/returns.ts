@@ -277,7 +277,7 @@ export async function createReturnAction(data: {
       // 5. Accounting Journal Entry. A patient-account refund reduces A/R;
       // wallet credit is a separate operation and must not be granted as well.
       const journalId = generateId();
-      const returnDate = new Date().toISOString().split('T')[0];
+      const returnDate = new Date().toLocaleDateString('en-CA');
       await db.prepare(`
         INSERT INTO daily_journals (id, date, description, created_by, total_amount)
         VALUES (?, ?, ?, ?, ?)

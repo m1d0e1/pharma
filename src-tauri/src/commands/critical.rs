@@ -3230,6 +3230,7 @@ mod tests {
             include_str!("../../migrations/011_shift_cash_difference_account.sql"),
             include_str!("../../migrations/012_shortages_pharmacy_scope.sql"),
             include_str!("../../migrations/013_shift_handover_details.sql"),
+            include_str!("../../migrations/014_inventory_performance.sql"),
         ] {
             sqlx::raw_sql(migration)
                 .execute(&mut connection)

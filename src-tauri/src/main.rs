@@ -539,6 +539,12 @@ fn main() {
             sql: include_str!("../migrations/013_shift_handover_details.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 14,
+            description: "inventory_performance",
+            sql: include_str!("../migrations/014_inventory_performance.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()
