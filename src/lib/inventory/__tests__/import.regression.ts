@@ -293,4 +293,51 @@ describe('inventory workbook drug identity preflight', () => {
     expect(db.prepare('SELECT COUNT(*) AS count FROM master_drugs WHERE id = 9002').get()).toEqual({ count: 0 });
     expect(db.prepare('SELECT COUNT(*) AS count FROM inventory').get()).toEqual({ count: 0 });
   });
+
+  it('safely remaps shifted source IDs to the matching target drug without corrupting existing drugs', async () => {
+    db.exec(`
+      INSERT INTO master_drugs (id, trade_name, active_ingredient)
+      VALUES
+        (2190, 'BACTOBLIS 10 SACHETS', 'STREPTOCOCCUS SALIVARIUS'),
+        (2228, 'BAMBEDIL 1MG/ML SYRUP 120ML', 'BAMBUTEROL');
+    `);
+
+    const result = await importInventoryWorkbookRows(
+      [
+        { id: 'bambedil-lot', drug_id: 2190, quantity: 5, strips_per_box: 1 },
+      ],
+      [
+        {
+          id: 2190,
+          trade_name: 'BAMBEDIL 1MG/ML SYRUP 120ML',
+          active_ingredient: 'BAMBUTEROL',
+        },
+      ],
+      'active-pharmacy',
+      adapter(db),
+    );
+
+    expect(result.inventoryCount).toBe(1);
+
+    // BACTOBLIS at 2190 must remain completely untouched
+    expect(db.prepare('SELECT trade_name, active_ingredient FROM master_drugs WHERE id = 2190').get()).toEqual({
+      trade_name: 'BACTOBLIS 10 SACHETS',
+      active_ingredient: 'STREPTOCOCCUS SALIVARIUS',
+    });
+
+    // BAMBEDIL at 2228 must remain completely untouched
+    expect(db.prepare('SELECT trade_name, active_ingredient FROM master_drugs WHERE id = 2228').get()).toEqual({
+      trade_name: 'BAMBEDIL 1MG/ML SYRUP 120ML',
+      active_ingredient: 'BAMBUTEROL',
+    });
+
+    // Inventory row must be remapped to 2228 (BAMBEDIL), NEVER attached to 2190 (BACTOBLIS)
+    expect(db.prepare('SELECT id, drug_id, quantity, pharmacy_id FROM inventory WHERE id = ?').get('bambedil-lot')).toEqual({
+      id: 'bambedil-lot',
+      drug_id: 2228,
+      quantity: 5,
+      pharmacy_id: 'active-pharmacy',
+    });
+  });
 });
+

@@ -184,6 +184,7 @@ export async function importInventoryWorkbookRows(
     }
 
     const preserveExistingNames = new Set<number>();
+    const idRemapping = new Map<number, number>();
 
     for (const [sourceId, row] of importedDrugs) {
       const incomingNames = identityNames(row, sourceId);
@@ -194,40 +195,93 @@ export async function importInventoryWorkbookRows(
       const sameIdentity = [...incomingNames].some(name => existingNames.has(name));
 
       if (existingAtSource && existingNames.size > 0 && !sameIdentity) {
-        // Never merge inventory balances by display name. If multiple stable
-        // metadata fields prove that the workbook row still belongs to this
+        // Case 1: Multiple stable metadata fields prove that the workbook row still belongs to this
         // numeric ID, keep the ID and discard only its shifted name fields.
         if (matchingIdentityMetadata(row, existingAtSource) >= 2) {
           preserveExistingNames.add(sourceId);
         } else {
-          const incomingName = drugName(row, sourceId) || `drug ${sourceId}`;
-          const existingName = drugName(existingAtSource, sourceId) || `drug ${sourceId}`;
-          throw new Error(
-            `Drug identity conflict for source drug ${sourceId}: ` +
-            `workbook name "${incomingName}" does not match existing "${existingName}"; ` +
-            'the import was rolled back',
-          );
+          // Case 2: sourceId belongs to a different drug in this database.
+          // Safely resolve the incoming drug's true ID in the target database by barcode or exact name.
+          const incomingName = drugName(row, sourceId);
+          let targetMatch: ExcelRow | null = null;
+
+          if (incomingName && !isPlaceholderDrugName(incomingName, sourceId)) {
+            const barcode = text(row.barcode);
+            if (barcode) {
+              const byBarcode = await database.select<ExcelRow>(
+                'SELECT id, trade_name, trade_name_en, active_ingredient FROM master_drugs WHERE barcode = ? LIMIT 1',
+                [barcode],
+              );
+              if (byBarcode.length > 0) {
+                targetMatch = byBarcode[0];
+              }
+            }
+
+            if (!targetMatch) {
+              const byName = await database.select<ExcelRow>(
+                'SELECT id, trade_name, trade_name_en, active_ingredient FROM master_drugs WHERE LOWER(TRIM(trade_name)) = LOWER(TRIM(?)) OR LOWER(TRIM(trade_name_en)) = LOWER(TRIM(?)) LIMIT 1',
+                [incomingName, incomingName],
+              );
+              if (byName.length > 0) {
+                targetMatch = byName[0];
+              }
+            }
+          }
+
+          // Safety check: ensure active_ingredient does not contradict
+          if (targetMatch) {
+            const incomingIng = normalizedDrugName(row.active_ingredient);
+            const targetIng = normalizedDrugName(targetMatch.active_ingredient);
+            if (incomingIng && targetIng && incomingIng !== targetIng) {
+              targetMatch = null;
+            }
+          }
+
+          if (targetMatch && drugId(targetMatch.id)) {
+            const resolvedTargetId = drugId(targetMatch.id)!;
+            idRemapping.set(sourceId, resolvedTargetId);
+          } else {
+            const existingName = drugName(existingAtSource, sourceId) || `drug ${sourceId}`;
+            throw new Error(
+              `Drug identity conflict for source drug ${sourceId}: ` +
+              `workbook name "${incomingName || `drug ${sourceId}`}" does not match existing "${existingName}"; ` +
+              'the import was rolled back',
+            );
+          }
+        }
+      }
+    }
+
+    // Apply ID remapping to inventory rows
+    if (idRemapping.size > 0) {
+      for (const item of inventory) {
+        const remapped = idRemapping.get(Number(item.drug_id));
+        if (remapped) {
+          item.drug_id = remapped;
         }
       }
     }
 
     // Preserve the canonical names at a proven same-ID conflict while allowing
-    // all other partial and legitimate-new-ID imports to behave as before.
-    const masterRowsToUpsert = [...importedDrugs.entries()]
-      .map(([sourceId, row]) => {
-        if (!preserveExistingNames.has(sourceId)) return row;
-        const existing = existingById.get(sourceId)!;
-        return {
-          ...row,
-          trade_name: existing.trade_name,
-          trade_name_en: existing.trade_name_en,
-        };
-      });
+    // all other partial, remapped, and legitimate-new-ID imports to behave safely.
+    const masterRowsToUpsert = [
+      ...[...importedDrugs.entries()]
+        .filter(([sourceId]) => !idRemapping.has(sourceId))
+        .map(([sourceId, row]) => {
+          if (!preserveExistingNames.has(sourceId)) return row;
+          const existing = existingById.get(sourceId)!;
+          return {
+            ...row,
+            trade_name: existing.trade_name,
+            trade_name_en: existing.trade_name_en,
+          };
+        }),
+    ];
     await upsertRows(database, 'master_drugs', masterRowsToUpsert, masterColumns);
 
     const plannedMasterIds = new Set(masterRowsToUpsert.map(row => Number(row.id)));
     for (const id of new Set(inventory.map(row => Number(row.drug_id)))) {
-      if (plannedMasterIds.has(id) || existingById.has(id)) continue;
+      if (plannedMasterIds.has(id) || existingById.has(id) || [...idRemapping.values()].includes(id)) continue;
       throw new Error(`Missing drug name for inventory drug ${id}`);
     }
 

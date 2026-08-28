@@ -176,7 +176,7 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
     try {
       const toastId = toast.loading('جاري تصدير المخزون الحالي...');
       const all = await dbSelect(`
-        SELECT i.*, COALESCE(NULLIF(i.barcode, ''), NULLIF(md.barcode, ''), (
+        SELECT i.*, md.trade_name, md.trade_name_en, COALESCE(NULLIF(i.barcode, ''), NULLIF(md.barcode, ''), (
                  SELECT ii.barcode FROM inventory ii
                  WHERE ii.drug_id = i.drug_id AND ii.barcode IS NOT NULL AND ii.barcode != ''
                  LIMIT 1
