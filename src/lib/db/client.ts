@@ -20,9 +20,25 @@ function getDatabasePath(): string {
 
   try {
     const os = require('os');
-    if (os.platform() === 'win32') {
-      const appDataDb = join(os.homedir(), 'AppData', 'Roaming', 'com.pharma.system', 'pharma_local.db');
-      if (existsSync(appDataDb)) {
+    const platform = os.platform();
+    if (platform === 'win32') {
+      const roaming = process.env.APPDATA || join(os.homedir(), 'AppData', 'Roaming');
+      const appDataFolder = join(roaming, 'com.pharma.system');
+      const appDataDb = join(appDataFolder, 'pharma_local.db');
+      if (existsSync(appDataDb) || existsSync(appDataFolder)) {
+        return appDataDb;
+      }
+    } else if (platform === 'darwin') {
+      const appDataFolder = join(os.homedir(), 'Library', 'Application Support', 'com.pharma.system');
+      const appDataDb = join(appDataFolder, 'pharma_local.db');
+      if (existsSync(appDataDb) || existsSync(appDataFolder)) {
+        return appDataDb;
+      }
+    } else if (platform === 'linux') {
+      const configDir = process.env.XDG_CONFIG_HOME || join(os.homedir(), '.config');
+      const appDataFolder = join(configDir, 'com.pharma.system');
+      const appDataDb = join(appDataFolder, 'pharma_local.db');
+      if (existsSync(appDataDb) || existsSync(appDataFolder)) {
         return appDataDb;
       }
     }

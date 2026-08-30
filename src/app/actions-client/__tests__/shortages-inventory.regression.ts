@@ -12,7 +12,7 @@ jest.mock('@/lib/db/tauri', () => ({
     return { rowsAffected: result.changes, lastInsertId: Number(result.lastInsertRowid) };
   }),
   dbTransaction: jest.fn(async (callback: () => unknown) => callback()),
-  generateId: jest.fn(() => 'test-id'),
+  generateId: jest.fn(() => 'test-id-' + Math.random().toString(36).slice(2)),
 }));
 
 jest.mock('@/lib/auth/local', () => ({
@@ -45,6 +45,9 @@ import {
   updateShortagesStatusBulkAction,
 } from '@/app/actions-client/shortages';
 import {
+  createPurchaseInvoiceAction,
+  completePurchaseInvoiceAction,
+  updateCompletedPurchaseInvoiceAction,
   createPurchaseOrderAction,
   updatePurchaseOrderStatusAction,
 } from '@/app/actions-client/purchases';
@@ -280,5 +283,114 @@ describe('inventory-linked reorder and shortage notebook regression', () => {
     const row9101 = mockDb.prepare('SELECT status FROM shortages WHERE drug_id = 9101').get() as any;
     expect(row9102.status).toBe('received');
     expect(row9101.status).toBe('received');
+  });
+
+  it('updates shortages to received and resolves stock alerts across purchase invoice lifecycle (create, complete, edit)', async () => {
+    mockDb.exec(`
+      INSERT OR IGNORE INTO users (id, username, role, pharmacy_id) VALUES ('admin', 'admin', 'owner', NULL);
+      INSERT OR IGNORE INTO suppliers (id, name_ar, balance) VALUES (1, 'مورد تجريبي', 0);
+    `);
+
+    // 1. Drug 9101 is initially low stock (qty=2, reorder=5)
+    await addToShortagesAction({ drug_id: 9101, qty: 10 });
+    const shortagesBefore = (await getShortagesAction()).data || [];
+    expect(shortagesBefore.some((s: any) => s.drug_id === 9101)).toBe(true);
+
+    const lowStockBefore = await getLowStockAction(5);
+    expect(lowStockBefore.data?.some((d: any) => d.id === 9101)).toBe(true);
+
+    // 2. Perform a purchase invoice for drug 9101 (qty=10)
+    const invoiceRes = await createPurchaseInvoiceAction({
+      supplier_id: 1,
+      invoice_number: 'INV-TEST-001',
+      invoice_date: '2026-08-30',
+      payment_method: 'credit',
+      status: 'completed',
+      cart: [
+        {
+          id: 9101,
+          quantity: 10,
+          cost_price: 20,
+          selling_price: 25,
+          expiry_date: '2029-12-31',
+          strips_per_box: 10,
+        },
+      ],
+    });
+    expect(invoiceRes.success).toBe(true);
+
+    // Verify shortage for 9101 is now 'received' and left active notebook
+    const shortagesAfter = (await getShortagesAction()).data || [];
+    expect(shortagesAfter.some((s: any) => s.drug_id === 9101)).toBe(false);
+    const shortage9101 = mockDb.prepare('SELECT status FROM shortages WHERE drug_id = 9101').get() as any;
+    expect(shortage9101.status).toBe('received');
+
+    // Verify stock alert for 9101 is resolved (new stock = 2 + 10 = 12 > reorder_point 5)
+    const lowStockAfter = await getLowStockAction(5);
+    expect(lowStockAfter.data?.some((d: any) => d.id === 9101)).toBe(false);
+
+    // 3. Test draft invoice -> complete invoice resolves shortages
+    await addToShortagesAction({ drug_id: 9102, qty: 5 });
+    const draftRes = await createPurchaseInvoiceAction({
+      supplier_id: 1,
+      invoice_number: 'INV-DRAFT-001',
+      invoice_date: '2026-08-30',
+      payment_method: 'credit',
+      status: 'draft',
+      cart: [
+        {
+          id: 9102,
+          quantity: 5,
+          cost_price: 10,
+          selling_price: 15,
+          expiry_date: '2029-12-31',
+          strips_per_box: 1,
+        },
+      ],
+    });
+    expect(draftRes.success).toBe(true);
+
+    // In draft status, shortage remains pending
+    const shortage9102Draft = mockDb.prepare('SELECT status FROM shortages WHERE drug_id = 9102').get() as any;
+    expect(shortage9102Draft.status).toBe('pending');
+
+    // Complete the draft invoice
+    const completeRes = await completePurchaseInvoiceAction(draftRes.id!);
+    expect(completeRes.success).toBe(true);
+
+    // Upon completion, shortage is marked received
+    const shortage9102Completed = mockDb.prepare('SELECT status FROM shortages WHERE drug_id = 9102').get() as any;
+    expect(shortage9102Completed.status).toBe('received');
+
+    // 4. Test editing completed invoice resolves shortages for added items
+    await addToShortagesAction({ drug_id: 9103, qty: 5 });
+    const editRes = await updateCompletedPurchaseInvoiceAction({
+      id: invoiceRes.id!,
+      supplier_id: 1,
+      payment_method: 'credit',
+      cart: [
+        {
+          id: 9101,
+          quantity: 10,
+          cost_price: 20,
+          selling_price: 25,
+          expiry_date: '2029-12-31',
+          strips_per_box: 10,
+        },
+        {
+          id: 9103,
+          quantity: 5,
+          cost_price: 15,
+          selling_price: 20,
+          expiry_date: '2029-12-31',
+          strips_per_box: 1,
+        },
+      ],
+    });
+    expect(editRes.success).toBe(true);
+
+    // Shortage for 9103 is now received
+    const shortage9103 = mockDb.prepare('SELECT status FROM shortages WHERE drug_id = 9103').get() as any;
+    expect(shortage9103.status).toBe('received');
   });
 });

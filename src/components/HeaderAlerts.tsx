@@ -30,8 +30,13 @@ export default function HeaderAlerts() {
       } catch (e) {}
     }
     fetchAlerts()
+    const handleRefresh = () => fetchAlerts();
+    window.addEventListener('inventory-alerts-refresh', handleRefresh);
     const interval = setInterval(fetchAlerts, 60000 * 5) // Every 5 mins
-    return () => clearInterval(interval)
+    return () => {
+      window.removeEventListener('inventory-alerts-refresh', handleRefresh);
+      clearInterval(interval);
+    }
   }, [])
 
   useEffect(() => {

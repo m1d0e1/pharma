@@ -1100,7 +1100,7 @@ pub(crate) async fn save_purchase_invoice_tx(
 
             let pharmacy_scope = payload.pharmacy_id.as_deref().unwrap_or("local_default");
             sqlx::query(
-                "UPDATE shortages SET status = 'received' WHERE drug_id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default')) AND status IN ('pending', 'ordered')",
+                "UPDATE shortages SET status = 'received' WHERE drug_id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default')) AND (status IN ('pending', 'ordered') OR status IS NULL OR status = '')",
             )
             .bind(item.id)
             .bind(pharmacy_scope)

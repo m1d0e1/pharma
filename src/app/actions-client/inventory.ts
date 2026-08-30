@@ -739,7 +739,7 @@ const _lowStockStmt = db.prepare(`
   WHERE (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
     AND (i.expiry_date IS NULL OR i.expiry_date >= date('now', 'localtime'))
   GROUP BY m.id
-  HAVING SUM(i.quantity) <= 10
+  HAVING SUM(i.quantity) <= COALESCE(NULLIF(m.reorder_point, 0), NULLIF(m.min_limit, 0), 10)
   LIMIT 10
 `);
 const _expiringStmt = db.prepare(`

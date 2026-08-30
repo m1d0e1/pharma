@@ -664,6 +664,21 @@ async fn ensure_compatibility(
             "pharmacy_id",
             "pharmacy_id TEXT NOT NULL DEFAULT 'local_default'",
         ),
+        (
+            "shortages",
+            "requested_quantity",
+            "requested_quantity REAL DEFAULT 1",
+        ),
+        (
+            "shortages",
+            "status",
+            "status TEXT DEFAULT 'pending'",
+        ),
+        (
+            "shortages",
+            "created_at",
+            "created_at DATETIME DEFAULT CURRENT_TIMESTAMP",
+        ),
         ("suppliers", "balance", "balance REAL DEFAULT 0"),
         ("suppliers", "phone", "phone TEXT"),
         ("suppliers", "address", "address TEXT"),
@@ -703,6 +718,18 @@ async fn ensure_compatibility(
 
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_shortages_pharmacy_drug_status ON shortages(pharmacy_id, drug_id, status)",
+    )
+    .execute(&mut **transaction)
+    .await?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_shortages_pharmacy_status ON shortages(pharmacy_id, status)",
+    )
+    .execute(&mut **transaction)
+    .await?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_shortages_drug_id ON shortages(drug_id)",
     )
     .execute(&mut **transaction)
     .await?;
@@ -1726,6 +1753,9 @@ mod tests {
             ("shortages", "pharmacy_id"),
             ("shortages", "priority"),
             ("shortages", "notes"),
+            ("shortages", "requested_quantity"),
+            ("shortages", "status"),
+            ("shortages", "created_at"),
         ] {
             let rows = sqlx::query(&format!("PRAGMA table_info({table})"))
                 .fetch_one(&mut connection)

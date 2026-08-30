@@ -16,7 +16,8 @@ import {
 const formatInvoiceDateTime = (dateStr?: string | null, includeYear = false) => {
   if (!dateStr) return '';
   try {
-    const d = new Date(dateStr);
+    const raw = dateStr.includes(' ') && !dateStr.includes('T') ? dateStr.replace(' ', 'T') + 'Z' : dateStr;
+    const d = new Date(raw);
     if (isNaN(d.getTime())) return dateStr;
     const day = String(d.getDate()).padStart(2, '0');
     const month = String(d.getMonth() + 1).padStart(2, '0');

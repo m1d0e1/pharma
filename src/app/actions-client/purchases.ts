@@ -558,7 +558,10 @@ export async function createPurchaseInvoiceAction(data: {
       }) as any;
       revalidatePath('/purchases');
       revalidatePath('/inventory');
+      revalidatePath('/inventory/low-stock');
+      revalidatePath('/stores/shortages');
       revalidatePath('/purchases/suppliers');
+      revalidatePath('/');
       return { success: true, id: result?.id };
     }
 
@@ -626,14 +629,14 @@ export async function createPurchaseInvoiceAction(data: {
           }
 
           if (item.barcode) {
-            await db.prepare('UPDATE master_drugs SET barcode = ? WHERE id = ? AND (barcode IS NULL OR barcode = "")').run(item.barcode, item.id);
-            await db.prepare('UPDATE inventory SET barcode = ? WHERE drug_id = ? AND (barcode IS NULL OR barcode = "")').run(item.barcode, item.id);
+            await db.prepare("UPDATE master_drugs SET barcode = ? WHERE id = ? AND (barcode IS NULL OR barcode = '')").run(item.barcode, item.id);
+            await db.prepare("UPDATE inventory SET barcode = ? WHERE drug_id = ? AND (barcode IS NULL OR barcode = '')").run(item.barcode, item.id);
             secureCache.updateDrug(Number(item.id), { barcode: item.barcode });
           }
 
           if (finalStatus === 'completed') {
             const itemSubtotal = (item.quantity * item.cost_price);
-            const itemTax = itemSubtotal * (item.tax_percent / 100);
+            const itemTax = itemSubtotal * ((Number(item.tax_percent) || 0) / 100);
             const itemTotal = itemSubtotal + itemTax;
             
             totalAmount += itemTotal;
@@ -658,13 +661,14 @@ export async function createPurchaseInvoiceAction(data: {
 
             // Automatically resolve shortages for received drugs
             const pharmacyScope = session.pharmacy_id || 'local_default';
+            const drugId = Number(item.id || item.drug_id);
             await db.prepare(`
               UPDATE shortages 
               SET status = 'received' 
               WHERE drug_id = ? 
                 AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
-                AND status IN ('pending', 'ordered')
-            `).run(item.id, pharmacyScope, pharmacyScope);
+                AND (status IN ('pending', 'ordered') OR status IS NULL OR status = '')
+            `).run(drugId, pharmacyScope, pharmacyScope);
           }
         }
       }
@@ -738,8 +742,10 @@ export async function createPurchaseInvoiceAction(data: {
 
     revalidatePath('/purchases');
     revalidatePath('/inventory');
-    revalidatePath('/purchases/suppliers');
+    revalidatePath('/inventory/low-stock');
     revalidatePath('/stores/shortages');
+    revalidatePath('/purchases/suppliers');
+    revalidatePath('/');
     
     return { success: true, id: invoiceId };
   } catch (error: any) {
@@ -809,9 +815,8 @@ export async function completePurchaseInvoiceAction(invoiceId: string) {
       for (const item of items) {
         // Base calculation
         const itemSubtotal = (item.quantity * item.cost_price);
-        const itemTax = itemSubtotal * (item.tax_percent / 100);
+        const itemTax = itemSubtotal * ((Number(item.tax_percent) || 0) / 100);
         const itemTotal = itemSubtotal + itemTax;
-        
         totalAmount += itemTotal;
 
         const totalReceivedQty = Number(item.quantity) + Number(item.bonus_quantity || 0);
@@ -832,6 +837,17 @@ export async function completePurchaseInvoiceAction(invoiceId: string) {
           await db.prepare('UPDATE master_drugs SET large_to_medium = ? WHERE id = ?').run(item.strips_per_box, item.drug_id);
           secureCache.updateDrug(Number(item.drug_id), { large_to_medium: item.strips_per_box });
         }
+
+        // Automatically resolve shortages for received drugs
+        const pharmacyScope = session.pharmacy_id || 'local_default';
+        const drugId = Number(item.drug_id || item.id);
+        await db.prepare(`
+          UPDATE shortages 
+          SET status = 'received' 
+          WHERE drug_id = ? 
+            AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+            AND (status IN ('pending', 'ordered') OR status IS NULL OR status = '')
+        `).run(drugId, pharmacyScope, pharmacyScope);
       }
 
       // 3. Apply global invoice discounts and expenses
@@ -900,7 +916,10 @@ export async function completePurchaseInvoiceAction(invoiceId: string) {
 
     revalidatePath('/purchases');
     revalidatePath('/inventory');
+    revalidatePath('/inventory/low-stock');
+    revalidatePath('/stores/shortages');
     revalidatePath('/purchases/suppliers');
+    revalidatePath('/');
     
     return { success: true };
   } catch (error: any) {
@@ -1924,15 +1943,26 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
         }
 
         if (item.barcode) {
-          await db.prepare('UPDATE master_drugs SET barcode = ? WHERE id = ? AND (barcode IS NULL OR barcode = "")').run(item.barcode, item.id);
-          await db.prepare('UPDATE inventory SET barcode = ? WHERE drug_id = ? AND (barcode IS NULL OR barcode = "")').run(item.barcode, item.id);
+          await db.prepare("UPDATE master_drugs SET barcode = ? WHERE id = ? AND (barcode IS NULL OR barcode = '')").run(item.barcode, item.id);
+          await db.prepare("UPDATE inventory SET barcode = ? WHERE drug_id = ? AND (barcode IS NULL OR barcode = '')").run(item.barcode, item.id);
           secureCache.updateDrug(Number(item.id), { barcode: item.barcode });
         }
 
         const itemSubtotal = (item.quantity * item.cost_price);
-        const itemTax = itemSubtotal * (item.tax_percent / 100);
+        const itemTax = itemSubtotal * ((Number(item.tax_percent) || 0) / 100);
         const itemTotal = itemSubtotal + itemTax;
         totalAmount += itemTotal;
+
+        // Automatically resolve shortages for received drugs
+        const pharmacyScope = session.pharmacy_id || 'local_default';
+        const drugId = Number(item.id || item.drug_id);
+        await db.prepare(`
+          UPDATE shortages 
+          SET status = 'received' 
+          WHERE drug_id = ? 
+            AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+            AND (status IN ('pending', 'ordered') OR status IS NULL OR status = '')
+        `).run(drugId, pharmacyScope, pharmacyScope);
       }
 
       // Calculate new invoice total
@@ -2075,7 +2105,10 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
 
     revalidatePath('/purchases');
     revalidatePath('/inventory');
+    revalidatePath('/inventory/low-stock');
+    revalidatePath('/stores/shortages');
     revalidatePath('/purchases/suppliers');
+    revalidatePath('/');
     
     return { success: true };
   } catch (error: any) {

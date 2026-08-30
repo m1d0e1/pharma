@@ -870,9 +870,14 @@ export function initLocalDb() {
   addColumnSafely('master_drugs', 'has_expiry', 'INTEGER DEFAULT 1');
   addColumnSafely('sales_items', 'cost_price', 'REAL DEFAULT 0');
   addColumnSafely('shortages', 'pharmacy_id', "TEXT NOT NULL DEFAULT 'local_default'");
+  addColumnSafely('shortages', 'requested_quantity', 'REAL DEFAULT 1');
+  addColumnSafely('shortages', 'status', "TEXT DEFAULT 'pending'");
   addColumnSafely('shortages', 'notes', 'TEXT');
   addColumnSafely('shortages', 'priority', "TEXT DEFAULT 'normal'");
+  addColumnSafely('shortages', 'created_at', 'DATETIME DEFAULT CURRENT_TIMESTAMP');
   db.exec('CREATE INDEX IF NOT EXISTS idx_shortages_pharmacy_drug_status ON shortages(pharmacy_id, drug_id, status)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_shortages_pharmacy_status ON shortages(pharmacy_id, status)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_shortages_drug_id ON shortages(drug_id)');
 
   // Migration: Add shift_id to sales_invoices if missing
   const salesColumns = db.prepare("PRAGMA table_info(sales_invoices)").all() as any[];
