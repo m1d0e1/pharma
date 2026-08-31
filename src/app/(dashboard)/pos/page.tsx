@@ -308,6 +308,7 @@ export default function POSPage() {
   const [canChangePrice, setCanChangePrice] = useState(false);
   const [canViewStock, setCanViewStock] = useState(false);
   const [canSellCredit, setCanSellCredit] = useState(false);
+  const [canDiscountSaleItem, setCanDiscountSaleItem] = useState(false);
   const [canGiveTotalDiscount, setCanGiveTotalDiscount] = useState(false);
   const [canShowDrafts, setCanShowDrafts] = useState(false);
   const [canSaveDraft, setCanSaveDraft] = useState(false);
@@ -447,6 +448,13 @@ export default function POSPage() {
       setCanChangePrice(hasUserPermissionSync(userObj, 'can_change_price_sale'));
       setCanViewStock(hasUserPermissionSync(userObj, 'can_view_stock_sale'));
       setCanSellCredit(hasUserPermissionSync(userObj, 'can_sell_credit'));
+      const itemDiscountAllowed = hasUserPermissionSync(userObj, 'can_discount_sale_item');
+      setCanDiscountSaleItem(itemDiscountAllowed);
+      if (!itemDiscountAllowed) {
+        setCart(previous => previous.some(item => item.itemDiscountPercent)
+          ? previous.map(item => ({ ...item, itemDiscountPercent: 0 }))
+          : previous);
+      }
       setCanGiveTotalDiscount(hasUserPermissionSync(userObj, 'can_give_total_discount'));
       setCanShowDrafts(hasUserPermissionSync(userObj, 'show_suspended_invoices'));
       setCanSaveDraft(hasUserPermissionSync(userObj, 'suspended_can_save_invoice'));
@@ -466,7 +474,7 @@ export default function POSPage() {
     setTimeout(() => {
       searchSidebarRef.current?.focus();
     }, 150);
-  }, [router]);
+  }, [router, setCart]);
 
   // Redirect if coming from drafts tab
   useEffect(() => {
@@ -703,6 +711,7 @@ export default function POSPage() {
         inventory_id: item.inventory_id || null,
         quantity_sold: item.qty,
         unit_price: item.price * (1 - (item.itemDiscountPercent || 0) / 100),
+        item_discount_percent: item.itemDiscountPercent || 0,
         selected_unit: item.selectedUnit,
         is_negative: item.isNegative || false
       }));
@@ -1229,15 +1238,22 @@ export default function POSPage() {
                     </td>
                     <td className="px-1 py-2 text-center text-[9px] font-bold text-slate-400 w-10">{item.reorder_point || 0}</td>
                     <td className="px-1 py-2 text-center w-12">
-                      <input 
-                        type="number"
-                        value={item.itemDiscountPercent || 0}
-                        onChange={(e) => setCart(p => p.map(i => i.id === item.id ? {...i, itemDiscountPercent: Number(e.target.value)} : i))}
-                        data-nav={`discount-input-${index}`}
-                        onKeyDown={handleInputKeyDown}
-                        className="w-12 bg-slate-50 dark:bg-slate-800 border-none p-0.5 rounded text-[9px] font-black text-center text-rose-500 focus:ring-2 focus:ring-rose-500"
-                        placeholder="%"
-                      />
+                      {canDiscountSaleItem ? (
+                        <input
+                          type="number"
+                          min="0"
+                          max="100"
+                          value={item.itemDiscountPercent || 0}
+                          onChange={(e) => setCart(p => p.map(i => i.id === item.id ? { ...i, itemDiscountPercent: Math.min(100, Math.max(0, Number(e.target.value) || 0)) } : i))}
+                          data-nav={`discount-input-${index}`}
+                          onKeyDown={handleInputKeyDown}
+                          aria-label={`خصم الصنف ${item.trade_name_en || item.trade_name}`}
+                          className="w-12 bg-slate-50 dark:bg-slate-800 border-none p-0.5 rounded text-[9px] font-black text-center text-rose-500 focus:ring-2 focus:ring-rose-500"
+                          placeholder="%"
+                        />
+                      ) : (
+                        <span className="text-[9px] font-black text-slate-400" title="تعديل خصم الصنف يتطلب صلاحية">0%</span>
+                      )}
                     </td>
                     <td className="px-1 py-2 text-left font-black text-blue-600 text-[11px] w-16">
                       {(item.price * item.qty * (1 - (item.itemDiscountPercent || 0) / 100)).toFixed(2)}

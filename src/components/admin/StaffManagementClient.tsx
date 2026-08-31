@@ -43,6 +43,7 @@ interface PermissionSet {
   can_exceed_max_sale_limit: boolean;
   can_view_stock_sale: boolean;
   can_sell_no_stock: boolean;
+  can_discount_sale_item: boolean;
   can_give_total_discount: boolean;
   show_sales_report_invoice: boolean;
   show_suspended_invoices: boolean;
@@ -142,6 +143,7 @@ const defaultPermissions: PermissionSet = {
   can_exceed_max_sale_limit: false,
   can_view_stock_sale: true,
   can_sell_no_stock: false,
+  can_discount_sale_item: false,
   can_give_total_discount: false,
   show_sales_report_invoice: false,
   show_suspended_invoices: true,
@@ -868,6 +870,7 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
                         {renderPermissionItem('can_exceed_max_sale_limit', 'تجاوز الحد الأقصى للبيع')}
                         {renderPermissionItem('can_view_stock_sale', 'رؤية رصيد الصنف أثناء البيع')}
                         {renderPermissionItem('can_sell_no_stock', 'بيع أصناف ليس لها رصيد')}
+                        {renderPermissionItem('can_discount_sale_item', 'تعديل خصم كل صنف في سلة البيع')}
                         {renderPermissionItem('can_give_total_discount', 'إعطاء خصومات على الإجمالي')}
                         {renderPermissionItem('show_sales_report_invoice', 'إظهار تقرير المبيعات في الفاتورة')}
                         {renderPermissionItem('show_suspended_invoices', 'إظهار الفواتير المعلقة')}

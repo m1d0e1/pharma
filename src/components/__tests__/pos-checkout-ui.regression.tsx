@@ -3,11 +3,13 @@ import POSPage from '@/app/(dashboard)/pos/page';
 import { processCheckoutAction } from '@/app/actions-client/sales';
 import { checkDrugInteractions } from '@/app/actions-client/interactions';
 import { usePOSStore } from '@/store/usePOSStore';
+import { hasUserPermissionSync } from '@/lib/auth/local';
 
 const mockPush = jest.fn();
+const mockRouter = { push: mockPush };
 
 jest.mock('next/navigation', () => ({
-  useRouter: () => ({ push: mockPush }),
+  useRouter: () => mockRouter,
   useSearchParams: () => new URLSearchParams(),
 }));
 jest.mock('react-hotkeys-hook', () => ({ useHotkeys: jest.fn() }));
@@ -63,6 +65,7 @@ const cartItem = {
 describe('rendered POS checkout flow', () => {
   beforeEach(() => {
     mockPush.mockReset();
+    (hasUserPermissionSync as jest.Mock).mockReturnValue(true);
     usePOSStore.getState().resetPOS();
     usePOSStore.getState().setCart([cartItem]);
     (checkDrugInteractions as jest.Mock).mockResolvedValue({
@@ -105,5 +108,29 @@ describe('rendered POS checkout flow', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'فتح وردية' }));
 
     expect(mockPush).toHaveBeenCalledWith('/shifts');
+  });
+
+  it('submits a permitted per-item discount separately from the receipt discount', async () => {
+    (processCheckoutAction as jest.Mock).mockResolvedValue({ success: true, data: { sale_id: 'sale-discount' } });
+    render(<POSPage />);
+
+    fireEvent.change(await screen.findByLabelText('خصم الصنف Test Drug'), { target: { value: '10' } });
+    fireEvent.click(screen.getByRole('button', { name: /إتمام وطباعة/ }));
+
+    await waitFor(() => expect(processCheckoutAction).toHaveBeenCalledWith(expect.objectContaining({
+      items: [expect.objectContaining({ unit_price: 22.5, item_discount_percent: 10 })],
+      total_discount: 0,
+    })));
+  });
+
+  it('hides and clears per-item discount when its permission is disabled', async () => {
+    (hasUserPermissionSync as jest.Mock).mockImplementation((_user, key) => key !== 'can_discount_sale_item');
+    usePOSStore.getState().setCart([{ ...cartItem, itemDiscountPercent: 10 }]);
+
+    render(<POSPage />);
+
+    await waitFor(() => expect(usePOSStore.getState().cart[0].itemDiscountPercent).toBe(0));
+    expect(screen.queryByLabelText('خصم الصنف Test Drug')).not.toBeInTheDocument();
+    expect(screen.getByTitle('تعديل خصم الصنف يتطلب صلاحية')).toHaveTextContent('0%');
   });
 });

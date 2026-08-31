@@ -32,6 +32,7 @@ describe('business permission enforcement', () => {
   it.each([
     [{ items: [item], payment_method: 'credit' }, 'البيع الآجل'],
     [{ items: [{ ...item, is_negative: true }], payment_method: 'cash' }, 'البيع بدون رصيد'],
+    [{ items: [{ ...item, unit_price: 90, item_discount_percent: 10 }], payment_method: 'cash' }, 'خصم الصنف'],
     [{ items: [item], payment_method: 'cash', status: 'draft' }, 'الفواتير المعلقة'],
     [{ items: [item], payment_method: 'cash', total_discount: 1 }, 'خصم إجمالي'],
   ])('rejects a POS operation whose checkbox is disabled', async (request, message) => {

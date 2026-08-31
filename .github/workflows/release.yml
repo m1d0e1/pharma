@@ -223,11 +223,13 @@ jobs:
 
       - name: Verify combined x64 and x86 updater manifest
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $manifestUrl = "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/latest.json"
           for ($attempt = 1; $attempt -le 12; $attempt++) {
             try {
-              $manifest = Invoke-RestMethod -Uri $manifestUrl -TimeoutSec 30
+              gh release download ${{ github.ref_name }} --pattern latest.json --dir . --clobber *>&1 | Out-Null
+              $manifest = Get-Content latest.json -Raw | ConvertFrom-Json
               $keys = @($manifest.platforms.PSObject.Properties.Name)
               if ($keys -contains 'windows-x86_64-nsis' -and $keys -contains 'windows-i686-nsis') {
                 break

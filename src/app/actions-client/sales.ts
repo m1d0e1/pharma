@@ -66,6 +66,7 @@ const CheckoutItemSchema = z.object({
   inventory_id: z.string().optional().nullable(),
   quantity_sold: z.coerce.number().positive(),
   unit_price: z.coerce.number().nonnegative(),
+  item_discount_percent: z.coerce.number().min(0).max(100).optional().default(0),
   selected_unit: z.string().default('large'),
   is_negative: z.boolean().optional().default(false)
 });
@@ -495,6 +496,9 @@ export async function processCheckoutAction(data: any) {
     }
     if (validatedData.items.some(item => item.is_negative) && !hasUserPermissionSync(localUser, 'can_sell_no_stock')) {
       return { success: false, error: 'غير مصرح بالبيع بدون رصيد' };
+    }
+    if (validatedData.items.some(item => item.item_discount_percent > 0) && !hasUserPermissionSync(localUser, 'can_discount_sale_item')) {
+      return { success: false, error: 'غير مصرح بتعديل خصم الصنف' };
     }
     if (validatedData.total_discount > 0) {
       if (!hasUserPermissionSync(localUser, 'can_give_total_discount')) {

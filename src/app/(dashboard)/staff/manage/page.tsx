@@ -49,6 +49,7 @@ const defaultOwnerPerms = {
   rep_can_view_inventory: true,
   can_exceed_max_sale_limit: true,
   can_sell_no_stock: true,
+  can_discount_sale_item: true,
   can_give_total_discount: true,
   show_sales_report_invoice: true,
   can_change_price_return: true,
@@ -194,6 +195,7 @@ export default function StaffManagePage() {
           preview_item_movements: true,
           show_own_financial_only: true,
           can_manage_inventory: false,
+          can_discount_sale_item: false,
           can_change_price_sale: false,
           max_invoice_discount_percent: 5,
           max_exchange_discount_percent: 0,
@@ -229,6 +231,7 @@ export default function StaffManagePage() {
         } : formData.role === 'admin' ? {
           can_view_stock_sale: true,
           can_manage_inventory: true,
+          can_discount_sale_item: true,
           can_change_price_sale: true,
           show_cost_price: true,
           max_invoice_discount_percent: 15,

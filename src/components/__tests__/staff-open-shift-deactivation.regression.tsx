@@ -50,3 +50,23 @@ it('warns about an open shift and reconciles it before deactivating the user', a
   }));
   expect(screen.queryByRole('heading', { name: 'لدى الموظف وردية مفتوحة' })).not.toBeInTheDocument();
 });
+
+it('exposes a separate permission for discounting each sale item', async () => {
+  const user = userEvent.setup();
+  render(
+    <StaffManagementClient
+      users={[{ id: 'user-1', username: 'cashier', full_name: 'Cashier One', role: 'pharmacist', permissions: '{}' }]}
+      jobs={[]}
+      onUpdatePermissions={jest.fn()}
+      onAddUser={jest.fn()}
+      onDeleteUser={jest.fn()}
+      onCloseShiftAndDelete={jest.fn()}
+      onUpdateUser={jest.fn()}
+      onResetPassword={jest.fn()}
+    />,
+  );
+
+  await user.click(screen.getByRole('button', { name: 'تعديل' }));
+  await user.click(screen.getByRole('button', { name: /المبيعات/ }));
+  expect(screen.getByRole('checkbox', { name: 'تعديل خصم كل صنف في سلة البيع' })).not.toBeChecked();
+});
