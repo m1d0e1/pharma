@@ -9,7 +9,7 @@ import { toast } from 'react-hot-toast';
 
 const STATUS_CONFIG: Record<string, { label: string; color: string; bg: string; icon: any }> = {
   pending: { label: 'قيد الانتظار', color: 'text-amber-600', bg: 'bg-amber-100', icon: Clock },
-  completed: { label: 'تم الاستلام', color: 'text-emerald-600', bg: 'bg-emerald-100', icon: CheckCircle2 },
+  completed: { label: 'تم إغلاق الطلب', color: 'text-emerald-600', bg: 'bg-emerald-100', icon: CheckCircle2 },
   cancelled: { label: 'تم الإلغاء', color: 'text-red-600', bg: 'bg-red-100', icon: XCircle },
 };
 
@@ -32,7 +32,9 @@ export default function PurchaseOrdersClient({ initialOrders }: Props) {
   const handleStatusUpdate = async (poId: string, newStatus: string) => {
     const result = await updatePurchaseOrderStatusAction(poId, newStatus);
     if (result.success) {
-      toast.success('تم تحديث حالة الطلب');
+      toast.success(newStatus === 'completed'
+        ? 'تم إغلاق أمر الشراء؛ سجّل فاتورة الشراء لإضافة المخزون وإزالة النواقص'
+        : 'تم إلغاء أمر الشراء');
       setOrders(orders.map(o => o.id === poId ? { ...o, status: newStatus } : o));
     } else {
       toast.error(result.error || 'فشل التحديث');
@@ -123,7 +125,7 @@ export default function PurchaseOrdersClient({ initialOrders }: Props) {
                             <button 
                               onClick={() => handleStatusUpdate(order.id, 'completed')}
                               className="p-2 bg-emerald-50 text-emerald-600 rounded-lg hover:bg-emerald-100"
-                              title="تم الاستلام"
+                              title="إغلاق الطلب (التوريد يتم بفاتورة شراء)"
                             >
                               <CheckCircle2 className="w-4 h-4" />
                             </button>

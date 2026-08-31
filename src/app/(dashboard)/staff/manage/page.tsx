@@ -7,6 +7,7 @@ import {
   updateUserPermissionsAction, 
   addUserAction, 
   deleteUserAction, 
+  closeUserShiftAndDeactivateAction,
   updateUserAction, 
   resetUserPasswordAction,
   getStaffManagementDataAction
@@ -108,6 +109,7 @@ export default function StaffManagePage() {
           SELECT u.*, ej.name_ar as job_name_ar 
           FROM users u
           LEFT JOIN employee_jobs ej ON u.job_id = ej.id
+          WHERE u.is_active = 1
         `);
         setUsers(u || []);
 
@@ -301,19 +303,19 @@ export default function StaffManagePage() {
   };
 
   const handleDeleteUser = async (userId: string) => {
-    if (isTauri) {
-      if (user.id === userId) return { success: false, error: 'لا يمكنك حذف حسابك الخاص' };
-      try {
-        await dbExecute('DELETE FROM users WHERE id = ?', [userId]);
-        await dbExecute("INSERT INTO activity_log (user_id, action, details) VALUES (?, 'DELETE_USER', ?)",
-          [user.id, `حذف المستخدم: ${userId}`]);
-        await loadData();
-        return { success: true };
-      } catch (error: any) {
-        return { success: false, error: error.message };
-      }
-    }
     const res = await deleteUserAction(userId);
+    if (res.success) await loadData();
+    return res;
+  };
+
+  const handleCloseShiftAndDelete = async (data: {
+    userId: string;
+    shiftId: string;
+    actualCash: number;
+    authorizerPassword: string;
+    notes?: string;
+  }) => {
+    const res = await closeUserShiftAndDeactivateAction(data);
     if (res.success) await loadData();
     return res;
   };
@@ -421,7 +423,8 @@ export default function StaffManagePage() {
         jobs={jobs}
         onUpdatePermissions={handleUpdatePermissions} 
         onAddUser={handleAddUser}
-        onDeleteUser={handleDeleteUser}
+      onDeleteUser={handleDeleteUser}
+      onCloseShiftAndDelete={handleCloseShiftAndDelete}
         onUpdateUser={handleUpdateUser}
         onResetPassword={handleResetPassword}
       />

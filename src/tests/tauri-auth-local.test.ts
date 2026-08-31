@@ -101,9 +101,10 @@ describe('Tauri Auth — hasUserPermissionSync', () => {
     expect(hasUserPermissionSync({ role: 'owner', permissions: '{}' }, 'anything')).toBe(true);
   });
 
-  it('admin has all permissions', () => {
+  it('admin follows configured permissions', () => {
     const { hasUserPermissionSync } = require('@/lib/auth/local');
-    expect(hasUserPermissionSync({ role: 'admin', permissions: '{}' }, 'anything')).toBe(true);
+    expect(hasUserPermissionSync({ role: 'admin', permissions: '{}' }, 'anything')).toBe(false);
+    expect(hasUserPermissionSync({ role: 'admin', permissions: '{"anything":true}' }, 'anything')).toBe(true);
   });
 
   it('identifies owner/admin roles', () => {

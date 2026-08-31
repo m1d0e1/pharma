@@ -649,9 +649,17 @@ async fn ensure_compatibility(
         ("shifts", "ending_cash", "ending_cash REAL"),
         ("shifts", "notes", "notes TEXT"),
         ("shifts", "actual_cash", "actual_cash REAL"),
-        ("shifts", "transfer_amount", "transfer_amount REAL DEFAULT 0"),
+        (
+            "shifts",
+            "transfer_amount",
+            "transfer_amount REAL DEFAULT 0",
+        ),
         ("shifts", "transfer_target", "transfer_target TEXT"),
-        ("shifts", "cash_difference", "cash_difference REAL DEFAULT 0"),
+        (
+            "shifts",
+            "cash_difference",
+            "cash_difference REAL DEFAULT 0",
+        ),
         ("shifts", "receiver_id", "receiver_id TEXT"),
         ("cash_movements", "sub_category", "sub_category TEXT"),
         ("cash_movements", "actual_date", "actual_date TEXT"),
@@ -669,16 +677,8 @@ async fn ensure_compatibility(
             "requested_quantity",
             "requested_quantity REAL DEFAULT 1",
         ),
-        (
-            "shortages",
-            "status",
-            "status TEXT DEFAULT 'pending'",
-        ),
-        (
-            "shortages",
-            "created_at",
-            "created_at DATETIME DEFAULT CURRENT_TIMESTAMP",
-        ),
+        ("shortages", "status", "status TEXT DEFAULT 'pending'"),
+        ("shortages", "created_at", "created_at DATETIME"),
         ("suppliers", "balance", "balance REAL DEFAULT 0"),
         ("suppliers", "phone", "phone TEXT"),
         ("suppliers", "address", "address TEXT"),
@@ -713,6 +713,27 @@ async fn ensure_compatibility(
         add_column(transaction, table, column, definition).await?;
     }
 
+    sqlx::query(
+        "UPDATE shortages SET pharmacy_id = 'local_default' WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = ''",
+    )
+    .execute(&mut **transaction)
+    .await?;
+    sqlx::query("UPDATE shortages SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL")
+        .execute(&mut **transaction)
+        .await?;
+    sqlx::raw_sql(
+        r#"
+        CREATE TRIGGER IF NOT EXISTS shortages_set_created_at
+        AFTER INSERT ON shortages
+        WHEN NEW.created_at IS NULL
+        BEGIN
+          UPDATE shortages SET created_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+        END;
+        "#,
+    )
+    .execute(&mut **transaction)
+    .await?;
+
     // ponytail: only one matching user/time window is safe to repair automatically.
     repair_unambiguous_shift_links(transaction).await?;
 
@@ -728,11 +749,9 @@ async fn ensure_compatibility(
     .execute(&mut **transaction)
     .await?;
 
-    sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_shortages_drug_id ON shortages(drug_id)",
-    )
-    .execute(&mut **transaction)
-    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_shortages_drug_id ON shortages(drug_id)")
+        .execute(&mut **transaction)
+        .await?;
 
     let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
         .fetch_one(&mut **transaction)
@@ -1645,6 +1664,15 @@ mod tests {
             r#"
             CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT);
             CREATE TABLE master_drugs (id INTEGER PRIMARY KEY, trade_name TEXT NOT NULL);
+            CREATE TABLE shortages (
+              id INTEGER PRIMARY KEY,
+              drug_id INTEGER NOT NULL,
+              pharmacy_id TEXT,
+              requested_quantity REAL,
+              status TEXT
+            );
+            INSERT INTO shortages (id, drug_id, pharmacy_id, requested_quantity, status)
+            VALUES (1, 1, NULL, 1, 'pending'), (2, 2, '', 1, 'ordered');
             CREATE TABLE suppliers (id INTEGER PRIMARY KEY);
             CREATE TABLE users (id TEXT PRIMARY KEY);
             CREATE TABLE patients (id TEXT PRIMARY KEY, full_name TEXT NOT NULL);
@@ -1722,6 +1750,16 @@ mod tests {
         .unwrap();
 
         prepare_connection(&mut connection).await.unwrap();
+
+        let shortage_scopes: Vec<String> =
+            sqlx::query_scalar("SELECT pharmacy_id FROM shortages ORDER BY id")
+                .fetch_all(&mut connection)
+                .await
+                .unwrap();
+        assert_eq!(
+            shortage_scopes,
+            vec!["local_default".to_string(), "local_default".to_string()]
+        );
 
         for repair in CHECKSUM_REPAIRS {
             let checksum: String =

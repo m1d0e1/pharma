@@ -53,6 +53,7 @@ import { getShiftReportAction } from '@/app/actions-client/reports';
 import { updatePatientWalletAction } from '@/app/actions-client/patients';
 import { closeDeliveryInvoiceAction } from '@/app/actions-client/delivery';
 import { addExpenseAction } from '@/app/actions-client/expenses';
+import { closeUserShiftAndDeactivateAction, deleteUserAction } from '@/app/actions-client/users';
 
 describe('purchase reports and drawer handover regressions', () => {
   beforeEach(() => {
@@ -81,6 +82,36 @@ describe('purchase reports and drawer handover regressions', () => {
   });
 
   afterEach(() => mockDb.close());
+
+  it('reconciles an open shift before deactivating a user and preserves history', async () => {
+    mockDb.prepare(`UPDATE users SET password_hash = 'owner-hash', role = 'owner', is_active = 1 WHERE id = 'admin'`).run();
+    mockDb.prepare(`INSERT INTO users (id, username, password_hash, role, full_name, is_active)
+      VALUES ('cashier-delete', 'cashier_delete', 'cashier-hash', 'pharmacist', 'Cashier', 1)`).run();
+    mockDb.prepare(`INSERT INTO shifts (id, user_id, start_time, starting_cash, status)
+      VALUES ('delete-shift', 'cashier-delete', '2026-08-31 09:00:00', 100, 'open')`).run();
+
+    expect(await deleteUserAction('cashier-delete')).toMatchObject({
+      success: false,
+      code: 'OPEN_SHIFT',
+      openShift: { id: 'delete-shift', expected_cash: 100 },
+    });
+
+    expect(await closeUserShiftAndDeactivateAction({
+      userId: 'cashier-delete',
+      shiftId: 'delete-shift',
+      actualCash: 90,
+      authorizerPassword: 'owner-password',
+      notes: 'Employment ended',
+    })).toMatchObject({ success: true, difference: -10, remainingCash: 0, receiverId: null });
+
+    expect(mockDb.prepare('SELECT is_active FROM users WHERE id = ?').get('cashier-delete')).toEqual({ is_active: 0 });
+    expect(mockDb.prepare('SELECT status, actual_cash, transfer_amount, transfer_target, receiver_id FROM shifts WHERE id = ?').get('delete-shift')).toEqual({
+      status: 'discrepancy', actual_cash: 90, transfer_amount: 90, transfer_target: 'treasury', receiver_id: null,
+    });
+    expect(mockDb.prepare("SELECT amount, target_name FROM cash_movements WHERE shift_id = ? AND category = 'handover'").get('delete-shift')).toEqual({
+      amount: 90, target_name: 'الخزينة الرئيسية - إغلاق حساب مستخدم',
+    });
+  });
 
   it('creates a purchase then lists and opens it from purchase reports', async () => {
     const created = await createPurchaseInvoiceAction({

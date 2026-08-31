@@ -48,7 +48,7 @@ const navItems = [
   // Inventory Ops
   { category: 'العمليات المخزنية', href: '/inventory', label: 'المخزون', icon: Package, roles: ['owner', 'admin', 'pharmacist'] },
   { category: 'العمليات المخزنية', href: '/stores/shortages', label: 'كشكول النواقص', icon: AlertTriangle, roles: ['owner', 'admin', 'pharmacist'], permission: 'can_view_restock' },
-  { category: 'العمليات المخزنية', href: '/inventory/item-movements', label: 'حركات الأصناف', icon: Activity, roles: ['owner', 'admin', 'pharmacist'], permission: 'can_manage_inventory' },
+  { category: 'العمليات المخزنية', href: '/inventory/item-movements', label: 'حركات الأصناف', icon: Activity, roles: ['owner', 'admin', 'pharmacist'], permission: 'preview_item_movements' },
   { category: 'العمليات المخزنية', href: '/restock', label: 'إعادة التموين', icon: Package, roles: ['owner', 'admin'], permission: 'can_view_restock' },
   { category: 'العمليات المخزنية', href: '/inventory/opening-balances', label: 'الأرصدة الإفتتاحية', icon: Database, roles: ['owner', 'admin'], permission: 'can_view_opening_balances' },
   { category: 'العمليات المخزنية', href: '/inventory/settlement', label: 'تسوية المخزون', icon: ArrowLeftRight, roles: ['owner', 'admin', 'pharmacist'], permission: 'can_view_settlement' },
@@ -57,7 +57,7 @@ const navItems = [
   { category: 'المشتريات', href: '/purchases', label: 'المشتريات', icon: ShoppingCart, roles: ['owner', 'admin'], permission: 'can_view_purchases' },
 
   // Master Data
-  { category: 'البيانات الأساسية', href: '/stores/items', label: 'إدارة المخازن', icon: Box, roles: ['owner', 'admin'], permission: 'can_manage_inventory' },
+  { category: 'البيانات الأساسية', href: '/stores/items', label: 'إدارة المخازن', icon: Box, roles: ['owner', 'admin'], permission: 'can_view_stores' },
 
   // Finance
   { category: 'المالية', href: '/accounts', label: 'الحسابات والمالية', icon: Wallet, roles: ['owner', 'admin'], permission: 'acc_can_view_general' },
@@ -121,15 +121,15 @@ export default function SidebarNav({ userRole, userPermissions }: Props) {
     if (!userPermissions) refreshPermissions()
   }, [pathname, userPermissions])
 
-  const userObj = { role: userRole, permissions: userPermissions ? JSON.stringify(userPermissions) : '{}' }
+  const effectivePermissions = userPermissions ?? permissions ?? {}
+  const userObj = { role: userRole, permissions: effectivePermissions }
 
   const filteredItems = navItems.filter(item => {
-    if (!item.roles.includes(userRole)) return false;
     if (item.permission) {
-      if (userRole === 'owner' || userRole === 'admin') return true;
+      if (userRole === 'owner') return true;
       return hasUserPermissionSync(userObj, item.permission);
     }
-    return true;
+    return item.roles.includes(userRole);
   });
 
   return (

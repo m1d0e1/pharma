@@ -571,10 +571,10 @@ export async function createGeneralReturnAction(data: {
 }) {
   try {
     const user = await getLocalSession();
-    if (!user || (user.role !== 'owner' && user.role !== 'admin')) {
-      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
-    }
     if (!user || !hasUserPermissionSync(user, 'can_view_returns')) return { success: false, error: 'غير مصرح' };
+    if (data.saleItems.length > 0 && !hasUserPermissionSync(user, 'can_make_exchanges')) {
+      return { success: false, error: 'غير مصرح بعمل الاستبدالات' };
+    }
 
     const returnId = generateId();
     const totalReturn = data.returnItems.reduce((sum, i) => sum + (i.quantity * i.unit_price), 0);

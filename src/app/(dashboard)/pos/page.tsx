@@ -108,10 +108,18 @@ export interface POSSearchSidebarRef {
 interface POSSearchSidebarProps {
   addToCart: (drug: DrugItem) => void;
   onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
+  showStock: boolean;
+}
+
+function permissionNumber(user: any, key: string, fallback = 0): number {
+  let values = user?.permissions;
+  try { if (typeof values === 'string') values = JSON.parse(values); } catch { return fallback; }
+  const value = values && !Array.isArray(values) ? values[key] : undefined;
+  return Number(value ?? (user?.role === 'owner' ? 100 : fallback)) || fallback;
 }
 
 const POSSearchSidebar = memo(forwardRef<POSSearchSidebarRef, POSSearchSidebarProps>(
-  ({ addToCart, onKeyDown }, ref) => {
+  ({ addToCart, onKeyDown, showStock }, ref) => {
     const [searchTerm, setSearchTerm] = useState('');
     const [searchByActive, setSearchByActive] = useState(false);
     const [searchResults, setSearchResults] = useState<DrugItem[]>([]);
@@ -256,7 +264,7 @@ const POSSearchSidebar = memo(forwardRef<POSSearchSidebarRef, POSSearchSidebarPr
                   <p className="text-[9px] text-blue-600 dark:text-blue-400 font-semibold truncate">{drug.active_ingredient}</p>
                 )}
                 <div className="flex items-center gap-2 mt-0.5">
-                  <p className="text-[9px] text-slate-400 font-black">{drug.total_stock} متاح | {drug.min_price} ج.م</p>
+                  <p className="text-[9px] text-slate-400 font-black">{showStock ? `${drug.total_stock} متاح | ` : ''}{drug.min_price} ج.م</p>
                   {drug.category && <span className="text-[8px] bg-slate-100 dark:bg-slate-700 px-1 rounded text-slate-500">{drug.category}</span>}
                 </div>
               </div>
@@ -298,6 +306,13 @@ export default function POSPage() {
   const [currentUser, setCurrentUser] = useState<{ id: string; pharmacy_id: string } | null>(null);
   const [isAllowed, setIsAllowed] = useState(false);
   const [canChangePrice, setCanChangePrice] = useState(false);
+  const [canViewStock, setCanViewStock] = useState(false);
+  const [canSellCredit, setCanSellCredit] = useState(false);
+  const [canGiveTotalDiscount, setCanGiveTotalDiscount] = useState(false);
+  const [canShowDrafts, setCanShowDrafts] = useState(false);
+  const [canSaveDraft, setCanSaveDraft] = useState(false);
+  const [canSellNoStock, setCanSellNoStock] = useState(false);
+  const [maxInvoiceDiscountPercent, setMaxInvoiceDiscountPercent] = useState(0);
   const [isUserLoading, setIsUserLoading] = useState(true);
   const [pendingInteractions, setPendingInteractions] = useState<any[]>([]);
   const [showInteractionModal, setShowInteractionModal] = useState(false);
@@ -428,8 +443,15 @@ export default function POSPage() {
         return;
       }
 
-      setIsAllowed(hasUserPermissionSync(userObj, 'can_access_pos') || userObj.role === 'pharmacist' || userObj.role === 'owner' || userObj.role === 'admin');
-      setCanChangePrice(hasUserPermissionSync(userObj, 'can_change_price_sale') || userObj.role === 'owner' || userObj.role === 'admin');
+      setIsAllowed(hasUserPermissionSync(userObj, 'can_access_pos') || ['pharmacist', 'cashier', 'owner', 'admin'].includes(userObj.role));
+      setCanChangePrice(hasUserPermissionSync(userObj, 'can_change_price_sale'));
+      setCanViewStock(hasUserPermissionSync(userObj, 'can_view_stock_sale'));
+      setCanSellCredit(hasUserPermissionSync(userObj, 'can_sell_credit'));
+      setCanGiveTotalDiscount(hasUserPermissionSync(userObj, 'can_give_total_discount'));
+      setCanShowDrafts(hasUserPermissionSync(userObj, 'show_suspended_invoices'));
+      setCanSaveDraft(hasUserPermissionSync(userObj, 'suspended_can_save_invoice'));
+      setCanSellNoStock(hasUserPermissionSync(userObj, 'can_sell_no_stock'));
+      setMaxInvoiceDiscountPercent(permissionNumber(userObj, 'max_invoice_discount_percent'));
 
       const res = await getCurrentUserAction();
       if (res.success && res.user) {
@@ -909,7 +931,7 @@ export default function POSPage() {
       {/* LEFT SIDEBAR ACTIONS */}
       <div className="w-20 flex flex-col gap-2 bg-white dark:bg-slate-900 p-2 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xl overflow-y-auto shrink-0">
         <SidebarButton icon={Plus} label="جديد" color="bg-emerald-500" onClick={resetCart} />
-        <SidebarButton icon={Save} label="حفظ" color="bg-blue-500" onClick={() => handleCheckout('draft')} />
+        {canSaveDraft && <SidebarButton icon={Save} label="حفظ" color="bg-blue-500" onClick={() => handleCheckout('draft')} />}
         <SidebarButton icon={Printer} label="طباعة" color="bg-indigo-500" onClick={() => handleCheckout('completed')} />
         <SidebarButton 
           icon={ShieldAlert} 
@@ -947,7 +969,7 @@ export default function POSPage() {
           }} 
         />
         <div className="h-px bg-slate-100 dark:bg-slate-800 my-1" />
-        <SidebarButton icon={FileText} label="فواتير معلقة" color="bg-amber-500" onClick={() => { fetchDrafts(); setShowDraftsModal(true); }} />
+        {canShowDrafts && <SidebarButton icon={FileText} label="فواتير معلقة" color="bg-amber-500" onClick={() => { fetchDrafts(); setShowDraftsModal(true); }} />}
         <SidebarButton icon={RotateCcw} label="استرجاع" color="bg-rose-500" onClick={() => setShowReturnModal(true)} />
         <SidebarButton icon={ArrowLeftRight} label="تسليم الدرج" color="bg-blue-600" onClick={() => setShowHandoverModal(true)} />
         <div className="h-px bg-slate-100 dark:bg-slate-800 my-1" />
@@ -1048,7 +1070,7 @@ export default function POSPage() {
                   { id: 'wallet', label: 'محفظة', icon: '👛', color: 'purple' },
                   { id: 'visa', label: 'فيزا', icon: '🏧', color: 'indigo' },
                   { id: 'delivery', label: 'توصيل', icon: '🛵', color: 'rose' }
-                ].map(method => (
+                ].filter(method => method.id !== 'credit' || canSellCredit).map(method => (
                   <button 
                     key={method.id}
                     onClick={() => setPaymentMethod(method.id as any)}
@@ -1081,7 +1103,10 @@ export default function POSPage() {
                 <input 
                   type="number"
                   value={discountPercent}
-                  onChange={(e) => setDiscountPercent(Number(e.target.value))}
+                  min={0}
+                  max={maxInvoiceDiscountPercent}
+                  disabled={!canGiveTotalDiscount}
+                  onChange={(e) => setDiscountPercent(Math.min(maxInvoiceDiscountPercent, Math.max(0, Number(e.target.value))))}
                   data-nav="discount-percent-input"
                   onKeyDown={handleInputKeyDown}
                   className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-100 dark:border-slate-700 p-2 rounded-xl text-xs font-black text-center text-rose-500"
@@ -1199,7 +1224,7 @@ export default function POSPage() {
                     </td>
                     <td className="px-1 py-2 text-center w-10">
                        <span className={`text-[9px] font-black ${item.total_stock <= (item.reorder_point || 0) ? 'text-red-500' : 'text-slate-400'}`}>
-                        {Number(stockInSelectedUnit(item).toFixed(2))}
+                        {canViewStock ? Number(stockInSelectedUnit(item).toFixed(2)) : '—'}
                        </span>
                     </td>
                     <td className="px-1 py-2 text-center text-[9px] font-bold text-slate-400 w-10">{item.reorder_point || 0}</td>
@@ -1257,7 +1282,7 @@ export default function POSPage() {
 
       {/* Right Search Area */}
       <div className="w-[300px] flex flex-col gap-4 shrink-0">
-         <POSSearchSidebar ref={searchSidebarRef} addToCart={addToCart} onKeyDown={handleInputKeyDown} />
+         <POSSearchSidebar ref={searchSidebarRef} addToCart={addToCart} onKeyDown={handleInputKeyDown} showStock={canViewStock} />
 
          {alternatives.length > 0 && (
             <div className="bg-indigo-50 dark:bg-indigo-900/20 p-5 rounded-3xl border border-indigo-100 dark:border-indigo-900/40">
@@ -1307,6 +1332,7 @@ export default function POSPage() {
         isOpen={!!showStockWarning}
         onClose={() => setShowStockWarning(null)}
         drug={showStockWarning}
+        allowNegativeSale={canSellNoStock}
         onNewPurchaseOrder={(drugId) => {
           toast.dismiss(); // dismiss any existing toasts so they don't pile up
           toast('جاري الانتقال لإنشاء فاتورة شراء...', { duration: 1500, icon: '🔄' });

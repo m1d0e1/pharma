@@ -206,10 +206,11 @@ describe('14–22: Permission Scenarios — hasUserPermissionSync', () => {
     expect(hasUserPermissionSync(user, 'flag_e')).toBe(false);
   });
 
-  test('21: owner and admin roles bypass permission checks', async () => {
+  test('21: owner bypasses checks while admin follows configured permissions', async () => {
     const { hasUserPermissionSync } = await import('@/lib/auth/local');
     expect(hasUserPermissionSync({ role: 'owner', permissions: '[]' }, 'anything')).toBe(true);
-    expect(hasUserPermissionSync({ role: 'admin', permissions: '{}' }, 'anything')).toBe(true);
+    expect(hasUserPermissionSync({ role: 'admin', permissions: '{}' }, 'anything')).toBe(false);
+    expect(hasUserPermissionSync({ role: 'admin', permissions: '{"anything":true}' }, 'anything')).toBe(true);
   });
 
   test('22: empty / absent permissions object returns false', async () => {
@@ -665,7 +666,8 @@ describe('38–43: Session Scenarios', () => {
     const { hasUserPermissionSync } = await import('@/lib/auth/local');
 
     expect(hasUserPermissionSync({ role: 'owner', permissions: '{}' }, 'can_manage_inventory')).toBe(true);
-    expect(hasUserPermissionSync({ role: 'admin', permissions: '{}' }, 'can_manage_inventory')).toBe(true);
+    expect(hasUserPermissionSync({ role: 'admin', permissions: '{}' }, 'can_manage_inventory')).toBe(false);
+    expect(hasUserPermissionSync({ role: 'admin', permissions: '{"can_manage_inventory":true}' }, 'can_manage_inventory')).toBe(true);
     expect(hasUserPermissionSync({ role: 'manager', permissions: '{"can_manage_inventory":true}' }, 'can_manage_inventory')).toBe(true);
     expect(hasUserPermissionSync({ role: 'manager', permissions: '{}' }, 'can_manage_inventory')).toBe(false);
     expect(hasUserPermissionSync({ role: 'pharmacist', permissions: '{"can_view_patients":true}' }, 'can_view_patients')).toBe(true);

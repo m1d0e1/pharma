@@ -77,6 +77,11 @@ async function assertBarcodeAvailable(barcode: string | null, excludedDrugId?: n
 
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local'
+
+async function canManageInventory() {
+  const user = await getLocalSession();
+  return !!user && hasUserPermissionSync(user, 'can_manage_inventory');
+}
 import { secureCache } from '@/lib/cache/secure_cache';
 
 export async function getMasterDrugAction(id: number) {
@@ -94,9 +99,7 @@ export async function getMasterDrugAction(id: number) {
 export async function addMasterDrugAction(data: any) {
   try {
     const localUser = await getLocalSession();
-    if (!localUser || (localUser.role !== 'owner' && localUser.role !== 'admin')) {
-      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
-    }
+    if (!localUser || !hasUserPermissionSync(localUser, 'can_manage_inventory')) return { success: false, error: 'غير مصرح' };
     const tradeName = (data.trade_name || data.trade_name_en || '').trim();
     const tradeNameEn = (data.trade_name_en || data.trade_name || '').trim() || null;
     if (!tradeName) {
@@ -232,6 +235,13 @@ export async function searchInventoryAction(query: string) {
 export async function updateMasterDrugAction(id: number, data: any) {
   try {
     const localUser = await getLocalSession();
+    if (!localUser || !hasUserPermissionSync(localUser, 'can_manage_inventory')) return { success: false, error: 'غير مصرح' };
+    if (!hasUserPermissionSync(localUser, 'can_modify_unit_conversion')) {
+      const current = await db.prepare('SELECT large_to_medium, medium_to_small FROM master_drugs WHERE id = ?').get(id) as any;
+      const changesLarge = data.large_to_medium !== undefined && Number(data.large_to_medium || 1) !== Number(current?.large_to_medium || 1);
+      const changesSmall = data.medium_to_small !== undefined && Number(data.medium_to_small || 1) !== Number(current?.medium_to_small || 1);
+      if (changesLarge || changesSmall) return { success: false, error: 'غير مصرح بتعديل معاملات التحويل' };
+    }
     const tradeName = (data.trade_name || data.trade_name_en || '').trim();
     const tradeNameEn = (data.trade_name_en || data.trade_name || '').trim() || null;
     if (!tradeName) {
@@ -476,6 +486,7 @@ export async function getUnitsAction() {
 
 export async function addUnitAction(data: { name_ar: string, name_en?: string }) {
   try {
+    if (!(await canManageInventory())) return { success: false, error: 'غير مصرح' };
     const stmt = db.prepare('INSERT INTO units (name_ar, name_en) VALUES (?, ?)');
     const result = await stmt.run(data.name_ar, data.name_en || null);
     revalidatePath('/stores/units');
@@ -487,6 +498,7 @@ export async function addUnitAction(data: { name_ar: string, name_en?: string })
 
 export async function updateUnitAction(id: number, data: { name_ar: string, name_en?: string }) {
   try {
+    if (!(await canManageInventory())) return { success: false, error: 'غير مصرح' };
     await db.prepare('UPDATE units SET name_ar = ?, name_en = ? WHERE id = ?').run(data.name_ar, data.name_en || null, id);
     revalidatePath('/stores/units');
     return { success: true };
@@ -497,6 +509,7 @@ export async function updateUnitAction(id: number, data: { name_ar: string, name
 
 export async function deleteUnitAction(id: number) {
   try {
+    if (!(await canManageInventory())) return { success: false, error: 'غير مصرح' };
     await db.prepare('DELETE FROM units WHERE id = ?').run(id);
     revalidatePath('/stores/units');
     return { success: true };
@@ -508,6 +521,7 @@ export async function deleteUnitAction(id: number) {
 // Product Categories (Hierarchical)
 export async function addProductCategoryAction(data: { name_ar: string, name_en?: string, parent_id?: number }) {
   try {
+    if (!(await canManageInventory())) return { success: false, error: 'غير مصرح' };
     const stmt = db.prepare('INSERT INTO product_categories (name_ar, name_en, parent_id) VALUES (?, ?, ?)');
     const result = await stmt.run(data.name_ar, data.name_en || null, data.parent_id || null);
     revalidatePath('/stores/categories');
@@ -519,6 +533,7 @@ export async function addProductCategoryAction(data: { name_ar: string, name_en?
 
 export async function updateProductCategoryAction(id: number, data: { name_ar: string, name_en?: string, parent_id?: number }) {
   try {
+    if (!(await canManageInventory())) return { success: false, error: 'غير مصرح' };
     await db.prepare('UPDATE product_categories SET name_ar = ?, name_en = ?, parent_id = ? WHERE id = ?').run(data.name_ar, data.name_en || null, data.parent_id || null, id);
     revalidatePath('/stores/categories');
     return { success: true };
@@ -530,9 +545,7 @@ export async function updateProductCategoryAction(id: number, data: { name_ar: s
 export async function deleteProductCategoryAction(id: number) {
   try {
     const localUser = await getLocalSession();
-    if (!localUser || (localUser.role !== 'owner' && localUser.role !== 'admin')) {
-      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
-    }
+    if (!localUser || !hasUserPermissionSync(localUser, 'can_manage_inventory')) return { success: false, error: 'غير مصرح' };
 
     // Check if it has children
     const check = await db.prepare('SELECT COUNT(*) as count FROM product_categories WHERE parent_id = ?').get(id) as any;
@@ -562,6 +575,7 @@ export async function getProductCategoriesAction() {
 // Alternatives
 export async function addAlternativeAction(drugId: number, altId: number) {
   try {
+    if (!(await canManageInventory())) return { success: false, error: 'غير مصرح' };
     const stmt = db.prepare('INSERT OR IGNORE INTO drug_alternatives (drug_id, alternative_id) VALUES (?, ?)');
     await stmt.run(drugId, altId);
     return { success: true };
@@ -586,6 +600,7 @@ export async function getAlternativesAction(drugId: number) {
 // Indications
 export async function addIndicationAction(data: { name_ar: string, name_en?: string }) {
   try {
+    if (!(await canManageInventory())) return { success: false, error: 'غير مصرح' };
     const stmt = db.prepare('INSERT INTO indications (name_ar, name_en) VALUES (?, ?)');
     const result = await stmt.run(data.name_ar, data.name_en || null);
     revalidatePath('/stores/indications');
@@ -597,6 +612,7 @@ export async function addIndicationAction(data: { name_ar: string, name_en?: str
 
 export async function updateIndicationAction(id: number, data: { name_ar: string, name_en?: string }) {
   try {
+    if (!(await canManageInventory())) return { success: false, error: 'غير مصرح' };
     await db.prepare('UPDATE indications SET name_ar = ?, name_en = ? WHERE id = ?').run(data.name_ar, data.name_en || null, id);
     revalidatePath('/stores/indications');
     return { success: true };
@@ -607,6 +623,7 @@ export async function updateIndicationAction(id: number, data: { name_ar: string
 
 export async function deleteIndicationAction(id: number) {
   try {
+    if (!(await canManageInventory())) return { success: false, error: 'غير مصرح' };
     await db.prepare('DELETE FROM indications WHERE id = ?').run(id);
     revalidatePath('/stores/indications');
     return { success: true };
@@ -636,6 +653,7 @@ export async function getScientificGroupsAction() {
 
 export async function addScientificGroupAction(data: { name_ar: string, name_en?: string }) {
   try {
+    if (!(await canManageInventory())) return { success: false, error: 'غير مصرح' };
     const stmt = db.prepare('INSERT INTO scientific_groups (name_ar, name_en) VALUES (?, ?)');
     const result = await stmt.run(data.name_ar, data.name_en || null);
     revalidatePath('/stores/scientific-groups');
@@ -647,6 +665,7 @@ export async function addScientificGroupAction(data: { name_ar: string, name_en?
 
 export async function updateScientificGroupAction(id: number, data: { name_ar: string, name_en?: string }) {
   try {
+    if (!(await canManageInventory())) return { success: false, error: 'غير مصرح' };
     await db.prepare('UPDATE scientific_groups SET name_ar = ?, name_en = ? WHERE id = ?').run(data.name_ar, data.name_en || null, id);
     revalidatePath('/stores/scientific-groups');
     return { success: true };
@@ -657,6 +676,7 @@ export async function updateScientificGroupAction(id: number, data: { name_ar: s
 
 export async function deleteScientificGroupAction(id: number) {
   try {
+    if (!(await canManageInventory())) return { success: false, error: 'غير مصرح' };
     await db.prepare('DELETE FROM scientific_groups WHERE id = ?').run(id);
     revalidatePath('/stores/scientific-groups');
     return { success: true };
@@ -677,6 +697,7 @@ export async function getItemNaturesAction() {
 
 export async function addItemNatureAction(data: { name_ar: string, name_en?: string }) {
   try {
+    if (!(await canManageInventory())) return { success: false, error: 'غير مصرح' };
     const stmt = db.prepare('INSERT INTO item_natures (name_ar, name_en) VALUES (?, ?)');
     const result = await stmt.run(data.name_ar, data.name_en || null);
     revalidatePath('/stores/nature');
@@ -688,6 +709,7 @@ export async function addItemNatureAction(data: { name_ar: string, name_en?: str
 
 export async function updateItemNatureAction(id: number, data: { name_ar: string, name_en?: string }) {
   try {
+    if (!(await canManageInventory())) return { success: false, error: 'غير مصرح' };
     await db.prepare('UPDATE item_natures SET name_ar = ?, name_en = ? WHERE id = ?').run(data.name_ar, data.name_en || null, id);
     revalidatePath('/stores/nature');
     return { success: true };
@@ -698,6 +720,7 @@ export async function updateItemNatureAction(id: number, data: { name_ar: string
 
 export async function deleteItemNatureAction(id: number) {
   try {
+    if (!(await canManageInventory())) return { success: false, error: 'غير مصرح' };
     await db.prepare('DELETE FROM item_natures WHERE id = ?').run(id);
     revalidatePath('/stores/nature');
     return { success: true };
@@ -718,6 +741,7 @@ export async function getUsageMethodsAction() {
 
 export async function addUsageMethodAction(data: { name_ar: string, name_en?: string }) {
   try {
+    if (!(await canManageInventory())) return { success: false, error: 'غير مصرح' };
     const stmt = db.prepare('INSERT INTO usage_methods (name_ar, name_en) VALUES (?, ?)');
     const result = await stmt.run(data.name_ar, data.name_en || null);
     revalidatePath('/stores/usage');
@@ -729,6 +753,7 @@ export async function addUsageMethodAction(data: { name_ar: string, name_en?: st
 
 export async function updateUsageMethodAction(id: number, data: { name_ar: string, name_en?: string }) {
   try {
+    if (!(await canManageInventory())) return { success: false, error: 'غير مصرح' };
     await db.prepare('UPDATE usage_methods SET name_ar = ?, name_en = ? WHERE id = ?').run(data.name_ar, data.name_en || null, id);
     revalidatePath('/stores/usage');
     return { success: true };
@@ -739,6 +764,7 @@ export async function updateUsageMethodAction(id: number, data: { name_ar: strin
 
 export async function deleteUsageMethodAction(id: number) {
   try {
+    if (!(await canManageInventory())) return { success: false, error: 'غير مصرح' };
     await db.prepare('DELETE FROM usage_methods WHERE id = ?').run(id);
     revalidatePath('/stores/usage');
     return { success: true };
@@ -759,6 +785,7 @@ export async function getAdjustmentReasonsAction() {
 
 export async function addAdjustmentReasonAction(data: { name_ar: string, name_en?: string }) {
   try {
+    if (!(await canManageInventory())) return { success: false, error: 'غير مصرح' };
     const stmt = db.prepare('INSERT INTO adjustment_reasons (name_ar, name_en) VALUES (?, ?)');
     const result = await stmt.run(data.name_ar, data.name_en || null);
     revalidatePath('/stores/adjustment-reasons');
@@ -770,6 +797,7 @@ export async function addAdjustmentReasonAction(data: { name_ar: string, name_en
 
 export async function updateAdjustmentReasonAction(id: number, data: { name_ar: string, name_en?: string }) {
   try {
+    if (!(await canManageInventory())) return { success: false, error: 'غير مصرح' };
     await db.prepare('UPDATE adjustment_reasons SET name_ar = ?, name_en = ? WHERE id = ?').run(data.name_ar, data.name_en || null, id);
     revalidatePath('/stores/adjustment-reasons');
     return { success: true };
@@ -780,6 +808,7 @@ export async function updateAdjustmentReasonAction(id: number, data: { name_ar: 
 
 export async function deleteAdjustmentReasonAction(id: number) {
   try {
+    if (!(await canManageInventory())) return { success: false, error: 'غير مصرح' };
     await db.prepare('DELETE FROM adjustment_reasons WHERE id = ?').run(id);
     revalidatePath('/stores/adjustment-reasons');
     return { success: true };
@@ -793,6 +822,7 @@ export async function deleteAdjustmentReasonAction(id: number) {
 // Generic Delete/Update for other tables
 export async function updateGenericBilingualAction(table: string, id: number, data: { name_ar: string, name_en?: string }) {
   try {
+    if (!(await canManageInventory())) return { success: false, error: 'غير مصرح' };
     const ALLOWED = new Set(['indications', 'item_natures', 'usage_methods', 'scientific_groups', 'units', 'manufacturers']);
     if (!ALLOWED.has(table)) return { success: false, error: 'Table not allowed' };
 
@@ -806,6 +836,7 @@ export async function updateGenericBilingualAction(table: string, id: number, da
 
 export async function deleteGenericBilingualAction(table: string, id: number) {
   try {
+    if (!(await canManageInventory())) return { success: false, error: 'غير مصرح' };
     const ALLOWED = new Set(['indications', 'item_natures', 'usage_methods', 'scientific_groups', 'units', 'manufacturers']);
     if (!ALLOWED.has(table)) return { success: false, error: 'Table not allowed' };
 
@@ -832,6 +863,7 @@ export async function getDrugsByIndicationAction(indicationId: number) {
 
 export async function addDrugIndicationAction(drugId: number, indicationId: number) {
   try {
+    if (!(await canManageInventory())) return { success: false, error: 'غير مصرح' };
     const stmt = db.prepare('INSERT OR IGNORE INTO drug_indications (drug_id, indication_id) VALUES (?, ?)');
     await stmt.run(drugId, indicationId);
     revalidatePath('/stores/drug-indications');
@@ -843,6 +875,7 @@ export async function addDrugIndicationAction(drugId: number, indicationId: numb
 
 export async function deleteDrugIndicationAction(drugId: number, indicationId: number) {
   try {
+    if (!(await canManageInventory())) return { success: false, error: 'غير مصرح' };
     await db.prepare('DELETE FROM drug_indications WHERE drug_id = ? AND indication_id = ?').run(drugId, indicationId);
     revalidatePath('/stores/drug-indications');
     return { success: true };
@@ -971,6 +1004,7 @@ export async function getManufacturersAction() {
 
 export async function addManufacturerAction(data: { name_ar: string, name_en?: string }) {
   try {
+    if (!(await canManageInventory())) return { success: false, error: 'غير مصرح' };
     const stmt = db.prepare('INSERT INTO manufacturers (name_ar, name_en) VALUES (?, ?)');
     const result = await stmt.run(data.name_ar, data.name_en || null);
     revalidatePath('/stores/manufacturers');
@@ -984,9 +1018,6 @@ export async function addManufacturerAction(data: { name_ar: string, name_en?: s
 export async function getOpeningBalancesAction() {
   try {
     const session = await getLocalSession();
-    if (!session || (session.role !== 'owner' && session.role !== 'admin')) {
-      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
-    }
     if (!session || !hasUserPermissionSync(session, 'can_view_opening_balances')) return { success: false, error: 'Unauthorized' };
 
     const items = await db.prepare(`
@@ -1017,6 +1048,8 @@ export async function createOpeningBalanceAction(notes?: string) {
 
 export async function addOpeningBalanceItemAction(obId: string, item: { drug_id: number, quantity: number, unit_id?: number, expiry_date?: string, selling_price?: number, cost_price?: number, discount_pct?: number }) {
   try {
+    const session = await getLocalSession();
+    if (!session || !hasUserPermissionSync(session, 'can_view_opening_balances')) return { success: false, error: 'Unauthorized' };
     await db.prepare(`
       INSERT INTO opening_balance_items (ob_id, drug_id, quantity, unit_id, expiry_date, selling_price, cost_price, discount_pct)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -1030,9 +1063,6 @@ export async function addOpeningBalanceItemAction(obId: string, item: { drug_id:
 export async function completeOpeningBalanceAction(obId: string) {
   try {
     const session = await getLocalSession();
-    if (!session || (session.role !== 'owner' && session.role !== 'admin')) {
-      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
-    }
     if (!session || !hasUserPermissionSync(session, 'can_view_opening_balances')) return { success: false, error: 'Unauthorized' };
 
     const transaction = db.transaction(async () => {
@@ -1063,10 +1093,7 @@ export async function completeOpeningBalanceAction(obId: string) {
 export async function createStockAdjustmentAction(inventoryId: string, data: { reason_id: number, old_quantity: number, new_quantity: number, notes?: string }) {
   try {
     const session = await getLocalSession();
-    if (!session || (session.role !== 'owner' && session.role !== 'admin')) {
-      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
-    }
-    if (!session) return { success: false, error: 'Unauthorized' };
+    if (!session || (!hasUserPermissionSync(session, 'can_view_settlement') && !hasUserPermissionSync(session, 'can_manage_inventory'))) return { success: false, error: 'Unauthorized' };
 
     const transaction = db.transaction(async () => {
       // 1. Record adjustment
@@ -1091,9 +1118,6 @@ export async function createStockAdjustmentAction(inventoryId: string, data: { r
 export async function addDrugAlternativeAction(drugId: number, alternativeId: number) {
   try {
     const localUser = await getLocalSession();
-    if (!localUser || (localUser.role !== 'owner' && localUser.role !== 'admin')) {
-      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
-    }
     if (!localUser || !hasUserPermissionSync(localUser, 'can_manage_inventory')) return { success: false, error: 'غير مصرح' };
 
     const existing = await db.prepare('SELECT id FROM drug_alternatives WHERE (drug_id = ? AND alternative_id = ?) OR (drug_id = ? AND alternative_id = ?)').get(drugId, alternativeId, alternativeId, drugId);
@@ -1127,9 +1151,6 @@ export async function removeDrugAlternativeAction(drugId: number, alternativeId:
 export async function addDrugInteractionAction(ingredientA: string, ingredientB: string, severity: string = 'minor') {
   try {
     const localUser = await getLocalSession();
-    if (!localUser || (localUser.role !== 'owner' && localUser.role !== 'admin')) {
-      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
-    }
     if (!localUser || !hasUserPermissionSync(localUser, 'can_manage_inventory')) return { success: false, error: 'غير مصرح' };
 
     if (!ingredientA || !ingredientB) return { success: false, error: 'المادة الفعالة مطلوبة' };

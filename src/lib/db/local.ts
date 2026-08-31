@@ -874,7 +874,17 @@ export function initLocalDb() {
   addColumnSafely('shortages', 'status', "TEXT DEFAULT 'pending'");
   addColumnSafely('shortages', 'notes', 'TEXT');
   addColumnSafely('shortages', 'priority', "TEXT DEFAULT 'normal'");
-  addColumnSafely('shortages', 'created_at', 'DATETIME DEFAULT CURRENT_TIMESTAMP');
+  addColumnSafely('shortages', 'created_at', 'DATETIME');
+  db.exec("UPDATE shortages SET pharmacy_id = 'local_default' WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = ''");
+  db.exec('UPDATE shortages SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL');
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS shortages_set_created_at
+    AFTER INSERT ON shortages
+    WHEN NEW.created_at IS NULL
+    BEGIN
+      UPDATE shortages SET created_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+    END
+  `);
   db.exec('CREATE INDEX IF NOT EXISTS idx_shortages_pharmacy_drug_status ON shortages(pharmacy_id, drug_id, status)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_shortages_pharmacy_status ON shortages(pharmacy_id, status)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_shortages_drug_id ON shortages(drug_id)');

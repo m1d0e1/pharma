@@ -50,16 +50,13 @@ const db = {
 
 
 import { createClient } from '@/utils/supabase/client';
-import { getLocalSession, hasUserPermissionSync, isOwnerOrAdmin } from '@/lib/auth/local';
+import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 
 export async function updatePharmacyAction(formData: any) {
   try {
     const localUser = await getLocalSession();
-    if (!isOwnerOrAdmin(localUser)) {
-      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
-    }
-    if (!isOwnerOrAdmin(localUser)) return { success: false, error: 'غير مصرح' };
+    if (!localUser || !hasUserPermissionSync(localUser, 'can_view_settings')) return { success: false, error: 'غير مصرح' };
 
     // 1. Update Cloud (Supabase)
     const supabase = await createClient();

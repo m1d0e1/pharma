@@ -1107,7 +1107,7 @@ pub(crate) async fn save_purchase_invoice_tx(
             .bind(pharmacy_scope)
             .execute(&mut **tx)
             .await
-            .ok();
+            .map_err(|e| e.to_string())?;
         }
     }
 
@@ -3598,6 +3598,7 @@ mod tests {
             "CREATE TABLE cash_movements (id TEXT, user_id TEXT, shift_id TEXT, type TEXT, amount REAL, category TEXT, notes TEXT, date TEXT)",
             "CREATE TABLE shifts (id TEXT, user_id TEXT, status TEXT)",
             "CREATE TABLE activity_log (user_id TEXT, action TEXT, details TEXT)",
+            "CREATE TABLE shortages (id INTEGER PRIMARY KEY AUTOINCREMENT, drug_id INTEGER, pharmacy_id TEXT, requested_quantity REAL, status TEXT)",
         ] {
             sqlx::query(sql).execute(&mut conn).await.unwrap();
         }
@@ -4089,6 +4090,20 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
+            r#"
+            INSERT INTO shortages (drug_id, pharmacy_id, requested_quantity, status)
+            VALUES
+              (90001, 'fresh-pharmacy', 7, 'pending'),
+              (90001, 'fresh-pharmacy', 7, 'ordered'),
+              (90001, 'fresh-pharmacy', 7, NULL),
+              (90001, 'fresh-pharmacy', 7, ''),
+              (90001, 'other-pharmacy', 7, 'pending')
+            "#,
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        sqlx::query(
             "INSERT INTO shifts (id, user_id, starting_cash, status) VALUES ('fresh-shift', 'fresh-admin', 500, 'open')",
         )
         .execute(&mut conn)
@@ -4308,6 +4323,64 @@ mod tests {
         .await
         .unwrap();
         assert!(draft_link.is_none());
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM shortages WHERE drug_id = 90001 AND pharmacy_id = 'fresh-pharmacy' AND status = 'received'",
+            )
+            .fetch_one(&mut conn)
+            .await
+            .unwrap(),
+            0
+        );
+
+        sqlx::query(
+            r#"
+            CREATE TRIGGER block_shortage_receipt
+            BEFORE UPDATE OF status ON shortages
+            WHEN NEW.status = 'received'
+            BEGIN
+              SELECT RAISE(FAIL, 'blocked shortage receipt');
+            END
+            "#,
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        let mut tx = conn.begin().await.unwrap();
+        let blocked = save_purchase_invoice_tx(
+            &mut tx,
+            fresh_purchase(
+                "blocked-purchase",
+                "BLOCKED-PURCHASE",
+                "cash",
+                "completed",
+                vec![fresh_purchase_line("2032-01-01", 1.0, 0.0, None)],
+            ),
+        )
+        .await
+        .unwrap_err();
+        tx.rollback().await.unwrap();
+        assert!(blocked.contains("blocked shortage receipt"));
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM purchase_invoices WHERE id = 'blocked-purchase'",
+            )
+            .fetch_one(&mut conn)
+            .await
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM inventory")
+                .fetch_one(&mut conn)
+                .await
+                .unwrap(),
+            0
+        );
+        sqlx::query("DROP TRIGGER block_shortage_receipt")
+            .execute(&mut conn)
+            .await
+            .unwrap();
 
         let mut cash = fresh_purchase(
             "fresh-cash",
@@ -4327,6 +4400,24 @@ mod tests {
         let completed = save_purchase_invoice_tx(&mut tx, cash).await.unwrap();
         tx.commit().await.unwrap();
         assert!((completed.total_amount - 619.2).abs() < 0.001);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM shortages WHERE drug_id = 90001 AND pharmacy_id = 'fresh-pharmacy' AND status = 'received'",
+            )
+            .fetch_one(&mut conn)
+            .await
+            .unwrap(),
+            4
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT status FROM shortages WHERE drug_id = 90001 AND pharmacy_id = 'other-pharmacy'",
+            )
+            .fetch_one(&mut conn)
+            .await
+            .unwrap(),
+            "pending"
+        );
         let stored_default_date: String = sqlx::query_scalar(
             "SELECT invoice_date FROM purchase_invoices WHERE id = 'fresh-cash'",
         )

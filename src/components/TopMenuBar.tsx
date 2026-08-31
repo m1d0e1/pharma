@@ -68,7 +68,7 @@ const MENUS: Menu[] = [
     items: [
       { type: 'link', label: 'المخزون',             href: '/inventory',                  icon: Package,        roles: ['owner','admin','pharmacist'] },
       { type: 'link', label: 'النواقص',             href: '/inventory/low-stock',        icon: AlertTriangle,  roles: ['owner','admin','pharmacist'], permission: 'can_view_low_stock' },
-      { type: 'link', label: 'حركات الأصناف',       href: '/inventory/item-movements',   icon: Activity,       roles: ['owner','admin','pharmacist'], permission: 'can_manage_inventory' },
+      { type: 'link', label: 'حركات الأصناف',       href: '/inventory/item-movements',   icon: Activity,       roles: ['owner','admin','pharmacist'], permission: 'preview_item_movements' },
       { type: 'separator' },
       { type: 'link', label: 'إعادة التموين',       href: '/restock',                    icon: RefreshCw,      roles: ['owner','admin'], permission: 'can_view_restock' },
       { type: 'link', label: 'تسوية المخزون',       href: '/inventory/settlement',       icon: ArrowLeftRight, roles: ['owner','admin','pharmacist'], permission: 'can_view_settlement' },
@@ -81,7 +81,7 @@ const MENUS: Menu[] = [
     items: [
       { type: 'link', label: 'المشتريات',              href: '/purchases',                 icon: ShoppingCart,  roles: ['owner','admin'], permission: 'can_view_purchases' },
       { type: 'link', label: 'فاتورة مشتريات جديدة',  href: '/purchases/new',             icon: PlusCircle,    roles: ['owner','admin'], permission: 'can_view_purchases' },
-      { type: 'link', label: 'أوامر الشراء',           href: '/purchase-orders',           icon: ClipboardList, roles: ['owner','admin'] },
+      { type: 'link', label: 'أوامر الشراء',           href: '/purchase-orders',           icon: ClipboardList, roles: ['owner','admin'], permission: 'can_view_purchases' },
       { type: 'link', label: 'الموردون',               href: '/purchases/suppliers',       icon: Truck,         roles: ['owner','admin'], permission: 'can_view_purchases' },
       { type: 'separator' },
       { type: 'link', label: 'مرتجعات للموردين',      href: '/purchases/returns',         icon: RotateCcw,     roles: ['owner','admin'], permission: 'can_view_purchases' },
@@ -93,23 +93,23 @@ const MENUS: Menu[] = [
     items: [
       { type: 'link', label: 'لوحة التحكم (الرئيسية)', href: '/',                 icon: Home,           roles: ['owner','admin','pharmacist'] },
       { type: 'separator' },
-      { type: 'link', label: 'المخازن',             href: '/stores',                     icon: Box,           roles: ['owner','admin'], permission: 'can_manage_inventory' },
-      { type: 'link', label: 'الأصناف',             href: '/stores/items',               icon: Layers,        roles: ['owner','admin'] },
-      { type: 'link', label: 'البدائل',             href: '/stores/alternatives',        icon: GitBranch,     roles: ['owner','admin'] },
+      { type: 'link', label: 'المخازن',             href: '/stores',                     icon: Box,           roles: ['owner','admin'], permission: 'can_view_stores' },
+      { type: 'link', label: 'الأصناف',             href: '/stores/items',               icon: Layers,        roles: ['owner','admin'], permission: 'can_view_stores' },
+      { type: 'link', label: 'البدائل',             href: '/stores/alternatives',        icon: GitBranch,     roles: ['owner','admin'], permission: 'can_view_stores' },
       { type: 'separator' },
-      { type: 'link', label: 'التصنيفات',           href: '/stores/categories',          icon: Tag,           roles: ['owner','admin'] },
-      { type: 'link', label: 'النوع',               href: '/stores/nature',              icon: Beaker,        roles: ['owner','admin'] },
-      { type: 'link', label: 'الاستخدام',           href: '/stores/usage',               icon: Stethoscope,   roles: ['owner','admin'] },
-      { type: 'link', label: 'الوحدات',             href: '/stores/units',               icon: Package,       roles: ['owner','admin'] },
-      { type: 'link', label: 'دواعي الإستخدام',            href: '/stores/indications',         icon: Pill,          roles: ['owner','admin'] },
-      { type: 'link', label: 'دواعي استخدام الأدوية',  href: '/stores/drug-indications',    icon: FlaskConical,  roles: ['owner','admin'] },
-      { type: 'link', label: 'الشركات المنتجة',    href: '/stores/manufacturers',       icon: Building2,     roles: ['owner','admin'] },
-      { type: 'link', label: 'المجموعات العلمية',  href: '/stores/scientific-groups',   icon: FlaskConical,  roles: ['owner','admin'] },
+      { type: 'link', label: 'التصنيفات',           href: '/stores/categories',          icon: Tag,           roles: ['owner','admin'], permission: 'can_view_stores' },
+      { type: 'link', label: 'النوع',               href: '/stores/nature',              icon: Beaker,        roles: ['owner','admin'], permission: 'can_view_stores' },
+      { type: 'link', label: 'الاستخدام',           href: '/stores/usage',               icon: Stethoscope,   roles: ['owner','admin'], permission: 'can_view_stores' },
+      { type: 'link', label: 'الوحدات',             href: '/stores/units',               icon: Package,       roles: ['owner','admin'], permission: 'can_view_stores' },
+      { type: 'link', label: 'دواعي الإستخدام',            href: '/stores/indications',         icon: Pill,          roles: ['owner','admin'], permission: 'can_view_stores' },
+      { type: 'link', label: 'دواعي استخدام الأدوية',  href: '/stores/drug-indications',    icon: FlaskConical,  roles: ['owner','admin'], permission: 'can_view_stores' },
+      { type: 'link', label: 'الشركات المنتجة',    href: '/stores/manufacturers',       icon: Building2,     roles: ['owner','admin'], permission: 'can_view_stores' },
+      { type: 'link', label: 'المجموعات العلمية',  href: '/stores/scientific-groups',   icon: FlaskConical,  roles: ['owner','admin'], permission: 'can_view_stores' },
       { type: 'separator' },
-      { type: 'link', label: 'التعديلات',           href: '/stores/adjustments',         icon: Wrench,        roles: ['owner','admin'] },
-      { type: 'link', label: 'أسباب التعديل',       href: '/stores/adjustment-reasons',  icon: FileText,      roles: ['owner','admin'] },
-      { type: 'link', label: 'نقص المخزون',         href: '/stores/shortages',           icon: AlertTriangle, roles: ['owner','admin'] },
-      { type: 'link', label: 'حذف الأصناف',         href: '/stores/delete-items',        icon: Trash2,        roles: ['owner','admin'] },
+      { type: 'link', label: 'التعديلات',           href: '/stores/adjustments',         icon: Wrench,        roles: ['owner','admin'], permission: 'can_view_stores' },
+      { type: 'link', label: 'أسباب التعديل',       href: '/stores/adjustment-reasons',  icon: FileText,      roles: ['owner','admin'], permission: 'can_view_stores' },
+      { type: 'link', label: 'نقص المخزون',         href: '/stores/shortages',           icon: AlertTriangle, roles: ['owner','admin'], permission: 'can_view_restock' },
+      { type: 'link', label: 'حذف الأصناف',         href: '/stores/delete-items',        icon: Trash2,        roles: ['owner','admin'], permission: 'can_view_stores' },
     ],
   },
   {
@@ -133,7 +133,7 @@ const MENUS: Menu[] = [
     ownerRoutes: ['/patients','/interactions'],
     items: [
       { type: 'link', label: 'المرضى',              href: '/patients',    icon: Users,       roles: ['owner','admin','pharmacist'], permission: 'can_view_patients' },
-      { type: 'link', label: 'التفاعلات الدوائية', href: '/interactions', icon: FlaskConical, roles: ['owner','admin','pharmacist'] },
+      { type: 'link', label: 'التفاعلات الدوائية', href: '/interactions', icon: FlaskConical, roles: ['owner','admin','pharmacist'], permission: 'can_view_patients' },
     ],
   },
   {
@@ -158,7 +158,7 @@ const MENUS: Menu[] = [
     id: 'reports', label: 'التقارير',
     ownerRoutes: ['/reports','/reports/sales','/reports/trial-balance','/expenses'],
     items: [
-      { type: 'link', label: 'التقارير',          href: '/reports',               icon: BarChart3,  roles: ['owner','admin'] },
+      { type: 'link', label: 'التقارير',          href: '/reports',               icon: BarChart3,  roles: ['owner','admin'], permission: 'rep_can_view_sales' },
       { type: 'link', label: 'تقارير المبيعات',  href: '/reports/sales',         icon: TrendingUp, roles: ['owner','admin'], permission: 'rep_can_view_sales' },
       { type: 'link', label: 'ميزان المراجعة',   href: '/reports/trial-balance', icon: PieChart,   roles: ['owner','admin'], permission: 'acc_can_view_reports' },
       { type: 'separator' },
@@ -247,10 +247,8 @@ export default function TopMenuBar({ userRole, permissions }: Props) {
 
   const canSee = useCallback((item: MenuItem): boolean => {
     if (item.type === 'separator' || item.type === 'action') return true
-    if (!item.roles) return true
-    if (!item.roles.includes(userRole)) return false
     if (item.permission) {
-      if (userRole === 'owner' || userRole === 'admin') return true
+      if (userRole === 'owner') return true
       
       let perms = permissions;
       let attempts = 0;
@@ -264,7 +262,7 @@ export default function TopMenuBar({ userRole, permissions }: Props) {
       }
       return perms ? (perms[item.permission] === true || perms[item.permission] === 'true' || perms[item.permission] == 1) : false
     }
-    return true
+    return !item.roles || item.roles.includes(userRole)
   }, [userRole, permissions])
 
   const isMenuActive = (menu: Menu) =>

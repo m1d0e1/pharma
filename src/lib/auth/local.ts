@@ -1,6 +1,5 @@
 // Universal Authentication Helper for local operations
 import { dbGet, dbExecute } from '@/lib/db/tauri';
-import { cache } from 'react';
 import { isTauri, isClient } from '@/lib/env';
 
 const SESSION_COOKIE = 'pharma_session';
@@ -210,7 +209,7 @@ export async function logoutLocal() {
   cookieStore.delete('subscriptionActivated');
 }
 
-export const getLocalSession = cache(async () => {
+export async function getLocalSession() {
   if (process.env.NODE_ENV === 'test' && (globalThis as any).__MOCK_SESSION__) {
     return (globalThis as any).__MOCK_SESSION__;
   }
@@ -221,7 +220,7 @@ export const getLocalSession = cache(async () => {
     try {
       const parsed = JSON.parse(stored);
       // Query the database to get the latest permissions/role for this user
-      const dbUser = await dbGet('SELECT id, username, role, full_name, pharmacy_id, permissions FROM users WHERE id = ?', [parsed.id]);
+      const dbUser = await dbGet('SELECT id, username, role, full_name, pharmacy_id, permissions FROM users WHERE id = ? AND is_active = 1', [parsed.id]);
       if (dbUser) {
         const updatedUser = {
           id: dbUser.id,
@@ -252,7 +251,7 @@ export const getLocalSession = cache(async () => {
 
     if (!userId) return null;
 
-    return await dbGet('SELECT * FROM users WHERE id = ?', [userId]);
+    return await dbGet('SELECT * FROM users WHERE id = ? AND is_active = 1', [userId]);
   } catch (error: any) {
     if (
       error &&
@@ -265,7 +264,7 @@ export const getLocalSession = cache(async () => {
     console.error('Error fetching server session:', error);
     return null;
   }
-});
+}
 
 export async function getPermissionValue(permissionKey: string, defaultValue: any = null) {
   const user = await getLocalSession();
@@ -289,7 +288,7 @@ export async function getPermissionValue(permissionKey: string, defaultValue: an
     }
   }
 
-  if (user.role === 'owner' || user.role === 'admin') {
+  if (user.role === 'owner') {
     if (permissionKey.includes('discount')) return 100;
     if (permissionKey.includes('max')) return 9999999;
     return true;
@@ -308,7 +307,8 @@ export function isOwnerOrAdmin(user: any): boolean {
 
 export function hasUserPermissionSync(user: any, permissionKey: string): boolean {
   if (!user) return false;
-  if (isOwnerOrAdmin(user)) return true;
+  // Owner access is fixed; admin permissions are configurable in staff management.
+  if (user.role === 'owner') return true;
   if (!user.permissions) return false;
   
   let perms = user.permissions;
@@ -347,7 +347,7 @@ export async function getClientSession() {
     const parsed = JSON.parse(stored);
     try {
       const dbUser = await dbGet(
-        'SELECT id, username, role, full_name, pharmacy_id, permissions FROM users WHERE id = ?',
+        'SELECT id, username, role, full_name, pharmacy_id, permissions FROM users WHERE id = ? AND is_active = 1',
         [parsed.id]
       );
       if (dbUser) {

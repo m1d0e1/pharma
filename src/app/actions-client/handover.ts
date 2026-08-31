@@ -153,11 +153,22 @@ export async function processHandoverAction(data: {
   receiverPasswordHash: string;
   notes?: string;
   autoOpenNewShift?: boolean;
+  closeOnly?: boolean;
+  managedUserId?: string;
+  deactivateManagedUser?: boolean;
+  authorizerPassword?: string;
 }) {
   try {
     const user = await getLocalSession();
-    if (!user || !hasUserPermissionSync(user, 'acc_can_view_handover')) {
+    const managedUserId = data.closeOnly ? data.managedUserId : undefined;
+    const isManagedClosure = Boolean(managedUserId);
+    const canManageStaff = user?.role === 'owner'
+      || (user?.role === 'admin' && hasUserPermissionSync(user, 'can_view_staff_manage'));
+    if (!user || (isManagedClosure ? !canManageStaff : !hasUserPermissionSync(user, 'acc_can_view_handover'))) {
       return { success: false, error: 'غير مصرح' };
+    }
+    if (managedUserId && String(managedUserId) === String(user.id)) {
+      return { success: false, error: 'لا يمكنك تعطيل حسابك الخاص' };
     }
     if (!Number.isFinite(data.actualCash) || data.actualCash < 0) {
       return { success: false, error: 'النقدية الفعلية غير صالحة' };
@@ -169,11 +180,25 @@ export async function processHandoverAction(data: {
       return { success: false, error: 'مبلغ التحويل أكبر من النقدية الفعلية في الدرج' };
     }
 
-    // Validate receiver
-    const receiver = await db.prepare('SELECT id, password_hash FROM users WHERE username = ? AND is_active = 1').get(data.receiverUsername) as any;
-    if (!receiver) return { success: false, error: 'المستلم غير موجود' };
-    if (!data.receiverPasswordHash || !receiver.password_hash || !await verifyPassword(data.receiverPasswordHash, receiver.password_hash)) {
-      return { success: false, error: 'كلمة مرور المستلم غير صحيحة' };
+    let managedUser: any = null;
+    let receiver: any = null;
+    if (managedUserId) {
+      managedUser = await db.prepare('SELECT id, username, role FROM users WHERE id = ? AND is_active = 1').get(managedUserId) as any;
+      if (!managedUser) return { success: false, error: 'المستخدم غير موجود أو الحساب معطل بالفعل' };
+      if (managedUser.role === 'owner' && user.role !== 'owner') {
+        return { success: false, error: 'لا يمكنك تعطيل حساب المالك' };
+      }
+      const authorizer = await db.prepare('SELECT password_hash FROM users WHERE id = ? AND is_active = 1').get(user.id) as any;
+      if (!data.authorizerPassword || !authorizer?.password_hash || !await verifyPassword(data.authorizerPassword, authorizer.password_hash)) {
+        return { success: false, error: 'كلمة مرور المسؤول غير صحيحة' };
+      }
+    } else {
+      // Validate receiver for a normal handover.
+      receiver = await db.prepare('SELECT id, password_hash FROM users WHERE username = ? AND is_active = 1').get(data.receiverUsername) as any;
+      if (!receiver) return { success: false, error: 'المستلم غير موجود' };
+      if (!data.receiverPasswordHash || !receiver.password_hash || !await verifyPassword(data.receiverPasswordHash, receiver.password_hash)) {
+        return { success: false, error: 'كلمة مرور المستلم غير صحيحة' };
+      }
     }
     
     const getAccount = async (cat: string) => {
@@ -193,7 +218,8 @@ export async function processHandoverAction(data: {
 
     const transaction = db.transaction(async () => {
       const details = await loadHandoverDetails(data.shiftId);
-      if (String(details.user_id) !== String(user.id) || details.status !== 'open') {
+      const shiftOwnerId = managedUserId || user.id;
+      if (String(details.user_id) !== String(shiftOwnerId) || details.status !== 'open') {
         throw new Error('الوردية غير مفتوحة أو لا تخص المستخدم الحالي');
       }
 
@@ -206,7 +232,7 @@ export async function processHandoverAction(data: {
         await db.prepare(`
           INSERT INTO cash_movements (id, user_id, shift_id, type, category, amount, target_name, notes, date)
           VALUES (?, ?, ?, 'disbursement', 'handover', ?, ?, ?, datetime('now', 'localtime'))
-        `).run(movementId, user.id, data.shiftId, data.transferAmount, data.receiverUsername, data.notes || 'تسليم درج');
+        `).run(movementId, shiftOwnerId, data.shiftId, data.transferAmount, managedUserId ? 'الخزينة الرئيسية - إغلاق حساب مستخدم' : data.receiverUsername, data.notes || 'تسليم درج');
       }
 
       if (data.transferAmount > 0 && data.transferTargetType === 'bank') {
@@ -268,19 +294,26 @@ export async function processHandoverAction(data: {
         data.transferAmount,
         data.transferTargetType || 'treasury',
         difference,
-        receiver.id,
+        receiver?.id || null,
         data.notes || null,
         shiftStatus,
         data.shiftId,
-        user.id
+        shiftOwnerId
       );
       if (shiftUpdate.changes !== 1) throw new Error('تم إغلاق الوردية أو تعديلها بالفعل');
 
       await db.prepare('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)').run(
         user.id,
-        'HANDOVER',
-        `Handed over ${data.transferAmount} to ${data.receiverUsername}; difference ${difference.toFixed(2)}`
+        managedUserId ? 'CLOSE_USER_SHIFT_AND_DEACTIVATE' : 'HANDOVER',
+        managedUserId
+          ? `Closed shift ${data.shiftId} and deactivated ${managedUser.username}; cash ${data.actualCash}; difference ${difference.toFixed(2)}`
+          : `Handed over ${data.transferAmount} to ${data.receiverUsername}; difference ${difference.toFixed(2)}`
       );
+
+      if (managedUserId && data.deactivateManagedUser) {
+        const deactivated = await db.prepare('UPDATE users SET is_active = 0 WHERE id = ? AND is_active = 1').run(managedUserId);
+        if (deactivated.changes !== 1) throw new Error('تعذر تعطيل حساب المستخدم');
+      }
 
       // 2. Determine next shift starting cash
       const nextShiftCash = data.transferTargetType === 'next_shift'
@@ -289,7 +322,7 @@ export async function processHandoverAction(data: {
 
       // 3. Auto-open next shift atomically in the database if requested
       let nextShiftId: string | null = null;
-      if (data.autoOpenNewShift) {
+      if (data.autoOpenNewShift && !managedUserId) {
         nextShiftId = generateId();
         await db.prepare(`
           INSERT INTO shifts (id, user_id, starting_cash, notes, status)
@@ -324,7 +357,7 @@ export async function processHandoverAction(data: {
         status: shiftStatus,
         newShiftId: nextShiftId,
         startingCash: nextShiftCash,
-        receiverId: receiver.id,
+        receiverId: receiver?.id || null,
         transferTargetType: data.transferTargetType
       };
     });

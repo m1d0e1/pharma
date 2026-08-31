@@ -20,7 +20,8 @@ import {
   Key,
   User as UserIcon,
   Box,
-  BarChart3
+  BarChart3,
+  AlertTriangle
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { cn } from '@/lib/utils';
@@ -245,17 +246,33 @@ interface User {
   job_name_ar?: string;
 }
 
+interface OpenShiftDeletion {
+  userId: string;
+  name: string;
+  shiftId: string;
+  startTime: string;
+  expectedCash: number;
+}
+
+type DeleteUserResult = {
+  success: boolean;
+  error?: string;
+  code?: 'OPEN_SHIFT';
+  openShift?: { id: string; start_time: string; expected_cash: number };
+};
+
 interface Props {
   users: User[];
   jobs: any[];
   onUpdatePermissions: (userId: string, permissions: PermissionSet) => Promise<{ success: boolean; error?: string }>;
   onAddUser: (data: any) => Promise<{ success: boolean; error?: string }>;
-  onDeleteUser: (userId: string) => Promise<{ success: boolean; error?: string }>;
+  onDeleteUser: (userId: string) => Promise<DeleteUserResult>;
+  onCloseShiftAndDelete: (data: { userId: string; shiftId: string; actualCash: number; authorizerPassword: string; notes?: string }) => Promise<{ success: boolean; error?: string }>;
   onUpdateUser: (userId: string, data: any) => Promise<{ success: boolean; error?: string }>;
   onResetPassword: (userId: string, newPassword: string) => Promise<{ success: boolean; error?: string }>;
 }
 
-export default function StaffManagementClient({ users, jobs, onUpdatePermissions, onAddUser, onDeleteUser, onUpdateUser, onResetPassword }: Props) {
+export default function StaffManagementClient({ users, jobs, onUpdatePermissions, onAddUser, onDeleteUser, onCloseShiftAndDelete, onUpdateUser, onResetPassword }: Props) {
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
   const [showResetModal, setShowResetModal] = useState<User | null>(null);
@@ -285,6 +302,10 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
   const [editPermissions, setEditPermissions] = useState<PermissionSet>(defaultPermissions);
   const [activeTab, setActiveTab] = useState<'info' | 'personal' | 'sales' | 'suspended' | 'purchases' | 'inventory' | 'accounts' | 'reports' | 'other'>('info');
   const [isSaving, setIsSaving] = useState(false);
+  const [openShiftDeletion, setOpenShiftDeletion] = useState<OpenShiftDeletion | null>(null);
+  const [actualCash, setActualCash] = useState('');
+  const [authorizerPassword, setAuthorizerPassword] = useState('');
+  const [closingNotes, setClosingNotes] = useState('');
 
   const handleEdit = (user: User) => {
     setSelectedUser(user);
@@ -415,13 +436,48 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
   };
 
   const handleDelete = async (userId: string, name: string) => {
-    if (!confirm(`هل أنت متأكد من حذف الموظف "${name}"؟ لا يمكن التراجع عن هذا الإجراء.`)) return;
+    if (!confirm(`هل تريد تعطيل حساب الموظف "${name}"؟ ستظل سجلاته المالية محفوظة.`)) return;
     setIsSaving(true);
     const res = await onDeleteUser(userId);
     if (res.success) {
-      toast.success('تم حذف الموظف بنجاح');
+      toast.success('تم تعطيل حساب الموظف مع الاحتفاظ بسجلاته');
+    } else if (res.code === 'OPEN_SHIFT' && res.openShift) {
+      const expectedCash = Number(res.openShift.expected_cash || 0);
+      setOpenShiftDeletion({
+        userId,
+        name,
+        shiftId: res.openShift.id,
+        startTime: res.openShift.start_time,
+        expectedCash,
+      });
+      setActualCash(expectedCash.toFixed(2));
+      setAuthorizerPassword('');
+      setClosingNotes('');
     } else {
       toast.error(res.error || 'فشل حذف الموظف');
+    }
+    setIsSaving(false);
+  };
+
+  const handleCloseShiftAndDelete = async () => {
+    if (!openShiftDeletion) return;
+    const countedCash = Number(actualCash);
+    if (!Number.isFinite(countedCash) || countedCash < 0) return toast.error('أدخل النقدية الفعلية الصحيحة');
+    if (!authorizerPassword) return toast.error('كلمة مرور المسؤول مطلوبة');
+
+    setIsSaving(true);
+    const res = await onCloseShiftAndDelete({
+      userId: openShiftDeletion.userId,
+      shiftId: openShiftDeletion.shiftId,
+      actualCash: countedCash,
+      authorizerPassword,
+      notes: closingNotes,
+    });
+    if (res.success) {
+      toast.success('تمت تسوية الوردية وتعطيل حساب الموظف');
+      setOpenShiftDeletion(null);
+    } else {
+      toast.error(res.error || 'فشل إغلاق الوردية وتعطيل الحساب');
     }
     setIsSaving(false);
   };
@@ -1054,6 +1110,47 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
               >
                 {isSaving ? 'جاري الحفظ...' : 'حفظ الموظف'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Open shift must be reconciled before the account is deactivated. */}
+      {openShiftDeletion && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-[120] p-4">
+          <div className="bg-white dark:bg-slate-900 w-full max-w-lg rounded-[40px] shadow-hard border border-rose-100 dark:border-rose-900/30 overflow-hidden">
+            <div className="p-8 bg-rose-50 dark:bg-rose-900/10 flex items-center gap-4">
+              <div className="w-12 h-12 bg-rose-100 dark:bg-rose-900/30 rounded-2xl flex items-center justify-center text-rose-600">
+                <AlertTriangle className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="font-black text-xl text-slate-900 dark:text-white">لدى الموظف وردية مفتوحة</h3>
+                <p className="text-rose-600 text-sm font-bold">{openShiftDeletion.name}</p>
+              </div>
+            </div>
+            <div className="p-8 space-y-5">
+              <div className="grid grid-cols-2 gap-4 rounded-2xl bg-slate-50 dark:bg-slate-800 p-5 text-sm font-bold">
+                <div>النقدية المتوقعة<br /><strong>{openShiftDeletion.expectedCash.toFixed(2)} ج.م</strong></div>
+                <div>بداية الوردية<br /><strong>{new Date(openShiftDeletion.startTime).toLocaleString('ar-EG')}</strong></div>
+              </div>
+              <label className="block space-y-2">
+                <span className="text-sm font-black">النقدية الفعلية في الدرج</span>
+                <input type="number" min="0" step="0.01" value={actualCash} onChange={e => setActualCash(e.target.value)} className="w-full px-5 py-4 bg-slate-50 dark:bg-slate-800 rounded-2xl font-bold outline-none border-2 border-transparent focus:border-rose-500" />
+              </label>
+              <label className="block space-y-2">
+                <span className="text-sm font-black">ملاحظات الإغلاق (اختياري)</span>
+                <input value={closingNotes} onChange={e => setClosingNotes(e.target.value)} className="w-full px-5 py-4 bg-slate-50 dark:bg-slate-800 rounded-2xl font-bold outline-none border-2 border-transparent focus:border-rose-500" />
+              </label>
+              <label className="block space-y-2">
+                <span className="text-sm font-black">كلمة مرور المسؤول للتأكيد</span>
+                <input type="password" value={authorizerPassword} onChange={e => setAuthorizerPassword(e.target.value)} className="w-full px-5 py-4 bg-slate-50 dark:bg-slate-800 rounded-2xl font-bold outline-none border-2 border-transparent focus:border-rose-500" />
+              </label>
+              <p className="text-xs font-bold text-slate-500">سيتم تحويل النقدية الفعلية إلى الخزينة الرئيسية، وتسجيل العجز أو الزيادة، ثم تعطيل الحساب دون حذف سجلاته.</p>
+              <div className="flex gap-4">
+                <button onClick={handleCloseShiftAndDelete} disabled={isSaving} className="flex-1 py-4 bg-rose-600 text-white rounded-2xl font-black disabled:opacity-50">
+                  {isSaving ? 'جاري التنفيذ...' : 'إغلاق الوردية وتعطيل الحساب'}
+                </button>
+                <button onClick={() => setOpenShiftDeletion(null)} disabled={isSaving} className="px-8 py-4 bg-slate-100 dark:bg-slate-800 rounded-2xl font-black">إلغاء</button>
+              </div>
             </div>
           </div>
         </div>

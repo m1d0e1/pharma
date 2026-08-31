@@ -410,7 +410,7 @@ describe('Exhaustive Frontend UI & Business Logic Test Suite (All Domains & Feat
       expect(screen.getByText('PO-001')).toBeInTheDocument();
       expect(screen.getByText('مورد الأدوية الحديثة')).toBeInTheDocument();
 
-      const completeBtn = screen.getByTitle('تم الاستلام');
+      const completeBtn = screen.getByTitle('إغلاق الطلب (التوريد يتم بفاتورة شراء)');
       fireEvent.click(completeBtn);
 
       await waitFor(() => {
@@ -586,6 +586,7 @@ describe('Exhaustive Frontend UI & Business Logic Test Suite (All Domains & Feat
           drug={{ id: 99, trade_name: 'كونتراست شراب' }}
           onNewPurchaseOrder={onNewPO}
           onNegativeSale={onNegativeSale}
+          allowNegativeSale={true}
         />
       );
 

@@ -43,40 +43,48 @@ const safeFormat = (dateStr: string | null | undefined, fmt: string) => {
   return isValid(d) ? format(d, fmt) : '-';
 };
 
+const hasConfiguredPermission = (user: any, permission: string) => {
+  if (user?.role === 'owner') return true;
+  let values = user?.permissions;
+  try { if (typeof values === 'string') values = JSON.parse(values); } catch { return false; }
+  if (Array.isArray(values)) return values.includes(permission);
+  return values?.[permission] === true || values?.[permission] === 'true' || values?.[permission] == 1;
+};
+
 const ACCOUNT_TABS = [
   // 1. Core Financials
   { group: 'المحاسبة العامة', items: [
-    { id: 'chart_of_accounts', label: 'شجرة الحسابات', icon: Database, color: 'text-slate-600', bg: 'bg-slate-50' },
-    { id: 'daily_journals', label: 'القيود اليومية', icon: FileText, color: 'text-blue-600', bg: 'bg-blue-50' },
-    { id: 'trial_balance', label: 'ميزان المراجعة', icon: BarChart3, color: 'text-purple-600', bg: 'bg-purple-50' },
-    { id: 'trial_balance_settings', label: 'إعدادات الميزان', icon: Settings, color: 'text-blue-600', bg: 'bg-blue-50' },
+    { id: 'chart_of_accounts', label: 'شجرة الحسابات', icon: Database, color: 'text-slate-600', bg: 'bg-slate-50', permission: 'acc_can_view_general' },
+    { id: 'daily_journals', label: 'القيود اليومية', icon: FileText, color: 'text-blue-600', bg: 'bg-blue-50', permission: 'acc_can_make_daily_entries' },
+    { id: 'trial_balance', label: 'ميزان المراجعة', icon: BarChart3, color: 'text-purple-600', bg: 'bg-purple-50', permission: 'acc_can_view_reports' },
+    { id: 'trial_balance_settings', label: 'إعدادات الميزان', icon: Settings, color: 'text-blue-600', bg: 'bg-blue-50', permission: 'acc_can_view_general' },
   ]},
   
   // 2. Cash Management
   { group: 'إدارة النقدية', items: [
-    { id: 'treasury', label: 'الخزينة والتوريدات', icon: Wallet, color: 'text-emerald-600', bg: 'bg-emerald-50' },
-    { id: 'cash_movement', label: 'حركة النقدية', icon: ArrowRightLeft, color: 'text-blue-600', bg: 'bg-blue-50' },
-    { id: 'pos_management', label: 'نقط البيع', icon: Monitor, color: 'text-purple-600', bg: 'bg-purple-50' },
+    { id: 'treasury', label: 'الخزينة والتوريدات', icon: Wallet, color: 'text-emerald-600', bg: 'bg-emerald-50', permission: 'acc_can_view_general' },
+    { id: 'cash_movement', label: 'حركة النقدية', icon: ArrowRightLeft, color: 'text-blue-600', bg: 'bg-blue-50', permission: 'acc_can_process_cash_flow' },
+    { id: 'pos_management', label: 'نقط البيع', icon: Monitor, color: 'text-purple-600', bg: 'bg-purple-50', permission: 'acc_can_view_pos' },
   ]},
 
   // 3. Banks & Credit
   { group: 'البنوك والائتمان', items: [
-    { id: 'banks', label: 'الحسابات البنكية', icon: Landmark, color: 'text-blue-600', bg: 'bg-blue-50' },
-    { id: 'papers', label: 'الأوراق المالية', icon: FileStack, color: 'text-purple-600', bg: 'bg-purple-50' },
-    { id: 'cards', label: 'البطاقات الائتمانية', icon: CreditCard, color: 'text-indigo-600', bg: 'bg-indigo-50' },
+    { id: 'banks', label: 'الحسابات البنكية', icon: Landmark, color: 'text-blue-600', bg: 'bg-blue-50', permission: 'acc_can_view_bank_accounts' },
+    { id: 'papers', label: 'الأوراق المالية', icon: FileStack, color: 'text-purple-600', bg: 'bg-purple-50', permission: 'acc_can_view_securities' },
+    { id: 'cards', label: 'البطاقات الائتمانية', icon: CreditCard, color: 'text-indigo-600', bg: 'bg-indigo-50', permission: 'acc_can_collect_credit_cards' },
   ]},
 
   // 4. Expenses
   { group: 'المصروفات', items: [
-    { id: 'expense_definitions', label: 'تعريف المصروفات', icon: Settings, color: 'text-amber-600', bg: 'bg-amber-50' },
-    { id: 'expenses', label: 'المصاريف التشغيلية', icon: Receipt, color: 'text-rose-600', bg: 'bg-rose-50' },
+    { id: 'expense_definitions', label: 'تعريف المصروفات', icon: Settings, color: 'text-amber-600', bg: 'bg-amber-50', permission: 'acc_can_define_expenses' },
+    { id: 'expenses', label: 'المصاريف التشغيلية', icon: Receipt, color: 'text-rose-600', bg: 'bg-rose-50', permission: 'can_view_expenses' },
   ]},
 
   // 5. Adjustments & Audit
   { group: 'التسويات والرقابة', items: [
-    { id: 'notices', label: 'الإشعارات والتسويات', icon: AlertCircle, color: 'text-amber-600', bg: 'bg-amber-50' },
-    { id: 'daily_reports', label: 'تقارير الوردية', icon: BarChart3, color: 'text-rose-600', bg: 'bg-rose-50' },
-    { id: 'audit_logs', label: 'سجل الرقابة', icon: ShieldCheck, color: 'text-slate-600', bg: 'bg-slate-50' },
+    { id: 'notices', label: 'الإشعارات والتسويات', icon: AlertCircle, color: 'text-amber-600', bg: 'bg-amber-50', permission: 'acc_can_view_notifications' },
+    { id: 'daily_reports', label: 'تقارير الوردية', icon: BarChart3, color: 'text-rose-600', bg: 'bg-rose-50', permission: 'can_view_shifts' },
+    { id: 'audit_logs', label: 'سجل الرقابة', icon: ShieldCheck, color: 'text-slate-600', bg: 'bg-slate-50', permission: 'can_view_audit' },
   ]},
 ];
 
@@ -101,17 +109,35 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
   const [expensesList, setExpensesList] = useState<any[]>([]);
   
   const [userRole, setUserRole] = useState<string>('pharmacist');
+  const [sessionUser, setSessionUser] = useState<any>(null);
   const [isMounted, setIsMounted] = useState(false);
+
+  const visibleAccountTabs = ACCOUNT_TABS
+    .map(group => ({
+      ...group,
+      items: group.items.filter(tab => sessionUser && hasConfiguredPermission(sessionUser, tab.permission)),
+    }))
+    .filter(group => group.items.length > 0);
 
   useEffect(() => {
      setIsMounted(true);
+     if (!sessionUser) return;
+     const allowed = visibleAccountTabs.some(group => group.items.some(tab => tab.id === activeTab));
+     if (!allowed) {
+       const firstAllowed = visibleAccountTabs[0]?.items[0]?.id;
+       if (firstAllowed) setActiveTab(firstAllowed);
+       return;
+     }
      loadTabData();
      // The active tab is the loader's only changing input.
      // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab]);
+  }, [activeTab, sessionUser]);
 
   useEffect(() => {
-     getClientSession().then(user => setUserRole(user?.role || 'pharmacist'));
+     getClientSession().then(user => {
+       setSessionUser(user);
+       setUserRole(user?.role || 'pharmacist');
+     });
   }, []);
 
   const loadTabData = async () => {
@@ -226,7 +252,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
           <div className="bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 p-4 shadow-sm">
              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-6 mb-4">قائمة الحسابات</p>
              <div className="space-y-6">
-                {ACCOUNT_TABS.map((group) => (
+                {visibleAccountTabs.map((group) => (
                    <div key={group.group} className="space-y-2">
                       <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-6 mb-2">{group.group}</p>
                       <div className="space-y-1">
@@ -256,12 +282,14 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
              </div>
           </div>
 
-          <button 
-            onClick={handleSeed}
-            className="w-full flex items-center justify-center gap-3 px-6 py-5 rounded-[24px] font-black bg-blue-50 dark:bg-blue-900/10 text-blue-600 dark:text-blue-400 border-2 border-dashed border-blue-200 dark:border-blue-800 hover:bg-blue-100 transition-all"
-          >
-             <Database className="w-5 h-5" /> Initialize Test Data
-          </button>
+          {userRole === 'owner' && (
+            <button
+              onClick={handleSeed}
+              className="w-full flex items-center justify-center gap-3 px-6 py-5 rounded-[24px] font-black bg-blue-50 dark:bg-blue-900/10 text-blue-600 dark:text-blue-400 border-2 border-dashed border-blue-200 dark:border-blue-800 hover:bg-blue-100 transition-all"
+            >
+               <Database className="w-5 h-5" /> Initialize Test Data
+            </button>
+          )}
 
           <div className="bg-gradient-to-br from-indigo-600 to-purple-700 rounded-[40px] p-8 text-white shadow-2xl">
              <TrendingUp className="w-12 h-12 mb-6 opacity-50" />

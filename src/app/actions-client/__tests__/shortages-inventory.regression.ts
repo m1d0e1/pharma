@@ -234,7 +234,7 @@ describe('inventory-linked reorder and shortage notebook regression', () => {
     expect(list[0].id).toBe(ids[2]);
   });
 
-  it('classifies out_of_stock and critical items and updates shortage balance upon purchase order lifecycle', async () => {
+  it('keeps shortages active when a purchase order closes without receiving inventory', async () => {
     // Insert user for PO creation
     mockDb.exec(`INSERT OR IGNORE INTO users (id, username, role, pharmacy_id) VALUES ('admin', 'admin', 'owner', NULL)`);
 
@@ -269,20 +269,18 @@ describe('inventory-linked reorder and shortage notebook regression', () => {
     expect(zeroAfterPO.status).toBe('ordered');
     expect(criticalAfterPO.status).toBe('ordered');
 
-    // Complete the PO (order received)
+    // Closing an order is not an inventory receipt; only a completed purchase invoice receives stock.
     const completeResult = await updatePurchaseOrderStatusAction(poResult.po_id!, 'completed');
     expect(completeResult.success).toBe(true);
 
-    // Upon completion, shortages status transitions to 'received' and items leave active notebook
-    const listAfterReceived = (await getShortagesAction()).data || [];
-    expect(listAfterReceived.some((i: any) => i.drug_id === 9102)).toBe(false);
-    expect(listAfterReceived.some((i: any) => i.drug_id === 9101)).toBe(false);
+    const listAfterClose = (await getShortagesAction()).data || [];
+    expect(listAfterClose.find((i: any) => i.drug_id === 9102)?.status).toBe('ordered');
+    expect(listAfterClose.find((i: any) => i.drug_id === 9101)?.status).toBe('ordered');
 
-    // Verify in db that status is indeed 'received'
     const row9102 = mockDb.prepare('SELECT status FROM shortages WHERE drug_id = 9102').get() as any;
     const row9101 = mockDb.prepare('SELECT status FROM shortages WHERE drug_id = 9101').get() as any;
-    expect(row9102.status).toBe('received');
-    expect(row9101.status).toBe('received');
+    expect(row9102.status).toBe('ordered');
+    expect(row9101.status).toBe('ordered');
   });
 
   it('updates shortages to received and resolves stock alerts across purchase invoice lifecycle (create, complete, edit)', async () => {

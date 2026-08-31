@@ -3,12 +3,13 @@ import { hasUserPermissionSync, isOwnerOrAdmin } from '@/lib/auth/local';
 
 describe('Permissions Logic & Authorization Matrix', () => {
   describe('hasUserPermissionSync', () => {
-    it('grants full access to owner and admin roles regardless of permissions payload', () => {
+    it('grants unconditional access only to the owner and applies admin checkboxes', () => {
       const ownerUser = { id: '1', role: 'owner', permissions: '{}' };
-      const adminUser = { id: '2', role: 'admin', permissions: '[]' };
+      const adminUser = { id: '2', role: 'admin', permissions: '{"can_view_audit":true}' };
 
       expect(hasUserPermissionSync(ownerUser, 'any_random_permission')).toBe(true);
       expect(hasUserPermissionSync(adminUser, 'can_view_audit')).toBe(true);
+      expect(hasUserPermissionSync(adminUser, 'can_view_settings')).toBe(false);
       expect(isOwnerOrAdmin(ownerUser)).toBe(true);
       expect(isOwnerOrAdmin(adminUser)).toBe(true);
     });

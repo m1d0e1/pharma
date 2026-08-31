@@ -50,7 +50,7 @@ const db = {
 
 
 
-import { getLocalSession } from '@/lib/auth/local';
+import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { createCashMovementAction } from './finance';
 
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
@@ -66,9 +66,7 @@ export async function addExpenseAction(data: {
 }) {
   try {
     const user = await getLocalSession();
-    if (!user || (user.role !== 'owner' && user.role !== 'admin')) {
-      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
-    }
+    if (!user || !hasUserPermissionSync(user, 'acc_can_define_expenses')) return { success: false, error: 'غير مصرح' };
     if (!Number.isFinite(data.amount) || data.amount <= 0) return { success: false, error: 'مبلغ المصروف غير صالح' };
     if (!data.category.trim() || !data.date) return { success: false, error: 'بيانات المصروف غير مكتملة' };
 
@@ -106,7 +104,7 @@ export async function addExpenseAction(data: {
 export async function getExpensesAction(filter?: { from?: string; to?: string; category?: string }) {
   try {
     const user = await getLocalSession();
-    if (!user) return { success: false, error: 'غير مصرح' };
+    if (!user || (!hasUserPermissionSync(user, 'can_view_expenses') && !hasUserPermissionSync(user, 'acc_can_define_expenses'))) return { success: false, error: 'غير مصرح' };
 
     let query = `
       SELECT e.*, u.full_name as user_name 
@@ -144,10 +142,7 @@ export async function getExpensesAction(filter?: { from?: string; to?: string; c
 export async function deleteExpenseAction(id: string) {
   try {
     const user = await getLocalSession();
-    if (!user || (user.role !== 'owner' && user.role !== 'admin')) {
-      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
-    }
-    if (!user || user.role !== 'owner') return { success: false, error: 'غير مصرح' };
+    if (!user || !hasUserPermissionSync(user, 'acc_can_define_expenses')) return { success: false, error: 'غير مصرح' };
 
     await db.prepare('DELETE FROM expenses WHERE id = ?').run(id);
     logActivity(user.id, 'DELETE_EXPENSE', `حذف مصروف #${id.substring(0, 8)}`);
@@ -165,7 +160,7 @@ export async function deleteExpenseAction(id: string) {
 export async function getExpenseSummaryAction(month?: string) {
   try {
     const user = await getLocalSession();
-    if (!user) return { success: false, error: 'غير مصرح' };
+    if (!user || (!hasUserPermissionSync(user, 'can_view_expenses') && !hasUserPermissionSync(user, 'acc_can_define_expenses'))) return { success: false, error: 'غير مصرح' };
 
     const targetMonth = month || new Date().toISOString().substring(0, 7); // YYYY-MM
 

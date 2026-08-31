@@ -99,7 +99,7 @@ function applyLocalSchemaRepairs(db: Database.Database) {
   addCol('shortages', 'status', "TEXT DEFAULT 'pending'");
   addCol('shortages', 'priority', "TEXT DEFAULT 'normal'");
   addCol('shortages', 'notes', 'TEXT');
-  addCol('shortages', 'created_at', 'DATETIME DEFAULT CURRENT_TIMESTAMP');
+  addCol('shortages', 'created_at', 'DATETIME');
   addCol('purchase_invoice_items', 'barcode', 'TEXT');
   addCol('shifts', 'receiver_id', 'TEXT');
   addCol('shifts', 'actual_cash', 'REAL');
@@ -112,6 +112,16 @@ function applyLocalSchemaRepairs(db: Database.Database) {
   db.exec('CREATE INDEX IF NOT EXISTS idx_shortages_pharmacy_drug_status ON shortages(pharmacy_id, drug_id, status)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_shortages_pharmacy_status ON shortages(pharmacy_id, status)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_shortages_drug_id ON shortages(drug_id)');
+  db.exec("UPDATE shortages SET pharmacy_id = 'local_default' WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = ''");
+  db.exec('UPDATE shortages SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL');
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS shortages_set_created_at
+    AFTER INSERT ON shortages
+    WHEN NEW.created_at IS NULL
+    BEGIN
+      UPDATE shortages SET created_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+    END
+  `);
 }
 
 function seedBaselineEntities(db: Database.Database) {

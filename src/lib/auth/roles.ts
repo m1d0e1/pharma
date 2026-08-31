@@ -69,6 +69,55 @@ export const PAGE_PERMISSIONS = {
   can_view_sales_settlement: '/sales/settlement',
 } as const;
 
+// Configurable permission required by each navigable route. Longest matches
+// win so exceptions such as the shortages notebook override /stores.
+export const ROUTE_PERMISSIONS: Record<string, string> = {
+  '/receipts': 'can_view_receipts',
+  '/sales/delivery': 'can_view_delivery',
+  '/sales/cogs': 'can_view_cogs',
+  '/sales/settlement': 'can_view_settlement',
+  '/returns': 'can_view_returns',
+  '/inventory/low-stock': 'can_view_low_stock',
+  '/inventory/item-movements': 'preview_item_movements',
+  '/inventory/opening-balances': 'can_view_opening_balances',
+  '/inventory/settlement': 'can_view_settlement',
+  '/stores/shortages': 'can_view_restock',
+  '/restock': 'can_view_restock',
+  '/purchase-orders': 'can_view_purchases',
+  '/purchases': 'can_view_purchases',
+  '/stores': 'can_view_stores',
+  '/accounts/cash-transactions': 'acc_can_process_cash_flow',
+  '/accounts/settings/trial-balance': 'acc_can_view_general',
+  '/accounts': 'acc_can_view_general',
+  '/finance/handover': 'acc_can_view_handover',
+  '/finance/banks': 'acc_can_view_bank_accounts',
+  '/finance/cards': 'acc_can_collect_credit_cards',
+  '/finance/pos-management': 'acc_can_view_pos',
+  '/finance/accounts': 'acc_can_view_general',
+  '/expenses': 'can_view_expenses',
+  '/shifts': 'can_view_shifts',
+  '/patients': 'can_view_patients',
+  '/interactions': 'can_view_patients',
+  '/reports/purchases': 'rep_can_view_purchases',
+  '/reports/trial-balance': 'acc_can_view_reports',
+  '/reports/sales': 'rep_can_view_sales',
+  '/reports': 'rep_can_view_sales',
+  '/staff/manage': 'can_view_staff_manage',
+  '/staff/roles': 'can_view_staff_roles',
+  '/staff': 'rep_can_view_activity',
+  '/audit': 'can_view_audit',
+  '/settings': 'can_view_settings',
+};
+
+const ROUTE_PERMISSION_ENTRIES = Object.entries(ROUTE_PERMISSIONS)
+  .sort(([a], [b]) => b.length - a.length);
+
+export function getRoutePermission(pathname: string): string | undefined {
+  return ROUTE_PERMISSION_ENTRIES.find(([route]) =>
+    pathname === route || pathname.startsWith(`${route}/`)
+  )?.[1];
+}
+
 export function findUnprotectedRoutes(): string[] {
   const permittedRoutes = new Set(Object.values(PAGE_PERMISSIONS));
   const allMenuRoutes = [

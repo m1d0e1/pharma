@@ -4,7 +4,7 @@
  * in BOTH the frontend component AND the backend action function.
  */
 
-import { PAGE_PERMISSIONS, ACTION_PERMISSIONS, findUnprotectedRoutes, ROLE_PERMISSIONS } from '@/lib/auth/roles';
+import { PAGE_PERMISSIONS, ACTION_PERMISSIONS, findUnprotectedRoutes, ROLE_PERMISSIONS, getRoutePermission } from '@/lib/auth/roles';
 
 const TauriMenuRoutes = [
   '/pos', '/purchases/new', '/', '/receipts', '/sales',
@@ -35,6 +35,15 @@ describe('Permission-Route Mapping Audit', () => {
       if (route.startsWith('/stores/')) continue; // all under /stores checked via can_view_stores
       expect(permittedRoutes).toContain(route);
     }
+  });
+
+  it('resolves direct and nested routes to the actual configurable permission', () => {
+    expect(getRoutePermission('/purchases/new')).toBe('can_view_purchases');
+    expect(getRoutePermission('/stores/shortages')).toBe('can_view_restock');
+    expect(getRoutePermission('/stores/items/123')).toBe('can_view_stores');
+    expect(getRoutePermission('/inventory/item-movements')).toBe('preview_item_movements');
+    expect(getRoutePermission('/')).toBeUndefined();
+    expect(getRoutePermission('/pos')).toBeUndefined();
   });
 
   it('every PAGE_PERMISSIONS value maps to an existing menu route', () => {

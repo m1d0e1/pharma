@@ -201,8 +201,8 @@ describe('Exhaustive Testing: Financials, Handover, Shift, and Receipt Modules',
       render(<AccountsManagementClient initialTab="chart_of_accounts" />);
 
       expect(await screen.findByText(/شجرة الحسابات \(Chart of Accounts\)/i)).toBeInTheDocument();
-      expect(screen.getByText('الأصول')).toBeInTheDocument();
-      expect(screen.getByText('النقدية بالصندوق')).toBeInTheDocument();
+      expect(await screen.findByText('الأصول')).toBeInTheDocument();
+      expect(await screen.findByText('النقدية بالصندوق')).toBeInTheDocument();
 
       // Switch tab to POS Management
       const posTabBtn = screen.getByRole('button', { name: /نقط البيع/i });

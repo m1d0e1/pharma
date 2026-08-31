@@ -50,7 +50,8 @@ const db = {
 
 
 
-import { getLocalSession } from '@/lib/auth/local';
+import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
+import { processHandoverAction } from '@/app/actions-client/handover';
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 
 const defaultOwnerPerms = {
@@ -133,7 +134,7 @@ const defaultOwnerPerms = {
 export async function updateUserPermissionsAction(userId: string, permissions: any) {
   try {
     const localUser = await getLocalSession();
-    if (!localUser || (localUser.role !== 'owner' && localUser.role !== 'admin')) {
+    if (!localUser || (localUser.role !== 'owner' && !(localUser.role === 'admin' && hasUserPermissionSync(localUser, 'can_view_staff_manage')))) {
       return { success: false, error: 'غير مصرح - للمالك فقط' };
     }
 
@@ -312,8 +313,8 @@ export async function addUserAction(formData: {
 export async function deleteUserAction(userId: string) {
   try {
     const localUser = await getLocalSession();
-    if (!localUser || (localUser.role !== 'owner' && localUser.role !== 'admin')) {
-      return { success: false, error: 'غير مصرح - للمالك فقط' };
+    if (!localUser || (localUser.role !== 'owner' && !(localUser.role === 'admin' && hasUserPermissionSync(localUser, 'can_view_staff_manage')))) {
+      return { success: false, error: 'غير مصرح بإدارة المستخدمين' };
     }
 
     // Don't allow deleting self
@@ -321,15 +322,43 @@ export async function deleteUserAction(userId: string) {
       return { success: false, error: 'لا يمكنك حذف حسابك الخاص' };
     }
 
-    const targetUser = await db.prepare('SELECT username, role FROM users WHERE id = ?').get(userId) as { username: string; role: string };
+    const targetUser = await db.prepare('SELECT username, role, is_active FROM users WHERE id = ?').get(userId) as { username: string; role: string; is_active: number };
+    if (!targetUser) return { success: false, error: 'المستخدم غير موجود' };
     
     if (targetUser?.role === 'owner' && localUser.role !== 'owner') {
       return { success: false, error: 'لا يمكنك حذف حساب المالك' };
     }
     
-    await db.prepare('DELETE FROM users WHERE id = ?').run(userId);
+    const openShift = await db.prepare(`
+      SELECT s.id, s.start_time,
+        CAST(COALESCE(s.starting_cash, 0) AS REAL)
+        + CAST(COALESCE((SELECT SUM(si.total_amount) FROM sales_invoices si
+            WHERE si.shift_id = s.id AND si.payment_method = 'cash'
+              AND (si.status IS NULL OR si.status = '' OR si.status IN ('completed', 'approved'))), 0) AS REAL)
+        + CAST(COALESCE((SELECT SUM(CASE WHEN cm.type IN ('receipt', 'in') THEN cm.amount ELSE 0 END)
+            FROM cash_movements cm WHERE cm.shift_id = s.id), 0) AS REAL)
+        - CAST(COALESCE((SELECT SUM(CASE WHEN cm.type IN ('disbursement', 'out') THEN cm.amount ELSE 0 END)
+            FROM cash_movements cm WHERE cm.shift_id = s.id), 0) AS REAL)
+        - CAST(COALESCE((SELECT SUM(r.total_refund) FROM returns r
+            WHERE r.shift_id = s.id AND r.refund_method = 'cash'
+              AND (r.status IS NULL OR r.status = '' OR r.status IN ('approved', 'completed'))), 0) AS REAL)
+        AS expected_cash
+      FROM shifts s
+      WHERE CAST(s.user_id AS TEXT) = CAST(? AS TEXT) AND s.status = 'open'
+      ORDER BY s.start_time DESC LIMIT 1
+    `).get(userId) as { id: string; start_time: string; expected_cash: number } | undefined;
+    if (openShift) {
+      return {
+        success: false,
+        code: 'OPEN_SHIFT' as const,
+        error: 'لدى المستخدم وردية مفتوحة ويجب تسويتها قبل تعطيل الحساب',
+        openShift: { ...openShift, expected_cash: Number(openShift.expected_cash || 0) },
+      };
+    }
+
+    await db.prepare('UPDATE users SET is_active = 0 WHERE id = ? AND is_active = 1').run(userId);
     
-    logActivity(localUser.id, 'DELETE_USER', `حذف المستخدم: ${targetUser?.username || userId}`);
+    logActivity(localUser.id, 'DEACTIVATE_USER', `تعطيل المستخدم مع الاحتفاظ بسجلاته: ${targetUser.username}`);
 
     revalidatePath('/staff/manage');
     revalidatePath('/staff');
@@ -339,6 +368,29 @@ export async function deleteUserAction(userId: string) {
     console.error('Delete user error:', error);
     return { success: false, error: 'فشل حذف المستخدم' };
   }
+}
+
+export async function closeUserShiftAndDeactivateAction(data: {
+  userId: string;
+  shiftId: string;
+  actualCash: number;
+  authorizerPassword: string;
+  notes?: string;
+}) {
+  return processHandoverAction({
+    shiftId: data.shiftId,
+    actualCash: data.actualCash,
+    transferAmount: data.actualCash,
+    transferTargetId: '',
+    transferTargetType: 'treasury',
+    receiverUsername: '',
+    receiverPasswordHash: '',
+    notes: data.notes || 'إغلاق الوردية وتعطيل حساب المستخدم',
+    closeOnly: true,
+    managedUserId: data.userId,
+    deactivateManagedUser: true,
+    authorizerPassword: data.authorizerPassword,
+  });
 }
 
 export async function updateUserAction(userId: string, data: { 

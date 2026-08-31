@@ -91,9 +91,6 @@ export async function getSoldItemsForCogsAdjustmentAction(searchTerm: string) {
 export async function updateSoldItemCostAction(itemId: number | string, newCost: number) {
   try {
     const user = await getLocalSession();
-    if (!user || (user.role !== 'owner' && user.role !== 'admin')) {
-      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
-    }
     if (!user || !hasUserPermissionSync(user, 'can_view_cogs')) return { success: false, error: 'غير مصرح' };
 
     await db.prepare('UPDATE sales_items SET cost_price = ? WHERE id = ?').run(newCost, itemId);

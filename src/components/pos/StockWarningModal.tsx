@@ -10,6 +10,7 @@ interface StockWarningModalProps {
   drug: any;
   onNewPurchaseOrder: (drugId: number) => void;
   onNegativeSale: (drug: any) => void;
+  allowNegativeSale?: boolean;
 }
 
 export default function StockWarningModal({
@@ -17,7 +18,8 @@ export default function StockWarningModal({
   onClose,
   drug,
   onNewPurchaseOrder,
-  onNegativeSale
+  onNegativeSale,
+  allowNegativeSale = false,
 }: StockWarningModalProps) {
   
   useHotkeys('esc', () => { if(typeof onClose === 'function') onClose(); }, { enableOnFormTags: true });
@@ -35,25 +37,27 @@ if (!isOpen || !drug) return null;
         </p>
         <div className="flex flex-col gap-3">
           <div className="flex gap-4">
-            <button 
+            <button
               onClick={() => onNewPurchaseOrder(drug.id)}
               className="flex-1 py-4 bg-blue-600 text-white rounded-2xl font-black text-lg hover:bg-blue-700 transition-all shadow-lg shadow-blue-500/20 flex items-center justify-center gap-2"
             >
               <PlusCircle className="w-5 h-5" /> فاتورة شراء جديدة
             </button>
-            <button 
+            <button
               onClick={onClose}
               className="flex-1 py-4 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-2xl font-black text-lg hover:bg-slate-200 dark:hover:bg-slate-700 transition-all"
             >
               إلغاء
             </button>
           </div>
-          <button 
-            onClick={() => onNegativeSale(drug)}
-            className="w-full py-4 bg-amber-500 text-white rounded-2xl font-black text-lg hover:bg-amber-600 transition-all shadow-lg shadow-amber-500/20 mt-2"
-          >
-            بيع بدون رصيد (تسوية لاحقاً)
-          </button>
+          {allowNegativeSale && (
+            <button
+              onClick={() => onNegativeSale(drug)}
+              className="w-full py-4 bg-amber-500 text-white rounded-2xl font-black text-lg hover:bg-amber-600 transition-all shadow-lg shadow-amber-500/20 mt-2"
+            >
+              بيع بدون رصيد (تسوية لاحقاً)
+            </button>
+          )}
         </div>
       </div>
     </div>

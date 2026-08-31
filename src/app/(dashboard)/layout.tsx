@@ -13,6 +13,8 @@ import { dbGet } from '@/lib/db/tauri';
 import { Monitor, Bell, LogOut, Menu, ArrowRight } from 'lucide-react';
 import HeaderAlerts from '@/components/HeaderAlerts';
 import AuthGuard from '@/components/AuthGuard';
+import PermissionGuard from '@/components/PermissionGuard';
+import { getRoutePermission } from '@/lib/auth/roles';
 import { isTauri as isTauriRuntime } from '@/lib/env';
 import packageInfo from '../../../package.json';
 
@@ -24,6 +26,7 @@ export default function DashboardLayout({
   const router = useRouter();
   const pathname = usePathname();
   const isPos = pathname?.startsWith('/pos');
+  const routePermission = getRoutePermission(pathname || '/');
 
   const [user, setUser] = useState<any>(null);
   const [userRole, setUserRole] = useState<string>('pharmacist');
@@ -374,7 +377,7 @@ export default function DashboardLayout({
           {/* Page Content */}
           <main className={`flex-1 ${isPos ? 'flex flex-col min-h-0 overflow-hidden' : 'overflow-y-auto'}`}>
             <div className={isPos ? "w-full flex-1 flex flex-col min-h-0" : "w-full p-4 sm:p-6"}>
-              {children}
+              <PermissionGuard permissionKey={routePermission}>{children}</PermissionGuard>
             </div>
           </main>
         </div>
@@ -411,7 +414,7 @@ export default function DashboardLayout({
           </div>
 
           {/* Navigation */}
-          <SidebarNav userRole={userRole} />
+          <SidebarNav userRole={userRole} userPermissions={permissions} />
 
           {/* User Profile & Actions */}
           <div className="p-5 border-t border-slate-200/50 dark:border-slate-800/50 space-y-5">
@@ -495,7 +498,7 @@ export default function DashboardLayout({
           {/* Page Content */}
           <div className={`flex-1 ${isPos ? 'flex flex-col min-h-0 overflow-hidden p-3' : 'overflow-y-auto p-4 sm:p-6'}`}>
             <div className={isPos ? "w-full flex-1 flex flex-col min-h-0" : "max-w-7xl mx-auto"}>
-              {children}
+              <PermissionGuard permissionKey={routePermission}>{children}</PermissionGuard>
             </div>
           </div>
         </main>

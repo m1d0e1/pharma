@@ -1055,20 +1055,6 @@ export async function updatePurchaseOrderStatusAction(poId: string, status: stri
     `).run(status, poId, pharmacyId, pharmacyId);
     if (result.changes !== 1) return { success: false, error: 'Purchase order is missing or no longer pending' };
 
-    if (status === 'completed') {
-      const poItems = await db.prepare('SELECT drug_id FROM purchase_order_items WHERE po_id = ?').all(poId) as any[];
-      for (const item of poItems) {
-        await db.prepare(`
-          UPDATE shortages 
-          SET status = 'received' 
-          WHERE drug_id = ? 
-            AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
-            AND status IN ('pending', 'ordered')
-        `).run(item.drug_id, pharmacyId, pharmacyId);
-      }
-      revalidatePath('/stores/shortages');
-    }
-
     return { success: true };
   } catch (error) {
     return { success: false, error: 'Failed' };

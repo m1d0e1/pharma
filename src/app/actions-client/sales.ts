@@ -87,11 +87,25 @@ function saleStockQty(quantity: number, unit: string, largeToMedium: number, med
   return quantity;
 }
 
+function canUsePos(user: any): boolean {
+  return !!user && (
+    ['owner', 'admin', 'pharmacist', 'cashier'].includes(user.role)
+    || hasUserPermissionSync(user, 'can_access_pos')
+  );
+}
+
+function permissionNumber(user: any, key: string, fallback = 0): number {
+  let values = user?.permissions;
+  try { if (typeof values === 'string') values = JSON.parse(values); } catch { return fallback; }
+  const value = values && !Array.isArray(values) ? values[key] : undefined;
+  return Number(value ?? (user?.role === 'owner' ? 100 : fallback)) || fallback;
+}
+
 export async function searchDrugsAction(searchTerm: string, limit = 20, searchByActiveIngredient = false) {
   try {
     const localUser = await getLocalSession();
     const pharmacyId = localUser?.pharmacy_id || 'local_default';
-    if (!localUser || !hasUserPermissionSync(localUser, 'can_view_stock_sale')) return { success: false, error: 'غير مصرح' };
+    if (!canUsePos(localUser)) return { success: false, error: 'غير مصرح' };
 
     if (!searchTerm || searchTerm.trim().length === 0) {
       return { success: true, data: [] };
@@ -266,7 +280,7 @@ export async function searchDrugsAction(searchTerm: string, limit = 20, searchBy
 export async function searchPatientsAction(query: string) {
   try {
     const localUser = await getLocalSession();
-    if (!localUser || !hasUserPermissionSync(localUser, 'can_view_stock_sale')) return { success: false, error: 'غير مصرح' };
+    if (!canUsePos(localUser)) return { success: false, error: 'غير مصرح' };
 
     if (!query || query.length < 2) {
       return { success: true, data: [] };
@@ -299,7 +313,7 @@ export async function barcodeLookupAction(barcode: string) {
   try {
     const localUser = await getLocalSession();
     const pharmacyId = localUser?.pharmacy_id || 'local_default';
-    if (!localUser || !hasUserPermissionSync(localUser, 'can_view_stock_sale')) return { success: false, error: 'غير مصرح' };
+    if (!canUsePos(localUser)) return { success: false, error: 'غير مصرح' };
 
     if (!barcode) {
       return { success: false, error: 'الباركود مطلوب' };
@@ -397,7 +411,7 @@ export async function barcodeLookupAction(barcode: string) {
 export async function fetchDraftsAction() {
   try {
     const localUser = await getLocalSession();
-    if (!localUser || !hasUserPermissionSync(localUser, 'can_view_stock_sale')) return { success: false, error: 'غير مصرح' };
+    if (!canUsePos(localUser) || !hasUserPermissionSync(localUser, 'show_suspended_invoices')) return { success: false, error: 'غير مصرح' };
 
     const pharmacyId = localUser.pharmacy_id || 'local_default';
 
@@ -467,12 +481,31 @@ export async function fetchDraftsAction() {
 export async function processCheckoutAction(data: any) {
   try {
     const localUser = await getLocalSession();
-    if (!localUser || !hasUserPermissionSync(localUser, 'can_view_stock_sale')) return { success: false, error: 'غير مصرح' };
+    if (!canUsePos(localUser)) return { success: false, error: 'غير مصرح' };
 
     const pharmacyId = localUser.pharmacy_id || 'local_default';
     const userId = localUser.id;
 
     const validatedData = CheckoutRequestSchema.parse(data);
+    if (validatedData.status === 'draft' && !hasUserPermissionSync(localUser, 'suspended_can_save_invoice')) {
+      return { success: false, error: 'غير مصرح بحفظ الفواتير المعلقة' };
+    }
+    if (validatedData.payment_method === 'credit' && !hasUserPermissionSync(localUser, 'can_sell_credit')) {
+      return { success: false, error: 'غير مصرح بالبيع الآجل' };
+    }
+    if (validatedData.items.some(item => item.is_negative) && !hasUserPermissionSync(localUser, 'can_sell_no_stock')) {
+      return { success: false, error: 'غير مصرح بالبيع بدون رصيد' };
+    }
+    if (validatedData.total_discount > 0) {
+      if (!hasUserPermissionSync(localUser, 'can_give_total_discount')) {
+        return { success: false, error: 'غير مصرح بإضافة خصم إجمالي' };
+      }
+      const gross = validatedData.items.reduce((sum, item) => sum + item.quantity_sold * item.unit_price, 0);
+      const maxDiscountPercent = permissionNumber(localUser, 'max_invoice_discount_percent');
+      if (gross > 0 && (validatedData.total_discount / gross) * 100 > maxDiscountPercent + 0.000001) {
+        return { success: false, error: `نسبة الخصم تتجاوز الحد المسموح (${maxDiscountPercent}%)` };
+      }
+    }
     const requestedShiftId = validatedData.shift_id ? String(validatedData.shift_id) : null;
     const openShift = requestedShiftId
       ? await db.prepare(`

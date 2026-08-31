@@ -57,6 +57,9 @@ import { format } from 'date-fns';
 import { z } from 'zod';
 import { patientOutstandingBalanceQuery } from '@/lib/patients/balance';
 
+const hasAnyFinancePermission = (user: any, ...permissions: string[]) =>
+  !!user && permissions.some(permission => hasUserPermissionSync(user, permission));
+
 export async function requireOpenShiftId(userId: string, requestedShiftId?: string) {
   const shift = requestedShiftId
     ? await db.prepare(`
@@ -86,9 +89,7 @@ export async function addFinancialNoticeAction(rawData: z.infer<typeof noticeSch
   try {
     const data = noticeSchema.parse(rawData);
     const user = await getLocalSession();
-    if (!user || (user.role !== 'owner' && user.role !== 'admin')) {
-      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
-    }
+    if (!hasAnyFinancePermission(user, 'acc_can_view_notifications')) return { success: false, error: 'غير مصرح' };
 
     if (data.target_type !== 'pharmacy' && !data.target_id) {
       return { success: false, error: 'يجب اختيار الحساب المستهدف' };
@@ -367,6 +368,8 @@ export async function getCashMovementsAction(filters?: {
 
 export async function getPointsOfSaleAction() {
   try {
+    const user = await getLocalSession();
+    if (!hasAnyFinancePermission(user, 'acc_can_view_pos', 'acc_can_view_general', 'can_select_pos_financial')) return { success: false, error: 'غير مصرح' };
     const results = await db.prepare(`SELECT * FROM points_of_sale ORDER BY id ASC`).all();
     return { success: true, data: results };
   } catch (error) {
@@ -377,6 +380,8 @@ export async function getPointsOfSaleAction() {
 
 export async function getExpenseDefinitionsAction() {
   try {
+    const user = await getLocalSession();
+    if (!hasAnyFinancePermission(user, 'acc_can_define_expenses', 'can_view_expenses')) return { success: false, error: 'غير مصرح' };
     const results = await db.prepare(`SELECT * FROM expense_definitions ORDER BY code ASC`).all();
     return { success: true, data: results };
   } catch (error) {
@@ -387,6 +392,8 @@ export async function getExpenseDefinitionsAction() {
 
 export async function getBanksAction() {
   try {
+    const user = await getLocalSession();
+    if (!hasAnyFinancePermission(user, 'acc_can_view_bank_accounts', 'acc_can_view_handover', 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
     const results = await db.prepare(`SELECT * FROM banks ORDER BY name_ar ASC`).all();
     return { success: true, data: results };
   } catch (error) {
@@ -397,6 +404,8 @@ export async function getBanksAction() {
 
 export async function getPapersAction() {
   try {
+    const user = await getLocalSession();
+    if (!hasAnyFinancePermission(user, 'acc_can_view_securities')) return { success: false, error: 'غير مصرح' };
     const results = await db.prepare(`SELECT * FROM commercial_papers ORDER BY due_date ASC`).all();
     return { success: true, data: results };
   } catch (error) {
@@ -407,6 +416,8 @@ export async function getPapersAction() {
 
 export async function getCardsAction() {
   try {
+    const user = await getLocalSession();
+    if (!hasAnyFinancePermission(user, 'acc_can_collect_credit_cards')) return { success: false, error: 'غير مصرح' };
     const results = await db.prepare(`SELECT * FROM credit_cards ORDER BY name_ar ASC`).all();
     return { success: true, data: results };
   } catch (error) {
@@ -418,7 +429,7 @@ export async function getCardsAction() {
 export async function getAccountsAction() {
   try {
     const user = await getLocalSession();
-    if (!user || !hasUserPermissionSync(user, 'rep_can_view_financial')) return { success: false, error: 'غير مصرح' };
+    if (!hasAnyFinancePermission(user, 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
 
     const accounts = await db.prepare(`SELECT * FROM accounts ORDER BY code ASC`).all() as any[];
 
@@ -482,10 +493,7 @@ const addAccountSchema = z.object({
 export async function addAccountAction(rawData: z.infer<typeof addAccountSchema>) {
   try {
     const user = await getLocalSession();
-    if (!user || (user.role !== 'owner' && user.role !== 'admin')) {
-      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
-    }
-    if (!user || !hasUserPermissionSync(user, 'rep_can_view_financial')) return { success: false, error: 'غير مصرح' };
+    if (!hasAnyFinancePermission(user, 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
 
     const data = addAccountSchema.parse(rawData);
     const res = await db.prepare(`
@@ -511,10 +519,7 @@ const updateAccountSchema = z.object({
 export async function updateAccountAction(id: number, rawData: z.infer<typeof updateAccountSchema>) {
   try {
     const user = await getLocalSession();
-    if (!user || (user.role !== 'owner' && user.role !== 'admin')) {
-      return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
-    }
-    if (!user || !hasUserPermissionSync(user, 'rep_can_view_financial')) return { success: false, error: 'غير مصرح' };
+    if (!hasAnyFinancePermission(user, 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
 
     const data = updateAccountSchema.parse(rawData);
     
@@ -540,7 +545,7 @@ export async function updateAccountAction(id: number, rawData: z.infer<typeof up
 export async function getJournalsAction(filters?: { dateFrom?: string; dateTo?: string }) {
   try {
     const user = await getLocalSession();
-    if (!user || !hasUserPermissionSync(user, 'rep_can_view_financial')) return { success: false, error: 'غير مصرح' };
+    if (!hasAnyFinancePermission(user, 'acc_can_make_daily_entries', 'acc_can_view_reports')) return { success: false, error: 'غير مصرح' };
 
     let sql = `SELECT * FROM daily_journals WHERE 1=1`;
     const params: any[] = [];
@@ -563,6 +568,8 @@ export async function getJournalsAction(filters?: { dateFrom?: string; dateTo?: 
 
 export async function getJournalDetailsAction(journalId: string) {
   try {
+    const user = await getLocalSession();
+    if (!hasAnyFinancePermission(user, 'acc_can_make_daily_entries', 'acc_can_view_reports')) return { success: false, error: 'غير مصرح' };
     const entries = await db.prepare(`
       SELECT e.*, a.name_ar as account_name, a.code as account_code,
              dj.description, dj.date,
@@ -583,6 +590,8 @@ export async function getJournalDetailsAction(journalId: string) {
 
 export async function seedFinanceTestDataAction() {
   try {
+    const user = await getLocalSession();
+    if (user?.role !== 'owner') return { success: false, error: 'غير مصرح' };
     // 1. Seed POS
     const posCount = await db.prepare('SELECT COUNT(*) as count FROM points_of_sale').get() as any;
     if (posCount.count === 0) {
@@ -727,6 +736,8 @@ export async function generateDailySnapshotAction(targetDate?: string) {
 
 export async function getTrialBalanceSettingsAction() {
   try {
+    const user = await getLocalSession();
+    if (!hasAnyFinancePermission(user, 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
     const results = await db.prepare(`
       SELECT s.*, a.name_ar as account_name, a.code as account_code
       FROM trial_balance_settings s
@@ -748,6 +759,8 @@ export async function saveTrialBalanceSettingAction(data: {
   account_id: number;
 }) {
   try {
+    const user = await getLocalSession();
+    if (!hasAnyFinancePermission(user, 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
     // INSERT OR REPLACE leverages the UNIQUE constraint on `category`
     await db.prepare(`
       INSERT INTO trial_balance_settings (category, target_type, target_id, target_name, account_id)
@@ -777,7 +790,7 @@ export async function getPatientStatementAction(patientId: string) {
 export async function getTrialBalanceAction(startDate?: string, endDate?: string) {
   try {
     const user = await getLocalSession();
-    if (!user || !hasUserPermissionSync(user, 'rep_can_view_financial')) return { success: false, error: 'غير مصرح' };
+    if (!hasAnyFinancePermission(user, 'acc_can_view_reports')) return { success: false, error: 'غير مصرح' };
 
     const cleanStart = startDate && startDate.trim().length > 0 ? startDate.trim() : null;
     const cleanEnd = endDate && endDate.trim().length > 0 ? endDate.trim() : null;
@@ -854,6 +867,8 @@ export async function getTrialBalanceAction(startDate?: string, endDate?: string
 
 export async function getFinancialNoticesAction() {
   try {
+    const user = await getLocalSession();
+    if (!hasAnyFinancePermission(user, 'acc_can_view_notifications')) return { success: false, error: 'غير مصرح' };
     const results = await db.prepare(`
       SELECT n.*, u.full_name as user_name
       FROM financial_notices n
@@ -869,6 +884,8 @@ export async function getFinancialNoticesAction() {
 
 export async function getActivityLogsAction() {
   try {
+    const user = await getLocalSession();
+    if (!hasAnyFinancePermission(user, 'can_view_audit')) return { success: false, error: 'غير مصرح' };
     const logs = await db.prepare(`
       SELECT a.*, u.full_name as user_name
       FROM activity_log a

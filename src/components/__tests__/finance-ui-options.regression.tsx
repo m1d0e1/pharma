@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import AccountsManagementClient from '@/components/finance/AccountsManagementClient';
 import * as finance from '@/app/actions-client/finance';
 import { getExpensesAction } from '@/app/actions-client/expenses';
@@ -69,7 +69,7 @@ it('opens the real POS-management tab from its dedicated route', async () => {
   render(<AccountsManagementClient initialTab="pos_management" />);
 
   expect(await screen.findByRole('heading', { name: 'إدارة نقاط البيع' })).toBeInTheDocument();
-  expect(finance.getPointsOfSaleAction).toHaveBeenCalled();
+  await waitFor(() => expect(finance.getPointsOfSaleAction).toHaveBeenCalled());
   expect(screen.getByRole('button', { name: /إضافة نقطة بيع/ })).toBeDisabled();
 });
 
