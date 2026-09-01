@@ -1,5 +1,5 @@
-import TableScrollContainer from '@/components/ui/TableScrollContainer';
 'use client';
+import TableScrollContainer from '@/components/ui/TableScrollContainer';
 
 import React, { useState, useEffect } from 'react';
 import { Search, Plus, ArrowRightLeft, X } from 'lucide-react';

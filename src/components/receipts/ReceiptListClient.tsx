@@ -1,5 +1,5 @@
+'use client';
 import TableScrollContainer from '@/components/ui/TableScrollContainer';
-'use client'
 
 import React, { useState } from 'react'
 import { toast } from 'react-hot-toast'

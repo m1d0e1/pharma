@@ -1,5 +1,5 @@
-
 'use client';
+
 
 import React, { useState, useEffect } from 'react';
 import { Save, Layout, Maximize2, Type, Barcode, Trash2, CheckCircle2 } from 'lucide-react';

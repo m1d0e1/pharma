@@ -1,5 +1,5 @@
-import TableScrollContainer from '@/components/ui/TableScrollContainer';
 'use client';
+import TableScrollContainer from '@/components/ui/TableScrollContainer';
 
 import React, { useState, useMemo } from 'react';
 import { 

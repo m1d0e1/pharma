@@ -1,5 +1,5 @@
+'use client';
 import TableScrollContainer from '@/components/ui/TableScrollContainer';
-'use client'
 
 import nextDynamic from 'next/dynamic'
 import React, { useState, useEffect } from 'react'
