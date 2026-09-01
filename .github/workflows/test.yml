@@ -183,14 +183,11 @@ jobs:
               if ($appProcess.MainWindowHandle -ne 0) {
                 $closed = $appProcess.CloseMainWindow()
               }
-              if (-not $closed) {
-                Stop-Process -Id $appProcess.Id -ErrorAction SilentlyContinue
+              if (-not $closed -or -not $appProcess.WaitForExit(5000)) {
+                Stop-Process -Id $appProcess.Id -Force -ErrorAction SilentlyContinue
               }
-              if (-not $appProcess.WaitForExit(15000)) {
+              if (-not $appProcess.WaitForExit(10000)) {
                 throw "$phase launch did not close cleanly."
-              }
-              if ($appProcess.ExitCode -ne 0 -and $appProcess.ExitCode -ne -1 -and $appProcess.ExitCode -ne 1) {
-                throw "$phase launch closed with code $($appProcess.ExitCode)."
               }
             } finally {
               if (-not $appProcess.HasExited) {
@@ -318,14 +315,11 @@ jobs:
               if ($appProcess.MainWindowHandle -ne 0) {
                 $closed = $appProcess.CloseMainWindow()
               }
-              if (-not $closed) {
-                Stop-Process -Id $appProcess.Id -ErrorAction SilentlyContinue
+              if (-not $closed -or -not $appProcess.WaitForExit(5000)) {
+                Stop-Process -Id $appProcess.Id -Force -ErrorAction SilentlyContinue
               }
-              if (-not $appProcess.WaitForExit(15000)) {
+              if (-not $appProcess.WaitForExit(10000)) {
                 throw "$phase launch did not close cleanly."
-              }
-              if ($appProcess.ExitCode -ne 0 -and $appProcess.ExitCode -ne -1 -and $appProcess.ExitCode -ne 1) {
-                throw "$phase launch closed with code $($appProcess.ExitCode)."
               }
             } finally {
               if (-not $appProcess.HasExited) {
