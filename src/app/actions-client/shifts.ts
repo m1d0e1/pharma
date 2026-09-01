@@ -54,20 +54,20 @@ const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, 
 import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 
 /**
- * Return the user's permanent cash session, creating it on first use.
- * The INSERT ... WHERE NOT EXISTS keeps login, dashboard and checkout races idempotent.
+ * Return the pharmacy-wide open shift, creating it on first use.
+ * userId is retained only as the creator; transaction rows store the acting user.
  */
 export async function ensurePermanentShiftForUser(
   userId: string | number,
   startingCash = 0,
-  notes = 'جلسة نقدية دائمة أُنشئت تلقائياً'
+  notes = 'وردية مشتركة دائمة أُنشئت تلقائياً'
 ) {
   const existing = await db.prepare(`
     SELECT id, user_id, start_time, starting_cash, status
     FROM shifts
-    WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
-    ORDER BY start_time DESC LIMIT 1
-  `).get(userId) as any;
+    WHERE status = 'open'
+    ORDER BY start_time ASC, rowid ASC LIMIT 1
+  `).get() as any;
   if (existing?.id) return existing;
 
   const shiftId = generateId();
@@ -75,17 +75,17 @@ export async function ensurePermanentShiftForUser(
     INSERT INTO shifts (id, user_id, starting_cash, notes, status)
     SELECT ?, ?, ?, ?, 'open'
     WHERE NOT EXISTS (
-      SELECT 1 FROM shifts WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
+      SELECT 1 FROM shifts WHERE status = 'open'
     )
-  `).run(shiftId, userId, startingCash, notes, userId);
+  `).run(shiftId, userId, startingCash, notes);
 
   const created = await db.prepare(`
     SELECT id, user_id, start_time, starting_cash, status
     FROM shifts
-    WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
-    ORDER BY start_time DESC LIMIT 1
-  `).get(userId) as any;
-  if (!created?.id) throw new Error('تعذر إنشاء الجلسة النقدية الدائمة');
+    WHERE status = 'open'
+    ORDER BY start_time ASC, rowid ASC LIMIT 1
+  `).get() as any;
+  if (!created?.id) throw new Error('تعذر إنشاء الوردية المشتركة');
   return created;
 }
 
@@ -104,17 +104,17 @@ export async function openShiftAction(data: { starting_cash_amount: number; open
     const targetUserId = data.user_id || user.id;
     const alreadyOpen = await db.prepare(`
       SELECT id FROM shifts
-      WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
-      ORDER BY start_time DESC LIMIT 1
-    `).get(targetUserId) as any;
+      WHERE status = 'open'
+      ORDER BY start_time ASC, rowid ASC LIMIT 1
+    `).get() as any;
     const shift = await ensurePermanentShiftForUser(
       targetUserId,
       data.starting_cash_amount,
-      data.opening_notes || 'جلسة نقدية دائمة'
+      data.opening_notes || 'وردية مشتركة دائمة'
     );
 
     if (!alreadyOpen) {
-      logActivity(targetUserId, 'START_SHIFT', `أنشأ الجلسة النقدية الدائمة بمبلغ ${data.starting_cash_amount}`);
+      logActivity(user.id, 'START_SHIFT', `أنشأ الوردية المشتركة بمبلغ ${data.starting_cash_amount}`);
     }
 
     revalidatePath('/');
@@ -138,7 +138,7 @@ export async function closeShiftAction(data: { shift_id?: string; ending_cash_am
 
     let shiftId = data.shift_id;
     if (!shiftId || shiftId === 'auto') {
-      const openShift = await db.prepare("SELECT id FROM shifts WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'").get(user.id) as any;
+      const openShift = await db.prepare("SELECT id FROM shifts WHERE status = 'open' ORDER BY start_time ASC, rowid ASC LIMIT 1").get() as any;
       if (!openShift) return { success: false, error: 'لا توجد وردية مفتوحة لإغلاقها' };
       shiftId = openShift.id;
     }
@@ -148,9 +148,9 @@ export async function closeShiftAction(data: { shift_id?: string; ending_cash_am
       const shift = await db.prepare(`
         SELECT CAST(COALESCE(starting_cash, 0) AS REAL) as starting_cash
         FROM shifts
-        WHERE id = ? AND CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
-      `).get(shiftId, user.id) as any;
-      if (!shift) throw new Error('الوردية غير مفتوحة أو لا تخص المستخدم الحالي');
+        WHERE id = ? AND status = 'open'
+      `).get(shiftId) as any;
+      if (!shift) throw new Error('الوردية المشتركة غير مفتوحة');
       
       const sales = await db.prepare(`
         SELECT CAST(COALESCE(SUM(total_amount), 0) AS REAL) as total
@@ -193,8 +193,8 @@ export async function closeShiftAction(data: { shift_id?: string; ending_cash_am
             cash_difference = ?,
             notes = ?,
             status = ?
-        WHERE id = ? AND CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
-      `).run(data.ending_cash_amount, data.ending_cash_amount, difference, data.closing_notes || null, status, shiftId, user.id);
+        WHERE id = ? AND status = 'open'
+      `).run(data.ending_cash_amount, data.ending_cash_amount, difference, data.closing_notes || null, status, shiftId);
       if (shiftUpdate.changes !== 1) throw new Error('تم إغلاق الوردية أو تعديلها بالفعل');
 
       // 3. Accounting Reconciliation (Journal Entry)

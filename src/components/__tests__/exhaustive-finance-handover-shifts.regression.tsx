@@ -265,7 +265,7 @@ describe('Exhaustive Testing: Financials, Handover, Shift, and Receipt Modules',
       render(<DrawerHandoverClient shiftId="shift-100" onClose={onClose} />);
 
       // Verify shift details rendering
-      expect(await screen.findByText(/تسليم درج الوردية/i)).toBeInTheDocument();
+      expect(await screen.findByText(/تسليم الوردية المشتركة/i)).toBeInTheDocument();
       expect(screen.getByText(/د. أحمد الصيدلي/i)).toBeInTheDocument();
       expect(screen.getByText('3,700')).toBeInTheDocument();
 
@@ -315,7 +315,7 @@ describe('Exhaustive Testing: Financials, Handover, Shift, and Receipt Modules',
 
       render(<DrawerHandoverClient shiftId="shift-100" />);
 
-      expect(await screen.findByText(/تسليم درج الوردية/i)).toBeInTheDocument();
+      expect(await screen.findByText(/تسليم الوردية المشتركة/i)).toBeInTheDocument();
 
       const inputs = screen.getAllByPlaceholderText('0.00');
       const actualCashInput = inputs[0];

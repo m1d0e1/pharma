@@ -61,7 +61,7 @@ export default function ShiftManagement() {
             <div>
               <h2 className="text-xl font-black">إدارة الورديات</h2>
               <p className="text-xs text-slate-500 font-bold mt-0.5">
-                {currentShift ? 'الجلسة النقدية الدائمة نشطة' : 'جاري تهيئة الجلسة النقدية'}
+                {currentShift ? 'الوردية المشتركة الدائمة نشطة' : 'جاري تهيئة الوردية المشتركة'}
               </p>
             </div>
           </div>
@@ -97,13 +97,13 @@ export default function ShiftManagement() {
               className="w-full bg-slate-900 dark:bg-white text-white dark:text-slate-900 py-4 rounded-2xl font-black text-lg transition-all shadow-lg hover:bg-slate-800 dark:hover:bg-slate-100 flex items-center justify-center gap-2 group-hover:scale-[1.02] transform"
             >
               <ArrowRightLeft className="w-5 h-5" />
-              تسليم نقدية المستخدم
+              تسليم الوردية المشتركة
             </Link>
           </div>
         ) : (
           <div className="space-y-6">
             <p className="text-sm text-slate-600 dark:text-slate-400 font-medium leading-relaxed">
-              سينشئ النظام جلستك النقدية تلقائياً عند أول حركة.
+              سينشئ النظام وردية مشتركة لكل المستخدمين تلقائياً عند أول حركة.
             </p>
             <Link
               href="/shifts"

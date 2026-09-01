@@ -96,6 +96,8 @@ function applyAllMigrations(db: Database.Database) {
     '012_shortages_pharmacy_scope.sql',
     '013_shift_handover_details.sql',
     '014_inventory_performance.sql',
+    '015_shared_open_shift.sql',
+    '016_financial_expense_wiring.sql',
   ];
   for (const file of files) {
     const sql = readFileSync(`src-tauri/migrations/${file}`, 'utf8');
@@ -661,6 +663,76 @@ describe('Cross-computer consistency across fresh install and update', () => {
     expect(parsedDate.getUTCDate()).toBe(30);
     expect(parsedDate.getUTCHours()).toBe(15);
     expect(parsedDate.getUTCMinutes()).toBe(30);
+  });
+
+  it('merges legacy per-user open shifts into one shared shift during update', () => {
+    const legacyDb = new Database(':memory:');
+    try {
+      legacyDb.exec(readFileSync('src-tauri/migrations/001_initial.sql', 'utf8'));
+      legacyDb.exec(`
+        INSERT OR IGNORE INTO users (id, username, password_hash, role, full_name)
+        VALUES ('legacy-a', 'legacy_a', 'hash', 'admin', 'Legacy A'),
+               ('legacy-b', 'legacy_b', 'hash', 'pharmacist', 'Legacy B');
+        INSERT INTO shifts (id, user_id, start_time, starting_cash, status)
+        VALUES ('shared-oldest', 'legacy-a', '2026-08-01 08:00:00', 10, 'open'),
+               ('legacy-extra', 'legacy-b', '2026-08-01 09:00:00', 20, 'open');
+        INSERT INTO sales_invoices (id, user_id, shift_id, total_amount, payment_method, status)
+        VALUES ('legacy-sale', 'legacy-b', 'legacy-extra', 5, 'cash', 'completed');
+        INSERT INTO returns (id, invoice_id, user_id, shift_id, total_refund, refund_method, status)
+        VALUES ('legacy-return', 'legacy-sale', 'legacy-b', 'legacy-extra', 1, 'cash', 'approved');
+        INSERT INTO cash_movements (id, user_id, shift_id, type, category, amount, date)
+        VALUES ('legacy-movement', 'legacy-b', 'legacy-extra', 'receipt', 'pharmacy', 2, '2026-08-01');
+      `);
+
+      legacyDb.exec(readFileSync('src-tauri/migrations/015_shared_open_shift.sql', 'utf8'));
+
+      expect(legacyDb.prepare("SELECT id, starting_cash FROM shifts WHERE status = 'open'").all()).toEqual([
+        { id: 'shared-oldest', starting_cash: 30 },
+      ]);
+      expect(legacyDb.prepare("SELECT status FROM shifts WHERE id = 'legacy-extra'").get()).toEqual({ status: 'merged' });
+      expect(legacyDb.prepare("SELECT shift_id FROM sales_invoices WHERE id = 'legacy-sale'").get()).toEqual({ shift_id: 'shared-oldest' });
+      expect(legacyDb.prepare("SELECT shift_id FROM returns WHERE id = 'legacy-return'").get()).toEqual({ shift_id: 'shared-oldest' });
+      expect(legacyDb.prepare("SELECT shift_id FROM cash_movements WHERE id = 'legacy-movement'").get()).toEqual({ shift_id: 'shared-oldest' });
+      expect(() => legacyDb.prepare(`
+        INSERT INTO shifts (id, user_id, starting_cash, status)
+        VALUES ('duplicate-open', 'legacy-b', 0, 'open')
+      `).run()).toThrow();
+    } finally {
+      legacyDb.close();
+    }
+  });
+
+  it('backfills historical cash expenses without duplicating already linked expense records', () => {
+    const legacyDb = new Database(':memory:');
+    try {
+      legacyDb.exec(readFileSync('src-tauri/migrations/001_initial.sql', 'utf8'));
+      legacyDb.exec(`
+        INSERT OR IGNORE INTO users (id, username, password_hash, role, full_name)
+        VALUES ('expense-user', 'expense_user', 'hash', 'admin', 'Expense User');
+        INSERT INTO expenses (id, user_id, category, amount, description, date)
+        VALUES ('already-linked', 'expense-user', 'أدوات مكتبية', 30, 'ورق', '2026-08-31');
+        INSERT INTO cash_movements (id, user_id, type, category, sub_category, amount, notes, date)
+        VALUES
+          ('linked-movement', 'expense-user', 'disbursement', 'operating_expenses', 'أدوات مكتبية', 30, 'ورق', '2026-08-31'),
+          ('legacy-rent', 'expense-user', 'disbursement', 'rent', NULL, 100, 'إيجار', '2026-08-31'),
+          ('owner-draw', 'expense-user', 'disbursement', 'personal', NULL, 50, 'مسحوبات', '2026-08-31');
+      `);
+
+      const migration = readFileSync('src-tauri/migrations/016_financial_expense_wiring.sql', 'utf8');
+      legacyDb.exec(migration);
+      legacyDb.exec(migration);
+
+      expect(legacyDb.prepare(`
+        SELECT category, amount, description
+        FROM expenses
+        ORDER BY amount
+      `).all()).toEqual([
+        { category: 'أدوات مكتبية', amount: 30, description: 'ورق' },
+        { category: 'rent', amount: 100, description: 'إيجار' },
+      ]);
+    } finally {
+      legacyDb.close();
+    }
   });
 
   it('keeps separate trial-balance mappings for every bank, POS, and expense entity', async () => {

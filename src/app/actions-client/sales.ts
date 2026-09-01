@@ -536,8 +536,8 @@ export async function processCheckoutAction(data: any) {
     const requestedShift = requestedShiftId
       ? await db.prepare(`
           SELECT id FROM shifts
-          WHERE id = ? AND CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
-        `).get(requestedShiftId, userId) as any
+          WHERE id = ? AND status = 'open'
+        `).get(requestedShiftId) as any
       : null;
     const permanentShift = requestedShift || await ensurePermanentShiftForUser(userId);
     const shiftId = permanentShift?.id ? String(permanentShift.id) : null;

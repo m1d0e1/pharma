@@ -50,7 +50,9 @@ import {
   deleteAccountAction,
   getJournalDetailsAction,
   getFinancialNoticesAction,
-  getActivityLogsAction
+  getActivityLogsAction,
+  getTreasuryDashboardAction,
+  type TreasuryMetricKey
 } from '@/app/actions-client/finance';
 import { format, isValid } from 'date-fns';
 import { toast } from 'react-hot-toast';
@@ -110,7 +112,18 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
   const [activeTab, setActiveTab] = useState(initialTab);
   const [showCashForm, setShowCashForm] = useState<{ show: boolean, type: 'disbursement' | 'receipt' }>({ show: false, type: 'disbursement' });
   const [treasurySearch, setTreasurySearch] = useState('');
-  const [treasuryView, setTreasuryView] = useState<'all' | 'handovers'>('all');
+  const [treasuryView, setTreasuryView] = useState<'all' | 'handovers' | 'disbursements' | 'receipts'>('all');
+  const [treasurySummary, setTreasurySummary] = useState({
+    treasuryBalance: 0,
+    todayReceipts: 0,
+    todayExpenses: 0,
+    totalShiftHandovers: 0,
+    counts: { treasury: 0, receipts: 0, expenses: 0, handovers: 0 },
+  });
+  const [selectedTreasuryMetric, setSelectedTreasuryMetric] = useState<TreasuryMetricKey | null>(null);
+  const [treasuryDetails, setTreasuryDetails] = useState<any[]>([]);
+  const [treasuryDetailCount, setTreasuryDetailCount] = useState(0);
+  const [loadingTreasuryDetails, setLoadingTreasuryDetails] = useState(false);
   const [movements, setMovements] = useState<any[]>([]);
   const [pointsOfSale, setPointsOfSale] = useState<any[]>([]);
   const [expenseDefinitions, setExpenseDefinitions] = useState<any[]>([]);
@@ -277,13 +290,15 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
      setLoadingData(true);
      try {
         if (activeTab === 'treasury') {
-           const movementsRes = await getCashMovementsAction();
+           const [summaryRes, movementsRes, posRes, banksRes] = await Promise.all([
+             getTreasuryDashboardAction(),
+             getCashMovementsAction(),
+             getPointsOfSaleAction(),
+             getBanksAction(),
+           ]);
+           if (summaryRes.success && summaryRes.data) setTreasurySummary(summaryRes.data as typeof treasurySummary);
            if (movementsRes.success) setMovements(movementsRes.data as any[]);
-           const accountsRes = await getAccountsAction();
-           if (accountsRes.success) setAccounts(accountsRes.data as any[]);
-           const posRes = await getPointsOfSaleAction();
            if (posRes.success) setPointsOfSale(posRes.data as any[]);
-           const banksRes = await getBanksAction();
            if (banksRes.success) setBanks(banksRes.data as any[]);
         } else if (activeTab === 'cash_movement') {
            const res = await getCashMovementsAction();
@@ -332,22 +347,27 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
      setLoadingData(false);
   };
 
-  // Compute Treasury Stats Dynamically
-  const todayStr = format(new Date(), 'yyyy-MM-dd');
-  const treasuryAccount = accounts.find(a => a.code === '111' || a.code === '1.1.1' || a.category === 'cash_drawer');
-  const treasuryBalance = treasuryAccount ? (treasuryAccount.balance || 0) : 0;
-   
-  const todayReceipts = movements
-     .filter(m => m.type === 'receipt' && String(m.date || m.created_at || '').slice(0, 10) === todayStr)
-     .reduce((sum, m) => sum + Number(m.amount || 0), 0);
+  const {
+    treasuryBalance,
+    todayReceipts,
+    todayExpenses,
+    totalShiftHandovers,
+  } = treasurySummary;
 
-  const todayDisbursements = movements
-     .filter(m => m.type === 'disbursement' && String(m.date || m.created_at || '').slice(0, 10) === todayStr)
-     .reduce((sum, m) => sum + Number(m.amount || 0), 0);
-
-  const totalShiftHandovers = movements
-     .filter(m => m.category === 'handover')
-     .reduce((sum, m) => sum + Number(m.amount || 0), 0);
+  const openTreasuryMetric = async (metric: TreasuryMetricKey) => {
+    setSelectedTreasuryMetric(metric);
+    setTreasuryDetails([]);
+    setLoadingTreasuryDetails(true);
+    const result = await getTreasuryDashboardAction(metric);
+    if (result.success && result.data) {
+      setTreasurySummary(result.data as typeof treasurySummary);
+      setTreasuryDetails(result.data.details || []);
+      setTreasuryDetailCount(Number(result.data.detailCount || 0));
+    } else {
+      toast.error(result.error || 'فشل جلب تفاصيل الرقم');
+    }
+    setLoadingTreasuryDetails(false);
+  };
 
   const totalLiquidity = treasuryBalance + 
      pointsOfSale.reduce((sum, pos) => sum + (Number(pos.current_balance) || 0), 0) + 
@@ -521,11 +541,22 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                 </div>
 
                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
-                    <StatCard label="رصيد الخزينة" value={treasuryBalance.toLocaleString('en-US')} color="emerald" icon={Wallet} />
-                    <StatCard label="توريدات اليوم" value={todayReceipts.toLocaleString('en-US')} color="blue" icon={ArrowRightLeft} />
-                    <StatCard label="المصروفات اليومية" value={todayDisbursements.toLocaleString('en-US')} color="rose" icon={Receipt} />
-                    <StatCard label="إجمالي تسليمات الورديات" value={totalShiftHandovers.toLocaleString('en-US')} color="blue" icon={ShieldCheck} />
+                    <StatCard label="رصيد الخزينة" value={treasuryBalance.toLocaleString('en-US')} color="emerald" icon={Wallet} onClick={() => openTreasuryMetric('treasury')} active={selectedTreasuryMetric === 'treasury'} />
+                    <StatCard label="توريدات اليوم" value={todayReceipts.toLocaleString('en-US')} color="blue" icon={ArrowRightLeft} onClick={() => openTreasuryMetric('receipts')} active={selectedTreasuryMetric === 'receipts'} />
+                    <StatCard label="المصروفات اليومية" value={todayExpenses.toLocaleString('en-US')} color="rose" icon={Receipt} onClick={() => openTreasuryMetric('expenses')} active={selectedTreasuryMetric === 'expenses'} />
+                    <StatCard label="إجمالي تسليمات الورديات" value={totalShiftHandovers.toLocaleString('en-US')} color="blue" icon={ShieldCheck} onClick={() => openTreasuryMetric('handovers')} active={selectedTreasuryMetric === 'handovers'} />
                  </div>
+
+                 {selectedTreasuryMetric && (
+                    <TreasuryMetricDetails
+                      metric={selectedTreasuryMetric}
+                      total={{ treasury: treasuryBalance, receipts: todayReceipts, expenses: todayExpenses, handovers: totalShiftHandovers }[selectedTreasuryMetric]}
+                      details={treasuryDetails}
+                      detailCount={treasuryDetailCount}
+                      loading={loadingTreasuryDetails}
+                      onClose={() => setSelectedTreasuryMetric(null)}
+                    />
+                 )}
 
                  <div className="bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 overflow-hidden shadow-sm">
                      <div className="p-8 border-b border-slate-100 dark:border-slate-800 flex flex-wrap justify-between items-center gap-4">
@@ -1303,11 +1334,11 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                  <Link href="/shifts" className="p-8 bg-white dark:bg-slate-900 rounded-[32px] border border-slate-100 dark:border-slate-800 shadow-sm hover:border-blue-300 transition-all">
                     <BarChart3 className="w-10 h-10 text-blue-600 mb-5" />
                     <h3 className="text-xl font-black text-slate-800 dark:text-white">إدارة وتقارير الورديات</h3>
-                    <p className="text-sm font-bold text-slate-500 mt-2">مراجعة الجلسات النقدية الدائمة وحركات كل مستخدم.</p>
+                    <p className="text-sm font-bold text-slate-500 mt-2">مراجعة الوردية المشتركة وحركات كل مستخدم داخلها.</p>
                  </Link>
                  <Link href="/finance/handover" className="p-8 bg-white dark:bg-slate-900 rounded-[32px] border border-slate-100 dark:border-slate-800 shadow-sm hover:border-emerald-300 transition-all">
                     <ArrowRightLeft className="w-10 h-10 text-emerald-600 mb-5" />
-                    <h3 className="text-xl font-black text-slate-800 dark:text-white">تسليم نقدية المستخدم</h3>
+                    <h3 className="text-xl font-black text-slate-800 dark:text-white">تسليم الوردية المشتركة</h3>
                     <p className="text-sm font-bold text-slate-500 mt-2">مطابقة حركات المستخدم وتحويل النقدية مع بقاء الجلسة مفتوحة.</p>
                  </Link>
               </div>
@@ -1601,7 +1632,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
 }
 
 
-function StatCard({ label, value, color, icon: Icon }: any) {
+function StatCard({ label, value, color, icon: Icon, onClick, active }: any) {
   const colorMap = {
     emerald: 'text-emerald-600 bg-emerald-50 border-emerald-100 dark:bg-emerald-900/10 dark:border-emerald-900/20',
     blue: 'text-blue-600 bg-blue-50 border-blue-100 dark:bg-blue-900/10 dark:border-blue-900/20',
@@ -1609,7 +1640,18 @@ function StatCard({ label, value, color, icon: Icon }: any) {
   };
 
   return (
-    <div className={cn("p-8 rounded-[40px] border transition-all hover:scale-105 hover:shadow-xl", (colorMap as any)[color])}>
+    <button
+      type="button"
+      onClick={onClick}
+      aria-expanded={active}
+      aria-label={`عرض تفاصيل ${label}`}
+      className={cn(
+        "w-full p-8 rounded-[40px] border transition-all hover:scale-105 hover:shadow-xl text-right",
+        (colorMap as any)[color],
+        onClick && "cursor-pointer select-none active:scale-95",
+        active && "ring-2 ring-offset-2 ring-current shadow-md scale-[1.02]"
+      )}
+    >
        <div className="flex justify-between items-center mb-6">
           <div className="w-14 h-14 bg-white dark:bg-slate-900 rounded-2xl flex items-center justify-center shadow-sm">
              <Icon className="w-8 h-8" />
@@ -1618,7 +1660,82 @@ function StatCard({ label, value, color, icon: Icon }: any) {
        </div>
        <p className="text-sm font-black opacity-70 mb-2">{label}</p>
        <p className="text-4xl font-black">{value} <span className="text-sm">ج.م</span></p>
-    </div>
+       <p className="text-[10px] font-bold opacity-60 mt-3">اضغط لعرض التفاصيل</p>
+    </button>
+  );
+}
+
+function TreasuryMetricDetails({
+  metric,
+  total,
+  details,
+  detailCount,
+  loading,
+  onClose,
+}: {
+  metric: TreasuryMetricKey;
+  total: number;
+  details: any[];
+  detailCount: number;
+  loading: boolean;
+  onClose: () => void;
+}) {
+  const labels: Record<TreasuryMetricKey, string> = {
+    treasury: 'تفاصيل رصيد الخزينة',
+    receipts: 'تفاصيل توريدات اليوم',
+    expenses: 'تفاصيل المصروفات اليومية',
+    handovers: 'تفاصيل تسليمات الورديات',
+  };
+
+  return (
+    <section className="bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 overflow-hidden shadow-lg" aria-live="polite">
+      <div className="p-6 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between gap-4">
+        <div>
+          <h3 className="text-xl font-black text-slate-800 dark:text-white">{labels[metric]}</h3>
+          <p className="text-sm font-black text-blue-600 mt-1">
+            {Number(total || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ج.م
+            <span className="text-xs text-slate-400 mr-2">({detailCount} حركة)</span>
+          </p>
+        </div>
+        <button type="button" onClick={onClose} aria-label="إغلاق التفاصيل" className="p-3 rounded-2xl bg-slate-100 dark:bg-slate-800 text-slate-500 hover:text-rose-600 transition-colors">
+          <X className="w-5 h-5" />
+        </button>
+      </div>
+      <div className="max-h-[420px] overflow-auto">
+        <table className="w-full text-right">
+          <thead className="bg-slate-50 dark:bg-slate-800/50 sticky top-0">
+            <tr>
+              <th className="px-6 py-4 text-xs font-black text-slate-400">التاريخ</th>
+              <th className="px-6 py-4 text-xs font-black text-slate-400">البيان</th>
+              <th className="px-6 py-4 text-xs font-black text-slate-400">المستخدم</th>
+              <th className="px-6 py-4 text-xs font-black text-slate-400">المبلغ</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+            {loading ? (
+              <tr><td colSpan={4} className="py-16 text-center text-slate-400 font-bold">جاري تحميل التفاصيل...</td></tr>
+            ) : details.length === 0 ? (
+              <tr><td colSpan={4} className="py-16 text-center text-slate-400 font-bold">لا توجد حركات ضمن هذا الرقم</td></tr>
+            ) : details.map(detail => (
+              <tr key={`${metric}-${detail.id}`} className="hover:bg-slate-50 dark:hover:bg-slate-800/30">
+                <td className="px-6 py-4 text-xs font-bold text-slate-500" dir="ltr">{safeFormat(detail.created_at || detail.date, 'yyyy/MM/dd HH:mm')}</td>
+                <td className="px-6 py-4">
+                  <p className="font-black text-sm text-slate-800 dark:text-white">{detail.description || '—'}</p>
+                  {detail.shift_id && <Link href="/shifts" className="text-[10px] font-mono text-blue-500">وردية #{String(detail.shift_id).slice(0, 8)}</Link>}
+                </td>
+                <td className="px-6 py-4 text-xs font-bold text-slate-500">{detail.user_name || '—'}</td>
+                <td className={cn('px-6 py-4 font-black', detail.type === 'receipt' ? 'text-emerald-600' : 'text-rose-600')}>
+                  {detail.type === 'receipt' ? '+' : '-'}{Number(detail.amount || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ج.م
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {detailCount > details.length && (
+        <p className="px-6 py-3 text-[11px] font-bold text-slate-400 border-t border-slate-100 dark:border-slate-800">يتم عرض أحدث {details.length} حركة من أصل {detailCount} للحفاظ على سرعة الشاشة.</p>
+      )}
+    </section>
   );
 }
 

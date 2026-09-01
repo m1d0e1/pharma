@@ -1,3 +1,4 @@
+import TableScrollContainer from '@/components/ui/TableScrollContainer';
 'use client';
 
 import React, { useState, useEffect } from 'react';
@@ -37,6 +38,8 @@ const formatInvoiceDateTime = (dateStr?: string | null, includeYear = false) => 
 export default function PurchaseReturnClient() {
   const router = useRouter();
   const listRef = React.useRef<HTMLDivElement>(null);
+  const selectedInvoiceIdRef = React.useRef('');
+  const detailRequestRef = React.useRef(0);
   const [suppliers, setSuppliers] = useState<any[]>([]);
   const [selectedSupplierId, setSelectedSupplierId] = useState<string>('');
   const [searchTerm, setSearchTerm] = useState<string>('');
@@ -62,32 +65,46 @@ export default function PurchaseReturnClient() {
 
   // Fetch invoices by barcode/term or when supplier changes
   useEffect(() => {
+    let cancelled = false;
     async function fetchInvoices() {
       if (searchTerm.trim()) {
         setIsLoadingInvoices(true);
         const res = await searchPurchaseInvoicesForReturnAction(searchTerm);
+        if (cancelled) return;
         setIsLoadingInvoices(false);
         if (res.success && res.data) {
-          setInvoices(res.data);
-          setSelectedIndex(res.data.length > 0 ? 0 : -1);
+          const list = res.data;
+          const preservedIndex = list.findIndex((item: any) => item.id === selectedInvoiceIdRef.current);
+          const nextIndex = preservedIndex >= 0 ? preservedIndex : (list.length > 0 ? 0 : -1);
+          selectedInvoiceIdRef.current = nextIndex >= 0 ? list[nextIndex].id : '';
+          setInvoices(list);
+          setSelectedIndex(nextIndex);
         }
       } else if (selectedSupplierId) {
         setIsLoadingInvoices(true);
         const res = await getPurchasesReportsAction({ supplierId: selectedSupplierId, status: 'completed' });
+        if (cancelled) return;
         setIsLoadingInvoices(false);
         if (res.success && res.data) {
           const list = res.data.filter((invoice: any) => invoice.status === 'completed');
+          const preservedIndex = list.findIndex((item: any) => item.id === selectedInvoiceIdRef.current);
+          const nextIndex = preservedIndex >= 0 ? preservedIndex : (list.length > 0 ? 0 : -1);
+          selectedInvoiceIdRef.current = nextIndex >= 0 ? list[nextIndex].id : '';
           setInvoices(list);
-          setSelectedIndex(list.length > 0 ? 0 : -1);
+          setSelectedIndex(nextIndex);
         }
       } else {
+        selectedInvoiceIdRef.current = '';
         setInvoices([]);
         setSelectedIndex(-1);
         setItems([]);
       }
     }
     const timer = setTimeout(fetchInvoices, 250);
-    return () => clearTimeout(timer);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [selectedSupplierId, searchTerm]);
 
   // Fetch items when selectedIndex changes
@@ -95,9 +112,14 @@ export default function PurchaseReturnClient() {
     if (selectedIndex >= 0 && selectedIndex < invoices.length) {
       handleInvoiceSelect(invoices[selectedIndex].id);
     } else {
+      detailRequestRef.current += 1;
+      selectedInvoiceIdRef.current = '';
       setSelectedInvoiceId('');
       setItems([]);
+      setIsLoadingInvoices(false);
     }
+    // Selection and the refreshed invoice list are the only triggers for loading details.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedIndex, invoices]);
 
   // Scroll selected button into view
@@ -125,10 +147,18 @@ export default function PurchaseReturnClient() {
 
       if (e.key === 'ArrowDown') {
         e.preventDefault();
-        setSelectedIndex(prev => (prev < invoices.length - 1 ? prev + 1 : prev));
+        setSelectedIndex(prev => {
+          const next = prev < invoices.length - 1 ? prev + 1 : prev;
+          selectedInvoiceIdRef.current = invoices[next]?.id || '';
+          return next;
+        });
       } else if (e.key === 'ArrowUp') {
         e.preventDefault();
-        setSelectedIndex(prev => (prev > 0 ? prev - 1 : 0));
+        setSelectedIndex(prev => {
+          const next = prev > 0 ? prev - 1 : 0;
+          selectedInvoiceIdRef.current = invoices[next]?.id || '';
+          return next;
+        });
       }
     };
 
@@ -138,6 +168,8 @@ export default function PurchaseReturnClient() {
 
   // Fetch items when invoice changes
   const handleInvoiceSelect = async (invId: string) => {
+    const requestId = ++detailRequestRef.current;
+    selectedInvoiceIdRef.current = invId;
     setSelectedInvoiceId(invId);
     if (!invId) {
       setItems([]);
@@ -151,6 +183,7 @@ export default function PurchaseReturnClient() {
     
     setIsLoadingInvoices(true);
     const res = await getPurchaseInvoiceDetailsAction(invId);
+    if (requestId !== detailRequestRef.current) return;
     setIsLoadingInvoices(false);
     
     if (res.success && res.data) {
@@ -293,6 +326,7 @@ export default function PurchaseReturnClient() {
                     if (e.key === 'Enter') {
                       e.preventDefault();
                       if (invoices.length > 0) {
+                        selectedInvoiceIdRef.current = invoices[0].id;
                         setSelectedIndex(0);
                       }
                     }
@@ -335,7 +369,10 @@ export default function PurchaseReturnClient() {
                 invoices.map((inv, idx) => (
                   <button
                     key={inv.id}
-                    onClick={() => setSelectedIndex(idx)}
+                    onClick={() => {
+                      selectedInvoiceIdRef.current = inv.id;
+                      setSelectedIndex(idx);
+                    }}
                     className={`w-full text-right p-3 rounded-xl border transition-all flex flex-col gap-1 ${
                       selectedIndex === idx
                         ? 'bg-blue-50 dark:bg-blue-950/20 border-blue-500 dark:border-blue-600 shadow-md'

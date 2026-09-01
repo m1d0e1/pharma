@@ -478,25 +478,20 @@ async fn resolve_open_shift(
 ) -> Result<Option<String>, String> {
     if let Some(shift_id) = requested_shift_id.filter(|id| !id.trim().is_empty()) {
         if let Some(row) = sqlx::query(
-            "SELECT id FROM shifts WHERE id = ? AND CAST(user_id AS TEXT) = ? AND LOWER(COALESCE(status, '')) = 'open'",
+            "SELECT id FROM shifts WHERE id = ? AND LOWER(COALESCE(status, '')) = 'open'",
         )
         .bind(shift_id)
-        .bind(user_id)
         .fetch_optional(&mut **tx)
         .await
         .map_err(|e| e.to_string())?
         {
-            return row
-                .try_get("id")
-                .map(Some)
-                .map_err(|e| e.to_string());
+            return row.try_get("id").map(Some).map_err(|e| e.to_string());
         }
     }
 
     if let Some(row) = sqlx::query(
-        "SELECT id FROM shifts WHERE CAST(user_id AS TEXT) = ? AND LOWER(COALESCE(status, '')) = 'open' ORDER BY rowid DESC LIMIT 1",
+        "SELECT id FROM shifts WHERE LOWER(COALESCE(status, '')) = 'open' ORDER BY rowid ASC LIMIT 1",
     )
-    .bind(user_id)
     .fetch_optional(&mut **tx)
     .await
     .map_err(|e| e.to_string())?
@@ -509,19 +504,17 @@ async fn resolve_open_shift(
 
     let shift_id = Uuid::new_v4().to_string();
     sqlx::query(
-        "INSERT INTO shifts (id, user_id, status) SELECT ?, ?, 'open' WHERE NOT EXISTS (SELECT 1 FROM shifts WHERE CAST(user_id AS TEXT) = ? AND LOWER(COALESCE(status, '')) = 'open')",
+        "INSERT INTO shifts (id, user_id, status) SELECT ?, ?, 'open' WHERE NOT EXISTS (SELECT 1 FROM shifts WHERE LOWER(COALESCE(status, '')) = 'open')",
     )
     .bind(&shift_id)
-    .bind(user_id)
     .bind(user_id)
     .execute(&mut **tx)
     .await
     .map_err(|e| e.to_string())?;
 
     sqlx::query_scalar::<_, String>(
-        "SELECT id FROM shifts WHERE CAST(user_id AS TEXT) = ? AND LOWER(COALESCE(status, '')) = 'open' ORDER BY rowid DESC LIMIT 1",
+        "SELECT id FROM shifts WHERE LOWER(COALESCE(status, '')) = 'open' ORDER BY rowid ASC LIMIT 1",
     )
-    .bind(user_id)
     .fetch_optional(&mut **tx)
     .await
     .map_err(|e| e.to_string())
@@ -3259,6 +3252,8 @@ mod tests {
             include_str!("../../migrations/012_shortages_pharmacy_scope.sql"),
             include_str!("../../migrations/013_shift_handover_details.sql"),
             include_str!("../../migrations/014_inventory_performance.sql"),
+            include_str!("../../migrations/015_shared_open_shift.sql"),
+            include_str!("../../migrations/016_financial_expense_wiring.sql"),
         ] {
             sqlx::raw_sql(migration)
                 .execute(&mut connection)

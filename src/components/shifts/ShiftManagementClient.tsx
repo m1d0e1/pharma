@@ -1,3 +1,4 @@
+import TableScrollContainer from '@/components/ui/TableScrollContainer';
 'use client';
 
 import React, { useState, useEffect } from 'react';
@@ -62,7 +63,7 @@ export default function ShiftManagementClient({
     if (!startingCash && suggestedStartingCash > 0 && !hasOpenShift) {
       setStartingCash(String(suggestedStartingCash));
     }
-  }, [suggestedStartingCash, hasOpenShift]);
+  }, [suggestedStartingCash, hasOpenShift, startingCash]);
 
   const handleFilterChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
     const status = e.target.value;
@@ -175,12 +176,12 @@ export default function ShiftManagementClient({
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Open Shift Card */}
         <div className="p-6 bg-white dark:bg-slate-800 rounded-3xl border-2 border-slate-100 dark:border-slate-700 shadow-lg">
-          <h3 className="text-xl font-bold text-slate-800 dark:text-white mb-4">الجلسة النقدية الدائمة</h3>
+          <h3 className="text-xl font-bold text-slate-800 dark:text-white mb-4">الوردية المشتركة الدائمة</h3>
           
           {hasOpenShift ? (
             <div className="p-4 bg-emerald-50 dark:bg-emerald-900/20 rounded-2xl border border-emerald-200 dark:border-emerald-800">
               <p className="text-emerald-700 dark:text-emerald-300 font-bold">
-                الجلسة نشطة دائماً. تظل مفتوحة عند تسجيل الخروج والدخول، وترتبط كل حركة بالمستخدم الذي نفذها.
+                وردية واحدة مشتركة نشطة لكل المستخدمين. تظل مفتوحة عند تسجيل الخروج والدخول، وترتبط كل حركة بالمستخدم الذي نفذها.
               </p>
             </div>
           ) : (
@@ -244,7 +245,7 @@ export default function ShiftManagementClient({
 
         {/* Close Shift Card */}
         <div className="p-6 bg-white dark:bg-slate-800 rounded-3xl border-2 border-slate-100 dark:border-slate-700 shadow-lg">
-          <h3 className="text-xl font-bold text-slate-800 dark:text-white mb-4">تسليم نقدية المستخدم</h3>
+          <h3 className="text-xl font-bold text-slate-800 dark:text-white mb-4">تسليم الوردية المشتركة</h3>
           
           {!hasOpenShift ? (
             <div className="p-4 bg-slate-50 dark:bg-slate-700/50 rounded-2xl border border-slate-200 dark:border-slate-600">
@@ -343,11 +344,11 @@ export default function ShiftManagementClient({
             <p className="text-slate-500 dark:text-slate-400">لا توجد شفتات مسجلة بعد</p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <TableScrollContainer>
             <table className="w-full text-right">
               <thead className="bg-slate-50 dark:bg-slate-700/50">
                 <tr className="border-b border-slate-200 dark:border-slate-700 text-xs font-bold">
-                  <th className="py-3 px-4 text-slate-600 dark:text-slate-400">الصيدلي</th>
+                  <th className="py-3 px-4 text-slate-600 dark:text-slate-400">الوردية / افتتحها</th>
                   <th className="py-3 px-4 text-slate-600 dark:text-slate-400">وقت البدء</th>
                   <th className="py-3 px-4 text-slate-600 dark:text-slate-400">وقت الانتهاء</th>
                   <th className="py-3 px-4 text-slate-600 dark:text-slate-400">الرصيد الافتتاحي</th>
@@ -369,10 +370,12 @@ export default function ShiftManagementClient({
                   <tr key={shift.id} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/50 text-sm transition-colors">
                     <td className="py-3.5 px-4">
                       <div className="font-bold text-slate-800 dark:text-white">
-                        {shift.profiles?.full_name || 'غير معروف'}
+                        {shift.status === 'open' ? 'الوردية المشتركة' : (shift.profiles?.full_name || 'غير معروف')}
                       </div>
                       <div className="text-xs text-slate-500 dark:text-slate-400">
-                        {shift.profiles?.role === 'admin' ? 'مدير' : shift.profiles?.role === 'owner' ? 'مالك' : 'صيدلي'}
+                        {shift.status === 'open'
+                          ? `افتتحها: ${shift.profiles?.full_name || 'غير معروف'}`
+                          : shift.profiles?.role === 'admin' ? 'مدير' : shift.profiles?.role === 'owner' ? 'مالك' : 'صيدلي'}
                       </div>
                     </td>
                     <td className="py-3.5 px-4 text-slate-700 dark:text-slate-300 whitespace-nowrap text-xs">
@@ -446,7 +449,7 @@ export default function ShiftManagementClient({
                           size="sm"
                           onClick={() => setViewingReceiptsShift({ 
                             id: shift.id, 
-                            title: `وردية ${shift.profiles?.full_name || ''} (${formatDate(shift.shift_start)})` 
+                            title: `${shift.status === 'open' ? 'الوردية المشتركة' : `وردية ${shift.profiles?.full_name || ''}`} (${formatDate(shift.shift_start)})`
                           })}
                           className="rounded-xl border-blue-200 text-blue-700 hover:bg-blue-50 dark:border-blue-800 dark:text-blue-300 dark:hover:bg-blue-900/30 text-xs font-bold flex items-center gap-1 shadow-sm"
                           title="عرض فواتير وإيصالات هذه الوردية"
@@ -468,7 +471,7 @@ export default function ShiftManagementClient({
                 ))}
               </tbody>
             </table>
-          </div>
+          </TableScrollContainer>
         )}
       </div>
 

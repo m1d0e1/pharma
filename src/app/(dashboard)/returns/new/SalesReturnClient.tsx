@@ -1,3 +1,4 @@
+import TableScrollContainer from '@/components/ui/TableScrollContainer';
 'use client';
 
 import React, { useState } from 'react';
@@ -41,6 +42,8 @@ const formatInvoiceDateTime = (dateStr?: string | null, includeYear = false) => 
 export default function SalesReturnClient() {
   const router = useRouter();
   const listRef = React.useRef<HTMLDivElement>(null);
+  const selectedInvoiceIdRef = React.useRef('');
+  const detailRequestRef = React.useRef(0);
   const [selectedDate, setSelectedDate] = useState(getLocalTodayDate);
   const [searchTerm, setSearchTerm] = useState('');
   const [invoicesByDate, setInvoicesByDate] = useState<any[]>([]);
@@ -56,37 +59,52 @@ export default function SalesReturnClient() {
 
   // Fetch invoices by date or search term (all receipts)
   React.useEffect(() => {
+    let cancelled = false;
     async function fetchInvoices() {
       setIsSearching(true);
       if (searchTerm.trim()) {
         const res = await searchRecentReturnInvoicesAction(searchTerm);
+        if (cancelled) return;
         setIsSearching(false);
         if (res.success) {
           const list = res.data || [];
+          const preservedIndex = list.findIndex((item: any) => item.id === selectedInvoiceIdRef.current);
+          const nextIndex = preservedIndex >= 0 ? preservedIndex : (list.length > 0 ? 0 : -1);
+          selectedInvoiceIdRef.current = nextIndex >= 0 ? list[nextIndex].id : '';
           setInvoicesByDate(list);
-          setSelectedIndex(list.length > 0 ? 0 : -1);
+          setSelectedIndex(nextIndex);
         }
       } else {
         const res = await getSalesInvoicesByDateAction(selectedDate);
+        if (cancelled) return;
         setIsSearching(false);
         if (res.success) {
           const list = res.data || [];
+          const preservedIndex = list.findIndex((item: any) => item.id === selectedInvoiceIdRef.current);
+          const nextIndex = preservedIndex >= 0 ? preservedIndex : (list.length > 0 ? 0 : -1);
+          selectedInvoiceIdRef.current = nextIndex >= 0 ? list[nextIndex].id : '';
           setInvoicesByDate(list);
-          setSelectedIndex(list.length > 0 ? 0 : -1);
+          setSelectedIndex(nextIndex);
         }
       }
     }
     const timer = setTimeout(fetchInvoices, 250);
-    return () => clearTimeout(timer);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [selectedDate, searchTerm]);
   // Fetch details of selected invoice
   React.useEffect(() => {
     if (selectedIndex >= 0 && selectedIndex < invoicesByDate.length) {
       handleInvoiceSelect(invoicesByDate[selectedIndex].id);
     } else {
+      detailRequestRef.current += 1;
+      selectedInvoiceIdRef.current = '';
       setInvoiceId('');
       setInvoice(null);
       setItemsToReturn([]);
+      setIsSearching(false);
     }
   }, [selectedIndex, invoicesByDate]);
 
@@ -116,10 +134,18 @@ export default function SalesReturnClient() {
 
       if (e.key === 'ArrowDown') {
         e.preventDefault();
-        setSelectedIndex(prev => (prev < invoicesByDate.length - 1 ? prev + 1 : prev));
+        setSelectedIndex(prev => {
+          const next = prev < invoicesByDate.length - 1 ? prev + 1 : prev;
+          selectedInvoiceIdRef.current = invoicesByDate[next]?.id || '';
+          return next;
+        });
       } else if (e.key === 'ArrowUp') {
         e.preventDefault();
-        setSelectedIndex(prev => (prev > 0 ? prev - 1 : 0));
+        setSelectedIndex(prev => {
+          const next = prev > 0 ? prev - 1 : 0;
+          selectedInvoiceIdRef.current = invoicesByDate[next]?.id || '';
+          return next;
+        });
       }
     };
 
@@ -128,6 +154,8 @@ export default function SalesReturnClient() {
   }, [invoicesByDate]);
 
   const handleInvoiceSelect = async (invId: string) => {
+    const requestId = ++detailRequestRef.current;
+    selectedInvoiceIdRef.current = invId;
     setInvoiceId(invId);
     if (!invId) {
       setInvoice(null);
@@ -137,6 +165,7 @@ export default function SalesReturnClient() {
     
     setIsSearching(true);
     const res = await getInvoiceForReturnAction(invId);
+    if (requestId !== detailRequestRef.current) return;
     setIsSearching(false);
     
     if (res.success && res.data) {
@@ -257,6 +286,7 @@ export default function SalesReturnClient() {
                     if (e.key === 'Enter') {
                       e.preventDefault();
                       if (invoicesByDate.length > 0) {
+                        selectedInvoiceIdRef.current = invoicesByDate[0].id;
                         setSelectedIndex(0);
                       }
                     }
@@ -296,7 +326,10 @@ export default function SalesReturnClient() {
                 invoicesByDate.map((inv, idx) => (
                   <button
                     key={inv.id}
-                    onClick={() => setSelectedIndex(idx)}
+                    onClick={() => {
+                      selectedInvoiceIdRef.current = inv.id;
+                      setSelectedIndex(idx);
+                    }}
                     className={`w-full text-right p-3 rounded-xl border transition-all flex flex-col gap-1 ${
                       selectedIndex === idx
                         ? 'bg-blue-50 dark:bg-blue-950/20 border-blue-500 dark:border-blue-600 shadow-md'

@@ -1,3 +1,4 @@
+import TableScrollContainer from '@/components/ui/TableScrollContainer';
 'use client';
 
 import React, { useState, useEffect } from 'react';

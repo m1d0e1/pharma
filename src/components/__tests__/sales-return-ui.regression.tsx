@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import SalesReturnClient from '@/app/(dashboard)/returns/new/SalesReturnClient';
 import {
   createReturnAction,
@@ -107,5 +107,51 @@ describe('rendered customer-return flow', () => {
 
     await waitFor(() => expect(searchRecentReturnInvoicesAction).toHaveBeenCalledWith('6221000123456'));
     expect(await screen.findByText('Return Drug')).toBeInTheDocument();
+  });
+
+  it('keeps the chosen receipt when lists refresh and older detail requests finish late', async () => {
+    const receipts = [
+      { id: 'first-111111', total_amount: 10, payment_method: 'cash', created_at: '2026-08-25T10:00:00.000Z' },
+      { id: 'second-22222', total_amount: 20, payment_method: 'cash', created_at: '2026-08-25T11:00:00.000Z' },
+    ];
+    let resolveFirstDetails!: (value: any) => void;
+    let resolveRefresh!: (value: any) => void;
+    (searchRecentReturnInvoicesAction as jest.Mock).mockImplementation((term: string) => {
+      if (term === 'refresh') return new Promise(resolve => { resolveRefresh = resolve; });
+      return Promise.resolve({ success: true, data: receipts });
+    });
+    (getInvoiceForReturnAction as jest.Mock).mockImplementation((id: string) => {
+      if (id === 'first-111111') return new Promise(resolve => { resolveFirstDetails = resolve; });
+      return Promise.resolve({
+        success: true,
+        data: {
+          id,
+          items: [{ id: 'second-item', drug_name: 'Second Receipt Drug', quantity_sold: 1, returned_quantity: 0, unit_price: 20, unit: 'large' }],
+        },
+      });
+    });
+
+    render(<SalesReturnClient />);
+    const searchInput = screen.getByPlaceholderText('امسح الباركود، أو اكتب اسم الدواء، أو رقم الفاتورة...');
+    fireEvent.change(searchInput, { target: { value: 'initial' } });
+
+    const secondReceipt = await screen.findByRole('button', { name: /رقم الفاتورة: second-2/i });
+    await waitFor(() => expect(getInvoiceForReturnAction).toHaveBeenCalledWith('first-111111'));
+    fireEvent.click(secondReceipt);
+    expect(await screen.findByText('Second Receipt Drug')).toBeInTheDocument();
+
+    fireEvent.change(searchInput, { target: { value: 'refresh' } });
+    await waitFor(() => expect(searchRecentReturnInvoicesAction).toHaveBeenCalledWith('refresh'));
+    await act(async () => resolveRefresh({ success: true, data: receipts }));
+    await act(async () => resolveFirstDetails({
+      success: true,
+      data: {
+        id: 'first-111111',
+        items: [{ id: 'first-item', drug_name: 'Wrong First Receipt Drug', quantity_sold: 1, returned_quantity: 0, unit_price: 10, unit: 'large' }],
+      },
+    }));
+
+    expect(await screen.findByText('Second Receipt Drug')).toBeInTheDocument();
+    expect(screen.queryByText('Wrong First Receipt Drug')).not.toBeInTheDocument();
   });
 });

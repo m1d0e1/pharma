@@ -509,18 +509,16 @@ pub(crate) async fn create_purchase_return_on_connection(
     } else {
         let permanent_shift_id = Uuid::new_v4().to_string();
         sqlx::query(
-            "INSERT INTO shifts (id, user_id, status) SELECT ?, ?, 'open' WHERE NOT EXISTS (SELECT 1 FROM shifts WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open')",
+            "INSERT INTO shifts (id, user_id, status) SELECT ?, ?, 'open' WHERE NOT EXISTS (SELECT 1 FROM shifts WHERE status = 'open')",
         )
         .bind(&permanent_shift_id)
-        .bind(&user_id)
         .bind(&user_id)
         .execute(&mut *connection)
         .await
         .map_err(|error| error.to_string())?;
         let shift_id = sqlx::query_scalar::<_, String>(
-            "SELECT id FROM shifts WHERE user_id = ? AND status = 'open' ORDER BY start_time DESC LIMIT 1",
+            "SELECT id FROM shifts WHERE status = 'open' ORDER BY rowid ASC LIMIT 1",
         )
-        .bind(&user_id)
         .fetch_optional(&mut *connection)
         .await
         .map_err(|error| error.to_string())?;

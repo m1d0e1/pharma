@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { getTrialBalanceAction } from '@/app/actions-client/finance';
 import { Card, CardContent } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import TableScrollContainer from '@/components/ui/TableScrollContainer';
 import { Printer, RefreshCw, Download, Calendar, Search, CheckCircle2, AlertCircle, TrendingUp, TrendingDown, Minus } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 
@@ -232,7 +233,8 @@ export default function TrialBalanceReport({ userRole }: { userRole?: string }) 
       )}
 
       <Card className="rounded-[2.5rem] border-none shadow-xl overflow-hidden bg-white dark:bg-slate-900">
-        <CardContent className="p-0 overflow-x-auto">
+        <CardContent className="p-0">
+          <TableScrollContainer>
           <Table>
             <TableHeader className="bg-slate-50 dark:bg-slate-800/70 border-b border-slate-200 dark:border-slate-700">
               <TableRow>
@@ -370,6 +372,7 @@ export default function TrialBalanceReport({ userRole }: { userRole?: string }) 
               )}
             </TableBody>
           </Table>
+          </TableScrollContainer>
         </CardContent>
       </Card>
     </div>

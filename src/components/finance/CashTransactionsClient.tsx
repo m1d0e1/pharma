@@ -12,6 +12,7 @@ import {
   createCashMovementAction, 
   getCashMovementsAction 
 } from '@/app/actions-client/finance';
+import { addExpenseAction } from '@/app/actions-client/expenses';
 import { getCurrentShiftAction } from '@/app/actions-client/shifts';
 import { format, isValid } from 'date-fns';
 import { toast } from 'react-hot-toast';
@@ -399,10 +400,17 @@ function CashMovementForm({ type, currentShift, onClose }: { type: 'disbursement
         return;
      }
      setLoading(true);
-     const res = await createCashMovementAction({
-        ...formData,
-        type
-     });
+     const isExpense = type === 'disbursement' && ['operating_expenses', 'salaries', 'rent', 'electricity'].includes(formData.category);
+     const res = isExpense
+       ? await addExpenseAction({
+           category: formData.category === 'operating_expenses'
+             ? formData.sub_category || 'operating_expenses'
+             : formData.category,
+           amount: formData.amount,
+           description: formData.notes,
+           date: formData.date,
+         })
+       : await createCashMovementAction({ ...formData, type });
      
      if (res.success) {
         toast.success('تم تسجيل الحركة بنجاح');

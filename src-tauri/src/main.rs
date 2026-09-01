@@ -545,6 +545,18 @@ fn main() {
             sql: include_str!("../migrations/014_inventory_performance.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 15,
+            description: "shared_open_shift",
+            sql: include_str!("../migrations/015_shared_open_shift.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 16,
+            description: "financial_expense_wiring",
+            sql: include_str!("../migrations/016_financial_expense_wiring.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()

@@ -1,3 +1,4 @@
+import TableScrollContainer from '@/components/ui/TableScrollContainer';
 'use client';
 
 import React, { useState, useEffect } from 'react';
@@ -389,6 +390,19 @@ export default function PurchaseReportsClient() {
                 </tr>
               )}
             </tbody>
+            {filteredInvoices.length > 0 && (
+              <tfoot className="border-t-2 border-slate-200 bg-slate-50 font-black dark:border-slate-700 dark:bg-slate-800/70">
+                <tr>
+                  <td colSpan={5} className="p-4 text-slate-700 dark:text-slate-200 text-sm">
+                    الإجمالي ({filteredInvoices.length} فاتورة)
+                  </td>
+                  <td className="p-4 text-xl font-black text-primary-600 dark:text-primary-400">
+                    {filteredInvoices.reduce((sum, inv) => sum + (Number(inv.total_amount) || 0), 0).toFixed(2)} ج.م
+                  </td>
+                  <td className="p-4"></td>
+                </tr>
+              </tfoot>
+            )}
           </table>
         </div>
       </div>

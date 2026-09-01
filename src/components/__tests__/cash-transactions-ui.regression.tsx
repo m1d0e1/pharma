@@ -1,6 +1,7 @@
 ﻿import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import CashTransactionsClient from '@/components/finance/CashTransactionsClient';
 import { getCashMovementsAction, createCashMovementAction } from '@/app/actions-client/finance';
+import { addExpenseAction } from '@/app/actions-client/expenses';
 import { getCurrentShiftAction } from '@/app/actions-client/shifts';
 
 jest.mock('react-hotkeys-hook', () => ({ useHotkeys: jest.fn() }));
@@ -15,6 +16,9 @@ jest.mock('@/app/actions-client/finance', () => ({
 }));
 jest.mock('@/app/actions-client/shifts', () => ({
   getCurrentShiftAction: jest.fn(),
+}));
+jest.mock('@/app/actions-client/expenses', () => ({
+  addExpenseAction: jest.fn(),
 }));
 jest.mock('react-hot-toast', () => ({
   toast: { error: jest.fn(), success: jest.fn() },
@@ -81,6 +85,10 @@ describe('CashTransactionsClient Regression', () => {
     (createCashMovementAction as jest.Mock).mockResolvedValue({
       success: true,
       id: 'cm-new'
+    });
+    (addExpenseAction as jest.Mock).mockResolvedValue({
+      success: true,
+      id: 'expense-new'
     });
   });
 
@@ -178,15 +186,14 @@ describe('CashTransactionsClient Regression', () => {
     fireEvent.click(submitBtn);
 
     await waitFor(() => {
-      expect(createCashMovementAction).toHaveBeenCalledWith(
+      expect(addExpenseAction).toHaveBeenCalledWith(
         expect.objectContaining({
           amount: 80,
-          type: 'disbursement',
-          notes: 'شاي وسكر',
-          shift_id: 'shift-100',
-          source_type: 'pos'
+          category: 'operating_expenses',
+          description: 'شاي وسكر',
         })
       );
     });
+    expect(createCashMovementAction).not.toHaveBeenCalled();
   });
 });

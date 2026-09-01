@@ -66,7 +66,9 @@ export async function addExpenseAction(data: {
 }) {
   try {
     const user = await getLocalSession();
-    if (!user || !hasUserPermissionSync(user, 'acc_can_define_expenses')) return { success: false, error: 'غير مصرح' };
+    if (!user || (!hasUserPermissionSync(user, 'acc_can_define_expenses') && !hasUserPermissionSync(user, 'acc_can_process_cash_flow'))) {
+      return { success: false, error: 'غير مصرح' };
+    }
     if (!Number.isFinite(data.amount) || data.amount <= 0) return { success: false, error: 'مبلغ المصروف غير صالح' };
     if (!data.category.trim() || !data.date) return { success: false, error: 'بيانات المصروف غير مكتملة' };
 
@@ -91,6 +93,7 @@ export async function addExpenseAction(data: {
     await logActivity(user.id, 'ADD_EXPENSE', `${data.category}: ${data.amount} ج.م - ${data.description}`);
 
     revalidatePath('/expenses');
+    revalidatePath('/accounts');
     return { success: true, id };
   } catch (error) {
     console.error('Add expense error:', error);

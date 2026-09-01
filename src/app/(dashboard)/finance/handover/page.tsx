@@ -65,7 +65,7 @@ export default function HandoverPage() {
           <div className="space-y-4">
             <h1 className="text-3xl font-black text-slate-800 dark:text-white">لا توجد وردية مفتوحة حالياً</h1>
             <p className="text-slate-500 font-bold max-w-md mx-auto">
-              عذراً، يجب أن يكون هناك وردية مفتوحة باسمك لتتمكن من إجراء عملية تسليم الدرج.
+              يجب أن تكون الوردية المشتركة مفتوحة لتتمكن من إجراء عملية التسليم.
             </p>
           </div>
           <div className="flex gap-4 justify-center">

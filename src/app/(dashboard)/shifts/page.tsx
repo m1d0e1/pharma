@@ -68,7 +68,7 @@ export default function ShiftsPage() {
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
         <div>
           <h1 className="text-3xl font-bold text-slate-900 dark:text-white">إدارة الشفتات النقدية</h1>
-          <p className="text-slate-500 mt-1">إدارة الجلسات النقدية الدائمة وتتبع التسليمات والفروقات</p>
+          <p className="text-slate-500 mt-1">إدارة الوردية المشتركة وتتبع المستخدمين والتسليمات والفروقات</p>
         </div>
         <div className="flex gap-3">
           <Link 
@@ -86,7 +86,7 @@ export default function ShiftsPage() {
         <div className="p-6 bg-gradient-to-r from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20 rounded-3xl border-2 border-green-200 dark:border-green-800">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
-              <h2 className="text-xl font-bold text-green-800 dark:text-green-300">✅ لديك شفت مفتوح حالياً</h2>
+              <h2 className="text-xl font-bold text-green-800 dark:text-green-300">✅ الوردية المشتركة مفتوحة حالياً</h2>
               <p className="text-green-600 dark:text-green-400 mt-1">
                 تم فتح الشفت الساعة {new Date(currentShift.shift_start).toLocaleTimeString('ar-EG-u-nu-latn', { hour: '2-digit', minute: '2-digit', hour12: true })}
               </p>
@@ -126,7 +126,7 @@ export default function ShiftsPage() {
         <ul className="space-y-2 text-slate-600 dark:text-slate-300">
           <li className="flex items-start gap-2">
             <span className="text-blue-500">1.</span>
-            <span>ينشئ النظام جلسة نقدية دائمة لكل مستخدم تلقائياً، ولا تحتاج لفتحها بعد تسجيل الدخول.</span>
+            <span>ينشئ النظام وردية واحدة مشتركة تلقائياً، ويستخدمها جميع المستخدمين بعد تسجيل الدخول.</span>
           </li>
           <li className="flex items-start gap-2">
             <span className="text-blue-500">2.</span>
@@ -134,7 +134,7 @@ export default function ShiftsPage() {
           </li>
           <li className="flex items-start gap-2">
             <span className="text-blue-500">3.</span>
-            <span>عند التسليم، ينتقل مبلغ المستخدم فقط وتظل جلسته مفتوحة للحركات التالية.</span>
+            <span>عند التسليم بين المستخدمين تظل الوردية نفسها مفتوحة، وتبقى كل فاتورة مرتبطة بمن نفذها.</span>
           </li>
           <li className="flex items-start gap-2">
             <span className="text-blue-500">4.</span>

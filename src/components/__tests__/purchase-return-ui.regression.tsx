@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import PurchaseReturnClient from '@/app/(dashboard)/purchases/returns/new/PurchaseReturnClient';
 import {
   getSuppliersAction,
@@ -114,5 +114,57 @@ describe('rendered purchase-return flow', () => {
     });
 
     expect(mockPush).toHaveBeenCalledWith('/purchases/returns');
+  });
+
+  it('keeps the chosen purchase receipt when supplier/list refreshes and older details finish late', async () => {
+    const receipts = [
+      { id: 'purchase-first', invoice_number: 'PINV-FIRST', supplier_id: 1, total_amount: 10, status: 'completed' },
+      { id: 'purchase-second', invoice_number: 'PINV-SECOND', supplier_id: 1, total_amount: 20, status: 'completed' },
+    ];
+    let resolveFirstDetails!: (value: any) => void;
+    let resolveRefresh!: (value: any) => void;
+    (searchPurchaseInvoicesForReturnAction as jest.Mock).mockImplementation((term: string) => {
+      if (term === 'refresh') return new Promise(resolve => { resolveRefresh = resolve; });
+      return Promise.resolve({ success: true, data: receipts });
+    });
+    (getPurchaseInvoiceDetailsAction as jest.Mock).mockImplementation((id: string) => {
+      if (id === 'purchase-first') return new Promise(resolve => { resolveFirstDetails = resolve; });
+      return Promise.resolve({
+        success: true,
+        data: [{
+          id: 'second-item',
+          trade_name: 'Second Purchase Receipt Drug',
+          quantity: 1,
+          remaining_large_quantity: 1,
+          refundable_large_unit_price: 20,
+        }],
+      });
+    });
+
+    render(<PurchaseReturnClient />);
+    const searchInput = screen.getByPlaceholderText(/امسح الباركود، أو اكتب اسم الدواء/);
+    fireEvent.change(searchInput, { target: { value: 'initial' } });
+
+    const secondReceipt = await screen.findByRole('button', { name: /رقم الفاتورة: PINV-SECOND/i });
+    await waitFor(() => expect(getPurchaseInvoiceDetailsAction).toHaveBeenCalledWith('purchase-first'));
+    fireEvent.click(secondReceipt);
+    expect(await screen.findByText('Second Purchase Receipt Drug')).toBeInTheDocument();
+
+    fireEvent.change(searchInput, { target: { value: 'refresh' } });
+    await waitFor(() => expect(searchPurchaseInvoicesForReturnAction).toHaveBeenCalledWith('refresh'));
+    await act(async () => resolveRefresh({ success: true, data: receipts }));
+    await act(async () => resolveFirstDetails({
+      success: true,
+      data: [{
+        id: 'first-item',
+        trade_name: 'Wrong First Purchase Receipt Drug',
+        quantity: 1,
+        remaining_large_quantity: 1,
+        refundable_large_unit_price: 10,
+      }],
+    }));
+
+    expect(await screen.findByText('Second Purchase Receipt Drug')).toBeInTheDocument();
+    expect(screen.queryByText('Wrong First Purchase Receipt Drug')).not.toBeInTheDocument();
   });
 });

@@ -65,13 +65,13 @@ export async function requireOpenShiftId(userId: string, requestedShiftId?: stri
   const requestedShift = requestedShiftId
     ? await db.prepare(`
         SELECT id FROM shifts
-        WHERE id = ? AND CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
-      `).get(requestedShiftId, userId) as any
+        WHERE id = ? AND status = 'open'
+      `).get(requestedShiftId) as any
     : null;
   if (requestedShift?.id) return String(requestedShift.id);
 
-  // A stale shift id can remain in an already-open POS after another user logs in.
-  // Always resolve the permanent session from the acting user id.
+  // A stale shift id can remain in an already-open POS after handover or login.
+  // Every user resolves the same pharmacy-wide open shift.
   const shift = await ensurePermanentShiftForUser(userId);
   return String(shift.id);
 }
@@ -273,7 +273,13 @@ export async function createCashMovementAction(rawData: z.infer<typeof cashMovem
   try {
     const data = cashMovementSchema.parse(rawData);
     const user = await getLocalSession();
-    if (!user || !hasUserPermissionSync(user, 'acc_can_process_cash_flow')) return { success: false, error: 'غير مصرح' };
+    if (!user) return { success: false, error: 'غير مصرح' };
+    const expenseEntryAllowed = data.type === 'disbursement'
+      && data.category === 'operating_expenses'
+      && hasUserPermissionSync(user, 'acc_can_define_expenses');
+    if (!hasUserPermissionSync(user, 'acc_can_process_cash_flow') && !expenseEntryAllowed) {
+      return { success: false, error: 'غير مصرح' };
+    }
 
     const cashMovementId = generateId();
     const transaction = db.transaction(async () => {
@@ -349,6 +355,7 @@ export async function createCashMovementAction(rawData: z.infer<typeof cashMovem
     await transaction();
 
     revalidatePath('/finance');
+    revalidatePath('/accounts');
     return { success: true, id: cashMovementId };
   } catch (error) {
     console.error('Create cash movement error:', error);
@@ -401,6 +408,148 @@ export async function getCashMovementsAction(filters?: {
   } catch (error) {
     console.error('Get cash movements error:', error);
     return { success: false, error: 'فشل جلب سجل النقدية' };
+  }
+}
+
+export type TreasuryMetricKey = 'treasury' | 'receipts' | 'expenses' | 'handovers';
+
+export async function getTreasuryDashboardAction(detail?: TreasuryMetricKey) {
+  try {
+    const user = await getLocalSession();
+    if (!hasAnyFinancePermission(user, 'acc_can_process_cash_flow', 'acc_can_view_general')) {
+      return { success: false, error: 'غير مصرح' };
+    }
+    if (detail && !['treasury', 'receipts', 'expenses', 'handovers'].includes(detail)) {
+      return { success: false, error: 'نوع التفاصيل غير صالح' };
+    }
+
+    // ponytail: one configured cash account and one summary keep every finance card on the same source of truth.
+    let cashAccount = await db.prepare(`
+      SELECT a.id, a.code, a.name_ar
+      FROM trial_balance_settings t
+      JOIN accounts a ON a.id = t.account_id
+      WHERE t.category = 'cash_drawer'
+      LIMIT 1
+    `).get() as any;
+    if (!cashAccount) {
+      cashAccount = await db.prepare(`
+        SELECT id, code, name_ar
+        FROM accounts
+        WHERE code IN ('1.1.1', '111')
+        ORDER BY CASE WHEN code = '1.1.1' THEN 0 ELSE 1 END
+        LIMIT 1
+      `).get() as any;
+    }
+
+    const [treasury, receipts, expenses, handovers] = await Promise.all([
+      cashAccount
+        ? db.prepare(`
+            SELECT
+              CAST(COALESCE(SUM(CASE WHEN type = 'debit' THEN amount ELSE -amount END), 0) AS REAL) AS total,
+              COUNT(*) AS count
+            FROM journal_entries
+            WHERE account_id = ?
+          `).get(cashAccount.id)
+        : Promise.resolve({ total: 0, count: 0 }),
+      db.prepare(`
+        SELECT CAST(COALESCE(SUM(amount), 0) AS REAL) AS total, COUNT(*) AS count
+        FROM cash_movements
+        WHERE type = 'receipt'
+          AND category NOT IN ('handover_received', 'cash_adjustment')
+          AND date(COALESCE(NULLIF(date, ''), created_at)) = date('now', 'localtime')
+      `).get(),
+      db.prepare(`
+        SELECT CAST(COALESCE(SUM(amount), 0) AS REAL) AS total, COUNT(*) AS count
+        FROM expenses
+        WHERE date(date) = date('now', 'localtime')
+      `).get(),
+      db.prepare(`
+        SELECT CAST(COALESCE(SUM(amount), 0) AS REAL) AS total, COUNT(*) AS count
+        FROM cash_movements
+        WHERE type = 'disbursement' AND category = 'handover'
+      `).get(),
+    ]) as any[];
+
+    let details: any[] = [];
+    if (detail === 'treasury' && cashAccount) {
+      details = await db.prepare(`
+        SELECT je.id, dj.date, dj.created_at,
+               COALESCE(dj.description, je.notes, 'قيد خزينة') AS description,
+               CAST(je.amount AS REAL) AS amount,
+               CASE WHEN je.type = 'debit' THEN 'receipt' ELSE 'disbursement' END AS type,
+               COALESCE(u.full_name, u.username, dj.created_by) AS user_name,
+               NULL AS shift_id
+        FROM journal_entries je
+        JOIN daily_journals dj ON dj.id = je.journal_id
+        LEFT JOIN users u ON u.id = dj.created_by
+        WHERE je.account_id = ?
+        ORDER BY COALESCE(dj.created_at, dj.date) DESC, je.id DESC
+        LIMIT 500
+      `).all(cashAccount.id) as any[];
+    } else if (detail === 'receipts') {
+      details = await db.prepare(`
+        SELECT cm.id, cm.date, cm.created_at,
+               COALESCE(cm.notes, cm.target_name, cm.category, 'توريد نقدية') AS description,
+               CAST(cm.amount AS REAL) AS amount, cm.type,
+               COALESCE(u.full_name, u.username, cm.user_id) AS user_name,
+               cm.shift_id
+        FROM cash_movements cm
+        LEFT JOIN users u ON u.id = cm.user_id
+        WHERE cm.type = 'receipt'
+          AND cm.category NOT IN ('handover_received', 'cash_adjustment')
+          AND date(COALESCE(NULLIF(cm.date, ''), cm.created_at)) = date('now', 'localtime')
+        ORDER BY cm.created_at DESC
+        LIMIT 500
+      `).all() as any[];
+    } else if (detail === 'expenses') {
+      details = await db.prepare(`
+        SELECT e.id, e.date, e.created_at,
+               COALESCE(e.description, e.category, 'مصروف تشغيلي') AS description,
+               CAST(e.amount AS REAL) AS amount, 'disbursement' AS type,
+               COALESCE(u.full_name, u.username, e.user_id) AS user_name,
+               NULL AS shift_id
+        FROM expenses e
+        LEFT JOIN users u ON u.id = e.user_id
+        WHERE date(e.date) = date('now', 'localtime')
+        ORDER BY e.created_at DESC
+        LIMIT 500
+      `).all() as any[];
+    } else if (detail === 'handovers') {
+      details = await db.prepare(`
+        SELECT cm.id, cm.date, cm.created_at,
+               COALESCE(cm.notes, cm.target_name, 'تسليم وردية') AS description,
+               CAST(cm.amount AS REAL) AS amount, cm.type,
+               COALESCE(u.full_name, u.username, cm.user_id) AS user_name,
+               cm.shift_id
+        FROM cash_movements cm
+        LEFT JOIN users u ON u.id = cm.user_id
+        WHERE cm.type = 'disbursement' AND cm.category = 'handover'
+        ORDER BY cm.created_at DESC
+        LIMIT 500
+      `).all() as any[];
+    }
+
+    const counts = {
+      treasury: Number(treasury?.count || 0),
+      receipts: Number(receipts?.count || 0),
+      expenses: Number(expenses?.count || 0),
+      handovers: Number(handovers?.count || 0),
+    };
+    return {
+      success: true,
+      data: {
+        treasuryBalance: Number(treasury?.total || 0),
+        todayReceipts: Number(receipts?.total || 0),
+        todayExpenses: Number(expenses?.total || 0),
+        totalShiftHandovers: Number(handovers?.total || 0),
+        counts,
+        detailCount: detail ? counts[detail] : 0,
+        details,
+      },
+    };
+  } catch (error) {
+    console.error('Get treasury dashboard error:', error);
+    return { success: false, error: 'فشل جلب ملخص الخزينة' };
   }
 }
 

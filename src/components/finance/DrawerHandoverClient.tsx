@@ -117,7 +117,7 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
     });
 
     if (res.success) {
-      toast.success(`تم تسليم النقدية مع بقاء الجلسة مفتوحة (المتبقي ${Number(res.remainingCash ?? 0).toFixed(2)} ج.م)`);
+      toast.success(`تم تسليم النقدية مع بقاء الوردية المشتركة مفتوحة (رصيد الوردية ${Number(res.remainingCash ?? 0).toFixed(2)} ج.م)`);
       if (onClose) {
         onClose();
       } else {
@@ -150,9 +150,9 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
               <Calculator className="w-8 h-8 text-blue-400" />
             </div>
             <div>
-              <h2 className="text-2xl font-black">تسليم درج الوردية</h2>
+              <h2 className="text-2xl font-black">تسليم الوردية المشتركة</h2>
               <p className="text-xs font-bold text-slate-400 mt-1">
-                الموظف الحالي: {details?.user_name} | بداية الوردية: {details?.start_time ? new Date(details.start_time).toLocaleTimeString('ar-EG-u-nu-latn', { hour: '2-digit', minute: '2-digit', hour12: true }) : '---'}
+                افتتحها: {details?.user_name} | بداية الوردية: {details?.start_time ? new Date(details.start_time).toLocaleTimeString('ar-EG-u-nu-latn', { hour: '2-digit', minute: '2-digit', hour12: true }) : '---'}
               </p>
             </div>
           </div>

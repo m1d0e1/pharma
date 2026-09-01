@@ -222,12 +222,18 @@ export async function processHandoverAction(data: {
     const transaction = db.transaction(async () => {
       const details = await loadHandoverDetails(data.shiftId);
       const shiftOwnerId = managedUserId || user.id;
-      if (String(details.user_id) !== String(shiftOwnerId) || details.status !== 'open') {
-        throw new Error('الوردية غير مفتوحة أو لا تخص المستخدم الحالي');
+      if (details.status !== 'open') {
+        throw new Error('الوردية المشتركة غير مفتوحة');
+      }
+      if (managedUserId && String(details.user_id) !== String(managedUserId)) {
+        throw new Error('المستخدم ليس مالك سجل الوردية المطلوب إغلاقه');
       }
 
       const difference = data.actualCash - details.expected_cash;
-      const remainingCash = Math.max(0, data.actualCash - data.transferAmount);
+      const isInternalHandover = data.transferTargetType === 'next_shift';
+      const remainingCash = isInternalHandover
+        ? data.actualCash
+        : Math.max(0, data.actualCash - data.transferAmount);
       const shiftStatus = managedUserId
         ? (Math.abs(difference) > 5 ? 'discrepancy' : 'closed')
         : 'open';
@@ -255,28 +261,15 @@ export async function processHandoverAction(data: {
 
       let receiverShiftId: string | null = null;
       if (!managedUserId && data.transferAmount > 0 && data.transferTargetType === 'next_shift' && receiver?.id) {
-        const candidateId = generateId();
-        await db.prepare(`
-          INSERT INTO shifts (id, user_id, starting_cash, notes, status)
-          SELECT ?, ?, 0, 'جلسة نقدية دائمة للمستلم', 'open'
-          WHERE NOT EXISTS (
-            SELECT 1 FROM shifts WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
-          )
-        `).run(candidateId, receiver.id, receiver.id);
-        const receiverShift = await db.prepare(`
-          SELECT id FROM shifts
-          WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
-          ORDER BY start_time DESC LIMIT 1
-        `).get(receiver.id) as any;
-        if (!receiverShift?.id) throw new Error('تعذر تحديد الجلسة النقدية للمستلم');
-        receiverShiftId = String(receiverShift.id);
+        receiverShiftId = data.shiftId;
 
         await db.prepare(`
           INSERT INTO cash_movements (id, user_id, shift_id, type, category, amount, source_type, target_name, notes, date)
           VALUES (?, ?, ?, 'receipt', 'handover_received', ?, 'user_drawer_received', ?, ?, datetime('now', 'localtime'))
         `).run(
           generateId(), receiver.id, receiverShiftId, data.transferAmount,
-          details.user_name, data.notes || `استلام درج من ${details.user_name}`
+          user.full_name || user.username || user.id,
+          data.notes || `استلام درج من ${user.full_name || user.username || user.id}`
         );
       }
 
@@ -338,11 +331,11 @@ export async function processHandoverAction(data: {
             SET end_time = NULL, ending_cash = ?, actual_cash = ?,
                 transfer_amount = COALESCE(transfer_amount, 0) + ?, transfer_target = ?,
                 cash_difference = ?, receiver_id = ?, notes = ?, status = 'open'
-            WHERE id = ? AND CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
+            WHERE id = ? AND status = 'open'
           `).run(
             remainingCash, data.actualCash, data.transferAmount,
             data.transferTargetType || 'treasury', difference, receiver?.id || null,
-            data.notes || null, data.shiftId, shiftOwnerId
+            data.notes || null, data.shiftId
           );
       if (shiftUpdate.changes !== 1) throw new Error('تم إغلاق الوردية أو تعديلها بالفعل');
 
@@ -416,10 +409,9 @@ export async function getShiftCreditSalesAction(shiftId?: string) {
       SELECT id
       FROM shifts
       WHERE id = ?
-        AND CAST(user_id AS TEXT) = CAST(? AS TEXT)
         AND status = 'open'
-    `).get(targetShiftId, user.id) as any;
-    if (!shift) return { success: false, error: 'الوردية غير مفتوحة أو لا تخص المستخدم الحالي', data: [] };
+    `).get(targetShiftId) as any;
+    if (!shift) return { success: false, error: 'الوردية المشتركة غير مفتوحة', data: [] };
 
     const items = await db.prepare(`
       SELECT 

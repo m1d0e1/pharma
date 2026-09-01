@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import AccountsManagementClient from '@/components/finance/AccountsManagementClient';
 import * as finance from '@/app/actions-client/finance';
 import { getExpensesAction } from '@/app/actions-client/expenses';
@@ -30,6 +30,7 @@ jest.mock('@/app/actions-client/expenses', () => ({
 jest.mock('@/app/actions-client/finance', () => ({
   createCashMovementAction: jest.fn(),
   getCashMovementsAction: jest.fn(),
+  getTreasuryDashboardAction: jest.fn(),
   getPointsOfSaleAction: jest.fn(),
   getExpenseDefinitionsAction: jest.fn(),
   addExpenseDefinitionAction: jest.fn(),
@@ -74,6 +75,18 @@ beforeEach(() => {
   ]) {
     (action as jest.Mock).mockResolvedValue(emptyResult);
   }
+  (finance.getTreasuryDashboardAction as jest.Mock).mockResolvedValue({
+    success: true,
+    data: {
+      treasuryBalance: 0,
+      todayReceipts: 0,
+      todayExpenses: 0,
+      totalShiftHandovers: 0,
+      counts: { treasury: 0, receipts: 0, expenses: 0, handovers: 0 },
+      detailCount: 0,
+      details: [],
+    },
+  });
 });
 
 it('keeps treasury read-only for a user who can view finance but cannot process cash', async () => {
@@ -106,19 +119,61 @@ it('opens the real POS-management tab from its dedicated route', async () => {
 });
 
 it('shows the total money recorded by completed shift handovers', async () => {
-  (finance.getCashMovementsAction as jest.Mock).mockResolvedValue({
+  (finance.getTreasuryDashboardAction as jest.Mock).mockResolvedValue({
     success: true,
-    data: [
-      { id: 'handover-1', category: 'handover', type: 'disbursement', amount: 120 },
-      { id: 'handover-2', category: 'handover', type: 'disbursement', amount: '30.5' },
-      { id: 'expense-1', category: 'expenses', type: 'disbursement', amount: 900 },
-    ],
+    data: {
+      treasuryBalance: 500,
+      todayReceipts: 100,
+      todayExpenses: 25,
+      totalShiftHandovers: 150.5,
+      counts: { treasury: 1, receipts: 1, expenses: 1, handovers: 2 },
+      detailCount: 0,
+      details: [],
+    },
   });
 
   render(<AccountsManagementClient initialTab="treasury" />);
 
   const handoverCard = (await screen.findByText('إجمالي تسليمات الورديات')).parentElement;
   await waitFor(() => expect(handoverCard).toHaveTextContent('150.5 ج.م'));
+});
+
+it('opens authoritative details from every treasury summary card', async () => {
+  const totals = {
+    treasuryBalance: 500,
+    todayReceipts: 100,
+    todayExpenses: 25,
+    totalShiftHandovers: 150,
+    counts: { treasury: 1, receipts: 1, expenses: 1, handovers: 1 },
+  };
+  (finance.getTreasuryDashboardAction as jest.Mock).mockImplementation(async (metric?: string) => ({
+    success: true,
+    data: {
+      ...totals,
+      detailCount: metric ? 1 : 0,
+      details: metric ? [{
+        id: `${metric}-1`,
+        date: '2026-09-01',
+        description: `تفصيل ${metric}`,
+        amount: 25,
+        type: metric === 'receipts' || metric === 'treasury' ? 'receipt' : 'disbursement',
+        user_name: 'د. محمد',
+      }] : [],
+    },
+  }));
+
+  render(<AccountsManagementClient initialTab="treasury" />);
+
+  for (const [label, metric] of [
+    ['رصيد الخزينة', 'treasury'],
+    ['توريدات اليوم', 'receipts'],
+    ['المصروفات اليومية', 'expenses'],
+    ['إجمالي تسليمات الورديات', 'handovers'],
+  ] as const) {
+    fireEvent.click(await screen.findByRole('button', { name: `عرض تفاصيل ${label}` }));
+    await waitFor(() => expect(finance.getTreasuryDashboardAction).toHaveBeenCalledWith(metric));
+    expect(await screen.findByText(`تفصيل ${metric}`)).toBeInTheDocument();
+  }
 });
 
 it('dynamically searches movements in Treasury tab and provides navigation links', async () => {

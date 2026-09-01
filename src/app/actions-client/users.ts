@@ -51,7 +51,6 @@ const db = {
 
 
 import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
-import { processHandoverAction } from '@/app/actions-client/handover';
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 
 const defaultOwnerPerms = {
@@ -332,34 +331,15 @@ export async function deleteUserAction(userId: string) {
       return { success: false, error: 'لا يمكنك حذف حساب المالك' };
     }
     
-    const openShift = await db.prepare(`
-      SELECT s.id, s.start_time,
-        CAST(COALESCE(s.starting_cash, 0) AS REAL)
-        + CAST(COALESCE((SELECT SUM(si.total_amount) FROM sales_invoices si
-            WHERE si.shift_id = s.id AND si.payment_method = 'cash'
-              AND (si.status IS NULL OR si.status = '' OR si.status IN ('completed', 'approved'))), 0) AS REAL)
-        + CAST(COALESCE((SELECT SUM(CASE WHEN cm.type IN ('receipt', 'in') THEN cm.amount ELSE 0 END)
-            FROM cash_movements cm WHERE cm.shift_id = s.id), 0) AS REAL)
-        - CAST(COALESCE((SELECT SUM(CASE WHEN cm.type IN ('disbursement', 'out') THEN cm.amount ELSE 0 END)
-            FROM cash_movements cm WHERE cm.shift_id = s.id), 0) AS REAL)
-        - CAST(COALESCE((SELECT SUM(r.total_refund) FROM returns r
-            WHERE r.shift_id = s.id AND r.refund_method = 'cash'
-              AND (r.status IS NULL OR r.status = '' OR r.status IN ('approved', 'completed'))), 0) AS REAL)
-        AS expected_cash
-      FROM shifts s
-      WHERE CAST(s.user_id AS TEXT) = CAST(? AS TEXT) AND s.status = 'open'
-      ORDER BY s.start_time DESC LIMIT 1
-    `).get(userId) as { id: string; start_time: string; expected_cash: number } | undefined;
-    if (openShift) {
-      return {
-        success: false,
-        code: 'OPEN_SHIFT' as const,
-        error: 'لدى المستخدم وردية مفتوحة ويجب تسويتها قبل تعطيل الحساب',
-        openShift: { ...openShift, expected_cash: Number(openShift.expected_cash || 0) },
-      };
-    }
-
-    await db.prepare('UPDATE users SET is_active = 0 WHERE id = ? AND is_active = 1').run(userId);
+    await dbTransaction(async () => {
+      // The open shift is shared. If its original creator is deactivated,
+      // move only that administrative ownership marker; transaction user_ids stay unchanged.
+      await db.prepare(`
+        UPDATE shifts SET user_id = ?
+        WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
+      `).run(localUser.id, userId);
+      await db.prepare('UPDATE users SET is_active = 0 WHERE id = ? AND is_active = 1').run(userId);
+    });
     
     logActivity(localUser.id, 'DEACTIVATE_USER', `تعطيل المستخدم مع الاحتفاظ بسجلاته: ${targetUser.username}`);
 
@@ -380,20 +360,7 @@ export async function closeUserShiftAndDeactivateAction(data: {
   authorizerPassword: string;
   notes?: string;
 }) {
-  return processHandoverAction({
-    shiftId: data.shiftId,
-    actualCash: data.actualCash,
-    transferAmount: data.actualCash,
-    transferTargetId: '',
-    transferTargetType: 'treasury',
-    receiverUsername: '',
-    receiverPasswordHash: '',
-    notes: data.notes || 'إغلاق الوردية وتعطيل حساب المستخدم',
-    closeOnly: true,
-    managedUserId: data.userId,
-    deactivateManagedUser: true,
-    authorizerPassword: data.authorizerPassword,
-  });
+  return deleteUserAction(data.userId);
 }
 
 export async function updateUserAction(userId: string, data: { 

@@ -140,7 +140,7 @@ describe('Comprehensive UI Flow Regression Suite for all Added Features', () => 
       render(<DrawerHandoverClient shiftId="shift-100" onClose={onClose} />);
 
       // Wait for data to load
-      expect(await screen.findByText(/تسليم درج الوردية/)).toBeInTheDocument();
+      expect(await screen.findByText(/تسليم الوردية المشتركة/)).toBeInTheDocument();
 
       // Ensure discrepancy badge / icon is NOT displayed in handover modal
       expect(screen.queryByText(/فائض نقدي/)).not.toBeInTheDocument();

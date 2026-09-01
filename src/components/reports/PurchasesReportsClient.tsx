@@ -1,3 +1,4 @@
+import TableScrollContainer from '@/components/ui/TableScrollContainer';
 'use client';
 
 import React, { useState, useEffect } from 'react';
@@ -157,6 +158,17 @@ export default function PurchasesReportsClient({ userRole }: { userRole?: string
       toast.error('فشل تصدير تقرير المشتريات');
     }
   };
+
+  const totalGrossAmount = invoices.reduce((sum, inv) => sum + Number(inv.gross_amount ?? inv.total_amount ?? 0), 0);
+  const totalDiscountAmount = invoices.reduce((sum, inv) => sum + Number(inv.discount_amount || 0), 0);
+  const totalNetAmount = invoices.reduce((sum, inv) => sum + Number(inv.total_amount || 0), 0);
+  const totalSellingAmount = invoices.reduce((sum, inv) => sum + Number(inv.total_selling_amount || 0), 0);
+  const cashPurchasesTotal = invoices
+    .filter(i => i.payment_method === 'cash')
+    .reduce((sum, inv) => sum + Number(inv.total_amount || 0), 0);
+  const creditPurchasesTotal = invoices
+    .filter(i => i.payment_method === 'credit')
+    .reduce((sum, inv) => sum + Number(inv.total_amount || 0), 0);
 
   return (
     <div className="space-y-8 pb-20" dir="rtl">
@@ -328,10 +340,65 @@ export default function PurchasesReportsClient({ userRole }: { userRole?: string
         </Link>
       </div>
 
+      {/* Purchases Summary KPI Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+        <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-sm flex items-center gap-4">
+          <div className="w-14 h-14 bg-blue-50 dark:bg-blue-900/30 text-blue-600 rounded-2xl flex items-center justify-center shrink-0">
+            <DollarSign className="w-7 h-7" />
+          </div>
+          <div>
+            <p className="text-xs font-bold text-slate-400">صافي المشتريات</p>
+            <p className="text-2xl font-black text-slate-900 dark:text-white">
+              {totalNetAmount.toLocaleString()} <span className="text-xs text-slate-400">ج.م</span>
+            </p>
+            <p className="text-[10px] text-slate-400 font-bold mt-0.5">{invoices.length} فاتورة</p>
+          </div>
+        </div>
+
+        <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-sm flex items-center gap-4">
+          <div className="w-14 h-14 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-2xl flex items-center justify-center shrink-0">
+            <FileText className="w-7 h-7" />
+          </div>
+          <div>
+            <p className="text-xs font-bold text-slate-400">إجمالي قبل الخصم</p>
+            <p className="text-2xl font-black text-slate-800 dark:text-slate-200">
+              {totalGrossAmount.toLocaleString()} <span className="text-xs text-slate-400">ج.م</span>
+            </p>
+          </div>
+        </div>
+
+        <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-sm flex items-center gap-4">
+          <div className="w-14 h-14 bg-rose-50 dark:bg-rose-900/30 text-rose-600 rounded-2xl flex items-center justify-center shrink-0">
+            <ShoppingBag className="w-7 h-7" />
+          </div>
+          <div>
+            <p className="text-xs font-bold text-slate-400">إجمالي الخصومات</p>
+            <p className="text-2xl font-black text-rose-600">
+              {totalDiscountAmount.toLocaleString()} <span className="text-xs text-slate-400">ج.م</span>
+            </p>
+          </div>
+        </div>
+
+        <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-sm flex items-center gap-4">
+          <div className="w-14 h-14 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 rounded-2xl flex items-center justify-center shrink-0">
+            <CreditCard className="w-7 h-7" />
+          </div>
+          <div>
+            <p className="text-xs font-bold text-slate-400">القيمة البيعية المتوقعة</p>
+            <p className="text-xl font-black text-emerald-600">
+              {totalSellingAmount.toLocaleString()} <span className="text-xs text-slate-400">ج.م</span>
+            </p>
+            <p className="text-[10px] text-slate-400 font-bold mt-0.5">
+              نقدي: {cashPurchasesTotal.toLocaleString()} | آجل: {creditPurchasesTotal.toLocaleString()}
+            </p>
+          </div>
+        </div>
+      </div>
+
       {/* Main Table (Invoices) */}
       <div className="grid grid-cols-1 gap-8">
         <div className="bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 overflow-hidden shadow-sm">
-          <div className="overflow-x-auto">
+          <TableScrollContainer>
             <table className="w-full text-right">
               <thead className="bg-slate-50 dark:bg-slate-800/50">
                 <tr className="text-slate-400 text-[10px] font-black uppercase tracking-widest">
@@ -394,8 +461,30 @@ export default function PurchasesReportsClient({ userRole }: { userRole?: string
                   </tr>
                 ))}
               </tbody>
+              {invoices.length > 0 && (
+                <tfoot className="bg-slate-50 dark:bg-slate-800/80 font-black border-t-2 border-slate-200 dark:border-slate-700">
+                  <tr>
+                    <td colSpan={5} className="px-6 py-6 text-slate-700 dark:text-slate-200 text-sm font-black">
+                      الإجمالي ({invoices.length} فاتورة)
+                    </td>
+                    <td className="px-6 py-6 font-black text-slate-800 dark:text-slate-200">
+                      {totalGrossAmount.toLocaleString()}
+                    </td>
+                    <td className="px-6 py-6 font-black text-emerald-600">
+                      {totalSellingAmount.toLocaleString()}
+                    </td>
+                    <td className="px-6 py-6 font-black text-rose-500">
+                      {totalDiscountAmount.toLocaleString()}
+                    </td>
+                    <td className="px-6 py-6 font-black text-xl text-blue-600 dark:text-blue-400">
+                      {totalNetAmount.toLocaleString()}
+                    </td>
+                    <td className="px-6 py-6"></td>
+                  </tr>
+                </tfoot>
+              )}
             </table>
-          </div>
+          </TableScrollContainer>
         </div>
 
         {/* Invoice Items Modal */}
@@ -463,27 +552,31 @@ export default function PurchasesReportsClient({ userRole }: { userRole?: string
                       const amounts = purchaseReportLineAmounts(item);
                       totals.gross += amounts.gross;
                       totals.net += amounts.net;
+                      totals.selling += ((Number(item.selling_price ?? item.base_price ?? 0)) * (Number(item.quantity || 0)));
                       return totals;
-                    }, { gross: 0, net: 0 });
-                    const invoiceNet = Number(selected?.total_amount ?? lineTotals.net);
+                    }, { gross: 0, net: 0, selling: 0 });
+                    const invoiceNet = Number(selected?.total_amount || 0);
                     const reconciliation = invoiceNet - lineTotals.net;
+
                     return (
-                      <tfoot className="border-t-2 border-slate-200 bg-slate-50 font-black dark:border-slate-700 dark:bg-slate-800/70">
+                      <tfoot className="border-t-2 border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800/70 font-black text-xs">
                         <tr>
-                          <td colSpan={7} className="px-4 py-3">إجمالي السطور</td>
-                          <td className="px-4 py-3">{lineTotals.gross.toLocaleString()}</td>
-                          <td className="px-4 py-3 text-blue-600">{lineTotals.net.toLocaleString()}</td>
-                          <td />
+                          <td colSpan={7} className="px-4 py-4 text-slate-600 dark:text-slate-300">إجمالي السطور المسجلة</td>
+                          <td className="px-4 py-4 text-slate-800 dark:text-slate-200">{lineTotals.gross.toLocaleString()}</td>
+                          <td className="px-4 py-4 text-blue-600 dark:text-blue-400">{lineTotals.net.toLocaleString()}</td>
+                          <td className="px-4 py-4 text-emerald-600">{lineTotals.selling.toLocaleString()}</td>
                         </tr>
+                        {Math.abs(reconciliation) > 0.01 && (
+                          <tr>
+                            <td colSpan={8} className="px-4 py-3 text-slate-500">تسوية الفاتورة (ضريبة/خصم/مصروفات)</td>
+                            <td className="px-4 py-3 text-amber-600 font-bold">{reconciliation.toLocaleString()}</td>
+                            <td className="px-4 py-3"></td>
+                          </tr>
+                        )}
                         <tr>
-                          <td colSpan={8} className="px-4 py-3 text-slate-500">تسوية الفاتورة (ضريبة/خصم/مصروفات)</td>
-                          <td className="px-4 py-3 text-slate-600">{reconciliation.toLocaleString()}</td>
-                          <td />
-                        </tr>
-                        <tr>
-                          <td colSpan={8} className="px-4 py-3">صافي الفاتورة</td>
-                          <td className="px-4 py-3 text-lg text-blue-700">{invoiceNet.toLocaleString()}</td>
-                          <td />
+                          <td colSpan={8} className="px-4 py-4 text-base">صافي الفاتورة النهائي</td>
+                          <td className="px-4 py-4 text-lg text-primary-600 dark:text-primary-400">{invoiceNet.toLocaleString()} ج.م</td>
+                          <td className="px-4 py-4"></td>
                         </tr>
                       </tfoot>
                     );

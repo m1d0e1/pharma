@@ -1,3 +1,4 @@
+import TableScrollContainer from '@/components/ui/TableScrollContainer';
 'use client';
 
 import React, { useState, useEffect } from 'react';
@@ -69,6 +70,19 @@ export default function SalesReportsClient({ userRole }: { userRole?: string }) 
     setLoadingItems(false);
   };
 
+  const totalGrossAmount = invoices.reduce((sum, inv) => sum + Number(inv.total_amount || 0), 0);
+  const totalDiscountAmount = invoices.reduce((sum, inv) => sum + Number(inv.discount_amount || 0), 0);
+  const totalNetAmount = invoices.reduce((sum, inv) => sum + (Number(inv.total_amount || 0) - Number(inv.discount_amount || 0)), 0);
+  const cashSalesTotal = invoices
+    .filter(i => i.payment_method === 'cash')
+    .reduce((sum, inv) => sum + (Number(inv.total_amount || 0) - Number(inv.discount_amount || 0)), 0);
+  const visaSalesTotal = invoices
+    .filter(i => i.payment_method === 'visa')
+    .reduce((sum, inv) => sum + (Number(inv.total_amount || 0) - Number(inv.discount_amount || 0)), 0);
+  const creditSalesTotal = invoices
+    .filter(i => i.payment_method === 'credit')
+    .reduce((sum, inv) => sum + (Number(inv.total_amount || 0) - Number(inv.discount_amount || 0)), 0);
+
   return (
     <div className="space-y-8 pb-20" dir="rtl">
       {/* Header */}
@@ -79,16 +93,46 @@ export default function SalesReportsClient({ userRole }: { userRole?: string }) 
             <p className="text-slate-500 font-bold">عرض وتحليل تفصيلي لعمليات البيع والمرتجعات</p>
           </div>
           <div className="flex gap-4">
-            <button className="p-5 bg-slate-50 dark:bg-slate-800 text-slate-500 rounded-2xl border border-slate-100 dark:border-slate-700 hover:bg-slate-100 transition-all">
+            <button 
+              type="button"
+              onClick={() => window.print()}
+              className="p-5 bg-slate-50 dark:bg-slate-800 text-slate-500 rounded-2xl border border-slate-100 dark:border-slate-700 hover:bg-slate-100 transition-all"
+            >
               <Printer className="w-6 h-6" />
             </button>
-            <button className="p-5 bg-blue-50 dark:bg-blue-900/20 text-blue-600 rounded-2xl hover:bg-blue-600 hover:text-white transition-all">
+            <button 
+              type="button"
+              onClick={() => {
+                const headers = ['رقم الفاتورة', 'طريقة الدفع', 'التاريخ', 'العميل', 'الموظف', 'قيمة الفاتورة', 'الخصم', 'الصافي', 'الحالة'];
+                const rows = invoices.map(inv => [
+                  `#${inv.id.slice(0, 8)}`,
+                  inv.payment_method === 'cash' ? 'نقدي' : inv.payment_method === 'visa' ? 'فيزا' : 'آجل',
+                  format(new Date(inv.created_at), 'yyyy/MM/dd HH:mm'),
+                  `"${(inv.patient_name || '-').replace(/"/g, '""')}"`,
+                  `"${(inv.staff_name || 'غير محدد').replace(/"/g, '""')}"`,
+                  inv.total_amount,
+                  inv.discount_amount || 0,
+                  inv.total_amount - (inv.discount_amount || 0),
+                  inv.status || 'منتهية'
+                ]);
+                const csvContent = '\uFEFF' + [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+                const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.setAttribute('href', url);
+                link.setAttribute('download', `sales-report-${format(new Date(), 'yyyy-MM-dd')}.csv`);
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+              }}
+              className="p-5 bg-blue-50 dark:bg-blue-900/20 text-blue-600 rounded-2xl hover:bg-blue-600 hover:text-white transition-all"
+            >
               <Download className="w-6 h-6" />
             </button>
           </div>
         </div>
 
-        {/* Filters (Following Image 4 style) */}
+        {/* Filters */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-6 p-8 bg-slate-50 dark:bg-slate-800/50 rounded-[32px] border border-slate-100 dark:border-slate-700">
           <div className="space-y-2">
             <label className="text-[10px] font-black text-slate-400 uppercase mr-2">من تاريخ</label>
@@ -200,10 +244,65 @@ export default function SalesReportsClient({ userRole }: { userRole?: string }) 
         </Link>
       </div>
 
+      {/* Sales Summary KPI Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+        <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-sm flex items-center gap-4">
+          <div className="w-14 h-14 bg-blue-50 dark:bg-blue-900/30 text-blue-600 rounded-2xl flex items-center justify-center shrink-0">
+            <DollarSign className="w-7 h-7" />
+          </div>
+          <div>
+            <p className="text-xs font-bold text-slate-400">صافي المبيعات</p>
+            <p className="text-2xl font-black text-slate-900 dark:text-white">
+              {totalNetAmount.toLocaleString()} <span className="text-xs text-slate-400">ج.م</span>
+            </p>
+            <p className="text-[10px] text-slate-400 font-bold mt-0.5">{invoices.length} فاتورة</p>
+          </div>
+        </div>
+
+        <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-sm flex items-center gap-4">
+          <div className="w-14 h-14 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-2xl flex items-center justify-center shrink-0">
+            <FileText className="w-7 h-7" />
+          </div>
+          <div>
+            <p className="text-xs font-bold text-slate-400">إجمالي قبل الخصم</p>
+            <p className="text-2xl font-black text-slate-800 dark:text-slate-200">
+              {totalGrossAmount.toLocaleString()} <span className="text-xs text-slate-400">ج.م</span>
+            </p>
+          </div>
+        </div>
+
+        <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-sm flex items-center gap-4">
+          <div className="w-14 h-14 bg-rose-50 dark:bg-rose-900/30 text-rose-600 rounded-2xl flex items-center justify-center shrink-0">
+            <ShoppingBag className="w-7 h-7" />
+          </div>
+          <div>
+            <p className="text-xs font-bold text-slate-400">إجمالي الخصومات</p>
+            <p className="text-2xl font-black text-rose-600">
+              {totalDiscountAmount.toLocaleString()} <span className="text-xs text-slate-400">ج.م</span>
+            </p>
+          </div>
+        </div>
+
+        <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-sm flex items-center gap-4">
+          <div className="w-14 h-14 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 rounded-2xl flex items-center justify-center shrink-0">
+            <Wallet className="w-7 h-7" />
+          </div>
+          <div>
+            <p className="text-xs font-bold text-slate-400">المبيعات النقدية / شبكة</p>
+            <p className="text-xl font-black text-emerald-600">
+              {(cashSalesTotal + visaSalesTotal).toLocaleString()} <span className="text-xs text-slate-400">ج.م</span>
+            </p>
+            <p className="text-[10px] text-slate-400 font-bold mt-0.5">
+              آجل: {creditSalesTotal.toLocaleString()} ج.م
+            </p>
+          </div>
+        </div>
+      </div>
+
       {/* Main Table (Invoices) */}
       <div className="grid grid-cols-1 gap-8">
         <div className="bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 overflow-hidden shadow-sm">
-          <div className="overflow-x-auto">
+          <TableScrollContainer>
             <table className="w-full text-right">
               <thead className="bg-slate-50 dark:bg-slate-800/50">
                 <tr className="text-slate-400 text-[10px] font-black uppercase tracking-widest">
@@ -264,8 +363,27 @@ export default function SalesReportsClient({ userRole }: { userRole?: string }) 
                   </tr>
                 ))}
               </tbody>
+              {invoices.length > 0 && (
+                <tfoot className="bg-slate-50 dark:bg-slate-800/80 font-black border-t-2 border-slate-200 dark:border-slate-700">
+                  <tr>
+                    <td colSpan={5} className="px-8 py-6 text-slate-700 dark:text-slate-200 text-sm font-black">
+                      الإجمالي ({invoices.length} فاتورة)
+                    </td>
+                    <td className="px-8 py-6 font-black text-slate-800 dark:text-slate-200">
+                      {totalGrossAmount.toLocaleString()}
+                    </td>
+                    <td className="px-8 py-6 font-black text-rose-500">
+                      {totalDiscountAmount.toLocaleString()}
+                    </td>
+                    <td className="px-8 py-6 font-black text-xl text-blue-600 dark:text-blue-400">
+                      {totalNetAmount.toLocaleString()}
+                    </td>
+                    <td className="px-8 py-6"></td>
+                  </tr>
+                </tfoot>
+              )}
             </table>
-          </div>
+          </TableScrollContainer>
         </div>
         {selectedInvoice && !loadingItems && (
           <ReceiptDetailsModal 
