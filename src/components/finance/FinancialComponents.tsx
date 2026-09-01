@@ -203,9 +203,9 @@ export function FinancialNoticeForm({
       if (!isMounted) return;
       if (patRes.success && patRes.data) {
         setPatients(patRes.data);
-        if (formData.target_type === 'customer' && !formData.target_id && patRes.data.length > 0) {
-          setFormData(prev => ({ ...prev, target_id: String(patRes.data[0].id) }));
-        }
+        setFormData(prev => prev.target_type === 'customer' && !prev.target_id && patRes.data.length > 0
+          ? { ...prev, target_id: String(patRes.data[0].id) }
+          : prev);
       }
       if (supRes.success && supRes.data) {
         setSuppliers(supRes.data);
@@ -213,7 +213,7 @@ export function FinancialNoticeForm({
     });
 
     return () => { isMounted = false; };
-  }, [targetId]);
+  }, [targetId, targetType]);
 
   const handleTargetTypeChange = (newType: 'customer' | 'supplier' | 'pharmacy') => {
     let initialTargetId = '';

@@ -65,6 +65,8 @@ import { processHandoverAction } from '@/app/actions-client/handover';
 import { createReturnAction } from '@/app/actions-client/returns';
 import {
   addBankAction,
+  updateBankAction,
+  deleteBankAction,
   getBanksAction,
   addCardAction,
   getCardsAction,
@@ -75,6 +77,7 @@ import {
   updatePaperStatusAction,
   createManualJournalAction,
   getJournalsAction,
+  saveTrialBalanceSettingAction,
 } from '@/app/actions-client/finance';
 
 function applyAllMigrations(db: Database.Database) {
@@ -357,13 +360,22 @@ describe('Cross-computer consistency across fresh install and update', () => {
     expect(cashPaperRes.success).toBe(true);
     const cashedPaper = mockDb.prepare('SELECT status FROM commercial_papers WHERE id = ?').get(paperId) as any;
     expect(cashedPaper.status).toBe('cashed');
+    expect(mockDb.prepare("SELECT source_type, target_name FROM cash_movements WHERE category = 'collection' AND target_name = ?").get(paperId)).toMatchObject({
+      source_type: 'commercial_paper',
+      target_name: paperId,
+    });
+    expect(await updatePaperStatusAction(paperId, 'bounced')).toMatchObject({
+      success: false,
+      error: expect.stringContaining('قيد عكسي'),
+    });
+    expect((mockDb.prepare('SELECT status FROM commercial_papers WHERE id = ?').get(paperId) as any).status).toBe('cashed');
 
     const journalRes = await createManualJournalAction({
       date: '2026-09-01',
       description: 'تسوية نقدية يدوية',
       entries: [
-        { account_id: 1, type: 'debit', amount: 500, notes: 'زيادة نقدية' },
-        { account_id: 10, type: 'credit', amount: 500, notes: 'إيراد تسوية' },
+        { account_id: 6, type: 'debit', amount: 500, notes: 'زيادة نقدية' },
+        { account_id: 9, type: 'credit', amount: 500, notes: 'إيراد تسوية' },
       ],
     });
     expect(journalRes.success).toBe(true);
@@ -509,8 +521,8 @@ describe('Cross-computer consistency across fresh install and update', () => {
       date: '2026-09-01',
       description: 'تسوية رصيد بنكي في التحديث',
       entries: [
-        { account_id: 2, type: 'debit', amount: 1000, notes: 'إيداع بنكي' },
-        { account_id: 1, type: 'credit', amount: 1000, notes: 'صرف من الخزينة' },
+        { account_id: 8, type: 'debit', amount: 1000, notes: 'إيداع بنكي' },
+        { account_id: 6, type: 'credit', amount: 1000, notes: 'صرف من الخزينة' },
       ],
     });
     expect(journalRes.success).toBe(true);
@@ -649,5 +661,40 @@ describe('Cross-computer consistency across fresh install and update', () => {
     expect(parsedDate.getUTCDate()).toBe(30);
     expect(parsedDate.getUTCHours()).toBe(15);
     expect(parsedDate.getUTCMinutes()).toBe(30);
+  });
+
+  it('keeps separate trial-balance mappings for every bank, POS, and expense entity', async () => {
+    mockDb = new Database(':memory:');
+    applyAllMigrations(mockDb);
+    seedBaselineEntities(mockDb);
+
+    expect((await saveTrialBalanceSettingAction({ category: 'bank', target_id: '1', target_name: 'بنك 1', account_id: 6 })).success).toBe(true);
+    expect((await saveTrialBalanceSettingAction({ category: 'bank', target_id: '2', target_name: 'بنك 2', account_id: 7 })).success).toBe(true);
+
+    const mappings = mockDb.prepare(`
+      SELECT category, target_id, account_id
+      FROM trial_balance_settings
+      WHERE category LIKE 'bank:%'
+      ORDER BY category
+    `).all() as any[];
+
+    expect(mappings).toEqual([
+      { category: 'bank:1', target_id: '1', account_id: 6 },
+      { category: 'bank:2', target_id: '2', account_id: 7 },
+    ]);
+  });
+
+  it('prevents silent bank-balance edits and deletion of a non-zero account', async () => {
+    mockDb = new Database(':memory:');
+    applyAllMigrations(mockDb);
+    seedBaselineEntities(mockDb);
+
+    const created = await addBankAction({ name_ar: 'بنك اختباري', current_balance: 250 });
+    expect(created.success).toBe(true);
+    const bankId = Number(created.id);
+
+    expect((await updateBankAction(bankId, { name_ar: 'بنك محدث', current_balance: 0 })).success).toBe(true);
+    expect((mockDb.prepare('SELECT current_balance FROM banks WHERE id = ?').get(bankId) as any).current_balance).toBe(250);
+    expect(await deleteBankAction(bankId)).toMatchObject({ success: false, error: expect.stringContaining('رصيد') });
   });
 });

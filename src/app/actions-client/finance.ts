@@ -298,18 +298,33 @@ export async function createCashMovementAction(rawData: z.infer<typeof cashMovem
 
       // Determine Accounts Dynamically
       const getAccount = async (cat: string, targetName?: string) => {
-        let sql = 'SELECT account_id FROM trial_balance_settings WHERE category = ?';
-        const params = [cat];
         if (targetName) {
-          sql += ' AND (target_name = ? OR target_type = ?)';
-          params.push(targetName, targetName);
+          const targeted = await db.prepare(`
+            SELECT account_id FROM trial_balance_settings
+            WHERE category = ? AND (target_name = ? OR target_type = ?)
+            LIMIT 1
+          `).get(cat, targetName, targetName) as any;
+          if (targeted?.account_id) return targeted.account_id;
         }
-        const setting = await db.prepare(sql).get(...params) as any;
+        const setting = await db.prepare(
+          'SELECT account_id FROM trial_balance_settings WHERE category = ? LIMIT 1'
+        ).get(cat) as any;
         return setting?.account_id;
       };
 
-      const mainCashAccountId = await getAccount('cash_drawer', 'Main Treasury') || 6; 
-      const categoryAccountId = await getAccount(data.category, data.target_name) || 11;
+      const mainCashAccountId = await getAccount('cash_drawer') || 6;
+      let categoryAccountId: number | undefined;
+      if (data.category === 'operating_expenses' && data.sub_category) {
+        const expenseDefinition = await db.prepare(`
+          SELECT id FROM expense_definitions
+          WHERE code = ? OR name_ar = ? OR LOWER(name_en) = LOWER(?)
+          LIMIT 1
+        `).get(data.sub_category, data.sub_category, data.sub_category) as any;
+        if (expenseDefinition?.id) {
+          categoryAccountId = await getAccount(`expense:${expenseDefinition.id}`);
+        }
+      }
+      categoryAccountId = categoryAccountId || await getAccount(data.category, data.target_name) || 11;
 
 
 
@@ -343,12 +358,15 @@ export async function createCashMovementAction(rawData: z.infer<typeof cashMovem
 
 export async function getCashMovementsAction(filters?: {
   type?: 'disbursement' | 'receipt';
+  category?: string;
   dateFrom?: string;
   dateTo?: string;
 }) {
   try {
     const user = await getLocalSession();
-    if (!user || !hasUserPermissionSync(user, 'acc_can_process_cash_flow')) return { success: false, error: 'غير مصرح' };
+    if (!hasAnyFinancePermission(user, 'acc_can_process_cash_flow', 'acc_can_view_general')) {
+      return { success: false, error: 'غير مصرح' };
+    }
 
     let query = `
       SELECT cm.*, COALESCE(u.full_name, u.username, cm.user_id) AS user_name,
@@ -364,12 +382,16 @@ export async function getCashMovementsAction(filters?: {
       query += ` AND cm.type = ?`;
       params.push(filters.type);
     }
+    if (filters?.category) {
+      query += ` AND cm.category = ?`;
+      params.push(filters.category);
+    }
     if (filters?.dateFrom) {
-      query += ` AND cm.date >= ?`;
+      query += ` AND date(cm.date) >= date(?)`;
       params.push(filters.dateFrom);
     }
     if (filters?.dateTo) {
-      query += ` AND cm.date <= ?`;
+      query += ` AND date(cm.date) <= date(?)`;
       params.push(filters.dateTo);
     }
 
@@ -440,7 +462,7 @@ const expenseDefinitionSchema = z.object({
 export async function addExpenseDefinitionAction(rawData: z.infer<typeof expenseDefinitionSchema>) {
   try {
     const user = await getLocalSession();
-    if (!hasAnyFinancePermission(user, 'acc_can_define_expenses', 'acc_can_view_general')) {
+    if (!hasAnyFinancePermission(user, 'acc_can_define_expenses')) {
       return { success: false, error: 'غير مصرح بإضافة تعريفات المصروفات' };
     }
 
@@ -466,11 +488,25 @@ export async function addExpenseDefinitionAction(rawData: z.infer<typeof expense
 export async function updateExpenseDefinitionAction(id: number, rawData: z.infer<typeof expenseDefinitionSchema>) {
   try {
     const user = await getLocalSession();
-    if (!hasAnyFinancePermission(user, 'acc_can_define_expenses', 'acc_can_view_general')) {
+    if (!hasAnyFinancePermission(user, 'acc_can_define_expenses')) {
       return { success: false, error: 'غير مصرح بتعديل تعريفات المصروفات' };
     }
 
     const val = expenseDefinitionSchema.parse(rawData);
+
+    const current = await db.prepare('SELECT * FROM expense_definitions WHERE id = ?').get(id) as any;
+    if (!current) return { success: false, error: 'تعريف المصروف غير موجود' };
+
+    if (current.code !== val.code) {
+      const usage = await db.prepare(`
+        SELECT
+          (SELECT COUNT(*) FROM expenses WHERE category = ?) +
+          (SELECT COUNT(*) FROM cash_movements WHERE category = 'operating_expenses' AND sub_category = ?) AS count
+      `).get(current.code, current.code) as any;
+      if (Number(usage?.count || 0) > 0) {
+        return { success: false, error: 'لا يمكن تغيير كود مصروف استُخدم في حركات مالية. يمكن تعديل الاسم فقط' };
+      }
+    }
 
     const existingCode = await db.prepare('SELECT id FROM expense_definitions WHERE code = ? AND id != ?').get(val.code, id) as any;
     if (existingCode) {
@@ -493,7 +529,7 @@ export async function updateExpenseDefinitionAction(id: number, rawData: z.infer
 export async function deleteExpenseDefinitionAction(id: number) {
   try {
     const user = await getLocalSession();
-    if (!hasAnyFinancePermission(user, 'acc_can_define_expenses', 'acc_can_view_general')) {
+    if (!hasAnyFinancePermission(user, 'acc_can_define_expenses')) {
       return { success: false, error: 'غير مصرح بحذف تعريفات المصروفات' };
     }
 
@@ -513,14 +549,17 @@ export async function deleteExpenseDefinitionAction(id: number) {
 
     const movementUsage = await db.prepare(`
       SELECT COUNT(*) as count FROM cash_movements 
-      WHERE category = ? OR category = ?
+      WHERE category = 'operating_expenses' AND (sub_category = ? OR sub_category = ?)
     `).get(def.code, def.name_ar) as any;
 
     if (movementUsage && movementUsage.count > 0) {
       return { success: false, error: 'لا يمكن حذف هذا المصروف لوجود حركات نقدية مسجلة عليه' };
     }
 
-    await db.prepare('DELETE FROM expense_definitions WHERE id = ?').run(id);
+    await dbTransaction(async () => {
+      await db.prepare('DELETE FROM trial_balance_settings WHERE category = ?').run(`expense:${id}`);
+      await db.prepare('DELETE FROM expense_definitions WHERE id = ?').run(id);
+    });
     return { success: true };
   } catch (error: any) {
     console.error('Delete expense definition error:', error);
@@ -567,7 +606,7 @@ export async function getCardsAction() {
 export async function getAccountsAction() {
   try {
     const user = await getLocalSession();
-    if (!hasAnyFinancePermission(user, 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
+    if (!hasAnyFinancePermission(user, 'acc_can_view_general', 'acc_can_make_daily_entries')) return { success: false, error: 'غير مصرح' };
 
     const accounts = await db.prepare(`SELECT * FROM accounts ORDER BY code ASC`).all() as any[];
 
@@ -824,12 +863,13 @@ export async function seedFinanceTestDataAction() {
     if (moveCount.count === 0) {
       const user = await getLocalSession();
       if (user) {
+        const shiftId = await requireOpenShiftId(user.id);
         const moveStmt = db.prepare(`
-          INSERT INTO cash_movements (id, user_id, type, category, amount, date, notes)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO cash_movements (id, user_id, shift_id, type, category, amount, date, notes)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `);
-        await moveStmt.run(generateId(), user.id, 'receipt', 'patient', 150.00, format(new Date(), 'yyyy-MM-dd'), 'توريد من عميل #123');
-        await moveStmt.run(generateId(), user.id, 'disbursement', 'operating_expenses', 50.00, format(new Date(), 'yyyy-MM-dd'), 'دفع فاتورة انترنت');
+        await moveStmt.run(generateId(), user.id, shiftId, 'receipt', 'patient', 150.00, format(new Date(), 'yyyy-MM-dd'), 'توريد من عميل #123');
+        await moveStmt.run(generateId(), user.id, shiftId, 'disbursement', 'operating_expenses', 50.00, format(new Date(), 'yyyy-MM-dd'), 'دفع فاتورة انترنت');
       }
     }
 
@@ -946,7 +986,12 @@ export async function saveTrialBalanceSettingAction(data: {
   try {
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
-    // INSERT OR REPLACE leverages the UNIQUE constraint on `category`
+    const account = await db.prepare('SELECT id, is_group FROM accounts WHERE id = ?').get(data.account_id) as any;
+    if (!account) return { success: false, error: 'الحساب المحاسبي غير موجود' };
+    if (Number(account.is_group) === 1) return { success: false, error: 'يجب الربط بحساب فرعي وليس حساباً رئيسياً' };
+    // The schema keeps `category` unique. Scope entity mappings by id so
+    // linking a second bank/POS/expense never overwrites the first mapping.
+    const storageCategory = data.target_id ? `${data.category}:${data.target_id}` : data.category;
     await db.prepare(`
       INSERT INTO trial_balance_settings (category, target_type, target_id, target_name, account_id)
       VALUES (?, ?, ?, ?, ?)
@@ -955,7 +1000,7 @@ export async function saveTrialBalanceSettingAction(data: {
         target_id = excluded.target_id,
         target_name = excluded.target_name,
         account_id = excluded.account_id
-    `).run(data.category, data.target_type || null, data.target_id || null, data.target_name || null, data.account_id);
+    `).run(storageCategory, data.target_type || null, data.target_id || null, data.target_name || null, data.account_id);
 
     revalidatePath('/accounts/settings/trial-balance');
     return { success: true };
@@ -1097,7 +1142,7 @@ export async function getActivityLogsAction() {
 export async function addBankAction(data: { name_ar: string; name_en?: string; account_number?: string; branch?: string; current_balance?: number }) {
   try {
     const user = await getLocalSession();
-    if (!hasAnyFinancePermission(user, 'acc_can_view_bank_accounts', 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
+    if (!hasAnyFinancePermission(user, 'acc_can_view_bank_accounts')) return { success: false, error: 'غير مصرح' };
     if (!data.name_ar?.trim()) return { success: false, error: 'اسم البنك بالعربي مطلوب' };
 
     const res = await db.prepare(`
@@ -1122,19 +1167,18 @@ export async function addBankAction(data: { name_ar: string; name_en?: string; a
 export async function updateBankAction(id: number, data: { name_ar: string; name_en?: string; account_number?: string; branch?: string; current_balance?: number }) {
   try {
     const user = await getLocalSession();
-    if (!hasAnyFinancePermission(user, 'acc_can_view_bank_accounts', 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
+    if (!hasAnyFinancePermission(user, 'acc_can_view_bank_accounts')) return { success: false, error: 'غير مصرح' };
     if (!data.name_ar?.trim()) return { success: false, error: 'اسم البنك بالعربي مطلوب' };
 
     await db.prepare(`
       UPDATE banks 
-      SET name_ar = ?, name_en = ?, account_number = ?, branch = ?, current_balance = COALESCE(?, current_balance)
+      SET name_ar = ?, name_en = ?, account_number = ?, branch = ?
       WHERE id = ?
     `).run(
       data.name_ar.trim(),
       data.name_en?.trim() || null,
       data.account_number?.trim() || null,
       data.branch?.trim() || null,
-      data.current_balance !== undefined ? Number(data.current_balance) : null,
       id
     );
 
@@ -1149,7 +1193,12 @@ export async function updateBankAction(id: number, data: { name_ar: string; name
 export async function deleteBankAction(id: number) {
   try {
     const user = await getLocalSession();
-    if (!hasAnyFinancePermission(user, 'acc_can_view_bank_accounts', 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
+    if (!hasAnyFinancePermission(user, 'acc_can_view_bank_accounts')) return { success: false, error: 'غير مصرح' };
+    const bank = await db.prepare('SELECT current_balance FROM banks WHERE id = ?').get(id) as any;
+    if (!bank) return { success: false, error: 'الحساب البنكي غير موجود' };
+    if (Math.abs(Number(bank.current_balance || 0)) > 0.005) {
+      return { success: false, error: 'لا يمكن حذف حساب بنكي له رصيد. صفّر الرصيد بقيد موثق أولاً' };
+    }
 
     const cardUsage = await db.prepare('SELECT COUNT(*) as count FROM credit_cards WHERE bank_id = ?').get(id) as any;
     if (cardUsage && cardUsage.count > 0) {
@@ -1161,7 +1210,10 @@ export async function deleteBankAction(id: number) {
       return { success: false, error: 'لا يمكن حذف هذا البنك لوجود أوراق مالية مرتبطة به' };
     }
 
-    await db.prepare('DELETE FROM banks WHERE id = ?').run(id);
+    await dbTransaction(async () => {
+      await db.prepare('DELETE FROM trial_balance_settings WHERE category = ?').run(`bank:${id}`);
+      await db.prepare('DELETE FROM banks WHERE id = ?').run(id);
+    });
     await logActivity(user?.id, 'DELETE_BANK', `حذف حساب بنكي #${id}`);
     return { success: true };
   } catch (error: any) {
@@ -1176,7 +1228,7 @@ export async function deleteBankAction(id: number) {
 export async function addCardAction(data: { name_ar: string; name_en?: string; bank_id?: number | null; commission_pct?: number; current_balance?: number }) {
   try {
     const user = await getLocalSession();
-    if (!hasAnyFinancePermission(user, 'acc_can_collect_credit_cards', 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
+    if (!hasAnyFinancePermission(user, 'acc_can_collect_credit_cards')) return { success: false, error: 'غير مصرح' };
     if (!data.name_ar?.trim()) return { success: false, error: 'اسم الماكينة / البطاقة مطلوب' };
 
     const res = await db.prepare(`
@@ -1201,19 +1253,18 @@ export async function addCardAction(data: { name_ar: string; name_en?: string; b
 export async function updateCardAction(id: number, data: { name_ar: string; name_en?: string; bank_id?: number | null; commission_pct?: number; current_balance?: number }) {
   try {
     const user = await getLocalSession();
-    if (!hasAnyFinancePermission(user, 'acc_can_collect_credit_cards', 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
+    if (!hasAnyFinancePermission(user, 'acc_can_collect_credit_cards')) return { success: false, error: 'غير مصرح' };
     if (!data.name_ar?.trim()) return { success: false, error: 'اسم الماكينة / البطاقة مطلوب' };
 
     await db.prepare(`
       UPDATE credit_cards 
-      SET name_ar = ?, name_en = ?, bank_id = ?, commission_pct = ?, current_balance = COALESCE(?, current_balance)
+      SET name_ar = ?, name_en = ?, bank_id = ?, commission_pct = ?
       WHERE id = ?
     `).run(
       data.name_ar.trim(),
       data.name_en?.trim() || null,
       data.bank_id || null,
       Number(data.commission_pct) || 0,
-      data.current_balance !== undefined ? Number(data.current_balance) : null,
       id
     );
 
@@ -1228,7 +1279,12 @@ export async function updateCardAction(id: number, data: { name_ar: string; name
 export async function deleteCardAction(id: number) {
   try {
     const user = await getLocalSession();
-    if (!hasAnyFinancePermission(user, 'acc_can_collect_credit_cards', 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
+    if (!hasAnyFinancePermission(user, 'acc_can_collect_credit_cards')) return { success: false, error: 'غير مصرح' };
+    const card = await db.prepare('SELECT current_balance FROM credit_cards WHERE id = ?').get(id) as any;
+    if (!card) return { success: false, error: 'ماكينة الدفع غير موجودة' };
+    if (Math.abs(Number(card.current_balance || 0)) > 0.005) {
+      return { success: false, error: 'لا يمكن حذف ماكينة دفع لها رصيد معلق' };
+    }
 
     await db.prepare('DELETE FROM credit_cards WHERE id = ?').run(id);
     await logActivity(user?.id, 'DELETE_CARD', `حذف ماكينة دفع #${id}`);
@@ -1245,7 +1301,7 @@ export async function deleteCardAction(id: number) {
 export async function addPointOfSaleAction(data: { name_ar: string; name_en?: string; location?: string; computer_name?: string; current_balance?: number }) {
   try {
     const user = await getLocalSession();
-    if (!hasAnyFinancePermission(user, 'acc_can_view_pos', 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
+    if (!hasAnyFinancePermission(user, 'acc_can_view_pos')) return { success: false, error: 'غير مصرح' };
     if (!data.name_ar?.trim()) return { success: false, error: 'اسم نقطة البيع بالعربي مطلوب' };
 
     const res = await db.prepare(`
@@ -1270,7 +1326,7 @@ export async function addPointOfSaleAction(data: { name_ar: string; name_en?: st
 export async function updatePointOfSaleAction(id: number, data: { name_ar: string; name_en?: string; location?: string; computer_name?: string; current_balance?: number; status?: string }) {
   try {
     const user = await getLocalSession();
-    if (!hasAnyFinancePermission(user, 'acc_can_view_pos', 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
+    if (!hasAnyFinancePermission(user, 'acc_can_view_pos')) return { success: false, error: 'غير مصرح' };
     if (!data.name_ar?.trim()) return { success: false, error: 'اسم نقطة البيع بالعربي مطلوب' };
 
     await db.prepare(`
@@ -1298,9 +1354,16 @@ export async function updatePointOfSaleAction(id: number, data: { name_ar: strin
 export async function deletePointOfSaleAction(id: number) {
   try {
     const user = await getLocalSession();
-    if (!hasAnyFinancePermission(user, 'acc_can_view_pos', 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
-
-    await db.prepare('DELETE FROM points_of_sale WHERE id = ?').run(id);
+    if (!hasAnyFinancePermission(user, 'acc_can_view_pos')) return { success: false, error: 'غير مصرح' };
+    const point = await db.prepare('SELECT current_balance FROM points_of_sale WHERE id = ?').get(id) as any;
+    if (!point) return { success: false, error: 'نقطة البيع غير موجودة' };
+    if (Math.abs(Number(point.current_balance || 0)) > 0.005) {
+      return { success: false, error: 'لا يمكن حذف نقطة بيع لها رصيد. حوّل الرصيد أولاً' };
+    }
+    await dbTransaction(async () => {
+      await db.prepare('DELETE FROM trial_balance_settings WHERE category = ?').run(`cash:${id}`);
+      await db.prepare('DELETE FROM points_of_sale WHERE id = ?').run(id);
+    });
     await logActivity(user?.id, 'DELETE_POS', `حذف نقطة بيع #${id}`);
     return { success: true };
   } catch (error: any) {
@@ -1324,7 +1387,7 @@ export async function addPaperAction(data: {
 }) {
   try {
     const user = await getLocalSession();
-    if (!hasAnyFinancePermission(user, 'acc_can_view_securities', 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
+    if (!hasAnyFinancePermission(user, 'acc_can_view_securities')) return { success: false, error: 'غير مصرح' };
     if (!data.paper_number?.trim()) return { success: false, error: 'رقم الورقة / الشيك مطلوب' };
     if (!data.amount || data.amount <= 0) return { success: false, error: 'المبلغ يجب أن يكون أكبر من صفر' };
     if (!data.target_name?.trim()) return { success: false, error: 'اسم الجهة / الساحب مطلوب' };
@@ -1356,28 +1419,39 @@ export async function addPaperAction(data: {
 export async function updatePaperStatusAction(id: string, newStatus: 'pending' | 'cashed' | 'bounced' | 'cancelled', actionDate?: string) {
   try {
     const user = await getLocalSession();
-    if (!hasAnyFinancePermission(user, 'acc_can_view_securities', 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
+    if (!hasAnyFinancePermission(user, 'acc_can_view_securities')) return { success: false, error: 'غير مصرح' };
 
     const paper = await db.prepare('SELECT * FROM commercial_papers WHERE id = ?').get(id) as any;
     if (!paper) return { success: false, error: 'الورقة المالية غير موجودة' };
-
-    await db.prepare('UPDATE commercial_papers SET status = ? WHERE id = ?').run(newStatus, id);
-
-    // If status transitioned to 'cashed', dynamically record treasury cash movement & journal
-    if (newStatus === 'cashed' && paper.status !== 'cashed') {
-      const movementType = paper.direction === 'in' ? 'receipt' : 'disbursement';
-      const movementCategory = paper.direction === 'in' ? 'collection' : 'supplier_payment';
-      const date = actionDate || new Date().toISOString().split('T')[0];
-      const note = `تحصيل/صرف ${paper.type === 'check' ? 'شيك' : 'كمبيالة'} رقم ${paper.paper_number} - ${paper.target_name}`;
-
-      await createCashMovementAction({
-        type: movementType,
-        category: movementCategory,
-        amount: paper.amount,
-        notes: note,
-        date: date
-      });
+    if (paper.status === 'cashed' && newStatus !== 'cashed') {
+      return { success: false, error: 'لا يمكن تغيير حالة ورقة تم ترحيلها. يجب إنشاء قيد عكسي موثق.' };
     }
+    if (newStatus === 'cashed' && paper.status !== 'cashed' && !hasUserPermissionSync(user, 'acc_can_process_cash_flow')) {
+      return { success: false, error: 'تحصيل أو صرف الورقة يتطلب صلاحية حركة النقدية' };
+    }
+    if (paper.status === newStatus) return { success: true };
+
+    await dbTransaction(async () => {
+      await db.prepare('UPDATE commercial_papers SET status = ? WHERE id = ?').run(newStatus, id);
+
+      // Cash posting and lifecycle state must commit or roll back together.
+      if (newStatus === 'cashed') {
+        const movementType = paper.direction === 'in' ? 'receipt' : 'disbursement';
+        const movementCategory = paper.direction === 'in' ? 'collection' : 'supplier_payment';
+        const date = actionDate || new Date().toISOString().split('T')[0];
+        const note = `تحصيل/صرف ${paper.type === 'check' ? 'شيك' : 'كمبيالة'} رقم ${paper.paper_number} - ${paper.target_name}`;
+        const movement = await createCashMovementAction({
+          type: movementType,
+          category: movementCategory,
+          amount: paper.amount,
+          source_type: 'commercial_paper',
+          target_name: id,
+          notes: note,
+          date
+        });
+        if (!movement.success) throw new Error(movement.error || 'فشل ترحيل حركة الورقة المالية');
+      }
+    });
 
     await logActivity(user?.id, 'UPDATE_PAPER_STATUS', `تحديث حالة الورقة المالية #${id} إلى: ${newStatus}`);
     return { success: true };
@@ -1390,8 +1464,12 @@ export async function updatePaperStatusAction(id: string, newStatus: 'pending' |
 export async function deletePaperAction(id: string) {
   try {
     const user = await getLocalSession();
-    if (!hasAnyFinancePermission(user, 'acc_can_view_securities', 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
-
+    if (!hasAnyFinancePermission(user, 'acc_can_view_securities')) return { success: false, error: 'غير مصرح' };
+    const paper = await db.prepare('SELECT status FROM commercial_papers WHERE id = ?').get(id) as any;
+    if (!paper) return { success: false, error: 'الورقة المالية غير موجودة' };
+    if (paper.status === 'cashed') {
+      return { success: false, error: 'لا يمكن حذف ورقة مالية تم ترحيلها للنقدية' };
+    }
     await db.prepare('DELETE FROM commercial_papers WHERE id = ?').run(id);
     await logActivity(user?.id, 'DELETE_PAPER', `حذف ورقة مالية #${id}`);
     return { success: true };
@@ -1411,7 +1489,7 @@ export async function createManualJournalAction(data: {
 }) {
   try {
     const user = await getLocalSession();
-    if (!hasAnyFinancePermission(user, 'acc_can_make_daily_entries', 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
+    if (!hasAnyFinancePermission(user, 'acc_can_make_daily_entries')) return { success: false, error: 'غير مصرح' };
 
     if (!data.entries || data.entries.length < 2) {
       return { success: false, error: 'القيد اليومي يجب أن يتضمن طرفين على الأقل (طرف مدين وطرف دائن)' };
@@ -1422,6 +1500,9 @@ export async function createManualJournalAction(data: {
     for (const ent of data.entries) {
       const amt = Number(ent.amount) || 0;
       if (amt <= 0) return { success: false, error: 'يجب أن تكون جميع المبالغ في القيد أكبر من صفر' };
+      const account = await db.prepare('SELECT id, is_group FROM accounts WHERE id = ?').get(ent.account_id) as any;
+      if (!account) return { success: false, error: `الحساب #${ent.account_id} غير موجود` };
+      if (Number(account.is_group) === 1) return { success: false, error: 'لا يمكن الترحيل إلى حساب رئيسي' };
       if (ent.type === 'debit') totalDebit += amt;
       else if (ent.type === 'credit') totalCredit += amt;
     }
@@ -1431,29 +1512,31 @@ export async function createManualJournalAction(data: {
     }
 
     const journalId = generateId();
-    await db.prepare(`
-      INSERT INTO daily_journals (id, date, description, created_by, total_amount)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(
-      journalId,
-      data.date || new Date().toISOString().split('T')[0],
-      data.description?.trim() || 'قيد تسوية يدوي',
-      user?.id || 'admin',
-      totalDebit
-    );
-
-    for (const ent of data.entries) {
+    await dbTransaction(async () => {
       await db.prepare(`
-        INSERT INTO journal_entries (journal_id, account_id, type, amount, notes)
+        INSERT INTO daily_journals (id, date, description, created_by, total_amount)
         VALUES (?, ?, ?, ?, ?)
       `).run(
         journalId,
-        ent.account_id,
-        ent.type,
-        Number(ent.amount),
-        ent.notes?.trim() || data.description?.trim() || null
+        data.date || new Date().toISOString().split('T')[0],
+        data.description?.trim() || 'قيد تسوية يدوي',
+        user?.id || 'admin',
+        totalDebit
       );
-    }
+
+      for (const ent of data.entries) {
+        await db.prepare(`
+          INSERT INTO journal_entries (journal_id, account_id, type, amount, notes)
+          VALUES (?, ?, ?, ?, ?)
+        `).run(
+          journalId,
+          ent.account_id,
+          ent.type,
+          Number(ent.amount),
+          ent.notes?.trim() || data.description?.trim() || null
+        );
+      }
+    });
 
     await logActivity(user?.id, 'CREATE_MANUAL_JOURNAL', `إنشاء قيد يومي يدوي #${journalId.slice(0, 8)} بمبلغ ${totalDebit.toFixed(2)} ج.م`);
     return { success: true, id: journalId };

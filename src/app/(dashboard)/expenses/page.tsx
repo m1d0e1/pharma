@@ -36,7 +36,7 @@ export default function ExpensesPage() {
       <div className="flex flex-col items-center justify-center h-[60vh] text-center space-y-4" dir="rtl">
         <div className="text-6xl">🔐</div>
         <h2 className="text-2xl font-bold text-slate-800 dark:text-white">غير مصرح لك بالوصول</h2>
-        <p className="text-slate-500">هذه الصفحة مخصصة للمالك فقط.</p>
+        <p className="text-slate-500">ليس لديك صلاحية عرض المصروفات.</p>
       </div>
     );
   }
@@ -48,7 +48,7 @@ export default function ExpensesPage() {
         <p className="text-slate-500 mt-1">تتبع المصروفات وحساب صافي الأرباح الفعلي</p>
       </div>
 
-      <ExpensesClient />
+      <ExpensesClient canManage={hasUserPermissionSync(user, 'acc_can_define_expenses')} />
     </div>
   );
 }

@@ -4,6 +4,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import AccountsManagementClient from '@/components/finance/AccountsManagementClient';
 import * as finance from '@/app/actions-client/finance';
 import { getExpensesAction } from '@/app/actions-client/expenses';
+import { getClientSession } from '@/lib/auth/local';
 
 jest.mock('react-hotkeys-hook', () => ({ useHotkeys: jest.fn() }));
 jest.mock('@/lib/auth/local', () => ({
@@ -39,6 +40,7 @@ jest.mock('@/app/actions-client/finance', () => ({
   getCardsAction: jest.fn(),
   getAccountsAction: jest.fn(),
   getJournalsAction: jest.fn(),
+  createManualJournalAction: jest.fn(),
   addAccountAction: jest.fn(),
   updateAccountAction: jest.fn(),
   deleteAccountAction: jest.fn(),
@@ -51,6 +53,7 @@ jest.mock('@/app/actions-client/finance', () => ({
 const emptyResult = { success: true, data: [] };
 
 beforeEach(() => {
+  (getClientSession as jest.Mock).mockResolvedValue({ role: 'owner' });
   for (const action of [
     finance.getCashMovementsAction,
     finance.getPointsOfSaleAction,
@@ -71,6 +74,21 @@ beforeEach(() => {
   ]) {
     (action as jest.Mock).mockResolvedValue(emptyResult);
   }
+});
+
+it('keeps treasury read-only for a user who can view finance but cannot process cash', async () => {
+  (getClientSession as jest.Mock).mockResolvedValue({
+    id: 'viewer-1',
+    role: 'pharmacist',
+    permissions: ['acc_can_view_general'],
+  });
+
+  render(<AccountsManagementClient initialTab="treasury" />);
+
+  expect(await screen.findByText('سجل توريدات وحركات النقدية')).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /صرف نقدية/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /إضافة توريد جديد/ })).not.toBeInTheDocument();
+  await waitFor(() => expect(finance.getCashMovementsAction).toHaveBeenCalled());
 });
 
 it('opens the real POS-management tab from its dedicated route', async () => {
@@ -132,6 +150,42 @@ it('dynamically searches movements in Treasury tab and provides navigation links
 
   expect(screen.queryByText('سداد مريض محمد')).not.toBeInTheDocument();
   expect(screen.getByText('مرتب د. سارة')).toBeInTheDocument();
+});
+
+it('filters immutable handover history and exposes the logical user drawer', async () => {
+  (finance.getCashMovementsAction as jest.Mock).mockResolvedValue({
+    success: true,
+    data: [
+      { id: 'handover-1', category: 'handover', type: 'disbursement', amount: 120, source_type: 'user_drawer', user_name: 'د. محمد', target_name: 'د. سارة', shift_id: 'shift-123', date: '2026-09-01 11:00' },
+      { id: 'expense-1', category: 'salaries', type: 'disbursement', amount: 900, date: '2026-09-01 12:00' },
+    ],
+  });
+
+  const { fireEvent } = await import('@testing-library/react');
+  render(<AccountsManagementClient initialTab="treasury" />);
+
+  expect(await screen.findByText(/د\. سارة/)).toBeInTheDocument();
+  fireEvent.click(await screen.findByRole('button', { name: 'سجل التسليمات' }));
+  expect(await screen.findByText('تسليم درج')).toBeInTheDocument();
+  expect(screen.getByText('درج د. محمد')).toBeInTheDocument();
+  expect(screen.queryByText('أجور ومرتبات')).not.toBeInTheDocument();
+});
+
+it('opens the wired balanced manual-journal form from daily journals', async () => {
+  (finance.getAccountsAction as jest.Mock).mockResolvedValue({
+    success: true,
+    data: [
+      { id: 1, code: '1.1.1', name_ar: 'الخزينة', type: 'asset', is_group: 0 },
+      { id: 2, code: '4.1', name_ar: 'التسويات', type: 'income', is_group: 0 },
+    ],
+  });
+
+  const { fireEvent } = await import('@testing-library/react');
+  render(<AccountsManagementClient initialTab="daily_journals" />);
+  fireEvent.click(await screen.findByRole('button', { name: /قيد يومي جديد/ }));
+
+  expect(await screen.findByText('إنشاء سند قيد يومي يدوي')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'حفظ القيد اليومي' })).toBeDisabled();
 });
 
 it('allows editing and deleting accounts from the Chart of Accounts table and tree', async () => {
@@ -357,9 +411,6 @@ it('renders operational expenses tab with stats, live search, add expense modal,
     success: true,
     id: 'exp-new-1',
   });
-  (expenses.deleteExpenseAction as jest.Mock).mockResolvedValue({
-    success: true,
-  });
   (finance.getExpenseDefinitionsAction as jest.Mock).mockResolvedValue({
     success: true,
     data: [
@@ -413,19 +464,6 @@ it('renders operational expenses tab with stats, live search, add expense modal,
     );
   });
 
-  // Test Delete Expense
-  window.confirm = jest.fn(() => true);
-  const deleteButtons = screen.getAllByTitle('حذف المصروف');
-  expect(deleteButtons.length).toBeGreaterThan(0);
-  fireEvent.click(deleteButtons[0]);
-
-  expect(window.confirm).toHaveBeenCalled();
-  await waitFor(() => {
-    expect(expenses.deleteExpenseAction).toHaveBeenCalledWith('exp-1');
-  });
+  // Posted expenses are immutable because their cash and journal entries must remain linked.
+  expect(screen.queryByTitle('حذف المصروف')).not.toBeInTheDocument();
 });
-
-
-
-
-

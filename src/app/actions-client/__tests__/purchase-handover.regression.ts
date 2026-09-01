@@ -52,7 +52,7 @@ import { createReturnAction } from '@/app/actions-client/returns';
 import { getShiftReportAction } from '@/app/actions-client/reports';
 import { updatePatientWalletAction } from '@/app/actions-client/patients';
 import { closeDeliveryInvoiceAction } from '@/app/actions-client/delivery';
-import { addExpenseAction } from '@/app/actions-client/expenses';
+import { addExpenseAction, deleteExpenseAction, getExpenseSummaryAction } from '@/app/actions-client/expenses';
 import { closeUserShiftAndDeactivateAction, deleteUserAction } from '@/app/actions-client/users';
 
 describe('purchase reports and drawer handover regressions', () => {
@@ -557,6 +557,9 @@ describe('purchase reports and drawer handover regressions', () => {
     expect(await updatePatientWalletAction('wallet-patient', 25, 'cash top-up')).toMatchObject({ success: true, balance: 25 });
     expect(await addSupplierPaymentAction({ supplier_id: 1, amount: 10, payment_method: 'cash' })).toMatchObject({ success: true });
     expect(await addExpenseAction({ category: 'rent', amount: 3, description: 'cash expense', date: '2026-08-22' })).toMatchObject({ success: true });
+    const postedExpense = mockDb.prepare('SELECT id FROM expenses WHERE amount = 3').get() as any;
+    expect(await deleteExpenseAction(postedExpense.id)).toMatchObject({ success: false });
+    expect((mockDb.prepare('SELECT COUNT(*) AS total FROM expenses WHERE id = ?').get(postedExpense.id) as any).total).toBe(1);
     expect(await closeDeliveryInvoiceAction('delivery-invoice', 2)).toMatchObject({ success: true });
     expect(await closeDeliveryInvoiceAction('delivery-invoice', 2)).toMatchObject({ success: false });
 
@@ -670,6 +673,34 @@ describe('purchase reports and drawer handover regressions', () => {
       expect.objectContaining({ batch_number: 'LOT-A', inventory_id: expect.any(String) }),
       expect.objectContaining({ batch_number: 'LOT-B', inventory_id: expect.any(String) }),
     ]);
+  });
+
+  it('calculates net profit from completed sales, returns, COGS, and expenses', async () => {
+    mockDb.exec(`
+      INSERT INTO inventory (id, drug_id, quantity, cost_price, strips_per_box)
+      VALUES ('profit-batch', 9001, 10, 20, 2);
+      INSERT INTO sales_invoices (id, user_id, total_amount, status, created_at)
+      VALUES ('profit-sale', 'admin', 100, 'completed', '2026-08-15 10:00:00');
+      INSERT INTO sales_items (invoice_id, inventory_id, drug_id, quantity_sold, unit_price, unit, cost_price)
+      VALUES ('profit-sale', 'profit-batch', 9001, 2, 50, 'large', 20);
+      INSERT INTO returns (id, invoice_id, user_id, total_refund, status, created_at)
+      VALUES ('profit-return', 'profit-sale', 'admin', 30, 'approved', '2026-08-16 10:00:00');
+      INSERT INTO return_items (return_id, inventory_id, drug_id, quantity_returned, unit_price, sale_item_id, unit)
+      VALUES ('profit-return', 'profit-batch', 9001, 0.5, 60, 1, 'large');
+      INSERT INTO expenses (id, user_id, category, amount, description, date)
+      VALUES ('profit-expense', 'admin', 'rent', 5, 'rent', '2026-08-17');
+    `);
+
+    expect(await getExpenseSummaryAction('2026-08')).toMatchObject({
+      success: true,
+      data: {
+        totalRevenue: 100,
+        totalReturns: 30,
+        totalCOGS: 30,
+        totalExpenses: 5,
+        netProfit: 35,
+      },
+    });
   });
 
   it('keeps old and replacement manufacturer barcodes on one drug without changing stock', async () => {
@@ -1019,7 +1050,13 @@ describe('purchase reports and drawer handover regressions', () => {
     });
     const receiverShift = mockDb.prepare("SELECT id, status FROM shifts WHERE user_id = 'user-next-cashier' AND status = 'open'").get() as any;
     expect(receiverShift).toBeDefined();
-    expect((mockDb.prepare("SELECT amount FROM cash_movements WHERE shift_id = ? AND category = 'handover_received'").get(receiverShift.id) as any).amount).toBe(100);
+    expect(mockDb.prepare("SELECT amount, source_type FROM cash_movements WHERE shift_id = ? AND category = 'handover_received'").get(receiverShift.id)).toMatchObject({
+      amount: 100,
+      source_type: 'user_drawer_received',
+    });
+    expect(mockDb.prepare("SELECT source_type FROM cash_movements WHERE shift_id = ? AND category = 'handover'").get('shift-unconfigured-tb')).toMatchObject({
+      source_type: 'user_drawer',
+    });
     expect((await getHandoverDetailsAction('shift-unconfigured-tb')).data?.expected_cash).toBe(50);
     expect((await getHandoverDetailsAction(receiverShift.id)).data?.expected_cash).toBe(100);
   });

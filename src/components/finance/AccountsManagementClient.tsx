@@ -17,7 +17,7 @@ import { FinancialNoticeForm } from './FinancialComponents';
 import TrialBalanceSettingsClient from './TrialBalanceSettingsClient';
 import TrialBalanceReport from '@/components/reports/TrialBalanceReport';
 import CashTransactionsClient from './CashTransactionsClient';
-import { getExpensesAction, addExpenseAction, deleteExpenseAction } from '@/app/actions-client/expenses';
+import { getExpensesAction, addExpenseAction } from '@/app/actions-client/expenses';
 import { getClientSession } from '@/lib/auth/local';
 import { 
   createCashMovementAction, 
@@ -49,7 +49,6 @@ import {
   updateAccountAction,
   deleteAccountAction,
   getJournalDetailsAction,
-  seedFinanceTestDataAction,
   getFinancialNoticesAction,
   getActivityLogsAction
 } from '@/app/actions-client/finance';
@@ -111,6 +110,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
   const [activeTab, setActiveTab] = useState(initialTab);
   const [showCashForm, setShowCashForm] = useState<{ show: boolean, type: 'disbursement' | 'receipt' }>({ show: false, type: 'disbursement' });
   const [treasurySearch, setTreasurySearch] = useState('');
+  const [treasuryView, setTreasuryView] = useState<'all' | 'handovers'>('all');
   const [movements, setMovements] = useState<any[]>([]);
   const [pointsOfSale, setPointsOfSale] = useState<any[]>([]);
   const [expenseDefinitions, setExpenseDefinitions] = useState<any[]>([]);
@@ -236,20 +236,11 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
 
   useHotkeys('f4', (e) => {
     e.preventDefault();
-    setShowRecordExpenseModal(true);
+    if (activeTab === 'expenses' && hasConfiguredPermission(sessionUser, 'acc_can_define_expenses')) {
+      setShowRecordExpenseModal(true);
+    }
   }, { enableOnFormTags: true });
 
-  const handleDeleteExpense = async (exp: any) => {
-    if (!window.confirm(`هل أنت متأكد من حذف هذا المصروف (${exp.category} - ${exp.amount} ج.م)؟`)) return;
-    const res = await deleteExpenseAction(exp.id);
-    if (res.success) {
-      toast.success('تم حذف المصروف بنجاح');
-      loadTabData();
-    } else {
-      toast.error(res.error || 'فشل حذف المصروف');
-    }
-  };
-  
   const [userRole, setUserRole] = useState<string>('pharmacist');
   const [sessionUser, setSessionUser] = useState<any>(null);
   const [isMounted, setIsMounted] = useState(false);
@@ -341,27 +332,17 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
      setLoadingData(false);
   };
 
-  const handleSeed = async () => {
-     const res = await seedFinanceTestDataAction();
-     if (res.success) {
-        toast.success('Test data initialized successfully');
-        loadTabData();
-     } else {
-        toast.error('Failed to initialize data');
-     }
-  };
-
   // Compute Treasury Stats Dynamically
   const todayStr = format(new Date(), 'yyyy-MM-dd');
-  const treasuryAccount = accounts.find(a => a.code === '111' || a.category === 'cash_drawer');
+  const treasuryAccount = accounts.find(a => a.code === '111' || a.code === '1.1.1' || a.category === 'cash_drawer');
   const treasuryBalance = treasuryAccount ? (treasuryAccount.balance || 0) : 0;
    
   const todayReceipts = movements
-     .filter(m => m.type === 'receipt' && m.date === todayStr)
+     .filter(m => m.type === 'receipt' && String(m.date || m.created_at || '').slice(0, 10) === todayStr)
      .reduce((sum, m) => sum + Number(m.amount || 0), 0);
 
   const todayDisbursements = movements
-     .filter(m => m.type === 'disbursement' && m.date === todayStr)
+     .filter(m => m.type === 'disbursement' && String(m.date || m.created_at || '').slice(0, 10) === todayStr)
      .reduce((sum, m) => sum + Number(m.amount || 0), 0);
 
   const totalShiftHandovers = movements
@@ -370,9 +351,10 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
 
   const totalLiquidity = treasuryBalance + 
      pointsOfSale.reduce((sum, pos) => sum + (Number(pos.current_balance) || 0), 0) + 
-     banks.reduce((sum, b) => sum + (Number(b.balance) || 0), 0);
+     banks.reduce((sum, b) => sum + (Number(b.current_balance ?? b.balance) || 0), 0);
 
   const filteredTreasuryMovements = movements.filter(m => {
+     if (treasuryView === 'handovers' && m.category !== 'handover') return false;
      if (!treasurySearch.trim()) return true;
      const q = treasurySearch.toLowerCase().trim();
      const notes = String(m.notes || '').toLowerCase();
@@ -432,6 +414,14 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
   };
 
   const largestCategoryLabel = largestCategory === 'لا يوجد' ? 'لا يوجد' : getCategoryDisplayName(largestCategory);
+  const canProcessCash = hasConfiguredPermission(sessionUser, 'acc_can_process_cash_flow');
+  const canManageExpenses = hasConfiguredPermission(sessionUser, 'acc_can_define_expenses');
+  const filteredActivityLogs = activityLogs.filter(log => {
+    if (!auditSearch.trim()) return true;
+    const q = auditSearch.trim().toLowerCase();
+    return [log.action, log.details, log.user_name, log.created_at]
+      .some(value => String(value || '').toLowerCase().includes(q));
+  });
 
   if (!isMounted) return null;
 
@@ -472,15 +462,6 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
              </div>
           </div>
 
-          {userRole === 'owner' && (
-            <button
-              onClick={handleSeed}
-              className="w-full flex items-center justify-center gap-3 px-6 py-5 rounded-[24px] font-black bg-blue-50 dark:bg-blue-900/10 text-blue-600 dark:text-blue-400 border-2 border-dashed border-blue-200 dark:border-blue-800 hover:bg-blue-100 transition-all"
-            >
-               <Database className="w-5 h-5" /> Initialize Test Data
-            </button>
-          )}
-
           <div className="bg-gradient-to-br from-indigo-600 to-purple-700 rounded-[40px] p-8 text-white shadow-2xl">
              <TrendingUp className="w-12 h-12 mb-6 opacity-50" />
              <h4 className="text-xl font-black mb-2">إجمالي السيولة</h4>
@@ -518,24 +499,24 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                      <button onClick={() => window.print()} className="p-4 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-[20px] hover:bg-slate-200 transition-all no-print">
                        <Printer className="w-5 h-5" />
                      </button>
-                     <button 
-                       onClick={() => {
-                          setActiveTab('cash_movement');
-                          setShowCashForm({ show: true, type: 'disbursement' });
+                      {canProcessCash && <button
+                        onClick={() => {
+                           setActiveTab('cash_movement');
+                           setShowCashForm({ show: true, type: 'disbursement' });
                        }}
                        className="px-6 py-4 bg-rose-600 text-white rounded-[20px] font-black hover:bg-rose-700 transition-all shadow-xl shadow-rose-500/20 flex items-center gap-2 text-sm"
-                     >
-                        <Plus className="w-4 h-4" /> صرف نقدية
-                     </button>
-                     <button 
-                       onClick={() => {
-                          setActiveTab('cash_movement');
-                          setShowCashForm({ show: true, type: 'receipt' });
+                      >
+                         <Plus className="w-4 h-4" /> صرف نقدية
+                      </button>}
+                      {canProcessCash && <button
+                        onClick={() => {
+                           setActiveTab('cash_movement');
+                           setShowCashForm({ show: true, type: 'receipt' });
                        }}
                        className="px-6 py-4 bg-emerald-600 text-white rounded-[20px] font-black hover:bg-emerald-700 transition-all shadow-xl shadow-emerald-500/20 flex items-center gap-2 text-sm"
-                     >
-                        <Plus className="w-4 h-4" /> إضافة توريد جديد
-                     </button>
+                      >
+                         <Plus className="w-4 h-4" /> إضافة توريد جديد
+                      </button>}
                    </div>
                 </div>
 
@@ -547,8 +528,13 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                  </div>
 
                  <div className="bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 overflow-hidden shadow-sm">
-                    <div className="p-8 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center">
-                       <div className="relative w-96">
+                     <div className="p-8 border-b border-slate-100 dark:border-slate-800 flex flex-wrap justify-between items-center gap-4">
+                        <div className="flex flex-wrap items-center gap-3">
+                          <div className="bg-slate-100 dark:bg-slate-800 p-1 rounded-xl flex gap-1">
+                            <button onClick={() => setTreasuryView('all')} className={cn('px-4 py-2 rounded-lg text-xs font-black', treasuryView === 'all' ? 'bg-white dark:bg-slate-700 shadow text-blue-600' : 'text-slate-500')}>كل الحركات</button>
+                            <button onClick={() => setTreasuryView('handovers')} className={cn('px-4 py-2 rounded-lg text-xs font-black', treasuryView === 'handovers' ? 'bg-white dark:bg-slate-700 shadow text-blue-600' : 'text-slate-500')}>سجل التسليمات</button>
+                          </div>
+                          <div className="relative w-96 max-w-full">
                           <Search className="absolute right-5 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
                           <input 
                              type="text" 
@@ -563,9 +549,10 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                              </button>
                           )}
                        </div>
-                       <span className="text-xs font-black text-slate-400">عدد الحركات: ({filteredTreasuryMovements.length})</span>
-                    </div>
-                    <table className="w-full text-right">
+                        <span className="text-xs font-black text-slate-400">عدد الحركات: ({filteredTreasuryMovements.length})</span>
+                     </div>
+                     </div>
+                     <table className="w-full text-right">
                        <thead className="bg-slate-50 dark:bg-slate-800/50">
                           <tr>
                              <th className="px-8 py-5 text-xs font-black text-slate-400 uppercase">التاريخ</th>
@@ -604,7 +591,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                                 <td className="px-8 py-5">
                                    <div className="flex flex-col gap-1">
                                       <span className="bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400 px-3 py-1 rounded-full text-xs font-black w-fit">
-                                         {m.source_type === 'pos' ? 'نقطة البيع' : m.source_type === 'main_safe' ? 'خزينة المحل' : m.source_type === 'admin' ? 'خزينة الإدارة' : m.source_type || 'الخزينة'}
+                                         {m.source_type === 'pos' ? 'نقطة البيع' : m.source_type === 'main_safe' ? 'خزينة المحل' : m.source_type === 'admin' ? 'خزينة الإدارة' : m.source_type === 'user_drawer' ? `درج ${m.user_name || 'المستخدم'}` : m.source_type === 'user_drawer_received' ? `درج ${m.user_name || 'المستلم'}` : m.source_type || 'الخزينة'}
                                       </span>
                                       {m.shift_id && (
                                          <Link href="/shifts" className="text-[10px] font-mono text-slate-400 hover:text-blue-500">
@@ -882,8 +869,8 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                            <button onClick={() => window.print()} className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-2xl hover:bg-slate-200 transition-all no-print">
                               <Printer className="w-5 h-5" />
                            </button>
+                          </div>
                         </div>
-                     </div>
                      <table className="w-full text-right">
                         <thead className="bg-slate-50 dark:bg-slate-800/50">
                            <tr className="text-slate-400 text-[10px] font-black uppercase tracking-widest">
@@ -1067,7 +1054,6 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                              <th className="px-8 py-6">تاريخ الاستحقاق</th>
                              <th className="px-8 py-6 text-center">المبلغ</th>
                              <th className="px-8 py-6 text-center">الحالة</th>
-                             <th className="px-8 py-6 text-center">إجراءات</th>
                           </tr>
                        </thead>
                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -1230,12 +1216,12 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                           <FileText className="w-5 h-5 text-rose-600" />
                           <span>شاشة المصروفات الكاملة</span>
                        </Link>
-                       <button 
+                       {canManageExpenses && <button
                          onClick={() => setShowRecordExpenseModal(true)}
                          className="px-8 py-4 bg-rose-600 hover:bg-rose-700 text-white rounded-[20px] font-black text-sm shadow-xl shadow-rose-500/20 flex items-center gap-2 active:scale-95 transition-all"
                        >
                           <Plus className="w-5 h-5" /> إضافة مصروف (F4)
-                       </button>
+                       </button>}
                     </div>
                  </div>
 
@@ -1289,9 +1275,9 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                        </thead>
                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                           {loadingData ? (
-                             <tr><td colSpan={6} className="py-20 text-center text-slate-400 italic font-bold">جاري تحميل المصروفات...</td></tr>
+                             <tr><td colSpan={5} className="py-20 text-center text-slate-400 italic font-bold">جاري تحميل المصروفات...</td></tr>
                           ) : filteredExpenses.length === 0 ? (
-                             <tr><td colSpan={6} className="py-20 text-center text-slate-400 italic font-bold">{expenseSearch.trim() ? 'لا توجد نتائج مطابقة لبحثك' : 'لا توجد مصروفات مسجلة'}</td></tr>
+                             <tr><td colSpan={5} className="py-20 text-center text-slate-400 italic font-bold">{expenseSearch.trim() ? 'لا توجد نتائج مطابقة لبحثك' : 'لا توجد مصروفات مسجلة'}</td></tr>
                           ) : filteredExpenses.map(exp => (
                              <tr key={`exp-list-${exp.id}`} className="hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
                                 <td className="px-8 py-6 font-bold text-slate-500 font-mono text-xs">{safeFormat(exp.date || exp.created_at, 'yyyy/MM/dd')}</td>
@@ -1303,15 +1289,6 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                                 <td className="px-8 py-6 font-black text-lg text-rose-600 font-mono">{exp.amount.toLocaleString()} ج.م</td>
                                 <td className="px-8 py-6 font-bold text-slate-700 dark:text-slate-300 text-xs">{exp.user_name || 'غير معروف'}</td>
                                 <td className="px-8 py-6 font-bold text-slate-500 text-xs">{exp.description || exp.notes || '-'}</td>
-                                <td className="px-8 py-6 text-center">
-                                   <button
-                                     onClick={() => handleDeleteExpense(exp)}
-                                     title="حذف المصروف"
-                                     className="p-3 bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-900/60 rounded-xl transition-all shadow-sm"
-                                   >
-                                      <Trash2 className="w-4 h-4" />
-                                   </button>
-                                </td>
                              </tr>
                           ))}
                        </tbody>
@@ -1356,13 +1333,10 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                       <p className="text-slate-500 font-bold">تتبع جميع العمليات الحساسة التي تمت على النظام</p>
                    </div>
                    <div className="flex gap-4">
-                      <button
-                        disabled
-                        title="البحث غير متاح في هذا الإصدار"
-                        className="p-5 bg-slate-50 dark:bg-slate-800 text-slate-500 rounded-2xl border border-slate-100 dark:border-slate-700 opacity-50 cursor-not-allowed"
-                      >
-                         <Search className="w-6 h-6" />
-                      </button>
+                      <div className="relative w-80 max-w-full">
+                        <Search className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
+                        <input value={auditSearch} onChange={e => setAuditSearch(e.target.value)} placeholder="بحث في سجل الرقابة..." className="w-full py-4 pr-12 pl-4 bg-slate-50 dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 outline-none font-bold text-sm" />
+                      </div>
                    </div>
                 </div>
 
@@ -1379,9 +1353,9 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                       <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                          {loadingData ? (
                             <tr><td colSpan={4} className="py-20 text-center text-slate-400 italic font-bold">جاري تحميل سجل الرقابة...</td></tr>
-                         ) : activityLogs.length === 0 ? (
+                         ) : filteredActivityLogs.length === 0 ? (
                             <tr><td colSpan={4} className="py-20 text-center text-slate-400 italic font-bold">السجل فارغ حالياً</td></tr>
-                         ) : activityLogs.map(log => (
+                         ) : filteredActivityLogs.map(log => (
                             <tr key={`log-${log.id}`} className="hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
                                <td className="px-8 py-6 font-bold text-slate-500">{safeFormat(log.created_at, 'yyyy/MM/dd HH:mm:ss')}</td>
                                <td className="px-8 py-6 font-mono">
@@ -1527,11 +1501,10 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                        <p className="text-slate-500 font-bold">تسجيل الحركات المالية المزدوجة</p>
                     </div>
                     <button
-                       disabled
-                       title="غير متاح في هذا الإصدار"
-                       className="px-10 py-5 bg-blue-600 text-white rounded-[24px] font-black opacity-50 cursor-not-allowed flex items-center gap-3"
+                       onClick={() => setShowAddJournalModal(true)}
+                       className="px-10 py-5 bg-blue-600 text-white rounded-[24px] font-black hover:bg-blue-700 flex items-center gap-3 shadow-xl shadow-blue-500/20"
                     >
-                       <Plus className="w-6 h-6" /> قيد يومي جديد (قريباً)
+                       <Plus className="w-6 h-6" /> قيد يومي جديد
                     </button>
                  </div>
 
@@ -1562,10 +1535,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                                 <td className="px-8 py-6 font-black">{j.description}</td>
                                 <td className="px-8 py-6 font-black text-lg text-blue-600">{j.total_amount.toLocaleString()} ج.م</td>
                                 <td className="px-8 py-6">
-                                   <div className="flex gap-2">
-                                      <button className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-500 rounded-xl hover:text-blue-600 transition-all"><Printer className="w-4 h-4" /></button>
-                                      <button className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-500 rounded-xl hover:text-blue-600 transition-all"><ArrowRight className="w-4 h-4" /></button>
-                                   </div>
+                                   <button onClick={(e) => { e.stopPropagation(); setSelectedJournalId(j.id); }} title="عرض تفاصيل القيد" className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-500 rounded-xl hover:text-blue-600 transition-all"><ArrowRight className="w-4 h-4" /></button>
                                 </td>
                              </tr>
                           ))}
@@ -1619,6 +1589,12 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
        <JournalDetailsModal 
           journalId={selectedJournalId}
           onClose={() => setSelectedJournalId(null)}
+       />
+       <ManualJournalModal
+          show={showAddJournalModal}
+          accounts={accounts}
+          onClose={() => setShowAddJournalModal(false)}
+          onSuccess={loadTabData}
        />
     </div>
   );
@@ -2522,8 +2498,7 @@ function BankModal({ show, initialData, onClose, onSuccess }: BankModalProps) {
         name_ar: formData.name_ar.trim(),
         name_en: formData.name_en.trim() || undefined,
         account_number: formData.account_number.trim() || undefined,
-        branch: formData.branch.trim() || undefined,
-        current_balance: formData.current_balance ? parseFloat(formData.current_balance) : undefined
+        branch: formData.branch.trim() || undefined
       });
     } else {
       res = await addBankAction({
@@ -2607,14 +2582,15 @@ function BankModal({ show, initialData, onClose, onSuccess }: BankModalProps) {
           </div>
 
           <div className="space-y-2">
-            <label className="text-xs font-black text-slate-500 mr-2">الرصيد الافتتاحي / الحالي (ج.م)</label>
+            <label className="text-xs font-black text-slate-500 mr-2">{initialData ? 'الرصيد الحالي (للعرض فقط)' : 'الرصيد الافتتاحي (عند الإنشاء فقط)'}</label>
             <input
               type="number"
               step="0.01"
               placeholder="0.00"
               value={formData.current_balance}
+              disabled={!!initialData}
               onChange={e => setFormData({ ...formData, current_balance: e.target.value })}
-              className="w-full p-4 bg-slate-50 dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 outline-none font-bold text-lg text-slate-900 dark:text-white focus:border-blue-500 transition-all font-mono"
+              className="w-full p-4 bg-slate-50 dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 outline-none font-bold text-lg text-slate-900 dark:text-white focus:border-blue-500 transition-all font-mono disabled:opacity-60 disabled:cursor-not-allowed"
             />
           </div>
 
@@ -2682,8 +2658,7 @@ function CardModal({ show, initialData, banks, onClose, onSuccess }: CardModalPr
         name_ar: formData.name_ar.trim(),
         name_en: formData.name_en.trim() || undefined,
         bank_id: formData.bank_id ? parseInt(formData.bank_id) : null,
-        commission_pct: parseFloat(formData.commission_pct) || 0,
-        current_balance: parseFloat(formData.current_balance) || 0
+        commission_pct: parseFloat(formData.commission_pct) || 0
       });
     } else {
       res = await addCardAction({
@@ -2770,14 +2745,15 @@ function CardModal({ show, initialData, banks, onClose, onSuccess }: CardModalPr
               />
             </div>
             <div className="space-y-2">
-              <label className="text-xs font-black text-slate-500 mr-2">الرصيد الحالي (ج.م)</label>
+              <label className="text-xs font-black text-slate-500 mr-2">{initialData ? 'الرصيد الحالي (للعرض فقط)' : 'الرصيد الافتتاحي'}</label>
               <input
                 type="number"
                 step="0.01"
                 placeholder="0.00"
                 value={formData.current_balance}
+                disabled={!!initialData}
                 onChange={e => setFormData({ ...formData, current_balance: e.target.value })}
-                className="w-full p-4 bg-slate-50 dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 outline-none font-bold text-sm text-slate-900 dark:text-white focus:border-indigo-500 transition-all font-mono"
+                className="w-full p-4 bg-slate-50 dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 outline-none font-bold text-sm text-slate-900 dark:text-white focus:border-indigo-500 transition-all font-mono disabled:opacity-60 disabled:cursor-not-allowed"
               />
             </div>
           </div>
@@ -3351,4 +3327,3 @@ function ManualJournalModal({ show, accounts, onClose, onSuccess }: ManualJourna
     </div>
   );
 }
-

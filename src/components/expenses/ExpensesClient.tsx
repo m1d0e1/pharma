@@ -1,10 +1,10 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { addExpenseAction, getExpensesAction, deleteExpenseAction, getExpenseSummaryAction } from '@/app/actions-client/expenses';
+import { addExpenseAction, getExpensesAction, getExpenseSummaryAction } from '@/app/actions-client/expenses';
 import { getExpenseDefinitionsAction } from '@/app/actions-client/finance';
 import { toast } from 'react-hot-toast';
-import { Trash2, Plus, Filter } from 'lucide-react';
+import { Plus, Filter } from 'lucide-react';
 
 const FALLBACK_CATEGORIES = [
   { code: 'RENT', name_ar: 'إيجار' },
@@ -17,7 +17,7 @@ const FALLBACK_CATEGORIES = [
   { code: 'OTHER', name_ar: 'مصاريف متنوعة' },
 ];
 
-export default function ExpensesClient() {
+export default function ExpensesClient({ canManage = false }: { canManage?: boolean }) {
   const [expenses, setExpenses] = useState<any[]>([]);
   const [categories, setCategories] = useState<any[]>([]);
   const [summary, setSummary] = useState<any>({
@@ -119,17 +119,6 @@ export default function ExpensesClient() {
     }
   };
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('هل أنت متأكد من حذف هذا المصروف؟')) return;
-    const result = await deleteExpenseAction(id);
-    if (result.success) {
-      toast.success('تم الحذف');
-      loadExpenses();
-    } else {
-      toast.error(result.error || 'فشل الحذف');
-    }
-  };
-
   return (
     <div className="space-y-8">
       {/* P&L Summary Cards */}
@@ -202,16 +191,18 @@ export default function ExpensesClient() {
             ))}
           </select>
         </div>
-        <button
-          onClick={() => setShowForm(!showForm)}
-          className="bg-blue-600 text-white px-6 py-2.5 rounded-xl font-bold text-sm hover:bg-blue-700 transition-all flex items-center gap-2 shadow-lg shadow-blue-500/20"
-        >
-          <Plus className="w-4 h-4" /> إضافة مصروف
-        </button>
+        {canManage && (
+          <button
+            onClick={() => setShowForm(!showForm)}
+            className="bg-blue-600 text-white px-6 py-2.5 rounded-xl font-bold text-sm hover:bg-blue-700 transition-all flex items-center gap-2 shadow-lg shadow-blue-500/20"
+          >
+            <Plus className="w-4 h-4" /> إضافة مصروف
+          </button>
+        )}
       </div>
 
       {/* Add Form */}
-      {showForm && (
+      {canManage && showForm && (
         <form onSubmit={handleSubmit} className="bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-xl space-y-6 animate-in slide-in-from-top-4 duration-300">
           <h3 className="text-lg font-bold">إضافة مصروف جديد</h3>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -282,14 +273,13 @@ export default function ExpensesClient() {
               <th className="px-6 py-4 text-sm font-bold text-slate-500">الوصف</th>
               <th className="px-6 py-4 text-sm font-bold text-slate-500">المبلغ</th>
               <th className="px-6 py-4 text-sm font-bold text-slate-500">بواسطة</th>
-              <th className="px-6 py-4 text-sm font-bold text-slate-500"></th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
             {loading ? (
-              <tr><td colSpan={6} className="text-center py-12 text-slate-400">جاري التحميل...</td></tr>
+              <tr><td colSpan={5} className="text-center py-12 text-slate-400">جاري التحميل...</td></tr>
             ) : expenses.length === 0 ? (
-              <tr><td colSpan={6} className="text-center py-12 text-slate-400">لا توجد مصروفات مسجلة</td></tr>
+              <tr><td colSpan={5} className="text-center py-12 text-slate-400">لا توجد مصروفات مسجلة</td></tr>
             ) : expenses.map((exp: any) => (
               <tr key={exp.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
                 <td className="px-6 py-4 text-sm font-bold text-slate-600 dark:text-slate-400">
@@ -303,11 +293,6 @@ export default function ExpensesClient() {
                 <td className="px-6 py-4 text-sm text-slate-700 dark:text-slate-300">{exp.description || '---'}</td>
                 <td className="px-6 py-4 font-black text-red-600">{Number(exp.amount).toLocaleString()} ج.م</td>
                 <td className="px-6 py-4 text-sm text-slate-500">{exp.user_name}</td>
-                <td className="px-6 py-4">
-                  <button onClick={() => handleDelete(exp.id)} className="p-2 text-slate-400 hover:text-red-600 transition-colors rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20">
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </td>
               </tr>
             ))}
           </tbody>

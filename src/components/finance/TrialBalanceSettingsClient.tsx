@@ -3,13 +3,12 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Plus, Search, Save, X, ChevronDown, ChevronLeft, FolderOpen, 
-  Landmark, Monitor, Truck, Receipt, CheckCircle, AlertCircle
+  Landmark, Receipt, CheckCircle, AlertCircle
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { 
   getAccountsAction, 
   getBanksAction, 
-  getPointsOfSaleAction, 
   getExpenseDefinitionsAction,
   getTrialBalanceSettingsAction,
   saveTrialBalanceSettingAction
@@ -30,11 +29,10 @@ interface Account {
 export default function TrialBalanceSettingsClient() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [banks, setBanks] = useState<any[]>([]);
-  const [pos, setPos] = useState<any[]>([]);
   const [expenses, setExpenses] = useState<any[]>([]);
   const [settings, setSettings] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeCategory, setActiveCategory] = useState<'bank' | 'cash' | 'delivery' | 'expense'>('bank');
+  const [activeCategory, setActiveCategory] = useState<'bank' | 'expense'>('bank');
   
   const [showPicker, setShowPicker] = useState<{ show: boolean, targetId?: string, targetName?: string, category: string, targetType?: string } | null>(null);
 
@@ -44,24 +42,24 @@ export default function TrialBalanceSettingsClient() {
 
   async function loadData() {
     setLoading(true);
-    const [accRes, bankRes, posRes, expRes, setRes] = await Promise.all([
+    const [accRes, bankRes, expRes, setRes] = await Promise.all([
       getAccountsAction(),
       getBanksAction(),
-      getPointsOfSaleAction(),
       getExpenseDefinitionsAction(),
       getTrialBalanceSettingsAction()
     ]);
 
     if (accRes.success) setAccounts(accRes.data as any[]);
     if (bankRes.success) setBanks(bankRes.data as any[]);
-    if (posRes.success) setPos(posRes.data as any[]);
     if (expRes.success) setExpenses(expRes.data as any[]);
     if (setRes.success) setSettings(setRes.data as any[]);
     setLoading(false);
   }
 
   const getMapping = (category: string, id?: string, name?: string) => {
-    return settings.find(s => s.category === category && (s.target_id === id || s.target_name === name));
+    const belongsToTarget = (s: any) => s.target_id === id || s.target_name === name;
+    return settings.find(s => s.category === `${category}:${id}` && belongsToTarget(s))
+      || settings.find(s => s.category === category && belongsToTarget(s));
   };
 
   const handleSelectAccount = async (accountId: number) => {
@@ -103,20 +101,6 @@ export default function TrialBalanceSettingsClient() {
             color="blue"
           />
           <CategoryButton 
-            active={activeCategory === 'cash'} 
-            onClick={() => setActiveCategory('cash')}
-            icon={Monitor}
-            label="الحسابات النقدية"
-            color="emerald"
-          />
-          <CategoryButton 
-            active={activeCategory === 'delivery'} 
-            onClick={() => setActiveCategory('delivery')}
-            icon={Truck}
-            label="مندوبي التوصيل"
-            color="purple"
-          />
-          <CategoryButton 
             active={activeCategory === 'expense'} 
             onClick={() => setActiveCategory('expense')}
             icon={Receipt}
@@ -144,14 +128,6 @@ export default function TrialBalanceSettingsClient() {
                     onLink={() => setShowPicker({ show: true, category: 'bank', targetId: bank.id.toString(), targetName: bank.name_ar })}
                   />
                 ))}
-                {activeCategory === 'cash' && pos.map(p => (
-                  <MappingRow 
-                    key={`cash-${p.id}`}
-                    name={p.name_ar}
-                    mapping={getMapping('cash', p.id.toString())}
-                    onLink={() => setShowPicker({ show: true, category: 'cash', targetId: p.id.toString(), targetName: p.name_ar })}
-                  />
-                ))}
                 {activeCategory === 'expense' && expenses.map(exp => (
                   <MappingRow 
                     key={`expense-${exp.id}`}
@@ -160,11 +136,6 @@ export default function TrialBalanceSettingsClient() {
                     onLink={() => setShowPicker({ show: true, category: 'expense', targetId: exp.id.toString(), targetName: exp.name_ar })}
                   />
                 ))}
-                {activeCategory === 'delivery' && (
-                  <tr>
-                    <td colSpan={3} className="py-20 text-center text-slate-400 font-bold italic">لا يوجد مناديب مسجلين حالياً</td>
-                  </tr>
-                )}
               </tbody>
             </table>
           </div>
@@ -273,7 +244,7 @@ function AccountTree({ accounts, onSelect }: { accounts: Account[], onSelect: (i
     const tree: Account[] = [];
     list.forEach(acc => { map[acc.id] = { ...acc, children: [] }; });
     list.forEach(acc => {
-      if (acc.parent_id) map[acc.parent_id].children.push(map[acc.id]);
+      if (acc.parent_id && map[acc.parent_id]) map[acc.parent_id].children.push(map[acc.id]);
       else tree.push(map[acc.id]);
     });
     return tree;

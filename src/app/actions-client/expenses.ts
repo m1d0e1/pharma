@@ -144,11 +144,13 @@ export async function deleteExpenseAction(id: string) {
     const user = await getLocalSession();
     if (!user || !hasUserPermissionSync(user, 'acc_can_define_expenses')) return { success: false, error: 'غير مصرح' };
 
-    await db.prepare('DELETE FROM expenses WHERE id = ?').run(id);
-    logActivity(user.id, 'DELETE_EXPENSE', `حذف مصروف #${id.substring(0, 8)}`);
+    const expense = await db.prepare('SELECT id FROM expenses WHERE id = ?').get(id);
+    if (!expense) return { success: false, error: 'المصروف غير موجود' };
 
-    revalidatePath('/expenses');
-    return { success: true };
+    return {
+      success: false,
+      error: 'لا يمكن حذف مصروف مُرحّل حفاظاً على سلامة الخزينة والقيود المحاسبية. سجّل حركة عكسية موثقة بدلاً من الحذف.',
+    };
   } catch (error) {
     return { success: false, error: 'فشل حذف المصروف' };
   }
@@ -184,16 +186,68 @@ export async function getExpenseSummaryAction(month?: string) {
       SELECT COALESCE(SUM(total_refund), 0) as refunds
       FROM returns
       WHERE created_at LIKE ? || '%'
+        AND status IN ('approved', 'completed')
     `).get(targetMonth) as any;
+
+    const soldCogs = await db.prepare(`
+      SELECT COALESCE(SUM(
+        COALESCE(si.cost_price, 0) *
+        CASE
+          WHEN si.unit IN ('medium', 'strip', 'شريط') OR si.unit = md.medium_unit
+            THEN si.quantity_sold / COALESCE(NULLIF(i.strips_per_box, 0), NULLIF(md.large_to_medium, 0), 1)
+          WHEN si.unit = 'small' OR si.unit = md.small_unit
+            THEN si.quantity_sold / (
+              COALESCE(NULLIF(i.strips_per_box, 0), NULLIF(md.large_to_medium, 0), 1) *
+              COALESCE(NULLIF(md.medium_to_small, 0), 1)
+            )
+          ELSE si.quantity_sold
+        END
+      ), 0) AS cogs
+      FROM sales_items si
+      JOIN sales_invoices invoice ON invoice.id = si.invoice_id
+      LEFT JOIN inventory i ON i.id = si.inventory_id
+      LEFT JOIN master_drugs md ON md.id = si.drug_id
+      WHERE invoice.created_at LIKE ? || '%'
+        AND invoice.status IN ('completed', 'delivered')
+        AND COALESCE(si.is_negative, 0) = 0
+    `).get(targetMonth) as any;
+
+    const returnedCogs = await db.prepare(`
+      SELECT COALESCE(SUM(
+        COALESCE(si.cost_price, 0) *
+        CASE
+          WHEN ri.unit IN ('medium', 'strip', 'شريط') OR ri.unit = md.medium_unit
+            THEN ri.quantity_returned / COALESCE(NULLIF(i.strips_per_box, 0), NULLIF(md.large_to_medium, 0), 1)
+          WHEN ri.unit = 'small' OR ri.unit = md.small_unit
+            THEN ri.quantity_returned / (
+              COALESCE(NULLIF(i.strips_per_box, 0), NULLIF(md.large_to_medium, 0), 1) *
+              COALESCE(NULLIF(md.medium_to_small, 0), 1)
+            )
+          ELSE ri.quantity_returned
+        END
+      ), 0) AS cogs
+      FROM return_items ri
+      JOIN returns r ON r.id = ri.return_id
+      LEFT JOIN sales_items si ON si.id = ri.sale_item_id
+      LEFT JOIN inventory i ON i.id = COALESCE(ri.inventory_id, si.inventory_id)
+      LEFT JOIN master_drugs md ON md.id = COALESCE(ri.drug_id, si.drug_id)
+      WHERE r.created_at LIKE ? || '%'
+        AND r.status IN ('approved', 'completed')
+    `).get(targetMonth) as any;
+
+    const revenue = Number(totalRevenue?.revenue || 0);
+    const refunds = Number(totalReturns?.refunds || 0);
+    const totalCOGS = Number(soldCogs?.cogs || 0) - Number(returnedCogs?.cogs || 0);
 
     return {
       success: true,
       data: {
         byCategory,
         totalExpenses,
-        totalRevenue: totalRevenue?.revenue || 0,
-        totalReturns: totalReturns?.refunds || 0,
-        netProfit: (totalRevenue?.revenue || 0) - totalExpenses - (totalReturns?.refunds || 0),
+        totalRevenue: revenue,
+        totalReturns: refunds,
+        totalCOGS,
+        netProfit: revenue - refunds - totalCOGS - totalExpenses,
       }
     };
   } catch (error) {

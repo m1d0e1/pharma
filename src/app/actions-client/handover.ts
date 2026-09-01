@@ -208,7 +208,9 @@ export async function processHandoverAction(data: {
     };
 
     const cashDrawerAcc = await getAccount('cash_drawer') || (await db.prepare("SELECT id FROM accounts WHERE code = '1.1.1'").get() as any)?.id || 6;
-    const bankAcc = await getAccount('bank_clearing') || (await db.prepare("SELECT id FROM accounts WHERE code = '1.1.4'").get() as any)?.id;
+    const bankAcc = (data.transferTargetType === 'bank' && data.transferTargetId
+      ? await getAccount(`bank:${data.transferTargetId}`)
+      : null) || await getAccount('bank_clearing') || (await db.prepare("SELECT id FROM accounts WHERE code = '1.1.4'").get() as any)?.id;
     let cashDifferenceAcc = await getAccount('cash_difference') || (await db.prepare("SELECT id FROM accounts WHERE code = '4.3' OR name_ar LIKE '%عجز%' LIMIT 1").get() as any)?.id;
     if (!cashDifferenceAcc) {
       try {
@@ -246,8 +248,8 @@ export async function processHandoverAction(data: {
       if (data.transferAmount > 0) {
         const movementId = generateId();
         await db.prepare(`
-          INSERT INTO cash_movements (id, user_id, shift_id, type, category, amount, target_name, notes, date)
-          VALUES (?, ?, ?, 'disbursement', 'handover', ?, ?, ?, datetime('now', 'localtime'))
+          INSERT INTO cash_movements (id, user_id, shift_id, type, category, amount, source_type, target_name, notes, date)
+          VALUES (?, ?, ?, 'disbursement', 'handover', ?, 'user_drawer', ?, ?, datetime('now', 'localtime'))
         `).run(movementId, shiftOwnerId, data.shiftId, data.transferAmount, managedUserId ? 'الخزينة الرئيسية - إغلاق حساب مستخدم' : data.receiverUsername, data.notes || 'تسليم درج');
       }
 
@@ -270,8 +272,8 @@ export async function processHandoverAction(data: {
         receiverShiftId = String(receiverShift.id);
 
         await db.prepare(`
-          INSERT INTO cash_movements (id, user_id, shift_id, type, category, amount, target_name, notes, date)
-          VALUES (?, ?, ?, 'receipt', 'handover_received', ?, ?, ?, datetime('now', 'localtime'))
+          INSERT INTO cash_movements (id, user_id, shift_id, type, category, amount, source_type, target_name, notes, date)
+          VALUES (?, ?, ?, 'receipt', 'handover_received', ?, 'user_drawer_received', ?, ?, datetime('now', 'localtime'))
         `).run(
           generateId(), receiver.id, receiverShiftId, data.transferAmount,
           details.user_name, data.notes || `استلام درج من ${details.user_name}`
