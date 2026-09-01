@@ -53,6 +53,42 @@ const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, 
 
 import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 
+/**
+ * Return the user's permanent cash session, creating it on first use.
+ * The INSERT ... WHERE NOT EXISTS keeps login, dashboard and checkout races idempotent.
+ */
+export async function ensurePermanentShiftForUser(
+  userId: string | number,
+  startingCash = 0,
+  notes = 'جلسة نقدية دائمة أُنشئت تلقائياً'
+) {
+  const existing = await db.prepare(`
+    SELECT id, user_id, start_time, starting_cash, status
+    FROM shifts
+    WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
+    ORDER BY start_time DESC LIMIT 1
+  `).get(userId) as any;
+  if (existing?.id) return existing;
+
+  const shiftId = generateId();
+  await db.prepare(`
+    INSERT INTO shifts (id, user_id, starting_cash, notes, status)
+    SELECT ?, ?, ?, ?, 'open'
+    WHERE NOT EXISTS (
+      SELECT 1 FROM shifts WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
+    )
+  `).run(shiftId, userId, startingCash, notes, userId);
+
+  const created = await db.prepare(`
+    SELECT id, user_id, start_time, starting_cash, status
+    FROM shifts
+    WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
+    ORDER BY start_time DESC LIMIT 1
+  `).get(userId) as any;
+  if (!created?.id) throw new Error('تعذر إنشاء الجلسة النقدية الدائمة');
+  return created;
+}
+
 
 /**
  * Start a new shift (Alias for openShiftAction for compatibility)
@@ -66,23 +102,23 @@ export async function openShiftAction(data: { starting_cash_amount: number; open
     }
 
     const targetUserId = data.user_id || user.id;
+    const alreadyOpen = await db.prepare(`
+      SELECT id FROM shifts
+      WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
+      ORDER BY start_time DESC LIMIT 1
+    `).get(targetUserId) as any;
+    const shift = await ensurePermanentShiftForUser(
+      targetUserId,
+      data.starting_cash_amount,
+      data.opening_notes || 'جلسة نقدية دائمة'
+    );
 
-    const shiftId = generateId();
-    const inserted = await db.prepare(`
-      INSERT INTO shifts (id, user_id, starting_cash, notes, status)
-      SELECT ?, ?, ?, ?, 'open'
-      WHERE NOT EXISTS (
-        SELECT 1 FROM shifts WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
-      )
-    `).run(shiftId, targetUserId, data.starting_cash_amount, data.opening_notes || null, targetUserId);
-    if (inserted.changes !== 1) {
-      return { success: false, error: 'لديك وردية مفتوحة بالفعل' };
+    if (!alreadyOpen) {
+      logActivity(targetUserId, 'START_SHIFT', `أنشأ الجلسة النقدية الدائمة بمبلغ ${data.starting_cash_amount}`);
     }
 
-    logActivity(targetUserId, 'START_SHIFT', `بدأ وردية جديدة بمبلغ ${data.starting_cash_amount}`);
-
     revalidatePath('/');
-    return { success: true, shiftId };
+    return { success: true, shiftId: String(shift.id), alreadyOpen: !!alreadyOpen };
   } catch (error) {
     console.error('Start shift error:', error);
     return { success: false, error: error instanceof Error ? error.message : 'فشل بدء الوردية' };
@@ -307,12 +343,14 @@ export async function getCurrentShiftAction() {
     const user = await getLocalSession();
     if (!user) return { success: false, error: 'غير مصرح' };
 
-    const shift = await db.prepare(`
-      SELECT id, user_id, start_time as shift_start, starting_cash as starting_cash_amount, status
-      FROM shifts 
-      WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
-      ORDER BY start_time DESC LIMIT 1
-    `).get(user.id) as any;
+    const permanentShift = await ensurePermanentShiftForUser(user.id);
+    const shift = {
+      id: permanentShift.id,
+      user_id: permanentShift.user_id,
+      shift_start: permanentShift.start_time,
+      starting_cash_amount: Number(permanentShift.starting_cash || 0),
+      status: permanentShift.status,
+    };
 
     const lastClosed = await db.prepare(`
       SELECT ending_cash
@@ -328,8 +366,8 @@ export async function getCurrentShiftAction() {
 
     return { 
       success: true, 
-      data: shift || null,
-      has_open_shift: !!shift,
+      data: shift,
+      has_open_shift: true,
       suggested_starting_cash: suggestedStartingCash
     };
   } catch (error) {
@@ -346,13 +384,7 @@ export async function getCurrentShiftStatsAction() {
     const user = await getLocalSession();
     if (!user) return { success: false, error: 'غير مصرح' };
 
-    const shift = await db.prepare(`
-      SELECT id, start_time, starting_cash
-      FROM shifts 
-      WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
-    `).get(user.id) as any;
-
-    if (!shift) return { success: false, error: 'لا توجد وردية مفتوحة' };
+    const shift = await ensurePermanentShiftForUser(user.id);
 
     // 1. All completed transactions count
     const countStats = await db.prepare(`

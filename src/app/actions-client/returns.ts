@@ -1,6 +1,7 @@
 
 import { dbSelect, dbExecute, dbGet, dbTransaction, generateId } from '@/lib/db/tauri';
 import { isTauri } from '@/lib/env';
+import { requireOpenShiftId } from './finance';
 const logActivity = async (userId, action, details) => {
   try {
     await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [userId, action, details]);
@@ -113,6 +114,7 @@ export async function createReturnAction(data: {
   try {
     const user = await getLocalSession();
     if (!user || !hasUserPermissionSync(user, 'can_view_returns')) return { success: false, error: 'غير مصرح' };
+    const shiftId = await requireOpenShiftId(String(user.id), data.shift_id);
 
     if (isTauri) {
       const { invoke } = await import('@tauri-apps/api/core');
@@ -121,7 +123,7 @@ export async function createReturnAction(data: {
           invoice_id: data.invoice_id,
           user_id: user.id,
           pharmacy_id: user.pharmacy_id || null,
-          shift_id: data.shift_id || null,
+          shift_id: shiftId,
           refund_method: data.refund_method || 'cash',
           reason: data.reason || '',
           patient_id: data.patient_id ? String(data.patient_id) : null,
@@ -202,7 +204,7 @@ export async function createReturnAction(data: {
       await db.prepare(`
         INSERT INTO returns (id, invoice_id, user_id, shift_id, reason, total_refund, refund_method, status)
         VALUES (?, ?, ?, ?, ?, ?, ?, 'approved')
-      `).run(returnId, data.invoice_id, user.id, data.shift_id || null, data.reason, totalRefund, data.refund_method);
+      `).run(returnId, data.invoice_id, user.id, shiftId, data.reason, totalRefund, data.refund_method);
 
       let totalCogsReversal = 0;
 
@@ -402,8 +404,10 @@ export async function searchInvoicesForReturnAction(filters: {
       params.push(filters.drugId);
     }
     if (filters.barcode) {
-      query += ` AND (md.barcode = ? OR inv.barcode = ?)`;
-      params.push(filters.barcode, filters.barcode);
+      query += ` AND (md.barcode = ? OR inv.barcode = ? OR md.barcode LIKE ? OR inv.barcode LIKE ?)`;
+      const bc = filters.barcode.trim();
+      const bcWildcard = `%${bc}%`;
+      params.push(bc, bc, bcWildcard, bcWildcard);
     }
 
     query += ` ORDER BY si.created_at DESC LIMIT 50`;
@@ -418,9 +422,9 @@ export async function searchInvoicesForReturnAction(filters: {
 }
 
 /**
- * Search return invoices from the last 14 days by drug name, barcode, invoice ID or patient
+ * Search return invoices across all receipts by barcode, drug name, invoice ID, or patient
  */
-export async function searchRecentReturnInvoicesAction(searchTerm: string, days = 14) {
+export async function searchRecentReturnInvoicesAction(searchTerm: string, days?: number) {
   try {
     const user = await getLocalSession();
     if (!user || !hasUserPermissionSync(user, 'can_view_returns')) return { success: false, error: 'غير مصرح', data: [] };
@@ -428,6 +432,11 @@ export async function searchRecentReturnInvoicesAction(searchTerm: string, days 
     await ensureReturnItemsSchema();
     const term = searchTerm.trim();
     if (!term) return { success: true, data: [] };
+
+    let dateFilter = '';
+    if (days && days > 0) {
+      dateFilter = ` AND (datetime(si.created_at) >= datetime('now', '-${days} days') OR date(si.created_at) >= date('now', '-${days} days'))`;
+    }
 
     const query = `
       SELECT DISTINCT 
@@ -441,7 +450,7 @@ export async function searchRecentReturnInvoicesAction(searchTerm: string, days 
       LEFT JOIN master_drugs md ON sit.drug_id = md.id
       LEFT JOIN inventory inv ON sit.inventory_id = inv.id
       WHERE (si.status IS NULL OR si.status = 'completed' OR si.status = 'approved' OR si.status = '')
-        AND (datetime(si.created_at) >= datetime('now', '-${days} days') OR date(si.created_at) >= date('now', '-${days} days'))
+        ${dateFilter}
         AND (
           si.id LIKE ? OR
           p.full_name LIKE ? OR
@@ -449,13 +458,16 @@ export async function searchRecentReturnInvoicesAction(searchTerm: string, days 
           md.trade_name_en LIKE ? OR
           md.active_ingredient LIKE ? OR
           md.barcode = ? OR
-          inv.barcode = ?
+          inv.barcode = ? OR
+          md.barcode LIKE ? OR
+          inv.barcode LIKE ? OR
+          CAST(md.id AS TEXT) = ?
         )
       ORDER BY si.created_at DESC
-      LIMIT 50
+      LIMIT 100
     `;
     const wildcard = `%${term}%`;
-    const invoices = await db.prepare(query).all(wildcard, wildcard, wildcard, wildcard, wildcard, term, term) as any[];
+    const invoices = await db.prepare(query).all(wildcard, wildcard, wildcard, wildcard, wildcard, term, term, wildcard, wildcard, term) as any[];
     return { success: true, data: invoices };
   } catch (error: any) {
     console.error('searchRecentReturnInvoicesAction error:', error);
@@ -575,6 +587,7 @@ export async function createGeneralReturnAction(data: {
     if (data.saleItems.length > 0 && !hasUserPermissionSync(user, 'can_make_exchanges')) {
       return { success: false, error: 'غير مصرح بعمل الاستبدالات' };
     }
+    const shiftId = await requireOpenShiftId(String(user.id), data.shift_id);
 
     const returnId = generateId();
     const totalReturn = data.returnItems.reduce((sum, i) => sum + (i.quantity * i.unit_price), 0);
@@ -586,7 +599,7 @@ export async function createGeneralReturnAction(data: {
       await db.prepare(`
         INSERT INTO returns (id, invoice_id, user_id, shift_id, reason, total_refund, refund_method, status)
         VALUES (?, NULL, ?, ?, ?, ?, ?, 'approved')
-      `).run(returnId, user.id, data.shift_id || null, data.reason, totalReturn, data.refund_method);
+      `).run(returnId, user.id, shiftId, data.reason, totalReturn, data.refund_method);
 
       // 2. Process Return Items (Restock)
       for (const item of data.returnItems) {
@@ -646,7 +659,7 @@ export async function createGeneralReturnAction(data: {
           saleInvoiceId, 
           data.patient_id || null, 
           user.id, 
-          data.shift_id || null, 
+          shiftId,
           totalSale, 
           data.paid_amount, 
           data.refund_method === 'cash' ? 'cash' : 'credit'

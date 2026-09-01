@@ -51,6 +51,7 @@ const db = {
 
 
 import { getLocalSession, hasUserPermissionSync, verifyPassword } from '@/lib/auth/local';
+import { ensurePermanentShiftForUser } from './shifts';
 
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 
@@ -225,7 +226,22 @@ export async function processHandoverAction(data: {
 
       const difference = data.actualCash - details.expected_cash;
       const remainingCash = Math.max(0, data.actualCash - data.transferAmount);
-      const shiftStatus = Math.abs(difference) > 5 ? 'discrepancy' : 'closed';
+      const shiftStatus = managedUserId
+        ? (Math.abs(difference) > 5 ? 'discrepancy' : 'closed')
+        : 'open';
+
+      // Keep a permanent drawer mathematically aligned with the physical count.
+      // After this adjustment and the transfer its balance is exactly remainingCash.
+      if (!managedUserId && Math.abs(difference) > 0.005) {
+        await db.prepare(`
+          INSERT INTO cash_movements (id, user_id, shift_id, type, category, amount, target_name, notes, date)
+          VALUES (?, ?, ?, ?, 'cash_adjustment', ?, 'تسوية الجرد', ?, datetime('now', 'localtime'))
+        `).run(
+          generateId(), shiftOwnerId, data.shiftId,
+          difference > 0 ? 'receipt' : 'disbursement', Math.abs(difference),
+          `تسوية تسليم: ${difference.toFixed(2)} ج.م`
+        );
+      }
 
       if (data.transferAmount > 0) {
         const movementId = generateId();
@@ -233,6 +249,33 @@ export async function processHandoverAction(data: {
           INSERT INTO cash_movements (id, user_id, shift_id, type, category, amount, target_name, notes, date)
           VALUES (?, ?, ?, 'disbursement', 'handover', ?, ?, ?, datetime('now', 'localtime'))
         `).run(movementId, shiftOwnerId, data.shiftId, data.transferAmount, managedUserId ? 'الخزينة الرئيسية - إغلاق حساب مستخدم' : data.receiverUsername, data.notes || 'تسليم درج');
+      }
+
+      let receiverShiftId: string | null = null;
+      if (!managedUserId && data.transferAmount > 0 && data.transferTargetType === 'next_shift' && receiver?.id) {
+        const candidateId = generateId();
+        await db.prepare(`
+          INSERT INTO shifts (id, user_id, starting_cash, notes, status)
+          SELECT ?, ?, 0, 'جلسة نقدية دائمة للمستلم', 'open'
+          WHERE NOT EXISTS (
+            SELECT 1 FROM shifts WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
+          )
+        `).run(candidateId, receiver.id, receiver.id);
+        const receiverShift = await db.prepare(`
+          SELECT id FROM shifts
+          WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
+          ORDER BY start_time DESC LIMIT 1
+        `).get(receiver.id) as any;
+        if (!receiverShift?.id) throw new Error('تعذر تحديد الجلسة النقدية للمستلم');
+        receiverShiftId = String(receiverShift.id);
+
+        await db.prepare(`
+          INSERT INTO cash_movements (id, user_id, shift_id, type, category, amount, target_name, notes, date)
+          VALUES (?, ?, ?, 'receipt', 'handover_received', ?, ?, ?, datetime('now', 'localtime'))
+        `).run(
+          generateId(), receiver.id, receiverShiftId, data.transferAmount,
+          details.user_name, data.notes || `استلام درج من ${details.user_name}`
+        );
       }
 
       if (data.transferAmount > 0 && data.transferTargetType === 'bank') {
@@ -276,30 +319,29 @@ export async function processHandoverAction(data: {
         }
       }
 
-      const shiftUpdate = await db.prepare(`
-        UPDATE shifts
-        SET end_time = CURRENT_TIMESTAMP,
-            ending_cash = ?,
-            actual_cash = ?,
-            transfer_amount = ?,
-            transfer_target = ?,
-            cash_difference = ?,
-            receiver_id = ?,
-            notes = ?,
-            status = ?
-        WHERE id = ? AND CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
-      `).run(
-        remainingCash,
-        data.actualCash,
-        data.transferAmount,
-        data.transferTargetType || 'treasury',
-        difference,
-        receiver?.id || null,
-        data.notes || null,
-        shiftStatus,
-        data.shiftId,
-        shiftOwnerId
-      );
+      const shiftUpdate = managedUserId
+        ? await db.prepare(`
+            UPDATE shifts
+            SET end_time = CURRENT_TIMESTAMP, ending_cash = ?, actual_cash = ?,
+                transfer_amount = ?, transfer_target = ?, cash_difference = ?,
+                receiver_id = NULL, notes = ?, status = ?
+            WHERE id = ? AND CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
+          `).run(
+            remainingCash, data.actualCash, data.transferAmount,
+            data.transferTargetType || 'treasury', difference,
+            data.notes || null, shiftStatus, data.shiftId, shiftOwnerId
+          )
+        : await db.prepare(`
+            UPDATE shifts
+            SET end_time = NULL, ending_cash = ?, actual_cash = ?,
+                transfer_amount = COALESCE(transfer_amount, 0) + ?, transfer_target = ?,
+                cash_difference = ?, receiver_id = ?, notes = ?, status = 'open'
+            WHERE id = ? AND CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
+          `).run(
+            remainingCash, data.actualCash, data.transferAmount,
+            data.transferTargetType || 'treasury', difference, receiver?.id || null,
+            data.notes || null, data.shiftId, shiftOwnerId
+          );
       if (shiftUpdate.changes !== 1) throw new Error('تم إغلاق الوردية أو تعديلها بالفعل');
 
       await db.prepare('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)').run(
@@ -315,47 +357,14 @@ export async function processHandoverAction(data: {
         if (deactivated.changes !== 1) throw new Error('تعذر تعطيل حساب المستخدم');
       }
 
-      // 2. Determine next shift starting cash
-      const nextShiftCash = data.transferTargetType === 'next_shift'
-        ? (data.transferAmount > 0 && remainingCash === 0 ? data.transferAmount : remainingCash > 0 ? remainingCash : data.actualCash)
-        : remainingCash;
-
-      // 3. Auto-open next shift atomically in the database if requested
-      let nextShiftId: string | null = null;
-      if (data.autoOpenNewShift && !managedUserId) {
-        nextShiftId = generateId();
-        await db.prepare(`
-          INSERT INTO shifts (id, user_id, starting_cash, notes, status)
-          SELECT ?, ?, ?, ?, 'open'
-          WHERE NOT EXISTS (
-            SELECT 1 FROM shifts WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
-          )
-        `).run(nextShiftId, user.id, nextShiftCash, 'وردية جديدة تلقائية بعد تسليم الدرج', user.id);
-
-        // If next_shift handover was to a different staff member, also open a shift ready for them
-        if (data.transferTargetType === 'next_shift' && receiver.id && String(receiver.id) !== String(user.id)) {
-          const receiverShiftId = generateId();
-          await db.prepare(`
-            INSERT INTO shifts (id, user_id, starting_cash, notes, status)
-            SELECT ?, ?, ?, ?, 'open'
-            WHERE NOT EXISTS (
-              SELECT 1 FROM shifts WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
-            )
-          `).run(receiverShiftId, receiver.id, nextShiftCash, 'وردية جديدة تلقائية للمستلم بعد تسليم الدرج', receiver.id);
-        }
-
-        await db.prepare('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)').run(
-          user.id,
-          'START_SHIFT',
-          `بدأ وردية جديدة تلقائياً بمبلغ ${nextShiftCash}`
-        );
-      }
+      const nextShiftCash = remainingCash;
+      const nextShiftId = managedUserId ? null : data.shiftId;
 
       return { 
         difference, 
         remainingCash, 
         status: shiftStatus,
-        newShiftId: nextShiftId,
+        newShiftId: receiverShiftId || nextShiftId,
         startingCash: nextShiftCash,
         receiverId: receiver?.id || null,
         transferTargetType: data.transferTargetType
@@ -380,14 +389,8 @@ export async function getOpenShiftHandoverAction() {
   try {
     const user = await getLocalSession();
     if (!user) return { success: false, error: 'غير مصرح', data: null };
-    const shift = await db.prepare(`
-      SELECT id, user_id, start_time, starting_cash, status
-      FROM shifts
-      WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
-      ORDER BY start_time DESC
-      LIMIT 1
-    `).get(user.id);
-    return { success: true, data: shift || null };
+    const shift = await ensurePermanentShiftForUser(user.id);
+    return { success: true, data: shift };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : 'فشل جلب الوردية المفتوحة', data: null };
   }
@@ -402,8 +405,7 @@ export async function getShiftCreditSalesAction(shiftId?: string) {
 
     let targetShiftId = shiftId;
     if (!targetShiftId) {
-      const openShift = await db.prepare("SELECT id FROM shifts WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open' ORDER BY start_time DESC LIMIT 1").get(user.id) as any;
-      targetShiftId = openShift?.id;
+      targetShiftId = String((await ensurePermanentShiftForUser(user.id)).id);
     }
 
     if (!targetShiftId) return { success: true, data: [] };

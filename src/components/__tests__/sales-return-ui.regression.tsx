@@ -68,7 +68,7 @@ describe('rendered customer-return flow', () => {
 
   it('searches the original invoice, clamps cumulative quantity, and posts its original batch', async () => {
     render(<SalesReturnClient />);
-    fireEvent.change(screen.getByPlaceholderText('اسم الدواء، البار كود، رقم الفاتورة...'), {
+    fireEvent.change(screen.getByPlaceholderText('امسح الباركود، أو اكتب اسم الدواء، أو رقم الفاتورة...'), {
       target: { value: 'Return Drug' },
     });
 
@@ -95,5 +95,17 @@ describe('rendered customer-return flow', () => {
       }],
     }));
     expect(mockPush).toHaveBeenCalledWith('/returns');
+  });
+
+  it('scans barcode and presses Enter to select receipt and return item', async () => {
+    render(<SalesReturnClient />);
+    const searchInput = screen.getByPlaceholderText('امسح الباركود، أو اكتب اسم الدواء، أو رقم الفاتورة...');
+    
+    // Simulate barcode scan with Enter key
+    fireEvent.change(searchInput, { target: { value: '6221000123456' } });
+    fireEvent.keyDown(searchInput, { key: 'Enter', code: 'Enter' });
+
+    await waitFor(() => expect(searchRecentReturnInvoicesAction).toHaveBeenCalledWith('6221000123456'));
+    expect(await screen.findByText('Return Drug')).toBeInTheDocument();
   });
 });

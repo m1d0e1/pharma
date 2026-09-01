@@ -369,4 +369,32 @@ describe.each(databaseVariants)('$name deletion invariants', ({ initialize }) =>
     expect(nameUpdated.trade_name_en).toBe('Panadol Extra Pure EN');
     expect(nameUpdated.official_price).toBe(30);
   });
+
+  it('preserves the previous barcode on existing stock when the master barcode changes', async () => {
+    insertUserAndDrug(3002);
+    mockDb.prepare("UPDATE master_drugs SET barcode = 'OLD-CODE' WHERE id = 3002").run();
+    mockDb.prepare(`
+      INSERT INTO inventory (id, pharmacy_id, drug_id, quantity, local_selling_price, barcode)
+      VALUES ('old-packages', 'local_default', 3002, 4, 10, NULL)
+    `).run();
+
+    const result = await updateMasterDrugAction(3002, {
+      trade_name_en: 'Drug 3002',
+      official_price: 12,
+      barcode: 'NEW-CODE',
+    });
+
+    expect(result).toEqual({ success: true });
+    expect(mockDb.prepare('SELECT barcode FROM master_drugs WHERE id = 3002').get()).toEqual({ barcode: 'NEW-CODE' });
+    expect(mockDb.prepare('SELECT barcode, quantity FROM inventory WHERE id = ?').get('old-packages'))
+      .toEqual({ barcode: 'OLD-CODE', quantity: 4 });
+
+    insertUserAndDrug(3003);
+    const conflict = await updateMasterDrugAction(3003, {
+      trade_name_en: 'Drug 3003',
+      official_price: 10,
+      barcode: 'OLD-CODE',
+    });
+    expect(conflict).toMatchObject({ success: false, error: expect.stringContaining('Barcode') });
+  });
 });

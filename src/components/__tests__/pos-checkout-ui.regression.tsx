@@ -100,14 +100,14 @@ describe('rendered POS checkout flow', () => {
     })));
   });
 
-  it('shows an actionable shift redirect when the backend rejects checkout without an open shift', async () => {
+  it('does not redirect to the retired manual-shift flow on a stale backend error', async () => {
     (processCheckoutAction as jest.Mock).mockResolvedValue({ success: false, error: 'يجب فتح وردية قبل إتمام البيع' });
 
     render(<POSPage />);
     fireEvent.click(await screen.findByRole('button', { name: /إتمام وطباعة/ }));
-    fireEvent.click(await screen.findByRole('button', { name: 'فتح وردية' }));
-
-    expect(mockPush).toHaveBeenCalledWith('/shifts');
+    expect(await screen.findByText('يجب فتح وردية قبل إتمام البيع')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'فتح وردية' })).not.toBeInTheDocument();
+    expect(mockPush).not.toHaveBeenCalledWith('/shifts');
   });
 
   it('submits a permitted per-item discount separately from the receipt discount', async () => {

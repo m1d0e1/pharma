@@ -1,6 +1,5 @@
-
 import { dbSelect, dbExecute, dbGet, dbTransaction } from '@/lib/db/tauri';
-const logActivity = async (userId, action, details) => {
+const logActivity = async (userId: any, action: any, details: any) => {
   try {
     await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [userId, action, details]);
   } catch (e) {
@@ -19,16 +18,16 @@ const clearAuditLogs = async () => {
 };
 
 const db = {
-  prepare: (sql) => ({
-    all: (...p) => {
+  prepare: (sql: string) => ({
+    all: (...p: any[]) => {
       const args = p.length === 1 && Array.isArray(p[0]) ? p[0] : p;
       return dbSelect(sql, args);
     },
-    get: (...p) => {
+    get: (...p: any[]) => {
       const args = p.length === 1 && Array.isArray(p[0]) ? p[0] : p;
       return dbGet(sql, args);
     },
-    run: async (...p) => {
+    run: async (...p: any[]) => {
       const args = p.length === 1 && Array.isArray(p[0]) ? p[0] : p;
       const res = await dbExecute(sql, args);
       return {
@@ -39,21 +38,18 @@ const db = {
       };
     }
   }),
-  transaction: (cb) => {
-    return (...args) => dbTransaction(async () => await cb(...args));
+  transaction: (cb: any) => {
+    return (...args: any[]) => dbTransaction(async () => await cb(...args));
   },
-  exec: (sql) => {
+  exec: (sql: string) => {
     return dbExecute(sql);
   }
 };
 
-
-
-
 import { getLocalSession } from '@/lib/auth/local';
 
-
-const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
+const revalidatePath = (...args: any[]) => {};
+const unstable_cache = (fn: any, ...args: any[]) => fn;
 
 // Get distinct ingredients from the drug_interactions table in SQLite
 async function getDbIngredients() {
@@ -67,7 +63,6 @@ async function getDbIngredients() {
   }
   return Array.from(ingredients);
 }
-
 
 /**
  * Check for drug interactions between items currently in the cart.
@@ -108,13 +103,12 @@ export async function checkDrugInteractions(cartIngredients: string[], patientId
       }
     }
 
-    // Check drug-drug interactions
-    if (cartIngs.length < 2) {
+    // Check drug-drug interactions (requires at least 2 medications in cart)
+    if (cartIngredients.length < 2 || cartIngs.length < 2) {
       return { success: true, data: { interactions: [], allergies, hasCritical: allergies.length > 0, hasMajor: false } };
     }
 
     const dbIngredients = await getDbIngredients();
-    const matched = new Set<string>();
 
     const cleanStr = (s: string) => {
       let cleaned = s
@@ -152,15 +146,39 @@ export async function checkDrugInteractions(cartIngredients: string[], patientId
       }
     };
 
-    for (const cartIng of cartIngs) {
-      for (const dbIng of dbIngredients) {
-        if (matchIngredients(cartIng, dbIng)) {
-          matched.add(dbIng);
+    // Match DB ingredients grouped by distinct cart items
+    const cartItemsMatched: Set<string>[] = [];
+    const allMatched = new Set<string>();
+
+    for (const rawCartItem of cartIngredients) {
+      const subIngs = parseIngredients(rawCartItem);
+      const itemMatched = new Set<string>();
+      for (const subIng of subIngs) {
+        for (const dbIng of dbIngredients) {
+          if (matchIngredients(subIng, dbIng)) {
+            itemMatched.add(dbIng);
+            allMatched.add(dbIng);
+          }
         }
+      }
+      if (itemMatched.size > 0) {
+        cartItemsMatched.push(itemMatched);
       }
     }
 
-    const matchedArray = Array.from(matched);
+    if (cartItemsMatched.length < 2) {
+      return {
+        success: true,
+        data: {
+          interactions: [],
+          allergies,
+          hasCritical: allergies.length > 0,
+          hasMajor: false,
+        }
+      };
+    }
+
+    const matchedArray = Array.from(allMatched);
     if (matchedArray.length < 2) {
       return {
         success: true,
@@ -186,6 +204,27 @@ export async function checkDrugInteractions(cartIngredients: string[], patientId
     const results: any[] = [];
 
     for (const p of pairs) {
+      // Interactions are only valid between different cart items
+      let isCrossItemInteraction = false;
+      for (let i = 0; i < cartItemsMatched.length; i++) {
+        for (let j = i + 1; j < cartItemsMatched.length; j++) {
+          const itemA = cartItemsMatched[i];
+          const itemB = cartItemsMatched[j];
+          if (
+            (itemA.has(p.ingredient_a) && itemB.has(p.ingredient_b)) ||
+            (itemA.has(p.ingredient_b) && itemB.has(p.ingredient_a))
+          ) {
+            isCrossItemInteraction = true;
+            break;
+          }
+        }
+        if (isCrossItemInteraction) break;
+      }
+
+      if (!isCrossItemInteraction) {
+        continue;
+      }
+
       const key = `${p.ingredient_a}_${p.ingredient_b}`;
       if (!interactionsFound.has(key)) {
         interactionsFound.add(key);
@@ -276,8 +315,6 @@ export async function addInteractionAction(data: {
       INSERT INTO drug_interactions (ingredient_a, ingredient_b, severity, description_ar, recommendation)
       VALUES (?, ?, ?, ?, ?)
     `).run(data.ingredient_a, data.ingredient_b, data.severity, data.description_ar, data.recommendation);
-
-    // Cache invalidation no longer needed as we use RAM cache
 
     logActivity(user.id, 'ADD_INTERACTION', `أضاف تفاعل: ${data.ingredient_a} + ${data.ingredient_b}`);
     return { success: true };

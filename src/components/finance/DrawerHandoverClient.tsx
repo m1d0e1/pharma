@@ -113,11 +113,11 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
       shiftId,
       ...form,
       receiverPasswordHash: form.receiverPassword,
-      autoOpenNewShift: true
+      autoOpenNewShift: false
     });
 
     if (res.success) {
-      toast.success(`تم تسليم الدرج وفتح الوردية الجديدة بنجاح (رصيد ${Number(res.startingCash ?? res.remainingCash ?? 0).toFixed(2)} ج.م)`);
+      toast.success(`تم تسليم النقدية مع بقاء الجلسة مفتوحة (المتبقي ${Number(res.remainingCash ?? 0).toFixed(2)} ج.م)`);
       if (onClose) {
         onClose();
       } else {
@@ -256,7 +256,7 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
                       onChange={(e) => setForm({...form, transferTargetType: e.target.value as any})}
                     >
                       <option value="treasury">الخزينة الرئيسية</option>
-                      <option value="next_shift">الوردية التالية (ترحيل بالدرج)</option>
+                      <option value="next_shift">درج المستخدم المستلم</option>
                       <option value="bank">حساب بنكي</option>
                     </select>
                   </div>

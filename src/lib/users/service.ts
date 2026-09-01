@@ -283,6 +283,13 @@ export async function updateUser(data: UpdateUser): Promise<any> {
  * @returns Success status
  */
 export function deleteUser(userId: string): boolean {
+  const openShift = get<{ id: string }>(
+    `SELECT id FROM shifts WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'`,
+    [userId]
+  );
+  if (openShift) {
+    throw new Error('لا يمكن حذف المستخدم لوجود وردية مفتوحة');
+  }
   const result = execute(`DELETE FROM users WHERE id = ?`, [userId]);
   return result.changes > 0;
 }
@@ -293,6 +300,13 @@ export function deleteUser(userId: string): boolean {
  * @returns Success status
  */
 export function deactivateUser(userId: string): boolean {
+  const openShift = get<{ id: string }>(
+    `SELECT id FROM shifts WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'`,
+    [userId]
+  );
+  if (openShift) {
+    throw new Error('لا يمكن تعطيل المستخدم لوجود وردية مفتوحة');
+  }
   const result = execute(
     `UPDATE users SET is_active = 0, updated_at = datetime('now') WHERE id = ?`,
     [userId]

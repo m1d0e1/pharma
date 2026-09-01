@@ -70,6 +70,22 @@ async function assertBarcodeAvailable(barcode: string | null, excludedDrugId?: n
   if (existing) {
     throw new Error('Barcode is already assigned to another drug');
   }
+
+  const inventoryOwner = excludedDrugId === undefined
+    ? await db.prepare(`
+        SELECT drug_id FROM inventory
+        WHERE barcode IS NOT NULL AND TRIM(barcode) = ? COLLATE NOCASE
+        LIMIT 1
+      `).get(barcode) as any
+    : await db.prepare(`
+        SELECT drug_id FROM inventory
+        WHERE drug_id != ? AND barcode IS NOT NULL AND TRIM(barcode) = ? COLLATE NOCASE
+        LIMIT 1
+      `).get(excludedDrugId, barcode) as any;
+
+  if (inventoryOwner) {
+    throw new Error('Barcode is already assigned to another drug');
+  }
 }
 
 
@@ -236,8 +252,9 @@ export async function updateMasterDrugAction(id: number, data: any) {
   try {
     const localUser = await getLocalSession();
     if (!localUser || !hasUserPermissionSync(localUser, 'can_manage_inventory')) return { success: false, error: 'غير مصرح' };
+    const current = await db.prepare('SELECT barcode, large_to_medium, medium_to_small FROM master_drugs WHERE id = ?').get(id) as any;
+    if (!current) return { success: false, error: 'الصنف غير موجود' };
     if (!hasUserPermissionSync(localUser, 'can_modify_unit_conversion')) {
-      const current = await db.prepare('SELECT large_to_medium, medium_to_small FROM master_drugs WHERE id = ?').get(id) as any;
       const changesLarge = data.large_to_medium !== undefined && Number(data.large_to_medium || 1) !== Number(current?.large_to_medium || 1);
       const changesSmall = data.medium_to_small !== undefined && Number(data.medium_to_small || 1) !== Number(current?.medium_to_small || 1);
       if (changesLarge || changesSmall) return { success: false, error: 'غير مصرح بتعديل معاملات التحويل' };
@@ -253,7 +270,8 @@ export async function updateMasterDrugAction(id: number, data: any) {
       return { success: false, error: 'سعر البيع غير صالح' };
     }
 
-    const barcode = normalizeBarcode(data.barcode);
+    const oldBarcode = normalizeBarcode(current.barcode);
+    const barcode = data.barcode === undefined ? oldBarcode : normalizeBarcode(data.barcode);
 
     const stmt = db.prepare(`
       UPDATE master_drugs SET
@@ -270,6 +288,14 @@ export async function updateMasterDrugAction(id: number, data: any) {
 
     const update = db.transaction(async () => {
       await assertBarcodeAvailable(barcode, id);
+      // ponytail: existing packages keep their old scannable code when the manufacturer changes it.
+      const inventoryBarcode = oldBarcode || barcode;
+      if (inventoryBarcode) {
+        await db.prepare(`
+          UPDATE inventory SET barcode = ?
+          WHERE drug_id = ? AND (barcode IS NULL OR TRIM(barcode) = '')
+        `).run(inventoryBarcode, id);
+      }
       await stmt.run(
       tradeName,
       tradeNameEn,
@@ -314,10 +340,9 @@ export async function updateMasterDrugAction(id: number, data: any) {
       await db.prepare(`
         UPDATE inventory
         SET local_selling_price = ?,
-            barcode = CASE WHEN (barcode IS NULL OR barcode = '') AND ? != '' THEN ? ELSE barcode END,
             updated_at = CURRENT_TIMESTAMP
         WHERE drug_id = ?
-      `).run(officialPrice, barcode || '', barcode || '', id);
+      `).run(officialPrice, id);
     });
     await update();
 

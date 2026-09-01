@@ -39,7 +39,7 @@ export default function ReorderAlerts() {
         return {
           drug_id: item.drug_id,
           trade_name: item.trade_name_en || item.trade_name || item.active_ingredient || `صنف #${item.drug_id}`,
-          current_stock: Number(item.quantity || 0),
+          current_stock: Number(item.current_stock ?? item.quantity ?? 0),
           reorder_point: Number(item.reorder_point || 10),
           deficit,
           avg_monthly_usage: Number(item.avg_monthly_usage || 0),
@@ -70,6 +70,13 @@ export default function ReorderAlerts() {
 
   useEffect(() => {
     loadReorderItems()
+
+    const handleInventoryRefresh = () => void loadReorderItems()
+    window.addEventListener('inventory-alerts-refresh', handleInventoryRefresh)
+
+    return () => {
+      window.removeEventListener('inventory-alerts-refresh', handleInventoryRefresh)
+    }
   }, [])
 
   if (isLoading) {

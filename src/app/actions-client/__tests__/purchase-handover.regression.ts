@@ -297,8 +297,9 @@ describe('purchase reports and drawer handover regressions', () => {
     expect(openedA.success).toBe(true);
     const shiftA = openedA.shiftId!;
     expect(await openShiftAction({ starting_cash_amount: 999 })).toMatchObject({
-      success: false,
-      error: expect.stringContaining('وردية مفتوحة'),
+      success: true,
+      shiftId: shiftA,
+      alreadyOpen: true,
     });
     expect((mockDb.prepare("SELECT COUNT(*) AS total FROM shifts WHERE user_id = 'admin' AND status = 'open'").get() as any).total)
       .toBe(1);
@@ -349,6 +350,7 @@ describe('purchase reports and drawer handover regressions', () => {
       receiverPasswordHash: 'password',
     })).toMatchObject({ success: true, difference: 0 });
 
+    mockSession = { id: 'receiver', role: 'admin', pharmacy_id: null };
     const openedB = await openShiftAction({ starting_cash_amount: 20 });
     expect(openedB.success).toBe(true);
     const shiftB = openedB.shiftId!;
@@ -411,10 +413,13 @@ describe('purchase reports and drawer handover regressions', () => {
       receiverUsername: 'receiver',
       receiverPasswordHash: 'password',
     })).toMatchObject({ success: true, difference: 0 });
-    expect(await getShiftCreditSalesAction()).toMatchObject({ success: true, data: [] });
+    expect(await getShiftCreditSalesAction()).toMatchObject({
+      success: true,
+      data: [expect.objectContaining({ id: saleB })],
+    });
   });
 
-  it('rejects completed checkout without creating a hidden shift', async () => {
+  it('auto-creates a permanent user shift before completed checkout', async () => {
     mockDb.prepare(`
       INSERT INTO inventory (id, drug_id, quantity, local_selling_price, cost_price, expiry_date)
       VALUES ('no-shift-stock', 9001, 2, 15, 10, '2099-12-31')
@@ -432,12 +437,12 @@ describe('purchase reports and drawer handover regressions', () => {
       status: 'completed',
     });
 
-    expect(checkout).toMatchObject({ success: false, error: expect.stringContaining('فتح وردية') });
-    expect((mockDb.prepare('SELECT COUNT(*) AS total FROM shifts').get() as any).total).toBe(0);
-    expect((mockDb.prepare('SELECT COUNT(*) AS total FROM sales_invoices').get() as any).total).toBe(0);
+    expect(checkout).toMatchObject({ success: true });
+    expect((mockDb.prepare('SELECT COUNT(*) AS total FROM shifts').get() as any).total).toBe(1);
+    expect((mockDb.prepare('SELECT COUNT(*) AS total FROM sales_invoices').get() as any).total).toBe(1);
   });
 
-  it('links cash movements to the open shift and closes it through one reconciled handover', async () => {
+  it('links cash movements to the user and keeps the reconciled session open after handover', async () => {
     mockDb.exec(`
       INSERT INTO users (id, username, password_hash, role, full_name)
       VALUES ('receiver', 'receiver', 'hash', 'admin', 'Receiver');
@@ -491,17 +496,19 @@ describe('purchase reports and drawer handover regressions', () => {
       receiverPasswordHash: 'password',
       notes: 'نهاية الوردية',
     });
-    expect(handover).toMatchObject({ success: true, difference: -10, remainingCash: 6, status: 'discrepancy' });
+    expect(handover).toMatchObject({ success: true, difference: -10, remainingCash: 6, status: 'open' });
     expect(mockDb.prepare('SELECT ending_cash, status FROM shifts WHERE id = ?').get('cash-shift'))
-      .toMatchObject({ ending_cash: 6, status: 'discrepancy' });
+      .toMatchObject({ ending_cash: 6, status: 'open' });
     expect((mockDb.prepare("SELECT COUNT(*) AS total FROM cash_movements WHERE shift_id = ? AND category = 'handover'").get('cash-shift') as any).total)
+      .toBe(1);
+    expect((mockDb.prepare("SELECT COUNT(*) AS total FROM cash_movements WHERE shift_id = ? AND category = 'cash_adjustment'").get('cash-shift') as any).total)
       .toBe(1);
     expect((mockDb.prepare("SELECT COUNT(*) AS total FROM daily_journals WHERE description LIKE 'تسليم درج:%'").get() as any).total)
       .toBe(0);
 
     const shifts = await getShiftsAction({ status: 'all' });
     expect(shifts.data?.find((shift: any) => shift.id === 'cash-shift')).toMatchObject({
-      expected_cash_amount: 16,
+      expected_cash_amount: 6,
       cash_difference: -10,
     });
     expect(await getShiftReportAction('cash-shift')).toMatchObject({
@@ -511,16 +518,16 @@ describe('purchase reports and drawer handover regressions', () => {
           cashSales: 50,
           cashReturns: 10,
           cashReceipts: 7,
-          cashDisbursements: 131,
+          cashDisbursements: 141,
           cashHandover: 130,
-          expectedCash: 16,
+          expectedCash: 6,
           actualCash: 6,
-          difference: -10,
+          difference: 0,
         },
       },
     });
     const shiftCount = (mockDb.prepare('SELECT COUNT(*) AS total FROM shifts').get() as any).total;
-    expect(await getCurrentShiftAction()).toMatchObject({ success: true, data: null, has_open_shift: false });
+    expect(await getCurrentShiftAction()).toMatchObject({ success: true, data: { id: 'cash-shift' }, has_open_shift: true });
     expect((mockDb.prepare('SELECT COUNT(*) AS total FROM shifts').get() as any).total).toBe(shiftCount);
 
     const afterClose = await createCashMovementAction({
@@ -529,7 +536,7 @@ describe('purchase reports and drawer handover regressions', () => {
       amount: 1,
       date: '2026-08-22',
     });
-    expect(afterClose).toMatchObject({ success: false, error: expect.stringContaining('فتح وردية') });
+    expect(afterClose).toMatchObject({ success: true });
   });
 
   it('links every user-triggered cash path to the collecting shift', async () => {
@@ -663,6 +670,76 @@ describe('purchase reports and drawer handover regressions', () => {
       expect.objectContaining({ batch_number: 'LOT-A', inventory_id: expect.any(String) }),
       expect.objectContaining({ batch_number: 'LOT-B', inventory_id: expect.any(String) }),
     ]);
+  });
+
+  it('keeps old and replacement manufacturer barcodes on one drug without changing stock', async () => {
+    mockDb.prepare(`
+      INSERT INTO inventory
+        (id, pharmacy_id, drug_id, quantity, local_selling_price, cost_price, expiry_date, barcode, batch_number, strips_per_box)
+      VALUES ('old-code-lot', 'local_default', 9001, 2, 15, 10, '2099-12-31', '6220000000001', 'OLD-CODE', 1)
+    `).run();
+
+    const purchase = await createPurchaseInvoiceAction({
+      supplier_id: 1,
+      invoice_number: 'NEW-CODE',
+      status: 'completed',
+      cart: [{
+        id: 9001, quantity: 3, expiry_date: '2099-12-31', cost_price: 11, selling_price: 16,
+        bonus_quantity: 0, tax_percent: 0, discount_percent: 0, strips_per_box: 1,
+        barcode: '6220000000002',
+      }],
+    });
+
+    expect(purchase.success).toBe(true);
+    expect(mockDb.prepare('SELECT barcode FROM master_drugs WHERE id = 9001').get()).toEqual({ barcode: '6220000000001' });
+    expect(mockDb.prepare(`
+      SELECT barcode, quantity FROM inventory WHERE drug_id = 9001 ORDER BY batch_number
+    `).all()).toEqual([
+      { barcode: '6220000000002', quantity: 3 },
+      { barcode: '6220000000001', quantity: 2 },
+    ]);
+
+    for (const barcode of ['6220000000001', '6220000000002']) {
+      expect(await barcodeLookupAction(barcode)).toMatchObject({
+        success: true,
+        data: { id: 9001, quantity: 5 },
+      });
+    }
+    expect(await searchDrugsAction('6220000000002')).toMatchObject({
+      success: true,
+      data: [expect.objectContaining({ id: 9001, total_stock: 5 })],
+    });
+
+    mockDb.prepare(`
+      INSERT INTO master_drugs (id, trade_name, trade_name_en, barcode, official_price)
+      VALUES (9002, 'Other Drug', 'Other Drug', 'OTHER-CODE', 10)
+    `).run();
+    const conflictingPurchase = await createPurchaseInvoiceAction({
+      supplier_id: 1,
+      invoice_number: 'CONFLICTING-CODE',
+      status: 'completed',
+      cart: [{
+        id: 9002, quantity: 1, expiry_date: '2099-12-31', cost_price: 5, selling_price: 8,
+        bonus_quantity: 0, tax_percent: 0, discount_percent: 0, strips_per_box: 1,
+        barcode: '6220000000002',
+      }],
+    });
+    expect(conflictingPurchase).toMatchObject({ success: false, error: expect.stringContaining('الباركود') });
+    expect(mockDb.prepare('SELECT COALESCE(SUM(quantity), 0) AS quantity FROM inventory WHERE drug_id = 9002').get())
+      .toEqual({ quantity: 0 });
+
+    // Legacy databases may already contain a collision; POS must stop instead of selling the wrong stock.
+    mockDb.prepare(`
+      INSERT INTO inventory
+        (id, pharmacy_id, drug_id, quantity, local_selling_price, expiry_date, barcode, batch_number)
+      VALUES ('legacy-collision', 'local_default', 9002, 1, 8, '2099-12-31', '6220000000002', 'LEGACY')
+    `).run();
+    expect(await barcodeLookupAction('6220000000002')).toMatchObject({
+      success: false,
+      error: expect.stringContaining('أكثر من صنف'),
+    });
+    expect(mockDb.prepare('SELECT SUM(quantity) AS quantity FROM inventory WHERE drug_id = 9001').get())
+      .toEqual({ quantity: 5 });
   });
 
   it('excludes expired and other-pharmacy lots from search, barcode lookup, and checkout', async () => {
@@ -848,7 +925,7 @@ describe('purchase reports and drawer handover regressions', () => {
       cash_difference: 5,
       receiver_id: 'user-receiver',
       ending_cash: 35,
-      status: 'closed',
+      status: 'open',
     });
 
     // 6. Test Owner / Admin access to audit columns
@@ -864,7 +941,7 @@ describe('purchase reports and drawer handover regressions', () => {
       transfer_target: 'treasury',
       cash_difference: 5,
       receiver_name: 'المستلم الصيدلي',
-      expected_cash_amount: 30,
+      expected_cash_amount: 35,
     });
 
     // 7. Test Non-privileged user (pharmacist/cashier) does NOT see audit columns
@@ -883,17 +960,18 @@ describe('purchase reports and drawer handover regressions', () => {
       expected_cash_amount: null,
     });
 
-    // 8. Test suggested starting cash for the next shift carries over the 35 remaining cash
+    // 8. The same permanent shift remains active with the reconciled 35 cash balance.
     const currentShiftInfo = await getCurrentShiftAction();
     expect(currentShiftInfo.success).toBe(true);
-    expect(currentShiftInfo.has_open_shift).toBe(false);
-    expect((currentShiftInfo as any).suggested_starting_cash).toBe(35);
+    expect(currentShiftInfo.has_open_shift).toBe(true);
+    expect(currentShiftInfo.data?.id).toBe(shiftId);
 
-    // 9. Open new shift using the carry-over balance
-    const nextShift = await openShiftAction({ starting_cash_amount: (currentShiftInfo as any).suggested_starting_cash });
+    // 9. An old open request is idempotent and cannot create a duplicate session.
+    const nextShift = await openShiftAction({ starting_cash_amount: 35 });
     expect(nextShift.success).toBe(true);
     const nextSaved = mockDb.prepare('SELECT starting_cash, status FROM shifts WHERE id = ?').get(nextShift.shiftId!) as any;
-    expect(nextSaved.starting_cash).toBe(35);
+    expect(nextShift.shiftId).toBe(shiftId);
+    expect(nextSaved.starting_cash).toBe(50);
   });
 
   it('accepts any cash value and next_shift target even if trial balance cash_difference account is unconfigured', async () => {
@@ -927,7 +1005,7 @@ describe('purchase reports and drawer handover regressions', () => {
     expect(handoverRes.success).toBe(true);
     expect(handoverRes.difference).toBe(-150);
     expect(handoverRes.remainingCash).toBe(50);
-    expect(handoverRes.status).toBe('discrepancy');
+    expect(handoverRes.status).toBe('open');
 
     const saved = mockDb.prepare('SELECT actual_cash, transfer_amount, transfer_target, cash_difference, receiver_id, ending_cash, status FROM shifts WHERE id = ?').get('shift-unconfigured-tb') as any;
     expect(saved).toMatchObject({
@@ -937,8 +1015,13 @@ describe('purchase reports and drawer handover regressions', () => {
       cash_difference: -150,
       receiver_id: 'user-next-cashier',
       ending_cash: 50,
-      status: 'discrepancy',
+      status: 'open',
     });
+    const receiverShift = mockDb.prepare("SELECT id, status FROM shifts WHERE user_id = 'user-next-cashier' AND status = 'open'").get() as any;
+    expect(receiverShift).toBeDefined();
+    expect((mockDb.prepare("SELECT amount FROM cash_movements WHERE shift_id = ? AND category = 'handover_received'").get(receiverShift.id) as any).amount).toBe(100);
+    expect((await getHandoverDetailsAction('shift-unconfigured-tb')).data?.expected_cash).toBe(50);
+    expect((await getHandoverDetailsAction(receiverShift.id)).data?.expected_cash).toBe(100);
   });
 
   it('fetches receipts belonging to a shift with item details, payment methods, and patient info', async () => {
@@ -978,7 +1061,7 @@ describe('purchase reports and drawer handover regressions', () => {
     });
   });
 
-  it('automatically opens a new shift when autoOpenNewShift is true in processHandoverAction', async () => {
+  it('keeps the same permanent shift even when an old client requests auto-open', async () => {
     mockDb.exec(`
       INSERT OR REPLACE INTO users (id, username, password_hash, full_name, role)
       VALUES ('cashier-auto-1', 'cauto1', '$2b$10$123456789012345678901u8v7w6x5y4z3a2b1c', 'Cashier Auto', 'pharmacist'),
@@ -1009,17 +1092,20 @@ describe('purchase reports and drawer handover regressions', () => {
     expect(handoverRes.success).toBe(true);
     expect(handoverRes.remainingCash).toBe(200);
     expect(handoverRes.startingCash).toBe(200);
-    expect(handoverRes.newShiftId).toBeTruthy();
+    expect(handoverRes.newShiftId).toBe('shift-auto-1');
 
-    // Check that current cashier immediately has a new open shift with 200 starting cash
+    // The original session stays open; its net expected cash is the 200 left behind.
     const currentShift = await getCurrentShiftAction();
     expect(currentShift.success).toBe(true);
     expect(currentShift.has_open_shift).toBe(true);
     expect(currentShift.data).toMatchObject({
-      starting_cash_amount: 200,
+      id: 'shift-auto-1',
+      starting_cash_amount: 500,
       status: 'open',
       user_id: 'cashier-auto-1',
     });
+    expect((await getHandoverDetailsAction('shift-auto-1')).data?.expected_cash).toBe(200);
+    expect((mockDb.prepare("SELECT COUNT(*) AS total FROM shifts WHERE user_id = 'cashier-auto-1'").get() as any).total).toBe(1);
   });
 });
 

@@ -477,7 +477,7 @@ async fn resolve_open_shift(
     requested_shift_id: Option<&str>,
 ) -> Result<Option<String>, String> {
     if let Some(shift_id) = requested_shift_id.filter(|id| !id.trim().is_empty()) {
-        return sqlx::query(
+        if let Some(row) = sqlx::query(
             "SELECT id FROM shifts WHERE id = ? AND CAST(user_id AS TEXT) = ? AND LOWER(COALESCE(status, '')) = 'open'",
         )
         .bind(shift_id)
@@ -485,21 +485,46 @@ async fn resolve_open_shift(
         .fetch_optional(&mut **tx)
         .await
         .map_err(|e| e.to_string())?
-        .map(|row| row.try_get("id").map_err(|e| e.to_string()))
-        .transpose()?
-        .ok_or_else(|| "Selected shift is not open for this user".to_string())
-        .map(Some);
+        {
+            return row
+                .try_get("id")
+                .map(Some)
+                .map_err(|e| e.to_string());
+        }
     }
 
-    sqlx::query(
-        "SELECT id FROM shifts WHERE CAST(user_id AS TEXT) = ? AND LOWER(COALESCE(status, '')) = 'open' ORDER BY start_time DESC LIMIT 1",
+    if let Some(row) = sqlx::query(
+        "SELECT id FROM shifts WHERE CAST(user_id AS TEXT) = ? AND LOWER(COALESCE(status, '')) = 'open' ORDER BY rowid DESC LIMIT 1",
     )
     .bind(user_id)
     .fetch_optional(&mut **tx)
     .await
     .map_err(|e| e.to_string())?
-    .map(|row| row.try_get("id").map_err(|e| e.to_string()))
-    .transpose()
+    {
+        return row
+            .try_get("id")
+            .map(Some)
+            .map_err(|e| e.to_string());
+    }
+
+    let shift_id = Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO shifts (id, user_id, status) SELECT ?, ?, 'open' WHERE NOT EXISTS (SELECT 1 FROM shifts WHERE CAST(user_id AS TEXT) = ? AND LOWER(COALESCE(status, '')) = 'open')",
+    )
+    .bind(&shift_id)
+    .bind(user_id)
+    .bind(user_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    sqlx::query_scalar::<_, String>(
+        "SELECT id FROM shifts WHERE CAST(user_id AS TEXT) = ? AND LOWER(COALESCE(status, '')) = 'open' ORDER BY rowid DESC LIMIT 1",
+    )
+    .bind(user_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| e.to_string())
 }
 
 async fn create_return_tx(
@@ -922,6 +947,7 @@ pub(crate) async fn save_purchase_invoice_tx(
     {
         return Err("Purchase pharmacy does not match the current user".into());
     }
+    let mut barcode_owners: HashMap<String, i64> = HashMap::new();
     for item in &payload.cart {
         if sqlx::query("SELECT 1 FROM master_drugs WHERE id = ?")
             .bind(item.id)
@@ -934,6 +960,40 @@ pub(crate) async fn save_purchase_invoice_tx(
                 "Drug {} no longer exists; remove it and add it again",
                 item.id
             ));
+        }
+        if let Some(barcode) = item
+            .barcode
+            .as_deref()
+            .map(str::trim)
+            .filter(|barcode| !barcode.is_empty())
+        {
+            let normalized = barcode.to_lowercase();
+            if barcode_owners
+                .insert(normalized, item.id)
+                .is_some_and(|owner| owner != item.id)
+            {
+                return Err("Barcode is already assigned to another drug".into());
+            }
+            let conflict = sqlx::query_scalar::<_, i64>(
+                r#"
+                SELECT id FROM master_drugs
+                WHERE id != ? AND barcode IS NOT NULL AND TRIM(barcode) = ? COLLATE NOCASE
+                UNION ALL
+                SELECT CAST(drug_id AS INTEGER) FROM inventory
+                WHERE drug_id != ? AND barcode IS NOT NULL AND TRIM(barcode) = ? COLLATE NOCASE
+                LIMIT 1
+                "#,
+            )
+            .bind(item.id)
+            .bind(barcode)
+            .bind(item.id)
+            .bind(barcode)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|e| e.to_string())?;
+            if conflict.is_some() {
+                return Err("Barcode is already assigned to another drug".into());
+            }
         }
     }
 
@@ -1029,12 +1089,6 @@ pub(crate) async fn save_purchase_invoice_tx(
         if let Some(ref bc) = item.barcode {
             if !bc.trim().is_empty() {
                 sqlx::query("UPDATE master_drugs SET barcode = ? WHERE id = ? AND (barcode IS NULL OR barcode = '')")
-                    .bind(bc)
-                    .bind(item.id)
-                    .execute(&mut **tx)
-                    .await
-                    .ok();
-                sqlx::query("UPDATE inventory SET barcode = ? WHERE drug_id = ? AND (barcode IS NULL OR barcode = '')")
                     .bind(bc)
                     .bind(item.id)
                     .execute(&mut **tx)
@@ -1492,31 +1546,12 @@ async fn process_checkout_tx(
         }
     }
 
-    let requested_shift_id = payload.shift_id.as_deref().filter(|s| !s.trim().is_empty());
-    let mut shift_id_to_use = if let Some(shift_id) = requested_shift_id {
-        sqlx::query_scalar::<_, String>(
-            "SELECT id FROM shifts WHERE id = ? AND CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'",
-        )
-        .bind(shift_id)
-        .bind(&payload.user_id)
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(|e| e.to_string())?
-    } else {
-        None
-    };
-    if shift_id_to_use.is_none() && !payload.user_id.trim().is_empty() {
-        shift_id_to_use = sqlx::query_scalar::<_, String>(
-            "SELECT id FROM shifts WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open' ORDER BY start_time DESC LIMIT 1",
-        )
-        .bind(&payload.user_id)
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(|e| e.to_string())?;
-    }
-    if payload.status != "draft" && shift_id_to_use.is_none() {
-        return Err("Open shift required before checkout".into());
-    }
+    let shift_id_to_use = resolve_open_shift(
+        tx,
+        &payload.user_id,
+        payload.shift_id.as_deref().filter(|s| !s.trim().is_empty()),
+    )
+    .await?;
 
     sqlx::query(
         r#"
@@ -2899,14 +2934,7 @@ async fn apply_purchase_accounting(
             .await
             .map_err(|e| e.to_string())?;
         insert_journal_entry(tx, &journal_id, cash, "credit", total_amount).await?;
-        if let Some(open_shift) =
-            sqlx::query("SELECT id FROM shifts WHERE user_id = ? AND status = 'open'")
-                .bind(user_id)
-                .fetch_optional(&mut **tx)
-                .await
-                .map_err(|e| e.to_string())?
-        {
-            let shift_id: String = open_shift.try_get("id").map_err(|e| e.to_string())?;
+        if let Some(shift_id) = resolve_open_shift(tx, user_id, None).await? {
             sqlx::query("INSERT INTO cash_movements (id, user_id, shift_id, type, amount, category, notes, date) VALUES (?, ?, ?, 'disbursement', ?, 'purchases', ?, DATE('now', 'localtime'))")
                 .bind(uuid::Uuid::new_v4().to_string())
                 .bind(user_id)
@@ -4837,6 +4865,27 @@ mod tests {
             .unwrap(),
             1
         );
+        sqlx::query(
+            "INSERT INTO master_drugs (id, trade_name, trade_name_en, barcode, official_price) VALUES (90002, 'OTHER DRUG', 'OTHER DRUG', 'OTHER-CODE', 10)",
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        let mut conflicting_line = fresh_purchase_line("2035-01-01", 1.0, 0.0, None);
+        conflicting_line.id = 90_002;
+        let conflicting = fresh_purchase(
+            "fresh-barcode-conflict",
+            "FRESH-BARCODE-CONFLICT",
+            "credit",
+            "completed",
+            vec![conflicting_line],
+        );
+        let mut tx = conn.begin().await.unwrap();
+        assert!(save_purchase_invoice_tx(&mut tx, conflicting)
+            .await
+            .unwrap_err()
+            .contains("Barcode"));
+        tx.rollback().await.unwrap();
         assert!(sqlx::query("PRAGMA foreign_key_check")
             .fetch_all(&mut conn)
             .await
@@ -5553,11 +5602,18 @@ mod tests {
         };
 
         let mut tx = conn.begin().await.unwrap();
-        let shift_error = process_checkout_tx(&mut tx, cash_payload(Some("full")), 69.0)
+        let auto_shift_sale = process_checkout_tx(&mut tx, cash_payload(Some("full")), 69.0)
             .await
-            .unwrap_err();
+            .unwrap();
+        assert_eq!(auto_shift_sale.total_amount, 69.0);
+        let auto_shift_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM shifts WHERE user_id = 'admin' AND status = 'open'",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+        assert_eq!(auto_shift_count, 1);
         tx.rollback().await.unwrap();
-        assert!(shift_error.contains("Open shift required"));
 
         sqlx::query("INSERT INTO shifts (id, user_id, start_time, status) VALUES ('shift-1', 'admin', CURRENT_TIMESTAMP, 'open')")
             .execute(&mut conn)

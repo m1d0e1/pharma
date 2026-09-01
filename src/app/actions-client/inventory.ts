@@ -603,6 +603,7 @@ export async function getLowStockAction(threshold?: number) {
       SELECT 
         m.id,
         m.id AS drug_id,
+        COALESCE(ds.current_stock, 0) AS current_stock,
         COALESCE(ds.current_stock, 0) AS quantity,
         COALESCE(ds.local_selling_price, m.official_price, 0) AS local_selling_price,
         ds.nearest_expiry AS expiry_date,

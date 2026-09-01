@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import ReorderAlerts from '@/components/dashboard/ReorderAlerts';
 import { getLowStockAction } from '@/app/actions-client/inventory';
 
@@ -29,5 +29,32 @@ describe('reorder alert inventory link', () => {
     const links = await screen.findAllByTitle('عرض في المخزون');
     expect(links[0]).toHaveAttribute('href', '/inventory?drugId=417&search=Duplicate%20drug');
     expect(links[1]).toHaveAttribute('href', '/inventory?drugId=429&search=Duplicate%20drug');
+  });
+
+  it('uses the canonical stock field and refreshes after inventory changes', async () => {
+    (getLowStockAction as jest.Mock)
+      .mockResolvedValueOnce({
+        success: true,
+        data: [
+          { drug_id: 1556, trade_name_en: 'ARTHINEUR 10 CAPS.', current_stock: 0, reorder_point: 10, deficit: 10 },
+        ],
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        data: [
+          { drug_id: 1556, trade_name_en: 'ARTHINEUR 10 CAPS.', current_stock: 2, quantity: 0, reorder_point: 10, deficit: 8 },
+        ],
+      });
+
+    render(<ReorderAlerts />);
+
+    expect(await screen.findByText('المخزون: 0')).toBeInTheDocument();
+
+    await act(async () => {
+      window.dispatchEvent(new Event('inventory-alerts-refresh'));
+    });
+
+    expect(await screen.findByText('المخزون: 2')).toBeInTheDocument();
+    expect(getLowStockAction).toHaveBeenCalledTimes(2);
   });
 });

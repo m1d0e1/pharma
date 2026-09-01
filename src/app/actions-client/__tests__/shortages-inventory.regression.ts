@@ -137,6 +137,7 @@ describe('inventory-linked reorder and shortage notebook regression', () => {
     // it was the phantom zero-stock entry the rebuy-alert fix targets.
     expect(lowStock.data?.map((item: any) => item.drug_id)).toEqual([9101]);
     expect(lowStock.data?.find((item: any) => item.drug_id === 9101)).toMatchObject({
+      current_stock: 2,
       quantity: 2,
       reorder_point: 5,
       deficit: 3,

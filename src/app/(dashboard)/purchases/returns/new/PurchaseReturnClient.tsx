@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { getSuppliersAction, createPurchaseReturnAction, getPurchasesReportsAction, getPurchaseInvoiceDetailsAction } from '@/app/actions-client/purchases';
+import { getSuppliersAction, createPurchaseReturnAction, getPurchasesReportsAction, getPurchaseInvoiceDetailsAction, searchPurchaseInvoicesForReturnAction } from '@/app/actions-client/purchases';
 import { Search, Save, ArrowRight, FileText } from 'lucide-react';
 import Link from 'next/link';
 import { toast } from 'react-hot-toast';
@@ -39,6 +39,7 @@ export default function PurchaseReturnClient() {
   const listRef = React.useRef<HTMLDivElement>(null);
   const [suppliers, setSuppliers] = useState<any[]>([]);
   const [selectedSupplierId, setSelectedSupplierId] = useState<string>('');
+  const [searchTerm, setSearchTerm] = useState<string>('');
   
   // Invoice state
   const [invoices, setInvoices] = useState<any[]>([]);
@@ -59,26 +60,35 @@ export default function PurchaseReturnClient() {
     });
   }, []);
 
-  // Fetch invoices when supplier changes
+  // Fetch invoices by barcode/term or when supplier changes
   useEffect(() => {
-    if (!selectedSupplierId) {
-      setInvoices([]);
-      setSelectedIndex(-1);
-      setItems([]);
-      return;
-    }
-    const fetchInvoices = async () => {
-      setIsLoadingInvoices(true);
-      const res = await getPurchasesReportsAction({ supplierId: selectedSupplierId, status: 'completed' });
-      setIsLoadingInvoices(false);
-      if (res.success && res.data) {
-        const list = res.data.filter((invoice: any) => invoice.status === 'completed');
-        setInvoices(list);
-        setSelectedIndex(list.length > 0 ? 0 : -1);
+    async function fetchInvoices() {
+      if (searchTerm.trim()) {
+        setIsLoadingInvoices(true);
+        const res = await searchPurchaseInvoicesForReturnAction(searchTerm);
+        setIsLoadingInvoices(false);
+        if (res.success && res.data) {
+          setInvoices(res.data);
+          setSelectedIndex(res.data.length > 0 ? 0 : -1);
+        }
+      } else if (selectedSupplierId) {
+        setIsLoadingInvoices(true);
+        const res = await getPurchasesReportsAction({ supplierId: selectedSupplierId, status: 'completed' });
+        setIsLoadingInvoices(false);
+        if (res.success && res.data) {
+          const list = res.data.filter((invoice: any) => invoice.status === 'completed');
+          setInvoices(list);
+          setSelectedIndex(list.length > 0 ? 0 : -1);
+        }
+      } else {
+        setInvoices([]);
+        setSelectedIndex(-1);
+        setItems([]);
       }
-    };
-    fetchInvoices();
-  }, [selectedSupplierId]);
+    }
+    const timer = setTimeout(fetchInvoices, 250);
+    return () => clearTimeout(timer);
+  }, [selectedSupplierId, searchTerm]);
 
   // Fetch items when selectedIndex changes
   useEffect(() => {
@@ -132,6 +142,10 @@ export default function PurchaseReturnClient() {
     if (!invId) {
       setItems([]);
       return;
+    }
+    const currentInv = invoices.find(inv => inv.id === invId);
+    if (currentInv && currentInv.supplier_id && String(currentInv.supplier_id) !== selectedSupplierId) {
+      setSelectedSupplierId(String(currentInv.supplier_id));
     }
     setItemSearch('');
     
@@ -263,18 +277,45 @@ export default function PurchaseReturnClient() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left column: Supplier Selection & Invoices List */}
         <div className="lg:col-span-1 space-y-4">
-          <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-4">
-            <label className="block text-xs font-bold text-slate-500 mb-2">المورد</label>
-            <select
-              className="w-full p-2.5 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold text-slate-900 dark:text-white"
-              value={selectedSupplierId}
-              onChange={(e) => setSelectedSupplierId(e.target.value)}
-            >
-              <option value="">-- اختر المورد --</option>
-              {suppliers.map(s => (
-                <option key={s.id} value={s.id}>{s.name_ar}</option>
-              ))}
-            </select>
+          <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-4 space-y-3">
+            <div>
+              <label className="block text-xs font-bold text-slate-500 mb-1.5">البحث بالباركود أو اسم الصنف أو رقم الفاتورة (جميع فواتير المشتريات)</label>
+              <div className="relative">
+                <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                <input
+                  type="text"
+                  autoFocus
+                  placeholder="امسح الباركود، أو اكتب اسم الدواء، أو رقم الفاتورة..."
+                  className="w-full pl-4 pr-9 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold text-xs text-slate-900 dark:text-white"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      if (invoices.length > 0) {
+                        setSelectedIndex(0);
+                      }
+                    }
+                  }}
+                />
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-slate-500 mb-1.5">أو اختر المورد</label>
+              <select
+                className="w-full p-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold text-slate-900 dark:text-white text-xs"
+                value={selectedSupplierId}
+                onChange={(e) => {
+                  setSelectedSupplierId(e.target.value);
+                  setSearchTerm('');
+                }}
+              >
+                <option value="">-- كل الموردين --</option>
+                {suppliers.map(s => (
+                  <option key={s.id} value={s.id}>{s.name_ar}</option>
+                ))}
+              </select>
+            </div>
           </div>
 
           <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-4">
@@ -286,10 +327,10 @@ export default function PurchaseReturnClient() {
             </h2>
 
             <div ref={listRef} className="space-y-2 max-h-[500px] overflow-y-auto pr-1">
-              {!selectedSupplierId ? (
-                <div className="py-12 text-center text-slate-400 font-bold text-xs">يرجى اختيار مورد أولاً</div>
+              {!selectedSupplierId && !searchTerm.trim() ? (
+                <div className="py-12 text-center text-slate-400 font-bold text-xs">امسح الباركود أو اختر المورد للبحث</div>
               ) : invoices.length === 0 ? (
-                <div className="py-12 text-center text-slate-400 font-bold text-xs">لا توجد فواتير مشتريات لهذا المورد</div>
+                <div className="py-12 text-center text-slate-400 font-bold text-xs">لا توجد فواتير مشتريات مطابقة</div>
               ) : (
                 invoices.map((inv, idx) => (
                   <button
@@ -313,7 +354,10 @@ export default function PurchaseReturnClient() {
                         {inv.payment_method === 'cash' ? 'نقدي' : 'آجل'}
                       </span>
                     </div>
-                    <div className="text-[9px] text-slate-400 font-bold mt-1">المستلم: {inv.staff_name || 'غير محدد'}</div>
+                    {inv.supplier_name && (
+                      <div className="text-[10px] text-purple-600 dark:text-purple-400 font-bold mt-1">🏢 المورد: {inv.supplier_name}</div>
+                    )}
+                    <div className="text-[9px] text-slate-400 font-bold">المستلم: {inv.staff_name || 'غير محدد'}</div>
                   </button>
                 ))
               )}

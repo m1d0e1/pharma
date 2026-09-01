@@ -3,6 +3,7 @@ import LogoutModal from '@/components/auth/LogoutModal';
 import DrawerHandoverClient from '@/components/finance/DrawerHandoverClient';
 import PosDrawerHandoverModal from '@/components/pos/PosDrawerHandoverModal';
 import { getCurrentShiftAction } from '@/app/actions-client/shifts';
+import { logoutLocalAction } from '@/app/actions-client/auth';
 import {
   getHandoverDetailsAction,
   getOpenShiftHandoverAction,
@@ -59,14 +60,15 @@ describe('today shift UI wiring', () => {
     (processHandoverAction as jest.Mock).mockReset().mockResolvedValue({ success: true });
   });
 
-  it('routes logout with an open shift through the unified handover', async () => {
+  it('allows immediate logout while the permanent cash session remains open', async () => {
     const onClose = jest.fn();
     render(<LogoutModal isOpen onClose={onClose} />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'الانتقال إلى تسليم الوردية' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'تأكيد تسجيل الخروج' }));
 
-    expect(onClose).toHaveBeenCalledTimes(1);
-    expect(mockPush).toHaveBeenCalledWith('/finance/handover');
+    await waitFor(() => expect(logoutLocalAction).toHaveBeenCalledTimes(1));
+    expect(getCurrentShiftAction).not.toHaveBeenCalled();
+    expect(mockPush).not.toHaveBeenCalled();
   });
 
   it('allows a zero-cash shift to close with a zero transfer', async () => {

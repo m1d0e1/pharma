@@ -51,6 +51,65 @@ it('warns about an open shift and reconciles it before deactivating the user', a
   expect(screen.queryByRole('heading', { name: 'لدى الموظف وردية مفتوحة' })).not.toBeInTheDocument();
 });
 
+it('validates required authorizer password and handles cancellation', async () => {
+  jest.spyOn(window, 'confirm').mockReturnValue(true);
+  const onDeleteUser = jest.fn().mockResolvedValue({
+    success: false,
+    code: 'OPEN_SHIFT',
+    error: 'open shift',
+    openShift: { id: 'shift-99', start_time: '2026-08-31T09:00:00Z', expected_cash: 200 },
+  });
+  const onCloseShiftAndDelete = jest.fn();
+  const user = userEvent.setup();
+
+  render(
+    <StaffManagementClient
+      users={[{ id: 'user-2', username: 'pharmacist_2', full_name: 'Pharmacist Two', role: 'pharmacist', permissions: '{}' }]}
+      jobs={[]}
+      onUpdatePermissions={jest.fn()}
+      onAddUser={jest.fn()}
+      onDeleteUser={onDeleteUser}
+      onCloseShiftAndDelete={onCloseShiftAndDelete}
+      onUpdateUser={jest.fn()}
+      onResetPassword={jest.fn()}
+    />,
+  );
+
+  await user.click(screen.getByTitle('حذف الموظف'));
+  expect(await screen.findByRole('heading', { name: 'لدى الموظف وردية مفتوحة' })).toBeInTheDocument();
+
+  // Try clicking without entering authorizer password
+  await user.click(screen.getByRole('button', { name: 'إغلاق الوردية وتعطيل الحساب' }));
+  expect(onCloseShiftAndDelete).not.toHaveBeenCalled();
+
+  // Cancel modal
+  await user.click(screen.getByRole('button', { name: 'إلغاء' }));
+  expect(screen.queryByRole('heading', { name: 'لدى الموظف وردية مفتوحة' })).not.toBeInTheDocument();
+});
+
+it('deletes user without open shift directly', async () => {
+  jest.spyOn(window, 'confirm').mockReturnValue(true);
+  const onDeleteUser = jest.fn().mockResolvedValue({ success: true });
+  const user = userEvent.setup();
+
+  render(
+    <StaffManagementClient
+      users={[{ id: 'user-3', username: 'clean_user', full_name: 'Clean User', role: 'pharmacist', permissions: '{}' }]}
+      jobs={[]}
+      onUpdatePermissions={jest.fn()}
+      onAddUser={jest.fn()}
+      onDeleteUser={onDeleteUser}
+      onCloseShiftAndDelete={jest.fn()}
+      onUpdateUser={jest.fn()}
+      onResetPassword={jest.fn()}
+    />,
+  );
+
+  await user.click(screen.getByTitle('حذف الموظف'));
+  await waitFor(() => expect(onDeleteUser).toHaveBeenCalledWith('user-3'));
+  expect(screen.queryByRole('heading', { name: 'لدى الموظف وردية مفتوحة' })).not.toBeInTheDocument();
+});
+
 it('exposes a separate permission for discounting each sale item', async () => {
   const user = userEvent.setup();
   render(

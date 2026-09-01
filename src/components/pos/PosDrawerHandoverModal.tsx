@@ -192,11 +192,11 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
       receiverUsername: form.receiverUsername,
       receiverPasswordHash: form.receiverPassword,
       notes: form.notes,
-      autoOpenNewShift: true
+      autoOpenNewShift: false
     });
 
     if (res.success) {
-      toast.success(`تم تسليم الدرج وفتح الوردية الجديدة بنجاح (رصيد ${Number(res.startingCash ?? res.remainingCash ?? 0).toFixed(2)} ج.م)`);
+      toast.success(`تم تسليم النقدية مع بقاء الجلسة مفتوحة (المتبقي ${Number(res.remainingCash ?? 0).toFixed(2)} ج.م)`);
       onClose();
     } else {
       toast.error(res.error || 'فشل تسليم الدرج');
@@ -347,7 +347,7 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
                       className="w-1/2 px-2 py-1.5 bg-white dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded font-bold text-xs text-slate-900 dark:text-white"
                     >
                       <option value="treasury">الخزينة الرئيسية</option>
-                      <option value="next_shift">الوردية التالية (ترحيل بالدرج)</option>
+                      <option value="next_shift">درج المستخدم المستلم</option>
                       {banks.map(b => (
                         <option key={b.id} value={b.id}>بنك: {b.name_ar}</option>
                       ))}
@@ -370,7 +370,7 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
             {/* Section 3: المستلم / مستخدم الوردية التالية */}
             <div className="border border-slate-400 dark:border-slate-700 rounded-xl p-4 bg-slate-100/80 dark:bg-slate-800/60 relative pt-3">
               <span className="absolute -top-3 right-4 px-2 bg-slate-200 dark:bg-slate-900 font-bold text-xs text-slate-700 dark:text-slate-300">
-                المستلم / مستخدم الوردية التالية
+                المستلم
               </span>
 
               <div className="space-y-2 text-xs font-bold">

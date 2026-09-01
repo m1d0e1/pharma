@@ -1,5 +1,6 @@
 
 import { dbSelect, dbExecute, dbGet, dbTransaction, generateId } from '@/lib/db/tauri';
+import { ensurePermanentShiftForUser } from './shifts';
 const logActivity = async (userId: string, action: string, details: string) => {
   try {
     await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [userId, action, details]);
@@ -143,13 +144,17 @@ export async function searchDrugsAction(searchTerm: string, limit = 20, searchBy
            AND (trade_name IS NULL OR trade_name != 'SECURE')
            AND (trade_name_en IS NULL OR trade_name_en != 'SECURE')`
       : `SELECT * FROM master_drugs 
-         WHERE (trade_name LIKE ? OR trade_name_en LIKE ? OR barcode = ?)
+         WHERE (trade_name LIKE ? OR trade_name_en LIKE ? OR barcode = ? OR EXISTS (
+           SELECT 1 FROM inventory barcode_lot
+           WHERE barcode_lot.drug_id = master_drugs.id
+             AND barcode_lot.barcode = ? COLLATE NOCASE
+         ))
            AND (trade_name IS NULL OR trade_name != 'SECURE')
            AND (trade_name_en IS NULL OR trade_name_en != 'SECURE')`;
 
     const dbParams = searchByActiveIngredient 
       ? [likePattern, likePattern] 
-      : [likePattern, likePattern, searchLower];
+      : [likePattern, likePattern, searchLower, searchLower];
 
     const dbMatched = await db.prepare(dbQuery).all(...dbParams) as any[];
 
@@ -316,11 +321,28 @@ export async function barcodeLookupAction(barcode: string) {
     const pharmacyId = localUser?.pharmacy_id || 'local_default';
     if (!canUsePos(localUser)) return { success: false, error: 'غير مصرح' };
 
-    if (!barcode) {
+    const normalizedBarcode = String(barcode || '').trim();
+    if (!normalizedBarcode) {
       return { success: false, error: 'الباركود مطلوب' };
     }
 
     const today = format(new Date(), 'yyyy-MM-dd');
+    const matchingDrugs = await db.prepare(`
+      SELECT DISTINCT md.id
+      FROM master_drugs md
+      INNER JOIN inventory i ON md.id = i.drug_id
+      WHERE (i.barcode = ? COLLATE NOCASE OR md.barcode = ? COLLATE NOCASE)
+        AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
+        AND i.quantity > 0
+        AND (i.expiry_date IS NULL OR i.expiry_date >= ?)
+      LIMIT 2
+    `).all(normalizedBarcode, normalizedBarcode, pharmacyId, pharmacyId, today) as any[];
+
+    const matchingDrugIds = new Set(matchingDrugs.map(item => item.id).filter(id => id !== null && id !== undefined));
+    if (matchingDrugIds.size > 1) {
+      return { success: false, error: 'الباركود مرتبط بأكثر من صنف؛ يرجى تصحيحه من إدارة الأصناف' };
+    }
+
     const drug = await db.prepare(`
       SELECT
         md.id,
@@ -344,13 +366,13 @@ export async function barcodeLookupAction(barcode: string) {
         i.id as inventory_id
       FROM master_drugs md
       INNER JOIN inventory i ON md.id = i.drug_id
-      WHERE (i.barcode = ? OR md.barcode = ?)
+      WHERE (i.barcode = ? COLLATE NOCASE OR md.barcode = ? COLLATE NOCASE)
         AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
         AND i.quantity > 0
         AND (i.expiry_date IS NULL OR i.expiry_date >= ?)
       ORDER BY CASE WHEN i.expiry_date IS NULL THEN 1 ELSE 0 END, i.expiry_date ASC, i.created_at ASC
       LIMIT 1
-    `).get(barcode, barcode, pharmacyId, pharmacyId, today) as any;
+    `).get(normalizedBarcode, normalizedBarcode, pharmacyId, pharmacyId, today) as any;
 
     if (!drug) {
       return { success: true, data: null };
@@ -511,20 +533,14 @@ export async function processCheckoutAction(data: any) {
       }
     }
     const requestedShiftId = validatedData.shift_id ? String(validatedData.shift_id) : null;
-    const openShift = requestedShiftId
+    const requestedShift = requestedShiftId
       ? await db.prepare(`
           SELECT id FROM shifts
           WHERE id = ? AND CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
         `).get(requestedShiftId, userId) as any
-      : await db.prepare(`
-          SELECT id FROM shifts
-          WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
-          ORDER BY start_time DESC LIMIT 1
-        `).get(userId) as any;
-    const shiftId = openShift?.id ? String(openShift.id) : null;
-    if (validatedData.status === 'completed' && !shiftId) {
-      return { success: false, error: 'يجب فتح وردية قبل إتمام البيع' };
-    }
+      : null;
+    const permanentShift = requestedShift || await ensurePermanentShiftForUser(userId);
+    const shiftId = permanentShift?.id ? String(permanentShift.id) : null;
 
     if (isTauri) {
       const { invoke } = await import('@tauri-apps/api/core');

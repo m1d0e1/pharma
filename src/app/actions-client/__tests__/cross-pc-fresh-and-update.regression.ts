@@ -45,6 +45,7 @@ jest.unmock('@/app/actions-client/sales');
 jest.unmock('@/app/actions-client/handover');
 jest.unmock('@/app/actions-client/shifts');
 jest.unmock('@/app/actions-client/returns');
+jest.unmock('@/app/actions-client/finance');
 
 import { normalizeDatabaseTimestamps } from '@/lib/db/tauri';
 import {
@@ -62,6 +63,19 @@ import { processCheckoutAction } from '@/app/actions-client/sales';
 import { openShiftAction, getCurrentShiftAction } from '@/app/actions-client/shifts';
 import { processHandoverAction } from '@/app/actions-client/handover';
 import { createReturnAction } from '@/app/actions-client/returns';
+import {
+  addBankAction,
+  getBanksAction,
+  addCardAction,
+  getCardsAction,
+  addPointOfSaleAction,
+  getPointsOfSaleAction,
+  addPaperAction,
+  getPapersAction,
+  updatePaperStatusAction,
+  createManualJournalAction,
+  getJournalsAction,
+} from '@/app/actions-client/finance';
 
 function applyAllMigrations(db: Database.Database) {
   const files = [
@@ -139,18 +153,18 @@ function seedBaselineEntities(db: Database.Database) {
       ('cash', 'عميل نقدي', 0),
       ('patient-1', 'أحمد محمود', 500);
 
-    INSERT OR IGNORE INTO accounts (code, name_ar, type, balance)
+    INSERT OR IGNORE INTO accounts (id, code, name_ar, type, balance, is_group)
     VALUES
-      ('1.1.1', 'الصندوق (الخزينة النقدية)', 'asset', 0),
-      ('1.1.2', 'البنك', 'asset', 0),
-      ('1.1.3', 'الخزينة الرئيسية (العهد)', 'asset', 0),
-      ('1.2.1', 'المخزون', 'asset', 0),
-      ('2.1.1', 'الموردين', 'liability', 0),
-      ('4.1.1', 'المبيعات', 'revenue', 0),
-      ('4.1.2', 'مردودات المبيعات', 'revenue', 0),
-      ('5.1.1', 'تكلفة البضاعة المباعة', 'expense', 0),
-      ('5.3.1', 'عجز النقدية', 'expense', 0),
-      ('4.3.1', 'زيادة النقدية', 'revenue', 0);
+      (1, '1.1.1', 'الصندوق (الخزينة النقدية)', 'asset', 0, 0),
+      (2, '1.1.2', 'البنك', 'asset', 0, 0),
+      (3, '1.1.3', 'الخزينة الرئيسية (العهد)', 'asset', 0, 0),
+      (4, '1.2.1', 'المخزون', 'asset', 0, 0),
+      (5, '2.1.1', 'الموردين', 'liability', 0, 0),
+      (6, '4.1.1', 'المبيعات', 'revenue', 0, 0),
+      (7, '4.1.2', 'مردودات المبيعات', 'revenue', 0, 0),
+      (8, '5.1.1', 'تكلفة البضاعة المباعة', 'expense', 0, 0),
+      (9, '5.3.1', 'عجز النقدية', 'expense', 0, 0),
+      (10, '4.3.1', 'زيادة النقدية', 'revenue', 0, 0);
 
     INSERT OR IGNORE INTO banks (id, name_ar, name_en, account_number, current_balance)
     VALUES (1, 'بنك التجاري الدولي', 'CIB Bank', '123456', 5000);
@@ -274,7 +288,7 @@ describe('Cross-computer consistency across fresh install and update', () => {
     const stockAfterReturn = mockDb.prepare('SELECT quantity FROM inventory WHERE drug_id = 5001').get() as any;
     expect(stockAfterReturn.quantity).toBe(19);
 
-    // 8. Close Shift with Handover
+    // 8. Handover keeps the permanent user session open.
     const handoverRes = await processHandoverAction({
       shiftId: shift!.id,
       actualCash: 140, // 100 starting + 80 sale - 40 refund = 140 expected.
@@ -288,10 +302,73 @@ describe('Cross-computer consistency across fresh install and update', () => {
     expect(handoverRes.difference).toBe(0);
     expect(handoverRes.remainingCash).toBe(40);
 
-    const closedShift = mockDb.prepare('SELECT * FROM shifts WHERE id = ?').get(shift!.id) as any;
-    expect(closedShift.status).toBe('closed');
-    expect(closedShift.actual_cash).toBe(140);
-    expect(closedShift.cash_difference).toBe(0);
+    const permanentShift = mockDb.prepare('SELECT * FROM shifts WHERE id = ?').get(shift!.id) as any;
+    expect(permanentShift.status).toBe('open');
+    expect(permanentShift.actual_cash).toBe(140);
+    expect(permanentShift.cash_difference).toBe(0);
+
+    // 9. Financial Module Full Dynamic Operations on Fresh Install
+    const addBankRes = await addBankAction({
+      name_ar: 'بنك مصر',
+      name_en: 'Banque Misr',
+      account_number: '987654321',
+      branch: 'الفرع الرئيسي',
+      current_balance: 10000,
+    });
+    expect(addBankRes.success).toBe(true);
+    const banks = (await getBanksAction()).data || [];
+    expect(banks.some((b: any) => b.name_ar === 'بنك مصر')).toBe(true);
+
+    const addCardRes = await addCardAction({
+      name_ar: 'ماكينة فوري كاشير 1',
+      bank_id: Number(addBankRes.id),
+      commission_pct: 1.5,
+      current_balance: 0,
+    });
+    expect(addCardRes.success).toBe(true);
+    const cards = (await getCardsAction()).data || [];
+    expect(cards.some((c: any) => c.name_ar === 'ماكينة فوري كاشير 1')).toBe(true);
+
+    const addPosRes = await addPointOfSaleAction({
+      name_ar: 'كاشير الصالة 1',
+      name_en: 'POS-01',
+      location: 'الصالة الرئيسية',
+      computer_name: 'PC-01',
+    });
+    expect(addPosRes.success).toBe(true);
+    const posList = (await getPointsOfSaleAction()).data || [];
+    expect(posList.some((p: any) => p.name_ar === 'كاشير الصالة 1')).toBe(true);
+
+    const addPaperRes = await addPaperAction({
+      type: 'check',
+      direction: 'in',
+      paper_number: 'CHK-9988',
+      bank_id: Number(addBankRes.id),
+      amount: 1500,
+      due_date: '2026-09-15',
+      target_name: 'صيدلية الأمل',
+    });
+    expect(addPaperRes.success).toBe(true);
+    const paperId = addPaperRes.id!;
+    const papers = (await getPapersAction()).data || [];
+    expect(papers.some((p: any) => p.id === paperId)).toBe(true);
+
+    const cashPaperRes = await updatePaperStatusAction(paperId, 'cashed', '2026-09-01');
+    expect(cashPaperRes.success).toBe(true);
+    const cashedPaper = mockDb.prepare('SELECT status FROM commercial_papers WHERE id = ?').get(paperId) as any;
+    expect(cashedPaper.status).toBe('cashed');
+
+    const journalRes = await createManualJournalAction({
+      date: '2026-09-01',
+      description: 'تسوية نقدية يدوية',
+      entries: [
+        { account_id: 1, type: 'debit', amount: 500, notes: 'زيادة نقدية' },
+        { account_id: 10, type: 'credit', amount: 500, notes: 'إيراد تسوية' },
+      ],
+    });
+    expect(journalRes.success).toBe(true);
+    const journals = (await getJournalsAction()).data || [];
+    expect(journals.some((j: any) => j.description === 'تسوية نقدية يدوية')).toBe(true);
   });
 
   it('behaves identically on an UPDATE / UPGRADE installation', async () => {
@@ -376,6 +453,69 @@ describe('Cross-computer consistency across fresh install and update', () => {
     expect(handoverRes.success).toBe(true);
     expect(handoverRes.difference).toBe(0);
     expect(handoverRes.remainingCash).toBe(40);
+
+    // 8. Financial Module Full Dynamic Operations on Update Install
+    const addBankRes = await addBankAction({
+      name_ar: 'بنك مصر (تحديث)',
+      name_en: 'Banque Misr Updated',
+      account_number: '11223344',
+      branch: 'فرع الدقي',
+      current_balance: 7500,
+    });
+    expect(addBankRes.success).toBe(true);
+    const banks = (await getBanksAction()).data || [];
+    expect(banks.some((b: any) => b.name_ar === 'بنك مصر (تحديث)')).toBe(true);
+
+    const addCardRes = await addCardAction({
+      name_ar: 'ماكينة بنك مصر كاشير 2',
+      bank_id: Number(addBankRes.id),
+      commission_pct: 1.0,
+      current_balance: 0,
+    });
+    expect(addCardRes.success).toBe(true);
+    const cards = (await getCardsAction()).data || [];
+    expect(cards.some((c: any) => c.name_ar === 'ماكينة بنك مصر كاشير 2')).toBe(true);
+
+    const addPosRes = await addPointOfSaleAction({
+      name_ar: 'كاشير الفرع 2',
+      name_en: 'POS-02',
+      location: 'الفرع الإضافي',
+      computer_name: 'PC-02',
+    });
+    expect(addPosRes.success).toBe(true);
+    const posList = (await getPointsOfSaleAction()).data || [];
+    expect(posList.some((p: any) => p.name_ar === 'كاشير الفرع 2')).toBe(true);
+
+    const addPaperRes = await addPaperAction({
+      type: 'promissory_note',
+      direction: 'out',
+      paper_number: 'NOTE-7766',
+      bank_id: Number(addBankRes.id),
+      amount: 3000,
+      due_date: '2026-10-01',
+      target_name: 'شركة توزيع الأدوية',
+    });
+    expect(addPaperRes.success).toBe(true);
+    const paperId = addPaperRes.id!;
+    const papers = (await getPapersAction()).data || [];
+    expect(papers.some((p: any) => p.id === paperId)).toBe(true);
+
+    const cashPaperRes = await updatePaperStatusAction(paperId, 'cashed', '2026-09-01');
+    expect(cashPaperRes.success).toBe(true);
+    const cashedPaper = mockDb.prepare('SELECT status FROM commercial_papers WHERE id = ?').get(paperId) as any;
+    expect(cashedPaper.status).toBe('cashed');
+
+    const journalRes = await createManualJournalAction({
+      date: '2026-09-01',
+      description: 'تسوية رصيد بنكي في التحديث',
+      entries: [
+        { account_id: 2, type: 'debit', amount: 1000, notes: 'إيداع بنكي' },
+        { account_id: 1, type: 'credit', amount: 1000, notes: 'صرف من الخزينة' },
+      ],
+    });
+    expect(journalRes.success).toBe(true);
+    const journals = (await getJournalsAction()).data || [];
+    expect(journals.some((j: any) => j.description === 'تسوية رصيد بنكي في التحديث')).toBe(true);
   });
 
   it('tests advanced feature options: purchase draft completion, edit, returns, and next-shift handover', async () => {
@@ -460,7 +600,7 @@ describe('Cross-computer consistency across fresh install and update', () => {
     expect(creditSale.total_amount).toBe(35);
     expect(creditSale.payment_method).toBe('credit');
 
-    // D. Handover to next shift with auto-open option
+    // D. Old auto-open requests are idempotent under the permanent-session model.
     // Cash in drawer = 50 starting + 17.5 strip sale (cash) = 67.5 (credit sale is 0 cash).
     // Transfer 50 to treasury, remaining in drawer = 17.5 for next shift.
     const nextShiftHandover = await processHandoverAction({
@@ -477,10 +617,11 @@ describe('Cross-computer consistency across fresh install and update', () => {
     expect(nextShiftHandover.difference).toBe(0);
     expect(nextShiftHandover.remainingCash).toBe(17.5);
 
-    // Verify next shift was automatically opened for admin with starting cash = 17.5
+    // Verify the same session remains open and carries 17.5 as its computed balance.
     const nextShift = mockDb.prepare("SELECT * FROM shifts WHERE user_id = 'admin' AND status = 'open'").get() as any;
     expect(nextShift).toBeDefined();
-    expect(nextShift.starting_cash).toBe(17.5);
+    expect(nextShift.starting_cash).toBe(50);
+    expect((mockDb.prepare("SELECT COUNT(*) AS total FROM shifts WHERE user_id = 'admin'").get() as any).total).toBe(1);
   });
 
   it('normalizes timestamps consistently across all computer timezones and string formats', () => {

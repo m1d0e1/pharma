@@ -75,4 +75,42 @@ describe('POS interaction safety', () => {
       severity: 'moderate',
     });
   });
+
+  it('does NOT trigger false-positive interactions between internal salts of a single cart drug (e.g. Centravita Magnesium + Ramipril)', async () => {
+    sqlite.exec(`
+      INSERT INTO drug_interactions VALUES
+        (2, 'Choline magnesium trisalicylate', 'Magnesium salicylate', 'major', 'desc', NULL, NULL),
+        (3, 'Magnesium hydroxide', 'Magnesium sulfate', 'major', 'desc', NULL, NULL),
+        (4, 'Magnesium oxide', 'Magnesium sulfate', 'major', 'desc', NULL, NULL),
+        (5, 'Magnesium salicylate', 'Magnesium sulfate', 'major', 'desc', NULL, NULL);
+    `);
+
+    // Cart with Item 0 = Centravita Magnesium ('MAGNESIUM') and Item 1 = Ramipecardin ('RAMIPRIL')
+    const result = await checkDrugInteractions(['MAGNESIUM', 'RAMIPRIL']);
+
+    expect(result.success).toBe(true);
+    // Must NOT report any interactions between magnesium salts since they all originate from the single Magnesium cart item
+    expect(result.data?.interactions).toHaveLength(0);
+  });
+
+  it('correctly checks cross-drug interaction for combination products without self-interacting', async () => {
+    sqlite.exec(`
+      INSERT INTO drug_interactions VALUES
+        (6, 'Sulpiride', 'Digoxin', 'major', 'desc', NULL, NULL),
+        (7, 'Mebeverine', 'Sulpiride', 'moderate', 'internal formulation', NULL, NULL);
+    `);
+
+    // Cart Item 0 = Colona ('MEBEVERINE + SULPIRIDE'), Cart Item 1 = Cardixin ('DIGOXINE')
+    const result = await checkDrugInteractions(['MEBEVERINE + SULPIRIDE', 'DIGOXINE']);
+
+    expect(result.success).toBe(true);
+    // Should ONLY report cross-drug interaction between Colona (Sulpiride) and Cardixin (Digoxin),
+    // and NOT the internal Mebeverine + Sulpiride combination within Colona itself.
+    expect(result.data?.interactions).toHaveLength(1);
+    expect(result.data?.interactions[0]).toMatchObject({
+      ingredient_a: 'Sulpiride',
+      ingredient_b: 'Digoxin',
+      severity: 'major',
+    });
+  });
 });

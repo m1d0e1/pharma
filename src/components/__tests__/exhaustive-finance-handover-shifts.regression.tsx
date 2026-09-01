@@ -293,7 +293,7 @@ describe('Exhaustive Testing: Financials, Handover, Shift, and Receipt Modules',
           actualCash: 3650,
           transferAmount: 3450,
           transferTargetType: 'treasury',
-          autoOpenNewShift: true,
+          autoOpenNewShift: false,
         }));
         expect(onClose).toHaveBeenCalled();
       });

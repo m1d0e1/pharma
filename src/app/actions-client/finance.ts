@@ -56,22 +56,23 @@ import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { format } from 'date-fns';
 import { z } from 'zod';
 import { patientOutstandingBalanceQuery } from '@/lib/patients/balance';
+import { ensurePermanentShiftForUser } from './shifts';
 
 const hasAnyFinancePermission = (user: any, ...permissions: string[]) =>
   !!user && permissions.some(permission => hasUserPermissionSync(user, permission));
 
 export async function requireOpenShiftId(userId: string, requestedShiftId?: string) {
-  const shift = requestedShiftId
+  const requestedShift = requestedShiftId
     ? await db.prepare(`
         SELECT id FROM shifts
         WHERE id = ? AND CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
       `).get(requestedShiftId, userId) as any
-    : await db.prepare(`
-        SELECT id FROM shifts
-        WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
-        ORDER BY start_time DESC LIMIT 1
-      `).get(userId) as any;
-  if (!shift?.id) throw new Error('يجب فتح وردية نقدية قبل تسجيل الحركة');
+    : null;
+  if (requestedShift?.id) return String(requestedShift.id);
+
+  // A stale shift id can remain in an already-open POS after another user logs in.
+  // Always resolve the permanent session from the acting user id.
+  const shift = await ensurePermanentShiftForUser(userId);
   return String(shift.id);
 }
 
@@ -117,6 +118,21 @@ export async function addFinancialNoticeAction(rawData: z.infer<typeof noticeSch
           INSERT INTO patient_transactions (id, patient_id, user_id, type, amount, notes, date)
           VALUES (?, ?, ?, 'adjustment', ?, ?, ?)
         `).run(generateId(), data.target_id, user.id, signedAmount, data.reason, data.date);
+      } else if (data.target_type === 'supplier' && data.target_id) {
+        const signedAmount = data.type === 'credit' ? -data.amount : data.amount;
+        try {
+          await db.prepare(`
+            INSERT INTO supplier_transactions (id, supplier_id, user_id, type, amount, notes, date)
+            VALUES (?, ?, ?, 'adjustment', ?, ?, ?)
+          `).run(generateId(), data.target_id, user.id, signedAmount, data.reason, data.date);
+        } catch {}
+        try {
+          await db.prepare(`
+            UPDATE suppliers 
+            SET current_balance = COALESCE(current_balance, 0) + ?
+            WHERE CAST(id AS TEXT) = ?
+          `).run(signedAmount, data.target_id);
+        } catch {}
       }
 
       const getAccount = async (category: string, fallback: number) => {
@@ -378,15 +394,137 @@ export async function getPointsOfSaleAction() {
   }
 }
 
+const DEFAULT_EXPENSE_DEFINITIONS = [
+  { code: '501', name_ar: 'كهرباء وإنارة', name_en: 'Electricity' },
+  { code: '502', name_ar: 'مياه ومرافق', name_en: 'Water & Utilities' },
+  { code: '503', name_ar: 'إيجار المقر', name_en: 'Rent' },
+  { code: '504', name_ar: 'مرتبات وأجور العاملين', name_en: 'Salaries & Wages' },
+  { code: '505', name_ar: 'صيانة ونظافة', name_en: 'Maintenance & Cleaning' },
+  { code: '506', name_ar: 'بوفيه وضيافة', name_en: 'Hospitality & Buffet' },
+  { code: '507', name_ar: 'إنترنت واتصالات', name_en: 'Internet & Communications' },
+  { code: '508', name_ar: 'أدوات ومستلزمات مكتبية', name_en: 'Office Supplies' },
+  { code: '509', name_ar: 'نقل وشحن ومواصلات', name_en: 'Transportation & Logistics' },
+  { code: '510', name_ar: 'تسويق ودعاية وإعلانات', name_en: 'Marketing & Advertising' },
+  { code: '511', name_ar: 'رسوم وتراخيص حكومية', name_en: 'Government Fees & Licenses' },
+  { code: '512', name_ar: 'مصروفات وعمولات بنكية', name_en: 'Bank Fees & Charges' },
+  { code: '599', name_ar: 'مصاريف نثرية وأخرى', name_en: 'Other Miscellaneous' },
+];
+
 export async function getExpenseDefinitionsAction() {
   try {
     const user = await getLocalSession();
-    if (!hasAnyFinancePermission(user, 'acc_can_define_expenses', 'can_view_expenses')) return { success: false, error: 'غير مصرح' };
-    const results = await db.prepare(`SELECT * FROM expense_definitions ORDER BY code ASC`).all();
+    if (!hasAnyFinancePermission(user, 'acc_can_define_expenses', 'can_view_expenses', 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
+
+    const countRes = await db.prepare(`SELECT COUNT(*) as count FROM expense_definitions`).get() as any;
+    if (!countRes || countRes.count === 0) {
+      const insertStmt = db.prepare(`INSERT INTO expense_definitions (code, name_ar, name_en) VALUES (?, ?, ?)`);
+      for (const def of DEFAULT_EXPENSE_DEFINITIONS) {
+        await insertStmt.run(def.code, def.name_ar, def.name_en);
+      }
+    }
+
+    const results = await db.prepare(`SELECT * FROM expense_definitions ORDER BY CAST(code AS INTEGER) ASC, code ASC`).all();
     return { success: true, data: results };
   } catch (error) {
     console.error('Get expense definitions error:', error);
     return { success: false, error: 'فشل جلب تعريفات المصروفات' };
+  }
+}
+
+const expenseDefinitionSchema = z.object({
+  code: z.string().min(1, 'كود المصروف مطلوب'),
+  name_ar: z.string().min(1, 'اسم المصروف بالعربي مطلوب'),
+  name_en: z.string().optional(),
+});
+
+export async function addExpenseDefinitionAction(rawData: z.infer<typeof expenseDefinitionSchema>) {
+  try {
+    const user = await getLocalSession();
+    if (!hasAnyFinancePermission(user, 'acc_can_define_expenses', 'acc_can_view_general')) {
+      return { success: false, error: 'غير مصرح بإضافة تعريفات المصروفات' };
+    }
+
+    const val = expenseDefinitionSchema.parse(rawData);
+
+    const existingCode = await db.prepare('SELECT id FROM expense_definitions WHERE code = ?').get(val.code) as any;
+    if (existingCode) {
+      return { success: false, error: 'كود المصروف مستخدم بالفعل' };
+    }
+
+    const res = await db.prepare(`
+      INSERT INTO expense_definitions (code, name_ar, name_en)
+      VALUES (?, ?, ?)
+    `).run(val.code, val.name_ar, val.name_en || null);
+
+    return { success: true, id: res.lastInsertRowid };
+  } catch (error: any) {
+    console.error('Add expense definition error:', error);
+    return { success: false, error: error.message || 'فشل إضافة تعريف المصروف' };
+  }
+}
+
+export async function updateExpenseDefinitionAction(id: number, rawData: z.infer<typeof expenseDefinitionSchema>) {
+  try {
+    const user = await getLocalSession();
+    if (!hasAnyFinancePermission(user, 'acc_can_define_expenses', 'acc_can_view_general')) {
+      return { success: false, error: 'غير مصرح بتعديل تعريفات المصروفات' };
+    }
+
+    const val = expenseDefinitionSchema.parse(rawData);
+
+    const existingCode = await db.prepare('SELECT id FROM expense_definitions WHERE code = ? AND id != ?').get(val.code, id) as any;
+    if (existingCode) {
+      return { success: false, error: 'كود المصروف مستخدم في تعريف آخر' };
+    }
+
+    await db.prepare(`
+      UPDATE expense_definitions 
+      SET code = ?, name_ar = ?, name_en = ?
+      WHERE id = ?
+    `).run(val.code, val.name_ar, val.name_en || null, id);
+
+    return { success: true };
+  } catch (error: any) {
+    console.error('Update expense definition error:', error);
+    return { success: false, error: error.message || 'فشل تعديل تعريف المصروف' };
+  }
+}
+
+export async function deleteExpenseDefinitionAction(id: number) {
+  try {
+    const user = await getLocalSession();
+    if (!hasAnyFinancePermission(user, 'acc_can_define_expenses', 'acc_can_view_general')) {
+      return { success: false, error: 'غير مصرح بحذف تعريفات المصروفات' };
+    }
+
+    const def = await db.prepare('SELECT * FROM expense_definitions WHERE id = ?').get(id) as any;
+    if (!def) {
+      return { success: false, error: 'تعريف المصروف غير موجود' };
+    }
+
+    const expenseUsage = await db.prepare(`
+      SELECT COUNT(*) as count FROM expenses 
+      WHERE category = ? OR category = ?
+    `).get(def.code, def.name_ar) as any;
+
+    if (expenseUsage && expenseUsage.count > 0) {
+      return { success: false, error: 'لا يمكن حذف هذا المصروف لوجود إيصالات مصروفات مسجلة عليه' };
+    }
+
+    const movementUsage = await db.prepare(`
+      SELECT COUNT(*) as count FROM cash_movements 
+      WHERE category = ? OR category = ?
+    `).get(def.code, def.name_ar) as any;
+
+    if (movementUsage && movementUsage.count > 0) {
+      return { success: false, error: 'لا يمكن حذف هذا المصروف لوجود حركات نقدية مسجلة عليه' };
+    }
+
+    await db.prepare('DELETE FROM expense_definitions WHERE id = ?').run(id);
+    return { success: true };
+  } catch (error: any) {
+    console.error('Delete expense definition error:', error);
+    return { success: false, error: error.message || 'فشل حذف تعريف المصروف' };
   }
 }
 
@@ -465,12 +603,21 @@ export async function getAccountsAction() {
 
     // Aggregate balances bottom-up to parent groups (process children before parents by sorting by code length descending)
     const accountsMap = new Map(accounts.map(acc => [acc.id, acc]));
+    const codeMap = new Map(accounts.map(acc => [acc.code, acc]));
     const sortedAccounts = [...accounts].sort((a, b) => b.code.length - a.code.length);
     
     sortedAccounts.forEach(acc => {
-      if (acc.parent_id && accountsMap.has(acc.parent_id)) {
-        const parent = accountsMap.get(acc.parent_id);
-        parent.balance = (parent.balance || 0) + acc.balance;
+      let parent = acc.parent_id ? accountsMap.get(acc.parent_id) : null;
+      if (!parent) {
+        if (acc.code.includes('.')) {
+          const parentCode = acc.code.split('.').slice(0, -1).join('.');
+          parent = codeMap.get(parentCode);
+        } else if (acc.code.length > 1) {
+          parent = codeMap.get(acc.code.slice(0, -1)) || codeMap.get(acc.code.charAt(0));
+        }
+      }
+      if (parent && parent.id !== acc.id) {
+        parent.balance = (parent.balance || 0) + (acc.balance || 0);
       }
     });
 
@@ -510,6 +657,7 @@ export async function addAccountAction(rawData: z.infer<typeof addAccountSchema>
 }
 
 const updateAccountSchema = z.object({
+  code: z.string().optional(),
   name_ar: z.string().optional(),
   name_en: z.string().optional(),
   type: z.enum(['asset', 'liability', 'equity', 'income', 'expense']).optional(),
@@ -541,6 +689,43 @@ export async function updateAccountAction(id: number, rawData: z.infer<typeof up
     return { success: false, error: 'فشل تحديث الحساب' };
   }
 }
+
+export async function deleteAccountAction(id: number) {
+  try {
+    const user = await getLocalSession();
+    if (!hasAnyFinancePermission(user, 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
+
+    const account = await db.prepare('SELECT * FROM accounts WHERE id = ?').get(id) as any;
+    if (!account) return { success: false, error: 'الحساب غير موجود' };
+
+    // 1. Check child sub-accounts
+    const childrenCount = await db.prepare('SELECT COUNT(*) as count FROM accounts WHERE parent_id = ?').get(id) as any;
+    if (childrenCount?.count > 0) {
+      return { success: false, error: 'لا يمكن حذف حساب رئيسي يحتوي على حسابات فرعية. يرجى حذف الحسابات الفرعية أولاً.' };
+    }
+
+    // 2. Check journal entries
+    const entriesCount = await db.prepare('SELECT COUNT(*) as count FROM journal_entries WHERE account_id = ?').get(id) as any;
+    if (entriesCount?.count > 0) {
+      return { success: false, error: 'لا يمكن حذف حساب مرتبط بحركات وقيود مالية مسجلة.' };
+    }
+
+    // 3. Check system trial_balance_settings
+    const settingCount = await db.prepare('SELECT COUNT(*) as count FROM trial_balance_settings WHERE account_id = ?').get(id) as any;
+    if (settingCount?.count > 0) {
+      return { success: false, error: 'لا يمكن حذف حساب أساسي مرتبط بإعدادات ميزان المراجعة.' };
+    }
+
+    await db.prepare('DELETE FROM accounts WHERE id = ?').run(id);
+
+    revalidatePath('/finance');
+    return { success: true };
+  } catch (error: any) {
+    console.error('Delete account error:', error);
+    return { success: false, error: error?.message || 'فشل حذف الحساب' };
+  }
+}
+
 
 export async function getJournalsAction(filters?: { dateFrom?: string; dateTo?: string }) {
   try {
@@ -870,10 +1055,17 @@ export async function getFinancialNoticesAction() {
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_view_notifications')) return { success: false, error: 'غير مصرح' };
     const results = await db.prepare(`
-      SELECT n.*, u.full_name as user_name
+      SELECT n.*, u.full_name as user_name,
+        CASE 
+          WHEN n.target_type = 'customer' THEN COALESCE(p.name, 'عميل')
+          WHEN n.target_type = 'supplier' THEN COALESCE(s.name, 'مورد')
+          ELSE 'الصيدلية / عام'
+        END as target_name
       FROM financial_notices n
       LEFT JOIN users u ON n.user_id = u.id
-      ORDER BY n.created_at DESC LIMIT 100
+      LEFT JOIN patients p ON n.target_type = 'customer' AND n.target_id = p.id
+      LEFT JOIN suppliers s ON n.target_type = 'supplier' AND CAST(n.target_id AS TEXT) = CAST(s.id AS TEXT)
+      ORDER BY n.created_at DESC LIMIT 200
     `).all();
     return { success: true, data: results };
   } catch (error) {
@@ -896,5 +1088,377 @@ export async function getActivityLogsAction() {
   } catch (error) {
     console.error('Get activity logs error:', error);
     return { success: false, error: 'فشل جلب سجل الرقابة' };
+  }
+}
+
+// -------------------------------------------------------------
+// 1. Bank Accounts CRUD
+// -------------------------------------------------------------
+export async function addBankAction(data: { name_ar: string; name_en?: string; account_number?: string; branch?: string; current_balance?: number }) {
+  try {
+    const user = await getLocalSession();
+    if (!hasAnyFinancePermission(user, 'acc_can_view_bank_accounts', 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
+    if (!data.name_ar?.trim()) return { success: false, error: 'اسم البنك بالعربي مطلوب' };
+
+    const res = await db.prepare(`
+      INSERT INTO banks (name_ar, name_en, account_number, branch, current_balance)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(
+      data.name_ar.trim(),
+      data.name_en?.trim() || null,
+      data.account_number?.trim() || null,
+      data.branch?.trim() || null,
+      Number(data.current_balance) || 0
+    );
+
+    await logActivity(user?.id, 'ADD_BANK', `إضافة حساب بنكي: ${data.name_ar}`);
+    return { success: true, id: res.lastInsertId };
+  } catch (error: any) {
+    console.error('Add bank error:', error);
+    return { success: false, error: error.message || 'فشل إضافة الحساب البنكي' };
+  }
+}
+
+export async function updateBankAction(id: number, data: { name_ar: string; name_en?: string; account_number?: string; branch?: string; current_balance?: number }) {
+  try {
+    const user = await getLocalSession();
+    if (!hasAnyFinancePermission(user, 'acc_can_view_bank_accounts', 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
+    if (!data.name_ar?.trim()) return { success: false, error: 'اسم البنك بالعربي مطلوب' };
+
+    await db.prepare(`
+      UPDATE banks 
+      SET name_ar = ?, name_en = ?, account_number = ?, branch = ?, current_balance = COALESCE(?, current_balance)
+      WHERE id = ?
+    `).run(
+      data.name_ar.trim(),
+      data.name_en?.trim() || null,
+      data.account_number?.trim() || null,
+      data.branch?.trim() || null,
+      data.current_balance !== undefined ? Number(data.current_balance) : null,
+      id
+    );
+
+    await logActivity(user?.id, 'UPDATE_BANK', `تعديل حساب بنكي #${id}: ${data.name_ar}`);
+    return { success: true };
+  } catch (error: any) {
+    console.error('Update bank error:', error);
+    return { success: false, error: error.message || 'فشل تعديل الحساب البنكي' };
+  }
+}
+
+export async function deleteBankAction(id: number) {
+  try {
+    const user = await getLocalSession();
+    if (!hasAnyFinancePermission(user, 'acc_can_view_bank_accounts', 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
+
+    const cardUsage = await db.prepare('SELECT COUNT(*) as count FROM credit_cards WHERE bank_id = ?').get(id) as any;
+    if (cardUsage && cardUsage.count > 0) {
+      return { success: false, error: 'لا يمكن حذف هذا البنك لوجود بطاقات ائتمان مرتبطة به' };
+    }
+
+    const paperUsage = await db.prepare('SELECT COUNT(*) as count FROM commercial_papers WHERE bank_id = ?').get(id) as any;
+    if (paperUsage && paperUsage.count > 0) {
+      return { success: false, error: 'لا يمكن حذف هذا البنك لوجود أوراق مالية مرتبطة به' };
+    }
+
+    await db.prepare('DELETE FROM banks WHERE id = ?').run(id);
+    await logActivity(user?.id, 'DELETE_BANK', `حذف حساب بنكي #${id}`);
+    return { success: true };
+  } catch (error: any) {
+    console.error('Delete bank error:', error);
+    return { success: false, error: error.message || 'فشل حذف الحساب البنكي' };
+  }
+}
+
+// -------------------------------------------------------------
+// 2. Credit Cards / Terminals CRUD
+// -------------------------------------------------------------
+export async function addCardAction(data: { name_ar: string; name_en?: string; bank_id?: number | null; commission_pct?: number; current_balance?: number }) {
+  try {
+    const user = await getLocalSession();
+    if (!hasAnyFinancePermission(user, 'acc_can_collect_credit_cards', 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
+    if (!data.name_ar?.trim()) return { success: false, error: 'اسم الماكينة / البطاقة مطلوب' };
+
+    const res = await db.prepare(`
+      INSERT INTO credit_cards (name_ar, name_en, bank_id, commission_pct, current_balance)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(
+      data.name_ar.trim(),
+      data.name_en?.trim() || null,
+      data.bank_id || null,
+      Number(data.commission_pct) || 0,
+      Number(data.current_balance) || 0
+    );
+
+    await logActivity(user?.id, 'ADD_CARD', `إضافة ماكينة دفع: ${data.name_ar}`);
+    return { success: true, id: res.lastInsertId };
+  } catch (error: any) {
+    console.error('Add card error:', error);
+    return { success: false, error: error.message || 'فشل إضافة ماكينة الدفع' };
+  }
+}
+
+export async function updateCardAction(id: number, data: { name_ar: string; name_en?: string; bank_id?: number | null; commission_pct?: number; current_balance?: number }) {
+  try {
+    const user = await getLocalSession();
+    if (!hasAnyFinancePermission(user, 'acc_can_collect_credit_cards', 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
+    if (!data.name_ar?.trim()) return { success: false, error: 'اسم الماكينة / البطاقة مطلوب' };
+
+    await db.prepare(`
+      UPDATE credit_cards 
+      SET name_ar = ?, name_en = ?, bank_id = ?, commission_pct = ?, current_balance = COALESCE(?, current_balance)
+      WHERE id = ?
+    `).run(
+      data.name_ar.trim(),
+      data.name_en?.trim() || null,
+      data.bank_id || null,
+      Number(data.commission_pct) || 0,
+      data.current_balance !== undefined ? Number(data.current_balance) : null,
+      id
+    );
+
+    await logActivity(user?.id, 'UPDATE_CARD', `تعديل ماكينة دفع #${id}: ${data.name_ar}`);
+    return { success: true };
+  } catch (error: any) {
+    console.error('Update card error:', error);
+    return { success: false, error: error.message || 'فشل تعديل ماكينة الدفع' };
+  }
+}
+
+export async function deleteCardAction(id: number) {
+  try {
+    const user = await getLocalSession();
+    if (!hasAnyFinancePermission(user, 'acc_can_collect_credit_cards', 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
+
+    await db.prepare('DELETE FROM credit_cards WHERE id = ?').run(id);
+    await logActivity(user?.id, 'DELETE_CARD', `حذف ماكينة دفع #${id}`);
+    return { success: true };
+  } catch (error: any) {
+    console.error('Delete card error:', error);
+    return { success: false, error: error.message || 'فشل حذف ماكينة الدفع' };
+  }
+}
+
+// -------------------------------------------------------------
+// 3. Points of Sale (POS) CRUD
+// -------------------------------------------------------------
+export async function addPointOfSaleAction(data: { name_ar: string; name_en?: string; location?: string; computer_name?: string; current_balance?: number }) {
+  try {
+    const user = await getLocalSession();
+    if (!hasAnyFinancePermission(user, 'acc_can_view_pos', 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
+    if (!data.name_ar?.trim()) return { success: false, error: 'اسم نقطة البيع بالعربي مطلوب' };
+
+    const res = await db.prepare(`
+      INSERT INTO points_of_sale (name_ar, name_en, location, computer_name, current_balance, status)
+      VALUES (?, ?, ?, ?, ?, 'active')
+    `).run(
+      data.name_ar.trim(),
+      data.name_en?.trim() || null,
+      data.location?.trim() || null,
+      data.computer_name?.trim() || null,
+      Number(data.current_balance) || 0
+    );
+
+    await logActivity(user?.id, 'ADD_POS', `إضافة نقطة بيع: ${data.name_ar}`);
+    return { success: true, id: res.lastInsertId };
+  } catch (error: any) {
+    console.error('Add point of sale error:', error);
+    return { success: false, error: error.message || 'فشل إضافة نقطة البيع' };
+  }
+}
+
+export async function updatePointOfSaleAction(id: number, data: { name_ar: string; name_en?: string; location?: string; computer_name?: string; current_balance?: number; status?: string }) {
+  try {
+    const user = await getLocalSession();
+    if (!hasAnyFinancePermission(user, 'acc_can_view_pos', 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
+    if (!data.name_ar?.trim()) return { success: false, error: 'اسم نقطة البيع بالعربي مطلوب' };
+
+    await db.prepare(`
+      UPDATE points_of_sale 
+      SET name_ar = ?, name_en = ?, location = ?, computer_name = ?, current_balance = COALESCE(?, current_balance), status = COALESCE(?, status)
+      WHERE id = ?
+    `).run(
+      data.name_ar.trim(),
+      data.name_en?.trim() || null,
+      data.location?.trim() || null,
+      data.computer_name?.trim() || null,
+      data.current_balance !== undefined ? Number(data.current_balance) : null,
+      data.status || 'active',
+      id
+    );
+
+    await logActivity(user?.id, 'UPDATE_POS', `تعديل نقطة بيع #${id}: ${data.name_ar}`);
+    return { success: true };
+  } catch (error: any) {
+    console.error('Update point of sale error:', error);
+    return { success: false, error: error.message || 'فشل تعديل نقطة البيع' };
+  }
+}
+
+export async function deletePointOfSaleAction(id: number) {
+  try {
+    const user = await getLocalSession();
+    if (!hasAnyFinancePermission(user, 'acc_can_view_pos', 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
+
+    await db.prepare('DELETE FROM points_of_sale WHERE id = ?').run(id);
+    await logActivity(user?.id, 'DELETE_POS', `حذف نقطة بيع #${id}`);
+    return { success: true };
+  } catch (error: any) {
+    console.error('Delete point of sale error:', error);
+    return { success: false, error: error.message || 'فشل حذف نقطة البيع' };
+  }
+}
+
+// -------------------------------------------------------------
+// 4. Commercial Papers (Checks / Notes) CRUD & Lifecycle
+// -------------------------------------------------------------
+export async function addPaperAction(data: {
+  type: 'check' | 'promissory_note';
+  direction: 'in' | 'out';
+  paper_number: string;
+  bank_id?: number | null;
+  amount: number;
+  due_date: string;
+  target_name: string;
+  notes?: string;
+}) {
+  try {
+    const user = await getLocalSession();
+    if (!hasAnyFinancePermission(user, 'acc_can_view_securities', 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
+    if (!data.paper_number?.trim()) return { success: false, error: 'رقم الورقة / الشيك مطلوب' };
+    if (!data.amount || data.amount <= 0) return { success: false, error: 'المبلغ يجب أن يكون أكبر من صفر' };
+    if (!data.target_name?.trim()) return { success: false, error: 'اسم الجهة / الساحب مطلوب' };
+
+    const id = generateId();
+    await db.prepare(`
+      INSERT INTO commercial_papers (id, type, direction, paper_number, bank_id, amount, due_date, status, target_name, notes)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+    `).run(
+      id,
+      data.type || 'check',
+      data.direction || 'in',
+      data.paper_number.trim(),
+      data.bank_id || null,
+      Number(data.amount),
+      data.due_date,
+      data.target_name.trim(),
+      data.notes?.trim() || null
+    );
+
+    await logActivity(user?.id, 'ADD_COMMERCIAL_PAPER', `تسجيل ورقة مالية (${data.type === 'check' ? 'شيك' : 'كمبيالة'} ${data.direction === 'in' ? 'وارد' : 'صادر'}) رقم: ${data.paper_number} بقيمة: ${data.amount}`);
+    return { success: true, id };
+  } catch (error: any) {
+    console.error('Add commercial paper error:', error);
+    return { success: false, error: error.message || 'فشل تسجيل الورقة المالية' };
+  }
+}
+
+export async function updatePaperStatusAction(id: string, newStatus: 'pending' | 'cashed' | 'bounced' | 'cancelled', actionDate?: string) {
+  try {
+    const user = await getLocalSession();
+    if (!hasAnyFinancePermission(user, 'acc_can_view_securities', 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
+
+    const paper = await db.prepare('SELECT * FROM commercial_papers WHERE id = ?').get(id) as any;
+    if (!paper) return { success: false, error: 'الورقة المالية غير موجودة' };
+
+    await db.prepare('UPDATE commercial_papers SET status = ? WHERE id = ?').run(newStatus, id);
+
+    // If status transitioned to 'cashed', dynamically record treasury cash movement & journal
+    if (newStatus === 'cashed' && paper.status !== 'cashed') {
+      const movementType = paper.direction === 'in' ? 'receipt' : 'disbursement';
+      const movementCategory = paper.direction === 'in' ? 'collection' : 'supplier_payment';
+      const date = actionDate || new Date().toISOString().split('T')[0];
+      const note = `تحصيل/صرف ${paper.type === 'check' ? 'شيك' : 'كمبيالة'} رقم ${paper.paper_number} - ${paper.target_name}`;
+
+      await createCashMovementAction({
+        type: movementType,
+        category: movementCategory,
+        amount: paper.amount,
+        notes: note,
+        date: date
+      });
+    }
+
+    await logActivity(user?.id, 'UPDATE_PAPER_STATUS', `تحديث حالة الورقة المالية #${id} إلى: ${newStatus}`);
+    return { success: true };
+  } catch (error: any) {
+    console.error('Update paper status error:', error);
+    return { success: false, error: error.message || 'فشل تحديث حالة الورقة المالية' };
+  }
+}
+
+export async function deletePaperAction(id: string) {
+  try {
+    const user = await getLocalSession();
+    if (!hasAnyFinancePermission(user, 'acc_can_view_securities', 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
+
+    await db.prepare('DELETE FROM commercial_papers WHERE id = ?').run(id);
+    await logActivity(user?.id, 'DELETE_PAPER', `حذف ورقة مالية #${id}`);
+    return { success: true };
+  } catch (error: any) {
+    console.error('Delete paper error:', error);
+    return { success: false, error: error.message || 'فشل حذف الورقة المالية' };
+  }
+}
+
+// -------------------------------------------------------------
+// 5. Manual Daily Journal Voucher Creation
+// -------------------------------------------------------------
+export async function createManualJournalAction(data: {
+  date: string;
+  description: string;
+  entries: Array<{ account_id: number; type: 'debit' | 'credit'; amount: number; notes?: string }>;
+}) {
+  try {
+    const user = await getLocalSession();
+    if (!hasAnyFinancePermission(user, 'acc_can_make_daily_entries', 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
+
+    if (!data.entries || data.entries.length < 2) {
+      return { success: false, error: 'القيد اليومي يجب أن يتضمن طرفين على الأقل (طرف مدين وطرف دائن)' };
+    }
+
+    let totalDebit = 0;
+    let totalCredit = 0;
+    for (const ent of data.entries) {
+      const amt = Number(ent.amount) || 0;
+      if (amt <= 0) return { success: false, error: 'يجب أن تكون جميع المبالغ في القيد أكبر من صفر' };
+      if (ent.type === 'debit') totalDebit += amt;
+      else if (ent.type === 'credit') totalCredit += amt;
+    }
+
+    if (Math.abs(totalDebit - totalCredit) > 0.01) {
+      return { success: false, error: `القيد غير متزن: مجموع المدين (${totalDebit.toFixed(2)}) لا يساوي مجموع الدائن (${totalCredit.toFixed(2)})` };
+    }
+
+    const journalId = generateId();
+    await db.prepare(`
+      INSERT INTO daily_journals (id, date, description, created_by, total_amount)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(
+      journalId,
+      data.date || new Date().toISOString().split('T')[0],
+      data.description?.trim() || 'قيد تسوية يدوي',
+      user?.id || 'admin',
+      totalDebit
+    );
+
+    for (const ent of data.entries) {
+      await db.prepare(`
+        INSERT INTO journal_entries (journal_id, account_id, type, amount, notes)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(
+        journalId,
+        ent.account_id,
+        ent.type,
+        Number(ent.amount),
+        ent.notes?.trim() || data.description?.trim() || null
+      );
+    }
+
+    await logActivity(user?.id, 'CREATE_MANUAL_JOURNAL', `إنشاء قيد يومي يدوي #${journalId.slice(0, 8)} بمبلغ ${totalDebit.toFixed(2)} ج.م`);
+    return { success: true, id: journalId };
+  } catch (error: any) {
+    console.error('Create manual journal error:', error);
+    return { success: false, error: error.message || 'فشل إنشاء القيد اليومي' };
   }
 }

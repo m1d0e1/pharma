@@ -1,12 +1,10 @@
 'use client';
 import { useHotkeys } from 'react-hotkeys-hook';
 
-import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
-import { LogOut, X, AlertTriangle } from 'lucide-react';
+import { useState } from 'react';
+import { LogOut, X } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { logoutLocalAction } from '@/app/actions-client/auth';
-import { getCurrentShiftAction } from '@/app/actions-client/shifts';
 
 interface LogoutModalProps {
   isOpen: boolean;
@@ -14,24 +12,8 @@ interface LogoutModalProps {
 }
 
 export default function LogoutModal({ isOpen, onClose }: LogoutModalProps) {
-  const router = useRouter();
-  
   useHotkeys('esc', () => { if(typeof onClose === 'function') onClose(); }, { enableOnFormTags: true });
   const [loading, setLoading] = useState(false);
-  const [currentShift, setCurrentShift] = useState<any>(null);
-
-  // Load current shift info when modal opens
-  useEffect(() => {
-    if (isOpen) {
-      const fetchShift = async () => {
-        const result = await getCurrentShiftAction();
-        if (result.success && result.data) {
-          setCurrentShift(result.data);
-        }
-      };
-      fetchShift();
-    }
-  }, [isOpen]);
 
   const handleQuickLogout = async () => {
     setLoading(true);
@@ -51,8 +33,6 @@ export default function LogoutModal({ isOpen, onClose }: LogoutModalProps) {
 
   if (!isOpen) return null;
 
-  const hasOpenShift = !!currentShift;
-
   return (
     <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-[200] p-4 animate-in fade-in duration-200" dir="rtl">
       <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl max-w-md w-full overflow-hidden border border-slate-200 dark:border-slate-800 animate-in zoom-in slide-in-from-bottom-4 duration-300">
@@ -68,7 +48,7 @@ export default function LogoutModal({ isOpen, onClose }: LogoutModalProps) {
                 تسجيل الخروج
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400 font-bold mt-0.5">
-                {hasOpenShift ? 'يجب إغلاق الوردية أولاً' : 'هل أنت متأكد من رغبتك في الخروج؟'}
+                يمكنك الدخول بمستخدم آخر ومتابعة العمل فوراً
               </p>
             </div>
           </div>
@@ -81,29 +61,7 @@ export default function LogoutModal({ isOpen, onClose }: LogoutModalProps) {
         </div>
 
         <div className="p-8">
-          {hasOpenShift ? (
-            <div className="space-y-6">
-              <div className="p-4 bg-amber-50 dark:bg-amber-900/10 rounded-2xl border border-amber-200 dark:border-amber-800 flex gap-3">
-                <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-500 shrink-0 mt-0.5" />
-                <div>
-                  <p className="text-sm font-black text-amber-800 dark:text-amber-200 leading-tight">وردية مفتوحة قيد التشغيل</p>
-                  <p className="text-xs text-amber-700 dark:text-amber-300 mt-1 font-bold">أكمل تسليم النقدية وإغلاق الوردية الموحد قبل تسجيل الخروج.</p>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => {
-                  onClose();
-                  router.push('/finance/handover');
-                }}
-                className="w-full bg-blue-600 text-white py-4 rounded-2xl font-black text-lg hover:bg-blue-700 transition-all shadow-xl shadow-blue-500/20 transform active:scale-95"
-              >
-                الانتقال إلى تسليم الوردية
-              </button>
-            </div>
-          ) : (
-            <div className="space-y-4">
+          <div className="space-y-4">
               <div className="p-6 text-center">
                 <p className="text-slate-600 dark:text-slate-400 font-bold">ستفقد الجلسة الحالية وسيتم توجيهك لصفحة الدخول.</p>
               </div>
@@ -124,8 +82,7 @@ export default function LogoutModal({ isOpen, onClose }: LogoutModalProps) {
                   إلغاء
                 </button>
               </div>
-            </div>
-          )}
+          </div>
         </div>
       </div>
     </div>

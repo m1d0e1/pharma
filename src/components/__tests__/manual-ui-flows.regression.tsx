@@ -176,7 +176,7 @@ describe('Comprehensive UI Flow Regression Suite for all Added Features', () => 
           receiverPasswordHash: '',
           transferTargetId: '',
           notes: '',
-          autoOpenNewShift: true,
+          autoOpenNewShift: false,
         });
       });
 

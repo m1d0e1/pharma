@@ -175,12 +175,12 @@ export default function ShiftManagementClient({
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Open Shift Card */}
         <div className="p-6 bg-white dark:bg-slate-800 rounded-3xl border-2 border-slate-100 dark:border-slate-700 shadow-lg">
-          <h3 className="text-xl font-bold text-slate-800 dark:text-white mb-4">فتح شفت جديد</h3>
+          <h3 className="text-xl font-bold text-slate-800 dark:text-white mb-4">الجلسة النقدية الدائمة</h3>
           
           {hasOpenShift ? (
-            <div className="p-4 bg-yellow-50 dark:bg-yellow-900/20 rounded-2xl border border-yellow-200 dark:border-yellow-800">
-              <p className="text-yellow-700 dark:text-yellow-300 font-bold">
-                لديك شفت مفتوح بالفعل. يرجى إغلاق الشفت الحالي قبل فتح شفت جديد.
+            <div className="p-4 bg-emerald-50 dark:bg-emerald-900/20 rounded-2xl border border-emerald-200 dark:border-emerald-800">
+              <p className="text-emerald-700 dark:text-emerald-300 font-bold">
+                الجلسة نشطة دائماً. تظل مفتوحة عند تسجيل الخروج والدخول، وترتبط كل حركة بالمستخدم الذي نفذها.
               </p>
             </div>
           ) : (
@@ -244,7 +244,7 @@ export default function ShiftManagementClient({
 
         {/* Close Shift Card */}
         <div className="p-6 bg-white dark:bg-slate-800 rounded-3xl border-2 border-slate-100 dark:border-slate-700 shadow-lg">
-          <h3 className="text-xl font-bold text-slate-800 dark:text-white mb-4">تسليم وإغلاق الشفت الحالي</h3>
+          <h3 className="text-xl font-bold text-slate-800 dark:text-white mb-4">تسليم نقدية المستخدم</h3>
           
           {!hasOpenShift ? (
             <div className="p-4 bg-slate-50 dark:bg-slate-700/50 rounded-2xl border border-slate-200 dark:border-slate-600">
@@ -265,9 +265,9 @@ export default function ShiftManagementClient({
 
               <div className="p-5 bg-emerald-50 dark:bg-emerald-900/20 rounded-2xl border border-emerald-200 dark:border-emerald-800 space-y-4">
                 <div>
-                  <p className="font-bold text-emerald-800 dark:text-emerald-300">الإغلاق والتسليم المالي</p>
+                  <p className="font-bold text-emerald-800 dark:text-emerald-300">الجرد والتسليم المالي</p>
                   <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-1">
-                    أدخل النقدية الفعلية بالدرج، وحدد المبلغ المحول للخزينة، وسيتم ترحيل المتبقي كرصيد افتتاحي للوردية القادمة مع تسجيل العجز أو الزيادة تلقائياً.
+                    أدخل النقدية الفعلية وحدد ما سيسلم. يسجل النظام العجز أو الزيادة ويبقي الجلسة مفتوحة.
                   </p>
                 </div>
                 <Link

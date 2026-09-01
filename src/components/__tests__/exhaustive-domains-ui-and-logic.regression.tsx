@@ -96,6 +96,7 @@ jest.mock('@/app/actions-client/purchases', () => ({
   checkSupplierPendingInvoiceAction: jest.fn(),
   getPurchasesReportsAction: jest.fn(),
   getPurchaseInvoiceDetailsAction: jest.fn(),
+  searchPurchaseInvoicesForReturnAction: jest.fn(),
   getDrugInventoryQuantityAction: jest.fn().mockResolvedValue({ success: true, quantity: 5 }),
 }));
 

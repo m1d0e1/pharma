@@ -7,6 +7,7 @@ import {
   getPurchaseInvoiceDetailsAction,
   getPurchasesReportsAction,
   getSuppliersAction,
+  searchPurchaseInvoicesForReturnAction,
 } from '@/app/actions-client/purchases';
 
 const mockPush = jest.fn();
@@ -30,6 +31,7 @@ jest.mock('@/app/actions-client/purchases', () => ({
   getPurchaseInvoiceDetailsAction: jest.fn(),
   getPurchasesReportsAction: jest.fn(),
   getSuppliersAction: jest.fn(),
+  searchPurchaseInvoicesForReturnAction: jest.fn(),
 }));
 jest.mock('@/components/patients/CustomerStatementModal', () => () => null);
 jest.mock('@/components/receipts/ReceiptDetailsModal', () => () => null);
@@ -76,6 +78,18 @@ describe("today's customer and purchase-return UI wiring", () => {
         id: 'invoice-1',
         invoice_number: 'INV-1',
         supplier_id: 7,
+        status: 'completed',
+        payment_method: 'credit',
+        total_amount: 50,
+      }],
+    });
+    (searchPurchaseInvoicesForReturnAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: [{
+        id: 'invoice-1',
+        invoice_number: 'INV-1',
+        supplier_id: 7,
+        supplier_name: 'Test Supplier',
         status: 'completed',
         payment_method: 'credit',
         total_amount: 50,
@@ -149,6 +163,26 @@ describe("today's customer and purchase-return UI wiring", () => {
         drug_id: 202,
         quantity: 2,
       })],
+    })));
+    expect(mockPush).toHaveBeenCalledWith('/purchases/returns');
+  });
+
+  it('scans barcode in purchase returns search box, auto-selects invoice, and returns item', async () => {
+    render(<PurchaseReturnClient />);
+
+    const barcodeInput = await screen.findByPlaceholderText('امسح الباركود، أو اكتب اسم الدواء، أو رقم الفاتورة...');
+    fireEvent.change(barcodeInput, { target: { value: '222222' } });
+    fireEvent.keyDown(barcodeInput, { key: 'Enter', code: 'Enter' });
+
+    await waitFor(() => expect(searchPurchaseInvoicesForReturnAction).toHaveBeenCalledWith('222222'));
+    expect(await screen.findByText('Beta Drug')).toBeInTheDocument();
+
+    fireEvent.change(screen.getAllByRole('spinbutton')[1], { target: { value: '1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'تنفيذ المرتجع' }));
+
+    await waitFor(() => expect(createPurchaseReturnAction).toHaveBeenCalledWith(expect.objectContaining({
+      purchase_invoice_id: 'invoice-1',
+      supplier_id: 7,
     })));
     expect(mockPush).toHaveBeenCalledWith('/purchases/returns');
   });

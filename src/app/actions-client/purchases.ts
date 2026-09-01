@@ -87,6 +87,7 @@ async function addToInventory(data: {
   expiryDate: string | null;
   batchNumber: string;
   stripsPerBox: number;
+  barcode?: string | null;
 }) {
   const pharmacyId = data.pharmacyId || 'local_default';
   const existing = await db.prepare(`
@@ -115,6 +116,10 @@ async function addToInventory(data: {
           expiry_date = ?,
           batch_number = ?,
           strips_per_box = ?,
+          barcode = CASE
+            WHEN (barcode IS NULL OR TRIM(barcode) = '') AND ? != '' THEN ?
+            ELSE barcode
+          END,
           updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `).run(
@@ -124,6 +129,8 @@ async function addToInventory(data: {
       data.expiryDate,
       data.batchNumber,
       data.stripsPerBox,
+      data.barcode?.trim() || '',
+      data.barcode?.trim() || '',
       existing.id
     );
     return String(existing.id);
@@ -131,8 +138,8 @@ async function addToInventory(data: {
 
   const inventoryId = generateId();
   await db.prepare(`
-    INSERT INTO inventory (id, drug_id, pharmacy_id, quantity, local_selling_price, cost_price, expiry_date, batch_number, strips_per_box)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO inventory (id, drug_id, pharmacy_id, quantity, local_selling_price, cost_price, expiry_date, batch_number, strips_per_box, barcode)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     inventoryId,
     data.drugId,
@@ -142,9 +149,32 @@ async function addToInventory(data: {
     data.costPrice,
     data.expiryDate,
     data.batchNumber,
-    data.stripsPerBox
+    data.stripsPerBox,
+    data.barcode?.trim() || null
   );
   return inventoryId;
+}
+
+async function assertPurchaseBarcodesAvailable(cart: any[] = []) {
+  const owners = new Map<string, string>();
+  for (const item of cart) {
+    const barcode = String(item.barcode || '').trim();
+    if (!barcode) continue;
+    const drugId = String(item.id || item.drug_id);
+    const cartOwner = owners.get(barcode.toLowerCase());
+    if (cartOwner && cartOwner !== drugId) throw new Error('الباركود مستخدم لصنف آخر');
+    owners.set(barcode.toLowerCase(), drugId);
+
+    const conflict = await db.prepare(`
+      SELECT id AS drug_id FROM master_drugs
+      WHERE id != ? AND barcode IS NOT NULL AND TRIM(barcode) = ? COLLATE NOCASE
+      UNION ALL
+      SELECT drug_id FROM inventory
+      WHERE drug_id != ? AND barcode IS NOT NULL AND TRIM(barcode) = ? COLLATE NOCASE
+      LIMIT 1
+    `).get(item.id || item.drug_id, barcode, item.id || item.drug_id, barcode) as any;
+    if (conflict) throw new Error('الباركود مستخدم لصنف آخر');
+  }
 }
 
 
@@ -522,6 +552,7 @@ export async function createPurchaseInvoiceAction(data: {
     if (!session || !hasUserPermissionSync(session, 'can_view_purchases')) return { success: false, error: 'Unauthorized' };
 
     await ensureBarcodeColumn();
+    if (!isTauri) await assertPurchaseBarcodesAvailable(data.cart || []);
     if (data.id) {
       const pharmacyId = session.pharmacy_id || 'local_default';
       const ownedDraft = await db.prepare(`
@@ -629,9 +660,8 @@ export async function createPurchaseInvoiceAction(data: {
           }
 
           if (item.barcode) {
-            await db.prepare("UPDATE master_drugs SET barcode = ? WHERE id = ? AND (barcode IS NULL OR barcode = '')").run(item.barcode, item.id);
-            await db.prepare("UPDATE inventory SET barcode = ? WHERE drug_id = ? AND (barcode IS NULL OR barcode = '')").run(item.barcode, item.id);
-            secureCache.updateDrug(Number(item.id), { barcode: item.barcode });
+            const masterUpdate = await db.prepare("UPDATE master_drugs SET barcode = ? WHERE id = ? AND (barcode IS NULL OR barcode = '')").run(item.barcode.trim(), item.id);
+            if (masterUpdate.changes > 0) secureCache.updateDrug(Number(item.id), { barcode: item.barcode.trim() });
           }
 
           if (finalStatus === 'completed') {
@@ -653,6 +683,7 @@ export async function createPurchaseInvoiceAction(data: {
               expiryDate: normExpiry,
               batchNumber: data.invoice_number || 'BATCH-' + id.substring(0, 8),
               stripsPerBox: item.strips_per_box || 1,
+              barcode: item.barcode,
             });
             await db.prepare('UPDATE purchase_invoice_items SET inventory_id = ? WHERE id = ?').run(
               inventoryId,
@@ -721,12 +752,10 @@ export async function createPurchaseInvoiceAction(data: {
         } else {
           try {
             if (accounts.cash) await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, accounts.cash, 'credit', finalTotal);
-            const openShift = await db.prepare("SELECT id FROM shifts WHERE user_id = ? AND status = 'open'").get(session.id) as any;
-            if (openShift) {
-              await db.prepare("INSERT INTO cash_movements (id, user_id, shift_id, type, amount, category, notes, date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(
-                generateId(), session.id, openShift.id, 'disbursement', finalTotal, 'purchases', `فاتورة شراء رقم ${data.invoice_number || id.slice(0, 8)}`, new Date().toISOString().split('T')[0]
-              );
-            }
+            const shiftId = await requireOpenShiftId(String(session.id));
+            await db.prepare("INSERT INTO cash_movements (id, user_id, shift_id, type, amount, category, notes, date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(
+              generateId(), session.id, shiftId, 'disbursement', finalTotal, 'purchases', `فاتورة شراء رقم ${data.invoice_number || id.slice(0, 8)}`, new Date().toISOString().split('T')[0]
+            );
           } catch (e) {
             console.warn('Accounting missing: could not insert cash journal entry', e);
           }
@@ -810,6 +839,7 @@ export async function completePurchaseInvoiceAction(invoiceId: string) {
       // 1. Get invoice and items
       const invoice = await db.prepare('SELECT * FROM purchase_invoices WHERE id = ?').get(invoiceId) as any;
       const items = await db.prepare('SELECT * FROM purchase_invoice_items WHERE invoice_id = ?').all(invoiceId) as any[];
+      await assertPurchaseBarcodesAvailable(items.map(item => ({ ...item, id: item.drug_id })));
 
       let totalAmount = 0;
       for (const item of items) {
@@ -831,6 +861,7 @@ export async function completePurchaseInvoiceAction(invoiceId: string) {
           expiryDate: item.expiry_date,
           batchNumber: invoice.invoice_number || 'BATCH-' + invoiceId.substring(0, 8),
           stripsPerBox: item.strips_per_box || 1,
+          barcode: item.barcode,
         });
 
         if (item.strips_per_box) {
@@ -1126,6 +1157,59 @@ export async function getPurchasesReportsAction(filters: any = {}) {
     const totalSelling = items.reduce((sum, inv) => sum + Number(inv.total_selling_amount || 0), 0);
     return { success: true, data: items, totalCost, totalSelling, invoiceCount: items.length };
   } catch (error: any) { return { success: false, error: error.message }; }
+}
+
+/**
+ * Search purchase invoices across all suppliers and history by barcode, drug name, invoice number, or supplier name
+ */
+export async function searchPurchaseInvoicesForReturnAction(searchTerm: string) {
+  try {
+    const session = await getLocalSession();
+    if (!session || !hasUserPermissionSync(session, 'can_view_purchases')) return { success: false, error: 'Unauthorized', data: [] };
+    await ensureBarcodeColumn();
+    const pharmacyId = session.pharmacy_id || 'local_default';
+    const term = searchTerm.trim();
+    if (!term) return { success: true, data: [] };
+
+    const query = `
+      SELECT DISTINCT 
+        i.id, i.invoice_number, i.supplier_id, i.total_amount, i.invoice_date, i.created_at, i.status,
+        s.name_ar as supplier_name
+      FROM purchase_invoices i
+      LEFT JOIN suppliers s ON i.supplier_id = s.id
+      LEFT JOIN purchase_invoice_items pii ON pii.invoice_id = i.id
+      LEFT JOIN master_drugs md ON pii.drug_id = md.id
+      WHERE (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
+        AND (i.status = 'completed')
+        AND (
+          i.id LIKE ? OR
+          i.invoice_number LIKE ? OR
+          s.name_ar LIKE ? OR
+          md.trade_name LIKE ? OR
+          md.trade_name_en LIKE ? OR
+          md.active_ingredient LIKE ? OR
+          md.barcode = ? OR
+          pii.barcode = ? OR
+          md.barcode LIKE ? OR
+          pii.barcode LIKE ? OR
+          CAST(md.id AS TEXT) = ?
+        )
+      ORDER BY date(i.invoice_date) DESC, i.created_at DESC
+      LIMIT 100
+    `;
+    const wildcard = `%${term}%`;
+    const invoices = await db.prepare(query).all(
+      pharmacyId, pharmacyId,
+      wildcard, wildcard, wildcard, wildcard, wildcard, wildcard,
+      term, term,
+      wildcard, wildcard,
+      term
+    ) as any[];
+    return { success: true, data: invoices };
+  } catch (error: any) {
+    console.error('searchPurchaseInvoicesForReturnAction error:', error);
+    return { success: false, error: error.message || 'فشل البحث في فواتير المشتريات', data: [] };
+  }
 }
 
 export async function getPurchaseInvoiceDetailsAction(invoiceId: string) {
@@ -1522,13 +1606,11 @@ export async function createPurchaseReturnAction(data: PurchaseReturnRequest) {
         // Decrease supplier balance
         await db.prepare('UPDATE suppliers SET balance = balance - ? WHERE id = ?').run(totalAmount, data.supplier_id);
       } else if (data.refund_method === 'cash') {
-        const openShift = await db.prepare("SELECT id FROM shifts WHERE user_id = ? AND status = 'open'").get(session.id) as any;
-        if (openShift) {
-          await db.prepare(`
-            INSERT INTO cash_movements (id, user_id, shift_id, type, category, amount, notes, date)
-            VALUES (?, ?, ?, 'in', 'purchase_return', ?, ?, ?)
-          `).run(generateId(), session.id, openShift.id, totalAmount, `مرتجع مشتريات نقدي للمورد رقم ${data.supplier_id}`, new Date().toLocaleDateString('en-CA'));
-        }
+        const shiftId = await requireOpenShiftId(String(session.id));
+        await db.prepare(`
+          INSERT INTO cash_movements (id, user_id, shift_id, type, category, amount, notes, date)
+          VALUES (?, ?, ?, 'in', 'purchase_return', ?, ?, ?)
+        `).run(generateId(), session.id, shiftId, totalAmount, `مرتجع مشتريات نقدي للمورد رقم ${data.supplier_id}`, new Date().toLocaleDateString('en-CA'));
         
         await db.prepare(`
           INSERT INTO supplier_transactions (supplier_id, type, amount, reference_id, notes)
@@ -1717,6 +1799,7 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
         AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
     `).get(data.id, pharmacyId, pharmacyId);
     if (!ownedInvoice) return { success: false, error: 'Completed purchase invoice not found in this pharmacy' };
+    if (!isTauri) await assertPurchaseBarcodesAvailable(data.cart || []);
 
     if (isTauri) {
       const { invoke } = await import('@tauri-apps/api/core');
@@ -1838,6 +1921,7 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
                   expiry_date = ?, 
                   batch_number = ?, 
                   strips_per_box = ?, 
+                  barcode = CASE WHEN ? != '' THEN ? ELSE barcode END,
                   updated_at = CURRENT_TIMESTAMP 
               WHERE id = ?
             `).run(
@@ -1847,6 +1931,8 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
               normalizeDateToYMD(newItem.expiry_date),
               newBatchNumber,
               newItem.strips_per_box || 1,
+              String(newItem.barcode || '').trim(),
+              String(newItem.barcode || '').trim(),
               inv.id
             );
             inventoryIdsByDrug.set(String(newItem.id), String(inv.id));
@@ -1860,6 +1946,7 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
               expiryDate: normalizeDateToYMD(newItem.expiry_date),
               batchNumber: newBatchNumber,
               stripsPerBox: newItem.strips_per_box || 1,
+              barcode: newItem.barcode,
             });
             inventoryIdsByDrug.set(String(newItem.id), inventoryId);
           }
@@ -1885,6 +1972,7 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
             expiryDate: normalizeDateToYMD(newItem.expiry_date),
             batchNumber: newBatchNumber,
             stripsPerBox: newItem.strips_per_box || 1,
+            barcode: newItem.barcode,
           });
           inventoryIdsByDrug.set(String(newItem.id), inventoryId);
         }
@@ -1929,9 +2017,8 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
         }
 
         if (item.barcode) {
-          await db.prepare("UPDATE master_drugs SET barcode = ? WHERE id = ? AND (barcode IS NULL OR barcode = '')").run(item.barcode, item.id);
-          await db.prepare("UPDATE inventory SET barcode = ? WHERE drug_id = ? AND (barcode IS NULL OR barcode = '')").run(item.barcode, item.id);
-          secureCache.updateDrug(Number(item.id), { barcode: item.barcode });
+          const masterUpdate = await db.prepare("UPDATE master_drugs SET barcode = ? WHERE id = ? AND (barcode IS NULL OR barcode = '')").run(item.barcode.trim(), item.id);
+          if (masterUpdate.changes > 0) secureCache.updateDrug(Number(item.id), { barcode: item.barcode.trim() });
         }
 
         const itemSubtotal = (item.quantity * item.cost_price);
@@ -2029,11 +2116,11 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
 
       // Cash Drawer / Movements Adjustment
       if (data.payment_method === 'cash') {
-        const openShift = await db.prepare("SELECT id FROM shifts WHERE user_id = ? AND status = 'open'").get(session.id) as any;
-        if (openShift && diff !== 0) {
+        const shiftId = await requireOpenShiftId(String(session.id));
+        if (diff !== 0) {
           const type = diff > 0 ? 'disbursement' : 'receipt';
           await db.prepare("INSERT INTO cash_movements (id, user_id, shift_id, type, amount, category, notes, date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(
-            generateId(), session.id, openShift.id, type, Math.abs(diff), 'purchases', `تعديل فاتورة شراء رقم ${data.invoice_number || data.id.slice(0, 8)}`, new Date().toISOString().split('T')[0]
+            generateId(), session.id, shiftId, type, Math.abs(diff), 'purchases', `تعديل فاتورة شراء رقم ${data.invoice_number || data.id.slice(0, 8)}`, new Date().toISOString().split('T')[0]
           );
         }
       }

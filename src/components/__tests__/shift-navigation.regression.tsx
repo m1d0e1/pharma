@@ -15,14 +15,13 @@ describe('unified shift navigation', () => {
 
     render(<ShiftManagement />);
 
-    expect(await screen.findByRole('link', { name: 'فتح وردية جديدة' })).toHaveAttribute('href', '/shifts');
+    expect(await screen.findByRole('link', { name: 'إدارة الجلسات النقدية' })).toHaveAttribute('href', '/shifts');
   });
 
-  it('keeps a visible POS redirect when checkout requires an open shift', () => {
+  it('does not expose the retired manual-open gate in POS checkout', () => {
     const source = fs.readFileSync(path.join(process.cwd(), 'src/app/(dashboard)/pos/page.tsx'), 'utf8');
 
-    expect(source).toContain("checkoutError.includes('فتح وردية')");
-    expect(source).toContain("router.push('/shifts')");
-    expect(source).toMatch(/<button[\s\S]*فتح وردية[\s\S]*<\/button>/);
+    expect(source).not.toContain("checkoutError.includes('فتح وردية')");
+    expect(source).not.toContain("router.push('/shifts')");
   });
 });

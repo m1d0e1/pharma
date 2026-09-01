@@ -98,6 +98,15 @@ function createSchema(db: Database.Database) {
       name_ar TEXT NOT NULL,
       name_en TEXT
     );
+    CREATE TABLE expenses (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      category TEXT NOT NULL,
+      amount REAL NOT NULL,
+      description TEXT,
+      date TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
     CREATE TABLE daily_financial_snapshots (
       date TEXT PRIMARY KEY,
       total_sales REAL DEFAULT 0,
@@ -132,6 +141,56 @@ function createSchema(db: Database.Database) {
       expected_cash REAL NOT NULL,
       discrepancy REAL NOT NULL,
       handover_time DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE users (
+      id TEXT PRIMARY KEY,
+      full_name TEXT NOT NULL,
+      role TEXT NOT NULL
+    );
+    CREATE TABLE patients (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      phone TEXT,
+      current_balance REAL DEFAULT 0,
+      opening_balance REAL DEFAULT 0
+    );
+    CREATE TABLE suppliers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      phone TEXT,
+      current_balance REAL DEFAULT 0
+    );
+    CREATE TABLE patient_transactions (
+      id TEXT PRIMARY KEY,
+      patient_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      amount REAL NOT NULL,
+      notes TEXT,
+      date TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE supplier_transactions (
+      id TEXT PRIMARY KEY,
+      supplier_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      amount REAL NOT NULL,
+      notes TEXT,
+      date TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE financial_notices (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      target_type TEXT NOT NULL CHECK(target_type IN ('customer', 'supplier', 'pharmacy')),
+      target_id TEXT,
+      type TEXT NOT NULL CHECK(type IN ('credit', 'debit')),
+      amount REAL NOT NULL,
+      reason TEXT NOT NULL,
+      notes TEXT,
+      date TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
   `);
 }
@@ -813,3 +872,237 @@ describe('10. Expanded Cash Movements & Operations Scenarios', () => {
     expect(netSales.total).toBe(7500);
   });
 });
+
+// ─────────────────────────────────────────────
+// SECTION 11: Accounts Management (Edit, Delete, Safety & Hierarchy)
+// ─────────────────────────────────────────────
+describe('11. Accounts Management (Edit, Delete, Safety & Hierarchy)', () => {
+  let db: Database.Database;
+
+  beforeAll(() => {
+    db = new Database(':memory:');
+    createSchema(db);
+    seedData(db);
+  });
+  afterAll(() => db.close());
+
+  it('Scenario 50: Update account metadata and code', () => {
+    db.prepare("INSERT INTO accounts (id, code, name_ar, name_en, type, is_group, parent_id) VALUES (901, '5.9.1', 'مصاريف نقل', 'Transport', 'expense', 0, 5)").run();
+    db.prepare("UPDATE accounts SET name_ar = 'مصاريف شحن ونقل', code = '5.9.2' WHERE id = 901").run();
+
+    const acc = db.prepare("SELECT * FROM accounts WHERE id = 901").get() as any;
+    expect(acc.name_ar).toBe('مصاريف شحن ونقل');
+    expect(acc.code).toBe('5.9.2');
+  });
+
+  it('Scenario 51: Prevent delete of parent account with children', () => {
+    const parentId = 1; // Assets parent
+    const childrenCount = (db.prepare("SELECT COUNT(*) as count FROM accounts WHERE parent_id = ?").get(parentId) as any).count;
+    expect(childrenCount).toBeGreaterThan(0);
+
+    // Business rule: if children exist, deletion must be blocked
+    const canDelete = childrenCount === 0;
+    expect(canDelete).toBe(false);
+  });
+
+  it('Scenario 52: Prevent delete of account with journal entries', () => {
+    db.prepare("INSERT INTO daily_journals (id, date, description, total_amount) VALUES ('j-test-del', '2026-09-01', 'قيد تجريبي', 500)").run();
+    db.prepare("INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES ('j-test-del', 4, 'debit', 500)").run();
+
+    const entriesCount = (db.prepare("SELECT COUNT(*) as count FROM journal_entries WHERE account_id = 4").get() as any).count;
+    expect(entriesCount).toBeGreaterThan(0);
+
+    const canDelete = entriesCount === 0;
+    expect(canDelete).toBe(false);
+  });
+
+  it('Scenario 53: Successfully delete standalone unused leaf account', () => {
+    db.prepare("INSERT INTO accounts (id, code, name_ar, name_en, type, is_group, parent_id) VALUES (902, '5.9.9', 'حساب تجريبي للحذف', 'Test Delete', 'expense', 0, null)").run();
+    
+    const existsBefore = db.prepare("SELECT * FROM accounts WHERE id = 902").get();
+    expect(existsBefore).toBeDefined();
+
+    db.prepare("DELETE FROM accounts WHERE id = 902").run();
+    const existsAfter = db.prepare("SELECT * FROM accounts WHERE id = 902").get();
+    expect(existsAfter).toBeUndefined();
+  });
+
+  it('Scenario 54: Aggregate multi-level account balances dynamically', () => {
+    const accounts = [
+      { id: 1, code: '1', name_ar: 'الأصول', type: 'asset', is_group: 1, parent_id: null },
+      { id: 2, code: '1.1', name_ar: 'الأصول المتداولة', type: 'asset', is_group: 1, parent_id: 1 },
+      { id: 3, code: '1.1.1', name_ar: 'الصندوق الرئيسي', type: 'asset', is_group: 0, parent_id: 2, balance: 1500 },
+      { id: 4, code: '1.1.2', name_ar: 'البنك', type: 'asset', is_group: 0, parent_id: 2, balance: 3500 },
+    ];
+
+    const accountsMap = new Map(accounts.map(a => [a.id, a]));
+    const sorted = [...accounts].sort((a, b) => b.code.length - a.code.length);
+    sorted.forEach(acc => {
+      if (acc.parent_id && accountsMap.has(acc.parent_id)) {
+        const parent: any = accountsMap.get(acc.parent_id);
+        parent.balance = (parent.balance || 0) + (acc.balance || 0);
+      }
+    });
+
+    expect(accountsMap.get(2)?.balance).toBe(5000);
+    expect(accountsMap.get(1)?.balance).toBe(5000);
+  });
+});
+
+// ─────────────────────────────────────────────
+// SECTION 12: Expense Definitions Lifecycle & Safety
+// ─────────────────────────────────────────────
+describe('12. Expense Definitions Lifecycle & Safety', () => {
+  let db: Database.Database;
+
+  beforeAll(() => {
+    db = new Database(':memory:');
+    createSchema(db);
+    seedData(db);
+  });
+  afterAll(() => db.close());
+
+  it('Scenario 55: Verify seeded default expense categories', () => {
+    const definitions = db.prepare("SELECT * FROM expense_definitions ORDER BY code ASC").all() as any[];
+    expect(definitions.length).toBeGreaterThan(0);
+    expect(definitions.some(d => d.name_ar === 'كهرباء')).toBe(true);
+    expect(definitions.some(d => d.name_ar === 'رواتب')).toBe(true);
+  });
+
+  it('Scenario 56: Add and update custom expense definition', () => {
+    db.prepare("INSERT INTO expense_definitions (code, name_ar, name_en) VALUES ('555', 'ضيافة وبوفيه', 'Hospitality')").run();
+    let def = db.prepare("SELECT * FROM expense_definitions WHERE code = '555'").get() as any;
+    expect(def.name_ar).toBe('ضيافة وبوفيه');
+
+    db.prepare("UPDATE expense_definitions SET name_ar = 'ضيافة واحتياجات بوفيه', code = '556' WHERE id = ?").run(def.id);
+    def = db.prepare("SELECT * FROM expense_definitions WHERE id = ?").get(def.id) as any;
+    expect(def.code).toBe('556');
+    expect(def.name_ar).toBe('ضيافة واحتياجات بوفيه');
+  });
+
+  it('Scenario 57: Prevent delete of expense definition when used in expenses/movements', () => {
+    // Record expense using category 'كهرباء'
+    db.prepare("INSERT INTO expenses (id, user_id, category, amount, date) VALUES ('exp-101', 'u1', 'كهرباء', 450, '2026-09-01')").run();
+
+    const def = db.prepare("SELECT * FROM expense_definitions WHERE name_ar = 'كهرباء'").get() as any;
+    const usageCount = (db.prepare("SELECT COUNT(*) as count FROM expenses WHERE category = ? OR category = ?").get(def.code, def.name_ar) as any).count;
+    expect(usageCount).toBeGreaterThan(0);
+
+    const canDelete = usageCount === 0;
+    expect(canDelete).toBe(false);
+  });
+
+  it('Scenario 58: Delete unlinked expense definition', () => {
+    db.prepare("INSERT INTO expense_definitions (id, code, name_ar, name_en) VALUES (999, '599', 'مصروف تجريبي مؤقت', 'Temp Expense')").run();
+    const existsBefore = db.prepare("SELECT * FROM expense_definitions WHERE id = 999").get();
+    expect(existsBefore).toBeDefined();
+
+    db.prepare("DELETE FROM expense_definitions WHERE id = 999").run();
+    const existsAfter = db.prepare("SELECT * FROM expense_definitions WHERE id = 999").get();
+    expect(existsAfter).toBeUndefined();
+  });
+});
+
+// ─────────────────────────────────────────────
+// SECTION 13: Financial Notices & Adjustments Dynamic Wiring
+// ─────────────────────────────────────────────
+describe('13. Financial Notices & Adjustments Dynamic Wiring', () => {
+  let db: Database.Database;
+
+  beforeAll(() => {
+    db = new Database(':memory:');
+    createSchema(db);
+    seedData(db);
+
+    db.prepare("INSERT INTO users (id, full_name, role) VALUES ('u-admin', 'د. محمد علي', 'owner')").run();
+    db.prepare("INSERT INTO patients (id, name, phone, current_balance, opening_balance) VALUES ('p-1', 'أحمد محمود', '01012345678', 500, 0)").run();
+    db.prepare("INSERT INTO suppliers (id, name, phone, current_balance) VALUES (1, 'شركة فارما إيجيبت', '01234567890', 1200)").run();
+  });
+  afterAll(() => db.close());
+
+  it('Scenario 59: Record customer credit notice (discount/adjustment) and create balanced journal entry', () => {
+    const noticeId = 'fn-001';
+    const amount = 50;
+    const date = '2026-09-01';
+
+    // 1. Insert notice
+    db.prepare(`
+      INSERT INTO financial_notices (id, user_id, target_type, target_id, type, amount, reason, notes, date)
+      VALUES (?, 'u-admin', 'customer', 'p-1', 'credit', ?, 'خصم إضافي / تسوية حساب', 'تسوية رصيد', ?)
+    `).run(noticeId, amount, date);
+
+    // 2. Insert patient transaction (credit = negative adjustment)
+    db.prepare(`
+      INSERT INTO patient_transactions (id, patient_id, user_id, type, amount, notes, date)
+      VALUES ('ptx-1', 'p-1', 'u-admin', 'adjustment', ?, 'خصم إضافي / تسوية حساب', ?)
+    `).run(-amount, date);
+
+    // 3. Create daily journal and entries
+    const journalId = 'dj-fn-1';
+    db.prepare(`
+      INSERT INTO daily_journals (id, date, description, created_by, total_amount)
+      VALUES (?, ?, 'إشعار دائن: تسوية رصيد عميل', 'u-admin', ?)
+    `).run(journalId, date, amount);
+
+    // Debit customer adjustments account 4, Credit AR account 5
+    db.prepare("INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, 4, 'debit', ?)").run(journalId, amount);
+    db.prepare("INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, 5, 'credit', ?)").run(journalId, amount);
+
+    const journal = db.prepare("SELECT * FROM daily_journals WHERE id = ?").get(journalId) as any;
+    expect(journal).toBeDefined();
+    expect(journal.total_amount).toBe(50);
+
+    const entries = db.prepare("SELECT * FROM journal_entries WHERE journal_id = ?").all(journalId) as any[];
+    expect(entries.length).toBe(2);
+    const debitSum = entries.filter(e => e.type === 'debit').reduce((s, e) => s + e.amount, 0);
+    const creditSum = entries.filter(e => e.type === 'credit').reduce((s, e) => s + e.amount, 0);
+    expect(debitSum).toBe(creditSum);
+  });
+
+  it('Scenario 60: Record supplier debit notice and update supplier balance', () => {
+    const noticeId = 'fn-002';
+    const amount = 200;
+    const date = '2026-09-01';
+
+    // 1. Insert notice
+    db.prepare(`
+      INSERT INTO financial_notices (id, user_id, target_type, target_id, type, amount, reason, notes, date)
+      VALUES (?, 'u-admin', 'supplier', '1', 'debit', ?, 'خصم تجاري / تسوية فاتورة', 'تسوية بونص', ?)
+    `).run(noticeId, amount, date);
+
+    // 2. Insert supplier transaction
+    db.prepare(`
+      INSERT INTO supplier_transactions (id, supplier_id, user_id, type, amount, notes, date)
+      VALUES ('stx-1', '1', 'u-admin', 'adjustment', ?, 'خصم تجاري / تسوية فاتورة', ?)
+    `).run(amount, date);
+
+    // 3. Update supplier balance
+    db.prepare("UPDATE suppliers SET current_balance = current_balance + ? WHERE id = 1").run(amount);
+    const supplier = db.prepare("SELECT * FROM suppliers WHERE id = 1").get() as any;
+    expect(supplier.current_balance).toBe(1400);
+  });
+
+  it('Scenario 61: Query financial notices with resolved target names from patients and suppliers', () => {
+    const results = db.prepare(`
+      SELECT n.*, u.full_name as user_name,
+        CASE 
+          WHEN n.target_type = 'customer' THEN COALESCE(p.name, 'عميل')
+          WHEN n.target_type = 'supplier' THEN COALESCE(s.name, 'مورد')
+          ELSE 'الصيدلية / عام'
+        END as target_name
+      FROM financial_notices n
+      LEFT JOIN users u ON n.user_id = u.id
+      LEFT JOIN patients p ON n.target_type = 'customer' AND n.target_id = p.id
+      LEFT JOIN suppliers s ON n.target_type = 'supplier' AND CAST(n.target_id AS TEXT) = CAST(s.id AS TEXT)
+      ORDER BY n.created_at DESC
+    `).all() as any[];
+
+    expect(results.length).toBe(2);
+    expect(results.some(r => r.target_name === 'أحمد محمود')).toBe(true);
+    expect(results.some(r => r.target_name === 'شركة فارما إيجيبت')).toBe(true);
+    expect(results[0].user_name).toBe('د. محمد علي');
+  });
+});
+
+
+

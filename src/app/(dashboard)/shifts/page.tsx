@@ -68,7 +68,7 @@ export default function ShiftsPage() {
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
         <div>
           <h1 className="text-3xl font-bold text-slate-900 dark:text-white">إدارة الشفتات النقدية</h1>
-          <p className="text-slate-500 mt-1">إدارة فتح وإغلاق الشفتات النقدية وتتبع الفروقات</p>
+          <p className="text-slate-500 mt-1">إدارة الجلسات النقدية الدائمة وتتبع التسليمات والفروقات</p>
         </div>
         <div className="flex gap-3">
           <Link 
@@ -126,7 +126,7 @@ export default function ShiftsPage() {
         <ul className="space-y-2 text-slate-600 dark:text-slate-300">
           <li className="flex items-start gap-2">
             <span className="text-blue-500">1.</span>
-            <span>يجب على كل صيدلي فتح شفت نقدي عند بداية الدوام بإدخال الرصيد الافتتاحي.</span>
+            <span>ينشئ النظام جلسة نقدية دائمة لكل مستخدم تلقائياً، ولا تحتاج لفتحها بعد تسجيل الدخول.</span>
           </li>
           <li className="flex items-start gap-2">
             <span className="text-blue-500">2.</span>
@@ -134,7 +134,7 @@ export default function ShiftsPage() {
           </li>
           <li className="flex items-start gap-2">
             <span className="text-blue-500">3.</span>
-            <span>عند نهاية الدوام، يتم إغلاق الشفت بإدخال الرصيد الختامي الفعلي.</span>
+            <span>عند التسليم، ينتقل مبلغ المستخدم فقط وتظل جلسته مفتوحة للحركات التالية.</span>
           </li>
           <li className="flex items-start gap-2">
             <span className="text-blue-500">4.</span>

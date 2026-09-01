@@ -755,25 +755,7 @@ export default function POSPage() {
       } else {
         setAutoPrintReceipt(false);
         const checkoutError = result.error || 'فشلت العملية';
-        if (checkoutError.includes('فتح وردية')) {
-          toast((notification) => (
-            <div className="flex items-center gap-3" dir="rtl">
-              <span>{checkoutError}</span>
-              <button
-                type="button"
-                onClick={() => {
-                  toast.dismiss(notification.id);
-                  router.push('/shifts');
-                }}
-                className="shrink-0 rounded-lg bg-blue-600 px-3 py-2 font-bold text-white hover:bg-blue-700"
-              >
-                فتح وردية
-              </button>
-            </div>
-          ), { duration: 10000, icon: '🕒' });
-        } else {
-          toast.error(checkoutError);
-        }
+        toast.error(checkoutError);
       }
     } catch (error) {
       setAutoPrintReceipt(false);

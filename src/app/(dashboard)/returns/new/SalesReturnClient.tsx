@@ -54,12 +54,12 @@ export default function SalesReturnClient() {
 
   const [selectedIndex, setSelectedIndex] = useState<number>(-1);
 
-  // Fetch invoices by date or search term (last 14 days)
+  // Fetch invoices by date or search term (all receipts)
   React.useEffect(() => {
     async function fetchInvoices() {
       setIsSearching(true);
       if (searchTerm.trim()) {
-        const res = await searchRecentReturnInvoicesAction(searchTerm, 14);
+        const res = await searchRecentReturnInvoicesAction(searchTerm);
         setIsSearching(false);
         if (res.success) {
           const list = res.data || [];
@@ -243,15 +243,24 @@ export default function SalesReturnClient() {
         <div className="lg:col-span-1 space-y-4">
           <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-4 space-y-3">
             <div>
-              <label className="block text-xs font-bold text-slate-500 mb-1.5">البحث باسم الدواء أو البار كود (آخر 14 يوم)</label>
+              <label className="block text-xs font-bold text-slate-500 mb-1.5">البحث بالباركود أو اسم الصنف أو رقم الفاتورة (جميع الفواتير)</label>
               <div className="relative">
                 <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                 <input
                   type="text"
-                  placeholder="اسم الدواء، البار كود، رقم الفاتورة..."
+                  autoFocus
+                  placeholder="امسح الباركود، أو اكتب اسم الدواء، أو رقم الفاتورة..."
                   className="w-full pl-4 pr-9 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold text-xs text-slate-900 dark:text-white"
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      if (invoicesByDate.length > 0) {
+                        setSelectedIndex(0);
+                      }
+                    }
+                  }}
                 />
               </div>
             </div>
