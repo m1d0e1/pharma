@@ -146,7 +146,7 @@ export default function ReceiptsPage() {
     }
 
     loadReceipts();
-  }, []);
+  }, [shiftId]);
 
   if (loading) {
     return (

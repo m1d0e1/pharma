@@ -110,13 +110,6 @@ describe('inventory-linked reorder and shortage notebook regression', () => {
         'CAST(m.id AS TEXT) = CAST(ds.drug_id AS TEXT)',
         'CAST(m.id AS TEXT) = CAST(ms.drug_id AS TEXT)',
       ]],
-      [dashboardSource, [
-        'm.id = ds.drug_id',
-        'm.id = ms.drug_id',
-      ], [
-        'CAST(m.id AS TEXT) = CAST(ds.drug_id AS TEXT)',
-        'CAST(m.id AS TEXT) = CAST(ms.drug_id AS TEXT)',
-      ]],
       [shortagesSource, [
         'm.id = s.drug_id',
         'ds.drug_id = s.drug_id',
@@ -128,6 +121,10 @@ describe('inventory-linked reorder and shortage notebook regression', () => {
       for (const join of directJoins) expect(source).toContain(join);
       for (const join of castJoins) expect(source).not.toContain(join);
     }
+
+    expect(dashboardSource).toContain("import { getLowStockAction } from '@/app/actions-client/inventory'");
+    expect(dashboardSource).toContain('await getLowStockAction(10)');
+    expect(dashboardSource).not.toContain('WITH DrugStock AS');
   });
 
   it('flows from live stock through reorder alerts into a duplicate-safe shortage workflow', async () => {

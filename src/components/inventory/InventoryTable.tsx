@@ -91,7 +91,7 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
   }
 
   // Items are pre-filtered on the database side
-  const filteredItems = items || [];
+  const filteredItems = useMemo(() => items || [], [items]);
   const arCollator = useMemo(() => new Intl.Collator('ar', { sensitivity: 'base' }), []);
 
   const sortedItems = useMemo(() => {

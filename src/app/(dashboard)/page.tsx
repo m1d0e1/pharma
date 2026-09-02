@@ -31,6 +31,7 @@ const DashboardCharts = dynamic(() => import('@/components/dashboard/DashboardCh
 const ReceiptDetailsModal = dynamic(() => import('@/components/receipts/ReceiptDetailsModal'), { ssr: false });
 
 import { getInvoiceDetailsAction } from '@/app/actions-client/sales-reports';
+import { getLowStockAction } from '@/app/actions-client/inventory';
 
 export default function DashboardPage() {
   const [user, setUser] = useState<any>(null);
@@ -144,36 +145,18 @@ export default function DashboardPage() {
           WHERE sa.created_at >= ? AND sa.created_at <= ? AND new_quantity < old_quantity
         `, [startOfDay, endOfDay]);
 
-        // Stock alerts (Distinct drugs below reorder point or out of stock)
-        const alertsRow = await dbGet(`
-          WITH DrugStock AS (
-            SELECT drug_id, SUM(quantity) as current_stock
-            FROM inventory
-            WHERE quantity > 0
-            GROUP BY drug_id
-          ),
-          MonthlySales AS (
-            SELECT si.drug_id, SUM(si.quantity_sold) as avg_monthly_usage
-            FROM sales_items si
-            JOIN sales_invoices inv ON si.invoice_id = inv.id
-            WHERE si.is_negative = 0 AND inv.created_at >= datetime('now', '-30 days', 'localtime')
-            GROUP BY si.drug_id
-          )
-          SELECT COUNT(*) as count
-          FROM master_drugs m
-          LEFT JOIN DrugStock ds ON m.id = ds.drug_id
-          LEFT JOIN MonthlySales ms ON m.id = ms.drug_id
-          WHERE (
-            (ds.current_stock IS NOT NULL AND ds.current_stock <= COALESCE(NULLIF(m.reorder_point, 0), NULLIF(m.min_limit, 0), 10))
-            OR (ds.current_stock IS NULL AND (m.reorder_point > 0 OR m.min_limit > 0 OR ms.avg_monthly_usage > 0))
-          )
-        `);
+        // Keep this KPI on the same pharmacy-scoped, expiry-aware source as the
+        // reorder widget and low-stock page so all three surfaces stay in sync.
+        const lowStockResult = await getLowStockAction(10);
+        const stockAlertsCount = lowStockResult.success && Array.isArray(lowStockResult.data)
+          ? lowStockResult.data.length
+          : 0;
 
         const kpis = {
           sales_today: salesTodayRow?.total || 0,
           pending_delivery_cash: pendingDeliveryRow?.total || 0,
           shrinkage_today: shrinkageRow?.total_loss || 0,
-          stock_alerts_count: alertsRow?.count || 0
+          stock_alerts_count: stockAlertsCount
         };
 
         const revenueChange = 12.5;
