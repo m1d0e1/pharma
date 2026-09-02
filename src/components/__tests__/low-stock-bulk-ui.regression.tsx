@@ -203,5 +203,26 @@ describe('low stock alert multi-selection and bulky actions ui', () => {
       expect(toast.success).toHaveBeenCalledWith(expect.stringContaining('تمت إضافة 3 صنف إلى كشكول النواقص بنجاح'));
     });
   });
-});
 
+  it('hides every current reorder alert without deleting data and restores them from inventory refresh', async () => {
+    (getLowStockAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: mockItems.map(i => ({
+        ...i,
+        current_stock: i.quantity,
+      })),
+    });
+
+    render(<ReorderAlerts />);
+    expect(await screen.findByText('Panadol Extra')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'إخفاء الكل' }));
+    expect(screen.getByText('تم إخفاء 3 صنف من العرض فقط')).toBeInTheDocument();
+    expect(screen.queryByText('Panadol Extra')).not.toBeInTheDocument();
+    expect(getLowStockAction).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'تحديث ومزامنة من المخزون' }));
+    await waitFor(() => expect(getLowStockAction).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText('Panadol Extra')).toBeInTheDocument();
+  });
+});

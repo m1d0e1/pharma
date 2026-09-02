@@ -275,22 +275,47 @@ describe('inventory workbook drug identity preflight', () => {
     ]);
   });
 
+  it('remaps an unnamed duplicate to the one named drug with the same barcode', async () => {
+    await importInventoryWorkbookRows(
+      [
+        { id: 'legacy-lot', drug_id: 100001, quantity: 2, barcode: '6221025003843' },
+        { id: 'named-lot', drug_id: 100099, quantity: 3, barcode: '6221025003843' },
+      ],
+      [
+        { id: 100001, trade_name: 'Drug 100001', barcode: '6221025003843' },
+        { id: 100099, trade_name: 'انتودين 40 اقراص', barcode: '6221025003843' },
+      ],
+      'active-pharmacy',
+      adapter(db),
+    );
+
+    expect(db.prepare('SELECT COUNT(*) AS count FROM master_drugs WHERE id = 100001').get()).toEqual({ count: 0 });
+    expect(db.prepare('SELECT id, drug_id, quantity FROM inventory ORDER BY id').all()).toEqual([
+      { id: 'legacy-lot', drug_id: 100099, quantity: 2 },
+      { id: 'named-lot', drug_id: 100099, quantity: 3 },
+    ]);
+    expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+  });
+
   it('rejects an ambiguous placeholder/barcode row without partially writing valid rows', async () => {
     await expect(importInventoryWorkbookRows(
       [
         { id: 'placeholder-lot', drug_id: 100002, quantity: 1, barcode: '6221025003843' },
         { id: 'valid-lot', drug_id: 9002, quantity: 1, barcode: '6221025003843' },
+        { id: 'other-valid-lot', drug_id: 9003, quantity: 1, barcode: '6221025003843' },
       ],
       [
         { id: 100002, trade_name: 'Drug 100002', barcode: '6221025003843' },
         { id: 9002, trade_name: 'Valid named row', barcode: '6221025003843' },
+        { id: 9003, trade_name: 'Another named row', barcode: '6221025003843' },
       ],
       'active-pharmacy',
       adapter(db),
-    )).rejects.toThrow(/Missing drug name for inventory drug 100002/);
+    )).rejects.toThrow(/Ambiguous barcode 6221025003843 for unnamed inventory drug 100002/);
 
     expect(db.prepare('SELECT COUNT(*) AS count FROM master_drugs WHERE id = 100002').get()).toEqual({ count: 0 });
     expect(db.prepare('SELECT COUNT(*) AS count FROM master_drugs WHERE id = 9002').get()).toEqual({ count: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM master_drugs WHERE id = 9003').get()).toEqual({ count: 0 });
     expect(db.prepare('SELECT COUNT(*) AS count FROM inventory').get()).toEqual({ count: 0 });
   });
 
@@ -340,4 +365,3 @@ describe('inventory workbook drug identity preflight', () => {
     });
   });
 });
-

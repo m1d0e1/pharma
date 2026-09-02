@@ -252,6 +252,38 @@ export async function importInventoryWorkbookRows(
       }
     }
 
+    for (const sourceId of new Set(inventory.map(row => Number(row.drug_id)))) {
+      const existing = existingById.get(sourceId);
+      if (importedDrugs.has(sourceId) || (existing && drugName(existing, sourceId)) || idRemapping.has(sourceId)) continue;
+      const barcodes = [...new Set(inventory
+        .filter(row => Number(row.drug_id) === sourceId)
+        .map(row => text(row.barcode))
+        .filter((barcode): barcode is string => Boolean(barcode)))];
+      if (barcodes.length !== 1) continue;
+
+      const matches = new Map<number, ExcelRow>();
+      for (const [candidateId, candidate] of importedDrugs) {
+        if (text(candidate.barcode) === barcodes[0]) matches.set(candidateId, candidate);
+      }
+      for (const candidate of await database.select<ExcelRow>(
+        'SELECT id, trade_name, trade_name_en, active_ingredient FROM master_drugs WHERE barcode = ?',
+        [barcodes[0]],
+      )) {
+        const candidateId = drugId(candidate.id);
+        if (candidateId && drugName(candidate, candidateId)) matches.set(candidateId, candidate);
+      }
+
+      if (matches.size === 1) {
+        const targetId = [...matches.keys()][0];
+        idRemapping.set(sourceId, idRemapping.get(targetId) || targetId);
+      } else if (matches.size > 1) {
+        throw new Error(
+          `Ambiguous barcode ${barcodes[0]} for unnamed inventory drug ${sourceId}; ` +
+          `it matches drug IDs ${[...matches.keys()].join(', ')} and the import was rolled back`,
+        );
+      }
+    }
+
     // Apply ID remapping to inventory rows
     if (idRemapping.size > 0) {
       for (const item of inventory) {
@@ -280,9 +312,16 @@ export async function importInventoryWorkbookRows(
     await upsertRows(database, 'master_drugs', masterRowsToUpsert, masterColumns);
 
     const plannedMasterIds = new Set(masterRowsToUpsert.map(row => Number(row.id)));
-    for (const id of new Set(inventory.map(row => Number(row.drug_id)))) {
-      if (plannedMasterIds.has(id) || existingById.has(id) || [...idRemapping.values()].includes(id)) continue;
-      throw new Error(`Missing drug name for inventory drug ${id}`);
+    const missingIds = [...new Set(inventory.map(row => Number(row.drug_id)))].filter(id => {
+      const existing = existingById.get(id);
+      return !plannedMasterIds.has(id) && ![...idRemapping.values()].includes(id) &&
+        (!existing || !drugName(existing, id));
+    });
+    if (missingIds.length > 0) {
+      throw new Error(
+        `Missing valid drug names for inventory drug IDs: ${missingIds.join(', ')}. ` +
+        'Add a real trade_name or trade_name_en to the workbook; the import was rolled back',
+      );
     }
 
     for (const row of inventory) {
