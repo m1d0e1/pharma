@@ -36,12 +36,14 @@ pnpm-debug.log*
 .data/
 !egypt_drugs_smart_scrape.csv
 !egypt_drugs_drugeye.csv
+!db_drug_interactions.csv
 
 # Local scratchpads and agent caches
 scratch/
 .agents/
 .claude/
 .roo/
+.kilo/
 .codex-remote-attachments/
 .mcp.json
 
