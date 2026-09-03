@@ -82,6 +82,7 @@ interface MasterDrug {
 
 interface Props {
    initialItems: MasterDrug[];
+   totalCount?: number;
 }
 
 type FilterType = 'medicine' | 'non-medicine' | 'service' | 'all';
@@ -101,15 +102,21 @@ function ContextMenuItem({ icon: Icon, label, onClick, color = "text-slate-700 d
   );
 }
 
-export default function ItemsManagementClient({ initialItems }: Props) {
+export default function ItemsManagementClient({ initialItems, totalCount }: Props) {
    const searchParams = useSearchParams();
-   const [items, setItems] = useState<MasterDrug[]>(initialItems);
+   const [items, setItems] = useState<MasterDrug[]>(initialItems || []);
    const [searchTerm, setSearchTerm] = useState('');
    const [searchByActive, setSearchByActive] = useState(false);
    const [filterType, setFilterType] = useState<FilterType>('all');
    const [filterStatus, setFilterStatus] = useState<FilterStatus>('all');
    const [minPrice, setMinPrice] = useState<string>('');
    const [maxPrice, setMaxPrice] = useState<string>('');
+
+   useEffect(() => {
+      if (!searchTerm.trim() && filterType === 'all' && filterStatus === 'all' && !minPrice && !maxPrice) {
+         setItems(initialItems || []);
+      }
+   }, [initialItems]);
 
    const [contextMenu, setContextMenu] = useState<{ x: number, y: number, drugId: number | string } | null>(null);
 
@@ -320,9 +327,18 @@ export default function ItemsManagementClient({ initialItems }: Props) {
 
    // Advanced search effect
    useEffect(() => {
+      const hasSearch = Boolean(searchTerm.trim());
+      const hasFilters = filterType !== 'all' || filterStatus !== 'all' || Boolean(minPrice) || Boolean(maxPrice);
+
+      // On initial load without active search or filters, keep initialItems to prevent flicker/wipe
+      if (!hasSearch && !hasFilters && initialItems && initialItems.length > 0) {
+         setItems(initialItems);
+         return;
+      }
+
       const delayDebounceFn = setTimeout(async () => {
          const options = {
-            query: searchTerm,
+            query: searchTerm.trim(),
             type: filterType,
             status: filterStatus,
             minPrice: minPrice ? parseFloat(minPrice) : undefined,
@@ -337,7 +353,7 @@ export default function ItemsManagementClient({ initialItems }: Props) {
       }, 400);
 
       return () => clearTimeout(delayDebounceFn);
-   }, [searchTerm, filterType, filterStatus, minPrice, maxPrice, searchByActive]);
+   }, [searchTerm, filterType, filterStatus, minPrice, maxPrice, searchByActive, initialItems]);
 
    const openAddModal = () => {
       setEditingItem({
@@ -645,10 +661,17 @@ export default function ItemsManagementClient({ initialItems }: Props) {
             </div>
 
             <div className="p-10 bg-slate-50/50 dark:bg-slate-800/40 flex justify-between items-center border-t border-slate-100 dark:border-slate-800">
-               <div className="flex items-center gap-4">
-                  <div className="w-3 h-3 rounded-full bg-primary-500" />
-                  <p className="text-sm font-black text-slate-500">إجمالي الأصناف: <span className="text-slate-900 dark:text-white ml-1">{items.length}</span></p>
-               </div>
+                <div className="flex items-center gap-4">
+                   <div className="w-3 h-3 rounded-full bg-primary-500" />
+                   <p className="text-sm font-black text-slate-500">
+                      إجمالي الأصناف: <span className="text-slate-900 dark:text-white ml-1">
+                         {(!searchTerm.trim() && filterType === 'all' && filterStatus === 'all' && !minPrice && !maxPrice && totalCount) ? totalCount : items.length}
+                      </span>
+                      {Boolean(totalCount && totalCount > items.length && !searchTerm.trim() && filterType === 'all' && filterStatus === 'all' && !minPrice && !maxPrice) && (
+                         <span className="text-xs text-slate-400 font-bold mr-2">(المعروض: {items.length})</span>
+                      )}
+                   </p>
+                </div>
                <div className="flex gap-2">
                   <button className="px-6 py-3 bg-white dark:bg-slate-800 rounded-2xl text-xs font-black text-slate-400 disabled:opacity-50 border border-slate-100 dark:border-slate-700">السابق</button>
                   <button className="px-6 py-3 bg-white dark:bg-slate-800 rounded-2xl text-xs font-black text-slate-400 disabled:opacity-50 border border-slate-100 dark:border-slate-700">التالي</button>

@@ -1,26 +1,27 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { getClientSession } from '@/lib/auth/local';
 import ItemsManagementClient from '@/components/inventory/ItemsManagementClient';
-import { dbSelect } from '@/lib/db/tauri';
+import { dbSelect, dbGet } from '@/lib/db/tauri';
 
 export default function ItemsPage() {
   const [items, setItems] = useState<any[]>([]);
+  const [totalCount, setTotalCount] = useState<number>(0);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     async function loadItems() {
       try {
-        const localUser = await getClientSession();
-        if (!localUser) return;
-
-        const data = await dbSelect(`
-          SELECT * FROM master_drugs 
-          ORDER BY trade_name ASC 
-          LIMIT 100
-        `);
+        const [data, countRes] = await Promise.all([
+          dbSelect(`
+            SELECT * FROM master_drugs 
+            ORDER BY trade_name ASC 
+            LIMIT 100
+          `),
+          dbGet('SELECT COUNT(*) as count FROM master_drugs')
+        ]);
         setItems(data || []);
+        setTotalCount(Number(countRes?.count) || (data || []).length);
       } catch (err) {
         console.error('Failed to load master drugs:', err);
       } finally {
@@ -49,7 +50,7 @@ export default function ItemsPage() {
       </div>
 
       <React.Suspense fallback={<div className="text-center py-10">جاري تحميل الأصناف...</div>}>
-        <ItemsManagementClient initialItems={items} />
+        <ItemsManagementClient initialItems={items} totalCount={totalCount} />
       </React.Suspense>
     </div>
   );

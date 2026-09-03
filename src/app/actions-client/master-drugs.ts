@@ -381,9 +381,13 @@ export async function searchMasterDrugsAction(queryOrOptions: string | {
 }): Promise<{ success: boolean; data?: any[]; error?: string }> {
   try {
     const options = typeof queryOrOptions === 'string' ? { query: queryOrOptions } : queryOrOptions;
-    const { query, type = 'all', status = 'all', minPrice, maxPrice, searchByActiveIngredient = false } = options;
+    const { query = '', type = 'all', status = 'all', minPrice, maxPrice, searchByActiveIngredient = false } = options;
+    const searchLower = (query || '').toLowerCase().trim();
+    const hasFilters = type !== 'all' || status !== 'all' || minPrice !== undefined || maxPrice !== undefined;
     
-    if (!query) return { success: true, data: [] };
+    if (typeof queryOrOptions === 'string' && !searchLower) {
+      return { success: true, data: [] };
+    }
 
     let allDrugs: any[] = [];
     try {
@@ -392,19 +396,20 @@ export async function searchMasterDrugsAction(queryOrOptions: string | {
     } catch (cacheErr) {
       console.warn('secureCache unavailable in searchMasterDrugsAction, searching DB only:', cacheErr);
     }
-    const searchLower = query.toLowerCase().trim();
 
     // 1. Search in secureCache (RAM)
     const cacheMatched = allDrugs.filter((m: any) => {
       // Name/Barcode/Active Ingredient Match
-      const matchesText = searchByActiveIngredient
-        ? (m.active_ingredient && m.active_ingredient.toLowerCase().includes(searchLower)) ||
-          (m.generic_name && m.generic_name.toLowerCase().includes(searchLower))
-        : (m.trade_name && m.trade_name.toLowerCase().includes(searchLower)) ||
-          (m.trade_name_en && m.trade_name_en.toLowerCase().includes(searchLower)) ||
-          m.barcode === searchLower ||
-          m.id?.toString() === searchLower;
-      if (!matchesText) return false;
+      if (searchLower) {
+        const matchesText = searchByActiveIngredient
+          ? (m.active_ingredient && m.active_ingredient.toLowerCase().includes(searchLower)) ||
+            (m.generic_name && m.generic_name.toLowerCase().includes(searchLower))
+          : (m.trade_name && m.trade_name.toLowerCase().includes(searchLower)) ||
+            (m.trade_name_en && m.trade_name_en.toLowerCase().includes(searchLower)) ||
+            m.barcode === searchLower ||
+            m.id?.toString() === searchLower;
+        if (!matchesText) return false;
+      }
 
       // Type Filter
       if (type === 'medicine' && (!m.is_medicine || m.is_service)) return false;
@@ -425,22 +430,52 @@ export async function searchMasterDrugsAction(queryOrOptions: string | {
     // 2. Search in local SQLite database (for custom added drugs or when cache unavailable)
     let dbMatched: any[] = [];
     if (allDrugs.length === 0 || cacheMatched.length < 20) {
-      const likePattern = `%${searchLower}%`;
-      const dbQuery = searchByActiveIngredient
-        ? `SELECT * FROM master_drugs 
-           WHERE (active_ingredient LIKE ? OR generic_name LIKE ?)
-             AND (trade_name IS NULL OR trade_name != 'SECURE')
-             AND (trade_name_en IS NULL OR trade_name_en != 'SECURE')
-           LIMIT 50`
-        : `SELECT * FROM master_drugs 
-           WHERE (trade_name LIKE ? OR trade_name_en LIKE ? OR barcode = ?)
-             AND (trade_name IS NULL OR trade_name != 'SECURE')
-             AND (trade_name_en IS NULL OR trade_name_en != 'SECURE')
-           LIMIT 50`;
+      const whereClauses: string[] = [
+        "(trade_name IS NULL OR trade_name != 'SECURE')",
+        "(trade_name_en IS NULL OR trade_name_en != 'SECURE')"
+      ];
+      const dbParams: any[] = [];
 
-      const dbParams = searchByActiveIngredient 
-        ? [likePattern, likePattern] 
-        : [likePattern, likePattern, searchLower];
+      if (searchLower) {
+        const likePattern = `%${searchLower}%`;
+        if (searchByActiveIngredient) {
+          whereClauses.push('(active_ingredient LIKE ? OR generic_name LIKE ?)');
+          dbParams.push(likePattern, likePattern);
+        } else {
+          whereClauses.push('(trade_name LIKE ? OR trade_name_en LIKE ? OR barcode = ?)');
+          dbParams.push(likePattern, likePattern, searchLower);
+        }
+      }
+
+      if (type === 'medicine') {
+        whereClauses.push('(is_medicine = 1 AND (is_service IS NULL OR is_service = 0))');
+      } else if (type === 'non-medicine') {
+        whereClauses.push('(is_medicine = 0 OR is_service = 1)');
+      } else if (type === 'service') {
+        whereClauses.push('is_service = 1');
+      }
+
+      if (status === 'stopped') {
+        whereClauses.push('stop_dealing = 1');
+      } else if (status === 'active') {
+        whereClauses.push('(stop_dealing IS NULL OR stop_dealing = 0)');
+      }
+
+      if (minPrice !== undefined) {
+        whereClauses.push('official_price >= ?');
+        dbParams.push(minPrice);
+      }
+      if (maxPrice !== undefined) {
+        whereClauses.push('official_price <= ?');
+        dbParams.push(maxPrice);
+      }
+
+      const dbQuery = `
+        SELECT * FROM master_drugs 
+        WHERE ${whereClauses.join(' AND ')}
+        ORDER BY trade_name ASC 
+        LIMIT 100
+      `;
 
       dbMatched = await db.prepare(dbQuery).all(...dbParams) as any[];
     }
@@ -475,8 +510,11 @@ export async function searchMasterDrugsAction(queryOrOptions: string | {
     }
 
     const merged = Array.from(combinedMap.values())
-      .map(drug => ({ drug, score: getRelevanceScore(drug, searchLower) }))
-      .sort((a, b) => b.score - a.score)
+      .map(drug => ({ drug, score: searchLower ? getRelevanceScore(drug, searchLower) : 0 }))
+      .sort((a, b) => searchLower
+        ? (b.score - a.score)
+        : ((a.drug.trade_name || a.drug.trade_name_en || '').localeCompare(b.drug.trade_name || b.drug.trade_name_en || '', 'ar'))
+      )
       .map(item => item.drug)
       .slice(0, 100);
 
