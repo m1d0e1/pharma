@@ -12,7 +12,7 @@
  */
 
 import { createClient } from '@supabase/supabase-js';
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { parse } from 'csv-parse/sync';
@@ -229,16 +229,22 @@ async function main() {
   if (!DRY_RUN) await createTables();
 
   // 1. Drugs
-  console.log('\n📋 Parsing egypt_drugs_drugeye.csv...');
-  const drugsCSV = readFileSync(resolve(ROOT, 'egypt_drugs_drugeye.csv'), 'utf-8');
+  const drugeyePath = resolve(ROOT, 'egypt_drugs_drugeye.csv');
+  const baselinePath = resolve(ROOT, 'egypt_drugs_smart_scrape.csv');
+  const drugeyeExists = existsSync(drugeyePath);
+  const activeCSVPath = drugeyeExists ? drugeyePath : baselinePath;
+  console.log(`\n📋 Parsing ${drugeyeExists ? 'egypt_drugs_drugeye.csv' : 'egypt_drugs_smart_scrape.csv'}...`);
+  const drugsCSV = readFileSync(activeCSVPath, 'utf-8');
   const { rows: drugRows } = parseCSV(drugsCSV);
-  const expectedColumns = ['Trade Name', 'Price', 'Active Ingredient', 'Category', 'Manufacturer'];
-  const actualColumns = drugRows.length ? Object.keys(drugRows[0]) : [];
-  if (actualColumns.join('\0') !== expectedColumns.join('\0')) {
-    throw new Error(`egypt_drugs_drugeye.csv columns must be exactly: ${expectedColumns.join(', ')}`);
+  if (drugeyeExists) {
+    const expectedColumns = ['Trade Name', 'Price', 'Active Ingredient', 'Category', 'Manufacturer'];
+    const actualColumns = drugRows.length ? Object.keys(drugRows[0]) : [];
+    if (actualColumns.join('\0') !== expectedColumns.join('\0')) {
+      throw new Error(`egypt_drugs_drugeye.csv columns must be exactly: ${expectedColumns.join(', ')}`);
+    }
   }
 
-  const baseline = parseCSV(readFileSync(resolve(ROOT, 'egypt_drugs_smart_scrape.csv'), 'utf-8')).rows
+  const baseline = parseCSV(readFileSync(baselinePath, 'utf-8')).rows
     .map(row => ({
       id: Number(row.id),
       trade_name: row['Trade Name'],

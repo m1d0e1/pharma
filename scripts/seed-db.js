@@ -113,6 +113,11 @@ function mergeDrugCatalog(baselineRows, updateRows) {
 // Main
 // ─────────────────────────────────────────────────
 
+
+// ─────────────────────────────────────────────────
+// Main
+// ─────────────────────────────────────────────────
+
 console.log('\n╔════════════════════════════════════════╗');
 console.log('║   Pharma DB Seeder                    ║');
 console.log('╚════════════════════════════════════════╝\n');
@@ -121,12 +126,19 @@ if (DRY_RUN) console.log('⚠  DRY RUN mode — no writes will be made\n');
 
 // 1. Parse CSVs first (fail fast before touching DB)
 console.log('📂 Parsing CSVs...');
-const drugsData = parseCsv(DRUGS_CSV, true);
+const drugsData = parseCsv(DRUGS_CSV, false);
 const baselineDrugsData = parseCsv(BASELINE_DRUGS_CSV, true);
 const interactionsData = parseCsv(INTERACTIONS_CSV);
-assertColumns(drugsData.header, ['Trade Name', 'Price', 'Active Ingredient', 'Category', 'Manufacturer'], path.basename(DRUGS_CSV));
 assertColumns(baselineDrugsData.header, ['id', 'Trade Name', 'Price', 'Active Ingredient', 'Category', 'Manufacturer'], path.basename(BASELINE_DRUGS_CSV));
-const preparedDrugRows = mergeDrugCatalog(baselineDrugsData.rows, drugsData.rows);
+let preparedDrugRows;
+if (drugsData.rows.length > 0) {
+  assertColumns(drugsData.header, ['Trade Name', 'Price', 'Active Ingredient', 'Category', 'Manufacturer'], path.basename(DRUGS_CSV));
+  preparedDrugRows = mergeDrugCatalog(baselineDrugsData.rows, drugsData.rows);
+} else {
+  preparedDrugRows = baselineDrugsData.rows.map(r => [
+    Number.parseInt(r[0], 10), r[1], r[2], r[3], r[4], r[5]
+  ]).filter(r => Number.isSafeInteger(r[0]) && r[0] > 0);
+}
 console.log('');
 
 if (DRY_RUN) {

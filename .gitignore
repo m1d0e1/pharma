@@ -35,6 +35,7 @@ pnpm-debug.log*
 *.xlsx
 .data/
 !egypt_drugs_smart_scrape.csv
+!egypt_drugs_drugeye.csv
 
 # Local scratchpads and agent caches
 scratch/
