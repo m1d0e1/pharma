@@ -99,6 +99,7 @@ async function canManageInventory() {
   return !!user && hasUserPermissionSync(user, 'can_manage_inventory');
 }
 import { secureCache } from '@/lib/cache/secure_cache';
+import { getSearchVariants, matchesDrug, calculateDrugRelevance } from '@/lib/search/normalization';
 
 export async function getMasterDrugAction(id: number) {
   try {
@@ -397,18 +398,13 @@ export async function searchMasterDrugsAction(queryOrOptions: string | {
       console.warn('secureCache unavailable in searchMasterDrugsAction, searching DB only:', cacheErr);
     }
 
+    const variants = getSearchVariants(searchLower);
+
     // 1. Search in secureCache (RAM)
     const cacheMatched = allDrugs.filter((m: any) => {
       // Name/Barcode/Active Ingredient Match
       if (searchLower) {
-        const matchesText = searchByActiveIngredient
-          ? (m.active_ingredient && m.active_ingredient.toLowerCase().includes(searchLower)) ||
-            (m.generic_name && m.generic_name.toLowerCase().includes(searchLower))
-          : (m.trade_name && m.trade_name.toLowerCase().includes(searchLower)) ||
-            (m.trade_name_en && m.trade_name_en.toLowerCase().includes(searchLower)) ||
-            m.barcode === searchLower ||
-            m.id?.toString() === searchLower;
-        if (!matchesText) return false;
+        if (!matchesDrug(m, variants, searchByActiveIngredient)) return false;
       }
 
       // Type Filter
@@ -437,13 +433,24 @@ export async function searchMasterDrugsAction(queryOrOptions: string | {
       const dbParams: any[] = [];
 
       if (searchLower) {
-        const likePattern = `%${searchLower}%`;
-        if (searchByActiveIngredient) {
-          whereClauses.push('(active_ingredient LIKE ? OR generic_name LIKE ?)');
-          dbParams.push(likePattern, likePattern);
-        } else {
-          whereClauses.push('(trade_name LIKE ? OR trade_name_en LIKE ? OR barcode = ?)');
-          dbParams.push(likePattern, likePattern, searchLower);
+        const textConditions: string[] = [];
+        for (const term of variants.searchTerms) {
+          const pattern = `%${term}%`;
+          if (searchByActiveIngredient) {
+            textConditions.push('(active_ingredient LIKE ? OR generic_name LIKE ?)');
+            dbParams.push(pattern, pattern);
+          } else {
+            textConditions.push('(trade_name LIKE ? OR trade_name_en LIKE ? OR barcode = ?)');
+            dbParams.push(pattern, pattern, term);
+          }
+        }
+        if (variants.compactQuery && variants.compactQuery.length >= 2) {
+          const compactPattern = `%${variants.compactQuery}%`;
+          textConditions.push('(trade_name LIKE ? OR trade_name_en LIKE ?)');
+          dbParams.push(compactPattern, compactPattern);
+        }
+        if (textConditions.length > 0) {
+          whereClauses.push(`(${textConditions.join(' OR ')})`);
         }
       }
 
@@ -481,6 +488,7 @@ export async function searchMasterDrugsAction(queryOrOptions: string | {
     }
 
     const dbFiltered = dbMatched.filter((m: any) => {
+      if (searchLower && !matchesDrug(m, variants, searchByActiveIngredient)) return false;
       if (type === 'medicine' && (!m.is_medicine || m.is_service)) return false;
       if (type === 'non-medicine' && (m.is_medicine || m.is_service)) return false;
       if (type === 'service' && !m.is_service) return false;
@@ -1247,48 +1255,5 @@ export async function removeDrugInteractionAction(id: number) {
 }
 
 export function getRelevanceScore(drug: any, searchLower: string): number {
-  const tradeEn = (drug.trade_name_en || '').toLowerCase().trim();
-  const tradeAr = (drug.trade_name || '').toLowerCase().trim();
-  const active = (drug.active_ingredient || drug.generic_name || '').toLowerCase().trim();
-  const barcode = (drug.barcode || '').toLowerCase().trim();
-
-  // 1. Exact matches on trade name or barcode
-  if (tradeEn === searchLower || tradeAr === searchLower || barcode === searchLower || String(drug.id) === searchLower) {
-    return 100;
-  }
-
-  // 2. Starts-with match on trade name (initial letters)
-  if (tradeEn.startsWith(searchLower) || tradeAr.startsWith(searchLower)) {
-    return 80;
-  }
-
-  // 3. Starts-with match on any word of trade name
-  const tradeEnWords = tradeEn.split(/[\s\-]+/);
-  const tradeArWords = tradeAr.split(/[\s\-]+/);
-  if (tradeEnWords.some((w: string) => w.startsWith(searchLower)) || tradeArWords.some((w: string) => w.startsWith(searchLower))) {
-    return 70;
-  }
-
-  // 4. Contains match on trade name
-  if (tradeEn.includes(searchLower) || tradeAr.includes(searchLower)) {
-    return 60;
-  }
-
-  // 5. Starts-with match on active ingredient (initial letters)
-  if (active.startsWith(searchLower)) {
-    return 50;
-  }
-
-  // 6. Starts-with match on any word of active ingredient
-  const activeWords = active.split(/[\s\-\+]+/);
-  if (activeWords.some((w: string) => w.startsWith(searchLower))) {
-    return 40;
-  }
-
-  // 7. Contains match on active ingredient
-  if (active.includes(searchLower)) {
-    return 30;
-  }
-
-  return 0;
+  return calculateDrugRelevance(drug, searchLower);
 }

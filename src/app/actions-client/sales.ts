@@ -55,6 +55,7 @@ import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { z } from 'zod';
 import { format } from 'date-fns';
 import { secureCache } from '@/lib/cache/secure_cache';
+import { getSearchVariants, matchesDrug, calculateDrugRelevance } from '@/lib/search/normalization';
 import { calculateCheckoutTotal, calculateLoyaltyPoints } from '@/lib/pos/checkout-calculation';
 import { isTauri } from '@/lib/env';
 import {
@@ -123,38 +124,44 @@ export async function searchDrugsAction(searchTerm: string, limit = 20, searchBy
     } catch (cacheErr) {
       console.warn('secureCache unavailable in searchDrugsAction, searching DB only:', cacheErr);
     }
+    const variants = getSearchVariants(searchLower);
     const cacheMatched = allDrugs.filter((d: any) => {
-      const match = searchByActiveIngredient
-        ? (d.generic_name && d.generic_name.toLowerCase().includes(searchLower)) ||
-          (d.active_ingredient && d.active_ingredient.toLowerCase().includes(searchLower))
-        : (d.trade_name && d.trade_name.toLowerCase().includes(searchLower)) || 
-          (d.trade_name_en && d.trade_name_en.toLowerCase().includes(searchLower)) || 
-          d.barcode === searchLower || 
-          d.id.toString() === searchLower;
-             
+      const match = matchesDrug(d, variants, searchByActiveIngredient);
       if (d.barcode === searchLower || d.id.toString() === searchLower) exactMatch = d;
       return match;
     });
 
     // Search custom drugs in SQLite db
-    const likePattern = `%${searchLower}%`;
-    const dbQuery = searchByActiveIngredient
-      ? `SELECT * FROM master_drugs 
-         WHERE (active_ingredient LIKE ? OR generic_name LIKE ?)
-           AND (trade_name IS NULL OR trade_name != 'SECURE')
-           AND (trade_name_en IS NULL OR trade_name_en != 'SECURE')`
-      : `SELECT * FROM master_drugs 
-         WHERE (trade_name LIKE ? OR trade_name_en LIKE ? OR barcode = ? OR EXISTS (
-           SELECT 1 FROM inventory barcode_lot
-           WHERE barcode_lot.drug_id = master_drugs.id
-             AND barcode_lot.barcode = ? COLLATE NOCASE
-         ))
-           AND (trade_name IS NULL OR trade_name != 'SECURE')
-           AND (trade_name_en IS NULL OR trade_name_en != 'SECURE')`;
+    const textConditions: string[] = [];
+    const dbParams: any[] = [];
+    for (const term of variants.searchTerms) {
+      const pattern = `%${term}%`;
+      if (searchByActiveIngredient) {
+        textConditions.push('(active_ingredient LIKE ? OR generic_name LIKE ?)');
+        dbParams.push(pattern, pattern);
+      } else {
+        textConditions.push('(trade_name LIKE ? OR trade_name_en LIKE ? OR barcode = ?)');
+        dbParams.push(pattern, pattern, term);
+      }
+    }
+    if (variants.compactQuery && variants.compactQuery.length >= 2) {
+      const compactPattern = `%${variants.compactQuery}%`;
+      textConditions.push('(trade_name LIKE ? OR trade_name_en LIKE ?)');
+      dbParams.push(compactPattern, compactPattern);
+    }
+    if (!searchByActiveIngredient) {
+      textConditions.push('EXISTS (SELECT 1 FROM inventory barcode_lot WHERE barcode_lot.drug_id = master_drugs.id AND barcode_lot.barcode = ? COLLATE NOCASE)');
+      dbParams.push(searchLower);
+    }
 
-    const dbParams = searchByActiveIngredient 
-      ? [likePattern, likePattern] 
-      : [likePattern, likePattern, searchLower, searchLower];
+    const whereClause = textConditions.length > 0 ? `(${textConditions.join(' OR ')})` : '1=1';
+    const dbQuery = `
+      SELECT * FROM master_drugs 
+      WHERE ${whereClause}
+        AND (trade_name IS NULL OR trade_name != 'SECURE')
+        AND (trade_name_en IS NULL OR trade_name_en != 'SECURE')
+      LIMIT 100
+    `;
 
     const dbMatched = await db.prepare(dbQuery).all(...dbParams) as any[];
 
@@ -947,48 +954,5 @@ export async function getSalesDashboardStatsAction() {
 }
 
 export function getRelevanceScore(drug: any, searchLower: string): number {
-  const tradeEn = (drug.trade_name_en || '').toLowerCase().trim();
-  const tradeAr = (drug.trade_name || '').toLowerCase().trim();
-  const active = (drug.active_ingredient || drug.generic_name || '').toLowerCase().trim();
-  const barcode = (drug.barcode || '').toLowerCase().trim();
-
-  // 1. Exact matches on trade name or barcode
-  if (tradeEn === searchLower || tradeAr === searchLower || barcode === searchLower || String(drug.id) === searchLower) {
-    return 100;
-  }
-
-  // 2. Starts-with match on trade name (initial letters)
-  if (tradeEn.startsWith(searchLower) || tradeAr.startsWith(searchLower)) {
-    return 80;
-  }
-
-  // 3. Starts-with match on any word of trade name
-  const tradeEnWords = tradeEn.split(/[\s\-]+/);
-  const tradeArWords = tradeAr.split(/[\s\-]+/);
-  if (tradeEnWords.some((w: string) => w.startsWith(searchLower)) || tradeArWords.some((w: string) => w.startsWith(searchLower))) {
-    return 70;
-  }
-
-  // 4. Contains match on trade name
-  if (tradeEn.includes(searchLower) || tradeAr.includes(searchLower)) {
-    return 60;
-  }
-
-  // 5. Starts-with match on active ingredient (initial letters)
-  if (active.startsWith(searchLower)) {
-    return 50;
-  }
-
-  // 6. Starts-with match on any word of active ingredient
-  const activeWords = active.split(/[\s\-\+]+/);
-  if (activeWords.some((w: string) => w.startsWith(searchLower))) {
-    return 40;
-  }
-
-  // 7. Contains match on active ingredient
-  if (active.includes(searchLower)) {
-    return 30;
-  }
-
-  return 0;
+  return calculateDrugRelevance(drug, searchLower);
 }
