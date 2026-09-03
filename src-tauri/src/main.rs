@@ -557,6 +557,12 @@ fn main() {
             sql: include_str!("../migrations/016_financial_expense_wiring.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 17,
+            description: "cloud_drug_identity",
+            sql: include_str!("../migrations/017_cloud_drug_identity.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()

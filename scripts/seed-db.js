@@ -3,7 +3,7 @@
  * seed-db.js
  * -----------
  * Seeds pharma_local.db with:
- *   1. master_drugs  — from egypt_drugs_database_full.csv
+ *   1. master_drugs  — existing catalog enriched by egypt_drugs_drugeye.csv
  *   2. drug_interactions — from db_drug_interactions.csv
  *
  * Usage:
@@ -17,9 +17,11 @@
 const path = require('path');
 const fs = require('fs');
 const Database = require('better-sqlite3');
+const { parse } = require('csv-parse/sync');
 
 const ROOT = path.join(__dirname, '..');
-const DRUGS_CSV = path.join(ROOT, 'egypt_drugs_smart_scrape.csv');
+const BASELINE_DRUGS_CSV = path.join(ROOT, 'egypt_drugs_smart_scrape.csv');
+const DRUGS_CSV = path.join(ROOT, 'egypt_drugs_drugeye.csv');
 const INTERACTIONS_CSV = path.join(ROOT, 'db_drug_interactions.csv');
 const MIGRATIONS_DIR = path.join(ROOT, 'src-tauri', 'migrations');
 
@@ -46,26 +48,6 @@ const DB_PATH = COPY_DEST
 // Helpers
 // ─────────────────────────────────────────────────
 
-/** Parse a simple CSV line respecting quoted fields */
-function parseCsvLine(line) {
-  const result = [];
-  let cur = '';
-  let inQuote = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (ch === '"') {
-      inQuote = !inQuote;
-    } else if (ch === ',' && !inQuote) {
-      result.push(cur.trim());
-      cur = '';
-    } else {
-      cur += ch;
-    }
-  }
-  result.push(cur.trim());
-  return result;
-}
-
 /** Parse CSV file into array of row arrays (skips header) */
 function parseCsv(filePath, required = false) {
   if (!fs.existsSync(filePath)) {
@@ -74,21 +56,57 @@ function parseCsv(filePath, required = false) {
     return { header: [], rows: [] };
   }
   console.log(`  Reading ${path.basename(filePath)}...`);
-  const content = fs.readFileSync(filePath, 'utf8');
-  // Remove BOM if present
-  const cleaned = content.replace(/^\uFEFF/, '');
-  const lines = cleaned.split(/\r?\n/);
-  const header = parseCsvLine(lines[0]);
+  const records = parse(fs.readFileSync(filePath, 'utf8'), {
+    bom: true,
+    skip_empty_lines: true,
+    trim: true,
+  });
+  const header = records[0] || [];
   console.log(`  Columns: ${header.join(', ')}`);
-
-  const rows = [];
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (!line) continue;
-    rows.push(parseCsvLine(line));
-  }
+  const rows = records.slice(1);
   console.log(`  Parsed ${rows.length.toLocaleString()} rows`);
   return { header, rows };
+}
+
+function assertColumns(actual, expected, filename) {
+  if (actual.join('\0') !== expected.join('\0')) {
+    throw new Error(`${filename} columns must be exactly: ${expected.join(', ')}`);
+  }
+}
+
+const normalizeDrugName = value => String(value || '').normalize('NFKC').trim().replace(/\s+/g, ' ').toUpperCase();
+const drugKey = (name, manufacturer) => `${normalizeDrugName(name)}|${normalizeDrugName(manufacturer)}`;
+
+function mergeDrugCatalog(baselineRows, updateRows) {
+  const finalRows = new Map();
+  const idsByName = new Map();
+  const idsByKey = new Map();
+  let nextId = 0;
+
+  for (const row of baselineRows) {
+    const [rawId, tradeName, price, activeIngredient, category, manufacturer] = row;
+    const id = Number.parseInt(rawId, 10);
+    if (!Number.isSafeInteger(id) || id <= 0 || !normalizeDrugName(tradeName)) continue;
+    finalRows.set(id, [id, tradeName, price, activeIngredient, category, manufacturer]);
+    nextId = Math.max(nextId, id);
+    const name = normalizeDrugName(tradeName);
+    idsByName.set(name, [...(idsByName.get(name) || []), id]);
+    idsByKey.set(drugKey(tradeName, manufacturer), [...(idsByKey.get(drugKey(tradeName, manufacturer)) || []), id]);
+  }
+
+  const claimedIds = new Set();
+  for (const row of updateRows) {
+    const [tradeName, price, activeIngredient, category, manufacturer] = row;
+    const name = normalizeDrugName(tradeName);
+    if (!name) continue;
+    const exact = (idsByKey.get(drugKey(tradeName, manufacturer)) || []).filter(id => !claimedIds.has(id));
+    const sameName = (idsByName.get(name) || []).filter(id => !claimedIds.has(id));
+    const id = exact.length === 1 ? exact[0] : sameName.length === 1 ? sameName[0] : ++nextId;
+    claimedIds.add(id);
+    finalRows.set(id, [id, tradeName, price, activeIngredient, category, manufacturer]);
+  }
+
+  return [...finalRows.values()].sort((a, b) => a[0] - b[0]);
 }
 
 // ─────────────────────────────────────────────────
@@ -104,12 +122,17 @@ if (DRY_RUN) console.log('⚠  DRY RUN mode — no writes will be made\n');
 // 1. Parse CSVs first (fail fast before touching DB)
 console.log('📂 Parsing CSVs...');
 const drugsData = parseCsv(DRUGS_CSV, true);
+const baselineDrugsData = parseCsv(BASELINE_DRUGS_CSV, true);
 const interactionsData = parseCsv(INTERACTIONS_CSV);
+assertColumns(drugsData.header, ['Trade Name', 'Price', 'Active Ingredient', 'Category', 'Manufacturer'], path.basename(DRUGS_CSV));
+assertColumns(baselineDrugsData.header, ['id', 'Trade Name', 'Price', 'Active Ingredient', 'Category', 'Manufacturer'], path.basename(BASELINE_DRUGS_CSV));
+const preparedDrugRows = mergeDrugCatalog(baselineDrugsData.rows, drugsData.rows);
 console.log('');
 
 if (DRY_RUN) {
   console.log('✅ Dry run complete.');
-  console.log(`   master_drugs rows:     ${drugsData.rows.length.toLocaleString()}`);
+  console.log(`   updated source rows:   ${drugsData.rows.length.toLocaleString()}`);
+  console.log(`   preserved + updated:   ${preparedDrugRows.length.toLocaleString()}`);
   console.log(`   drug_interactions rows: ${interactionsData.rows.length.toLocaleString()}`);
   process.exit(0);
 }
@@ -139,7 +162,7 @@ for (const filename of fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.s
 // ─────────────────────────────────────────────────
 console.log('\n💊 Importing master_drugs...');
 
-// CSV columns: id, Trade Name, Price, Active Ingredient, Category, Manufacturer
+// Prepared columns: id, Trade Name, Price, Active Ingredient, Category, Manufacturer
 const existingDrugs = db.prepare('SELECT COUNT(*) as count FROM master_drugs').get();
 console.log(`   Existing rows: ${existingDrugs.count.toLocaleString()}`);
 
@@ -170,7 +193,7 @@ const importDrugs = db.transaction((rows) => {
   return inserted;
 });
 
-const drugsInserted = importDrugs(drugsData.rows);
+const drugsInserted = importDrugs(preparedDrugRows);
 const totalDrugs = db.prepare('SELECT COUNT(*) as count FROM master_drugs').get();
 console.log(`   ✅ Inserted: ${drugsInserted.toLocaleString()} new rows`);
 console.log(`   📊 Total in DB: ${totalDrugs.count.toLocaleString()}`);

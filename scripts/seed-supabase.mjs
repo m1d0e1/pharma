@@ -15,6 +15,7 @@ import { createClient } from '@supabase/supabase-js';
 import { readFileSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { parse } from 'csv-parse/sync';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
@@ -22,53 +23,70 @@ const ROOT = resolve(__dirname, '..');
 // --- Config ---
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://ntaaxbjeoqyetrmxyktf.supabase.co';
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const DRY_RUN = process.argv.includes('--dry-run');
 
-if (!SERVICE_KEY) {
+if (!SERVICE_KEY && !DRY_RUN) {
   console.error('❌ Set SUPABASE_SERVICE_ROLE_KEY env var first.');
   console.error('   Find it at: Supabase Dashboard > Settings > API > service_role');
   process.exit(1);
 }
 
-const supabase = createClient(SUPABASE_URL, SERVICE_KEY, {
+const supabase = DRY_RUN ? null : createClient(SUPABASE_URL, SERVICE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false }
 });
 
 // --- CSV Parser (no dependency) ---
 function parseCSV(text) {
-  const lines = text.split('\n').filter(l => l.trim());
-  if (lines.length === 0) return { headers: [], rows: [] };
-  
-  const headers = parseCSVLine(lines[0]);
-  const rows = [];
-  for (let i = 1; i < lines.length; i++) {
-    const values = parseCSVLine(lines[i]);
-    if (values.length === headers.length) {
-      const row = {};
-      headers.forEach((h, j) => row[h] = values[j] || null);
-      rows.push(row);
-    }
-  }
-  return { headers, rows };
+  const records = parse(text, { bom: true, columns: true, skip_empty_lines: true, trim: true });
+  return { headers: records.length ? Object.keys(records[0]) : [], rows: records };
 }
 
-function parseCSVLine(line) {
-  const result = [];
-  let current = '';
-  let inQuotes = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (ch === '"') {
-      if (inQuotes && line[i + 1] === '"') { current += '"'; i++; }
-      else inQuotes = !inQuotes;
-    } else if (ch === ',' && !inQuotes) {
-      result.push(current.trim());
-      current = '';
-    } else {
-      current += ch;
-    }
+const normalizeDrugName = value => String(value || '').normalize('NFKC').trim().replace(/\s+/g, ' ').toUpperCase();
+const drugKey = (name, manufacturer) => `${normalizeDrugName(name)}|${normalizeDrugName(manufacturer)}`;
+
+function reconcileDrugIds(rows, existingRows) {
+  const byName = new Map();
+  const byKey = new Map();
+  let nextId = 0;
+  for (const drug of existingRows) {
+    const id = Number(drug.id);
+    if (!Number.isSafeInteger(id) || id <= 0) continue;
+    nextId = Math.max(nextId, id);
+    const name = normalizeDrugName(drug.trade_name);
+    byName.set(name, [...(byName.get(name) || []), id]);
+    const key = drugKey(drug.trade_name, drug.manufacturer);
+    byKey.set(key, [...(byKey.get(key) || []), id]);
   }
-  result.push(current.trim());
-  return result;
+
+  const claimed = new Set();
+  return rows.map(row => {
+    const tradeName = String(row['Trade Name'] || '').trim();
+    if (!tradeName) return null;
+    const exact = (byKey.get(drugKey(tradeName, row['Manufacturer'])) || []).filter(id => !claimed.has(id));
+    const sameName = (byName.get(normalizeDrugName(tradeName)) || []).filter(id => !claimed.has(id));
+    const id = exact.length === 1 ? exact[0] : sameName.length === 1 ? sameName[0] : ++nextId;
+    claimed.add(id);
+    const price = Number(row['Price']);
+    return {
+      id,
+      trade_name: tradeName,
+      price: Number.isFinite(price) && price >= 0 ? price : 0,
+      active_ingredient: String(row['Active Ingredient'] || '').trim() || null,
+      category: String(row['Category'] || '').trim() || null,
+      manufacturer: String(row['Manufacturer'] || '').trim() || null,
+    };
+  }).filter(Boolean);
+}
+
+async function fetchAllCloudDrugs() {
+  const rows = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await supabase.from('cloud_drugs')
+      .select('id,trade_name,manufacturer').order('id', { ascending: true }).range(from, from + 999);
+    if (error) throw new Error(`Cannot read existing cloud drug IDs: ${error.message}`);
+    rows.push(...(data || []));
+    if (!data || data.length < 1000) return rows;
+  }
 }
 
 // --- Create tables via SQL ---
@@ -208,23 +226,33 @@ async function batchUpsert(table, rows, conflictCol, batchSize = 500) {
 // --- Main ---
 async function main() {
   // Try to create tables (will fallback gracefully if RPC not available)
-  await createTables();
+  if (!DRY_RUN) await createTables();
 
   // 1. Drugs
-  console.log('\n📋 Parsing egypt_drugs_database_full.csv...');
-  const drugsCSV = readFileSync(resolve(ROOT, 'egypt_drugs_database_full.csv'), 'utf-8');
+  console.log('\n📋 Parsing egypt_drugs_drugeye.csv...');
+  const drugsCSV = readFileSync(resolve(ROOT, 'egypt_drugs_drugeye.csv'), 'utf-8');
   const { rows: drugRows } = parseCSV(drugsCSV);
-  
-  const drugs = drugRows.map(r => ({
-    id: parseInt(r['id']),
-    trade_name: r['Trade Name'] || '',
-    price: parseFloat(r['Price']) || 0,
-    active_ingredient: r['Active Ingredient'] || null,
-    category: r['Category'] || null,
-    manufacturer: r['Manufacturer'] || null,
-  })).filter(d => !isNaN(d.id));
+  const expectedColumns = ['Trade Name', 'Price', 'Active Ingredient', 'Category', 'Manufacturer'];
+  const actualColumns = drugRows.length ? Object.keys(drugRows[0]) : [];
+  if (actualColumns.join('\0') !== expectedColumns.join('\0')) {
+    throw new Error(`egypt_drugs_drugeye.csv columns must be exactly: ${expectedColumns.join(', ')}`);
+  }
+
+  const baseline = parseCSV(readFileSync(resolve(ROOT, 'egypt_drugs_smart_scrape.csv'), 'utf-8')).rows
+    .map(row => ({
+      id: Number(row.id),
+      trade_name: row['Trade Name'],
+      manufacturer: row['Manufacturer'],
+    }));
+  const existing = DRY_RUN ? baseline : await fetchAllCloudDrugs();
+  const drugs = reconcileDrugIds(drugRows, existing.length ? existing : baseline);
 
   console.log(`   Parsed ${drugs.length} drugs`);
+  if (DRY_RUN) {
+    console.log(`   Existing IDs retained where identity matched; ${drugs.filter(drug => drug.id > Math.max(...baseline.map(row => row.id))).length} rows need new IDs`);
+    console.log('✅ Dry run complete; no cloud data was changed.');
+    return;
+  }
   await batchUpsert('cloud_drugs', drugs, 'id');
 
   // 2. Interactions

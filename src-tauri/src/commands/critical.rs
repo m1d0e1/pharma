@@ -3254,6 +3254,7 @@ mod tests {
             include_str!("../../migrations/014_inventory_performance.sql"),
             include_str!("../../migrations/015_shared_open_shift.sql"),
             include_str!("../../migrations/016_financial_expense_wiring.sql"),
+            include_str!("../../migrations/017_cloud_drug_identity.sql"),
         ] {
             sqlx::raw_sql(migration)
                 .execute(&mut connection)

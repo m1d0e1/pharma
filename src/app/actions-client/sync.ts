@@ -54,6 +54,112 @@ import { getLocalSession, isOwnerOrAdmin } from '@/lib/auth/local';
 
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 
+const normalizeCatalogName = (value: unknown) => String(value ?? '')
+  .normalize('NFKC')
+  .trim()
+  .replace(/\s+/g, ' ')
+  .toUpperCase();
+
+/** Merge cloud catalog fields without replacing local-only drug data or IDs. */
+export async function syncMasterDrugsToLocal(drugList: any[]) {
+  const existing = await dbSelect<any>('SELECT id, trade_name, trade_name_en FROM master_drugs');
+  const mappings = await dbSelect<any>('SELECT cloud_id, local_drug_id FROM cloud_drug_mappings');
+  const byId = new Map(existing.map(drug => [Number(drug.id), drug]));
+  const byName = new Map<string, number[]>();
+  const mappedLocalIds = new Set(mappings.map(mapping => Number(mapping.local_drug_id)));
+  const mappedCloudIds = new Map(mappings.map(mapping => [Number(mapping.cloud_id), Number(mapping.local_drug_id)]));
+
+  const addName = (value: unknown, id: number) => {
+    const name = normalizeCatalogName(value);
+    if (!name) return;
+    const ids = byName.get(name) || [];
+    if (!ids.includes(id)) ids.push(id);
+    byName.set(name, ids);
+  };
+  for (const drug of existing) {
+    addName(drug.trade_name, Number(drug.id));
+    addName(drug.trade_name_en, Number(drug.id));
+  }
+
+  const upsertWithId = db.prepare(`
+    INSERT INTO master_drugs (id, trade_name, active_ingredient, category, manufacturer, official_price)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      trade_name = COALESCE(NULLIF(TRIM(excluded.trade_name), ''), master_drugs.trade_name),
+      active_ingredient = COALESCE(NULLIF(TRIM(excluded.active_ingredient), ''), master_drugs.active_ingredient),
+      category = COALESCE(NULLIF(TRIM(excluded.category), ''), master_drugs.category),
+      manufacturer = COALESCE(NULLIF(TRIM(excluded.manufacturer), ''), master_drugs.manufacturer),
+      official_price = CASE WHEN excluded.official_price > 0 THEN excluded.official_price ELSE master_drugs.official_price END
+  `);
+  const insertWithoutId = db.prepare(`
+    INSERT INTO master_drugs (trade_name, active_ingredient, category, manufacturer, official_price)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+  const saveMapping = db.prepare(`
+    INSERT INTO cloud_drug_mappings (cloud_id, local_drug_id, last_cloud_name, updated_at)
+    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(cloud_id) DO UPDATE SET
+      local_drug_id = excluded.local_drug_id,
+      last_cloud_name = excluded.last_cloud_name,
+      updated_at = CURRENT_TIMESTAMP
+  `);
+
+  let synced = 0;
+  let skipped = 0;
+  await dbTransaction(async () => {
+    for (const drug of drugList) {
+      const cloudId = Number(drug.id);
+      const tradeName = String(drug.trade_name ?? '').trim();
+      if (!Number.isSafeInteger(cloudId) || cloudId <= 0 || !tradeName) {
+        skipped++;
+        continue;
+      }
+
+      const normalizedName = normalizeCatalogName(tradeName);
+      let localId = mappedCloudIds.get(cloudId);
+      if (localId && !byId.has(localId)) localId = undefined;
+
+      if (!localId) {
+        const sameId = byId.get(cloudId);
+        const sameIdentity = sameId && [sameId.trade_name, sameId.trade_name_en]
+          .some(value => normalizeCatalogName(value) === normalizedName);
+        const nameMatches = (byName.get(normalizedName) || [])
+          .filter(id => !mappedLocalIds.has(id));
+
+        if (sameIdentity) localId = cloudId;
+        else if (nameMatches.length === 1) localId = nameMatches[0];
+        else if (!sameId) localId = cloudId;
+      }
+
+      const price = Number(drug.price);
+      const values = [
+        tradeName,
+        String(drug.active_ingredient ?? '').trim() || null,
+        String(drug.category ?? '').trim() || null,
+        String(drug.manufacturer ?? '').trim() || null,
+        Number.isFinite(price) && price >= 0 ? price : 0,
+      ];
+
+      if (localId) {
+        await upsertWithId.run(localId, ...values);
+      } else {
+        const inserted = await insertWithoutId.run(...values);
+        localId = Number(inserted.lastInsertRowid);
+      }
+
+      const localDrug = { id: localId, trade_name: tradeName, trade_name_en: byId.get(localId)?.trade_name_en };
+      byId.set(localId, localDrug);
+      addName(tradeName, localId);
+      mappedLocalIds.add(localId);
+      mappedCloudIds.set(cloudId, localId);
+      await saveMapping.run(cloudId, localId, tradeName);
+      synced++;
+    }
+  });
+
+  return { synced, skipped };
+}
+
 export async function syncFromCloudAction() {
   try {
     const localUser = await getLocalSession();
@@ -138,38 +244,7 @@ export async function syncFromCloudAction() {
 
     console.log(`Fetched ${allDrugs.length} new/updated drugs.`);
 
-    if (allDrugs.length > 0) {
-      const insertDrug = db.prepare(`
-        INSERT INTO master_drugs 
-        (id, trade_name, trade_name_en, generic_name, active_ingredient, category, manufacturer, official_price) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-          trade_name = excluded.trade_name,
-          trade_name_en = excluded.trade_name_en,
-          generic_name = excluded.generic_name,
-          active_ingredient = excluded.active_ingredient,
-          category = excluded.category,
-          manufacturer = excluded.manufacturer,
-          official_price = excluded.official_price
-      `);
-
-      const transaction = db.transaction(async (drugList) => {
-        for (const drug of drugList) {
-          await insertDrug.run(
-            drug.id,
-            drug.trade_name || '',
-            null, // trade_name_en not in csv
-            null, // generic_name not in csv
-            drug.active_ingredient || null,
-            drug.category || null,
-            drug.manufacturer || null,
-            drug.price || 0
-          );
-        }
-      });
-
-      await transaction(allDrugs);
-    }
+    if (allDrugs.length > 0) await syncMasterDrugsToLocal(allDrugs);
 
     // Update last sync time for drugs
     const updateSyncMeta = db.prepare('INSERT OR REPLACE INTO sync_metadata (table_name, last_synced_at) VALUES (?, ?)');
