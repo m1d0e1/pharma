@@ -1149,19 +1149,46 @@ async fn repair_catalog_name_drift_on_connection(
             SET drug_id = (SELECT target_id FROM catalog_identity_repairs WHERE source_id = shortages.drug_id)
             WHERE drug_id IN (SELECT source_id FROM catalog_identity_repairs);
 
+            -- Restore every catalog-owned field for both sides of a detected identity
+            -- shift. Never touch pharmacy-owned data such as barcode, units, limits,
+            -- flags, notes, or inventory quantities.
             UPDATE master_drugs
             SET
               trade_name = (
-                SELECT repair.trade_name
-                FROM catalog_identity_repairs repair
-                WHERE repair.source_id = master_drugs.id
+                SELECT seed.trade_name
+                FROM bundled_catalog.master_drugs seed
+                WHERE seed.id = master_drugs.id
               ),
               trade_name_en = (
-                SELECT repair.trade_name_en
-                FROM catalog_identity_repairs repair
-                WHERE repair.source_id = master_drugs.id
+                SELECT seed.trade_name_en
+                FROM bundled_catalog.master_drugs seed
+                WHERE seed.id = master_drugs.id
+              ),
+              official_price = (
+                SELECT seed.official_price
+                FROM bundled_catalog.master_drugs seed
+                WHERE seed.id = master_drugs.id
+              ),
+              active_ingredient = (
+                SELECT seed.active_ingredient
+                FROM bundled_catalog.master_drugs seed
+                WHERE seed.id = master_drugs.id
+              ),
+              category = (
+                SELECT seed.category
+                FROM bundled_catalog.master_drugs seed
+                WHERE seed.id = master_drugs.id
+              ),
+              manufacturer = (
+                SELECT seed.manufacturer
+                FROM bundled_catalog.master_drugs seed
+                WHERE seed.id = master_drugs.id
               )
-            WHERE id IN (SELECT source_id FROM catalog_identity_repairs);
+            WHERE id IN (
+              SELECT source_id FROM catalog_identity_repairs
+              UNION
+              SELECT target_id FROM catalog_identity_repairs
+            );
             "#,
         )
         .execute(&mut *transaction)
@@ -1439,17 +1466,19 @@ mod tests {
               category TEXT,
               manufacturer TEXT,
               official_price REAL,
-              large_to_medium INTEGER
+              large_to_medium INTEGER,
+              barcode TEXT,
+              notes TEXT
             );
             INSERT INTO master_drugs VALUES
-              (417, 'AGIOLAX', NULL, 'ISPAGHULA', 'laxative', 'VIATRIS', 150, NULL),
-              (429, 'AIG ESOMEPRAZOLE', NULL, 'ESOMEPRAZOLE', 'ppi', 'PLANET CURE', 296, NULL),
-              (500, 'ORIGINAL CUSTOM', NULL, 'CUSTOM ACTIVE', 'custom', 'CUSTOM MAKER', 10, NULL),
-              (501, 'ORIGINAL TWO', NULL, 'SECOND ACTIVE', 'second', 'SECOND MAKER', 20, NULL),
-              (502, 'ORIGINAL THREE', NULL, 'THIRD ACTIVE', 'third', 'THIRD MAKER', 30, NULL),
-              (600, 'ALPHA', NULL, 'ACTIVE A', 'category a', 'MAKER A', 40, NULL),
-              (601, 'BETA', NULL, 'ACTIVE B', 'category b', 'MAKER B', 50, NULL),
-              (602, 'GAMMA', NULL, 'ACTIVE C', 'category c', 'MAKER C', 60, NULL);
+              (417, 'AGIOLAX', NULL, 'ISPAGHULA', 'laxative', 'VIATRIS', 150, NULL, NULL, NULL),
+              (429, 'AIG ESOMEPRAZOLE', NULL, 'ESOMEPRAZOLE', 'ppi', 'PLANET CURE', 296, NULL, NULL, NULL),
+              (500, 'ORIGINAL CUSTOM', NULL, 'CUSTOM ACTIVE', 'custom', 'CUSTOM MAKER', 10, NULL, NULL, NULL),
+              (501, 'ORIGINAL TWO', NULL, 'SECOND ACTIVE', 'second', 'SECOND MAKER', 20, NULL, NULL, NULL),
+              (502, 'ORIGINAL THREE', NULL, 'THIRD ACTIVE', 'third', 'THIRD MAKER', 30, NULL, NULL, NULL),
+              (600, 'ALPHA', NULL, 'ACTIVE A', 'category a', 'MAKER A', 40, NULL, NULL, NULL),
+              (601, 'BETA', NULL, 'ACTIVE B', 'category b', 'MAKER B', 50, NULL, NULL, NULL),
+              (602, 'GAMMA', NULL, 'ACTIVE C', 'category c', 'MAKER C', 60, NULL, NULL, NULL);
             CREATE INDEX idx_seed_master_drugs_trade_name ON master_drugs(trade_name COLLATE NOCASE);
             "#,
         )
@@ -1469,7 +1498,9 @@ mod tests {
               category TEXT,
               manufacturer TEXT,
               official_price REAL,
-              large_to_medium INTEGER
+              large_to_medium INTEGER,
+              barcode TEXT,
+              notes TEXT
             );
             CREATE TABLE inventory (
               id TEXT PRIMARY KEY,
@@ -1509,14 +1540,14 @@ mod tests {
               VALUES (NEW.id, NEW.trade_name, NEW.trade_name_en);
             END;
             INSERT INTO master_drugs VALUES
-              (417, 'AIG ESOMEPRAZOLE', 'AIG ESOMEPRAZOLE', 'ISPAGHULA', 'laxative', 'VIATRIS', 292, 1),
-              (429, 'AIG ESOMEPRAZOLE', 'AIG ESOMEPRAZOLE', 'ESOMEPRAZOLE', 'ppi', 'PLANET CURE', 292, 2),
-              (500, 'USER LABEL', 'USER LABEL EN', 'CUSTOM ACTIVE', 'custom', 'CUSTOM MAKER', 11, 3),
-              (501, 'AIG ESOMEPRAZOLE', 'AIG ESOMEPRAZOLE', 'SECOND ACTIVE', 'second', 'USER MAKER', 21, 4),
-              (502, 'AIG ESOMEPRAZOLE', 'Custom English Translation', 'THIRD ACTIVE', 'third', 'THIRD MAKER', 31, 5),
-              (600, 'BETA', 'BETA', 'ACTIVE A', 'category a', 'MAKER A', 41, 6),
-              (601, 'GAMMA', 'GAMMA', 'ACTIVE B', 'category b', 'MAKER B', 51, 7),
-              (602, 'GAMMA', 'GAMMA', 'ACTIVE C', 'category c', 'MAKER C', 61, 8);
+              (417, 'AIG ESOMEPRAZOLE', 'AIG ESOMEPRAZOLE', 'ISPAGHULA', 'laxative', 'VIATRIS', 292, 1, 'USER-BARCODE-417', 'user note 417'),
+              (429, 'AIG ESOMEPRAZOLE', 'AIG ESOMEPRAZOLE', 'ESOMEPRAZOLE', 'ppi', 'PLANET CURE', 292, 2, 'USER-BARCODE-429', 'user note 429'),
+              (500, 'USER LABEL', 'USER LABEL EN', 'CUSTOM ACTIVE', 'custom', 'CUSTOM MAKER', 11, 3, 'CUSTOM-BARCODE', 'custom note'),
+              (501, 'AIG ESOMEPRAZOLE', 'AIG ESOMEPRAZOLE', 'SECOND ACTIVE', 'second', 'USER MAKER', 21, 4, NULL, NULL),
+              (502, 'AIG ESOMEPRAZOLE', 'Custom English Translation', 'THIRD ACTIVE', 'third', 'THIRD MAKER', 31, 5, NULL, NULL),
+              (600, 'BETA', 'BETA', 'ACTIVE A', 'category a', 'MAKER A', 41, 6, 'USER-BARCODE-600', 'user note 600'),
+              (601, 'GAMMA', 'GAMMA', 'ACTIVE B', 'category b', 'MAKER B', 51, 7, 'USER-BARCODE-601', 'user note 601'),
+              (602, 'GAMMA', 'GAMMA', 'ACTIVE C', 'category c', 'MAKER C', 61, 8, 'USER-BARCODE-602', 'user note 602');
             INSERT INTO master_drugs_fts(rowid, trade_name, trade_name_en)
             SELECT id, trade_name, trade_name_en FROM master_drugs;
             INSERT INTO inventory VALUES
@@ -1546,15 +1577,60 @@ mod tests {
         assert_eq!(repaired, 4);
 
         let repaired_row = sqlx::query(
-            "SELECT trade_name, trade_name_en, official_price, large_to_medium FROM master_drugs WHERE id = 417",
+            "SELECT trade_name, trade_name_en, active_ingredient, category, manufacturer, official_price, large_to_medium, barcode, notes FROM master_drugs WHERE id = 417",
         )
         .fetch_one(&mut live)
         .await
         .unwrap();
         assert_eq!(repaired_row.get::<String, _>("trade_name"), "AGIOLAX");
         assert_eq!(repaired_row.get::<Option<String>, _>("trade_name_en"), None);
-        assert_eq!(repaired_row.get::<f64, _>("official_price"), 292.0);
+        assert_eq!(
+            repaired_row.get::<String, _>("active_ingredient"),
+            "ISPAGHULA"
+        );
+        assert_eq!(repaired_row.get::<String, _>("category"), "laxative");
+        assert_eq!(repaired_row.get::<String, _>("manufacturer"), "VIATRIS");
+        assert_eq!(repaired_row.get::<f64, _>("official_price"), 150.0);
         assert_eq!(repaired_row.get::<i64, _>("large_to_medium"), 1);
+        assert_eq!(repaired_row.get::<String, _>("barcode"), "USER-BARCODE-417");
+        assert_eq!(repaired_row.get::<String, _>("notes"), "user note 417");
+
+        let target_row = sqlx::query(
+            "SELECT trade_name, active_ingredient, category, manufacturer, official_price, large_to_medium, barcode, notes FROM master_drugs WHERE id = 429",
+        )
+        .fetch_one(&mut live)
+        .await
+        .unwrap();
+        assert_eq!(
+            target_row.get::<String, _>("trade_name"),
+            "AIG ESOMEPRAZOLE"
+        );
+        assert_eq!(
+            target_row.get::<String, _>("active_ingredient"),
+            "ESOMEPRAZOLE"
+        );
+        assert_eq!(target_row.get::<String, _>("category"), "ppi");
+        assert_eq!(target_row.get::<String, _>("manufacturer"), "PLANET CURE");
+        assert_eq!(target_row.get::<f64, _>("official_price"), 296.0);
+        assert_eq!(target_row.get::<i64, _>("large_to_medium"), 2);
+        assert_eq!(target_row.get::<String, _>("barcode"), "USER-BARCODE-429");
+        assert_eq!(target_row.get::<String, _>("notes"), "user note 429");
+
+        let custom_row: (String, f64, String, String) = sqlx::query_as(
+            "SELECT trade_name, official_price, barcode, notes FROM master_drugs WHERE id = 500",
+        )
+        .fetch_one(&mut live)
+        .await
+        .unwrap();
+        assert_eq!(
+            custom_row,
+            (
+                "USER LABEL".into(),
+                11.0,
+                "CUSTOM-BARCODE".into(),
+                "custom note".into()
+            )
+        );
 
         for (id, expected_name) in [
             (429, "AIG ESOMEPRAZOLE"),
