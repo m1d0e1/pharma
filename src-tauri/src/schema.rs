@@ -1068,48 +1068,77 @@ async fn repair_catalog_name_drift_on_connection(
         let mut transaction = connection.begin().await.map_err(|e| e.to_string())?;
         sqlx::raw_sql(
             r#"
-            CREATE TEMP TABLE catalog_identity_repairs (
-              source_id INTEGER PRIMARY KEY,
-              target_id INTEGER NOT NULL UNIQUE,
-              trade_name TEXT NOT NULL,
-              trade_name_en TEXT
+            CREATE TEMP TABLE unique_bundled_catalog_names (
+              trade_name TEXT COLLATE NOCASE PRIMARY KEY,
+              drug_id INTEGER NOT NULL UNIQUE
             );
 
-            INSERT OR IGNORE INTO catalog_identity_repairs (
-              source_id, target_id, trade_name, trade_name_en
-            )
-            SELECT live.id, duplicate.id, seed.trade_name, seed.trade_name_en
-            FROM main.master_drugs live
-            JOIN bundled_catalog.master_drugs seed ON seed.id = live.id
-            JOIN bundled_catalog.master_drugs duplicate
-              ON duplicate.id != seed.id
-             AND live.trade_name = duplicate.trade_name COLLATE NOCASE
-            JOIN main.master_drugs live_duplicate ON live_duplicate.id = duplicate.id
-            WHERE TRIM(COALESCE(seed.trade_name, '')) != ''
-              AND TRIM(COALESCE(live.trade_name, '')) != ''
-              AND live.trade_name != seed.trade_name COLLATE NOCASE
-              AND TRIM(COALESCE(live.active_ingredient, '')) != ''
-              AND TRIM(COALESCE(live.category, '')) != ''
-              AND TRIM(COALESCE(live.manufacturer, '')) != ''
-              AND live.active_ingredient = seed.active_ingredient COLLATE NOCASE
-              AND live.category = seed.category COLLATE NOCASE
-              AND live.manufacturer = seed.manufacturer COLLATE NOCASE
-              AND (
-                TRIM(COALESCE(live.trade_name_en, '')) = ''
-                OR live.trade_name_en = duplicate.trade_name COLLATE NOCASE
-                OR (
-                  TRIM(COALESCE(duplicate.trade_name_en, '')) != ''
-                  AND live.trade_name_en = duplicate.trade_name_en COLLATE NOCASE
+            INSERT INTO unique_bundled_catalog_names (trade_name, drug_id)
+            SELECT TRIM(trade_name), MIN(id)
+            FROM bundled_catalog.master_drugs
+            WHERE TRIM(COALESCE(trade_name, '')) != ''
+            GROUP BY TRIM(trade_name) COLLATE NOCASE
+            HAVING COUNT(*) = 1;
+
+            CREATE TEMP TABLE catalog_identity_repairs (
+              source_id INTEGER PRIMARY KEY,
+              target_id INTEGER NOT NULL UNIQUE
+            );
+
+            INSERT OR IGNORE INTO catalog_identity_repairs (source_id, target_id)
+            SELECT source_id, target_id
+            FROM (
+              SELECT
+                live.id AS source_id,
+                duplicate.id AS target_id,
+                (
+                  CASE WHEN live.official_price IS NOT NULL
+                         AND seed.official_price IS NOT NULL
+                         AND ABS(live.official_price - seed.official_price) < 0.001
+                    THEN 1 ELSE 0 END
+                  + CASE WHEN TRIM(COALESCE(seed.active_ingredient, '')) != ''
+                           AND TRIM(live.active_ingredient) = TRIM(seed.active_ingredient) COLLATE NOCASE
+                    THEN 1 ELSE 0 END
+                  + CASE WHEN TRIM(COALESCE(seed.category, '')) != ''
+                           AND TRIM(live.category) = TRIM(seed.category) COLLATE NOCASE
+                    THEN 1 ELSE 0 END
+                  + CASE WHEN TRIM(COALESCE(seed.manufacturer, '')) != ''
+                           AND TRIM(live.manufacturer) = TRIM(seed.manufacturer) COLLATE NOCASE
+                    THEN 1 ELSE 0 END
+                ) AS source_score,
+                (
+                  CASE WHEN live.official_price IS NOT NULL
+                         AND duplicate.official_price IS NOT NULL
+                         AND ABS(live.official_price - duplicate.official_price) < 0.001
+                    THEN 1 ELSE 0 END
+                  + CASE WHEN TRIM(COALESCE(duplicate.active_ingredient, '')) != ''
+                           AND TRIM(live.active_ingredient) = TRIM(duplicate.active_ingredient) COLLATE NOCASE
+                    THEN 1 ELSE 0 END
+                  + CASE WHEN TRIM(COALESCE(duplicate.category, '')) != ''
+                           AND TRIM(live.category) = TRIM(duplicate.category) COLLATE NOCASE
+                    THEN 1 ELSE 0 END
+                  + CASE WHEN TRIM(COALESCE(duplicate.manufacturer, '')) != ''
+                           AND TRIM(live.manufacturer) = TRIM(duplicate.manufacturer) COLLATE NOCASE
+                    THEN 1 ELSE 0 END
+                ) AS target_score
+              FROM main.master_drugs live
+              JOIN bundled_catalog.master_drugs seed ON seed.id = live.id
+              JOIN unique_bundled_catalog_names catalog_name
+                ON catalog_name.trade_name = TRIM(live.trade_name)
+               AND catalog_name.drug_id != live.id
+              JOIN bundled_catalog.master_drugs duplicate ON duplicate.id = catalog_name.drug_id
+              WHERE TRIM(COALESCE(live.trade_name, '')) != ''
+                AND TRIM(live.trade_name) != TRIM(seed.trade_name) COLLATE NOCASE
+                AND (
+                  TRIM(COALESCE(live.trade_name_en, '')) = ''
+                  OR TRIM(live.trade_name_en) = TRIM(duplicate.trade_name) COLLATE NOCASE
+                  OR (
+                    TRIM(COALESCE(duplicate.trade_name_en, '')) != ''
+                    AND TRIM(live.trade_name_en) = TRIM(duplicate.trade_name_en) COLLATE NOCASE
+                  )
                 )
-              )
-              AND live_duplicate.active_ingredient = duplicate.active_ingredient COLLATE NOCASE
-              AND live_duplicate.category = duplicate.category COLLATE NOCASE
-              AND live_duplicate.manufacturer = duplicate.manufacturer COLLATE NOCASE
-              AND (
-                seed.active_ingredient != duplicate.active_ingredient COLLATE NOCASE
-                OR seed.category != duplicate.category COLLATE NOCASE
-                OR seed.manufacturer != duplicate.manufacturer COLLATE NOCASE
-              );
+            ) candidates
+            WHERE source_score >= 3 OR target_score >= 3;
 
             -- The legacy import attached the next visible catalog name to the old numeric ID.
             -- Move every business reference to that name's canonical ID before restoring names.
@@ -1194,6 +1223,31 @@ async fn repair_catalog_name_drift_on_connection(
         .execute(&mut *transaction)
         .await
         .map_err(|e| e.to_string())?;
+
+        if has_column(
+            &mut transaction,
+            "cloud_drug_mappings",
+            "local_drug_id",
+        )
+        .await
+        .map_err(|e| e.to_string())?
+        {
+            // These mappings are a derived sync cache. Keeping a mapping created by
+            // the bad positional import would immediately corrupt the repaired row again.
+            sqlx::query(
+                r#"
+                DELETE FROM cloud_drug_mappings
+                WHERE local_drug_id IN (
+                  SELECT source_id FROM catalog_identity_repairs
+                  UNION
+                  SELECT target_id FROM catalog_identity_repairs
+                )
+                "#,
+            )
+            .execute(&mut *transaction)
+            .await
+            .map_err(|e| e.to_string())?;
+        }
 
         if has_column(&mut transaction, "drug_indications", "indication_id")
             .await
@@ -1307,10 +1361,14 @@ async fn repair_catalog_name_drift_on_connection(
         .await
         .map_err(|e| e.to_string())?
         .rows_affected() as i64;
-        sqlx::query("DROP TABLE catalog_identity_repairs")
-            .execute(&mut *transaction)
-            .await
-            .map_err(|e| e.to_string())?;
+            sqlx::query("DROP TABLE catalog_identity_repairs")
+                .execute(&mut *transaction)
+                .await
+                .map_err(|e| e.to_string())?;
+            sqlx::query("DROP TABLE unique_bundled_catalog_names")
+                .execute(&mut *transaction)
+                .await
+                .map_err(|e| e.to_string())?;
         transaction.commit().await.map_err(|e| e.to_string())?;
         Ok::<u64, String>((repaired + unit_repairs) as u64)
     }
@@ -1517,6 +1575,11 @@ mod tests {
             CREATE TABLE stock_adjustments (id INTEGER PRIMARY KEY, inventory_id TEXT);
             CREATE TABLE opening_balance_items (id INTEGER PRIMARY KEY, drug_id INTEGER);
             CREATE TABLE shortages (id INTEGER PRIMARY KEY, drug_id INTEGER);
+            CREATE TABLE cloud_drug_mappings (
+              cloud_id INTEGER PRIMARY KEY,
+              local_drug_id INTEGER NOT NULL UNIQUE,
+              last_cloud_name TEXT NOT NULL
+            );
             CREATE TABLE drug_indications (
               drug_id INTEGER,
               indication_id INTEGER,
@@ -1545,8 +1608,8 @@ mod tests {
               (500, 'USER LABEL', 'USER LABEL EN', 'CUSTOM ACTIVE', 'custom', 'CUSTOM MAKER', 11, 3, 'CUSTOM-BARCODE', 'custom note'),
               (501, 'AIG ESOMEPRAZOLE', 'AIG ESOMEPRAZOLE', 'SECOND ACTIVE', 'second', 'USER MAKER', 21, 4, NULL, NULL),
               (502, 'AIG ESOMEPRAZOLE', 'Custom English Translation', 'THIRD ACTIVE', 'third', 'THIRD MAKER', 31, 5, NULL, NULL),
-              (600, 'BETA', 'BETA', 'ACTIVE A', 'category a', 'MAKER A', 41, 6, 'USER-BARCODE-600', 'user note 600'),
-              (601, 'GAMMA', 'GAMMA', 'ACTIVE B', 'category b', 'MAKER B', 51, 7, 'USER-BARCODE-601', 'user note 601'),
+              (600, 'BETA', 'BETA', 'ACTIVE B', 'category b', 'MAKER B', 50, 6, 'USER-BARCODE-600', 'user note 600'),
+              (601, 'GAMMA', 'GAMMA', 'ACTIVE C', 'category c', 'MAKER C', 60, 7, 'USER-BARCODE-601', 'user note 601'),
               (602, 'GAMMA', 'GAMMA', 'ACTIVE C', 'category c', 'MAKER C', 61, 8, 'USER-BARCODE-602', 'user note 602');
             INSERT INTO master_drugs_fts(rowid, trade_name, trade_name_en)
             SELECT id, trade_name, trade_name_en FROM master_drugs;
@@ -1563,6 +1626,11 @@ mod tests {
             INSERT INTO purchase_return_items VALUES (1, 417, 'lot-417');
             INSERT INTO opening_balance_items VALUES (1, 417);
             INSERT INTO shortages VALUES (1, 417);
+            INSERT INTO cloud_drug_mappings VALUES
+              (417, 417, 'AIG ESOMEPRAZOLE'),
+              (500, 500, 'USER LABEL'),
+              (600, 600, 'BETA'),
+              (601, 601, 'GAMMA');
             INSERT INTO drug_indications VALUES (417, 1), (429, 1);
             INSERT INTO drug_alternatives VALUES (417, 600), (429, 601);
             "#,
@@ -1631,6 +1699,13 @@ mod tests {
                 "custom note".into()
             )
         );
+        let remaining_mappings: Vec<(i64, i64)> = sqlx::query_as(
+            "SELECT cloud_id, local_drug_id FROM cloud_drug_mappings ORDER BY cloud_id",
+        )
+        .fetch_all(&mut live)
+        .await
+        .unwrap();
+        assert_eq!(remaining_mappings, vec![(500, 500)]);
 
         for (id, expected_name) in [
             (429, "AIG ESOMEPRAZOLE"),
