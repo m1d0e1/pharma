@@ -1361,6 +1361,52 @@ async fn repair_catalog_name_drift_on_connection(
         .await
         .map_err(|e| e.to_string())?
         .rows_affected() as i64;
+
+        // Phase 2: Fix metadata drift for drugs where the trade_name is
+        // correct but active_ingredient / category / manufacturer /
+        // official_price came from a different drug due to CSV ID
+        // misalignment. Match by unique trade_name instead of by ID.
+        let metadata_repairs = sqlx::query(
+            r#"
+            UPDATE master_drugs
+            SET
+              active_ingredient = seed.active_ingredient,
+              category          = seed.category,
+              manufacturer      = seed.manufacturer,
+              official_price    = seed.official_price
+            FROM (
+              SELECT bc.trade_name, bc.active_ingredient, bc.category,
+                     bc.manufacturer, bc.official_price
+              FROM bundled_catalog.master_drugs bc
+              WHERE TRIM(COALESCE(bc.trade_name, '')) != ''
+              GROUP BY TRIM(bc.trade_name) COLLATE NOCASE
+              HAVING COUNT(*) = 1
+            ) seed
+            INNER JOIN (
+              SELECT TRIM(trade_name) AS uname
+              FROM master_drugs
+              WHERE TRIM(COALESCE(trade_name, '')) != ''
+              GROUP BY TRIM(trade_name) COLLATE NOCASE
+              HAVING COUNT(*) = 1
+            ) live_unique ON live_unique.uname = TRIM(seed.trade_name) COLLATE NOCASE
+            WHERE TRIM(master_drugs.trade_name) = TRIM(seed.trade_name) COLLATE NOCASE
+              AND (
+                COALESCE(TRIM(master_drugs.active_ingredient), '')
+                  != COALESCE(TRIM(seed.active_ingredient), '') COLLATE NOCASE
+                OR COALESCE(TRIM(master_drugs.manufacturer), '')
+                  != COALESCE(TRIM(seed.manufacturer), '') COLLATE NOCASE
+                OR COALESCE(TRIM(master_drugs.category), '')
+                  != COALESCE(TRIM(seed.category), '') COLLATE NOCASE
+                OR ABS(COALESCE(master_drugs.official_price, 0)
+                     - COALESCE(seed.official_price, 0)) > 0.001
+              )
+            "#,
+        )
+        .execute(&mut *transaction)
+        .await
+        .map_err(|e| e.to_string())?
+        .rows_affected() as i64;
+
             sqlx::query("DROP TABLE catalog_identity_repairs")
                 .execute(&mut *transaction)
                 .await
@@ -1370,7 +1416,7 @@ async fn repair_catalog_name_drift_on_connection(
                 .await
                 .map_err(|e| e.to_string())?;
         transaction.commit().await.map_err(|e| e.to_string())?;
-        Ok::<u64, String>((repaired + unit_repairs) as u64)
+        Ok::<u64, String>((repaired + unit_repairs + metadata_repairs) as u64)
     }
     .await;
 
@@ -1536,7 +1582,8 @@ mod tests {
               (502, 'ORIGINAL THREE', NULL, 'THIRD ACTIVE', 'third', 'THIRD MAKER', 30, NULL, NULL, NULL),
               (600, 'ALPHA', NULL, 'ACTIVE A', 'category a', 'MAKER A', 40, NULL, NULL, NULL),
               (601, 'BETA', NULL, 'ACTIVE B', 'category b', 'MAKER B', 50, NULL, NULL, NULL),
-              (602, 'GAMMA', NULL, 'ACTIVE C', 'category c', 'MAKER C', 60, NULL, NULL, NULL);
+              (602, 'GAMMA', NULL, 'ACTIVE C', 'category c', 'MAKER C', 60, NULL, NULL, NULL),
+              (700, 'HIBIOTIC 1GM', NULL, 'AMOXICILLIN', 'penicillin', 'AMOUN', 173, NULL, NULL, NULL);
             CREATE INDEX idx_seed_master_drugs_trade_name ON master_drugs(trade_name COLLATE NOCASE);
             "#,
         )
@@ -1610,7 +1657,8 @@ mod tests {
               (502, 'AIG ESOMEPRAZOLE', 'Custom English Translation', 'THIRD ACTIVE', 'third', 'THIRD MAKER', 31, 5, NULL, NULL),
               (600, 'BETA', 'BETA', 'ACTIVE B', 'category b', 'MAKER B', 50, 6, 'USER-BARCODE-600', 'user note 600'),
               (601, 'GAMMA', 'GAMMA', 'ACTIVE C', 'category c', 'MAKER C', 60, 7, 'USER-BARCODE-601', 'user note 601'),
-              (602, 'GAMMA', 'GAMMA', 'ACTIVE C', 'category c', 'MAKER C', 61, 8, 'USER-BARCODE-602', 'user note 602');
+              (602, 'GAMMA', 'GAMMA', 'ACTIVE C', 'category c', 'MAKER C', 61, 8, 'USER-BARCODE-602', 'user note 602'),
+              (700, 'HIBIOTIC 1GM', NULL, 'SOFOSBUVIR', 'hepatitis', 'PHARCO', 900, NULL, 'HIB-BARCODE', 'user note hib');
             INSERT INTO master_drugs_fts(rowid, trade_name, trade_name_en)
             SELECT id, trade_name, trade_name_en FROM master_drugs;
             INSERT INTO inventory VALUES
@@ -1642,7 +1690,7 @@ mod tests {
         let repaired = repair_catalog_name_drift_on_connection(&mut live, &seed_path)
             .await
             .unwrap();
-        assert_eq!(repaired, 4);
+        assert_eq!(repaired, 5);
 
         let repaired_row = sqlx::query(
             "SELECT trade_name, trade_name_en, active_ingredient, category, manufacturer, official_price, large_to_medium, barcode, notes FROM master_drugs WHERE id = 417",
@@ -1706,6 +1754,23 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(remaining_mappings, vec![(500, 500)]);
+
+        // Verify metadata-by-name sync: HIBIOTIC 1GM had correct trade_name
+        // but wrong metadata (SOFOSBUVIR/hepatitis/PHARCO/900 from CSV shift).
+        // The sync should fix metadata from the seed while preserving user data.
+        let hib_row = sqlx::query(
+            "SELECT active_ingredient, category, manufacturer, official_price, barcode, notes FROM master_drugs WHERE id = 700",
+        )
+        .fetch_one(&mut live)
+        .await
+        .unwrap();
+        assert_eq!(hib_row.get::<String, _>("active_ingredient"), "AMOXICILLIN");
+        assert_eq!(hib_row.get::<String, _>("category"), "penicillin");
+        assert_eq!(hib_row.get::<String, _>("manufacturer"), "AMOUN");
+        assert_eq!(hib_row.get::<f64, _>("official_price"), 173.0);
+        // User-owned fields preserved
+        assert_eq!(hib_row.get::<String, _>("barcode"), "HIB-BARCODE");
+        assert_eq!(hib_row.get::<String, _>("notes"), "user note hib");
 
         for (id, expected_name) in [
             (429, "AIG ESOMEPRAZOLE"),
