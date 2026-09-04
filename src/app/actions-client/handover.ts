@@ -63,7 +63,8 @@ const HANDOVER_DETAILS_SQL = `
     s.end_time,
     s.status,
     CAST(COALESCE(s.starting_cash, 0) AS REAL) AS starting_cash,
-    COALESCE(u.full_name, u.username, s.user_id) AS user_name,
+    CAST(COALESCE(s.transfer_amount, 0) AS REAL) AS previous_transfers,
+    COALESCE(u.full_name, u.username, s.user_id, 'غير معروف') AS user_name,
     (
       SELECT COALESCE(SUM(CASE WHEN si.payment_method = 'cash' THEN CAST(si.total_amount AS REAL) ELSE 0 END), 0)
       FROM sales_invoices si
@@ -104,9 +105,14 @@ const HANDOVER_DETAILS_SQL = `
       SELECT COALESCE(SUM(CASE WHEN cm.type IN ('disbursement', 'out') THEN CAST(cm.amount AS REAL) ELSE 0 END), 0)
       FROM cash_movements cm
       WHERE cm.shift_id = s.id
-    ) AS disbursements
+    ) AS disbursements,
+    (
+      SELECT COALESCE(SUM(CASE WHEN cm.type IN ('disbursement', 'out') AND cm.category = 'handover' THEN CAST(cm.amount AS REAL) ELSE 0 END), 0)
+      FROM cash_movements cm
+      WHERE cm.shift_id = s.id
+    ) AS handover_movements
   FROM shifts s
-  LEFT JOIN users u ON u.id = s.user_id
+  LEFT JOIN users u ON (CAST(u.id AS TEXT) = CAST(s.user_id AS TEXT) OR LOWER(u.username) = LOWER(s.user_id))
   WHERE s.id = ?
 `;
 
@@ -114,20 +120,34 @@ async function loadHandoverDetails(shiftId: string) {
   const row = await db.prepare(HANDOVER_DETAILS_SQL).get(shiftId) as any;
   if (!row) throw new Error('الوردية غير موجودة');
 
+  const startingCash = Number(row.starting_cash || 0);
+  const cashSales = Number(row.cash_sales || 0);
+  const visaSales = Number(row.visa_sales || 0);
+  const creditSales = Number(row.credit_sales || 0);
+  const returns = Number(row.returns || 0);
+  const receipts = Number(row.receipts || 0);
+  const disbursements = Number(row.disbursements || 0);
+  const previousTransfers = Number(row.previous_transfers || 0);
+  const handoverMovements = Number(row.handover_movements || 0);
+  const transferredSoFar = Math.max(previousTransfers, handoverMovements);
+  // If previous transfers were tracked on the shift but not yet reflected in disbursements:
+  const unrecordedTransfers = Math.max(0, previousTransfers - handoverMovements);
+
   const data = {
     ...row,
-    starting_cash: Number(row.starting_cash || 0),
-    cash_sales: Number(row.cash_sales || 0),
-    visa_sales: Number(row.visa_sales || 0),
-    credit_sales: Number(row.credit_sales || 0),
-    returns: Number(row.returns || 0),
-    receipts: Number(row.receipts || 0),
-    disbursements: Number(row.disbursements || 0),
+    starting_cash: startingCash,
+    cash_sales: cashSales,
+    visa_sales: visaSales,
+    credit_sales: creditSales,
+    returns,
+    receipts,
+    disbursements,
+    transferred_so_far: transferredSoFar,
   };
 
   return {
     ...data,
-    expected_cash: data.starting_cash + data.cash_sales + data.receipts - data.disbursements - data.returns,
+    expected_cash: data.starting_cash + data.cash_sales + data.receipts - data.disbursements - data.returns - unrecordedTransfers,
   };
 }
 

@@ -265,13 +265,16 @@ export async function getShiftsAction(filter: { status: string }) {
              s.starting_cash as starting_cash_amount, s.ending_cash as ending_cash_amount,
              s.actual_cash, s.transfer_amount, s.transfer_target, s.cash_difference,
              s.receiver_id, ru.full_name as receiver_name,
-             s.status, s.notes as opening_notes, u.full_name, u.role,
+             s.status, s.notes as opening_notes,
+             COALESCE(u.full_name, u.username, s.user_id, 'غير معروف') as full_name,
+             COALESCE(u.role, 'pharmacist') as role,
              COALESCE(sales.total_sales, 0) as total_sales,
              COALESCE(rets.total_refunds, 0) as total_refunds,
-             COALESCE(moves.net_movements, 0) as net_movements
+             COALESCE(moves.net_movements, 0) as net_movements,
+             COALESCE(moves.handover_transfers, 0) as handover_transfers
       FROM shifts s
-      JOIN users u ON s.user_id = u.id
-      LEFT JOIN users ru ON s.receiver_id = ru.id
+      LEFT JOIN users u ON (CAST(s.user_id AS TEXT) = CAST(u.id AS TEXT) OR LOWER(s.user_id) = LOWER(u.username))
+      LEFT JOIN users ru ON (CAST(s.receiver_id AS TEXT) = CAST(ru.id AS TEXT) OR LOWER(s.receiver_id) = LOWER(ru.username))
       LEFT JOIN (
         SELECT shift_id, SUM(total_amount) as total_sales
         FROM sales_invoices
@@ -287,32 +290,56 @@ export async function getShiftsAction(filter: { status: string }) {
         GROUP BY shift_id
       ) rets ON s.id = rets.shift_id
       LEFT JOIN (
-        SELECT shift_id, SUM(
-          CASE WHEN type IN ('receipt', 'in') THEN amount
-               WHEN type IN ('disbursement', 'out') THEN -amount
-               ELSE 0 END
-        ) as net_movements
+        SELECT shift_id, 
+          SUM(
+            CASE WHEN type IN ('receipt', 'in') THEN amount
+                 WHEN type IN ('disbursement', 'out') THEN -amount
+                 ELSE 0 END
+          ) as net_movements,
+          SUM(
+            CASE WHEN type IN ('disbursement', 'out') AND category = 'handover' THEN amount ELSE 0 END
+          ) as handover_transfers
         FROM cash_movements
         GROUP BY shift_id
       ) moves ON s.id = moves.shift_id
       ${filter.status !== 'all' ? 'WHERE s.status = ?' : ''}
-      ORDER BY s.start_time DESC LIMIT 50
+      ORDER BY COALESCE(datetime(s.start_time), s.start_time, s.rowid) DESC LIMIT 100
     `).all(...params) as any[];
     
     const shifts = rawShifts.map(s => {
-      const expectedCash = s.starting_cash_amount + s.total_sales - s.total_refunds + s.net_movements;
-      const difference = (s.cash_difference !== null && s.cash_difference !== undefined)
+      const startingCash = Number(s.starting_cash_amount || 0);
+      const totalSales = Number(s.total_sales || 0);
+      const totalRefunds = Number(s.total_refunds || 0);
+      const netMovements = Number(s.net_movements || 0);
+      const totalTransferred = Math.max(Number(s.transfer_amount || 0), Number(s.handover_transfers || 0));
+
+      const expectedCash = startingCash + totalSales - totalRefunds + netMovements;
+
+      let difference = (s.cash_difference !== null && s.cash_difference !== undefined)
         ? Number(s.cash_difference)
-        : (s.status !== 'open' && s.ending_cash_amount !== null ? (s.ending_cash_amount - expectedCash) : 0);
+        : (s.status !== 'open' && s.ending_cash_amount !== null && s.ending_cash_amount !== undefined ? (Number(s.ending_cash_amount) - expectedCash) : 0);
+
+      // Self-heal legacy bug where shift handover calculated deficit as: actual_cash - (starting + sales - refunds),
+      // ignoring all the money already transferred to the treasury!
+      if (s.cash_difference !== null && s.cash_difference !== undefined && totalTransferred > 0) {
+        const stored = Number(s.cash_difference);
+        const rawDeficit = Number(s.actual_cash || 0) - (startingCash + totalSales - totalRefunds);
+        if (stored < 0 && Math.abs(stored - rawDeficit) < 2) {
+          const drawerCash = s.ending_cash_amount !== null && s.ending_cash_amount !== undefined
+            ? Number(s.ending_cash_amount)
+            : Math.max(0, Number(s.actual_cash || 0) - totalTransferred);
+          difference = (drawerCash + totalTransferred) - (startingCash + totalSales - totalRefunds);
+        }
+      }
 
       return {
         id: s.id,
         shift_start: s.shift_start,
         shift_end: s.shift_end,
-        starting_cash_amount: s.starting_cash_amount,
-        ending_cash_amount: s.ending_cash_amount,
-        actual_cash: isOwnerOrAdmin ? s.actual_cash : null,
-        transfer_amount: isOwnerOrAdmin ? (s.transfer_amount || 0) : null,
+        starting_cash_amount: startingCash,
+        ending_cash_amount: s.ending_cash_amount !== null && s.ending_cash_amount !== undefined ? Number(s.ending_cash_amount) : null,
+        actual_cash: isOwnerOrAdmin ? (s.actual_cash !== null && s.actual_cash !== undefined ? Number(s.actual_cash) : null) : null,
+        transfer_amount: isOwnerOrAdmin ? totalTransferred : null,
         transfer_target: isOwnerOrAdmin ? s.transfer_target : null,
         receiver_id: isOwnerOrAdmin ? s.receiver_id : null,
         receiver_name: isOwnerOrAdmin ? (s.receiver_name || null) : null,

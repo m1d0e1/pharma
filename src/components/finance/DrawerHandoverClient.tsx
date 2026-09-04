@@ -193,11 +193,13 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
                 </span>
               </div>
 
-              <div className="h-2" />
               <DetailRow label="مرتجع مبيعات" value={details?.returns} color="text-rose-600" isNegative />
               <DetailRow label="مصروفات / صرف نقدية" value={details?.disbursements} color="text-rose-600" isNegative />
+              {details?.transferred_so_far > 0 && (
+                <DetailRow label="محول للخزينة سابقاً" value={details?.transferred_so_far} color="text-blue-600" isNegative />
+              )}
               <div className="pt-4 mt-4 border-t-2 border-dashed border-slate-200 dark:border-slate-600">
-                <DetailRow label="صافي النقدية المتوقع" value={details?.expected_cash} color="text-blue-600 font-black text-xl" />
+                <DetailRow label="صافي نقدية الدرج المتوقعة" value={details?.expected_cash} color="text-blue-600 font-black text-xl" />
               </div>
             </div>
 

@@ -369,8 +369,11 @@ export default function ShiftManagementClient({
                 {shifts.map((shift) => (
                   <tr key={shift.id} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/50 text-sm transition-colors">
                     <td className="py-3.5 px-4">
-                      <div className="font-bold text-slate-800 dark:text-white">
-                        {shift.status === 'open' ? 'الوردية المشتركة' : (shift.profiles?.full_name || 'غير معروف')}
+                      <div className="font-bold text-slate-800 dark:text-white flex items-center gap-2">
+                        <span>{shift.status === 'open' ? 'الوردية المشتركة' : (shift.profiles?.full_name || 'غير معروف')}</span>
+                        <span className="text-[10px] font-mono font-normal px-1.5 py-0.5 bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 rounded">
+                          #{shift.id.slice(0, 8)}
+                        </span>
                       </div>
                       <div className="text-xs text-slate-500 dark:text-slate-400">
                         {shift.status === 'open'
