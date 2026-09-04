@@ -1178,9 +1178,36 @@ async fn repair_catalog_name_drift_on_connection(
             SET drug_id = (SELECT target_id FROM catalog_identity_repairs WHERE source_id = shortages.drug_id)
             WHERE drug_id IN (SELECT source_id FROM catalog_identity_repairs);
 
+            -- Migrate barcode from source to target when the target lacks one.
+            -- The user entered the barcode under the wrong drug ID (due to CSV
+            -- shift), so it should follow the business references to the
+            -- canonical drug.
+            UPDATE master_drugs
+            SET barcode = (
+              SELECT src.barcode
+              FROM catalog_identity_repairs r
+              JOIN master_drugs src ON src.id = r.source_id
+              WHERE r.target_id = master_drugs.id
+                AND TRIM(COALESCE(src.barcode, '')) != ''
+            )
+            WHERE id IN (SELECT target_id FROM catalog_identity_repairs)
+              AND (barcode IS NULL OR TRIM(barcode) = '');
+
+            -- Clear the barcode on the source row after it was migrated to the
+            -- target, so it doesn't linger on the restored seed identity.
+            UPDATE master_drugs
+            SET barcode = NULL
+            WHERE id IN (
+              SELECT r.source_id FROM catalog_identity_repairs r
+              JOIN master_drugs src ON src.id = r.source_id
+              JOIN master_drugs tgt ON tgt.id = r.target_id
+              WHERE TRIM(COALESCE(src.barcode, '')) != ''
+                AND TRIM(COALESCE(tgt.barcode, '')) != ''
+                AND src.barcode = tgt.barcode
+            );
+
             -- Restore every catalog-owned field for both sides of a detected identity
-            -- shift. Never touch pharmacy-owned data such as barcode, units, limits,
-            -- flags, notes, or inventory quantities.
+            -- shift. Barcode has already been migrated above.
             UPDATE master_drugs
             SET
               trade_name = (
@@ -1407,6 +1434,86 @@ async fn repair_catalog_name_drift_on_connection(
         .map_err(|e| e.to_string())?
         .rows_affected() as i64;
 
+        // Phase 3: Heal stranded barcodes.
+        // If a canonical master_drug row has inventory or purchase items with a barcode,
+        // but its master_drugs.barcode is empty (e.g. from an earlier migration
+        // that didn't move barcodes), assign the barcode from inventory/purchases.
+        // Also clear barcodes from rows that have no matching inventory/purchases
+        // and whose barcode conflicts with an inventory-backed drug.
+        let mut barcode_heals = 0;
+        let inv_has_barcode = has_column(&mut transaction, "inventory", "barcode")
+            .await
+            .unwrap_or(false);
+        let pii_has_barcode = has_column(&mut transaction, "purchase_invoice_items", "barcode")
+            .await
+            .unwrap_or(false);
+
+        if inv_has_barcode {
+            let healed = sqlx::raw_sql(
+                r#"
+                UPDATE master_drugs
+                SET barcode = (
+                  SELECT i.barcode FROM inventory i
+                  WHERE i.drug_id = master_drugs.id AND TRIM(COALESCE(i.barcode, '')) != ''
+                  LIMIT 1
+                )
+                WHERE (barcode IS NULL OR TRIM(barcode) = '')
+                  AND id IN (
+                    SELECT drug_id FROM inventory WHERE TRIM(COALESCE(barcode, '')) != ''
+                  );
+
+                UPDATE master_drugs
+                SET barcode = NULL
+                WHERE barcode IS NOT NULL AND TRIM(barcode) != ''
+                  AND id NOT IN (
+                    SELECT drug_id FROM inventory WHERE TRIM(COALESCE(barcode, '')) != ''
+                  )
+                  AND barcode IN (
+                    SELECT i.barcode FROM inventory i
+                    WHERE i.drug_id != master_drugs.id AND TRIM(COALESCE(i.barcode, '')) != ''
+                  );
+                "#,
+            )
+            .execute(&mut *transaction)
+            .await
+            .map_err(|e| e.to_string())?
+            .rows_affected() as i64;
+            barcode_heals += healed;
+        }
+
+        if pii_has_barcode {
+            let healed = sqlx::raw_sql(
+                r#"
+                UPDATE master_drugs
+                SET barcode = (
+                  SELECT p.barcode FROM purchase_invoice_items p
+                  WHERE p.drug_id = master_drugs.id AND TRIM(COALESCE(p.barcode, '')) != ''
+                  LIMIT 1
+                )
+                WHERE (barcode IS NULL OR TRIM(barcode) = '')
+                  AND id IN (
+                    SELECT drug_id FROM purchase_invoice_items WHERE TRIM(COALESCE(barcode, '')) != ''
+                  );
+
+                UPDATE master_drugs
+                SET barcode = NULL
+                WHERE barcode IS NOT NULL AND TRIM(barcode) != ''
+                  AND id NOT IN (
+                    SELECT drug_id FROM purchase_invoice_items WHERE TRIM(COALESCE(barcode, '')) != ''
+                  )
+                  AND barcode IN (
+                    SELECT p.barcode FROM purchase_invoice_items p
+                    WHERE p.drug_id != master_drugs.id AND TRIM(COALESCE(p.barcode, '')) != ''
+                  );
+                "#,
+            )
+            .execute(&mut *transaction)
+            .await
+            .map_err(|e| e.to_string())?
+            .rows_affected() as i64;
+            barcode_heals += healed;
+        }
+
             sqlx::query("DROP TABLE catalog_identity_repairs")
                 .execute(&mut *transaction)
                 .await
@@ -1416,7 +1523,7 @@ async fn repair_catalog_name_drift_on_connection(
                 .await
                 .map_err(|e| e.to_string())?;
         transaction.commit().await.map_err(|e| e.to_string())?;
-        Ok::<u64, String>((repaired + unit_repairs + metadata_repairs) as u64)
+        Ok::<u64, String>((repaired + unit_repairs + metadata_repairs + barcode_heals) as u64)
     }
     .await;
 
@@ -1656,7 +1763,7 @@ mod tests {
               (501, 'AIG ESOMEPRAZOLE', 'AIG ESOMEPRAZOLE', 'SECOND ACTIVE', 'second', 'USER MAKER', 21, 4, NULL, NULL),
               (502, 'AIG ESOMEPRAZOLE', 'Custom English Translation', 'THIRD ACTIVE', 'third', 'THIRD MAKER', 31, 5, NULL, NULL),
               (600, 'BETA', 'BETA', 'ACTIVE B', 'category b', 'MAKER B', 50, 6, 'USER-BARCODE-600', 'user note 600'),
-              (601, 'GAMMA', 'GAMMA', 'ACTIVE C', 'category c', 'MAKER C', 60, 7, 'USER-BARCODE-601', 'user note 601'),
+              (601, 'GAMMA', 'GAMMA', 'ACTIVE C', 'category c', 'MAKER C', 60, 7, NULL, 'user note 601'),
               (602, 'GAMMA', 'GAMMA', 'ACTIVE C', 'category c', 'MAKER C', 61, 8, 'USER-BARCODE-602', 'user note 602'),
               (700, 'HIBIOTIC 1GM', NULL, 'SOFOSBUVIR', 'hepatitis', 'PHARCO', 900, NULL, 'HIB-BARCODE', 'user note hib');
             INSERT INTO master_drugs_fts(rowid, trade_name, trade_name_en)
@@ -1813,6 +1920,22 @@ mod tests {
             chained_inventory,
             vec![("lot-600".into(), 601), ("lot-601".into(), 602)]
         );
+
+        // Barcode migration: source #600 had USER-BARCODE-600, target #601 had
+        // no barcode. The barcode should follow the business refs to #601.
+        let target_barcode: Option<String> =
+            sqlx::query_scalar("SELECT barcode FROM master_drugs WHERE id = 601")
+                .fetch_one(&mut live)
+                .await
+                .unwrap();
+        assert_eq!(target_barcode.as_deref(), Some("USER-BARCODE-600"));
+
+        let source_barcode: Option<String> =
+            sqlx::query_scalar("SELECT barcode FROM master_drugs WHERE id = 600")
+                .fetch_one(&mut live)
+                .await
+                .unwrap();
+        assert_eq!(source_barcode, None, "barcode should be cleared from source after migration");
 
         for table in [
             "sales_items",
@@ -2556,5 +2679,122 @@ mod tests {
         let mut blank = SqliteConnection::connect("sqlite::memory:").await.unwrap();
         prepare_connection(&mut blank).await.unwrap();
         assert!(!table_exists(&mut blank, "purchase_invoices").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn heals_stranded_barcodes_from_inventory_and_purchases() {
+        let seed_path =
+            std::env::temp_dir().join(format!("pharma-stranded-seed-{}.db", uuid::Uuid::new_v4()));
+        let live_path =
+            std::env::temp_dir().join(format!("pharma-stranded-live-{}.db", uuid::Uuid::new_v4()));
+        let mut seed = connect(&seed_path).await.unwrap();
+        sqlx::raw_sql(
+            r#"
+            CREATE TABLE master_drugs (
+              id INTEGER PRIMARY KEY,
+              trade_name TEXT,
+              trade_name_en TEXT,
+              active_ingredient TEXT,
+              category TEXT,
+              manufacturer TEXT,
+              official_price REAL,
+              large_to_medium INTEGER,
+              barcode TEXT,
+              notes TEXT
+            );
+            INSERT INTO master_drugs VALUES
+              (6862, 'EFUCISAN 1% VISCOUS EYE DROPS 5 GM', NULL, 'FUSIDIC ACID', 'antibiotic', 'ORCHIDIA', 28, NULL, NULL, NULL),
+              (7399, 'ERASTAPEX TRIO 10/40/25MG 30 F.C. TABS.', NULL, 'AMLODIPINE...', 'anti-hypertensive', 'MULTI-APEX', 162, NULL, NULL, NULL);
+            CREATE INDEX idx_seed_master_drugs_trade_name ON master_drugs(trade_name COLLATE NOCASE);
+            "#,
+        )
+        .execute(&mut seed)
+        .await
+        .unwrap();
+        seed.close().await.unwrap();
+
+        let mut live = connect(&live_path).await.unwrap();
+        sqlx::raw_sql(
+            r#"
+            CREATE TABLE master_drugs (
+              id INTEGER PRIMARY KEY,
+              trade_name TEXT,
+              trade_name_en TEXT,
+              active_ingredient TEXT,
+              category TEXT,
+              manufacturer TEXT,
+              official_price REAL,
+              large_to_medium INTEGER,
+              barcode TEXT,
+              notes TEXT
+            );
+            CREATE TABLE inventory (
+              id TEXT PRIMARY KEY,
+              drug_id INTEGER,
+              quantity REAL,
+              strips_per_box INTEGER,
+              barcode TEXT
+            );
+            CREATE TABLE purchase_invoice_items (
+              id INTEGER PRIMARY KEY,
+              drug_id INTEGER,
+              inventory_id TEXT,
+              barcode TEXT
+            );
+            CREATE TABLE sales_items (id INTEGER PRIMARY KEY, drug_id INTEGER, inventory_id TEXT);
+            CREATE TABLE refill_reminders (id TEXT PRIMARY KEY, drug_id INTEGER);
+            CREATE TABLE return_items (id INTEGER PRIMARY KEY, drug_id INTEGER, inventory_id TEXT);
+            CREATE TABLE purchase_order_items (id INTEGER PRIMARY KEY, drug_id INTEGER);
+            CREATE TABLE purchase_return_items (id INTEGER PRIMARY KEY, drug_id INTEGER, inventory_id TEXT);
+            CREATE TABLE stock_adjustments (id INTEGER PRIMARY KEY, inventory_id TEXT);
+            CREATE TABLE opening_balance_items (id INTEGER PRIMARY KEY, drug_id INTEGER);
+            CREATE TABLE shortages (id INTEGER PRIMARY KEY, drug_id INTEGER);
+            CREATE TABLE drug_indications (drug_id INTEGER, indication_id INTEGER, PRIMARY KEY (drug_id, indication_id));
+            CREATE TABLE drug_alternatives (drug_id INTEGER, alternative_id INTEGER, PRIMARY KEY (drug_id, alternative_id));
+
+            -- Simulate state after an older repair restored names, but left
+            -- the barcode stranded on #6862, while canonical #7399 has NULL barcode:
+            INSERT INTO master_drugs VALUES
+              (6862, 'EFUCISAN 1% VISCOUS EYE DROPS 5 GM', NULL, 'FUSIDIC ACID', 'antibiotic', 'ORCHIDIA', 28, NULL, '6223003205577', NULL),
+              (7399, 'ERASTAPEX TRIO 10/40/25MG 30 F.C. TABS.', NULL, 'AMLODIPINE...', 'anti-hypertensive', 'MULTI-APEX', 162, NULL, NULL, NULL);
+
+            -- Inventory was moved to #7399 and carries the barcode:
+            INSERT INTO inventory VALUES ('inv-erast', 7399, 5, 3, '6223003205577');
+            "#,
+        )
+        .execute(&mut live)
+        .await
+        .unwrap();
+
+        let repaired = repair_catalog_name_drift_on_connection(&mut live, &seed_path)
+            .await
+            .unwrap();
+        assert!(repaired > 0);
+
+        // #7399 should now have the barcode:
+        let target_barcode: Option<String> =
+            sqlx::query_scalar("SELECT barcode FROM master_drugs WHERE id = 7399")
+                .fetch_one(&mut live)
+                .await
+                .unwrap();
+        assert_eq!(target_barcode.as_deref(), Some("6223003205577"));
+
+        // #6862 should have its barcode cleared:
+        let source_barcode: Option<String> =
+            sqlx::query_scalar("SELECT barcode FROM master_drugs WHERE id = 6862")
+                .fetch_one(&mut live)
+                .await
+                .unwrap();
+        assert_eq!(source_barcode, None);
+
+        // Idempotency: second run does nothing:
+        let second_run = repair_catalog_name_drift_on_connection(&mut live, &seed_path)
+            .await
+            .unwrap();
+        assert_eq!(second_run, 0);
+
+        live.close().await.unwrap();
+        std::fs::remove_file(seed_path).unwrap();
+        std::fs::remove_file(live_path).unwrap();
     }
 }
