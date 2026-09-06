@@ -1,12 +1,46 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Database, ShieldAlert, Sparkles, RefreshCw } from 'lucide-react';
 import { runDatabaseMaintenanceClient } from '@/lib/settings/client';
 import { toast } from 'react-hot-toast';
+import { getClientSession, isOwnerOrAdmin } from '@/lib/auth/local';
+import { isTauri } from '@/lib/env';
+import { invoke } from '@tauri-apps/api/core';
 
 export default function DbMaintenance() {
   const [running, setRunning] = useState(false);
+  const [backupRunning, setBackupRunning] = useState(false);
+  const [backupPath, setBackupPath] = useState('');
+  const [backupAllowed, setBackupAllowed] = useState(false);
+  const [backupPassword, setBackupPassword] = useState('');
+
+  useEffect(() => {
+    let mounted = true;
+    if (isTauri) {
+      void getClientSession().then(user => {
+        if (mounted) setBackupAllowed(isOwnerOrAdmin(user));
+      }).catch(() => { /* Keep backup unavailable without a verified user. */ });
+    }
+    return () => { mounted = false; };
+  }, []);
+
+  const handleBackup = async () => {
+    setBackupRunning(true);
+    setBackupPath('');
+    try {
+      const user = await getClientSession();
+      if (!isOwnerOrAdmin(user)) throw new Error('حفظ نسخة كاملة متاح لمدير النظام أو المالك فقط');
+      const path = await invoke<string>('export_database_backup', { userId: user!.id, password: backupPassword });
+      setBackupPath(path);
+      toast.success('تم حفظ نسخة كاملة تشمل أحدث البيانات');
+    } catch (error) {
+      toast.error(`فشل حفظ النسخة الاحتياطية: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setBackupRunning(false);
+      setBackupPassword('');
+    }
+  };
 
   const handleMaintenance = async () => {
     setRunning(true);
@@ -35,12 +69,35 @@ export default function DbMaintenance() {
           <Database className="w-6 h-6 text-blue-400" />
         </div>
         <div>
-          <h4 className="text-xl font-bold">صيانة قاعدة البيانات (Local Enforcer)</h4>
-          <p className="text-slate-400 text-xs">تحسين وضغط التخزين المحلي وتسريع الاستعلامات</p>
+          <h4 className="text-xl font-bold">النسخ الاحتياطي وصيانة قاعدة البيانات</h4>
+          <p className="text-slate-400 text-xs">حفظ نسخة كاملة من بيانات النظام وتحسين التخزين المحلي</p>
         </div>
       </div>
 
       <div className="space-y-4">
+        {backupAllowed && (
+          <div className="bg-white/5 border border-white/10 p-6 rounded-2xl space-y-4">
+            <p className="text-sm text-slate-300">
+              يحفظ الزر بيانات النظام وأحدث التغييرات المحفوظة في ملف احتياطي واحد، دون نسخ ملفات DB وWAL وSHM يدوياً. أرسل الملف الناتج وحده للدعم. تحتوي النسخة على بيانات حساسة، شاركها بأمان فقط.
+            </p>
+            <label className="block text-sm">
+              كلمة مرور حسابك لتأكيد النسخ الاحتياطي
+              <input type="password" autoComplete="current-password" value={backupPassword}
+                onChange={event => setBackupPassword(event.target.value)} disabled={backupRunning}
+                className="block w-full mt-2 p-3 rounded-xl bg-slate-800" />
+            </label>
+            <button type="button" onClick={handleBackup} disabled={running || backupRunning || !backupPassword}
+              className="w-full py-4 bg-emerald-700 rounded-2xl font-bold disabled:opacity-50">
+              {backupRunning ? 'جاري حفظ النسخة...' : 'حفظ نسخة احتياطية كاملة'}
+            </button>
+            {backupPath && (
+              <div role="status" className="text-sm space-y-2">
+                <p>تم حفظ النسخة الكاملة. مكان الملف:</p>
+                <p dir="ltr" className="text-xs break-all select-all">{backupPath}</p>
+              </div>
+            )}
+          </div>
+        )}
         <div className="bg-white/5 border border-white/10 p-6 rounded-2xl space-y-4">
           <p className="text-sm text-slate-300 leading-relaxed">
             يقوم هذا الإجراء بإعادة بناء ملف قاعدة البيانات بالكامل لاستعادة المساحة المهدرة الناتجة عن حذف الفواتير والأصناف السابقة (`VACUUM`)، ويقوم بتحديث إحصائيات الفهارس لتسريع محرك بحث SQLite (`ANALYZE`).
@@ -55,7 +112,7 @@ export default function DbMaintenance() {
           
           <button 
             onClick={handleMaintenance}
-            disabled={running}
+            disabled={running || backupRunning}
             className="w-full py-4 bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700 text-white rounded-2xl font-black shadow-xl transition-all disabled:opacity-50 flex items-center justify-center gap-2 border border-blue-400/20"
           >
             {running ? (

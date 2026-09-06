@@ -1,5 +1,6 @@
 import { getSupabaseBrowserClient } from '@/lib/supabase';
 import { dbExecute, dbTransaction, dbGet } from '@/lib/db/tauri';
+import { syncMasterDrugsToLocal } from '@/app/actions-client/sync';
 
 export async function syncFromCloudClient() {
   try {
@@ -82,41 +83,7 @@ export async function syncFromCloudClient() {
 
     console.log(`Fetched ${allDrugs.length} new/updated drugs.`);
 
-    if (allDrugs.length > 0) {
-      console.log(`Inserting ${allDrugs.length} drugs in batches...`);
-      const batchSize = 100;
-      for (let i = 0; i < allDrugs.length; i += batchSize) {
-        const chunk = allDrugs.slice(i, i + batchSize);
-        const placeholders = chunk.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
-        const sql = `
-          INSERT INTO master_drugs 
-          (id, trade_name, trade_name_en, generic_name, active_ingredient, category, manufacturer, official_price) 
-          VALUES ${placeholders}
-          ON CONFLICT(id) DO UPDATE SET
-            trade_name = excluded.trade_name,
-            trade_name_en = excluded.trade_name_en,
-            generic_name = excluded.generic_name,
-            active_ingredient = excluded.active_ingredient,
-            category = excluded.category,
-            manufacturer = excluded.manufacturer,
-            official_price = excluded.official_price
-        `;
-        const params: any[] = [];
-        for (const drug of chunk) {
-          params.push(
-            drug.id,
-            drug.trade_name || '',
-            null, // trade_name_en not in csv
-            null, // generic_name not in csv
-            drug.active_ingredient || null,
-            drug.category || null,
-            drug.manufacturer || null,
-            drug.price || 0
-          );
-        }
-        await dbExecute(sql, params);
-      }
-    }
+    if (allDrugs.length > 0) await syncMasterDrugsToLocal(allDrugs);
 
     // Update last sync time for drugs
     await dbExecute('INSERT OR REPLACE INTO sync_metadata (table_name, last_synced_at) VALUES (?, ?)', ['cloud_drugs', nowSyncTime]);
@@ -239,7 +206,7 @@ export async function syncFromCloudClient() {
 
     return { 
       success: true, 
-      message: `تمت المزامنة بنجاح. تم تحميل ${allDrugs.length} صنفاً جديداً/محدثاً.`,
+      message: `تمت مزامنة ${allDrugs.length} صنفاً مع الحفاظ على بيانات الأصناف المرجعية المحلية.`,
       syncedUsernames: Array.from(new Set(syncedUsernames))
     };
 

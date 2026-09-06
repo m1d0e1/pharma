@@ -60,7 +60,11 @@ const normalizeCatalogName = (value: unknown) => String(value ?? '')
   .replace(/\s+/g, ' ')
   .toUpperCase();
 
-/** Merge cloud catalog fields without replacing local-only drug data or IDs. */
+/**
+ * Record cloud identities and add genuinely new catalog entries. The bundled
+ * CSV is authoritative for known drugs, so a cloud row must never overwrite a
+ * local catalog row merely because its numeric ID happens to match.
+ */
 export async function syncMasterDrugsToLocal(drugList: any[]) {
   const existing = await dbSelect<any>('SELECT id, trade_name, trade_name_en FROM master_drugs');
   const mappings = await dbSelect<any>('SELECT cloud_id, local_drug_id FROM cloud_drug_mappings');
@@ -81,16 +85,6 @@ export async function syncMasterDrugsToLocal(drugList: any[]) {
     addName(drug.trade_name_en, Number(drug.id));
   }
 
-  const upsertWithId = db.prepare(`
-    INSERT INTO master_drugs (id, trade_name, active_ingredient, category, manufacturer, official_price)
-    VALUES (?, ?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET
-      trade_name = COALESCE(NULLIF(TRIM(excluded.trade_name), ''), master_drugs.trade_name),
-      active_ingredient = COALESCE(NULLIF(TRIM(excluded.active_ingredient), ''), master_drugs.active_ingredient),
-      category = COALESCE(NULLIF(TRIM(excluded.category), ''), master_drugs.category),
-      manufacturer = COALESCE(NULLIF(TRIM(excluded.manufacturer), ''), master_drugs.manufacturer),
-      official_price = CASE WHEN excluded.official_price > 0 THEN excluded.official_price ELSE master_drugs.official_price END
-  `);
   const insertWithoutId = db.prepare(`
     INSERT INTO master_drugs (trade_name, active_ingredient, category, manufacturer, official_price)
     VALUES (?, ?, ?, ?, ?)
@@ -117,7 +111,14 @@ export async function syncMasterDrugsToLocal(drugList: any[]) {
 
       const normalizedName = normalizeCatalogName(tradeName);
       let localId = mappedCloudIds.get(cloudId);
-      if (localId && !byId.has(localId)) localId = undefined;
+      if (localId) {
+        const mappedDrug = byId.get(localId);
+        const mappingStillMatches = mappedDrug && [mappedDrug.trade_name, mappedDrug.trade_name_en]
+          .some(value => normalizeCatalogName(value) === normalizedName);
+        // A catalog feed may be reordered. Never let a stale cloud-ID cache
+        // overwrite a seeded local drug whose name is different.
+        if (!mappingStillMatches) localId = undefined;
+      }
 
       if (!localId) {
         const sameId = byId.get(cloudId);
@@ -140,14 +141,13 @@ export async function syncMasterDrugsToLocal(drugList: any[]) {
         Number.isFinite(price) && price >= 0 ? price : 0,
       ];
 
-      if (localId) {
-        await upsertWithId.run(localId, ...values);
-      } else {
+      const matchedLocalDrug = localId ? byId.get(localId) : undefined;
+      if (!matchedLocalDrug) {
         const inserted = await insertWithoutId.run(...values);
         localId = Number(inserted.lastInsertRowid);
       }
 
-      const localDrug = { id: localId, trade_name: tradeName, trade_name_en: byId.get(localId)?.trade_name_en };
+      const localDrug = matchedLocalDrug || { id: localId, trade_name: tradeName, trade_name_en: null };
       byId.set(localId, localDrug);
       addName(tradeName, localId);
       mappedLocalIds.add(localId);
@@ -359,7 +359,7 @@ export async function syncFromCloudAction() {
 
     return { 
       success: true, 
-      message: `تمت المزامنة بنجاح. تم تحميل ${allDrugs.length} صنفاً جديداً/محدثاً.`,
+      message: `تمت مزامنة ${allDrugs.length} صنفاً مع الحفاظ على بيانات الأصناف المرجعية المحلية.`,
       syncedUsernames: Array.from(new Set(syncedUsernames)) // Deduplicate just in case
     };
 

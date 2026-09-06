@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod database_backup;
 mod schema;
 
 use std::fs::{self, File, OpenOptions};
@@ -638,7 +639,9 @@ fn main() {
             if let Some(seed_path) = seed_path {
                 match schema::repair_catalog_name_drift(&db_path, &seed_path) {
                     Ok(repaired) if repaired > 0 => {
-                        println!("Repaired {repaired} catalog or inventory identity issue(s)");
+                        println!(
+                            "Restored {repaired} catalog record(s) from the bundled CSV reference"
+                        );
                     }
                     Ok(_) => {}
                     Err(error) => eprintln!("Catalog identity repair skipped: {error}"),
@@ -668,6 +671,7 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
+            database_backup::export_database_backup,
             commands::auth::bcrypt_hash,
             commands::auth::bcrypt_compare,
             commands::critical::db_execute_guarded,

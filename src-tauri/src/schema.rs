@@ -1051,7 +1051,11 @@ pub fn prepare_legacy_database(path: &Path) -> Result<(), String> {
     })
 }
 
-async fn repair_catalog_name_drift_on_connection(
+// Kept only to exercise recovery of databases that were already remapped by
+// the withdrawn positional-repair build. New installs must never move a
+// business record merely because catalog text changed.
+#[cfg(test)]
+async fn repair_legacy_catalog_name_drift_on_connection(
     connection: &mut SqliteConnection,
     seed_path: &Path,
 ) -> Result<u64, String> {
@@ -1539,11 +1543,136 @@ async fn repair_catalog_name_drift_on_connection(
     }
 }
 
+/// Restores catalog-owned fields by their stable seed IDs. The bundled seed is
+/// generated from egypt_drugs_drugeye.csv by name/manufacturer, so it remains
+/// the authority even when the update feed has a different row order.
+async fn repair_catalog_name_drift_on_connection(
+    connection: &mut SqliteConnection,
+    seed_path: &Path,
+) -> Result<u64, String> {
+    const REPAIR_VERSION: &str = "csv-catalog-reference-v1";
+
+    let already_repaired: Option<String> = sqlx::query_scalar(
+        "SELECT value FROM config WHERE key = 'catalog_reference_repair_version'",
+    )
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(|e| e.to_string())?;
+    if already_repaired.as_deref() == Some(REPAIR_VERSION) {
+        return Ok(0);
+    }
+
+    let seed_path = seed_path
+        .to_string_lossy()
+        .replace('\\', "/")
+        .replace('\'', "''");
+    sqlx::query(&format!("ATTACH DATABASE '{seed_path}' AS bundled_catalog"))
+        .execute(&mut *connection)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let repair_result = async {
+        let mut transaction = connection.begin().await.map_err(|e| e.to_string())?;
+        // Deliberately do not update barcode, inventory, or any business table:
+        // the positional importer never moved them, so their stable IDs remain
+        // their only reliable ownership record.
+        let repaired = sqlx::query(
+            r#"
+            UPDATE master_drugs AS local
+            SET
+              trade_name = reference.trade_name,
+              trade_name_en = CASE
+                -- The bad positional sync sometimes duplicated the wrong
+                -- catalog name into the display-name field. Clear only that
+                -- mirror, so screens fall back to the restored trade name
+                -- while genuine local translations remain untouched.
+                WHEN COALESCE(TRIM(local.trade_name_en), '') <> ''
+                  AND UPPER(TRIM(local.trade_name_en)) = UPPER(TRIM(local.trade_name))
+                  AND UPPER(TRIM(local.trade_name)) <> UPPER(TRIM(reference.trade_name))
+                THEN NULL
+                ELSE local.trade_name_en
+              END,
+              official_price = reference.official_price,
+              active_ingredient = reference.active_ingredient,
+              category = reference.category,
+              manufacturer = reference.manufacturer
+            FROM bundled_catalog.master_drugs AS reference
+            WHERE local.id = reference.id
+              AND (
+                COALESCE(TRIM(local.trade_name), '')
+                  != COALESCE(TRIM(reference.trade_name), '') COLLATE NOCASE
+                OR ABS(COALESCE(local.official_price, 0)
+                     - COALESCE(reference.official_price, 0)) > 0.001
+                OR COALESCE(TRIM(local.active_ingredient), '')
+                  != COALESCE(TRIM(reference.active_ingredient), '') COLLATE NOCASE
+                OR COALESCE(TRIM(local.category), '')
+                  != COALESCE(TRIM(reference.category), '') COLLATE NOCASE
+                OR COALESCE(TRIM(local.manufacturer), '')
+                  != COALESCE(TRIM(reference.manufacturer), '') COLLATE NOCASE
+              )
+            "#,
+        )
+        .execute(&mut *transaction)
+        .await
+        .map_err(|e| e.to_string())?
+        .rows_affected();
+
+        if repaired > 0
+            && has_column(&mut transaction, "cloud_drug_mappings", "local_drug_id")
+                .await
+                .map_err(|e| e.to_string())?
+        {
+            // This table is a cache. A positional mapping would immediately
+            // overwrite the restored catalog during the next cloud sync.
+            sqlx::query("DELETE FROM cloud_drug_mappings")
+                .execute(&mut *transaction)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+
+        sqlx::query(
+            "INSERT INTO config (key, value) VALUES ('catalog_reference_repair_version', ?) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(REPAIR_VERSION)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|e| e.to_string())?;
+
+        transaction.commit().await.map_err(|e| e.to_string())?;
+        Ok::<u64, String>(repaired)
+    }
+    .await;
+
+    let detach_result = sqlx::query("DETACH DATABASE bundled_catalog")
+        .execute(&mut *connection)
+        .await
+        .map_err(|e| e.to_string());
+
+    match (repair_result, detach_result) {
+        (Ok(repaired), Ok(_)) => Ok(repaired),
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+    }
+}
+
+async fn repair_catalog_with_backup(path: &Path, seed_path: &Path) -> Result<u64, String> {
+    let mut connection = connect(path).await?;
+    let version: Option<String> = sqlx::query_scalar(
+        "SELECT value FROM config WHERE key = 'catalog_reference_repair_version'",
+    )
+    .fetch_optional(&mut connection)
+    .await
+    .map_err(|e| e.to_string())?;
+    if version.as_deref() != Some("csv-catalog-reference-v1") {
+        // Never modify catalog metadata unless a complete recovery point exists.
+        crate::database_backup::create_backup(path).await?;
+    }
+    repair_catalog_name_drift_on_connection(&mut connection, seed_path).await
+}
+
 pub fn repair_catalog_name_drift(path: &Path, seed_path: &Path) -> Result<u64, String> {
-    tauri::async_runtime::block_on(async {
-        let mut connection = connect(path).await?;
-        repair_catalog_name_drift_on_connection(&mut connection, seed_path).await
-    })
+    tauri::async_runtime::block_on(repair_catalog_with_backup(path, seed_path))
 }
 
 #[tauri::command]
@@ -1661,7 +1790,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn repairs_only_high_confidence_duplicate_catalog_name_drift() {
+    async fn legacy_name_repair_handles_duplicate_catalog_name_drift() {
         let seed_path =
             std::env::temp_dir().join(format!("pharma-catalog-seed-{}.db", uuid::Uuid::new_v4()));
         let live_path =
@@ -1794,7 +1923,7 @@ mod tests {
         .await
         .unwrap();
 
-        let repaired = repair_catalog_name_drift_on_connection(&mut live, &seed_path)
+        let repaired = repair_legacy_catalog_name_drift_on_connection(&mut live, &seed_path)
             .await
             .unwrap();
         assert_eq!(repaired, 5);
@@ -1935,7 +2064,10 @@ mod tests {
                 .fetch_one(&mut live)
                 .await
                 .unwrap();
-        assert_eq!(source_barcode, None, "barcode should be cleared from source after migration");
+        assert_eq!(
+            source_barcode, None,
+            "barcode should be cleared from source after migration"
+        );
 
         for table in [
             "sales_items",
@@ -1985,7 +2117,7 @@ mod tests {
         assert_eq!(fts_matches, 1);
 
         assert_eq!(
-            repair_catalog_name_drift_on_connection(&mut live, &seed_path)
+            repair_legacy_catalog_name_drift_on_connection(&mut live, &seed_path)
                 .await
                 .unwrap(),
             0
@@ -1994,6 +2126,210 @@ mod tests {
         live.close().await.unwrap();
         std::fs::remove_file(seed_path).unwrap();
         std::fs::remove_file(live_path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn restores_csv_catalog_by_stable_id_without_moving_barcodes_or_history() {
+        let directory = std::env::temp_dir().join(format!("pharma-stable-catalog-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let seed_path = directory.join("seed.db");
+        let live_path = directory.join("live.db");
+
+        let mut seed = connect(&seed_path).await.unwrap();
+        sqlx::raw_sql(
+            r#"
+            CREATE TABLE master_drugs (
+              id INTEGER PRIMARY KEY,
+              trade_name TEXT,
+              trade_name_en TEXT,
+              active_ingredient TEXT,
+              category TEXT,
+              manufacturer TEXT,
+              official_price REAL,
+              barcode TEXT,
+              notes TEXT
+            );
+            INSERT INTO master_drugs VALUES
+              (101, 'ALPHA', NULL, 'ACTIVE A', 'CATEGORY A', 'MAKER A', 10, NULL, NULL),
+              (102, 'BETA', NULL, 'ACTIVE B', 'CATEGORY B', 'MAKER B', 20, NULL, NULL),
+              (103, 'GAMMA', NULL, 'ACTIVE C', 'CATEGORY C', 'MAKER C', 30, NULL, NULL);
+            "#,
+        )
+        .execute(&mut seed)
+        .await
+        .unwrap();
+        seed.close().await.unwrap();
+
+        let mut live = connect(&live_path).await.unwrap();
+        sqlx::raw_sql(
+            r#"
+            CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT);
+            CREATE TABLE master_drugs (
+              id INTEGER PRIMARY KEY,
+              trade_name TEXT,
+              trade_name_en TEXT,
+              active_ingredient TEXT,
+              category TEXT,
+              manufacturer TEXT,
+              official_price REAL,
+              barcode TEXT,
+              notes TEXT
+            );
+            CREATE TABLE inventory (id TEXT PRIMARY KEY, drug_id INTEGER, barcode TEXT, quantity REAL);
+            CREATE TABLE sales_items (id INTEGER PRIMARY KEY, drug_id INTEGER, inventory_id TEXT);
+            CREATE TABLE cloud_drug_mappings (
+              cloud_id INTEGER PRIMARY KEY,
+              local_drug_id INTEGER NOT NULL,
+              last_cloud_name TEXT NOT NULL
+            );
+
+            -- This is the full A -> B -> C positional-field shift caused by
+            -- the old cloud updater. Barcode and business references still
+            -- belong to their original stable IDs.
+            INSERT INTO master_drugs VALUES
+              (101, 'BETA', 'BETA', 'ACTIVE B', 'CATEGORY B', 'MAKER B', 20, 'BAR-ALPHA', 'alpha note'),
+              (102, 'GAMMA', 'Local Gamma translation', 'ACTIVE C', 'CATEGORY C', 'MAKER C', 30, 'BAR-BETA', 'beta note'),
+              (103, 'ALPHA', 'ALPHA', 'ACTIVE A', 'CATEGORY A', 'MAKER A', 10, 'BAR-GAMMA', 'gamma note'),
+              (900, 'LOCAL CUSTOM', 'Local custom', 'CUSTOM ACTIVE', 'CUSTOM CATEGORY', 'CUSTOM MAKER', 99, 'BAR-CUSTOM', 'custom note');
+            INSERT INTO inventory VALUES
+              ('lot-alpha', 101, 'BAR-ALPHA', 4),
+              ('lot-beta', 102, 'BAR-BETA', 3),
+              ('lot-gamma', 103, 'BAR-GAMMA', 2);
+            INSERT INTO sales_items VALUES (1, 101, 'lot-alpha'), (2, 102, 'lot-beta');
+            INSERT INTO cloud_drug_mappings VALUES
+              (101, 101, 'BETA'), (102, 102, 'GAMMA'), (103, 103, 'ALPHA');
+            "#,
+        )
+        .execute(&mut live)
+        .await
+        .unwrap();
+
+        // An unavailable backup location must prevent any catalog write.
+        std::fs::write(directory.join("backups"), b"blocked directory").unwrap();
+        assert!(repair_catalog_with_backup(&live_path, &seed_path).await.is_err());
+        let marker_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM config WHERE key = 'catalog_reference_repair_version'")
+            .fetch_one(&mut live).await.unwrap();
+        assert_eq!(marker_count, 0);
+        std::fs::remove_file(directory.join("backups")).unwrap();
+        assert_eq!(repair_catalog_with_backup(&live_path, &seed_path).await.unwrap(), 3);
+        let backups: Vec<_> = std::fs::read_dir(directory.join("backups")).unwrap().collect();
+        assert_eq!(backups.len(), 1);
+        let backup_path = backups[0].as_ref().unwrap().path().join("pharma_local.db");
+        let mut before = connect(&backup_path).await.unwrap();
+        let old_name: String = sqlx::query_scalar("SELECT trade_name FROM master_drugs WHERE id = 101")
+            .fetch_one(&mut before).await.unwrap();
+        assert_ne!(old_name, "ALPHA");
+        let before_quantity: f64 = sqlx::query_scalar("SELECT SUM(quantity) FROM inventory")
+            .fetch_one(&mut before).await.unwrap();
+        assert_eq!(before_quantity, 9.0);
+        before.close().await.unwrap();
+
+        let restored: Vec<(i64, String, Option<String>, String, String, String, f64, String, String)> =
+            sqlx::query_as(
+                "SELECT id, trade_name, trade_name_en, active_ingredient, category, manufacturer, official_price, barcode, notes FROM master_drugs WHERE id BETWEEN 101 AND 103 ORDER BY id",
+            )
+            .fetch_all(&mut live)
+            .await
+            .unwrap();
+        assert_eq!(
+            restored,
+            vec![
+                (
+                    101,
+                    "ALPHA".into(),
+                    None,
+                    "ACTIVE A".into(),
+                    "CATEGORY A".into(),
+                    "MAKER A".into(),
+                    10.0,
+                    "BAR-ALPHA".into(),
+                    "alpha note".into()
+                ),
+                (
+                    102,
+                    "BETA".into(),
+                    Some("Local Gamma translation".into()),
+                    "ACTIVE B".into(),
+                    "CATEGORY B".into(),
+                    "MAKER B".into(),
+                    20.0,
+                    "BAR-BETA".into(),
+                    "beta note".into()
+                ),
+                (
+                    103,
+                    "GAMMA".into(),
+                    None,
+                    "ACTIVE C".into(),
+                    "CATEGORY C".into(),
+                    "MAKER C".into(),
+                    30.0,
+                    "BAR-GAMMA".into(),
+                    "gamma note".into()
+                ),
+            ]
+        );
+
+        let inventory: Vec<(String, i64, String, f64)> =
+            sqlx::query_as("SELECT id, drug_id, barcode, quantity FROM inventory ORDER BY id")
+                .fetch_all(&mut live)
+                .await
+                .unwrap();
+        assert_eq!(
+            inventory,
+            vec![
+                ("lot-alpha".into(), 101, "BAR-ALPHA".into(), 4.0),
+                ("lot-beta".into(), 102, "BAR-BETA".into(), 3.0),
+                ("lot-gamma".into(), 103, "BAR-GAMMA".into(), 2.0),
+            ]
+        );
+        let sale_drug_ids: Vec<i64> =
+            sqlx::query_scalar("SELECT drug_id FROM sales_items ORDER BY id")
+                .fetch_all(&mut live)
+                .await
+                .unwrap();
+        assert_eq!(sale_drug_ids, vec![101, 102]);
+        let custom: (String, String, String) =
+            sqlx::query_as("SELECT trade_name, barcode, notes FROM master_drugs WHERE id = 900")
+                .fetch_one(&mut live)
+                .await
+                .unwrap();
+        assert_eq!(
+            custom,
+            (
+                "LOCAL CUSTOM".into(),
+                "BAR-CUSTOM".into(),
+                "custom note".into()
+            )
+        );
+        let mappings: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cloud_drug_mappings")
+            .fetch_one(&mut live)
+            .await
+            .unwrap();
+        assert_eq!(mappings, 0);
+
+        // The repair runs once per reference version, so a later intentional
+        // local edit is not silently overwritten on every application start.
+        sqlx::query("UPDATE master_drugs SET official_price = 12 WHERE id = 101")
+            .execute(&mut live)
+            .await
+            .unwrap();
+        assert_eq!(
+            repair_catalog_with_backup(&live_path, &seed_path)
+                .await
+                .unwrap(),
+            0
+        );
+        let local_price: f64 =
+            sqlx::query_scalar("SELECT official_price FROM master_drugs WHERE id = 101")
+                .fetch_one(&mut live)
+                .await
+                .unwrap();
+        assert_eq!(local_price, 12.0);
+        assert_eq!(std::fs::read_dir(directory.join("backups")).unwrap().count(), 1);
+
+        live.close().await.unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[tokio::test]
@@ -2766,7 +3102,7 @@ mod tests {
         .await
         .unwrap();
 
-        let repaired = repair_catalog_name_drift_on_connection(&mut live, &seed_path)
+        let repaired = repair_legacy_catalog_name_drift_on_connection(&mut live, &seed_path)
             .await
             .unwrap();
         assert!(repaired > 0);
@@ -2788,7 +3124,7 @@ mod tests {
         assert_eq!(source_barcode, None);
 
         // Idempotency: second run does nothing:
-        let second_run = repair_catalog_name_drift_on_connection(&mut live, &seed_path)
+        let second_run = repair_legacy_catalog_name_drift_on_connection(&mut live, &seed_path)
             .await
             .unwrap();
         assert_eq!(second_run, 0);
