@@ -18,6 +18,7 @@ const path = require('path');
 const fs = require('fs');
 const Database = require('better-sqlite3');
 const { parse } = require('csv-parse/sync');
+const { loadReference, installReference } = require('./catalog-reference');
 
 const ROOT = path.join(__dirname, '..');
 const BASELINE_DRUGS_CSV = path.join(ROOT, 'egypt_drugs_smart_scrape.csv');
@@ -126,6 +127,7 @@ if (DRY_RUN) console.log('⚠  DRY RUN mode — no writes will be made\n');
 
 // 1. Parse CSVs first (fail fast before touching DB)
 console.log('📂 Parsing CSVs...');
+const csvReference = loadReference(DRUGS_CSV);
 const drugsData = parseCsv(DRUGS_CSV, false);
 const baselineDrugsData = parseCsv(BASELINE_DRUGS_CSV, true);
 const interactionsData = parseCsv(INTERACTIONS_CSV);
@@ -173,6 +175,7 @@ for (const filename of fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.s
 // 4. Import master_drugs
 // ─────────────────────────────────────────────────
 console.log('\n💊 Importing master_drugs...');
+installReference(db, csvReference);
 
 // Prepared columns: id, Trade Name, Price, Active Ingredient, Category, Manufacturer
 const existingDrugs = db.prepare('SELECT COUNT(*) as count FROM master_drugs').get();

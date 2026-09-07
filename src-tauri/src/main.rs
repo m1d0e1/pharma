@@ -640,7 +640,7 @@ fn main() {
                 match schema::repair_catalog_name_drift(&db_path, &seed_path) {
                     Ok(repaired) if repaired > 0 => {
                         println!(
-                            "Restored {repaired} catalog record(s) from the bundled CSV reference"
+                            "Corrected {repaired} catalog/inventory price record(s) locally from the bundled CSV reference"
                         );
                     }
                     Ok(_) => {}

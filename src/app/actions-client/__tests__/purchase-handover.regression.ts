@@ -83,6 +83,37 @@ describe('purchase reports and drawer handover regressions', () => {
 
   afterEach(() => mockDb.close());
 
+  it('barcode POS supports CSV metadata repair and explicitly opted-in selling-price repair', async () => {
+    mockDb.exec(`UPDATE master_drugs SET trade_name='HIBIOTIC 1 GM 16 TABS.', trade_name_en='HIBIOTIC 1 GM 16 TABS.', active_ingredient='WRONG', official_price=900 WHERE id=9001;
+      INSERT INTO inventory(id,pharmacy_id,drug_id,quantity,local_selling_price,expiry_date,barcode,strips_per_box)
+      VALUES ('metadata-lot','local_default',9001,1.75,190,'2099-12-31','6220000000001',2);
+      ATTACH DATABASE ':memory:' AS bundled_catalog;
+      CREATE TABLE bundled_catalog.catalog_csv_reference(trade_name TEXT,official_price REAL,active_ingredient TEXT,category TEXT,manufacturer TEXT);
+      INSERT INTO bundled_catalog.catalog_csv_reference VALUES ('HIBIOTIC 1 GM 16 TABS.',173,'AMOXICILLIN + CLAVULANIC ACID','penicillins','AMOUN');`);
+    mockDb.exec(readFileSync('src-tauri/migrations/009_rebuild_master_drugs_fts.sql', 'utf8'));
+    mockDb.exec(readFileSync('src-tauri/src/catalog_metadata_repair.sql', 'utf8'));
+    expect(await barcodeLookupAction('6220000000001')).toMatchObject({
+      success: true,
+      data: {
+        id: 9001, trade_name: 'HIBIOTIC 1 GM 16 TABS.',
+        active_ingredient: 'AMOXICILLIN + CLAVULANIC ACID',
+        official_price: 173, unit_price: 190, quantity: 1.75, inventory_id: 'metadata-lot',
+      },
+    });
+    mockDb.exec(readFileSync('src-tauri/src/catalog_inventory_price_repair.sql', 'utf8'));
+    expect(await barcodeLookupAction('6220000000001')).toMatchObject({
+      success: true,
+      data: {
+        id: 9001, trade_name: 'HIBIOTIC 1 GM 16 TABS.',
+        active_ingredient: 'AMOXICILLIN + CLAVULANIC ACID',
+        official_price: 173, unit_price: 173, quantity: 1.75, inventory_id: 'metadata-lot',
+        units: { large_to_medium: 2 },
+        batches: [{ inventory_id: 'metadata-lot', quantity: 1.75, unit_price: 173, strips_per_box: 2 }],
+      },
+    });
+    expect(mockDb.prepare('SELECT barcode FROM master_drugs WHERE id=9001').get()).toEqual({ barcode: '6220000000001' });
+  });
+
   it('deactivates the shared-shift creator without closing or losing the shared shift', async () => {
     mockDb.prepare(`UPDATE users SET password_hash = 'owner-hash', role = 'owner', is_active = 1 WHERE id = 'admin'`).run();
     mockDb.prepare(`INSERT INTO users (id, username, password_hash, role, full_name, is_active)

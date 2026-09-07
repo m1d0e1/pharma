@@ -7,6 +7,7 @@ import { toast } from 'react-hot-toast';
 import { getClientSession, isOwnerOrAdmin } from '@/lib/auth/local';
 import { isTauri } from '@/lib/env';
 import { invoke } from '@tauri-apps/api/core';
+import { dbGet } from '@/lib/db/tauri';
 
 export default function DbMaintenance() {
   const [running, setRunning] = useState(false);
@@ -14,12 +15,21 @@ export default function DbMaintenance() {
   const [backupPath, setBackupPath] = useState('');
   const [backupAllowed, setBackupAllowed] = useState(false);
   const [backupPassword, setBackupPassword] = useState('');
+  const [repairNote, setRepairNote] = useState('');
+  const [repairBackupPath, setRepairBackupPath] = useState('');
 
   useEffect(() => {
     let mounted = true;
     if (isTauri) {
-      void getClientSession().then(user => {
+      void getClientSession().then(async user => {
         if (mounted) setBackupAllowed(isOwnerOrAdmin(user));
+        if (isOwnerOrAdmin(user)) {
+          const row = await dbGet<{ value: string | null; backup_path: string | null }>("SELECT (SELECT value FROM config WHERE key='catalog_csv_repair_status') AS value, (SELECT value FROM config WHERE key='catalog_csv_repair_backup_path') AS backup_path");
+          if (mounted) {
+            setRepairNote(row?.value || '');
+            setRepairBackupPath(row?.backup_path || '');
+          }
+        }
       }).catch(() => { /* Keep backup unavailable without a verified user. */ });
     }
     return () => { mounted = false; };
@@ -75,6 +85,12 @@ export default function DbMaintenance() {
       </div>
 
       <div className="space-y-4">
+        {repairNote && (
+          <div role="note" aria-label="حالة التصحيح المحلي" className="p-4 rounded-xl bg-white/10 text-sm space-y-2">
+            <p>{repairNote}</p>
+            {repairBackupPath && <><p>نسخة ما قبل التصحيح:</p><p dir="ltr" className="break-all select-all text-xs">{repairBackupPath}</p></>}
+          </div>
+        )}
         {backupAllowed && (
           <div className="bg-white/5 border border-white/10 p-6 rounded-2xl space-y-4">
             <p className="text-sm text-slate-300">

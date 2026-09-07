@@ -4,8 +4,10 @@ import { invoke } from '@tauri-apps/api/core';
 import { getClientSession } from '@/lib/auth/local';
 import { toast } from 'react-hot-toast';
 import DbMaintenance from '@/components/settings/DbMaintenance';
+import { dbGet } from '@/lib/db/tauri';
 
 jest.mock('@tauri-apps/api/core', () => ({ invoke: jest.fn() }));
+jest.mock('@/lib/db/tauri', () => ({ dbGet: jest.fn() }));
 jest.mock('@/lib/env', () => ({ isTauri: true }));
 jest.mock('@/lib/auth/local', () => ({
   getClientSession: jest.fn(),
@@ -17,6 +19,14 @@ jest.mock('react-hot-toast', () => ({ toast: { success: jest.fn(), error: jest.f
 beforeEach(() => {
   jest.clearAllMocks();
   (getClientSession as jest.Mock).mockResolvedValue({ id: 'admin-id', role: 'admin' });
+  (dbGet as jest.Mock).mockResolvedValue(null);
+});
+
+it('shows the persisted local automatic-repair result in Settings', async () => {
+  (dbGet as jest.Mock).mockResolvedValue({ value: 'اكتمل التصحيح المحلي: 4 سجل دواء و3 سعر مخزون', backup_path: 'C:/data/backups/before-repair.db' });
+  render(<DbMaintenance />);
+  expect(await screen.findByRole('note', { name: 'حالة التصحيح المحلي' })).toHaveTextContent('4 سجل دواء و3 سعر مخزون');
+  expect(screen.getByRole('note')).toHaveTextContent('C:/data/backups/before-repair.db');
 });
 
 it('exports a complete database through Tauri and shows the resulting path', async () => {

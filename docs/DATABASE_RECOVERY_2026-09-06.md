@@ -1,5 +1,7 @@
 # Database recovery findings — 6 September 2026
 
+> Superseded catalog strategy: the later complete backup demonstrated that stable reference IDs do not identify the same drugs on this installation. Do not apply the ID-based repair below. See [CSV-authoritative recovery](CATALOG_METADATA_RECOVERY.md) for the replacement and corrected-snapshot results. The incomplete-file diagnosis below remains historical evidence for the earlier uploads.
+
 ## Uploaded database: repair remains blocked
 
 The original files in Downloads were not changed. Diagnostics used private local copies, excluded from Git.
