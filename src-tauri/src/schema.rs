@@ -2261,6 +2261,7 @@ mod tests {
         assert_eq!(backup_price, 20.0);
         before.close().await.unwrap();
 
+        #[allow(clippy::type_complexity)]
         let restored: Vec<(i64, String, Option<String>, String, String, String, f64, String, String)> =
             sqlx::query_as(
                 "SELECT id, trade_name, trade_name_en, active_ingredient, category, manufacturer, official_price, barcode, notes FROM master_drugs WHERE id BETWEEN 101 AND 103 ORDER BY id",

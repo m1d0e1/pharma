@@ -1,6 +1,6 @@
 [package]
 name = "pharma"
-version = "0.2.84"
+version = "0.2.85"
 description = "Pharmacy Local Enforcer"
 authors = ["Pharma Management Team"]
 edition = "2021"
