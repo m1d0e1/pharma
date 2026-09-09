@@ -54,7 +54,7 @@ pub async fn create_backup(source: &Path) -> Result<PathBuf, String> {
     Ok(complete)
 }
 
-async fn require_backup_admin(source: &Path, user_id: &str, password: &str) -> Result<(), String> {
+pub(crate) async fn require_backup_admin(source: &Path, user_id: &str, password: &str) -> Result<(), String> {
     let mut connection = SqliteConnection::connect_with(
         &SqliteConnectOptions::new().filename(source).read_only(true),
     )

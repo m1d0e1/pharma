@@ -41,7 +41,7 @@ export function useBarcodeScanner(onScan: (barcode: string) => void) {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (!document.hasFocus()) return;
 
-      const target = (e.target || document.activeElement) as HTMLElement | null;
+      const target = (document.activeElement || e.target) as HTMLElement | null;
       const isInput = target ? (
         target.tagName === 'INPUT' ||
         target.tagName === 'TEXTAREA' ||

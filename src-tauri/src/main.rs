@@ -679,6 +679,7 @@ fn main() {
             commands::critical::db_transaction_finish,
             commands::critical::process_checkout_critical,
             commands::critical::save_purchase_invoice_critical,
+            commands::drug_replacement::replace_master_drug,
             commands::critical::delete_purchase_invoice_critical,
             commands::critical::create_return_critical,
             commands::critical::settle_negative_sale_item_critical,

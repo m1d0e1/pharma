@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import PurchaseInvoiceClient from '@/app/(dashboard)/purchases/new/PurchaseInvoiceClient';
 import { searchMasterDrugsAction } from '@/app/actions-client/master-drugs';
+import { findDrugBarcodeConflict, getReplacementDrug, replaceDrugAction } from '@/app/actions-client/drug-replacement';
 import {
   checkSupplierPendingInvoiceAction,
   createPurchaseInvoiceAction,
@@ -19,6 +20,11 @@ jest.mock('@/lib/db/tauri', () => ({ dbGet: jest.fn().mockResolvedValue(null) })
 jest.mock('@/components/purchases/BarcodePrinter', () => () => null);
 jest.mock('@/components/pos/DrugDetailsModal', () => () => null);
 jest.mock('@/components/master-drugs/QuickAddDrugModal', () => () => null);
+jest.mock('@/app/actions-client/drug-replacement', () => ({
+  findDrugBarcodeConflict: jest.fn().mockResolvedValue(null),
+  replaceDrugAction: jest.fn(),
+  getReplacementDrug: jest.fn(async (id: number) => ({ id, trade_name: id === 99 ? 'Old medicine' : 'Test Drug', barcode: '123456', official_price: 20, large_to_medium: 1 })),
+}));
 jest.mock('@/app/actions-client/master-drugs', () => ({ searchMasterDrugsAction: jest.fn() }));
 jest.mock('@/app/actions-client/purchases', () => ({
   getSuppliersAction: jest.fn(),
@@ -43,6 +49,7 @@ jest.mock('react-hot-toast', () => ({
 describe('rendered purchase-invoice flow', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    (findDrugBarcodeConflict as jest.Mock).mockResolvedValue(null);
     sessionStorage.clear();
     localStorage.setItem('pharma_session_user', JSON.stringify({ id: 'buyer-1' }));
     mockPush.mockReset();
@@ -68,6 +75,41 @@ describe('rendered purchase-invoice flow', () => {
   });
 
   afterEach(() => jest.restoreAllMocks());
+
+  it('warns before a conflicting purchase, allows cancellation or replacement, then saves only after review', async () => {
+    render(<PurchaseInvoiceClient />);
+    fireEvent.change(screen.getByPlaceholderText('اسم الصنف أو الباركود...'), { target: { value: '123456' } });
+    fireEvent.click(await screen.findByRole('button', { name: /Purchase Drug/ }));
+    fireEvent.change(await screen.findByRole('combobox'), { target: { value: '7' } });
+    fireEvent.change(screen.getByPlaceholderText('مثلاً: INV-2024-001'), { target: { value: 'CONFLICT-ORDER' } });
+    fireEvent.change(document.querySelectorAll<HTMLInputElement>('input[type="date"]')[1], { target: { value: '2030-01-01' } });
+    (findDrugBarcodeConflict as jest.Mock).mockResolvedValue({ id: 99, trade_name: 'Old drug', barcode: '123456' });
+    fireEvent.click(screen.getByRole('button', { name: /حفظ نهائي/ }));
+    const first = await screen.findByRole('dialog');
+    expect(within(first).getByText(/Old drug/)).toBeInTheDocument();
+    expect(createPurchaseInvoiceAction).not.toHaveBeenCalled();
+    fireEvent.click(within(first).getByRole('button', { name: /إلغاء — بدون تغيير/ }));
+    expect(replaceDrugAction).not.toHaveBeenCalled();
+    expect(screen.getByPlaceholderText('مثلاً: INV-2024-001')).toHaveValue('CONFLICT-ORDER');
+    fireEvent.click(screen.getByRole('button', { name: /حفظ نهائي/ }));
+    const dialog = await screen.findByRole('dialog');
+    const confirm = within(dialog).getByRole('button', { name: 'نقل الروابط وحذف القديم' });
+    expect(confirm).toBeDisabled();
+    fireEvent.change(await within(dialog).findByLabelText('البيانات النهائية: الاسم التجاري'), { target: { value: 'Reviewed Drug' } });
+    fireEvent.change(within(dialog).getByLabelText('البيانات النهائية: سعر البيع'), { target: { value: '45' } });
+    fireEvent.click(within(dialog).getByRole('checkbox'));
+    fireEvent.change(within(dialog).getByLabelText('كلمة مرور المدير الحالي'), { target: { value: 'test-password' } });
+    (replaceDrugAction as jest.Mock).mockResolvedValue({ success: true, id: 101 });
+    (getReplacementDrug as jest.Mock).mockResolvedValueOnce({ id: 101, trade_name: 'Reviewed Drug', barcode: '123456', official_price: 45 });
+    fireEvent.click(confirm);
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(replaceDrugAction).toHaveBeenCalledWith(99, 101, null, 'test-password', { trade_name: 'Reviewed Drug', official_price: 45 });
+    expect(createPurchaseInvoiceAction).not.toHaveBeenCalled();
+    (findDrugBarcodeConflict as jest.Mock).mockResolvedValue(null);
+    fireEvent.click(screen.getByRole('button', { name: /حفظ نهائي/ }));
+    await waitFor(() => expect(createPurchaseInvoiceAction).toHaveBeenCalledTimes(1));
+    expect(createPurchaseInvoiceAction).toHaveBeenCalledWith(expect.objectContaining({ invoice_number: 'CONFLICT-ORDER', cart: [expect.objectContaining({ id: 101, trade_name: 'Reviewed Drug', selling_price: 45, barcode: '123456' })] }));
+  });
 
   it.each([false, true])('submits the full invoice and clears the local draft (print barcodes: %s)', async printBarcodes => {
     jest.mocked(window.confirm).mockReturnValue(printBarcodes);

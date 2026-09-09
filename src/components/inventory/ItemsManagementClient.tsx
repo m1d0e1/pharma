@@ -35,6 +35,8 @@ import { cn } from '@/lib/utils'
 import { toast, Toaster } from 'react-hot-toast'
 import { useSearchParams } from 'next/navigation'
 import { dbSelect, dbExecute } from '@/lib/db/tauri'
+import { findDrugBarcodeConflict } from '@/app/actions-client/drug-replacement';
+import DrugReplacementDialog from '@/components/master-drugs/DrugReplacementDialog';
 import {
    addMasterDrugAction,
    deleteMasterDrugAction,
@@ -105,6 +107,7 @@ function ContextMenuItem({ icon: Icon, label, onClick, color = "text-slate-700 d
 export default function ItemsManagementClient({ initialItems, totalCount }: Props) {
    const searchParams = useSearchParams();
    const [items, setItems] = useState<MasterDrug[]>(initialItems || []);
+   const [replacement, setReplacement] = useState<any>(null);
    const [searchTerm, setSearchTerm] = useState('');
    const [searchByActive, setSearchByActive] = useState(false);
    const [filterType, setFilterType] = useState<FilterType>('all');
@@ -160,6 +163,10 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
             setItems(items.filter(i => i.id !== id));
             toast.success('تم حذف الصنف بنجاح');
          } else {
+            if ((res as any).code === 'DRUG_IN_USE') {
+               setReplacement({ source: items.find(item => item.id === id) || { id } });
+               return;
+            }
             toast.error(res.error || 'فشل الحذف');
          }
       } catch (err: any) {
@@ -429,6 +436,11 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
             setItems(refreshRes.data);
          }
       } else {
+         const conflict = await findDrugBarcodeConflict(String(itemToSave.barcode || ''), itemToSave.id);
+         if (conflict) {
+            setReplacement({ source: conflict, ...(itemToSave.id ? { target: itemToSave, pendingEdit: itemToSave } : { newDrug: { ...itemToSave, official_price: Number(itemToSave.official_price) } }) });
+            return;
+         }
          toast.error(res.error || 'فشل الحفظ');
       }
    };
@@ -439,6 +451,13 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
 
    return (
       <div className="space-y-8 animate-in fade-in duration-700" dir="rtl">
+         {replacement && <DrugReplacementDialog {...replacement} onClose={() => setReplacement(null)} onSuccess={async () => {
+            setReplacement(null);
+            setIsModalOpen(false);
+            toast.success('تم نقل الروابط وحذف الصنف القديم مع حفظ نسخة احتياطية');
+            const refreshed = await searchMasterDrugsAction({ query: searchTerm, type: filterType, status: filterStatus });
+            if (refreshed.success) setItems(refreshed.data || []);
+         }} />}
          <Toaster position="top-center" />
 
          {/* PREMIUM FILTER HEADER */}

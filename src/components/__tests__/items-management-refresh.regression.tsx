@@ -2,7 +2,8 @@ import React from 'react';
 import { render, screen, waitFor, act, fireEvent } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import ItemsManagementClient from '../inventory/ItemsManagementClient';
-import { searchMasterDrugsAction } from '@/app/actions-client/master-drugs';
+import { searchMasterDrugsAction, deleteMasterDrugAction } from '@/app/actions-client/master-drugs';
+import { replaceDrugAction } from '@/app/actions-client/drug-replacement';
 
 jest.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(),
@@ -19,6 +20,7 @@ jest.mock('@/app/actions-client/master-drugs', () => ({
   updateMasterDrugAction: jest.fn(),
   searchMasterDrugsAction: jest.fn(),
 }));
+jest.mock('@/app/actions-client/drug-replacement', () => ({ findDrugBarcodeConflict: jest.fn(), replaceDrugAction: jest.fn(), getReplacementDrug: jest.fn(async (id: number) => ({ id, trade_name: 'Concor 5mg' })) }));
 
 describe('ItemsManagementClient auto-refresh and total count regression', () => {
   const sampleItems: any[] = [
@@ -54,6 +56,22 @@ describe('ItemsManagementClient auto-refresh and total count regression', () => 
       success: true,
       data: sampleItems,
     });
+  });
+
+  it('offers a linked-record replacement when deleting a used drug, without deleting on cancellation', async () => {
+    const confirm = jest.spyOn(window, 'confirm').mockReturnValue(true);
+    (deleteMasterDrugAction as jest.Mock).mockResolvedValue({ success: false, code: 'DRUG_IN_USE', error: 'linked history' });
+    render(<ItemsManagementClient initialItems={sampleItems} totalCount={100} />);
+    fireEvent.contextMenu(screen.getByText('Concor 5mg').closest('tr')!);
+    fireEvent.click(screen.getByRole('button', { name: /حذف الصنف نهائياً/ }));
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveTextContent('Concor 5mg');
+    expect(screen.getByRole('button', { name: 'نقل الروابط وحذف القديم' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: /إلغاء — بدون تغيير/ }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByText('Concor 5mg')).toBeInTheDocument();
+    expect(replaceDrugAction).not.toHaveBeenCalled();
+    confirm.mockRestore();
   });
 
   it('preserves initialItems on initial render and after debounce without wiping to 0', async () => {

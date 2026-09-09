@@ -5,10 +5,12 @@ import { useRouter } from 'next/navigation'
 import { getClientSession } from '@/lib/auth/local'
 import { getUnusedDrugsAction, deleteDrugAction } from '@/app/actions-client/inventory'
 import DeleteUnusedItemsClient from '@/components/inventory/DeleteUnusedItemsClient'
+import DrugReplacementDialog from '@/components/master-drugs/DrugReplacementDialog';
 
 export default function DeleteUnusedItemsPage() {
   const router = useRouter();
   const [items, setItems] = useState<any[]>([]);
+  const [replacement, setReplacement] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [isAuthorized, setIsAuthorized] = useState(false);
 
@@ -53,6 +55,10 @@ export default function DeleteUnusedItemsPage() {
         await loadData();
         return { success: true };
       }
+      if ((res as any).code === 'DRUG_IN_USE') {
+        setReplacement(items.find(item => item.id === id) || { id });
+        return { success: false, error: 'الصنف مرتبط بمخزون أو حركات؛ اختر بديلاً لنقل الروابط قبل حذفه' };
+      }
       return res;
     } catch (error: any) {
       return { success: false, error: error.message };
@@ -69,6 +75,7 @@ export default function DeleteUnusedItemsPage() {
 
   return (
     <div className="space-y-8 animate-in slide-in-up" dir="rtl">
+      {replacement && <DrugReplacementDialog source={replacement} onClose={() => setReplacement(null)} onSuccess={async () => { setReplacement(null); await loadData(); }} />}
       <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl shadow-soft border border-slate-100 dark:border-slate-800 flex justify-between items-center">
         <div>
           <h1 className="text-3xl font-black text-slate-900 dark:text-white">حذف الأصناف التي لم يتم عليها حركات</h1>

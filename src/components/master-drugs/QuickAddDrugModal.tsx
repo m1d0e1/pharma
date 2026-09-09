@@ -5,6 +5,8 @@ import { addMasterDrugAction, getUnitsAction } from '@/app/actions-client/master
 import { toast } from 'react-hot-toast'
 import { Plus, X, Pill, BadgeDollarSign, Factory, Beaker, Box, ChevronDown } from 'lucide-react'
 import { useHotkeys } from 'react-hotkeys-hook'
+import { findDrugBarcodeConflict, getReplacementDrug } from '@/app/actions-client/drug-replacement';
+import DrugReplacementDialog from './DrugReplacementDialog';
 
 interface Props {
   onClose: () => void
@@ -13,6 +15,7 @@ interface Props {
 
 export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [replacement, setReplacement] = useState<any>(null);
   const [unitsList, setUnitsList] = useState<{ name_ar: string }[]>([])
   const [formData, setFormData] = useState({
     trade_name: '',
@@ -35,7 +38,7 @@ export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
     fetchUnits()
   }, [])
 
-  useHotkeys('esc', () => onClose(), { enableOnFormTags: true })
+  useHotkeys('esc', () => { if (!replacement && !isSubmitting) onClose(); }, { enableOnFormTags: true }, [replacement, isSubmitting])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -54,6 +57,11 @@ export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
       toast.success('تمت إضافة الصنف لقاعدة البيانات بنجاح')
       onSuccess(res.id as number, formData.trade_name_en || formData.trade_name, formData.unit, officialPriceVal, largeToMediumVal, formData.barcode)
     } else {
+      const conflict = await findDrugBarcodeConflict(formData.barcode).catch(() => null);
+      if (conflict) {
+        setReplacement({ source: conflict, newDrug: { ...formData, large_unit: formData.unit, official_price: officialPriceVal, large_to_medium: largeToMediumVal } });
+        return;
+      }
       toast.error(res.error || 'فشل إضافة الصنف')
     }
   }
@@ -62,6 +70,13 @@ export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
   const labelClass = "text-[11px] font-bold text-slate-500 dark:text-slate-400 flex items-center gap-1.5 mb-1.5 uppercase tracking-wide"
 
   return (
+    <>
+    {replacement && <DrugReplacementDialog {...replacement} onClose={() => setReplacement(null)} onSuccess={async id => {
+      setReplacement(null);
+      const drug = await getReplacementDrug(id);
+      if (drug) onSuccess(id, drug.trade_name_en || drug.trade_name, drug.large_unit, drug.official_price, drug.large_to_medium, drug.barcode);
+      else { toast.success('تم الاستبدال. ابحث عن الصنف الجديد لإضافته للفاتورة'); onClose(); }
+    }} />}
     <div
       className="fixed inset-0 z-[110] flex items-center justify-center p-6"
       dir="rtl"
@@ -292,5 +307,6 @@ export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
         </form>
       </div>
     </div>
+    </>
   )
 }

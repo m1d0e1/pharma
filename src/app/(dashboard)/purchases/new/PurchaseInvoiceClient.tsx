@@ -39,6 +39,8 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { useHotkeys } from 'react-hotkeys-hook'
 import { Supplier, PurchaseItem, PurchaseInvoiceHeader } from '@/types/purchases'
 import BarcodePrinter from '@/components/purchases/BarcodePrinter'
+import DrugReplacementDialog from '@/components/master-drugs/DrugReplacementDialog';
+import { findDrugBarcodeConflict } from '@/app/actions-client/drug-replacement';
 import {
   clampPurchasePercent,
   derivePurchaseDiscountPercent,
@@ -79,6 +81,7 @@ function ContextMenuItem({ icon: Icon, label, onClick, color = "text-slate-700 d
 
 export default function PurchaseInvoiceClient() {
   const router = useRouter()
+  const [replacement, setReplacement] = useState<any>(null);
   const searchParams = useSearchParams();
   // ponytail: same-window navigation needs session storage, not a new database invoice.
   const [draftStorageKey] = useState(() => {
@@ -766,6 +769,13 @@ export default function PurchaseInvoiceClient() {
     
     try {
       let res;
+      for (const item of normalizedCart) {
+        const conflict = await findDrugBarcodeConflict(String(item.barcode || ''), Number(item.id));
+        if (conflict) {
+          setReplacement({ source: conflict, target: item });
+          return; // Keep the order; replacement and posting are separate explicit operations.
+        }
+      }
       if (isEditingCompleted) {
         res = await updateCompletedPurchaseInvoiceAction({
           id: invoiceHeader.id!,
@@ -844,6 +854,18 @@ export default function PurchaseInvoiceClient() {
 
   return (
     <div className="space-y-8 animate-in slide-in-from-bottom duration-500 pb-20" dir="rtl">
+      {replacement && <DrugReplacementDialog {...replacement} onClose={() => setReplacement(null)} onSuccess={(id, _backup, drug, edits) => {
+        const oldId = Number(replacement.source.id);
+        setReplacement(null);
+        setCart(prev => prev.map(item => [oldId, id].includes(Number(item.id)) ? {
+          ...item, id, trade_name: drug?.trade_name || replacement.target.trade_name,
+          trade_name_en: drug?.trade_name_en ?? replacement.target.trade_name_en,
+          barcode: drug?.barcode ?? item.barcode,
+          ...(edits && 'official_price' in edits ? { selling_price: Number(drug?.official_price ?? edits.official_price), official_price: Number(drug?.official_price ?? edits.official_price) } : {}),
+          ...(edits && 'large_to_medium' in edits ? { strips_per_box: Number(drug?.large_to_medium || 1) } : {}),
+        } : item));
+        toast.success('تم الاستبدال وحفظ نسخة احتياطية. راجع الفاتورة ثم اضغط حفظ مرة أخرى');
+      }} />}
       {/* Header Form */}
       <div className="bg-white dark:bg-slate-900 p-10 rounded-[45px] shadow-hard border border-slate-100 dark:border-slate-800">
         <div className="flex justify-between items-start mb-8">

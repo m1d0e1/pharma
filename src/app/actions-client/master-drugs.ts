@@ -1006,7 +1006,7 @@ export async function deleteMasterDrugAction(id: number) {
 
       if (!item) throw new Error('Drug not found');
       if (Number(item.is_referenced) === 1) {
-        throw new Error('Drugs with inventory, transaction, or clinical history cannot be deleted');
+        throw Object.assign(new Error('Drugs with inventory, transaction, or clinical history cannot be deleted'), { code: 'DRUG_IN_USE' });
       }
 
       const result = await db.prepare('DELETE FROM master_drugs WHERE id = ?').run(Number(id));
@@ -1030,7 +1030,7 @@ export async function deleteMasterDrugAction(id: number) {
     revalidatePath('/inventory');
     return { success: true };
   } catch (error: any) {
-    return { success: false, error: error.message };
+    return { success: false, error: error.message, code: error.code };
   }
 }
 
