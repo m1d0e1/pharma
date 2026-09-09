@@ -55,9 +55,9 @@ export default function DeleteUnusedItemsPage() {
         await loadData();
         return { success: true };
       }
-      if ((res as any).code === 'DRUG_IN_USE') {
+      if ((res as any).code === 'DRUG_IN_USE' || /Drugs with inventory, transaction, or clinical history/i.test(res.error || '')) {
         setReplacement(items.find(item => item.id === id) || { id });
-        return { success: false, error: 'الصنف مرتبط بمخزون أو حركات؛ اختر بديلاً لنقل الروابط قبل حذفه' };
+        return { success: false, error: 'اختر الحذف الآمن أو نقل الروابط إلى بديل من نافذة التحذير' };
       }
       return res;
     } catch (error: any) {
@@ -75,7 +75,7 @@ export default function DeleteUnusedItemsPage() {
 
   return (
     <div className="space-y-8 animate-in slide-in-up" dir="rtl">
-      {replacement && <DrugReplacementDialog source={replacement} onClose={() => setReplacement(null)} onSuccess={async () => { setReplacement(null); await loadData(); }} />}
+      {replacement && <DrugReplacementDialog source={replacement} onClose={() => setReplacement(null)} onArchived={async () => { setReplacement(null); await loadData(); }} onSuccess={async () => { setReplacement(null); await loadData(); }} />}
       <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl shadow-soft border border-slate-100 dark:border-slate-800 flex justify-between items-center">
         <div>
           <h1 className="text-3xl font-black text-slate-900 dark:text-white">حذف الأصناف التي لم يتم عليها حركات</h1>

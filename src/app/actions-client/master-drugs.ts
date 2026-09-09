@@ -987,6 +987,24 @@ export async function getUnusedItemsAction() {
   }
 }
 
+// ponytail: use the existing stopped flag; never cascade-delete stock or receipts.
+export async function archiveMasterDrugAction(id: number, confirmed: boolean) {
+  try {
+    const user = await getLocalSession();
+    if (!user || !hasUserPermissionSync(user, 'can_manage_inventory')) return { success: false, error: 'غير مصرح' };
+    if (confirmed !== true || !Number.isInteger(id) || id <= 0) return { success: false, error: 'يلزم تأكيد الحذف الآمن لصنف صحيح' };
+    await db.transaction(async () => {
+      const result = await db.prepare('UPDATE master_drugs SET stop_dealing=1 WHERE id=?').run(id);
+      if (Number(result.changes) !== 1) throw new Error('الصنف غير موجود');
+      await db.prepare("INSERT INTO activity_log(user_id,action,details) VALUES(?,'ARCHIVE_MASTER_DRUG',?)").run(user.id, `Archived drug #${id}; inventory, barcodes and history preserved`);
+    })();
+    try { secureCache.updateDrug(id, { stop_dealing: 1 }); await secureCache.reload(); } catch (error) { console.warn('Archived drug cache refresh', error); }
+    window.dispatchEvent(new Event('inventory-alerts-refresh'));
+    revalidatePath('/stores/items');
+    return { success: true };
+  } catch (error: any) { return { success: false, error: error.message }; }
+}
+
 export async function deleteMasterDrugAction(id: number) {
   try {
     const localUser = await getLocalSession();
@@ -1006,7 +1024,7 @@ export async function deleteMasterDrugAction(id: number) {
 
       if (!item) throw new Error('Drug not found');
       if (Number(item.is_referenced) === 1) {
-        throw Object.assign(new Error('Drugs with inventory, transaction, or clinical history cannot be deleted'), { code: 'DRUG_IN_USE' });
+        throw Object.assign(new Error('الصنف مرتبط بمخزون أو فواتير أو سجل طبي. اختر الحذف الآمن لإيقاف التعامل وحفظ السجل، أو انقل الروابط إلى بديل لحذفه نهائياً.'), { code: 'DRUG_IN_USE' });
       }
 
       const result = await db.prepare('DELETE FROM master_drugs WHERE id = ?').run(Number(id));

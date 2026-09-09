@@ -431,7 +431,7 @@ export default function PurchaseInvoiceClient() {
   const handleDrugSearch = async (query: string, byActive = searchByActive) => {
     setSearchQuery(query)
     if (query.length > 2) {
-      const res = await searchMasterDrugsAction({ query, searchByActiveIngredient: byActive })
+      const res = await searchMasterDrugsAction({ query, searchByActiveIngredient: byActive, status: 'active' })
       if (res.success) setSearchResults(res.data)
     } else {
       setSearchResults([])

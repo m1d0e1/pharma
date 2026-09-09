@@ -163,7 +163,7 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
             setItems(items.filter(i => i.id !== id));
             toast.success('تم حذف الصنف بنجاح');
          } else {
-            if ((res as any).code === 'DRUG_IN_USE') {
+            if ((res as any).code === 'DRUG_IN_USE' || /Drugs with inventory, transaction, or clinical history/i.test(res.error || '')) {
                setReplacement({ source: items.find(item => item.id === id) || { id } });
                return;
             }
@@ -451,7 +451,11 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
 
    return (
       <div className="space-y-8 animate-in fade-in duration-700" dir="rtl">
-         {replacement && <DrugReplacementDialog {...replacement} onClose={() => setReplacement(null)} onSuccess={async () => {
+         {replacement && <DrugReplacementDialog {...replacement} onClose={() => setReplacement(null)} onArchived={!replacement.target && !replacement.newDrug ? () => {
+            setItems(current => current.map(item => Number(item.id) === Number(replacement.source.id) ? { ...item, stop_dealing: 1 } : item));
+            setReplacement(null);
+            toast.success('تمت الأرشفة وإيقاف التعامل مع حفظ المخزون والسجل');
+         } : undefined} onSuccess={async () => {
             setReplacement(null);
             setIsModalOpen(false);
             toast.success('تم نقل الروابط وحذف الصنف القديم مع حفظ نسخة احتياطية');

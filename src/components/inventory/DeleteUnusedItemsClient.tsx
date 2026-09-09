@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { Search, Trash2, AlertTriangle } from 'lucide-react'
 import { toast, Toaster } from 'react-hot-toast'
 // Removed server action import
@@ -23,6 +23,7 @@ export const DELETE_ITEMS_PAGE_SIZE = 100;
 
 export default function DeleteUnusedItemsClient({ initialItems, onDelete }: Props) {
   const [items, setItems] = useState<UnusedItem[]>(initialItems);
+  useEffect(() => { setItems(initialItems); }, [initialItems]);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState<'all' | 'medicine' | 'other'>('all');
   const [isDeleting, setIsDeleting] = useState<number | null>(null);

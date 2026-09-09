@@ -942,6 +942,8 @@ pub(crate) async fn save_purchase_invoice_tx(
     }
     let mut barcode_owners: HashMap<String, i64> = HashMap::new();
     for item in &payload.cart {
+        let stopped: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(stop_dealing),0) FROM master_drugs WHERE id=?").bind(item.id).fetch_one(&mut **tx).await.map_err(|e| e.to_string())?;
+        if stopped == 1 { return Err("هذا الصنف مؤرشف أو متوقف؛ أزله من الفاتورة أو أعد تفعيله من إدارة الأصناف".into()); }
         if sqlx::query("SELECT 1 FROM master_drugs WHERE id = ?")
             .bind(item.id)
             .fetch_optional(&mut **tx)
@@ -1571,7 +1573,7 @@ async fn process_checkout_tx(
     for item in &payload.items {
         let drug = sqlx::query(
             r#"
-            SELECT md.trade_name, md.trade_name_en, md.active_ingredient, md.large_to_medium, md.medium_to_small, md.medium_unit, md.small_unit
+            SELECT md.trade_name, md.trade_name_en, md.active_ingredient, md.large_to_medium, md.medium_to_small, md.medium_unit, md.small_unit, md.stop_dealing
             FROM master_drugs md
             WHERE CAST(md.id AS TEXT) = CAST(? AS TEXT)
             "#,
@@ -1581,6 +1583,9 @@ async fn process_checkout_tx(
         .await
         .map_err(|e| e.to_string())?;
 
+        if drug.as_ref().and_then(|row| row.try_get::<i64,_>("stop_dealing").ok()).unwrap_or(0) == 1 {
+            return Err("هذا الصنف مؤرشف أو متوقف؛ أزله من الفاتورة أو أعد تفعيله من إدارة الأصناف".into());
+        }
         let is_placeholder = |s: &str| {
             let t = s.trim();
             t.is_empty()
@@ -3625,7 +3630,7 @@ mod tests {
     async fn completed_purchase_reduction_and_taxes_update_inventory() {
         let mut conn = SqliteConnection::connect("sqlite::memory:").await.unwrap();
         for sql in [
-            "CREATE TABLE master_drugs (id INTEGER PRIMARY KEY, large_to_medium INTEGER, barcode TEXT)",
+            "CREATE TABLE master_drugs (id INTEGER PRIMARY KEY, large_to_medium INTEGER, barcode TEXT, stop_dealing INTEGER DEFAULT 0)",
             "CREATE TABLE inventory (id TEXT PRIMARY KEY, drug_id INTEGER, pharmacy_id TEXT, quantity INTEGER, local_selling_price REAL, cost_price REAL, expiry_date TEXT, barcode TEXT, batch_number TEXT, strips_per_box INTEGER, created_at TEXT, updated_at TEXT)",
             "CREATE TABLE purchase_invoices (id TEXT PRIMARY KEY, supplier_id INTEGER, pharmacy_id TEXT, user_id TEXT, invoice_number TEXT, invoice_date TEXT, payment_method TEXT, notes TEXT, check_number TEXT, expenses REAL, discount_value REAL, discount_percent REAL, tax_percent REAL, status TEXT, total_amount REAL)",
             "CREATE TABLE purchase_invoice_items (id INTEGER PRIMARY KEY AUTOINCREMENT, invoice_id TEXT, drug_id INTEGER, quantity INTEGER, unit_id INTEGER, expiry_date TEXT, cost_price REAL, selling_price REAL, bonus_quantity INTEGER, tax_percent REAL, discount_percent REAL, strips_per_box INTEGER, inventory_id TEXT)",
@@ -3742,6 +3747,10 @@ mod tests {
             .await
             .unwrap();
 
+        let mut tx = conn.begin().await.unwrap();
+        sqlx::query("UPDATE master_drugs SET stop_dealing=1").execute(&mut *tx).await.unwrap();
+        assert!(save_purchase_invoice_tx(&mut tx, purchase(6.0)).await.unwrap_err().contains("مؤرشف"));
+        tx.rollback().await.unwrap();
         let mut tx = conn.begin().await.unwrap();
         save_purchase_invoice_tx(&mut tx, purchase(6.0))
             .await
@@ -5560,7 +5569,7 @@ mod tests {
     async fn checkout_handles_batch_fallback_and_wallet_accounting() {
         let mut conn = SqliteConnection::connect("sqlite::memory:").await.unwrap();
         for sql in [
-            "CREATE TABLE master_drugs (id INTEGER PRIMARY KEY, trade_name TEXT, trade_name_en TEXT, active_ingredient TEXT, large_to_medium INTEGER, medium_to_small INTEGER, medium_unit TEXT, small_unit TEXT, min_limit REAL, reorder_point REAL, default_purchase_qty REAL)",
+            "CREATE TABLE master_drugs (id INTEGER PRIMARY KEY, trade_name TEXT, trade_name_en TEXT, active_ingredient TEXT, large_to_medium INTEGER, medium_to_small INTEGER, medium_unit TEXT, small_unit TEXT, min_limit REAL, reorder_point REAL, default_purchase_qty REAL, stop_dealing INTEGER DEFAULT 0)",
             "CREATE TABLE inventory (id TEXT PRIMARY KEY, drug_id INTEGER, pharmacy_id TEXT, quantity INTEGER, cost_price REAL, expiry_date TEXT, created_at TEXT, updated_at TEXT, strips_per_box INTEGER)",
             "CREATE TABLE sales_invoices (id TEXT PRIMARY KEY, pharmacy_id TEXT, user_id TEXT, patient_id TEXT, shift_id TEXT, total_amount REAL, payment_method TEXT, check_number TEXT, status TEXT, discount_amount REAL, created_at TEXT)",
             "CREATE TABLE sales_items (id INTEGER PRIMARY KEY AUTOINCREMENT, invoice_id TEXT, inventory_id TEXT, drug_id INTEGER, quantity_sold REAL, unit_price REAL, unit TEXT, is_negative INTEGER, cost_price REAL, created_at TEXT)",
@@ -5615,6 +5624,13 @@ mod tests {
             additional_fees: 0.0,
         };
 
+        let mut tx = conn.begin().await.unwrap();
+        sqlx::query("UPDATE master_drugs SET stop_dealing=1 WHERE id=4463").execute(&mut *tx).await.unwrap();
+        let archived = process_checkout_tx(&mut tx, cash_payload(Some("full")), 69.0).await.unwrap_err();
+        assert!(archived.contains("مؤرشف"));
+        tx.rollback().await.unwrap();
+        let unchanged: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sales_invoices").fetch_one(&mut conn).await.unwrap();
+        assert_eq!(unchanged,0);
         let mut tx = conn.begin().await.unwrap();
         let auto_shift_sale = process_checkout_tx(&mut tx, cash_payload(Some("full")), 69.0)
             .await

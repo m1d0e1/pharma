@@ -2,7 +2,7 @@ import React from 'react';
 import { render, screen, waitFor, act, fireEvent } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import ItemsManagementClient from '../inventory/ItemsManagementClient';
-import { searchMasterDrugsAction, deleteMasterDrugAction } from '@/app/actions-client/master-drugs';
+import { searchMasterDrugsAction, deleteMasterDrugAction, archiveMasterDrugAction } from '@/app/actions-client/master-drugs';
 import { replaceDrugAction } from '@/app/actions-client/drug-replacement';
 
 jest.mock('next/navigation', () => ({
@@ -17,6 +17,7 @@ jest.mock('@/lib/db/tauri', () => ({
 jest.mock('@/app/actions-client/master-drugs', () => ({
   addMasterDrugAction: jest.fn(),
   deleteMasterDrugAction: jest.fn(),
+  archiveMasterDrugAction: jest.fn(),
   updateMasterDrugAction: jest.fn(),
   searchMasterDrugsAction: jest.fn(),
 }));
@@ -56,6 +57,24 @@ describe('ItemsManagementClient auto-refresh and total count regression', () => 
       success: true,
       data: sampleItems,
     });
+  });
+
+  it('offers safe archive for the legacy deletion error, preserves cancellation, then archives with explicit confirmation', async () => {
+    jest.spyOn(window, 'confirm').mockReturnValue(true);
+    (deleteMasterDrugAction as jest.Mock).mockResolvedValue({success:false,error:'Drugs with inventory, transaction, or clinical history cannot be deleted'});
+    (archiveMasterDrugAction as jest.Mock).mockResolvedValue({success:true});
+    render(<ItemsManagementClient initialItems={sampleItems} totalCount={100} />);
+    fireEvent.contextMenu(screen.getByText('Concor 5mg').closest('tr')!);
+    fireEvent.click(screen.getByText('حذف الصنف نهائياً'));
+    const save = await screen.findByRole('button', { name:'تأكيد الحذف الآمن (أرشفة)' });
+    expect(save).toBeDisabled();
+    expect(archiveMasterDrugAction).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument());
+    fireEvent.click(screen.getByLabelText('أوافق على إيقاف الصنف مع حفظ المخزون والسجل، وليس مسح الحركات.'));
+    fireEvent.click(save);
+    await waitFor(() => expect(archiveMasterDrugAction).toHaveBeenCalledWith(1,true));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(screen.getByText('Concor 5mg').closest('tr')).toHaveClass('opacity-75');
   });
 
   it('offers a linked-record replacement when deleting a used drug, without deleting on cancellation', async () => {

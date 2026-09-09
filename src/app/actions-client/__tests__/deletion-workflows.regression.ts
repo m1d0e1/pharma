@@ -52,6 +52,7 @@ import {
 } from '@/app/actions-client/inventory';
 import {
   addMasterDrugAction,
+  archiveMasterDrugAction,
   deleteMasterDrugAction,
   getUnusedItemsAction,
   updateMasterDrugAction,
@@ -307,7 +308,7 @@ describe.each(databaseVariants)('$name deletion invariants', ({ initialize }) =>
     }
 
     const referenced = await deleteMasterDrugAction(2006);
-    expect(referenced).toMatchObject({ success: false, error: expect.stringContaining('history') });
+    expect(referenced).toMatchObject({ success: false, code: 'DRUG_IN_USE' });
     expect(mockDb.prepare('SELECT COUNT(*) AS count FROM master_drugs WHERE id = 2006').get()).toEqual({ count: 1 });
 
     const missing = await deleteDrugAction(999999);
@@ -317,6 +318,22 @@ describe.each(databaseVariants)('$name deletion invariants', ({ initialize }) =>
     expect(mockDb.prepare('SELECT COUNT(*) AS count FROM master_drugs WHERE id = 2001').get()).toEqual({ count: 0 });
     expect(mockDb.prepare('SELECT COUNT(*) AS count FROM master_drugs_fts WHERE rowid = 2001').get()).toEqual({ count: 0 });
     expect(mockDb.prepare(`SELECT COUNT(*) AS count FROM activity_log WHERE action = 'DELETE_MASTER_DRUG'`).get()).toEqual({ count: 1 });
+    expect(mockDb.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+  });
+
+  it('archives used drugs only after permission and confirmation, without changing stock or history', async () => {
+    insertUserAndDrug(2001);
+    seedMasterDrugReferences();
+    const before = ['inventory','sales_items','return_items','purchase_invoice_items','refill_reminders'].map(table => mockDb.prepare(`SELECT * FROM ${table}`).all());
+    expect((await archiveMasterDrugAction(2006,false)).success).toBe(false);
+    mockPermission=false;
+    expect((await archiveMasterDrugAction(2006,true)).success).toBe(false);
+    mockPermission=true;
+    expect(mockDb.prepare('SELECT stop_dealing FROM master_drugs WHERE id=2006').get()).toEqual({ stop_dealing:0 });
+    expect(await archiveMasterDrugAction(2006,true)).toEqual({ success:true });
+    expect(mockDb.prepare('SELECT stop_dealing FROM master_drugs WHERE id=2006').get()).toEqual({ stop_dealing:1 });
+    expect(['inventory','sales_items','return_items','purchase_invoice_items','refill_reminders'].map(table => mockDb.prepare(`SELECT * FROM ${table}`).all())).toEqual(before);
+    expect(mockDb.prepare("SELECT COUNT(*) AS count FROM activity_log WHERE action='ARCHIVE_MASTER_DRUG'").get()).toEqual({ count:1 });
     expect(mockDb.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
   });
 

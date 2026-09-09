@@ -1,6 +1,6 @@
 'use client';
 import React, { useState } from 'react';
-import { searchMasterDrugsAction } from '@/app/actions-client/master-drugs';
+import { archiveMasterDrugAction, searchMasterDrugsAction } from '@/app/actions-client/master-drugs';
 import { getReplacementDrug, replaceDrugAction } from '@/app/actions-client/drug-replacement';
 
 const fields: [string, string, ('text' | 'number' | 'flag')?][] = [
@@ -18,14 +18,16 @@ const fields: [string, string, ('text' | 'number' | 'flag')?][] = [
   ['usage_method','طريقة الاستخدام'], ['indications','دواعي الاستعمال'], ['side_effects','الآثار الجانبية'], ['notes','ملاحظات'],
 ];
 
-export default function DrugReplacementDialog({ source, target, newDrug, pendingEdit, onClose, onSuccess }: {
+export default function DrugReplacementDialog({ source, target, newDrug, pendingEdit, onClose, onSuccess, onArchived }: {
   source: any; target?: any; newDrug?: any; pendingEdit?: any; onClose: () => void;
   onSuccess: (targetId: number, backupPath?: string, savedDrug?: any, edits?: Record<string, any>) => void;
+  onArchived?: () => void;
 }) {
   const [selected, setSelected] = useState<any>(target || null);
   const [results, setResults] = useState<any[]>([]);
   const [query, setQuery] = useState('');
   const [confirmed, setConfirmed] = useState(false);
+  const [archiveConfirmed, setArchiveConfirmed] = useState(false);
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -69,10 +71,23 @@ export default function DrugReplacementDialog({ source, target, newDrug, pending
       if (e.shiftKey && (document.activeElement === first || document.activeElement === e.currentTarget)) { e.preventDefault(); last.focus(); }
       else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
     }} className="bg-white dark:bg-slate-900 rounded-2xl p-6 w-full max-w-6xl max-h-[90vh] overflow-auto space-y-4">
-      <h2 id="replacement-title" className="font-bold text-xl">تحذير: استبدال الصنف القديم وحفظ روابطه</h2>
+      <h2 id="replacement-title" className="font-bold text-xl">{onArchived ? 'تحذير: حذف آمن أو استبدال الصنف القديم' : 'تحذير: استبدال الصنف القديم وحفظ روابطه'}</h2>
       <p>الصنف القديم: {source.trade_name_en || source.trade_name || `#${source.id}`} (#{source.id})</p>
-      <p>لا يمكن مشاركة الباركود بين صنفين أو حذف سجل مستخدم مباشرة. سيؤدي التأكيد إلى إنشاء نسخة احتياطية، ونقل دفعات المخزون والفواتير والمرتجعات والروابط إلى البديل، ثم حذف السجل القديم. تبقى الكميات والتكاليف وأسعار الفواتير السابقة دون تغيير.</p>
+      <p>لا يمكن مشاركة الباركود بين صنفين أو حذف سجل مستخدم مباشرة. عند اختيار نقل الروابط: تُنشأ نسخة احتياطية وتُنقل دفعات المخزون والفواتير والمرتجعات والروابط إلى البديل، ثم يُحذف السجل القديم. تبقى الكميات والتكاليف وأسعار الفواتير السابقة دون تغيير.</p>
       <p className="text-amber-700">لا تستخدم الدمج لأدوية أو تركيزات أو عبوات مختلفة. أغلق الفواتير المفتوحة أو المعلقة في النوافذ الأخرى أولاً. عند إنشاء بديل جديد تُحفظ الإعدادات التشغيلية للصنف القديم.</p>
+      {onArchived && <div className="border border-amber-400 rounded p-4 space-y-3">
+        <h3 className="font-bold">حذف آمن بدون اختيار بديل (أرشفة)</h3>
+        <p>يوقف البيع والشراء الجديد لهذا الصنف ولا يحذف كمياته أو فواتيره أو سجله الطبي. يبقى قابلاً للمراجعة في إدارة الأصناف ضمن «متوقف»، ويمكن استعادته بإلغاء «إيقاف التعامل». الباركود يبقى محجوزاً؛ استخدم نقل الروابط أدناه إذا كنت تريد استعماله لصنف بديل مطابق.</p>
+        <p>الرصيد المحفوظ: {sourceInfo?.stock_quantity ?? 'جاري التحميل'} — باركود الدفعات: {sourceInfo?.inventory_barcodes || '—'}</p>
+        <label className="flex gap-2"><input type="checkbox" checked={archiveConfirmed} disabled={busy} onChange={e => setArchiveConfirmed(e.target.checked)} />أوافق على إيقاف الصنف مع حفظ المخزون والسجل، وليس مسح الحركات.</label>
+        <button type="button" disabled={busy || loading || !archiveConfirmed} className="bg-amber-700 text-white rounded p-3 disabled:opacity-40" onClick={async () => {
+          if (submitLock.current) return;
+          submitLock.current=true; setBusy(true); setError('');
+          const result = await archiveMasterDrugAction(Number(source.id), true);
+          if (result.success) onArchived();
+          else { setError(result.error || 'فشل الحذف الآمن'); setBusy(false); submitLock.current=false; }
+        }}>تأكيد الحذف الآمن (أرشفة)</button>
+      </div>}
       <p>حذف الباركود من بطاقة الصنف لا يزيله من دفعات المخزون القديمة. الاستبدال ينقل هذه الدفعات إلى الصنف الصحيح ويزيل التعارض. إذا كان دواءً مختلفاً، ألغِ العملية واستخدم باركوداً مختلفاً.</p>
       {newDrug ? <p>البديل الجديد: {newDrug.trade_name_en || newDrug.trade_name}</p> : target ? <p>البديل: {target.trade_name_en || target.trade_name} (#{target.id})</p> : <>
         <label className="block">ابحث عن الصنف البديل

@@ -158,6 +158,8 @@ async function addToInventory(data: {
 async function assertPurchaseBarcodesAvailable(cart: any[] = []) {
   const owners = new Map<string, string>();
   for (const item of cart) {
+    const state = await db.prepare('SELECT stop_dealing FROM master_drugs WHERE id=?').get(item.id || item.drug_id) as any;
+    if (Number(state?.stop_dealing) === 1) throw new Error('هذا الصنف مؤرشف أو متوقف؛ أزله من الفاتورة أو أعد تفعيله من إدارة الأصناف');
     const barcode = String(item.barcode || '').trim();
     if (!barcode) continue;
     const drugId = String(item.id || item.drug_id);

@@ -83,6 +83,17 @@ describe('purchase reports and drawer handover regressions', () => {
 
   afterEach(() => mockDb.close());
 
+  it('hides archived drugs from POS name and barcode lookup without losing stock, and permits restoration', async () => {
+    mockDb.exec(`INSERT INTO inventory(id,pharmacy_id,drug_id,quantity,local_selling_price,expiry_date,barcode,strips_per_box)
+      VALUES('archive-lot','local_default',9001,2,20,'2099-12-31','6220000000001',1);
+      UPDATE master_drugs SET stop_dealing=1 WHERE id=9001;`);
+    expect(await searchDrugsAction('Test Drug')).toMatchObject({success:true,data:[]});
+    expect(await barcodeLookupAction('6220000000001')).toMatchObject({success:true,data:null});
+    expect(mockDb.prepare("SELECT quantity FROM inventory WHERE id='archive-lot'").get()).toEqual({quantity:2});
+    mockDb.exec('UPDATE master_drugs SET stop_dealing=0 WHERE id=9001');
+    expect(await barcodeLookupAction('6220000000001')).toMatchObject({success:true,data:{id:9001,quantity:2}});
+  });
+
   it('barcode POS supports CSV metadata repair and explicitly opted-in selling-price repair', async () => {
     mockDb.exec(`UPDATE master_drugs SET trade_name='HIBIOTIC 1 GM 16 TABS.', trade_name_en='HIBIOTIC 1 GM 16 TABS.', active_ingredient='WRONG', official_price=900 WHERE id=9001;
       INSERT INTO inventory(id,pharmacy_id,drug_id,quantity,local_selling_price,expiry_date,barcode,strips_per_box)

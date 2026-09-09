@@ -126,6 +126,7 @@ export async function searchDrugsAction(searchTerm: string, limit = 20, searchBy
     }
     const variants = getSearchVariants(searchLower);
     const cacheMatched = allDrugs.filter((d: any) => {
+      if (Number(d.stop_dealing) === 1) return false;
       const match = matchesDrug(d, variants, searchByActiveIngredient);
       if (d.barcode === searchLower || d.id.toString() === searchLower) exactMatch = d;
       return match;
@@ -158,6 +159,7 @@ export async function searchDrugsAction(searchTerm: string, limit = 20, searchBy
     const dbQuery = `
       SELECT * FROM master_drugs 
       WHERE ${whereClause}
+        AND COALESCE(stop_dealing,0)=0
         AND (trade_name IS NULL OR trade_name != 'SECURE')
         AND (trade_name_en IS NULL OR trade_name_en != 'SECURE')
       LIMIT 100
@@ -339,6 +341,7 @@ export async function barcodeLookupAction(barcode: string) {
       FROM master_drugs md
       INNER JOIN inventory i ON md.id = i.drug_id
       WHERE (i.barcode = ? COLLATE NOCASE OR md.barcode = ? COLLATE NOCASE)
+        AND COALESCE(md.stop_dealing,0)=0
         AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
         AND i.quantity > 0
         AND (i.expiry_date IS NULL OR i.expiry_date >= ?)
@@ -374,6 +377,7 @@ export async function barcodeLookupAction(barcode: string) {
       FROM master_drugs md
       INNER JOIN inventory i ON md.id = i.drug_id
       WHERE (i.barcode = ? COLLATE NOCASE OR md.barcode = ? COLLATE NOCASE)
+        AND COALESCE(md.stop_dealing,0)=0
         AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
         AND i.quantity > 0
         AND (i.expiry_date IS NULL OR i.expiry_date >= ?)
@@ -634,10 +638,11 @@ export async function processCheckoutAction(data: any) {
 
       for (const item of validatedData.items) {
         const drugInfo = await db.prepare(`
-          SELECT md.trade_name, md.trade_name_en, md.active_ingredient, md.large_to_medium, md.medium_to_small, md.has_expiry, md.medium_unit, md.small_unit
+          SELECT md.trade_name, md.trade_name_en, md.active_ingredient, md.large_to_medium, md.medium_to_small, md.has_expiry, md.medium_unit, md.small_unit, md.stop_dealing
           FROM master_drugs md
           WHERE md.id = ?
         `).get(item.drug_id) as any;
+        if (Number(drugInfo?.stop_dealing) === 1) throw new Error('هذا الصنف مؤرشف أو متوقف؛ أزل الصنف من الفاتورة أو أعد تفعيله من إدارة الأصناف');
         
         const isPlaceholder = (s?: string) => !s || /^Drug\s*#?\s*\d+$/i.test(String(s).trim());
         const drugName = (!isPlaceholder(drugInfo?.trade_name_en) ? drugInfo?.trade_name_en : null) ||
