@@ -267,7 +267,7 @@ export async function getPatientProfileAction(patientId: string) {
       SELECT pt.*, u.full_name AS user_name
       FROM patient_transactions pt
       LEFT JOIN users u ON u.id = pt.user_id
-      WHERE pt.patient_id = ? AND pt.type = 'payment'
+      WHERE pt.patient_id = ? AND pt.type IN ('payment', 'refund')
       ORDER BY pt.date DESC, pt.created_at DESC
     `).all(patientId) as any[];
 
@@ -501,7 +501,7 @@ export async function getPatientStatementAction(patientId: string) {
         ), pt.notes) as notes,
         (SELECT full_name FROM users WHERE id = pt.user_id) as user_name
       FROM patient_transactions pt
-      WHERE pt.patient_id = ?
+      WHERE pt.patient_id = ? AND pt.type != 'refund'
 
       UNION ALL
 

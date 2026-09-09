@@ -764,8 +764,10 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                          {(data.payments || []).map((p: any) => (
                              <tr key={p.id}>
                                 <td className="px-6 py-4 font-bold">{p.date ? format(new Date(p.date), 'yyyy/MM/dd') : '---'}</td>
-                                <td className="px-6 py-4 font-black text-emerald-600 text-lg">{p.amount} ج.م</td>
-                                <td className="px-6 py-4 text-slate-500">{p.notes || 'دفعة نقدية'}</td>
+                                <td className={cn("px-6 py-4 font-black text-lg", p.type === 'refund' ? "text-amber-600" : "text-emerald-600")}>
+                                  {p.type === 'refund' ? `-${p.amount}` : p.amount} ج.م
+                                </td>
+                                <td className="px-6 py-4 text-slate-500">{p.notes || (p.type === 'refund' ? 'مرتجع لحساب العميل' : 'دفعة نقدية')}</td>
                                 <td className="px-6 py-4 font-bold">{p.user_name || '---'}</td>
                              </tr>
                           ))}

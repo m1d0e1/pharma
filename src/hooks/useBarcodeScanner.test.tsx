@@ -18,4 +18,27 @@ test('only the focused window handles a barcode scan', () => {
   hasFocus.mockReturnValue(true);
   act(scan);
   expect(onScan).toHaveBeenCalledWith('123456');
+  hasFocus.mockRestore();
+});
+
+test('restores focused input value and invokes onScan when scanner fires into an input', () => {
+  const onScan = jest.fn();
+  jest.spyOn(document, 'hasFocus').mockReturnValue(true);
+  renderHook(() => useBarcodeScanner(onScan));
+
+  const input = document.createElement('input');
+  input.value = 'initial text';
+  document.body.appendChild(input);
+  input.focus();
+
+  act(() => {
+    for (const key of '622123456789') {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+    }
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  });
+
+  expect(onScan).toHaveBeenCalledWith('622123456789');
+  expect(input.value).toBe('initial text');
+  document.body.removeChild(input);
 });

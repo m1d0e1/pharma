@@ -200,6 +200,11 @@ describe('Patient Statement, Inventory Amount Editing, and Credit Returns', () =
     expect(returnRes.success).toBe(true);
     expect(returnRes.totalRefund).toBe(40);
 
+    const refundTx = mockDb.prepare("SELECT * FROM patient_transactions WHERE patient_id = 'pat-1' AND type = 'refund'").get() as any;
+    expect(refundTx).toBeDefined();
+    expect(refundTx.amount).toBe(40);
+    expect(refundTx.payment_method).toBe('patient_account');
+
     // 3. Add an imported debit notice and a normally mirrored credit notice.
     mockDb.prepare(`
       INSERT INTO financial_notices (id, target_type, target_id, type, amount, reason, notes, date, user_id)

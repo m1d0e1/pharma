@@ -79,6 +79,18 @@ function ContextMenuItem({ icon: Icon, label, onClick, color = "text-slate-700 d
 
 export default function PurchaseInvoiceClient() {
   const router = useRouter()
+  const searchParams = useSearchParams();
+  // ponytail: same-window navigation needs session storage, not a new database invoice.
+  const [draftStorageKey] = useState(() => {
+    try {
+      if (searchParams.get('edit_invoice_id')) return null;
+      const user = JSON.parse(localStorage.getItem('pharma_session_user') || 'null');
+      return user?.id ? `pharma_purchase_draft_v2:${JSON.stringify([user.pharmacy_id || 'local_default', user.id])}` : null;
+    } catch { return null; }
+  });
+  const [draftReady, setDraftReady] = useState(false);
+  const submittedDraftRef = React.useRef(false);
+  const draftWarningRef = React.useRef(false);
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number, drugId: string | number, lineId: string } | null>(null);
   const [showDrugDetails, setShowDrugDetails] = useState<string | number | null>(null);
 
@@ -122,6 +134,7 @@ export default function PurchaseInvoiceClient() {
   };
 
   const resetPurchase = () => {
+    submittedDraftRef.current = false;
     setCart([]);
     setSelectedSupplier(null);
     setInvoiceHeaderState(initialHeader);
@@ -129,6 +142,23 @@ export default function PurchaseInvoiceClient() {
 
   useEffect(() => {
     try { localStorage.removeItem('pharma_purchase_draft_v1'); } catch {}
+
+    try {
+      const stored = draftStorageKey && sessionStorage.getItem(draftStorageKey);
+      if (stored) {
+        const draft = JSON.parse(stored);
+        if (!Array.isArray(draft.cart) || !draft.cart.every((item: any) => item && item.id != null && typeof item.trade_name === 'string')
+          || !draft.invoiceHeader || typeof draft.invoiceHeader.invoice_number !== 'string'
+          || (draft.selectedSupplier != null && typeof draft.selectedSupplier.id !== 'number')) {
+          throw new Error('Invalid purchase draft');
+        }
+        setCart(draft.cart);
+        setSelectedSupplier(draft.selectedSupplier || null);
+        setInvoiceHeaderState({ ...initialHeader, ...draft.invoiceHeader });
+      }
+    } catch {
+      toast.error('تعذر استرجاع مسودة الشراء المحلية؛ يرجى مراجعة بيانات الفاتورة');
+    }
 
     try {
       const stored = sessionStorage.getItem('shortages_to_purchase');
@@ -153,14 +183,17 @@ export default function PurchaseInvoiceClient() {
             expiry_date: '',
             strips_per_box: Number(item.large_to_medium) || 1
           }));
-          setCart(newItems);
+          setCart(prev => [...prev, ...newItems]);
           toast.success(`تم استيراد ${newItems.length} صنف من كشكول النواقص`);
         }
       }
     } catch (e) {
       console.error('Failed to load shortages into purchase invoice:', e);
     }
-  }, []);
+    setDraftReady(true);
+  // Restore once before the autosave effect; subsequent edits are the live form.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftStorageKey]);
 
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
   const [searchQuery, setSearchQuery] = useState('')
@@ -177,6 +210,23 @@ export default function PurchaseInvoiceClient() {
   const [isQuickAddOpen, setIsQuickAddOpen] = useState(false)
   const searchInputRef = React.useRef<HTMLInputElement>(null)
   const submissionLockRef = React.useRef(false)
+
+  useEffect(() => {
+    if (!draftReady || !draftStorageKey || isEditingCompleted || searchParams.get('edit_invoice_id')) return;
+    try {
+      const hasChanges = cart.length > 0 || selectedSupplier || invoiceHeader.id
+        || Object.entries(initialHeader).some(([key, value]) => invoiceHeader[key as keyof PurchaseInvoiceHeader] !== value);
+      if (submittedDraftRef.current || !hasChanges) sessionStorage.removeItem(draftStorageKey);
+      else sessionStorage.setItem(draftStorageKey, JSON.stringify({ cart, selectedSupplier, invoiceHeader }));
+    } catch {
+      if (!draftWarningRef.current) {
+        draftWarningRef.current = true;
+        toast.error('تعذر حفظ المسودة تلقائياً؛ احفظ الفاتورة كمسودة قبل مغادرة الصفحة');
+      }
+    }
+  // initialHeader supplies fresh empty defaults; search parameters only guard explicit editing.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cart, selectedSupplier, invoiceHeader, draftReady, draftStorageKey, isEditingCompleted]);
 
   const handleEnterNext = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
@@ -281,8 +331,6 @@ export default function PurchaseInvoiceClient() {
       if (res.success) setSuppliers(res.data);
     });
   }, []);
-
-  const searchParams = useSearchParams();
 
   // Handle drugId, supplier_id, edit_invoice_id from URL
   useEffect(() => {
@@ -753,6 +801,12 @@ export default function PurchaseInvoiceClient() {
         const errMsg = (res as any).error || 'فشل في تسجيل الفاتورة';
         console.error('Save purchase invoice failed:', (res as any).error);
         throw new Error(errMsg);
+      }
+
+      // Do not restore an already-posted invoice, including while printing its barcodes.
+      submittedDraftRef.current = true;
+      if (draftStorageKey && !isEditingCompleted) {
+        try { sessionStorage.removeItem(draftStorageKey); } catch {}
       }
 
       if (isEditingCompleted) {

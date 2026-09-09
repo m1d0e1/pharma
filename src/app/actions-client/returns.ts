@@ -309,6 +309,23 @@ export async function createReturnAction(data: {
         await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, accounts.cogs, 'credit', totalCogsReversal);
       }
 
+      // ponytail: record refund in patient_transactions for customer ledger visibility
+      const patientId = data.patient_id || dbHeader?.patient_id;
+      if (data.refund_method === 'patient_account' && patientId) {
+        const txId = generateId();
+        await db.prepare(`
+          INSERT INTO patient_transactions (id, patient_id, user_id, type, amount, payment_method, notes, date)
+          VALUES (?, ?, ?, 'refund', ?, 'patient_account', ?, ?)
+        `).run(
+          txId,
+          String(patientId),
+          user.id,
+          totalRefund,
+          `مرتجع مبيعات فاتورة #${data.invoice_id.slice(0, 8)}`,
+          returnDate
+        );
+      }
+
       logActivity(user.id, 'CREATE_RETURN', `مرتجع بقيمة ${totalRefund} ج.م للفاتورة ${data.invoice_id.slice(0,8)}`);
       revalidatePath('/returns');
       revalidatePath('/inventory');

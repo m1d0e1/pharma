@@ -1546,6 +1546,26 @@ async fn repair_legacy_catalog_name_drift_on_connection(
 const CATALOG_REPAIR_VERSION: &str = "csv-catalog-name-metadata-v2";
 const CATALOG_PRICE_REPAIR_VERSION: &str = "csv-inventory-selling-price-v1";
 
+async fn attach_catalog_reference(connection: &mut SqliteConnection, seed_path: &Path) -> Result<(), String> {
+    // Installed resources may be under Program Files. The seed is a checkpointed
+    // read-only artifact, even though its SQLite header still says WAL mode.
+    // A normal ATTACH can try to create -wal/-shm beside that protected resource.
+    let absolute = std::fs::canonicalize(seed_path).map_err(|e| format!("Cannot locate bundled catalog: {e}"))?;
+    let mut wal = absolute.as_os_str().to_os_string();
+    wal.push("-wal");
+    match std::fs::metadata(std::path::PathBuf::from(wal)) {
+        Ok(metadata) if metadata.len() > 0 => return Err("Bundled catalog has an uncheckpointed WAL; refusing to ignore its contents".into()),
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(format!("Cannot check bundled catalog WAL: {error}")),
+        _ => {}
+    }
+    let mut uri = tauri::Url::from_file_path(&absolute).map_err(|_| "Invalid bundled catalog path")?;
+    uri.set_query(Some("mode=ro&immutable=1"));
+    sqlx::query("ATTACH DATABASE ? AS bundled_catalog")
+        .bind(uri.as_str()).execute(&mut *connection).await
+        .map_err(|e| format!("Cannot read bundled catalog: {e}"))?;
+    Ok(())
+}
+
 /// The local name/barcode identifies stock; seed IDs are not portable across installations.
 /// Only unambiguous CSV names can supply replacement metadata. Never move business rows.
 async fn repair_catalog_name_drift_on_connection(
@@ -1574,14 +1594,7 @@ async fn repair_catalog_name_drift_on_connection(
         return Err("Earlier ID-based catalog repair detected. Recover the original drug names from its pre-repair backup before applying name-based correction.".into());
     }
 
-    let seed_path = seed_path
-        .to_string_lossy()
-        .replace('\\', "/")
-        .replace('\'', "''");
-    sqlx::query(&format!("ATTACH DATABASE '{seed_path}' AS bundled_catalog"))
-        .execute(&mut *connection)
-        .await
-        .map_err(|e| e.to_string())?;
+    attach_catalog_reference(connection, seed_path).await?;
 
     let repair_result = async {
         let mut transaction = connection.begin().await.map_err(|e| e.to_string())?;
@@ -1722,6 +1735,37 @@ pub fn ensure_schema_compatibility(app: tauri::AppHandle) -> Result<(), String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn reads_checkpointed_read_only_resource_without_creating_sidecars() {
+        let directory = std::env::temp_dir().join(format!("pharma-resource-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("catalog space # % ' عربي.db");
+        let mut seed = connect(&path).await.unwrap();
+        sqlx::query("PRAGMA journal_mode=WAL").execute(&mut seed).await.unwrap();
+        sqlx::raw_sql("CREATE TABLE catalog_csv_reference(trade_name TEXT); INSERT INTO catalog_csv_reference VALUES ('ANDODERMA');")
+            .execute(&mut seed).await.unwrap();
+        let mut live = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        assert!(attach_catalog_reference(&mut live, &path).await.unwrap_err().contains("uncheckpointed WAL"));
+        seed.close().await.unwrap();
+        let original = std::fs::read(&path).unwrap();
+        let original_permissions = std::fs::metadata(&path).unwrap().permissions();
+        let mut read_only = original_permissions.clone(); read_only.set_readonly(true);
+        std::fs::set_permissions(&path, read_only).unwrap();
+        let result = attach_catalog_reference(&mut live, &path).await;
+        // Restore permissions before asserting, so a failing test leaves no locked fixture.
+        std::fs::set_permissions(&path, original_permissions).unwrap();
+        result.unwrap();
+        let name: String = sqlx::query_scalar("SELECT trade_name FROM bundled_catalog.catalog_csv_reference")
+            .fetch_one(&mut live).await.unwrap();
+        assert_eq!(name, "ANDODERMA");
+        assert!(sqlx::query("DELETE FROM bundled_catalog.catalog_csv_reference").execute(&mut live).await.is_err());
+        live.close().await.unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1, "No WAL/SHM should be created beside an installed resource");
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+    }
 
     #[test]
     fn repairs_only_known_legacy_checksums() {

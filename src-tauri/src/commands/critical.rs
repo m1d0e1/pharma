@@ -3120,6 +3120,24 @@ async fn apply_return_accounting(
         }
     }
 
+    if payload.refund_method == "patient_account" {
+        if let Some(patient_id) = payload.patient_id.as_deref() {
+            let tx_id = uuid::Uuid::new_v4().to_string();
+            let notes = format!("مرتجع مبيعات فاتورة #{}", &payload.invoice_id[..payload.invoice_id.len().min(8)]);
+            sqlx::query(
+                "INSERT INTO patient_transactions (id, patient_id, user_id, type, amount, payment_method, notes, date) VALUES (?, ?, ?, 'refund', ?, 'patient_account', ?, DATE('now', 'localtime'))",
+            )
+            .bind(tx_id)
+            .bind(patient_id)
+            .bind(&payload.user_id)
+            .bind(total_refund)
+            .bind(notes)
+            .execute(&mut **tx)
+            .await
+            .ok();
+        }
+    }
+
     sqlx::query(
         "INSERT INTO activity_log (user_id, action, details) VALUES (?, 'CREATE_RETURN', ?)",
     )
