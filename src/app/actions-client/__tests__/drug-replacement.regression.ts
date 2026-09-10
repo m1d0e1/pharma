@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { readFileSync } from 'fs';
 let mockDb: Database.Database;
 jest.mock('@/lib/db/tauri', () => ({
   dbGet: jest.fn(async (sql: string, params: any[]) => mockDb.prepare(sql).get(...params)),
@@ -26,6 +27,30 @@ it('detects a barcode remaining on old batches and returns complete comparison e
   expect(await findDrugBarcodeConflict('123',20)).toMatchObject({ id: 10, barcode: null });
   expect(await getReplacementDrug(10)).toMatchObject({ id: 10, stock_quantity: 2, inventory_barcodes: '123,456' });
   expect(await getReplacementDrug(20)).toMatchObject({ id: 20, stock_quantity: 0, barcode: '123' });
+});
+
+it('ignores only exhausted batch aliases without deleting historical evidence', async () => {
+  mockDb.exec("UPDATE inventory SET quantity=0 WHERE barcode='123'");
+  expect(await findDrugBarcodeConflict('123',20)).toBeFalsy();
+  expect(await getReplacementDrug(10)).toMatchObject({ inventory_barcodes:'123,456', stock_quantity:0.5 });
+  mockDb.exec("UPDATE master_drugs SET barcode='123' WHERE id=10");
+  expect(await findDrugBarcodeConflict('123',20)).toMatchObject({id:10});
+});
+
+it.each([0.001,-1,null])('still blocks a batch with a nonzero or unknown balance (%s)', async quantity => {
+  mockDb.prepare("UPDATE inventory SET quantity=? WHERE barcode='123'").run(quantity);
+  expect(await findDrugBarcodeConflict('123',20)).toMatchObject({id:10});
+});
+
+it.each([0,0.001,-1,null])('uses the same zero-balance rule in the native purchase SQL (%s)', async quantity => {
+  const source = readFileSync('src-tauri/src/commands/critical.rs','utf8');
+  const sql = source.match(/SELECT id FROM master_drugs\s+WHERE id != \?[\s\S]*?UNION ALL[\s\S]*?LIMIT 1/)?.[0];
+  expect(sql).toBeDefined();
+  mockDb.prepare("UPDATE inventory SET quantity=? WHERE barcode='123'").run(quantity);
+  const nativeConflict = mockDb.prepare(sql!).get(20,'123',20,'123');
+  expect(Boolean(nativeConflict)).toBe(quantity !== 0);
+  mockDb.exec("UPDATE master_drugs SET barcode='123' WHERE id=10");
+  expect(mockDb.prepare(sql!).get(20,'123',20,'123')).toEqual({id:10});
 });
 
 it('sends corrections in the same native replacement command, not separate catalog updates', async () => {

@@ -75,11 +75,13 @@ async function assertBarcodeAvailable(barcode: string | null, excludedDrugId?: n
     ? await db.prepare(`
         SELECT drug_id FROM inventory
         WHERE barcode IS NOT NULL AND TRIM(barcode) = ? COLLATE NOCASE
+          AND (quantity IS NULL OR quantity != 0)
         LIMIT 1
       `).get(barcode) as any
     : await db.prepare(`
         SELECT drug_id FROM inventory
         WHERE drug_id != ? AND barcode IS NOT NULL AND TRIM(barcode) = ? COLLATE NOCASE
+          AND (quantity IS NULL OR quantity != 0)
         LIMIT 1
       `).get(excludedDrugId, barcode) as any;
 

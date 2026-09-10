@@ -7,9 +7,10 @@ export async function findDrugBarcodeConflict(barcode: string, targetId?: number
   if (!barcode.trim()) return null;
   const user = await getLocalSession();
   if (!user || (!hasUserPermissionSync(user, 'can_manage_inventory') && !hasUserPermissionSync(user, 'can_view_purchases'))) return null;
+  // Empty batches retain history, but do not reserve a barcode. Unknown/negative balances still require review.
   return dbGet(`SELECT m.id,m.trade_name,m.trade_name_en,m.barcode,m.large_to_medium,m.official_price
     FROM master_drugs m WHERE m.id != ? AND (TRIM(m.barcode)=? COLLATE NOCASE
-      OR EXISTS(SELECT 1 FROM inventory i WHERE i.drug_id=m.id AND TRIM(i.barcode)=? COLLATE NOCASE))
+      OR EXISTS(SELECT 1 FROM inventory i WHERE i.drug_id=m.id AND (i.quantity IS NULL OR i.quantity != 0) AND TRIM(i.barcode)=? COLLATE NOCASE))
     ORDER BY m.id LIMIT 1`, [targetId || -1, barcode.trim(), barcode.trim()]);
 }
 

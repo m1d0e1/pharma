@@ -44,6 +44,7 @@ jest.unmock('@/app/actions-client/patients');
 import {
   createPurchaseReturnAction,
   createPurchaseInvoiceAction,
+  completePurchaseInvoiceAction,
   addSupplierPaymentAction,
   getPurchaseInvoiceDetailsAction,
   getPurchasesReportsAction,
@@ -926,6 +927,30 @@ describe('purchase reports and drawer handover regressions', () => {
         netProfit: 35,
       },
     });
+  });
+
+  it.each(['completed','draft'])('purchases the correct strength despite a historical empty batch (%s)', async status => {
+    mockDb.exec(`
+      INSERT INTO master_drugs(id,trade_name,trade_name_en,barcode,official_price)
+      VALUES(9724,'HIBIOTIC N 457MG/5ML','HIBIOTIC N 457MG/5ML','6221025038838',80),
+            (9725,'HIBIOTIC N 600 MG','HIBIOTIC N 600 MG','6221025019578',92);
+      INSERT INTO inventory(id,drug_id,pharmacy_id,quantity,barcode,expiry_date,local_selling_price)
+      VALUES('old-wrong-code',9724,'local_default',0,'6221025019578','2028-05-15',80),
+            ('old-correct-code',9724,'local_default',1,'6221025038838','2099-12-31',80);
+    `);
+    const oldLots = mockDb.prepare('SELECT * FROM inventory WHERE drug_id=9724 ORDER BY id').all();
+    const purchase = await createPurchaseInvoiceAction({supplier_id:1,status,invoice_number:'EMPTY-ALIAS',payment_method:'credit',cart:[{
+      id:9725,quantity:2,expiry_date:'2099-12-31',cost_price:70,selling_price:92,barcode:'6221025019578',strips_per_box:1,
+    }]});
+    expect(purchase.success).toBe(true);
+    if (status === 'draft') expect(await completePurchaseInvoiceAction(purchase.id!)).toMatchObject({success:true});
+    expect(mockDb.prepare('SELECT * FROM inventory WHERE drug_id=9724 ORDER BY id').all()).toEqual(oldLots);
+    expect(await barcodeLookupAction('6221025019578')).toMatchObject({success:true,data:{id:9725,quantity:2}});
+    expect(await barcodeLookupAction('6221025038838')).toMatchObject({success:true,data:{id:9724,quantity:1}});
+    expect(mockDb.prepare('SELECT drug_id,quantity FROM purchase_invoice_items WHERE invoice_id=?').all(purchase.id)).toEqual([{drug_id:9725,quantity:2}]);
+    // A later return can replenish the historical batch. Never silently choose the wrong strength.
+    mockDb.exec("UPDATE inventory SET quantity=1,expiry_date='2099-12-31' WHERE id='old-wrong-code'");
+    expect(await barcodeLookupAction('6221025019578')).toMatchObject({success:false,error:expect.stringContaining('أكثر من صنف')});
   });
 
   it('keeps old and replacement manufacturer barcodes on one drug without changing stock', async () => {

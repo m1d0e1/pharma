@@ -173,6 +173,7 @@ async function assertPurchaseBarcodesAvailable(cart: any[] = []) {
       UNION ALL
       SELECT drug_id FROM inventory
       WHERE drug_id != ? AND barcode IS NOT NULL AND TRIM(barcode) = ? COLLATE NOCASE
+        AND (quantity IS NULL OR quantity != 0)
       LIMIT 1
     `).get(item.id || item.drug_id, barcode, item.id || item.drug_id, barcode) as any;
     if (conflict) throw new Error('الباركود مستخدم لصنف آخر');

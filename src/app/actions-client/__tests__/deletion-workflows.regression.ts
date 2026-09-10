@@ -387,6 +387,20 @@ describe.each(databaseVariants)('$name deletion invariants', ({ initialize }) =>
     expect(nameUpdated.official_price).toBe(30);
   });
 
+  it.each(['add','update'])('allows catalog %s past an exhausted batch alias without changing the old drug', async operation => {
+    insertUserAndDrug(3002);
+    insertDrug(3003);
+    mockDb.exec(`UPDATE master_drugs SET barcode='CORRECT-OLD' WHERE id=3002;
+      INSERT INTO inventory(id,drug_id,quantity,barcode) VALUES('empty-alias',3002,0,'REASSIGNED');`);
+    const before = mockDb.prepare("SELECT * FROM inventory WHERE id='empty-alias'").get();
+    const data = {trade_name:'New strength',official_price:20,barcode:'REASSIGNED'};
+    const result = operation === 'add' ? await addMasterDrugAction(data) : await updateMasterDrugAction(3003,data);
+    expect(result.success).toBe(true);
+    expect(mockDb.prepare("SELECT * FROM inventory WHERE id='empty-alias'").get()).toEqual(before);
+    expect(mockDb.prepare('SELECT barcode FROM master_drugs WHERE id=3002').get()).toEqual({barcode:'CORRECT-OLD'});
+    expect(mockDb.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+  });
+
   it('preserves the previous barcode on existing stock when the master barcode changes', async () => {
     insertUserAndDrug(3002);
     mockDb.prepare("UPDATE master_drugs SET barcode = 'OLD-CODE' WHERE id = 3002").run();

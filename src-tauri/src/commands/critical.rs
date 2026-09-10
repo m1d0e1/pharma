@@ -976,6 +976,7 @@ pub(crate) async fn save_purchase_invoice_tx(
                 UNION ALL
                 SELECT CAST(drug_id AS INTEGER) FROM inventory
                 WHERE drug_id != ? AND barcode IS NOT NULL AND TRIM(barcode) = ? COLLATE NOCASE
+                  AND (quantity IS NULL OR quantity != 0)
                 LIMIT 1
                 "#,
             )
