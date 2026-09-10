@@ -76,6 +76,13 @@ export async function requireOpenShiftId(userId: string, requestedShiftId?: stri
   return String(shift.id);
 }
 
+function isValidISODate(str: unknown): boolean {
+  if (typeof str !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(str)) return false;
+  const [y, m, d] = str.split('-').map(Number);
+  const date = new Date(y, m - 1, d);
+  return date.getFullYear() === y && date.getMonth() === m - 1 && date.getDate() === d;
+}
+
 const noticeSchema = z.object({
   target_type: z.enum(['customer', 'supplier', 'pharmacy']),
   target_id: z.string().optional(),
@@ -83,7 +90,7 @@ const noticeSchema = z.object({
   amount: z.number().positive(),
   reason: z.string().min(1),
   notes: z.string().optional(),
-  date: z.string(),
+  date: z.string().refine(isValidISODate, { message: 'تاريخ غير صالح' }),
 });
 
 export async function addFinancialNoticeAction(rawData: z.infer<typeof noticeSchema>) {
@@ -264,7 +271,7 @@ const cashMovementSchema = z.object({
   source_type: z.string().optional(),
   target_name: z.string().optional(),
   notes: z.string().optional(),
-  date: z.string(),
+  date: z.string().refine(isValidISODate, { message: 'تاريخ غير صالح' }),
   actual_date: z.string().optional(),
   shift_id: z.string().optional(),
 });
@@ -1639,6 +1646,8 @@ export async function createManualJournalAction(data: {
   try {
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_make_daily_entries')) return { success: false, error: 'غير مصرح' };
+
+    if (!isValidISODate(data.date)) return { success: false, error: 'تاريخ القيد غير صالح' };
 
     if (!data.entries || data.entries.length < 2) {
       return { success: false, error: 'القيد اليومي يجب أن يتضمن طرفين على الأقل (طرف مدين وطرف دائن)' };
