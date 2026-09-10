@@ -293,7 +293,7 @@ describe('Cross-computer consistency across fresh install and update', () => {
     const stockAfterReturn = mockDb.prepare('SELECT quantity FROM inventory WHERE drug_id = 5001').get() as any;
     expect(stockAfterReturn.quantity).toBe(19);
 
-    // 8. Handover keeps the permanent user session open.
+    // 8. Handover closes the old shift and opens a shared replacement.
     const handoverRes = await processHandoverAction({
       shiftId: shift!.id,
       actualCash: 140, // 100 starting + 80 sale - 40 refund = 140 expected.
@@ -308,7 +308,9 @@ describe('Cross-computer consistency across fresh install and update', () => {
     expect(handoverRes.remainingCash).toBe(40);
 
     const permanentShift = mockDb.prepare('SELECT * FROM shifts WHERE id = ?').get(shift!.id) as any;
-    expect(permanentShift.status).toBe('open');
+    expect(permanentShift.status).toBe('closed');
+    expect(handoverRes.newShiftId).not.toBe(shift!.id);
+    expect(mockDb.prepare("SELECT starting_cash FROM shifts WHERE id=? AND status='open'").get(handoverRes.newShiftId)).toEqual({ starting_cash:40 });
     expect(permanentShift.actual_cash).toBe(140);
     expect(permanentShift.cash_difference).toBe(0);
 
@@ -634,8 +636,9 @@ describe('Cross-computer consistency across fresh install and update', () => {
     // Verify the same session remains open and carries 17.5 as its computed balance.
     const nextShift = mockDb.prepare("SELECT * FROM shifts WHERE user_id = 'admin' AND status = 'open'").get() as any;
     expect(nextShift).toBeDefined();
-    expect(nextShift.starting_cash).toBe(50);
-    expect((mockDb.prepare("SELECT COUNT(*) AS total FROM shifts WHERE user_id = 'admin'").get() as any).total).toBe(1);
+    expect(nextShift.starting_cash).toBe(17.5);
+    expect(nextShift.id).not.toBe(shift!.id);
+    expect((mockDb.prepare("SELECT COUNT(*) AS total FROM shifts WHERE user_id = 'admin'").get() as any).total).toBe(2);
   });
 
   it('normalizes timestamps consistently across all computer timezones and string formats', () => {

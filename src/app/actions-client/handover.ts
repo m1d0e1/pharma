@@ -164,6 +164,8 @@ export async function getHandoverDetailsAction(shiftId: string) {
   }
 }
 
+// ponytail: one handover per renderer; SQLite serializes handovers across windows.
+let handoverInProgress = false;
 export async function processHandoverAction(data: {
   shiftId: string;
   actualCash: number;
@@ -173,12 +175,14 @@ export async function processHandoverAction(data: {
   receiverUsername: string;
   receiverPasswordHash: string;
   notes?: string;
-  autoOpenNewShift?: boolean;
+  autoOpenNewShift?: boolean; // Legacy clients may send false; normal handover always rotates the shared shift.
   closeOnly?: boolean;
   managedUserId?: string;
   deactivateManagedUser?: boolean;
   authorizerPassword?: string;
 }) {
+  if (handoverInProgress) return { success:false, error:'جاري تنفيذ تسليم آخر؛ انتظر انتهاء العملية' };
+  handoverInProgress = true;
   try {
     const user = await getLocalSession();
     const managedUserId = data.closeOnly ? data.managedUserId : undefined;
@@ -200,6 +204,7 @@ export async function processHandoverAction(data: {
     if (data.transferAmount > data.actualCash + 0.005) {
       return { success: false, error: 'مبلغ التحويل أكبر من النقدية الفعلية في الدرج' };
     }
+    if (!['bank','pos','treasury','next_shift'].includes(data.transferTargetType)) return { success:false, error:'جهة التحويل غير صالحة' };
 
     let managedUser: any = null;
     let receiver: any = null;
@@ -240,6 +245,9 @@ export async function processHandoverAction(data: {
     }
 
     const transaction = db.transaction(async () => {
+      // Serialize the cash snapshot with checkout and other handovers before reading it.
+      const locked = await db.prepare("UPDATE shifts SET status=status WHERE id=? AND status='open'").run(data.shiftId);
+      if (locked.changes !== 1) throw new Error('تم تسليم أو إغلاق هذه الوردية بالفعل؛ حدّث الشاشة');
       const details = await loadHandoverDetails(data.shiftId);
       const shiftOwnerId = managedUserId || user.id;
       if (details.status !== 'open') {
@@ -254,18 +262,17 @@ export async function processHandoverAction(data: {
       const remainingCash = isInternalHandover
         ? data.actualCash
         : Math.max(0, data.actualCash - data.transferAmount);
-      const shiftStatus = managedUserId
-        ? (Math.abs(difference) > 5 ? 'discrepancy' : 'closed')
-        : 'open';
+      const carriedCash = Math.max(0, data.actualCash - data.transferAmount);
+      const shiftStatus = Math.abs(difference) > 5 ? 'discrepancy' : 'closed';
+      const nextShiftId = managedUserId ? null : generateId();
 
-      // Keep a permanent drawer mathematically aligned with the physical count.
-      // After this adjustment and the transfer its balance is exactly remainingCash.
+      // Reconcile the old drawer before carrying its residual cash to the next shift.
       if (!managedUserId && Math.abs(difference) > 0.005) {
         await db.prepare(`
           INSERT INTO cash_movements (id, user_id, shift_id, type, category, amount, target_name, notes, date)
           VALUES (?, ?, ?, ?, 'cash_adjustment', ?, 'تسوية الجرد', ?, datetime('now', 'localtime'))
         `).run(
-          generateId(), shiftOwnerId, data.shiftId,
+          generateId(), user.id, data.shiftId,
           difference > 0 ? 'receipt' : 'disbursement', Math.abs(difference),
           `تسوية تسليم: ${difference.toFixed(2)} ج.م`
         );
@@ -276,22 +283,10 @@ export async function processHandoverAction(data: {
         await db.prepare(`
           INSERT INTO cash_movements (id, user_id, shift_id, type, category, amount, source_type, target_name, notes, date)
           VALUES (?, ?, ?, 'disbursement', 'handover', ?, 'user_drawer', ?, ?, datetime('now', 'localtime'))
-        `).run(movementId, shiftOwnerId, data.shiftId, data.transferAmount, managedUserId ? 'الخزينة الرئيسية - إغلاق حساب مستخدم' : data.receiverUsername, data.notes || 'تسليم درج');
+        `).run(movementId, user.id, data.shiftId, data.transferAmount, managedUserId ? 'الخزينة الرئيسية - إغلاق حساب مستخدم' : data.receiverUsername, data.notes || 'تسليم درج');
       }
 
       let receiverShiftId: string | null = null;
-      if (!managedUserId && data.transferAmount > 0 && data.transferTargetType === 'next_shift' && receiver?.id) {
-        receiverShiftId = data.shiftId;
-
-        await db.prepare(`
-          INSERT INTO cash_movements (id, user_id, shift_id, type, category, amount, source_type, target_name, notes, date)
-          VALUES (?, ?, ?, 'receipt', 'handover_received', ?, 'user_drawer_received', ?, ?, datetime('now', 'localtime'))
-        `).run(
-          generateId(), receiver.id, receiverShiftId, data.transferAmount,
-          user.full_name || user.username || user.id,
-          data.notes || `استلام درج من ${user.full_name || user.username || user.id}`
-        );
-      }
 
       if (data.transferAmount > 0 && data.transferTargetType === 'bank') {
         const bankUpdate = await db.prepare('UPDATE banks SET current_balance = current_balance + ? WHERE id = ?').run(data.transferAmount, data.transferTargetId);
@@ -303,6 +298,7 @@ export async function processHandoverAction(data: {
 
       // A treasury or next shift handover remains in the cash drawer or main treasury, so only bank transfers need a ledger transfer.
       if (data.transferTargetType === 'bank' && data.transferAmount > 0) {
+        if (!bankAcc || !cashDrawerAcc) throw new Error('يلزم ضبط حساب البنك والخزينة قبل التسليم');
         if (bankAcc && cashDrawerAcc) {
           try {
             const journalId = generateId();
@@ -313,12 +309,13 @@ export async function processHandoverAction(data: {
             await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, bankAcc, 'debit', data.transferAmount);
             await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, cashDrawerAcc, 'credit', data.transferAmount);
           } catch (bErr) {
-            console.warn('Could not post bank transfer journal entry:', bErr);
+            throw new Error('تعذر تسجيل قيد التحويل البنكي؛ تم إلغاء التسليم');
           }
         }
       }
 
-      if (Math.abs(difference) > 0.01 && cashDifferenceAcc && cashDrawerAcc) {
+      if (Math.abs(difference) > 0.005) {
+        if (!cashDifferenceAcc || !cashDrawerAcc) throw new Error('يلزم ضبط حساب فروق النقدية والخزينة قبل التسليم');
         try {
           const journalId = generateId();
           await db.prepare(`
@@ -330,7 +327,7 @@ export async function processHandoverAction(data: {
           await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, debitAccount, 'debit', Math.abs(difference));
           await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, creditAccount, 'credit', Math.abs(difference));
         } catch (dErr) {
-          console.warn('Could not post difference journal entry:', dErr);
+          throw new Error('تعذر تسجيل قيد فرق النقدية؛ تم إلغاء التسليم');
         }
       }
 
@@ -348,23 +345,37 @@ export async function processHandoverAction(data: {
           )
         : await db.prepare(`
             UPDATE shifts
-            SET end_time = NULL, ending_cash = ?, actual_cash = ?,
+            SET end_time = CURRENT_TIMESTAMP, ending_cash = ?, actual_cash = ?,
                 transfer_amount = COALESCE(transfer_amount, 0) + ?, transfer_target = ?,
-                cash_difference = ?, receiver_id = ?, notes = ?, status = 'open'
+                cash_difference = ?, receiver_id = ?, notes = ?, status = ?
             WHERE id = ? AND status = 'open'
           `).run(
-            remainingCash, data.actualCash, data.transferAmount,
+            carriedCash, data.actualCash, data.transferAmount,
             data.transferTargetType || 'treasury', difference, receiver?.id || null,
-            data.notes || null, data.shiftId
+            data.notes || null, shiftStatus, data.shiftId
           );
       if (shiftUpdate.changes !== 1) throw new Error('تم إغلاق الوردية أو تعديلها بالفعل');
+      if (nextShiftId) {
+        const opened = await db.prepare(`
+          INSERT INTO shifts(id,user_id,starting_cash,notes,status)
+          SELECT ?,?,?,?,'open' WHERE NOT EXISTS(SELECT 1 FROM shifts WHERE status='open')
+        `).run(nextShiftId,user.id,carriedCash,`وردية مشتركة بعد تسليم ${data.shiftId}`);
+        if (opened.changes !== 1) throw new Error('توجد وردية أخرى مفتوحة؛ لم يتم التسليم. راجع إدارة الورديات');
+        if (isInternalHandover && data.transferAmount > 0) {
+          receiverShiftId = nextShiftId;
+          await db.prepare(`INSERT INTO cash_movements(id,user_id,shift_id,type,category,amount,source_type,target_name,notes,date)
+            VALUES(?,?,?,'receipt','handover_received',?,'user_drawer_received',?,?,datetime('now','localtime'))
+          `).run(generateId(),receiver.id,nextShiftId,data.transferAmount,user.id,`استلام من الوردية ${data.shiftId}. ${data.notes || ''}`);
+        }
+        await db.prepare('INSERT INTO activity_log(user_id,action,details) VALUES (?,\'START_SHIFT\',?)').run(user.id,`Opened shared shift ${nextShiftId} after ${data.shiftId}; opening float ${carriedCash}`);
+      }
 
       await db.prepare('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)').run(
         user.id,
         managedUserId ? 'CLOSE_USER_SHIFT_AND_DEACTIVATE' : 'HANDOVER',
         managedUserId
           ? `Closed shift ${data.shiftId} and deactivated ${managedUser.username}; cash ${data.actualCash}; difference ${difference.toFixed(2)}`
-          : `Handed over ${data.transferAmount} to ${data.receiverUsername}; difference ${difference.toFixed(2)}`
+          : JSON.stringify({ shiftId:data.shiftId, newShiftId:nextShiftId, actorId:user.id, receiverId:receiver?.id, actualCash:data.actualCash, expectedCash:details.expected_cash, transferAmount:data.transferAmount, transferTargetType:data.transferTargetType, transferTargetId:data.transferTargetId, difference, carriedCash, notes:data.notes || '' })
       );
 
       if (managedUserId && data.deactivateManagedUser) {
@@ -372,8 +383,7 @@ export async function processHandoverAction(data: {
         if (deactivated.changes !== 1) throw new Error('تعذر تعطيل حساب المستخدم');
       }
 
-      const nextShiftCash = remainingCash;
-      const nextShiftId = managedUserId ? null : data.shiftId;
+      const nextShiftCash = carriedCash;
 
       return { 
         difference, 
@@ -387,6 +397,10 @@ export async function processHandoverAction(data: {
     });
 
     const result = await transaction();
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('shift-updated'));
+      try { localStorage.setItem('pharma:shift-updated', result.newShiftId || data.shiftId); } catch { /* Focus refresh still works when storage is unavailable. */ }
+    }
 
     revalidatePath('/');
     revalidatePath('/pos');
@@ -397,6 +411,8 @@ export async function processHandoverAction(data: {
   } catch (error) {
     console.error('Handover error:', error);
     return { success: false, error: error instanceof Error ? error.message : 'فشل إتمام عملية التسليم' };
+  } finally {
+    handoverInProgress = false;
   }
 }
 

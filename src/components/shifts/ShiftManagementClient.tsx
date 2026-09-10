@@ -46,6 +46,7 @@ export default function ShiftManagementClient({
   suggestedStartingCash = 0
 }: ShiftManagementClientProps) {
   const [shifts, setShifts] = useState<Shift[]>(initialShifts);
+  useEffect(() => { setShifts(initialShifts); }, [initialShifts]);
   const [isOpeningShift, setIsOpeningShift] = useState(false);
   const [startingCash, setStartingCash] = useState(() => {
     return suggestedStartingCash > 0 ? String(suggestedStartingCash) : '';
@@ -176,7 +177,7 @@ export default function ShiftManagementClient({
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Open Shift Card */}
         <div className="p-6 bg-white dark:bg-slate-800 rounded-3xl border-2 border-slate-100 dark:border-slate-700 shadow-lg">
-          <h3 className="text-xl font-bold text-slate-800 dark:text-white mb-4">الوردية المشتركة الدائمة</h3>
+          <h3 className="text-xl font-bold text-slate-800 dark:text-white mb-4">الوردية المشتركة الحالية</h3>
           
           {hasOpenShift ? (
             <div className="p-4 bg-emerald-50 dark:bg-emerald-900/20 rounded-2xl border border-emerald-200 dark:border-emerald-800">
@@ -268,7 +269,7 @@ export default function ShiftManagementClient({
                 <div>
                   <p className="font-bold text-emerald-800 dark:text-emerald-300">الجرد والتسليم المالي</p>
                   <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-1">
-                    أدخل النقدية الفعلية وحدد ما سيسلم. يسجل النظام العجز أو الزيادة ويبقي الجلسة مفتوحة.
+                    أدخل النقدية الفعلية وحدد ما سيسلم. يسجل النظام العجز أو الزيادة ويغلق الوردية ويفتح وردية مشتركة جديدة تلقائياً مع ترحيل النقدية المتبقية.
                   </p>
                 </div>
                 <Link

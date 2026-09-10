@@ -60,7 +60,7 @@ import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 export async function ensurePermanentShiftForUser(
   userId: string | number,
   startingCash = 0,
-  notes = 'وردية مشتركة دائمة أُنشئت تلقائياً'
+  notes = 'وردية مشتركة أُنشئت تلقائياً'
 ) {
   const existing = await db.prepare(`
     SELECT id, user_id, start_time, starting_cash, status
@@ -110,7 +110,7 @@ export async function openShiftAction(data: { starting_cash_amount: number; open
     const shift = await ensurePermanentShiftForUser(
       targetUserId,
       data.starting_cash_amount,
-      data.opening_notes || 'وردية مشتركة دائمة'
+      data.opening_notes || 'وردية مشتركة'
     );
 
     if (!alreadyOpen) {

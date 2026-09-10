@@ -151,7 +151,7 @@ export default function ShiftReportClient({ shiftId }: { shiftId: string }) {
                     </div>
                     <div className="text-left">
                        <p className="text-xs font-bold text-white/40 uppercase tracking-widest mb-1">الرصيد الفعلي</p>
-                       <p className="text-3xl font-black">{summary.actualCash ? summary.actualCash.toLocaleString() : '---'} <span className="text-sm">ج.م</span></p>
+                       <p className="text-3xl font-black">{summary.actualCash != null ? summary.actualCash.toLocaleString() : '---'} <span className="text-sm">ج.م</span></p>
                     </div>
                  </div>
               </div>

@@ -113,11 +113,11 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
       shiftId,
       ...form,
       receiverPasswordHash: form.receiverPassword,
-      autoOpenNewShift: false
+      autoOpenNewShift: true
     });
 
     if (res.success) {
-      toast.success(`تم تسليم النقدية مع بقاء الوردية المشتركة مفتوحة (رصيد الوردية ${Number(res.remainingCash ?? 0).toFixed(2)} ج.م)`);
+      toast.success(`تم التسليم وإغلاق الوردية وفتح وردية مشتركة جديدة (الرصيد ${Number(res.remainingCash ?? 0).toFixed(2)} ج.م)`);
       if (onClose) {
         onClose();
       } else {
@@ -321,6 +321,7 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
             </div>
 
             <div className="pt-4 border-t border-slate-100 dark:border-slate-800">
+              <p className="mb-3 text-sm text-slate-600 dark:text-slate-300">عند التأكيد سيتم إغلاق الوردية الحالية وتسجيل التسليم وفتح وردية مشتركة جديدة تلقائياً، مع ترحيل النقدية المتبقية وحفظ اسم منفّذ كل عملية.</p>
               <button 
                 type="submit"
                 disabled={processing}

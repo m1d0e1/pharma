@@ -13,6 +13,12 @@ export default function ShiftManagement() {
 
   useEffect(() => {
     fetchShift();
+    const refresh = () => { void fetchShift(); };
+    window.addEventListener('shift-updated', refresh);
+    window.addEventListener('focus', refresh);
+    const storage = (event: StorageEvent) => { if (event.key === 'pharma:shift-updated') refresh(); };
+    window.addEventListener('storage', storage);
+    return () => { window.removeEventListener('shift-updated', refresh); window.removeEventListener('focus', refresh); window.removeEventListener('storage', storage); };
     // The loader reads only stable action functions and state setters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -61,7 +67,7 @@ export default function ShiftManagement() {
             <div>
               <h2 className="text-xl font-black">إدارة الورديات</h2>
               <p className="text-xs text-slate-500 font-bold mt-0.5">
-                {currentShift ? 'الوردية المشتركة الدائمة نشطة' : 'جاري تهيئة الوردية المشتركة'}
+                {currentShift ? 'الوردية المشتركة الحالية نشطة' : 'جاري تهيئة الوردية المشتركة'}
               </p>
             </div>
           </div>

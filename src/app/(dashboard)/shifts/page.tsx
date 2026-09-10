@@ -49,6 +49,12 @@ export default function ShiftsPage() {
     }
 
     loadShiftsData();
+    const refresh = () => { void loadShiftsData(); };
+    const storage = (event: StorageEvent) => { if (event.key === 'pharma:shift-updated') refresh(); };
+    window.addEventListener('shift-updated', refresh);
+    window.addEventListener('focus', refresh);
+    window.addEventListener('storage', storage);
+    return () => { window.removeEventListener('shift-updated', refresh); window.removeEventListener('focus', refresh); window.removeEventListener('storage', storage); };
   }, []);
 
   if (loading) {

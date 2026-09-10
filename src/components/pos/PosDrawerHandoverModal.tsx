@@ -161,7 +161,7 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
 
   if (!isOpen) return null;
 
-  const remainingCash = (form.actualCash || 0) - (form.transferAmount || 0);
+  const remainingCash = form.transferTargetType === 'next_shift' ? (form.actualCash || 0) : (form.actualCash || 0) - (form.transferAmount || 0);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -192,11 +192,11 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
       receiverUsername: form.receiverUsername,
       receiverPasswordHash: form.receiverPassword,
       notes: form.notes,
-      autoOpenNewShift: false
+      autoOpenNewShift: true
     });
 
     if (res.success) {
-      toast.success(`تم تسليم النقدية مع بقاء الجلسة مفتوحة (المتبقي ${Number(res.remainingCash ?? 0).toFixed(2)} ج.م)`);
+      toast.success(`تم التسليم وإغلاق الوردية وفتح وردية مشتركة جديدة (الرصيد ${Number(res.remainingCash ?? 0).toFixed(2)} ج.م)`);
       onClose();
     } else {
       toast.error(res.error || 'فشل تسليم الدرج');
@@ -412,6 +412,7 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
             </div>
 
             {/* Bottom Action Buttons */}
+            <p className="text-xs text-slate-600 dark:text-slate-300">عند التأكيد سيتم إغلاق الوردية الحالية وتسجيل التسليم وفتح وردية مشتركة جديدة تلقائياً، مع ترحيل النقدية المتبقية وحفظ اسم منفّذ كل عملية.</p>
             <div className="flex justify-center gap-6 pt-3">
               <button 
                 type="submit" 

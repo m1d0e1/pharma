@@ -113,6 +113,10 @@ export async function getShiftReportAction(shiftId: string) {
     const cashDisbursements = movements.filter(m => ['disbursement', 'out'].includes(m.type)).reduce((sum, m) => sum + (m.total || 0), 0);
 
     const expectedCash = (shift.starting_cash || 0) + cashSales - cashReturns + cashReceipts - cashDisbursements;
+    // Closing counts are captured before the handover transfer and reconciliation.
+    const hasClosingCount = shift.status !== 'open' && shift.actual_cash != null && shift.cash_difference != null;
+    const actualCash = hasClosingCount ? Number(shift.actual_cash) : shift.ending_cash;
+    const difference = hasClosingCount ? Number(shift.cash_difference) : (actualCash != null ? actualCash - expectedCash : 0);
 
     return {
       success: true,
@@ -127,9 +131,9 @@ export async function getShiftReportAction(shiftId: string) {
           cashReceipts,
           cashDisbursements,
           cashHandover,
-          expectedCash,
-          actualCash: shift.ending_cash,
-          difference: shift.ending_cash !== null ? (shift.ending_cash - expectedCash) : 0
+          expectedCash: hasClosingCount ? actualCash - difference : expectedCash,
+          actualCash,
+          difference
         }
       }
     };
