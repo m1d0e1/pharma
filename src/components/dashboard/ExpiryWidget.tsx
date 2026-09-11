@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { dbSelect } from '@/lib/db/tauri';
+import { localDate } from '@/lib/time';
 
 export default function ExpiryWidget() {
   const [items, setItems] = useState<any[]>([]);
@@ -12,7 +13,7 @@ export default function ExpiryWidget() {
       try {
         const thirtyDaysFromNow = new Date();
         thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
-        const dateStr = thirtyDaysFromNow.toISOString().split('T')[0];
+        const dateStr = localDate(thirtyDaysFromNow);
 
         const results = await dbSelect(`
           SELECT i.id, i.expiry_date, i.drug_id, i.quantity,

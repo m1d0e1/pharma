@@ -51,6 +51,7 @@ const db = {
 
 
 import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
+import { localDate } from '@/lib/time';
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 
 export async function getShiftReportAction(shiftId: string) {
@@ -157,9 +158,9 @@ const getSalesTodayStmt = db.prepare(`
           ), 0) 
           FROM sales_items si
           LEFT JOIN master_drugs md ON si.drug_id = md.id
-          WHERE si.invoice_id IN (SELECT id FROM sales_invoices WHERE created_at >= ? AND created_at <= ? AND status = 'completed')) as total_cogs
+          WHERE si.invoice_id IN (SELECT id FROM sales_invoices WHERE date(created_at, 'localtime') = ? AND status = 'completed')) as total_cogs
   FROM sales_invoices
-  WHERE created_at >= ? AND created_at <= ? AND status = 'completed'
+  WHERE date(created_at, 'localtime') = ? AND status = 'completed'
 `);
 
 const getAccountIdStmt = db.prepare('SELECT account_id FROM trial_balance_settings WHERE category = ?');
@@ -180,7 +181,7 @@ const getShrinkageStmt = db.prepare(`
   SELECT COALESCE(SUM((old_quantity - new_quantity) * i.cost_price), 0) as total_loss
   FROM stock_adjustments sa
   JOIN inventory i ON sa.inventory_id = i.id
-  WHERE sa.created_at >= ? AND sa.created_at <= ? AND new_quantity < old_quantity
+  WHERE date(sa.created_at, 'localtime') = ? AND new_quantity < old_quantity
 `);
 
 const getStockAlertsStmt = db.prepare(`
@@ -199,16 +200,16 @@ const getSalesTrendStmt = db.prepare(`
     WHERE date < date('now', 'localtime')
   ),
   daily_sales AS (
-    SELECT date(created_at) as date, SUM(total_amount) as total
+    SELECT date(created_at, 'localtime') as date, SUM(total_amount) as total
     FROM sales_invoices
     WHERE status = 'completed'
-    GROUP BY date(created_at)
+    GROUP BY date(created_at, 'localtime')
   ),
   daily_returns AS (
-    SELECT date(created_at) as date, SUM(total_refund) as total
+    SELECT date(created_at, 'localtime') as date, SUM(total_refund) as total
     FROM returns
     WHERE status = 'approved'
-    GROUP BY date(created_at)
+    GROUP BY date(created_at, 'localtime')
   )
   SELECT 
     d.date,
@@ -223,9 +224,9 @@ const getSalesTrendStmt = db.prepare(`
 
 
 const _getDashboardKPIs = unstable_cache(
-  async (today: string, startOfDay: string, endOfDay: string) => {
+  async (today: string) => {
     // 1. Sales Today
-    const salesToday = await getSalesTodayStmt.get(startOfDay, endOfDay, startOfDay, endOfDay) as any;
+    const salesToday = await getSalesTodayStmt.get(today, today) as any;
 
     // 2. Current Liquidity (Cash Drawer Account Balance)
     const cashAccRow = await getAccountIdStmt.get('cash_drawer') as any;
@@ -236,7 +237,7 @@ const _getDashboardKPIs = unstable_cache(
     const pendingDelivery = await getPendingDeliveryStmt.get() as any;
 
     // 3. Inventory Shrinkage (Value of adjustments today)
-    const shrinkage = await getShrinkageStmt.get(startOfDay, endOfDay) as any;
+    const shrinkage = await getShrinkageStmt.get(today) as any;
 
     // 4. Critical Stock Alerts
     const alerts = await getStockAlertsStmt.get() as any;
@@ -259,11 +260,8 @@ export async function getDashboardKPIsAction() {
     const user = await getLocalSession();
     if (!user || !hasUserPermissionSync(user, 'rep_can_view_sales')) return { success: false, error: 'غير مصرح' };
 
-    const today = new Date().toISOString().split('T')[0];
-    const startOfDay = today + ' 00:00:00';
-    const endOfDay = today + ' 23:59:59';
-
-    const data = await _getDashboardKPIs(today, startOfDay, endOfDay);
+    const today = localDate();
+    const data = await _getDashboardKPIs(today);
     return { success: true, data };
   } catch (error) {
     console.error('KPI error:', error);
@@ -300,13 +298,12 @@ export async function getReportsDataAction() {
 
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-    // Format to YYYY-MM-DD HH:MM:SS for SQLite string comparison
-    const dateStr = thirtyDaysAgo.toISOString().split('T')[0] + ' 00:00:00';
+    const dateStr = localDate(thirtyDaysAgo);
 
     const salesHistoryRaw = await dbSelect(`
       SELECT created_at, total_amount 
       FROM sales_invoices 
-      WHERE created_at >= ?
+      WHERE date(created_at, 'localtime') >= ?
     `, [dateStr]) as any[];
 
     const topDrugsRaw = await dbSelect(`

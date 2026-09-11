@@ -5,6 +5,7 @@ import { Search, Filter, Download, Trash2, Loader2, AlertCircle } from 'lucide-r
 import { clearAuditLogsAction } from '@/app/actions-client/audit';
 import { toast } from 'react-hot-toast';
 import { useRouter } from 'next/navigation';
+import { localDate } from '@/lib/time';
 
 interface AuditLog {
   id: number;
@@ -62,7 +63,7 @@ export default function AuditLogClient({ initialLogs, onRefresh }: Props) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `audit_log_${new Date().toISOString().split('T')[0]}.csv`;
+    a.download = `audit_log_${localDate()}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };

@@ -4,6 +4,7 @@ import { isTauri } from '@/lib/env';
 import { purchaseReturnRemainingLargeQuantity } from '@/lib/purchases/return-units';
 import { format } from 'date-fns';
 import { requireOpenShiftId } from './finance';
+import { isBusinessDate, localDate } from '@/lib/time';
 const logActivity = async (userId, action, details) => {
   try {
     await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [userId, action, details]);
@@ -68,14 +69,23 @@ const db = {
 function normalizeDateToYMD(dateStr: string | null | undefined): string | null {
   if (!dateStr) return null;
   dateStr = dateStr.trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return dateStr;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return isBusinessDate(dateStr) ? dateStr : null;
   let match = dateStr.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
-  if (match) return `${match[3]}-${match[2].padStart(2, '0')}-${match[1].padStart(2, '0')}`;
+  if (match) {
+    const normalized = `${match[3]}-${match[2].padStart(2, '0')}-${match[1].padStart(2, '0')}`;
+    return isBusinessDate(normalized) ? normalized : null;
+  }
   match = dateStr.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/);
-  if (match) return `${match[1]}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')}`;
+  if (match) {
+    const normalized = `${match[1]}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')}`;
+    return isBusinessDate(normalized) ? normalized : null;
+  }
   match = dateStr.match(/^(\d{1,2})[\/\-](\d{4})$/);
-  if (match) return `${match[2]}-${match[1].padStart(2, '0')}-01`;
-  return dateStr;
+  if (match) {
+    const normalized = `${match[2]}-${match[1].padStart(2, '0')}-01`;
+    return isBusinessDate(normalized) ? normalized : null;
+  }
+  return null;
 }
 
 async function addToInventory(data: {
@@ -286,13 +296,21 @@ export async function addSupplierPaymentAction(rawData: {
     if (!Number.isFinite(amount) || amount <= 0) return { success: false, error: 'يرجى إدخال مبلغ صحيح أكبر من الصفر' };
 
     const paymentMethod = rawData.payment_method || 'cash';
-    const paymentDate = rawData.date || format(new Date(), 'yyyy-MM-dd');
+    const paymentDate = rawData.date || localDate();
+    if (!isBusinessDate(paymentDate)) return { success: false, error: 'تاريخ سداد المورد غير صالح' };
     const notes = rawData.notes ? String(rawData.notes).trim() : '';
 
     let remainingBalance = 0;
     const refId = `sup-pay-${Date.now()}`;
 
     await dbTransaction(async () => {
+      for (const column of [
+        'user_id TEXT',
+        "payment_method TEXT DEFAULT 'cash'",
+        'date TEXT',
+      ]) {
+        await dbExecute(`ALTER TABLE supplier_transactions ADD COLUMN ${column}`).catch(() => {});
+      }
       const supplier = await db.prepare('SELECT id, name_ar, balance FROM suppliers WHERE id = ?').get(supplierId) as any;
       if (!supplier) throw new Error('المورد غير موجود');
 
@@ -307,9 +325,9 @@ export async function addSupplierPaymentAction(rawData: {
         : `سداد دفعة للمورد (${paymentMethod === 'check' ? `شيك ${rawData.check_number || ''}` : paymentMethod === 'bank' ? 'تحويل بنكي' : 'نقدي'})`;
 
       await db.prepare(`
-        INSERT INTO supplier_transactions (supplier_id, type, amount, reference_id, notes, created_at)
-        VALUES (?, 'payment', ?, ?, ?, ?)
-      `).run(supplierId, amount, refId, transactionNote, `${paymentDate} ${new Date().toTimeString().split(' ')[0]}`);
+        INSERT INTO supplier_transactions (supplier_id, user_id, type, amount, reference_id, payment_method, notes, date, created_at)
+        VALUES (?, ?, 'payment', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      `).run(supplierId, session.id, amount, refId, paymentMethod, transactionNote, paymentDate);
 
       // 3. Record in cash_movements if cash
       if (paymentMethod === 'cash') {
@@ -553,6 +571,10 @@ export async function createPurchaseInvoiceAction(data: {
   try {
     const session = await getLocalSession();
     if (!session || !hasUserPermissionSync(session, 'can_view_purchases')) return { success: false, error: 'Unauthorized' };
+    if (data.invoice_date && !isBusinessDate(data.invoice_date)) return { success: false, error: 'تاريخ فاتورة الشراء غير صالح' };
+    if ((data.cart || []).some(item => item.expiry_date && !normalizeDateToYMD(item.expiry_date))) {
+      return { success: false, error: 'يوجد تاريخ صلاحية غير صالح في أصناف الفاتورة' };
+    }
 
     await ensureBarcodeColumn();
     if (!isTauri) await assertPurchaseBarcodesAvailable(data.cart || []);
@@ -622,7 +644,7 @@ export async function createPurchaseInvoiceAction(data: {
         session.pharmacy_id, 
         session.id, 
         data.invoice_number || null, 
-        data.invoice_date || new Date().toISOString().split('T')[0],
+        data.invoice_date || localDate(),
         data.payment_method || 'credit',
         data.notes || null,
         data.check_number || null,
@@ -717,7 +739,7 @@ export async function createPurchaseInvoiceAction(data: {
         await db.prepare('UPDATE purchase_invoices SET total_amount = ? WHERE id = ?').run(finalTotal, id);
 
         const journalId = generateId();
-        const purchaseDate = data.invoice_date || new Date().toISOString().split('T')[0];
+        const purchaseDate = data.invoice_date || localDate();
         
         await db.prepare(`
           INSERT INTO daily_journals (id, date, description, created_by, total_amount)
@@ -757,7 +779,7 @@ export async function createPurchaseInvoiceAction(data: {
             if (accounts.cash) await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, accounts.cash, 'credit', finalTotal);
             const shiftId = await requireOpenShiftId(String(session.id));
             await db.prepare("INSERT INTO cash_movements (id, user_id, shift_id, type, amount, category, notes, date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(
-              generateId(), session.id, shiftId, 'disbursement', finalTotal, 'purchases', `فاتورة شراء رقم ${data.invoice_number || id.slice(0, 8)}`, new Date().toISOString().split('T')[0]
+              generateId(), session.id, shiftId, 'disbursement', finalTotal, 'purchases', `فاتورة شراء رقم ${data.invoice_number || id.slice(0, 8)}`, localDate()
             );
           } catch (e) {
             console.warn('Accounting missing: could not insert cash journal entry', e);
@@ -896,7 +918,7 @@ export async function completePurchaseInvoiceAction(invoiceId: string) {
 
       // 5. Update supplier balance or record cash payment
       const journalId = generateId();
-      const purchaseDate = new Date().toISOString().split('T')[0];
+      const purchaseDate = localDate();
       
       await db.prepare(`
         INSERT INTO daily_journals (id, date, description, created_by, total_amount)
@@ -1793,6 +1815,10 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
     if (!session || !hasUserPermissionSync(session, 'can_view_purchases')) {
       return { success: false, error: 'Unauthorized' };
     }
+    if (data.invoice_date && !isBusinessDate(data.invoice_date)) return { success: false, error: 'تاريخ فاتورة الشراء غير صالح' };
+    if (data.cart.some(item => item.expiry_date && !normalizeDateToYMD(item.expiry_date))) {
+      return { success: false, error: 'يوجد تاريخ صلاحية غير صالح في أصناف الفاتورة' };
+    }
 
     await ensureBarcodeColumn();
     const pharmacyId = session.pharmacy_id || 'local_default';
@@ -2069,7 +2095,7 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
       `).run(
         data.supplier_id,
         data.invoice_number || null,
-        data.invoice_date || new Date().toISOString().split('T')[0],
+        data.invoice_date || localDate(),
         data.payment_method || 'credit',
         data.notes || null,
         data.check_number || null,
@@ -2123,7 +2149,7 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
         if (diff !== 0) {
           const type = diff > 0 ? 'disbursement' : 'receipt';
           await db.prepare("INSERT INTO cash_movements (id, user_id, shift_id, type, amount, category, notes, date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(
-            generateId(), session.id, shiftId, type, Math.abs(diff), 'purchases', `تعديل فاتورة شراء رقم ${data.invoice_number || data.id.slice(0, 8)}`, new Date().toISOString().split('T')[0]
+            generateId(), session.id, shiftId, type, Math.abs(diff), 'purchases', `تعديل فاتورة شراء رقم ${data.invoice_number || data.id.slice(0, 8)}`, localDate()
           );
         }
       }
@@ -2136,7 +2162,7 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
       }
 
       const journalId = generateId();
-      const purchaseDate = data.invoice_date || new Date().toISOString().split('T')[0];
+      const purchaseDate = data.invoice_date || localDate();
       await db.prepare(`
         INSERT INTO daily_journals (id, date, description, created_by, total_amount)
         VALUES (?, ?, ?, ?, ?)

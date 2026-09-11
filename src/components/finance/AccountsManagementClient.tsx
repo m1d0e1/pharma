@@ -4,7 +4,7 @@ import { useHotkeys } from 'react-hotkeys-hook';
 
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { 
+import {
   DollarSign, Landmark, Receipt, FileStack, AlertCircle, 
   CreditCard, TrendingUp, Wallet, ArrowRightLeft, PieChart,
   Plus, Search, Filter, Printer, X, Save, Activity, ArrowRight,
@@ -56,10 +56,11 @@ import {
 } from '@/app/actions-client/finance';
 import { format, isValid } from 'date-fns';
 import { toast } from 'react-hot-toast';
+import { isBusinessDate, localDate, parseBusinessDate } from '@/lib/time';
 
 const safeFormat = (dateStr: string | null | undefined, fmt: string) => {
   if (!dateStr) return '-';
-  const d = new Date(dateStr);
+  const d = isBusinessDate(dateStr) ? parseBusinessDate(dateStr) : new Date(dateStr);
   return isValid(d) ? format(d, fmt) : '-';
 };
 
@@ -2418,7 +2419,7 @@ function RecordExpenseModal({
     category: '',
     amount: '',
     description: '',
-    date: new Date().toISOString().split('T')[0],
+    date: localDate(),
   });
   const [loading, setLoading] = useState(false);
 
@@ -2428,7 +2429,7 @@ function RecordExpenseModal({
         category: categories.length > 0 ? (categories[0].code || categories[0].name_ar) : 'other',
         amount: '',
         description: '',
-        date: new Date().toISOString().split('T')[0],
+        date: localDate(),
       });
     }
   }, [show, categories]);
@@ -2454,7 +2455,7 @@ function RecordExpenseModal({
       category: formData.category,
       amount: amt,
       description: formData.description.trim(),
-      date: formData.date || new Date().toISOString().split('T')[0],
+      date: formData.date || localDate(),
     });
 
     if (res.success) {
@@ -3048,7 +3049,7 @@ function PaperModal({ show, type, direction, banks, onClose, onSuccess }: PaperM
     paper_number: '',
     target_name: '',
     amount: '',
-    due_date: new Date().toISOString().split('T')[0],
+    due_date: localDate(),
     bank_id: '',
     notes: ''
   });
@@ -3060,7 +3061,7 @@ function PaperModal({ show, type, direction, banks, onClose, onSuccess }: PaperM
         paper_number: '',
         target_name: '',
         amount: '',
-        due_date: new Date().toISOString().split('T')[0],
+        due_date: localDate(),
         bank_id: '',
         notes: ''
       });
@@ -3221,7 +3222,7 @@ interface JournalLineItem {
 }
 
 function ManualJournalModal({ show, accounts, onClose, onSuccess }: ManualJournalModalProps) {
-  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+  const [date, setDate] = useState(localDate());
   const [description, setDescription] = useState('');
   const [entries, setEntries] = useState<JournalLineItem[]>([
     { account_id: '', type: 'debit', amount: '', notes: '' },
@@ -3231,7 +3232,7 @@ function ManualJournalModal({ show, accounts, onClose, onSuccess }: ManualJourna
 
   useEffect(() => {
     if (show) {
-      setDate(new Date().toISOString().split('T')[0]);
+      setDate(localDate());
       setDescription('');
       setEntries([
         { account_id: '', type: 'debit', amount: '', notes: '' },

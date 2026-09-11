@@ -54,6 +54,7 @@ import { z } from 'zod';
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 
 import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
+import { isBusinessDate, localDate } from '@/lib/time';
 
 function normalizePharmacyId(value: unknown): string {
   const pharmacyId = String(value ?? '').trim();
@@ -66,7 +67,7 @@ const addInventorySchema = z.object({
   drug_id: z.coerce.number().int().positive('معرف الدواء يجب أن يكون رقم موجب'),
   quantity: z.coerce.number().positive('الكمية يجب أن تكون رقم موجب'),
   local_selling_price: z.coerce.number().nonnegative('السعر لا يمكن أن يكون سالباً'),
-  expiry_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'صيغة التاريخ غير صحيحة (YYYY-MM-DD)'),
+  expiry_date: z.string().refine(isBusinessDate, 'تاريخ الصلاحية غير صالح'),
   barcode: z.string().optional().nullable(),
   unit: z.string().optional().nullable(),
   large_to_medium: z.coerce.number().int().positive().optional().nullable(),
@@ -250,7 +251,7 @@ export async function updateInventoryAction(formData: UpdateInventoryInput) {
       const totalValue = diff * (costPrice?.cost_price || 0);
 
       if (totalValue > 0) {
-        const date = new Date().toISOString().split('T')[0];
+        const date = localDate();
         await db.prepare(`
           INSERT INTO daily_journals (id, date, description, created_by, total_amount)
           VALUES (?, ?, ?, ?, ?)
@@ -782,10 +783,10 @@ export async function getInventoryAlertsAction() {
     if (!user) return { success: false, error: 'غير مصرح' };
     const pharmacyId = normalizePharmacyId(user.pharmacy_id);
 
-    const today = new Date().toISOString().split('T')[0];
+    const today = localDate();
     const threeMonthsLater = new Date();
     threeMonthsLater.setMonth(threeMonthsLater.getMonth() + 3);
-    const threeMonthsStr = threeMonthsLater.toISOString().split('T')[0];
+    const threeMonthsStr = localDate(threeMonthsLater);
 
     const { lowStock, expiring, expired } = await _getAlertsData(today, threeMonthsStr, pharmacyId);
 
@@ -865,15 +866,15 @@ export async function getDrugDetailsFullAction(drugId: number | string) {
       ORDER BY expiry_date ASC
     `).all(drugId, pharmacyId, pharmacyId) as any[];
 
-    const today = new Date();
+    const today = localDate();
     drug.expiry_batches = batches.map(b => ({
       ...b,
-      is_expired: new Date(b.expiry_date) < today
+      is_expired: Boolean(b.expiry_date && b.expiry_date < today)
     }));
 
     // Get Consumption Stats (Last 6 months)
     const consumption = await db.prepare(`
-      SELECT strftime('%Y', si.created_at) as year, strftime('%m', si.created_at) as month,
+      SELECT strftime('%Y', si.created_at, 'localtime') as year, strftime('%m', si.created_at, 'localtime') as month,
              SUM(si.quantity_sold) as net_sales, COUNT(*) as transactions
       FROM sales_items si
       JOIN sales_invoices invoice ON invoice.id = si.invoice_id

@@ -94,8 +94,6 @@ export default function DashboardPage() {
         setIsPharmacist(pharmacist);
 
         const todayStr = format(new Date(), 'yyyy-MM-dd');
-        const startOfDay = todayStr + ' 00:00:00';
-        const endOfDay = todayStr + ' 23:59:59';
 
         // 1. Fetch total master drugs
         const drugCountRow = await dbGet('SELECT COUNT(*) as count FROM master_drugs');
@@ -116,10 +114,10 @@ export default function DashboardPage() {
                   ), 0) 
                   FROM sales_items si
                   LEFT JOIN master_drugs md ON si.drug_id = md.id
-                  WHERE si.invoice_id IN (SELECT id FROM sales_invoices WHERE created_at >= ? AND created_at <= ? AND status = 'completed')) as total_cogs
+                  WHERE si.invoice_id IN (SELECT id FROM sales_invoices WHERE date(created_at, 'localtime') = ? AND status = 'completed')) as total_cogs
           FROM sales_invoices
-          WHERE created_at >= ? AND created_at <= ? AND status = 'completed'
-        `, [startOfDay, endOfDay, startOfDay, endOfDay]);
+          WHERE date(created_at, 'localtime') = ? AND status = 'completed'
+        `, [todayStr, todayStr]);
 
         // Current liquidity
         const cashAccRow = await dbGet("SELECT account_id FROM trial_balance_settings WHERE category = 'cash_drawer'");
@@ -142,8 +140,8 @@ export default function DashboardPage() {
           SELECT COALESCE(SUM((old_quantity - new_quantity) * i.cost_price), 0) as total_loss
           FROM stock_adjustments sa
           JOIN inventory i ON sa.inventory_id = i.id
-          WHERE sa.created_at >= ? AND sa.created_at <= ? AND new_quantity < old_quantity
-        `, [startOfDay, endOfDay]);
+          WHERE date(sa.created_at, 'localtime') = ? AND new_quantity < old_quantity
+        `, [todayStr]);
 
         // Keep this KPI on the same pharmacy-scoped, expiry-aware source as the
         // reorder widget and low-stock page so all three surfaces stay in sync.
@@ -207,13 +205,13 @@ export default function DashboardPage() {
           )
           SELECT 
             d.date,
-            (SELECT COALESCE(SUM(total_amount), 0) FROM sales_invoices WHERE date(created_at) = d.date AND status = 'completed') as sales,
-            (SELECT COALESCE(SUM(total_refund), 0) FROM returns WHERE date(created_at) = d.date AND status = 'approved') as returns,
+            (SELECT COALESCE(SUM(total_amount), 0) FROM sales_invoices WHERE date(created_at, 'localtime') = d.date AND status = 'completed') as sales,
+            (SELECT COALESCE(SUM(total_refund), 0) FROM returns WHERE date(created_at, 'localtime') = d.date AND status = 'approved') as returns,
             (SELECT COALESCE(SUM(si.quantity_sold * COALESCE(NULLIF(si.cost_price, 0), i.cost_price, m.base_price, 0)), 0) 
              FROM sales_items si 
              LEFT JOIN inventory i ON si.inventory_id = i.id
              LEFT JOIN master_drugs m ON i.drug_id = m.id
-             WHERE si.invoice_id IN (SELECT id FROM sales_invoices WHERE date(created_at) = d.date AND status = 'completed')) as cogs
+             WHERE si.invoice_id IN (SELECT id FROM sales_invoices WHERE date(created_at, 'localtime') = d.date AND status = 'completed')) as cogs
           FROM dates d
           ORDER BY d.date ASC
         `);
@@ -229,7 +227,7 @@ export default function DashboardPage() {
           JOIN sales_invoices s ON si.invoice_id = s.id
           JOIN inventory i ON si.inventory_id = i.id
           JOIN master_drugs m ON i.drug_id = m.id
-          WHERE s.created_at >= date('now', '-30 days', 'localtime')
+          WHERE date(s.created_at, 'localtime') >= date('now', '-30 days', 'localtime')
             AND s.status = 'completed'
           GROUP BY i.drug_id, name
           ORDER BY quantity DESC

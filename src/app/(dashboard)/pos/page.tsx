@@ -733,7 +733,7 @@ export default function POSPage() {
           const invoice = {
             id: result.data.sale_id,
             total_amount: total,
-            created_at: new Date().toISOString(),
+            created_at: result.data.created_at,
             payment_method: paymentMethod,
             profiles: { full_name: currentUserName },
             patients: selectedPatient ? { full_name: selectedPatient.full_name, phone: selectedPatient.phone } : null,

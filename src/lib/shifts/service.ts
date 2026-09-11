@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { uuidv4 } from '../utils';
 import { getDatabase, execute, get, query } from '../db/client';
+import { localDate } from '../time';
 
 // Shift register schema
 export const ShiftRegisterSchema = z.object({
@@ -334,13 +335,13 @@ export function calculateExpectedCash(shiftId: string): number {
       ? [
           shift.id,
           shift.userId,
-          (shift.shiftStart || '').split('T')[0] || new Date().toISOString().split('T')[0],
-          (shift.shiftEnd || '').split('T')[0] || new Date().toISOString().split('T')[0]
+          shift.shiftStart ? localDate(new Date(shift.shiftStart)) : localDate(),
+          shift.shiftEnd ? localDate(new Date(shift.shiftEnd)) : localDate()
         ]
       : [
           shift.id,
           shift.userId,
-          (shift.shiftStart || '').split('T')[0] || new Date().toISOString().split('T')[0]
+          shift.shiftStart ? localDate(new Date(shift.shiftStart)) : localDate()
         ]
   );
 

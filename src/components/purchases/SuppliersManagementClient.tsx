@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useMemo } from 'react';
-import { 
+import {
   Truck, Plus, Search, DollarSign, CreditCard, 
   Trash2, Edit, X, Save, Phone, MapPin, 
   CheckCircle2, Clock, FileText, ArrowDownLeft, 
@@ -12,6 +12,7 @@ import {
   addSupplierPaymentAction, 
   getSupplierTransactionsAction 
 } from '@/app/actions-client/purchases';
+import { isBusinessDate, localDate, parseBusinessDate } from '@/lib/time';
 
 export interface SupplierItem {
   id: number;
@@ -56,7 +57,7 @@ export default function SuppliersManagementClient({
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'bank' | 'check'>('cash');
   const [checkNumber, setCheckNumber] = useState('');
   const [paymentNotes, setPaymentNotes] = useState('');
-  const [paymentDate, setPaymentDate] = useState(new Date().toISOString().split('T')[0]);
+  const [paymentDate, setPaymentDate] = useState(localDate());
   const [isProcessingPayment, setIsProcessingPayment] = useState(false);
 
   // Statement / History Modal
@@ -169,7 +170,7 @@ export default function SuppliersManagementClient({
     setPaymentMethod('cash');
     setCheckNumber('');
     setPaymentNotes('');
-    setPaymentDate(new Date().toISOString().split('T')[0]);
+    setPaymentDate(localDate());
   };
 
   const handleSubmitPayment = async (e: React.FormEvent) => {
@@ -713,7 +714,11 @@ export default function SuppliersManagementClient({
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                     {statementTransactions.map((tx) => (
                       <tr key={tx.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
-                        <td className="p-3 text-slate-500 font-bold">{tx.created_at ? new Date(tx.created_at).toLocaleDateString('ar-EG') : '-'}</td>
+                        <td className="p-3 text-slate-500 font-bold">{
+                          tx.date && isBusinessDate(tx.date)
+                            ? parseBusinessDate(tx.date).toLocaleDateString('ar-EG')
+                            : tx.created_at ? new Date(tx.created_at).toLocaleDateString('ar-EG') : '-'
+                        }</td>
                         <td className="p-3">
                           <span className={`px-2.5 py-1 rounded-lg text-[10px] font-black ${
                             tx.type === 'payment' ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/30' :

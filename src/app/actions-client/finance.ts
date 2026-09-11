@@ -57,6 +57,7 @@ import { format } from 'date-fns';
 import { z } from 'zod';
 import { patientOutstandingBalanceQuery } from '@/lib/patients/balance';
 import { ensurePermanentShiftForUser } from './shifts';
+import { isBusinessDate, localDate } from '@/lib/time';
 
 const hasAnyFinancePermission = (user: any, ...permissions: string[]) =>
   !!user && permissions.some(permission => hasUserPermissionSync(user, permission));
@@ -76,13 +77,6 @@ export async function requireOpenShiftId(userId: string, requestedShiftId?: stri
   return String(shift.id);
 }
 
-function isValidISODate(str: unknown): boolean {
-  if (typeof str !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(str)) return false;
-  const [y, m, d] = str.split('-').map(Number);
-  const date = new Date(y, m - 1, d);
-  return date.getFullYear() === y && date.getMonth() === m - 1 && date.getDate() === d;
-}
-
 const noticeSchema = z.object({
   target_type: z.enum(['customer', 'supplier', 'pharmacy']),
   target_id: z.string().optional(),
@@ -90,7 +84,7 @@ const noticeSchema = z.object({
   amount: z.number().positive(),
   reason: z.string().min(1),
   notes: z.string().optional(),
-  date: z.string().refine(isValidISODate, { message: 'تاريخ غير صالح' }),
+  date: z.string().refine(isBusinessDate, { message: 'تاريخ غير صالح' }),
 });
 
 export async function addFinancialNoticeAction(rawData: z.infer<typeof noticeSchema>) {
@@ -190,7 +184,7 @@ const paymentSchema = z.object({
   amount: z.number().positive(),
   payment_method: z.enum(['cash', 'bank']),
   notes: z.string().optional(),
-  date: z.string(),
+  date: z.string().refine(isBusinessDate, { message: 'تاريخ غير صالح' }),
 });
 
 export async function addPatientPaymentAction(rawData: z.infer<typeof paymentSchema>) {
@@ -271,7 +265,7 @@ const cashMovementSchema = z.object({
   source_type: z.string().optional(),
   target_name: z.string().optional(),
   notes: z.string().optional(),
-  date: z.string().refine(isValidISODate, { message: 'تاريخ غير صالح' }),
+  date: z.string().refine(isBusinessDate, { message: 'تاريخ غير صالح' }),
   actual_date: z.string().optional(),
   shift_id: z.string().optional(),
 });
@@ -1089,10 +1083,11 @@ export async function seedFinanceTestDataAction() {
 
 export async function generateDailySnapshotAction(targetDate?: string) {
   try {
-    const date = targetDate || format(new Date(), 'yyyy-MM-dd');
+    const date = targetDate || localDate();
+    if (!isBusinessDate(date)) return { success: false, error: 'تاريخ الملخص غير صالح' };
     
-    const sales = await db.prepare('SELECT COALESCE(SUM(total_amount), 0) as total FROM sales_invoices WHERE date(created_at) = ? AND status = ?').get(date, 'completed') as any;
-    const returns = await db.prepare('SELECT COALESCE(SUM(total_refund), 0) as total FROM returns WHERE date(created_at) = ? AND status = ?').get(date, 'approved') as any;
+    const sales = await db.prepare("SELECT COALESCE(SUM(total_amount), 0) as total FROM sales_invoices WHERE date(created_at, 'localtime') = ? AND status = ?").get(date, 'completed') as any;
+    const returns = await db.prepare("SELECT COALESCE(SUM(total_refund), 0) as total FROM returns WHERE date(created_at, 'localtime') = ? AND status = ?").get(date, 'approved') as any;
     const movements = await db.prepare("SELECT COALESCE(SUM(CASE WHEN type='receipt' THEN amount ELSE -amount END), 0) as net FROM cash_movements WHERE date(date) = ?").get(date) as any;
     
     // Simple net calculation for the dashboard pulse
@@ -1547,6 +1542,7 @@ export async function addPaperAction(data: {
     if (!data.paper_number?.trim()) return { success: false, error: 'رقم الورقة / الشيك مطلوب' };
     if (!data.amount || data.amount <= 0) return { success: false, error: 'المبلغ يجب أن يكون أكبر من صفر' };
     if (!data.target_name?.trim()) return { success: false, error: 'اسم الجهة / الساحب مطلوب' };
+    if (!isBusinessDate(data.due_date)) return { success: false, error: 'تاريخ الاستحقاق غير صالح' };
 
     const id = generateId();
     await db.prepare(`
@@ -1594,7 +1590,8 @@ export async function updatePaperStatusAction(id: string, newStatus: 'pending' |
       if (newStatus === 'cashed') {
         const movementType = paper.direction === 'in' ? 'receipt' : 'disbursement';
         const movementCategory = paper.direction === 'in' ? 'collection' : 'supplier_payment';
-        const date = actionDate || new Date().toISOString().split('T')[0];
+        const date = actionDate || localDate();
+        if (!isBusinessDate(date)) throw new Error('تاريخ الحركة غير صالح');
         const note = `تحصيل/صرف ${paper.type === 'check' ? 'شيك' : 'كمبيالة'} رقم ${paper.paper_number} - ${paper.target_name}`;
         const movement = await createCashMovementAction({
           type: movementType,
@@ -1647,7 +1644,7 @@ export async function createManualJournalAction(data: {
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_make_daily_entries')) return { success: false, error: 'غير مصرح' };
 
-    if (!isValidISODate(data.date)) return { success: false, error: 'تاريخ القيد غير صالح' };
+    if (!isBusinessDate(data.date)) return { success: false, error: 'تاريخ القيد غير صالح' };
 
     if (!data.entries || data.entries.length < 2) {
       return { success: false, error: 'القيد اليومي يجب أن يتضمن طرفين على الأقل (طرف مدين وطرف دائن)' };
@@ -1676,7 +1673,7 @@ export async function createManualJournalAction(data: {
         VALUES (?, ?, ?, ?, ?)
       `).run(
         journalId,
-        data.date || new Date().toISOString().split('T')[0],
+        data.date,
         data.description?.trim() || 'قيد تسوية يدوي',
         user?.id || 'admin',
         totalDebit

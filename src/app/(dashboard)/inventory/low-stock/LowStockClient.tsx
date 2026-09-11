@@ -2,7 +2,7 @@
 import TableScrollContainer from '@/components/ui/TableScrollContainer';
 
 import React, { useState, useMemo } from 'react';
-import { 
+import {
   Search, 
   ArrowLeft, 
   ShoppingCart, 
@@ -25,6 +25,7 @@ import {
   LayoutGrid,
   Table as TableIcon
 } from 'lucide-react';
+import { localDate } from '@/lib/time';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { toast } from 'react-hot-toast';
@@ -277,7 +278,7 @@ export default function LowStockClient({ initialItems }: Props) {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.setAttribute('href', url);
-    link.setAttribute('download', `low_stock_${new Date().toISOString().slice(0, 10)}.csv`);
+    link.setAttribute('download', `low_stock_${localDate()}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);

@@ -79,12 +79,12 @@ export async function getSalesReportsAction(filters: {
     const params: any[] = [];
 
     if (filters.startDate) {
-      query += ` AND si.created_at >= ?`;
-      params.push(filters.startDate + ' 00:00:00');
+      query += ` AND date(si.created_at, 'localtime') >= ?`;
+      params.push(filters.startDate);
     }
     if (filters.endDate) {
-      query += ` AND si.created_at <= ?`;
-      params.push(filters.endDate + ' 23:59:59');
+      query += ` AND date(si.created_at, 'localtime') <= ?`;
+      params.push(filters.endDate);
     }
     if (filters.userId) {
       query += ` AND si.user_id = ?`;

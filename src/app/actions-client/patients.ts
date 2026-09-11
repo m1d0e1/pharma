@@ -51,6 +51,7 @@ const db = {
 
 import { z } from 'zod';
 import { format } from 'date-fns';
+import { localDate } from '@/lib/time';
 
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 
@@ -154,7 +155,7 @@ export async function addPatientAction(formData: AddPatientInput) {
         const equityAccountId = Number(openingEquity?.account_id || 15);
         const amount = Math.abs(data.opening_balance);
         const journalId = generateId();
-        const date = new Date().toISOString().slice(0, 10);
+        const date = localDate();
 
         await db.prepare(`
           INSERT INTO daily_journals (id, date, description, created_by, total_amount)
@@ -441,8 +442,8 @@ export async function getPatientStatementAction(patientId: string) {
     if (!patient) return { success: false, error: 'العميل غير موجود' };
 
     // 2. Get all documents, with a separate effect on accounts receivable.
-    const movements = await db.prepare(`
-      SELECT 'فاتورة بيع' as type, id as doc_no, created_at as date,
+    const rawMovements = await db.prepare(`
+      SELECT 'فاتورة بيع' as type, id as doc_no, created_at as occurred_at,
              CAST(total_amount AS REAL) as value,
              CASE WHEN payment_method = 'credit' THEN CAST(total_amount AS REAL) ELSE 0 END as balance_effect,
              payment_method,
@@ -453,7 +454,7 @@ export async function getPatientStatementAction(patientId: string) {
       
       UNION ALL
       
-      SELECT 'مرتجع بيع' as type, id as doc_no, created_at as date,
+      SELECT 'مرتجع بيع' as type, id as doc_no, created_at as occurred_at,
              -CAST(total_refund AS REAL) as value,
              CASE WHEN refund_method = 'patient_account' THEN -CAST(total_refund AS REAL) ELSE 0 END as balance_effect,
              refund_method as payment_method,
@@ -472,7 +473,7 @@ export async function getPatientStatementAction(patientId: string) {
           WHEN pt.type = 'adjustment' AND pt.amount >= 0 THEN 'إشعار مدين (إضافة)'
           ELSE pt.type
         END as type, 
-        pt.id as doc_no, pt.date,
+        pt.id as doc_no, pt.date as occurred_at,
         CASE
           WHEN pt.type = 'payment' THEN -ABS(CAST(pt.amount AS REAL))
           WHEN pt.type = 'adjustment' THEN CAST(pt.amount AS REAL)
@@ -512,7 +513,7 @@ export async function getPatientStatementAction(patientId: string) {
           ELSE 'إشعار مالي'
         END as type,
         fn.id as doc_no,
-        COALESCE(fn.date, fn.created_at) as date,
+        COALESCE(fn.date, fn.created_at) as occurred_at,
         CASE
           WHEN fn.type = 'debit' THEN ABS(CAST(fn.amount AS REAL))
           WHEN fn.type = 'credit' THEN -ABS(CAST(fn.amount AS REAL))
@@ -547,12 +548,16 @@ export async function getPatientStatementAction(patientId: string) {
             AND COALESCE(mirrored.notes, '') = COALESCE(fn.reason, '')
         )
       
-      ORDER BY date DESC
+      ORDER BY occurred_at DESC
     `).all(patientId, patientId, patientId, patientId) as any[];
+    const movements = rawMovements.map(({ occurred_at, ...movement }: any) => ({
+      ...movement,
+      date: occurred_at,
+    }));
 
     // 3. Get Items purchased by this patient
     const rawItems = await db.prepare(`
-      SELECT si.invoice_id, si.created_at as date, si.drug_id, NULL as fallback_name, si.quantity_sold, si.unit, si.unit_price,
+      SELECT si.invoice_id, si.created_at as occurred_at, si.drug_id, NULL as fallback_name, si.quantity_sold, si.unit, si.unit_price,
              'بيع' as action
       FROM sales_items si
       JOIN sales_invoices sinv ON si.invoice_id = sinv.id
@@ -560,14 +565,14 @@ export async function getPatientStatementAction(patientId: string) {
       
       UNION ALL
       
-      SELECT r.id as invoice_id, r.created_at as date, ri.drug_id, ri.drug_name as fallback_name, -ri.quantity_returned as quantity_sold,
+      SELECT r.id as invoice_id, r.created_at as occurred_at, ri.drug_id, ri.drug_name as fallback_name, -ri.quantity_returned as quantity_sold,
              COALESCE(ri.unit, 'large') as unit, ri.unit_price, 'مرتجع' as action
       FROM return_items ri
       JOIN returns r ON ri.return_id = r.id
       JOIN sales_invoices sinv ON r.invoice_id = sinv.id
       WHERE sinv.patient_id = ? AND r.status IN ('approved', 'completed')
       
-      ORDER BY date DESC
+      ORDER BY occurred_at DESC
     `).all(patientId, patientId) as any[];
 
     // Use direct SQL JOIN to get drug names instead of loading full 191K cache
@@ -585,7 +590,7 @@ export async function getPatientStatementAction(patientId: string) {
       if (item.drug_id) {
         return {
           invoice_id: item.invoice_id,
-          date: item.date,
+          date: item.occurred_at,
           trade_name: drugNameMap.get(item.drug_id) || `صنف #${item.drug_id}`,
           quantity_sold: item.quantity_sold,
           unit: item.unit,
@@ -595,7 +600,7 @@ export async function getPatientStatementAction(patientId: string) {
       } else {
         return {
           invoice_id: item.invoice_id,
-          date: item.date,
+          date: item.occurred_at,
           trade_name: item.fallback_name || 'صنف غير معروف',
           quantity_sold: item.quantity_sold,
           unit: item.unit,

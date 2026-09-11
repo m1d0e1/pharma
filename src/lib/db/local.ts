@@ -855,6 +855,10 @@ export function initLocalDb() {
     }
   };
 
+  addColumnSafely('supplier_transactions', 'user_id', 'TEXT');
+  addColumnSafely('supplier_transactions', 'payment_method', "TEXT DEFAULT 'cash'");
+  addColumnSafely('supplier_transactions', 'date', 'TEXT');
+
   const purchaseItemColumns = db.prepare("PRAGMA table_info(purchase_invoice_items)").all() as any[];
   for (const col of [
     { name: 'strips_per_box', type: 'INTEGER DEFAULT 1' },

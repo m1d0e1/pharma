@@ -250,6 +250,8 @@ describe('purchase reports and drawer handover regressions', () => {
     expect(checkout.success).toBe(true);
 
     const saleId = checkout.data!.sale_id;
+    const storedCreatedAt = (mockDb.prepare('SELECT created_at FROM sales_invoices WHERE id = ?').get(saleId) as any).created_at;
+    expect(checkout.data!.created_at).toBe(`${storedCreatedAt.replace(' ', 'T')}Z`);
     expect((mockDb.prepare('SELECT shift_id FROM sales_invoices WHERE id = ?').get(saleId) as any).shift_id)
       .toBe('shift-1');
 

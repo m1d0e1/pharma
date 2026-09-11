@@ -2,6 +2,7 @@
 import { dbSelect, dbExecute, dbGet, dbTransaction, generateId } from '@/lib/db/tauri';
 import { isTauri } from '@/lib/env';
 import { requireOpenShiftId } from './finance';
+import { localDate } from '@/lib/time';
 const logActivity = async (userId, action, details) => {
   try {
     await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [userId, action, details]);
@@ -77,7 +78,7 @@ export async function getSalesInvoicesByDateAction(dateStr: string) {
       FROM sales_invoices i
       LEFT JOIN users u ON i.user_id = u.id
       LEFT JOIN patients p ON i.patient_id = p.id
-      WHERE (date(i.created_at) = ? OR date(i.created_at, 'localtime') = ?)
+      WHERE date(i.created_at, 'localtime') = ?
         AND (i.status IS NULL OR i.status = 'completed' OR i.status = 'approved' OR i.status = '')
         AND EXISTS (
           SELECT 1
@@ -93,7 +94,7 @@ export async function getSalesInvoicesByDateAction(dateStr: string) {
             AND si.quantity_sold > COALESCE(ret.returned, 0)
         )
       ORDER BY i.created_at DESC
-    `).all(dateStr, dateStr);
+    `).all(dateStr);
     return { success: true, data: invoices };
   } catch (err: any) {
     return { success: false, error: err.message };
@@ -235,7 +236,7 @@ export async function createReturnAction(data: {
             const newInvId = generateId();
             const defaultExpiry = new Date();
             defaultExpiry.setFullYear(defaultExpiry.getFullYear() + 2);
-            const expiryStr = defaultExpiry.toISOString().split('T')[0];
+            const expiryStr = localDate(defaultExpiry);
             const batchNum = 'RET-' + generateId().substring(0, 8);
             
             await db.prepare(`
@@ -401,12 +402,12 @@ export async function searchInvoicesForReturnAction(filters: {
     const params: any[] = [];
 
     if (filters.dateFrom) {
-      query += ` AND si.created_at >= ?`;
-      params.push(filters.dateFrom + ' 00:00:00');
+      query += ` AND date(si.created_at, 'localtime') >= ?`;
+      params.push(filters.dateFrom);
     }
     if (filters.dateTo) {
-      query += ` AND si.created_at <= ?`;
-      params.push(filters.dateTo + ' 23:59:59');
+      query += ` AND date(si.created_at, 'localtime') <= ?`;
+      params.push(filters.dateTo);
     }
     if (filters.patientName) {
       query += ` AND p.full_name LIKE ?`;
@@ -452,7 +453,8 @@ export async function searchRecentReturnInvoicesAction(searchTerm: string, days?
 
     let dateFilter = '';
     if (days && days > 0) {
-      dateFilter = ` AND (datetime(si.created_at) >= datetime('now', '-${days} days') OR date(si.created_at) >= date('now', '-${days} days'))`;
+      const recentDays = Math.min(3650, Math.max(1, Math.floor(days)));
+      dateFilter = ` AND datetime(si.created_at) >= datetime('now', '-${recentDays} days')`;
     }
 
     const query = `
@@ -637,7 +639,7 @@ export async function createGeneralReturnAction(data: {
             const newInvId = generateId();
             const defaultExpiry = new Date();
             defaultExpiry.setFullYear(defaultExpiry.getFullYear() + 2);
-            const expiryStr = defaultExpiry.toISOString().split('T')[0];
+            const expiryStr = localDate(defaultExpiry);
             const batchNum = 'RET-' + generateId().substring(0, 8);
             
             await db.prepare(`

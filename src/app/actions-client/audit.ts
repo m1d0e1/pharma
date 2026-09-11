@@ -51,6 +51,7 @@ const db = {
 
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 import { getLocalSession, getClientSession, hasUserPermissionSync } from '@/lib/auth/local'
+import { localDate } from '@/lib/time';
 
 /**
  * Clear all activity logs (Owner only)
@@ -83,8 +84,10 @@ export async function getAuditLogsAction() {
       return { success: false, error: 'غير مصرح' };
     }
 
-    const todayStart = new Date().toISOString().split('T')[0] + ' 00:00:00';
-    const sevenDaysAgoStart = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0] + ' 00:00:00';
+    const todayStart = localDate();
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    const sevenDaysAgoStart = localDate(sevenDaysAgo);
 
     const logs = await db.prepare(`
       SELECT al.*, u.full_name, u.role
@@ -95,14 +98,14 @@ export async function getAuditLogsAction() {
     `).all() as any[];
 
     const todayCountRes = await db.prepare(`
-      SELECT COUNT(*) as count FROM activity_log WHERE created_at >= ?
+      SELECT COUNT(*) as count FROM activity_log WHERE date(created_at, 'localtime') >= ?
     `).get(todayStart) as any;
 
     const userActivity = await db.prepare(`
       SELECT u.full_name, COUNT(al.id) as actions
       FROM activity_log al
       LEFT JOIN users u ON al.user_id = u.id
-      WHERE al.created_at >= ?
+      WHERE date(al.created_at, 'localtime') >= ?
       GROUP BY u.full_name
       ORDER BY actions DESC
       LIMIT 5
@@ -111,7 +114,7 @@ export async function getAuditLogsAction() {
     const actionTypes = await db.prepare(`
       SELECT action, COUNT(id) as count
       FROM activity_log
-      WHERE created_at >= ?
+      WHERE date(created_at, 'localtime') >= ?
       GROUP BY action
       ORDER BY count DESC
       LIMIT 5

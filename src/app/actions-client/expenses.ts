@@ -52,6 +52,7 @@ const db = {
 
 import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { createCashMovementAction } from './finance';
+import { isBusinessDate, localMonth } from '@/lib/time';
 
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 
@@ -70,7 +71,7 @@ export async function addExpenseAction(data: {
       return { success: false, error: 'غير مصرح' };
     }
     if (!Number.isFinite(data.amount) || data.amount <= 0) return { success: false, error: 'مبلغ المصروف غير صالح' };
-    if (!data.category.trim() || !data.date) return { success: false, error: 'بيانات المصروف غير مكتملة' };
+    if (!data.category.trim() || !isBusinessDate(data.date)) return { success: false, error: 'بيانات المصروف أو التاريخ غير صالحة' };
 
     const id = generateId();
     await dbTransaction(async () => {
@@ -167,7 +168,8 @@ export async function getExpenseSummaryAction(month?: string) {
     const user = await getLocalSession();
     if (!user || (!hasUserPermissionSync(user, 'can_view_expenses') && !hasUserPermissionSync(user, 'acc_can_define_expenses'))) return { success: false, error: 'غير مصرح' };
 
-    const targetMonth = month || new Date().toISOString().substring(0, 7); // YYYY-MM
+    const targetMonth = month || localMonth();
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(targetMonth)) return { success: false, error: 'الشهر غير صالح' };
 
     const byCategory = await db.prepare(`
       SELECT category, SUM(amount) as total 
@@ -182,13 +184,13 @@ export async function getExpenseSummaryAction(month?: string) {
     const totalRevenue = await db.prepare(`
       SELECT COALESCE(SUM(total_amount), 0) as revenue
       FROM sales_invoices
-      WHERE created_at LIKE ? || '%'
+      WHERE strftime('%Y-%m', created_at, 'localtime') = ?
     `).get(targetMonth) as any;
 
     const totalReturns = await db.prepare(`
       SELECT COALESCE(SUM(total_refund), 0) as refunds
       FROM returns
-      WHERE created_at LIKE ? || '%'
+      WHERE strftime('%Y-%m', created_at, 'localtime') = ?
         AND status IN ('approved', 'completed')
     `).get(targetMonth) as any;
 
@@ -210,7 +212,7 @@ export async function getExpenseSummaryAction(month?: string) {
       JOIN sales_invoices invoice ON invoice.id = si.invoice_id
       LEFT JOIN inventory i ON i.id = si.inventory_id
       LEFT JOIN master_drugs md ON md.id = si.drug_id
-      WHERE invoice.created_at LIKE ? || '%'
+      WHERE strftime('%Y-%m', invoice.created_at, 'localtime') = ?
         AND invoice.status IN ('completed', 'delivered')
         AND COALESCE(si.is_negative, 0) = 0
     `).get(targetMonth) as any;
@@ -234,7 +236,7 @@ export async function getExpenseSummaryAction(month?: string) {
       LEFT JOIN sales_items si ON si.id = ri.sale_item_id
       LEFT JOIN inventory i ON i.id = COALESCE(ri.inventory_id, si.inventory_id)
       LEFT JOIN master_drugs md ON md.id = COALESCE(ri.drug_id, si.drug_id)
-      WHERE r.created_at LIKE ? || '%'
+      WHERE strftime('%Y-%m', r.created_at, 'localtime') = ?
         AND r.status IN ('approved', 'completed')
     `).get(targetMonth) as any;
 

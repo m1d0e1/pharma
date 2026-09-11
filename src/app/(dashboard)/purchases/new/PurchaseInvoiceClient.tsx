@@ -4,7 +4,7 @@ import TableScrollContainer from '@/components/ui/TableScrollContainer';
 import nextDynamic from 'next/dynamic'
 import React, { useState, useEffect } from 'react'
 import { Info, Settings } from 'lucide-react'
-import { 
+import {
   FileText, 
   Search, 
   Plus, 
@@ -46,6 +46,7 @@ import {
   derivePurchaseDiscountPercent,
   getPurchaseExpiryStatus,
 } from '@/lib/purchases/invoice-form'
+import { localDate } from '@/lib/time'
 function normalizeDateToYMD(dateStr: string | null | undefined): string | null {
   if (!dateStr) return null;
   dateStr = dateStr.trim();
@@ -118,7 +119,7 @@ export default function PurchaseInvoiceClient() {
   }, []);
   const initialHeader: PurchaseInvoiceHeader = {
     invoice_number: '',
-    invoice_date: new Date().toISOString().split('T')[0],
+    invoice_date: localDate(),
     payment_method: 'credit',
     notes: '',
     check_number: '',
@@ -277,7 +278,7 @@ export default function PurchaseInvoiceClient() {
         setInvoiceHeader({
           id: invoice.id,
           invoice_number: invoice.invoice_number || '',
-          invoice_date: normalizeDateToYMD(invoice.invoice_date) || new Date().toISOString().split('T')[0],
+          invoice_date: normalizeDateToYMD(invoice.invoice_date) || localDate(),
           payment_method: invoice.payment_method || 'cash',
           notes: invoice.notes || '',
           check_number: invoice.check_number || '',
@@ -385,7 +386,7 @@ export default function PurchaseInvoiceClient() {
           setInvoiceHeader({
             id: invoice.id,
             invoice_number: invoice.invoice_number || '',
-            invoice_date: normalizeDateToYMD(invoice.invoice_date) || new Date().toISOString().split('T')[0],
+            invoice_date: normalizeDateToYMD(invoice.invoice_date) || localDate(),
             payment_method: invoice.payment_method || 'cash',
             notes: invoice.notes || '',
             check_number: invoice.check_number || '',
@@ -543,7 +544,7 @@ export default function PurchaseInvoiceClient() {
               setInvoiceHeader({
                 id: res.invoice.id,
                 invoice_number: res.invoice.invoice_number || '',
-                invoice_date: normalizeDateToYMD(res.invoice.invoice_date) || new Date().toISOString().split('T')[0],
+                invoice_date: normalizeDateToYMD(res.invoice.invoice_date) || localDate(),
                 payment_method: res.invoice.payment_method || 'cash',
                 notes: res.invoice.notes || '',
                 check_number: res.invoice.check_number || '',
@@ -595,7 +596,7 @@ export default function PurchaseInvoiceClient() {
                       setInvoiceHeader({
                         id: res.invoice.id,
                         invoice_number: res.invoice.invoice_number || '',
-                        invoice_date: normalizeDateToYMD(res.invoice.invoice_date) || new Date().toISOString().split('T')[0],
+                        invoice_date: normalizeDateToYMD(res.invoice.invoice_date) || localDate(),
                         payment_method: res.invoice.payment_method || 'cash',
                         notes: res.invoice.notes || '',
                         check_number: res.invoice.check_number || '',

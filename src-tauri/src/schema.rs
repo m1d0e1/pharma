@@ -683,6 +683,13 @@ async fn ensure_compatibility(
         ("suppliers", "phone", "phone TEXT"),
         ("suppliers", "address", "address TEXT"),
         ("suppliers", "name_en", "name_en TEXT"),
+        ("supplier_transactions", "user_id", "user_id TEXT"),
+        (
+            "supplier_transactions",
+            "payment_method",
+            "payment_method TEXT DEFAULT 'cash'",
+        ),
+        ("supplier_transactions", "date", "date TEXT"),
         ("users", "username", "username TEXT"),
         ("users", "password_hash", "password_hash TEXT"),
         ("users", "role", "role TEXT DEFAULT 'cashier'"),

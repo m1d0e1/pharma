@@ -48,6 +48,7 @@ pub struct CheckoutResult {
     pub sale_id: String,
     pub total_amount: f64,
     pub points_earned: i64,
+    pub created_at: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1909,10 +1910,23 @@ async fn process_checkout_tx(
         .map_err(|e| e.to_string())?;
     }
 
+    let stored_created_at: String =
+        sqlx::query_scalar("SELECT created_at FROM sales_invoices WHERE id = ?")
+            .bind(&sale_id)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(|e| e.to_string())?;
+    let created_at = if stored_created_at.ends_with('Z') || stored_created_at.contains('+') {
+        stored_created_at
+    } else {
+        format!("{}Z", stored_created_at.replace(' ', "T"))
+    };
+
     Ok(CheckoutResult {
         sale_id,
         total_amount,
         points_earned,
+        created_at,
     })
 }
 
@@ -5637,6 +5651,16 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(auto_shift_sale.total_amount, 69.0);
+        let stored_created_at: String =
+            sqlx::query_scalar("SELECT created_at FROM sales_invoices WHERE id = ?")
+                .bind(&auto_shift_sale.sale_id)
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+        assert_eq!(
+            auto_shift_sale.created_at,
+            format!("{}Z", stored_created_at.replace(' ', "T"))
+        );
         let auto_shift_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM shifts WHERE user_id = 'admin' AND status = 'open'",
         )

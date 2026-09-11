@@ -7,6 +7,9 @@ import { cn } from '@/lib/utils';
 import { getPatientStatementAction, getReceiptDetailsAction } from '@/app/actions-client/patients';
 import { toast } from 'react-hot-toast';
 import ReceiptDetailsModal from '../receipts/ReceiptDetailsModal';
+import { isBusinessDate, parseBusinessDate } from '@/lib/time';
+
+const statementDate = (value: string) => isBusinessDate(value) ? parseBusinessDate(value) : new Date(value);
 
 interface CustomerStatementModalProps {
   patientId: string;
@@ -79,7 +82,7 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
   const { patient, movements, items, notices, currentBalance } = data;
   let runningBalance = Number(patient.opening_balance || 0);
   const statementMovements = [...(movements || [])]
-    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+    .sort((a, b) => statementDate(a.date).getTime() - statementDate(b.date).getTime())
     .map(movement => {
       const balanceEffect = Number(movement.balance_effect ?? 0);
       runningBalance += balanceEffect;
@@ -191,7 +194,7 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
                          <td className="px-6 py-4 font-bold text-slate-500 hover:text-blue-600 underline">
                            #{mov.doc_no.slice(0, 8)}
                          </td>
-                         <td className="px-6 py-4 font-bold">{new Date(mov.date).toLocaleString('ar-EG')}</td>
+                         <td className="px-6 py-4 font-bold">{statementDate(mov.date).toLocaleString('ar-EG')}</td>
                          <td className={cn("px-6 py-4 font-black text-lg", mov.balanceEffect > 0 ? "text-blue-600" : "text-emerald-600")}>
                             {mov.value.toLocaleString()} ج.م
                          </td>
@@ -243,7 +246,7 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
                           </td>
                           <td className="px-6 py-4 font-bold text-slate-800 dark:text-white">{notice.reason || '---'}</td>
                           <td className="px-6 py-4 text-slate-500 font-medium text-sm">{notice.notes || '---'}</td>
-                          <td className="px-6 py-4 font-bold text-sm text-slate-600 dark:text-slate-400">{new Date(notice.date || notice.created_at).toLocaleDateString('ar-EG')}</td>
+                          <td className="px-6 py-4 font-bold text-sm text-slate-600 dark:text-slate-400">{statementDate(notice.date || notice.created_at).toLocaleDateString('ar-EG')}</td>
                           <td className="px-6 py-4 text-slate-500 font-bold text-sm">{notice.user_name || 'النظام'}</td>
                         </tr>
                       ))}
@@ -282,7 +285,7 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
                          <td className="px-6 py-4 font-black">{item.quantity_sold}</td>
                          <td className="px-6 py-4 text-slate-500 font-bold">{item.unit || 'وحدة'}</td>
                          <td className="px-6 py-4 font-black text-blue-600">{item.unit_price} ج.م</td>
-                         <td className="px-6 py-4 text-slate-500 text-sm">{new Date(item.date).toLocaleString('ar-EG')}</td>
+                         <td className="px-6 py-4 text-slate-500 text-sm">{statementDate(item.date).toLocaleString('ar-EG')}</td>
                       </tr>
                     ))}
                   </tbody>

@@ -62,6 +62,7 @@ import {
   patientOutstandingBalanceExpression,
   patientOutstandingBalanceQuery,
 } from '@/lib/patients/balance';
+import { normalizeUtcTimestamp } from '@/lib/time';
 
 const CheckoutItemSchema = z.object({
   drug_id: z.coerce.number(),
@@ -576,6 +577,7 @@ export async function processCheckoutAction(data: any) {
           sale_id: result.sale_id,
           total_amount: result.total_amount,
           points_earned: result.points_earned,
+          created_at: result.created_at,
         }
       };
     }
@@ -853,12 +855,14 @@ export async function processCheckoutAction(data: any) {
       }
     });
 
+    const savedInvoice = await db.prepare('SELECT created_at FROM sales_invoices WHERE id = ?').get(saleId) as any;
     return {
       success: true,
       data: {
         sale_id: saleId,
         total_amount: totalAmount,
-        points_earned: pointsEarned
+        points_earned: pointsEarned,
+        created_at: normalizeUtcTimestamp(savedInvoice?.created_at),
       }
     };
   } catch (error: any) {
@@ -876,7 +880,7 @@ export async function getSalesDashboardStatsAction() {
     const todaySalesRow = await db.prepare(`
       SELECT COALESCE(SUM(total_amount), 0) as total 
       FROM sales_invoices 
-      WHERE DATE(created_at) = DATE('now', 'localtime') AND status IN ('completed', 'delivered')
+      WHERE DATE(created_at, 'localtime') = DATE('now', 'localtime') AND status IN ('completed', 'delivered')
     `).get() as any;
     const todaySales = todaySalesRow?.total || 0;
 
@@ -884,7 +888,7 @@ export async function getSalesDashboardStatsAction() {
     const yesterdaySalesRow = await db.prepare(`
       SELECT COALESCE(SUM(total_amount), 0) as total 
       FROM sales_invoices 
-      WHERE DATE(created_at) = DATE('now', '-1 day', 'localtime') AND status IN ('completed', 'delivered')
+      WHERE DATE(created_at, 'localtime') = DATE('now', '-1 day', 'localtime') AND status IN ('completed', 'delivered')
     `).get() as any;
     const yesterdaySales = yesterdaySalesRow?.total || 0;
 
@@ -904,7 +908,7 @@ export async function getSalesDashboardStatsAction() {
     const deliveryCountRow = await db.prepare(`
       SELECT COUNT(*) as total 
       FROM sales_invoices 
-      WHERE payment_method = 'delivery' AND DATE(created_at) = DATE('now', 'localtime')
+      WHERE payment_method = 'delivery' AND DATE(created_at, 'localtime') = DATE('now', 'localtime')
     `).get() as any;
     const deliveryCount = deliveryCountRow?.total || 0;
 
@@ -920,14 +924,14 @@ export async function getSalesDashboardStatsAction() {
     const todayAvgInvoiceRow = await db.prepare(`
       SELECT COALESCE(AVG(total_amount), 0) as avg_val 
       FROM sales_invoices 
-      WHERE DATE(created_at) = DATE('now', 'localtime') AND status IN ('completed', 'delivered')
+      WHERE DATE(created_at, 'localtime') = DATE('now', 'localtime') AND status IN ('completed', 'delivered')
     `).get() as any;
     const averageInvoice = Math.round(todayAvgInvoiceRow?.avg_val || 0);
 
     const yesterdayAvgInvoiceRow = await db.prepare(`
       SELECT COALESCE(AVG(total_amount), 0) as avg_val 
       FROM sales_invoices 
-      WHERE DATE(created_at) = DATE('now', '-1 day', 'localtime') AND status IN ('completed', 'delivered')
+      WHERE DATE(created_at, 'localtime') = DATE('now', '-1 day', 'localtime') AND status IN ('completed', 'delivered')
     `).get() as any;
     const yesterdayAverageInvoice = Math.round(yesterdayAvgInvoiceRow?.avg_val || 0);
 

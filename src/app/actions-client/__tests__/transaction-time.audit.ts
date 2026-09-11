@@ -22,7 +22,8 @@ jest.mock('@/lib/auth/local', () => ({
   getLocalSession: jest.fn(async () => ({ id: 'admin', role: 'owner', pharmacy_id: null })),
   hasUserPermissionSync: jest.fn(() => true),
 }));
-import { addFinancialNoticeAction, createCashMovementAction, createManualJournalAction } from '../finance';
+import { addFinancialNoticeAction, addPaperAction, createCashMovementAction, createManualJournalAction } from '../finance';
+import { addSupplierPaymentAction } from '../purchases';
 
 beforeEach(() => {
   mockDb = new Database(':memory:');
@@ -55,5 +56,26 @@ it.each(['not-a-date','2026-02-30'])('rejects invalid financial-notice date %s',
 
 it.each(['not-a-date','2026-02-30'])('rejects invalid manual-journal date %s', async date => {
   const result = await createManualJournalAction({date,description:'Audit',entries:[{account_id:6,type:'debit',amount:10},{account_id:11,type:'credit',amount:10}]});
+  expect(result.success).toBe(false);
+});
+
+it.each(['not-a-date','2026-02-30'])('rejects invalid supplier-payment date %s', async date => {
+  const result = await addSupplierPaymentAction({ supplier_id: 1, amount: 10, date });
+  expect(result.success).toBe(false);
+});
+
+it('stores a supplier payment business date separately from its UTC creation instant', async () => {
+  mockDb.prepare("INSERT INTO suppliers(id,name_ar,balance) VALUES(1,'Audit supplier',100)").run();
+  const result = await addSupplierPaymentAction({ supplier_id: 1, amount: 10, payment_method: 'bank', date: '2026-09-01' });
+  expect(result.success).toBe(true);
+  const row = mockDb.prepare("SELECT date,created_at FROM supplier_transactions WHERE type='payment'").get() as any;
+  expect(row.date).toBe('2026-09-01');
+  expect(Math.abs(Date.now() - Date.parse(`${row.created_at.replace(' ', 'T')}Z`))).toBeLessThan(2000);
+});
+
+it.each(['not-a-date','2026-02-30'])('rejects invalid commercial-paper due date %s', async due_date => {
+  const result = await addPaperAction({
+    type: 'check', direction: 'in', paper_number: 'CHK-1', amount: 10, due_date, target_name: 'Audit',
+  });
   expect(result.success).toBe(false);
 });

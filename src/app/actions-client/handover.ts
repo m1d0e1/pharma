@@ -270,7 +270,7 @@ export async function processHandoverAction(data: {
       if (!managedUserId && Math.abs(difference) > 0.005) {
         await db.prepare(`
           INSERT INTO cash_movements (id, user_id, shift_id, type, category, amount, target_name, notes, date)
-          VALUES (?, ?, ?, ?, 'cash_adjustment', ?, 'تسوية الجرد', ?, datetime('now', 'localtime'))
+          VALUES (?, ?, ?, ?, 'cash_adjustment', ?, 'تسوية الجرد', ?, date('now', 'localtime'))
         `).run(
           generateId(), user.id, data.shiftId,
           difference > 0 ? 'receipt' : 'disbursement', Math.abs(difference),
@@ -282,7 +282,7 @@ export async function processHandoverAction(data: {
         const movementId = generateId();
         await db.prepare(`
           INSERT INTO cash_movements (id, user_id, shift_id, type, category, amount, source_type, target_name, notes, date)
-          VALUES (?, ?, ?, 'disbursement', 'handover', ?, 'user_drawer', ?, ?, datetime('now', 'localtime'))
+          VALUES (?, ?, ?, 'disbursement', 'handover', ?, 'user_drawer', ?, ?, date('now', 'localtime'))
         `).run(movementId, user.id, data.shiftId, data.transferAmount, managedUserId ? 'الخزينة الرئيسية - إغلاق حساب مستخدم' : data.receiverUsername, data.notes || 'تسليم درج');
       }
 

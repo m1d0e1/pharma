@@ -1,4 +1,5 @@
 import { getDatabase, get, query } from '../db/client';
+import { localDate } from '../time';
 import {
   getLowStockItems,
   getExpiringItems,
@@ -263,13 +264,13 @@ export function getExpiryReport(
   // Get start date (first day of current month)
   const start = new Date();
   start.setDate(1);
-  const startStr = start.toISOString().split('T')[0];
+  const startStr = localDate(start);
 
   // Get end date (last day of the month after X months)
   const end = new Date();
   end.setMonth(end.getMonth() + months);
   end.setDate(0);
-  const endStr = end.toISOString().split('T')[0];
+  const endStr = localDate(end);
 
   // Execute a single query for the entire date range
   const allItems = query<any>(

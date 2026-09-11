@@ -51,14 +51,14 @@ export function getSalesReport(
   // Sales by day
   const byDay = query<any>(
     `SELECT
-      DATE(created_at) as date,
+      DATE(created_at, 'localtime') as date,
       COUNT(*) as sales,
       COALESCE(SUM(total_amount), 0) as revenue
      FROM sales_invoices
      WHERE pharmacy_id = ?
-     ${dateRange?.startDate ? `AND created_at >= ?` : ''}
-     ${dateRange?.endDate ? `AND created_at <= ?` : ''}
-     GROUP BY DATE(created_at)
+     ${dateRange?.startDate ? `AND DATE(created_at, 'localtime') >= ?` : ''}
+     ${dateRange?.endDate ? `AND DATE(created_at, 'localtime') <= ?` : ''}
+     GROUP BY DATE(created_at, 'localtime')
      ORDER BY date DESC`,
     dateRange?.startDate && dateRange?.endDate
       ? [pharmacyId, dateRange.startDate, dateRange.endDate]
@@ -77,8 +77,8 @@ export function getSalesReport(
       COALESCE(SUM(total_amount), 0) as revenue
      FROM sales_invoices
      WHERE pharmacy_id = ?
-     ${dateRange?.startDate ? `AND created_at >= ?` : ''}
-     ${dateRange?.endDate ? `AND created_at <= ?` : ''}
+     ${dateRange?.startDate ? `AND DATE(created_at, 'localtime') >= ?` : ''}
+     ${dateRange?.endDate ? `AND DATE(created_at, 'localtime') <= ?` : ''}
      GROUP BY payment_method
      ORDER BY revenue DESC`,
     dateRange?.startDate && dateRange?.endDate
@@ -251,8 +251,8 @@ export function getStaffPerformanceReport(
      FROM users u
      LEFT JOIN sales_invoices si ON u.id = si.user_id
      WHERE u.pharmacy_id = ?
-     ${dateRange?.startDate ? `AND (si.created_at IS NULL OR si.created_at >= ?)` : ''}
-     ${dateRange?.endDate ? `AND (si.created_at IS NULL OR si.created_at <= ?)` : ''}
+     ${dateRange?.startDate ? `AND (si.created_at IS NULL OR DATE(si.created_at, 'localtime') >= ?)` : ''}
+     ${dateRange?.endDate ? `AND (si.created_at IS NULL OR DATE(si.created_at, 'localtime') <= ?)` : ''}
      GROUP BY u.id, u.username, u.full_name, u.role
      ORDER BY total_revenue DESC`,
     dateRange?.startDate && dateRange?.endDate
@@ -320,8 +320,8 @@ export function getPatientReport(
     `SELECT COUNT(DISTINCT patient_id) as count
      FROM sales_invoices
      WHERE pharmacy_id = ? AND patient_id IS NOT NULL
-     ${dateRange?.startDate ? `AND created_at >= ?` : ''}
-     ${dateRange?.endDate ? `AND created_at <= ?` : ''}`,
+     ${dateRange?.startDate ? `AND DATE(created_at, 'localtime') >= ?` : ''}
+     ${dateRange?.endDate ? `AND DATE(created_at, 'localtime') <= ?` : ''}`,
     dateRange?.startDate && dateRange?.endDate
       ? [pharmacyId, dateRange.startDate, dateRange.endDate]
       : dateRange?.startDate
@@ -334,8 +334,8 @@ export function getPatientReport(
   const newPatients = get<{ count: number }>(
     `SELECT COUNT(*) as count FROM patients
      WHERE pharmacy_id = ?
-     ${dateRange?.startDate ? `AND created_at >= ?` : ''}
-     ${dateRange?.endDate ? `AND created_at <= ?` : ''}`,
+     ${dateRange?.startDate ? `AND DATE(created_at, 'localtime') >= ?` : ''}
+     ${dateRange?.endDate ? `AND DATE(created_at, 'localtime') <= ?` : ''}`,
     dateRange?.startDate && dateRange?.endDate
       ? [pharmacyId, dateRange.startDate, dateRange.endDate]
       : dateRange?.startDate
@@ -357,8 +357,8 @@ export function getPatientReport(
      FROM patients p
      JOIN sales_invoices si ON p.id = si.patient_id
      WHERE p.pharmacy_id = ?
-     ${dateRange?.startDate ? `AND si.created_at >= ?` : ''}
-     ${dateRange?.endDate ? `AND si.created_at <= ?` : ''}
+     ${dateRange?.startDate ? `AND DATE(si.created_at, 'localtime') >= ?` : ''}
+     ${dateRange?.endDate ? `AND DATE(si.created_at, 'localtime') <= ?` : ''}
      GROUP BY p.id, p.full_name, p.phone
      ORDER BY total_spent DESC
      LIMIT 10`,
@@ -374,12 +374,12 @@ export function getPatientReport(
   // New patients by month
   const byMonth = query<any>(
     `SELECT
-      strftime('%Y-%m', created_at) as month,
+      strftime('%Y-%m', created_at, 'localtime') as month,
       COUNT(*) as new_patients
      FROM patients
      WHERE pharmacy_id = ?
-     ${dateRange?.startDate ? `AND created_at >= ?` : ''}
-     ${dateRange?.endDate ? `AND created_at <= ?` : ''}
+     ${dateRange?.startDate ? `AND DATE(created_at, 'localtime') >= ?` : ''}
+     ${dateRange?.endDate ? `AND DATE(created_at, 'localtime') <= ?` : ''}
      GROUP BY month
      ORDER BY month DESC`,
     dateRange?.startDate && dateRange?.endDate
