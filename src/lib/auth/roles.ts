@@ -1,4 +1,5 @@
 // Legacy Permission type — used by service.ts and users/service.ts
+import { isOwnerOnlyStaffPermission } from './staff-policy';
 export type Permission = string;
 
 export interface RolePermissions {
@@ -10,6 +11,7 @@ export interface RolePermissions {
 export type PagePermission = keyof typeof PAGE_PERMISSIONS;
 
 export const PAGE_PERMISSIONS = {
+  can_access_pos: '/pos',
   can_view_stores: '/stores/items',
   can_view_patients: '/patients',
   can_view_delivery: '/sales/delivery',
@@ -30,6 +32,7 @@ export const PAGE_PERMISSIONS = {
   can_manage_inventory: '/stores/items',
   acc_can_view_handover: '/finance/handover',
   rep_can_view_sales: '/reports/sales',
+  rep_can_view_shifts: '/shifts/report',
   rep_can_view_financial: '/accounts',
 
   // Additional menu routes that need permission mapping
@@ -72,6 +75,7 @@ export const PAGE_PERMISSIONS = {
 // Configurable permission required by each navigable route. Longest matches
 // win so exceptions such as the shortages notebook override /stores.
 export const ROUTE_PERMISSIONS: Record<string, string> = {
+  '/pos': 'can_access_pos',
   '/receipts': 'can_view_receipts',
   '/sales/delivery': 'can_view_delivery',
   '/sales/cogs': 'can_view_cogs',
@@ -84,7 +88,9 @@ export const ROUTE_PERMISSIONS: Record<string, string> = {
   '/stores/shortages': 'can_view_restock',
   '/restock': 'can_view_restock',
   '/purchase-orders': 'can_view_purchases',
+  '/purchases/suppliers': 'can_view_suppliers',
   '/purchases': 'can_view_purchases',
+  '/inventory': 'can_view_stores',
   '/stores': 'can_view_stores',
   '/accounts/cash-transactions': 'acc_can_process_cash_flow',
   '/accounts/settings/trial-balance': 'acc_can_view_general',
@@ -95,6 +101,7 @@ export const ROUTE_PERMISSIONS: Record<string, string> = {
   '/finance/pos-management': 'acc_can_view_pos',
   '/finance/accounts': 'acc_can_view_general',
   '/expenses': 'can_view_expenses',
+  '/shifts/report': 'rep_can_view_shifts',
   '/shifts': 'can_view_shifts',
   '/patients': 'can_view_patients',
   '/interactions': 'can_view_patients',
@@ -140,7 +147,7 @@ export function findUnprotectedRoutes(): string[] {
     '/shifts/report', '/patients', '/interactions', '/staff',
     '/staff/manage', '/staff/roles', '/audit', '/settings',
   ];
-  return allMenuRoutes.filter(r => !permittedRoutes.has(r as any) && r !== '/' && r !== '/pos');
+  return allMenuRoutes.filter(r => !permittedRoutes.has(r as any) && r !== '/');
 }
 
 // ACTION_PERMISSIONS maps each actions-client file to its permission check
@@ -168,12 +175,15 @@ export const ACTION_PERMISSIONS: Record<string, string> = {
 // Maps roles to page-level view permissions
 const ALL_PAGE_PERMS = Object.keys(PAGE_PERMISSIONS);
 
-const buildRole = (role: string, perms: string[], desc: string): RolePermissions => ({ role, permissions: perms, description: desc });
+const buildRole = (role: string, perms: string[], desc: string): RolePermissions => ({
+  role, permissions: role === 'owner' ? perms : perms.filter(key => !isOwnerOnlyStaffPermission(key)), description: desc,
+});
 
 export const ROLE_PERMISSIONS: Record<string, RolePermissions> = {
   owner: buildRole('owner', [...ALL_PAGE_PERMS], 'Full access to all features'),
-  admin: buildRole('admin', [...ALL_PAGE_PERMS], 'Full access to all features'),
+  admin: buildRole('admin', [...ALL_PAGE_PERMS], 'Configurable access excluding owner-only staff administration'),
   manager: buildRole('manager', [
+    'can_access_pos',
     'can_view_stores', 'can_view_patients', 'can_view_delivery',
     'can_view_cogs', 'can_view_receipts', 'can_view_returns',
     'can_view_purchases', 'can_view_shifts', 'can_view_restock',
@@ -187,8 +197,9 @@ export const ROLE_PERMISSIONS: Record<string, RolePermissions> = {
     'can_view_categories', 'can_view_usage', 'can_view_units',
     'can_view_indications', 'can_view_manufacturers',
     'can_view_interactions',
-  ], 'Can manage inventory, staff, and view reports'),
+  ], 'Can manage inventory and view permitted reports'),
   pharmacist: buildRole('pharmacist', [
+    'can_access_pos',
     'can_view_patients', 'can_view_receipts', 'can_view_returns',
     'can_view_shifts', 'can_view_restock', 'can_view_delivery',
     'can_view_low_stock', 'can_view_shortages',
@@ -196,6 +207,7 @@ export const ROLE_PERMISSIONS: Record<string, RolePermissions> = {
     'can_view_interactions', 'can_view_staff_performance',
   ], 'Can process sales and manage patients'),
   cashier: buildRole('cashier', [
+    'can_access_pos',
     'can_view_receipts', 'can_view_returns',
     'can_view_shifts', 'can_view_delivery',
     'can_view_sales',

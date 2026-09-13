@@ -1,4 +1,5 @@
 'use client'
+import { hasUserPermissionSync } from '@/lib/auth/local';
 
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
@@ -82,7 +83,7 @@ const MENUS: Menu[] = [
       { type: 'link', label: 'المشتريات',              href: '/purchases',                 icon: ShoppingCart,  roles: ['owner','admin'], permission: 'can_view_purchases' },
       { type: 'link', label: 'فاتورة مشتريات جديدة',  href: '/purchases/new',             icon: PlusCircle,    roles: ['owner','admin'], permission: 'can_view_purchases' },
       { type: 'link', label: 'أوامر الشراء',           href: '/purchase-orders',           icon: ClipboardList, roles: ['owner','admin'], permission: 'can_view_purchases' },
-      { type: 'link', label: 'الموردون',               href: '/purchases/suppliers',       icon: Truck,         roles: ['owner','admin'], permission: 'can_view_purchases' },
+      { type: 'link', label: 'الموردون',               href: '/purchases/suppliers',       icon: Truck,         roles: ['owner','admin'], permission: 'can_view_suppliers' },
       { type: 'separator' },
       { type: 'link', label: 'مرتجعات للموردين',      href: '/purchases/returns',         icon: RotateCcw,     roles: ['owner','admin'], permission: 'can_view_purchases' },
     ],
@@ -248,19 +249,7 @@ export default function TopMenuBar({ userRole, permissions }: Props) {
   const canSee = useCallback((item: MenuItem): boolean => {
     if (item.type === 'separator' || item.type === 'action') return true
     if (item.permission) {
-      if (userRole === 'owner') return true
-      
-      let perms = permissions;
-      let attempts = 0;
-      while (typeof perms === 'string' && attempts < 3) {
-        try { perms = JSON.parse(perms); } catch(e) { break; }
-        attempts++;
-      }
-      
-      if (Array.isArray(perms)) {
-        return perms.includes(item.permission)
-      }
-      return perms ? (perms[item.permission] === true || perms[item.permission] === 'true' || perms[item.permission] == 1) : false
+      return hasUserPermissionSync({ role: userRole, permissions }, item.permission)
     }
     return !item.roles || item.roles.includes(userRole)
   }, [userRole, permissions])

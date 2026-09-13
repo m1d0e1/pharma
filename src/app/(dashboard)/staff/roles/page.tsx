@@ -3,12 +3,10 @@
 import React, { useEffect, useState } from 'react';
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 import JobsManagementClient from '@/components/admin/JobsManagementClient';
-import { addJobAction, deleteJobAction } from '@/app/actions-client/users';
+import { addJobAction, deleteJobAction, getJobsAction } from '@/app/actions-client/users';
 import Link from 'next/link';
 import { ArrowRight } from 'lucide-react';
 import AccessDenied from '@/components/AccessDenied';
-import { dbSelect, dbExecute } from '@/lib/db/tauri';
-import { isTauri } from '@/lib/env';
 
 export default function StaffRolesPage() {
   const [user, setUser] = useState<any>(null);
@@ -17,8 +15,8 @@ export default function StaffRolesPage() {
 
   async function loadJobs() {
     try {
-      const data = await dbSelect('SELECT * FROM employee_jobs ORDER BY name_ar ASC');
-      setJobs(data || []);
+      const result = await getJobsAction();
+      if (result.success) setJobs(result.data || []);
     } catch (err) {
       console.error('Failed to load jobs:', err);
     }
@@ -46,31 +44,12 @@ export default function StaffRolesPage() {
   }, []);
 
   const handleAddJob = async (data: { name_ar: string; name_en?: string; min_salary?: number; max_salary?: number }) => {
-    if (isTauri) {
-      try {
-        await dbExecute('INSERT INTO employee_jobs (name_ar, name_en, min_salary, max_salary) VALUES (?, ?, ?, ?)',
-          [data.name_ar, data.name_en || null, data.min_salary || 0, data.max_salary || 0]);
-        await loadJobs();
-        return { success: true };
-      } catch (error: any) {
-        return { success: false, error: error.message };
-      }
-    }
     const res = await addJobAction(data);
     if (res.success) await loadJobs();
     return res;
   };
 
   const handleDeleteJob = async (jobId: number) => {
-    if (isTauri) {
-      try {
-        await dbExecute('DELETE FROM employee_jobs WHERE id = ?', [jobId]);
-        await loadJobs();
-        return { success: true };
-      } catch (error: any) {
-        return { success: false, error: error.message };
-      }
-    }
     const res = await deleteJobAction(jobId);
     if (res.success) await loadJobs();
     return res;

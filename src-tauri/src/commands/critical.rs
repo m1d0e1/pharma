@@ -38,6 +38,8 @@ pub struct CheckoutItem {
     pub quantity_sold: f64,
     #[serde(default, deserialize_with = "de_f64")]
     pub unit_price: f64,
+    #[serde(default, deserialize_with = "de_f64")]
+    pub item_discount_percent: f64,
     pub selected_unit: String,
     #[serde(default)]
     pub is_negative: bool,
@@ -1511,6 +1513,92 @@ async fn process_checkout_tx(
     {
         return Err("Invalid checkout amounts".into());
     }
+
+    let user = sqlx::query(
+        "SELECT role, permissions FROM users WHERE CAST(id AS TEXT) = CAST(? AS TEXT) AND COALESCE(is_active, 1) = 1",
+    )
+    .bind(&payload.user_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| e.to_string())?
+    .ok_or_else(|| "Unauthorized: active user required".to_string())?;
+    let user_role: Option<String> = user.try_get("role").ok();
+    let user_permissions: Option<String> = user.try_get("permissions").ok();
+    if !user_has_permission(user_role.as_deref(), user_permissions.as_deref(), "can_access_pos", true) {
+        return Err("Unauthorized: can_access_pos permission required".into());
+    }
+    if payload.payment_method == "credit"
+        && !user_has_permission(user_role.as_deref(), user_permissions.as_deref(), "can_sell_credit", false)
+    {
+        return Err("Unauthorized: can_sell_credit permission required".into());
+    }
+    if payload.items.iter().any(|item| item.is_negative)
+        && !user_has_permission(user_role.as_deref(), user_permissions.as_deref(), "can_sell_no_stock", false)
+    {
+        return Err("Unauthorized: can_sell_no_stock permission required".into());
+    }
+    if payload.items.iter().any(|item| item.item_discount_percent > 0.0)
+        && !user_has_permission(user_role.as_deref(), user_permissions.as_deref(), "can_discount_sale_item", false)
+    {
+        return Err("Unauthorized: can_discount_sale_item permission required".into());
+    }
+    if payload.total_discount > 0.0 {
+        if !user_has_permission(user_role.as_deref(), user_permissions.as_deref(), "can_give_total_discount", false) {
+            return Err("Unauthorized: can_give_total_discount permission required".into());
+        }
+        let gross: f64 = payload.items.iter().map(|item| item.quantity_sold * item.unit_price).sum();
+        let maximum = user_permission_number(user_role.as_deref(), user_permissions.as_deref(), "max_invoice_discount_percent", 0.0);
+        if gross > 0.0 && payload.total_discount / gross * 100.0 > maximum + 0.000001 {
+            return Err("Invoice discount exceeds the permitted maximum".into());
+        }
+    }
+    if !user_has_permission(user_role.as_deref(), user_permissions.as_deref(), "can_change_price_sale", false) {
+        for item in &payload.items {
+            let price = sqlx::query(
+                r#"
+                SELECT COALESCE(MIN(i.local_selling_price), md.official_price, 0) AS large_price,
+                       COALESCE(NULLIF(MAX(i.strips_per_box), 0), NULLIF(md.large_to_medium, 0), 1) AS large_to_medium,
+                       COALESCE(NULLIF(md.medium_to_small, 0), 1) AS medium_to_small,
+                       md.medium_unit, md.small_unit
+                FROM master_drugs md
+                LEFT JOIN inventory i ON CAST(i.drug_id AS TEXT) = CAST(md.id AS TEXT)
+                  AND (? IS NULL OR i.id = ?)
+                  AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
+                  AND i.quantity > 0
+                  AND (i.expiry_date IS NULL OR i.expiry_date >= DATE('now', 'localtime'))
+                WHERE CAST(md.id AS TEXT) = CAST(? AS TEXT)
+                GROUP BY md.id
+                "#,
+            )
+            .bind(item.inventory_id.as_deref())
+            .bind(item.inventory_id.as_deref())
+            .bind(&payload.pharmacy_id)
+            .bind(&payload.pharmacy_id)
+            .bind(item.drug_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "Checkout drug does not exist".to_string())?;
+            let mut expected: f64 = price.try_get("large_price").unwrap_or(0.0);
+            let large_to_medium: f64 = price.try_get::<f64, _>("large_to_medium").unwrap_or(1.0).max(1.0);
+            let medium_to_small: f64 = price.try_get::<f64, _>("medium_to_small").unwrap_or(1.0).max(1.0);
+            let medium_unit: Option<String> = price.try_get("medium_unit").ok();
+            let small_unit: Option<String> = price.try_get("small_unit").ok();
+            if matches!(item.selected_unit.as_str(), "medium" | "strip" | "شريط")
+                || medium_unit.as_deref() == Some(item.selected_unit.as_str())
+            {
+                expected /= large_to_medium;
+            } else if item.selected_unit == "small"
+                || small_unit.as_deref() == Some(item.selected_unit.as_str())
+            {
+                expected /= large_to_medium * medium_to_small;
+            }
+            expected *= 1.0 - item.item_discount_percent / 100.0;
+            if (expected - item.unit_price).abs() > 0.011 {
+                return Err("Unauthorized: can_change_price_sale permission required".into());
+            }
+        }
+    }
     let sale_id = uuid::Uuid::new_v4().to_string();
     let mut points_earned = 0_i64;
 
@@ -2115,16 +2203,8 @@ fn normalize_pharmacy_id(input: Option<&str>) -> String {
         .to_string()
 }
 
-pub(crate) fn user_can_view_purchases(role: Option<&str>, permissions: Option<&str>) -> bool {
-    if role
-        .is_some_and(|role| matches!(role.trim().to_ascii_lowercase().as_str(), "owner" | "admin"))
-    {
-        return true;
-    }
-
-    let Some(raw_permissions) = permissions else {
-        return false;
-    };
+fn decoded_permissions(permissions: Option<&str>) -> Option<Value> {
+    let raw_permissions = permissions?;
     let mut value = Value::String(raw_permissions.to_string());
     for _ in 0..3 {
         let Value::String(encoded) = &value else {
@@ -2132,22 +2212,48 @@ pub(crate) fn user_can_view_purchases(role: Option<&str>, permissions: Option<&s
         };
         value = match serde_json::from_str(encoded) {
             Ok(decoded) => decoded,
-            Err(_) => return false,
+            Err(_) => return None,
         };
     }
+    Some(value)
+}
 
-    let Some(permission) = value
-        .as_object()
-        .and_then(|permissions| permissions.get("can_view_purchases"))
-    else {
-        return false;
-    };
-    match permission {
-        Value::Bool(value) => *value,
-        Value::Number(value) => value.as_f64() == Some(1.0),
-        Value::String(value) => matches!(value.trim().to_ascii_lowercase().as_str(), "true" | "1"),
-        _ => false,
+fn user_has_permission(role: Option<&str>, permissions: Option<&str>, key: &str, legacy_pos: bool) -> bool {
+    let normalized_role = role.unwrap_or_default().trim().to_ascii_lowercase();
+    if normalized_role == "owner" {
+        return true;
     }
+    let value = decoded_permissions(permissions);
+    let permission = value.as_ref()
+        .and_then(Value::as_object)
+        .and_then(|permissions| permissions.get(key));
+    match permission {
+        Some(Value::Bool(value)) => *value,
+        Some(Value::Number(value)) => value.as_f64() == Some(1.0),
+        Some(Value::String(value)) => matches!(value.trim().to_ascii_lowercase().as_str(), "true" | "1"),
+        _ => legacy_pos && key == "can_access_pos" && matches!(normalized_role.as_str(), "admin" | "pharmacist" | "cashier"),
+    }
+}
+
+fn user_permission_number(role: Option<&str>, permissions: Option<&str>, key: &str, fallback: f64) -> f64 {
+    if role.is_some_and(|role| role.trim().eq_ignore_ascii_case("owner")) {
+        return 100.0;
+    }
+    decoded_permissions(permissions)
+        .as_ref()
+        .and_then(Value::as_object)
+        .and_then(|permissions| permissions.get(key))
+        .and_then(|value| match value {
+            Value::Number(number) => number.as_f64(),
+            Value::String(number) => number.parse::<f64>().ok(),
+            _ => None,
+        })
+        .unwrap_or(fallback)
+}
+
+pub(crate) fn user_can_view_purchases(role: Option<&str>, permissions: Option<&str>) -> bool {
+    role.is_some_and(|role| role.trim().eq_ignore_ascii_case("admin"))
+        || user_has_permission(role, permissions, "can_view_purchases", false)
 }
 
 fn purchase_item_total(item: &PurchaseItem, invoice_tax_percent: f64) -> f64 {
@@ -3260,9 +3366,9 @@ mod tests {
         loyalty_points, patient_outstanding_debt, process_checkout_tx,
         purchase_inventory_paid_factor, return_quantity_in_sale_unit, return_restock_qty,
         sale_stock_qty, save_purchase_invoice_tx, settle_negative_sale_item_tx,
-        user_can_view_purchases, validate_purchase_items, validate_write_sql, CheckoutItem,
-        CheckoutPayload, NegativeStockSettlementPayload, PurchaseItem, PurchasePayload, ReturnItem,
-        ReturnPayload,
+        user_can_view_purchases, user_has_permission, user_permission_number,
+        validate_purchase_items, validate_write_sql, CheckoutItem, CheckoutPayload,
+        NegativeStockSettlementPayload, PurchaseItem, PurchasePayload, ReturnItem, ReturnPayload,
     };
     use crate::commands::purchase_returns::{
         run_purchase_return_transaction, PurchaseReturnItem, PurchaseReturnPayload,
@@ -3321,6 +3427,33 @@ mod tests {
         assert!(!user_can_view_purchases(Some("cashier"), Some("invalid")));
     }
 
+    #[test]
+    fn pos_permissions_honor_explicit_denial_and_legacy_accounts() {
+        assert!(user_has_permission(Some("owner"), Some("{}"), "can_access_pos", true));
+        assert!(user_has_permission(Some("pharmacist"), Some("{}"), "can_access_pos", true));
+        assert!(!user_has_permission(
+            Some("pharmacist"),
+            Some(r#"{"can_access_pos":false}"#),
+            "can_access_pos",
+            true,
+        ));
+        assert!(user_has_permission(
+            Some("cashier"),
+            Some(r#""{\"can_discount_sale_item\":true}""#),
+            "can_discount_sale_item",
+            false,
+        ));
+        assert_eq!(
+            user_permission_number(
+                Some("cashier"),
+                Some(r#"{"max_invoice_discount_percent":"7.5"}"#),
+                "max_invoice_discount_percent",
+                0.0,
+            ),
+            7.5,
+        );
+    }
+
     fn fresh_purchase_line(
         expiry: &str,
         quantity: f64,
@@ -3377,6 +3510,7 @@ mod tests {
                 inventory_id: None,
                 quantity_sold: 2.0,
                 unit_price: 10.0,
+                item_discount_percent: 0.0,
                 selected_unit: "large".into(),
                 is_negative: false,
             },
@@ -3385,6 +3519,7 @@ mod tests {
                 inventory_id: None,
                 quantity_sold: 3.0,
                 unit_price: 5.0,
+                item_discount_percent: 0.0,
                 selected_unit: "large".into(),
                 is_negative: false,
             },
@@ -5584,8 +5719,9 @@ mod tests {
     async fn checkout_handles_batch_fallback_and_wallet_accounting() {
         let mut conn = SqliteConnection::connect("sqlite::memory:").await.unwrap();
         for sql in [
-            "CREATE TABLE master_drugs (id INTEGER PRIMARY KEY, trade_name TEXT, trade_name_en TEXT, active_ingredient TEXT, large_to_medium INTEGER, medium_to_small INTEGER, medium_unit TEXT, small_unit TEXT, min_limit REAL, reorder_point REAL, default_purchase_qty REAL, stop_dealing INTEGER DEFAULT 0)",
-            "CREATE TABLE inventory (id TEXT PRIMARY KEY, drug_id INTEGER, pharmacy_id TEXT, quantity INTEGER, cost_price REAL, expiry_date TEXT, created_at TEXT, updated_at TEXT, strips_per_box INTEGER)",
+            "CREATE TABLE master_drugs (id INTEGER PRIMARY KEY, trade_name TEXT, trade_name_en TEXT, active_ingredient TEXT, official_price REAL, large_to_medium INTEGER, medium_to_small INTEGER, medium_unit TEXT, small_unit TEXT, min_limit REAL, reorder_point REAL, default_purchase_qty REAL, stop_dealing INTEGER DEFAULT 0)",
+            "CREATE TABLE inventory (id TEXT PRIMARY KEY, drug_id INTEGER, pharmacy_id TEXT, quantity INTEGER, cost_price REAL, local_selling_price REAL, expiry_date TEXT, created_at TEXT, updated_at TEXT, strips_per_box INTEGER)",
+            "CREATE TABLE users (id TEXT PRIMARY KEY, role TEXT, permissions TEXT, is_active INTEGER)",
             "CREATE TABLE sales_invoices (id TEXT PRIMARY KEY, pharmacy_id TEXT, user_id TEXT, patient_id TEXT, shift_id TEXT, total_amount REAL, payment_method TEXT, check_number TEXT, status TEXT, discount_amount REAL, created_at TEXT)",
             "CREATE TABLE sales_items (id INTEGER PRIMARY KEY AUTOINCREMENT, invoice_id TEXT, inventory_id TEXT, drug_id INTEGER, quantity_sold REAL, unit_price REAL, unit TEXT, is_negative INTEGER, cost_price REAL, created_at TEXT)",
             "CREATE TABLE daily_journals (id TEXT PRIMARY KEY, date TEXT, description TEXT, created_by TEXT, total_amount REAL)",
@@ -5602,7 +5738,11 @@ mod tests {
         ] {
             sqlx::query(sql).execute(&mut conn).await.unwrap();
         }
-        sqlx::query("INSERT INTO master_drugs (id, trade_name, large_to_medium, medium_to_small, default_purchase_qty) VALUES (4463, 'COLONA', 10, 1, 8)")
+        sqlx::query("INSERT INTO users VALUES ('admin', 'owner', '{}', 1)")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO master_drugs (id, trade_name, official_price, large_to_medium, medium_to_small, default_purchase_qty) VALUES (4463, 'COLONA', 69, 10, 1, 8)")
             .execute(&mut conn)
             .await
             .unwrap();
@@ -5627,6 +5767,7 @@ mod tests {
                 inventory_id: inventory_id.map(str::to_string),
                 quantity_sold: 1.0,
                 unit_price: 69.0,
+                item_discount_percent: 0.0,
                 selected_unit: "large".into(),
                 is_negative: false,
             }],
@@ -5737,6 +5878,7 @@ mod tests {
                 inventory_id: Some("full".into()),
                 quantity_sold: 1.0,
                 unit_price: 69.0,
+                item_discount_percent: 0.0,
                 selected_unit: "large".into(),
                 is_negative: false,
             }],
@@ -5827,6 +5969,7 @@ mod tests {
                 inventory_id: None,
                 quantity_sold: 12.0,
                 unit_price: 5.0,
+                item_discount_percent: 0.0,
                 selected_unit: "medium".into(),
                 is_negative: false,
             }],
@@ -5890,6 +6033,7 @@ mod tests {
                 inventory_id: Some("mixed-12".into()),
                 quantity_sold: 1.0,
                 unit_price: 1.0,
+                item_discount_percent: 0.0,
                 selected_unit: "small".into(),
                 is_negative: false,
             }],

@@ -51,6 +51,7 @@ const db = {
 
 
 import { getLocalSession, logoutLocal, loginLocal } from '@/lib/auth/local';
+import { isStaffOwner } from '@/lib/auth/staff-policy';
 
 import { createClient } from '@/utils/supabase/client';
 import { useRouter } from 'next/navigation';
@@ -125,6 +126,7 @@ export async function logoutLocalAction() {
 
 export async function getLocalUsersAction() {
   try {
+    if (!isStaffOwner(await getLocalSession())) return { success: false, error: 'غير مصرح - للمالك فقط' };
     const users = await db.prepare('SELECT id, username, full_name, role, (password_hash IS NOT NULL) as has_password FROM users').all();
     return { success: true, data: users };
   } catch (error) {

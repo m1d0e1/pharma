@@ -187,8 +187,7 @@ export async function processHandoverAction(data: {
     const user = await getLocalSession();
     const managedUserId = data.closeOnly ? data.managedUserId : undefined;
     const isManagedClosure = Boolean(managedUserId);
-    const canManageStaff = user?.role === 'owner'
-      || (user?.role === 'admin' && hasUserPermissionSync(user, 'can_view_staff_manage'));
+    const canManageStaff = user?.role === 'owner';
     if (!user || (isManagedClosure ? !canManageStaff : !hasUserPermissionSync(user, 'acc_can_view_handover'))) {
       return { success: false, error: 'غير مصرح' };
     }

@@ -50,11 +50,14 @@ const db = {
 
 
 
-import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
+import { isStaffOwner } from '@/lib/auth/staff-policy';
+import { sanitizeStaffPermissions } from '@/lib/auth/permission-catalog';
+import { getLocalSession } from '@/lib/auth/local';
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 
 const defaultOwnerPerms = {
   national_id: '', address: '', birth_date: '', qualification: '', mobile: '', gender: 'ذكر', social_status: 'أعزب', is_delivery_rep: false,
+  can_access_pos: true,
   can_view_stock_sale: true,
   show_suspended_invoices: true,
   show_sale_price_return: true,
@@ -102,6 +105,7 @@ const defaultOwnerPerms = {
   rep_can_view_purchases: true,
   rep_can_view_financial: true,
   rep_can_view_activity: true,
+  rep_can_view_shifts: true,
   can_select_pos_financial: true,
   preview_drawer_details: true,
   hide_total_points_balance: false,
@@ -116,11 +120,13 @@ const defaultOwnerPerms = {
   can_view_settlement: true,
   can_view_stores: true,
   can_view_patients: true,
+  can_delete_patients: true,
   can_view_delivery: true,
   can_view_cogs: true,
   can_view_receipts: true,
   can_view_returns: true,
   can_view_purchases: true,
+  can_view_suppliers: true,
   can_view_shifts: true,
   can_view_restock: true,
   can_view_audit: true,
@@ -134,17 +140,22 @@ const defaultOwnerPerms = {
 export async function updateUserPermissionsAction(userId: string, permissions: any) {
   try {
     const localUser = await getLocalSession();
-    if (!localUser || (localUser.role !== 'owner' && !(localUser.role === 'admin' && hasUserPermissionSync(localUser, 'can_view_staff_manage')))) {
+    if (!isStaffOwner(localUser)) {
       return { success: false, error: 'غير مصرح - للمالك فقط' };
     }
 
-    let permissionsToSave = permissions;
     const targetUser = await db.prepare('SELECT username, role FROM users WHERE id = ?').get(userId) as { username: string; role: string };
 
     if (targetUser?.role === 'owner' && localUser.role !== 'owner') {
       return { success: false, error: 'لا يمكنك تعديل صلاحيات المالك' };
     }
 
+    const permissionsToSave = sanitizeStaffPermissions(permissions);
+    if (targetUser?.role !== 'owner') {
+      delete permissionsToSave.can_view_staff_manage;
+      delete permissionsToSave.can_view_staff_roles;
+      delete permissionsToSave.rep_can_view_activity;
+    }
     const permissionsJson = JSON.stringify(permissionsToSave);
 
     await db.prepare('UPDATE users SET permissions = ? WHERE id = ?').run(permissionsJson, userId);
@@ -175,7 +186,7 @@ export async function addUserAction(formData: {
 }) {
   try {
     const localUser = await getLocalSession();
-    if (!localUser || (localUser.role !== 'owner' && localUser.role !== 'admin')) {
+    if (!isStaffOwner(localUser)) {
       return { success: false, error: 'غير مصرح - للمالك فقط' };
     }
 
@@ -201,6 +212,7 @@ export async function addUserAction(formData: {
     // Default permissions based on role
     const defaultPerms = role === 'pharmacist' ? {
       national_id: '', address: '', birth_date: '', qualification: '', mobile: '', gender: 'ذكر', social_status: 'أعزب', is_delivery_rep: false,
+      can_access_pos: true,
       can_view_stock_sale: true,
       show_suspended_invoices: true,
       show_sale_price_return: true,
@@ -228,6 +240,7 @@ export async function addUserAction(formData: {
       acc_can_view_reports: true,
       rep_can_view_sales: true,
       rep_can_view_inventory: true,
+      rep_can_view_shifts: false,
 
       // New Page level permissions
       can_view_low_stock: true,
@@ -235,11 +248,13 @@ export async function addUserAction(formData: {
       can_view_settlement: true,
       can_view_stores: false,
       can_view_patients: true,
+      can_delete_patients: false,
       can_view_delivery: true,
       can_view_cogs: false,
       can_view_receipts: true,
       can_view_returns: true,
       can_view_purchases: false,
+      can_view_suppliers: false,
       can_view_shifts: true,
       can_view_restock: false,
       can_view_audit: false,
@@ -250,6 +265,7 @@ export async function addUserAction(formData: {
       can_view_staff_roles: false
     } : role === 'admin' ? {
       national_id: '', address: '', birth_date: '', qualification: '', mobile: '', gender: 'ذكر', social_status: 'أعزب', is_delivery_rep: false,
+          can_access_pos: true,
           can_view_stock_sale: true,
           can_manage_inventory: true,
           can_discount_sale_item: true,
@@ -273,6 +289,7 @@ export async function addUserAction(formData: {
       rep_can_view_inventory: true,
       rep_can_view_financial: true,
       rep_can_view_activity: true,
+      rep_can_view_shifts: true,
 
       // New Page level permissions
       can_view_low_stock: true,
@@ -280,11 +297,13 @@ export async function addUserAction(formData: {
       can_view_settlement: true,
       can_view_stores: true,
       can_view_patients: true,
+      can_delete_patients: true,
       can_view_delivery: true,
       can_view_cogs: true,
       can_view_receipts: true,
       can_view_returns: true,
       can_view_purchases: true,
+      can_view_suppliers: true,
       can_view_shifts: true,
       can_view_restock: true,
       can_view_audit: false,
@@ -315,7 +334,7 @@ export async function addUserAction(formData: {
 export async function deleteUserAction(userId: string) {
   try {
     const localUser = await getLocalSession();
-    if (!localUser || (localUser.role !== 'owner' && !(localUser.role === 'admin' && hasUserPermissionSync(localUser, 'can_view_staff_manage')))) {
+    if (!isStaffOwner(localUser)) {
       return { success: false, error: 'غير مصرح بإدارة المستخدمين' };
     }
 
@@ -376,7 +395,7 @@ export async function updateUserAction(userId: string, data: {
 }) {
   try {
     const localUser = await getLocalSession();
-    if (!localUser || (localUser.role !== 'owner' && localUser.role !== 'admin')) {
+    if (!isStaffOwner(localUser)) {
       return { success: false, error: 'غير مصرح - للمالك فقط' };
     }
 
@@ -385,6 +404,11 @@ export async function updateUserAction(userId: string, data: {
     const targetUser = await db.prepare('SELECT role FROM users WHERE id = ?').get(userId) as { role: string };
     if (targetUser?.role === 'owner' && localUser.role !== 'owner') {
       return { success: false, error: 'لا يمكنك تعديل حساب المالك' };
+    }
+
+    if (targetUser?.role === 'owner' && role !== 'owner') {
+      const owners = await db.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'owner' AND is_active = 1").get() as { count: number };
+      if (owners.count <= 1) return { success: false, error: 'لا يمكن تغيير دور المالك الوحيد؛ أضف مالكاً آخر أولاً' };
     }
 
     // Only update user profile fields here — permissions are saved separately by updateUserPermissionsAction
@@ -443,7 +467,7 @@ export async function getStaffAction() {
 export async function getJobsAction() {
   try {
     const user = await getLocalSession();
-    if (!user || (user.role !== 'owner' && user.role !== 'admin')) return { success: false, error: 'Unauthorized' };
+    if (!isStaffOwner(user)) return { success: false, error: 'Unauthorized' };
 
     const jobs = await db.prepare('SELECT * FROM employee_jobs ORDER BY name_ar ASC').all() as any[];
     return { success: true, data: jobs || [] };
@@ -455,7 +479,7 @@ export async function getJobsAction() {
 export async function addJobAction(data: { name_ar: string; name_en?: string; min_salary?: number; max_salary?: number }) {
   try {
     const user = await getLocalSession();
-    if (!user || (user.role !== 'owner' && user.role !== 'admin')) return { success: false, error: 'Unauthorized' };
+    if (!isStaffOwner(user)) return { success: false, error: 'Unauthorized' };
 
     await db.prepare('INSERT INTO employee_jobs (name_ar, name_en, min_salary, max_salary) VALUES (?, ?, ?, ?)').run(data.name_ar, data.name_en || null, data.min_salary || 0, data.max_salary || 0);
 
@@ -469,7 +493,7 @@ export async function addJobAction(data: { name_ar: string; name_en?: string; mi
 export async function deleteJobAction(jobId: number) {
   try {
     const user = await getLocalSession();
-    if (!user || (user.role !== 'owner' && user.role !== 'admin')) return { success: false, error: 'Unauthorized' };
+    if (!isStaffOwner(user)) return { success: false, error: 'Unauthorized' };
 
     await db.prepare('DELETE FROM employee_jobs WHERE id = ?').run(jobId);
     revalidatePath('/staff/roles');
@@ -481,13 +505,13 @@ export async function deleteJobAction(jobId: number) {
 
 /**
  * Administrative Password Reset
- * Allows Owner/Admin to set a new password for a staff member
+ * Allows the owner to set a new password for a staff member
  */
 export async function resetUserPasswordAction(userId: string, newPassword: string) {
   try {
     const localUser = await getLocalSession();
     // Only Owners can reset passwords for others
-    if (!localUser || (localUser.role !== 'owner' && localUser.role !== 'admin')) {
+    if (!isStaffOwner(localUser)) {
       return { success: false, error: 'غير مصرح - للمالك فقط' };
     }
 
@@ -527,14 +551,16 @@ export async function resetUserPasswordAction(userId: string, newPassword: strin
 export async function getStaffManagementDataAction() {
   try {
     const user = await getLocalSession();
-    if (!user || (user.role !== 'owner' && user.role !== 'admin')) {
+    if (!isStaffOwner(user)) {
       return { success: false, error: 'غير مصرح - للمالك فقط' };
     }
 
     const users = await db.prepare(`
-      SELECT u.*, ej.name_ar as job_name_ar 
+      SELECT u.id, u.username, u.full_name, u.role, u.is_active, u.permissions,
+        u.job_id, u.qualification, u.hire_date, u.shift, u.code, ej.name_ar as job_name_ar
       FROM users u
       LEFT JOIN employee_jobs ej ON u.job_id = ej.id
+      WHERE u.is_active = 1
       ORDER BY u.full_name ASC, u.username ASC
     `).all() as any[];
 
@@ -548,9 +574,8 @@ export async function getStaffManagementDataAction() {
 
 export async function getStaffPerformanceAction() {
   try {
-    const { hasUserPermissionSync, isOwnerOrAdmin } = await import('@/lib/auth/local');
     const user = await getLocalSession();
-    if (!user || (!isOwnerOrAdmin(user) && !hasUserPermissionSync(user, 'rep_can_view_activity'))) {
+    if (!isStaffOwner(user)) {
       return { success: false, error: 'غير مصرح' };
     }
 

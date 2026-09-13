@@ -14,7 +14,7 @@ import {
   ArrowDownLeft,
   Megaphone,
 } from 'lucide-react';
-import { getClientSession } from '@/lib/auth/local';
+import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { dbSelect, dbGet } from '@/lib/db/tauri';
 import { isTauri as isTauriRuntime } from '@/lib/env';
 
@@ -51,6 +51,8 @@ export default function DashboardPage() {
   const [isPharmacist, setIsPharmacist] = useState(false);
   const [isTauri, setIsTauri] = useState(false);
   const [newsBarEnabled, setNewsBarEnabled] = useState(true);
+  const canAccessPos = hasUserPermissionSync(user, 'can_access_pos');
+  const canViewShifts = hasUserPermissionSync(user, 'can_view_shifts');
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -425,13 +427,13 @@ export default function DashboardPage() {
 
       {/* Management Row */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-7">
-        {(isPharmacist || isOwner) && <ShiftManagement />}
+        {canViewShifts && <ShiftManagement />}
         {isOwner && <SubscriptionStatus />}
       </div>
 
       {/* Quick Actions */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <Link href="/pos" className="flex items-center gap-4 p-5 bg-white dark:bg-slate-800 rounded-[2rem] shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all border border-blue-200/50 dark:border-blue-800/30 hover:border-blue-300/80 dark:hover:border-blue-600/50 group">
+        {canAccessPos && <Link href="/pos" className="flex items-center gap-4 p-5 bg-white dark:bg-slate-800 rounded-[2rem] shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all border border-blue-200/50 dark:border-blue-800/30 hover:border-blue-300/80 dark:hover:border-blue-600/50 group">
           <div className="w-12 h-12 bg-blue-100 dark:bg-blue-900/30 rounded-2xl flex items-center justify-center text-blue-600 group-hover:scale-110 transition-transform">
             <ShoppingCart className="w-6 h-6" />
           </div>
@@ -439,7 +441,7 @@ export default function DashboardPage() {
             <p className="font-black text-slate-900 dark:text-white">نقطة البيع</p>
             <p className="text-[10px] text-slate-500">بيع سريع</p>
           </div>
-        </Link>
+        </Link>}
 
         <Link href="/inventory" className="flex items-center gap-4 p-5 bg-white dark:bg-slate-800 rounded-[2rem] shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all border border-teal-200/50 dark:border-teal-800/30 hover:border-teal-300/80 dark:hover:border-teal-600/50 group">
           <div className="w-12 h-12 bg-emerald-100 dark:bg-emerald-900/30 rounded-2xl flex items-center justify-center text-emerald-600 group-hover:scale-110 transition-transform">

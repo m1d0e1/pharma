@@ -444,7 +444,7 @@ export default function POSPage() {
         return;
       }
 
-      setIsAllowed(hasUserPermissionSync(userObj, 'can_access_pos') || ['pharmacist', 'cashier', 'owner', 'admin'].includes(userObj.role));
+      setIsAllowed(hasUserPermissionSync(userObj, 'can_access_pos'));
       setCanChangePrice(hasUserPermissionSync(userObj, 'can_change_price_sale'));
       setCanViewStock(hasUserPermissionSync(userObj, 'can_view_stock_sale'));
       setCanSellCredit(hasUserPermissionSync(userObj, 'can_sell_credit'));

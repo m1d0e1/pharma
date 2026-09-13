@@ -6,6 +6,7 @@ import StaffAnalyticsClient from '@/components/admin/StaffAnalyticsClient';
 import { getClientSession, hasUserPermissionSync, isOwnerOrAdmin } from '@/lib/auth/local';
 import { getStaffPerformanceAction } from '@/app/actions-client/users';
 import AccessDenied from '@/components/AccessDenied';
+import { isStaffOwner } from '@/lib/auth/staff-policy';
 
 export default function StaffPage() {
   const [user, setUser] = useState<any>(null);
@@ -19,7 +20,7 @@ export default function StaffPage() {
         if (!localUser) return;
         setUser(localUser);
 
-        const isAllowed = isOwnerOrAdmin(localUser) || hasUserPermissionSync(localUser, 'rep_can_view_activity');
+        const isAllowed = isStaffOwner(localUser);
         if (!isAllowed) {
           setLoading(false);
           return;
@@ -47,7 +48,7 @@ export default function StaffPage() {
     );
   }
 
-  if (!user || (!isOwnerOrAdmin(user) && !hasUserPermissionSync(user, 'rep_can_view_activity'))) {
+  if (!isStaffOwner(user)) {
     return <AccessDenied />;
   }
 
@@ -59,7 +60,7 @@ export default function StaffPage() {
           <p className="text-slate-500 mt-1">تقارير وتحليلات أداء المبيعات والشفتات للموظفين.</p>
         </div>
         <div className="flex gap-3">
-          {(isOwnerOrAdmin(user) || hasUserPermissionSync(user, 'can_view_staff_manage')) && (
+          {isStaffOwner(user) && (
             <Link href="/staff/manage" className="bg-slate-900 dark:bg-slate-800 text-white px-6 py-3 rounded-2xl font-bold text-sm shadow-lg hover:bg-slate-800 transition-all">
               🛡️ إدارة الموظفين
             </Link>

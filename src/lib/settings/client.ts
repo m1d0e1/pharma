@@ -1,4 +1,6 @@
 import { dbExecute, dbSelect } from '@/lib/db/tauri';
+import { getLocalSession } from '@/lib/auth/local';
+import { isStaffOwner } from '@/lib/auth/staff-policy';
 import { getSupabaseBrowserClient } from '@/lib/supabase';
 
 export async function updatePharmacyClient(formData: any) {
@@ -77,6 +79,7 @@ export async function runDatabaseMaintenanceClient() {
 
 export async function getLocalUsersClient() {
   try {
+    if (!isStaffOwner(await getLocalSession())) return { success: false, error: 'غير مصرح - للمالك فقط' };
     const users = await dbSelect('SELECT id, username, full_name, role, (password_hash IS NOT NULL) as has_password FROM users');
     return { success: true, data: users };
   } catch (error) {

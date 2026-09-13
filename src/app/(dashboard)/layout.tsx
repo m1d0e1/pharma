@@ -8,7 +8,7 @@ import { useHotkeys } from 'react-hotkeys-hook';
 import TopMenuBar from '@/components/TopMenuBar';
 import SidebarNav from '@/components/SidebarNav';
 import ThemeToggle from '@/components/ThemeToggle';
-import { getClientSession, logoutLocal } from '@/lib/auth/local';
+import { getClientSession, hasUserPermissionSync, logoutLocal } from '@/lib/auth/local';
 import { dbGet } from '@/lib/db/tauri';
 import { Monitor, Bell, LogOut, Menu, ArrowRight } from 'lucide-react';
 import HeaderAlerts from '@/components/HeaderAlerts';
@@ -34,6 +34,7 @@ export default function DashboardLayout({
   const [pharmacyName, setPharmacyName] = useState<string>('فارما تيك');
   const [loading, setLoading] = useState(true);
   const [isTauri, setIsTauri] = useState(false);
+  const canAccessPos = hasUserPermissionSync({ role: userRole, permissions }, 'can_access_pos');
 
   const log = (m: string) => typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__?.invoke('log_frontend_error', { message: m });
 
@@ -256,7 +257,7 @@ export default function DashboardLayout({
   // Global Keyboard Shortcuts
   useHotkeys('ctrl+p, meta+p', (e) => {
     e.preventDefault();
-    router.push('/pos');
+    if (canAccessPos) router.push('/pos');
   }, { enableOnFormTags: true });
 
   useHotkeys('ctrl+i, meta+i', (e) => {
@@ -348,13 +349,15 @@ export default function DashboardLayout({
 
                   <div className="h-8 w-px bg-slate-200 dark:bg-slate-700 mx-3 flex-shrink-0" />
 
-                  <Link
-                    href="/pos"
-                    className="flex-shrink-0 flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white rounded-xl font-black text-sm shadow-md shadow-blue-500/30 hover:shadow-lg hover:shadow-blue-500/40 transition-all ml-3"
-                  >
-                    <Monitor className="w-4 h-4" />
-                    <span className="hidden sm:inline">الكاشير</span>
-                  </Link>
+                  {canAccessPos && (
+                    <Link
+                      href="/pos"
+                      className="flex-shrink-0 flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white rounded-xl font-black text-sm shadow-md shadow-blue-500/30 hover:shadow-lg hover:shadow-blue-500/40 transition-all ml-3"
+                    >
+                      <Monitor className="w-4 h-4" />
+                      <span className="hidden sm:inline">الكاشير</span>
+                    </Link>
+                  )}
                 </div>
 
                 {/* Right: User + Theme */}

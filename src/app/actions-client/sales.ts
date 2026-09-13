@@ -92,10 +92,7 @@ function saleStockQty(quantity: number, unit: string, largeToMedium: number, med
 }
 
 function canUsePos(user: any): boolean {
-  return !!user && (
-    ['owner', 'admin', 'pharmacist', 'cashier'].includes(user.role)
-    || hasUserPermissionSync(user, 'can_access_pos')
-  );
+  return !!user && hasUserPermissionSync(user, 'can_access_pos');
 }
 
 function permissionNumber(user: any, key: string, fallback = 0): number {
@@ -103,6 +100,47 @@ function permissionNumber(user: any, key: string, fallback = 0): number {
   try { if (typeof values === 'string') values = JSON.parse(values); } catch { return fallback; }
   const value = values && !Array.isArray(values) ? values[key] : undefined;
   return Number(value ?? (user?.role === 'owner' ? 100 : fallback)) || fallback;
+}
+
+async function validateCheckoutPrices(items: z.infer<typeof CheckoutItemSchema>[], pharmacyId: string) {
+  for (const item of items) {
+    const priceRow = item.inventory_id
+      ? await db.prepare(`
+          SELECT COALESCE(i.local_selling_price, md.official_price, 0) AS large_price,
+                 COALESCE(NULLIF(i.strips_per_box, 0), NULLIF(md.large_to_medium, 0), 1) AS large_to_medium,
+                 COALESCE(NULLIF(md.medium_to_small, 0), 1) AS medium_to_small,
+                 md.medium_unit, md.small_unit
+          FROM inventory i
+          JOIN master_drugs md ON md.id = i.drug_id
+          WHERE i.id = ? AND i.drug_id = ?
+        `).get(item.inventory_id, item.drug_id) as any
+      : await db.prepare(`
+          SELECT COALESCE(MIN(i.local_selling_price), md.official_price, 0) AS large_price,
+                 COALESCE(NULLIF(MAX(i.strips_per_box), 0), NULLIF(md.large_to_medium, 0), 1) AS large_to_medium,
+                 COALESCE(NULLIF(md.medium_to_small, 0), 1) AS medium_to_small,
+                 md.medium_unit, md.small_unit
+          FROM master_drugs md
+          LEFT JOIN inventory i ON i.drug_id = md.id
+            AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
+            AND i.quantity > 0
+            AND (i.expiry_date IS NULL OR i.expiry_date >= date('now', 'localtime'))
+          WHERE md.id = ?
+          GROUP BY md.id
+        `).get(pharmacyId, pharmacyId, item.drug_id) as any;
+
+    if (!priceRow) return false;
+    const largeToMedium = Math.max(1, Number(priceRow.large_to_medium) || 1);
+    const mediumToSmall = Math.max(1, Number(priceRow.medium_to_small) || 1);
+    let expectedPrice = Number(priceRow.large_price) || 0;
+    if (['medium', 'strip', 'شريط', priceRow.medium_unit].includes(item.selected_unit)) {
+      expectedPrice /= largeToMedium;
+    } else if (['small', priceRow.small_unit].includes(item.selected_unit)) {
+      expectedPrice /= largeToMedium * mediumToSmall;
+    }
+    expectedPrice *= 1 - (Number(item.item_discount_percent) || 0) / 100;
+    if (Math.abs(expectedPrice - Number(item.unit_price)) > 0.011) return false;
+  }
+  return true;
 }
 
 export async function searchDrugsAction(searchTerm: string, limit = 20, searchByActiveIngredient = false) {
@@ -543,6 +581,9 @@ export async function processCheckoutAction(data: any) {
       if (gross > 0 && (validatedData.total_discount / gross) * 100 > maxDiscountPercent + 0.000001) {
         return { success: false, error: `نسبة الخصم تتجاوز الحد المسموح (${maxDiscountPercent}%)` };
       }
+    }
+    if (!hasUserPermissionSync(localUser, 'can_change_price_sale') && !(await validateCheckoutPrices(validatedData.items, pharmacyId))) {
+      return { success: false, error: 'غير مصرح بتغيير سعر الصنف أثناء البيع' };
     }
     const requestedShiftId = validatedData.shift_id ? String(validatedData.shift_id) : null;
     const requestedShift = requestedShiftId

@@ -1120,7 +1120,9 @@ export async function updatePurchaseOrderStatusAction(poId: string, status: stri
 export async function getPurchasesReportsAction(filters: any = {}) {
   try {
     const session = await getLocalSession();
-    if (!session || !hasUserPermissionSync(session, 'can_view_purchases')) return { success: false, error: 'Unauthorized' };
+    if (!session || (!hasUserPermissionSync(session, 'can_view_purchases') && !hasUserPermissionSync(session, 'rep_can_view_purchases'))) {
+      return { success: false, error: 'Unauthorized' };
+    }
     const pharmacyId = session.pharmacy_id || 'local_default';
     let sql = `
       SELECT DISTINCT i.*,

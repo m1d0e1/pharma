@@ -40,7 +40,7 @@ jest.mock('@/lib/db/tauri', () => ({
 
 jest.mock('@/lib/auth/local', () => ({
   getLocalSession: jest.fn(async () => ({ id: 'admin', role: 'owner' })),
-  hasUserPermissionSync: jest.fn(() => true),
+  hasUserPermissionSync: jest.fn((user: any, key: string) => user?.role === 'owner' || user?.permissions?.[key] === true),
 }));
 
 jest.mock('@/lib/cache/secure_cache', () => ({ secureCache: {} }));

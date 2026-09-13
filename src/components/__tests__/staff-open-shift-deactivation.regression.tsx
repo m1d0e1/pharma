@@ -126,6 +126,6 @@ it('exposes a separate permission for discounting each sale item', async () => {
   );
 
   await user.click(screen.getByRole('button', { name: 'تعديل' }));
-  await user.click(screen.getByRole('button', { name: /المبيعات/ }));
+  await user.click(screen.getByRole('button', { name: 'نقطة البيع' }));
   expect(screen.getByRole('checkbox', { name: 'تعديل خصم كل صنف في سلة البيع' })).not.toBeChecked();
 });

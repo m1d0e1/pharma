@@ -93,11 +93,11 @@ function canManagePatients(user: any): boolean {
 }
 
 function canDeletePatients(user: any): boolean {
-  return !!user && ['owner', 'admin'].includes(user.role);
+  return !!user && hasUserPermissionSync(user, 'can_delete_patients');
 }
 
 function canSearchPatientsForPos(user: any): boolean {
-  return canManagePatients(user) || (!!user && hasUserPermissionSync(user, 'can_view_sales'));
+  return canManagePatients(user) || (!!user && hasUserPermissionSync(user, 'can_access_pos'));
 }
 
 /**
@@ -430,11 +430,9 @@ export async function getPatientStatementAction(patientId: string) {
     const user = await getLocalSession();
     if (!user) return { success: false, error: 'غير مصرح' };
 
-    const { hasUserPermissionSync, isOwnerOrAdmin } = await import('@/lib/auth/local');
-    const allowed = isOwnerOrAdmin(user) ||
-      hasUserPermissionSync(user, 'can_view_patients') ||
-      hasUserPermissionSync(user, 'can_view_sales') ||
-      hasUserPermissionSync(user, 'can_sell');
+    const { hasUserPermissionSync } = await import('@/lib/auth/local');
+    const allowed = hasUserPermissionSync(user, 'can_view_patients') ||
+      hasUserPermissionSync(user, 'can_access_pos');
     if (!allowed) return { success: false, error: 'ليس لديك صلاحية عرض كشف الحساب' };
 
     // 1. Get Patient Details

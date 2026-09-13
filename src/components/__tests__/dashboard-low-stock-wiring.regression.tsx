@@ -10,6 +10,7 @@ jest.mock('next/link', () => function LinkStub({ href, children }: any) {
 });
 jest.mock('@/lib/env', () => ({ isTauri: false }));
 jest.mock('@/lib/auth/local', () => ({
+  hasUserPermissionSync: jest.fn((user: any) => user?.role === 'owner'),
   getClientSession: jest.fn().mockResolvedValue({
     id: 'user-1',
     username: 'owner',

@@ -1,6 +1,8 @@
 'use client';
 
 import React, { useState } from 'react';
+import { isOwnerOnlyStaffPermission } from '@/lib/auth/staff-policy';
+import { PERMISSION_MODULES, type PermissionDefinition } from '@/lib/auth/permission-catalog';
 import { 
   Users, 
   ShieldCheck, 
@@ -38,6 +40,7 @@ interface PermissionSet {
   is_delivery_rep: boolean;
 
   // Sales
+  can_access_pos: boolean;
   max_invoice_discount_percent: number;
   can_change_price_sale: boolean;
   can_exceed_max_sale_limit: boolean;
@@ -87,6 +90,7 @@ interface PermissionSet {
   rep_can_view_inventory: boolean;
   rep_can_view_financial: boolean;
   rep_can_view_activity: boolean;
+  rep_can_view_shifts: boolean;
 
   // Accounts
   can_select_pos_financial: boolean;
@@ -113,11 +117,13 @@ interface PermissionSet {
   can_view_settlement: boolean;
   can_view_stores: boolean;
   can_view_patients: boolean;
+  can_delete_patients: boolean;
   can_view_delivery: boolean;
   can_view_cogs: boolean;
   can_view_receipts: boolean;
   can_view_returns: boolean;
   can_view_purchases: boolean;
+  can_view_suppliers: boolean;
   can_view_shifts: boolean;
   can_view_restock: boolean;
   can_view_audit: boolean;
@@ -138,6 +144,7 @@ const defaultPermissions: PermissionSet = {
   social_status: 'أعزب',
   is_delivery_rep: false,
 
+  can_access_pos: true,
   max_invoice_discount_percent: 0,
   can_change_price_sale: false,
   can_exceed_max_sale_limit: false,
@@ -178,6 +185,7 @@ const defaultPermissions: PermissionSet = {
   rep_can_view_inventory: true,
   rep_can_view_financial: false,
   rep_can_view_activity: false,
+  rep_can_view_shifts: false,
 
   can_select_pos_financial: false,
   show_own_financial_only: true,
@@ -202,11 +210,13 @@ const defaultPermissions: PermissionSet = {
   can_view_settlement: true,
   can_view_stores: false,
   can_view_patients: true,
+  can_delete_patients: false,
   can_view_delivery: true,
   can_view_cogs: false,
   can_view_receipts: true,
   can_view_returns: true,
   can_view_purchases: false,
+  can_view_suppliers: false,
   can_view_shifts: true,
   can_view_restock: false,
   can_view_audit: false,
@@ -302,7 +312,7 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
     code: ''
   });
   const [editPermissions, setEditPermissions] = useState<PermissionSet>(defaultPermissions);
-  const [activeTab, setActiveTab] = useState<'info' | 'personal' | 'sales' | 'suspended' | 'purchases' | 'inventory' | 'accounts' | 'reports' | 'other'>('info');
+  const [activeTab, setActiveTab] = useState<string>('info');
   const [isSaving, setIsSaving] = useState(false);
   const [openShiftDeletion, setOpenShiftDeletion] = useState<OpenShiftDeletion | null>(null);
   const [actualCash, setActualCash] = useState('');
@@ -498,7 +508,9 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
     setIsSaving(false);
   };
 
-  const renderPermissionItem = (key: keyof PermissionSet, label: string) => (
+  const renderPermissionItem = (key: keyof PermissionSet, label: string) => isOwnerOnlyStaffPermission(key) ? (
+    <div className="p-4 text-sm text-slate-500">{label} — للمالك فقط (غير قابلة للتفويض)</div>
+  ) : (
     <label className="flex items-center gap-3 p-4 bg-slate-50 dark:bg-slate-800/40 rounded-2xl border border-slate-100 dark:border-slate-800/60 cursor-pointer hover:bg-white dark:hover:bg-slate-800 transition-all group hover:shadow-lg hover:shadow-primary-500/5">
       <div className={cn(
         "w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-all",
@@ -517,6 +529,26 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
       <span className="text-sm font-bold text-slate-700 dark:text-slate-300 group-hover:text-slate-900 dark:group-hover:text-white">{label}</span>
     </label>
   );
+
+  const renderPermissionSetting = (permission: PermissionDefinition) => {
+    const key = permission.key as keyof PermissionSet;
+    if (permission.kind === 'percent') {
+      return (
+        <label key={permission.key} className="flex items-center justify-between gap-4 p-4 bg-slate-50 dark:bg-slate-800/40 rounded-2xl border border-slate-100 dark:border-slate-800/60">
+          <span className="text-sm font-bold text-slate-700 dark:text-slate-300">{permission.label}</span>
+          <input
+            type="number"
+            min={0}
+            max={100}
+            value={Number(editPermissions[key]) || 0}
+            onChange={(event) => handleNumberChange(key, event.target.value)}
+            className="w-24 p-3 text-center bg-white dark:bg-slate-900 border-2 border-primary-100 dark:border-primary-800 rounded-xl font-black text-primary-600 outline-none focus:border-primary-500"
+          />
+        </label>
+      );
+    }
+    return <React.Fragment key={permission.key}>{renderPermissionItem(key, permission.label)}</React.Fragment>;
+  };
 
   return (
     <div className="space-y-8" dir="rtl">
@@ -623,13 +655,17 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
                 {[
                   { id: 'info', label: 'حساب المستخدم', icon: Lock },
                   { id: 'personal', label: 'بيانات شخصية', icon: UserIcon },
-                  { id: 'sales', label: 'المبيعات', icon: ShoppingCart },
-                  { id: 'suspended', label: 'الفواتير المعلقة', icon: Edit3 },
-                  { id: 'purchases', label: 'المشتريات', icon: Package },
-                  { id: 'inventory', label: 'المخازن والمنتجات', icon: Box },
-                  { id: 'accounts', label: 'الحسابات المادية', icon: Wallet },
-                  { id: 'reports', label: 'التقارير والإحصاءات', icon: BarChart3 },
-                  { id: 'other', label: 'خيارات أخرى', icon: SettingsIcon },
+                  ...PERMISSION_MODULES.map(module => ({
+                    id: module.id,
+                    label: module.label,
+                    icon: module.id === 'pos' || module.id === 'sales' ? ShoppingCart
+                      : module.id === 'purchases' ? Package
+                      : module.id === 'inventory' ? Box
+                      : module.id === 'finance' ? Wallet
+                      : module.id === 'reports' ? BarChart3
+                      : module.id === 'patients' ? Users
+                      : SettingsIcon,
+                  })),
                 ].map(tab => (
                   <button
                     key={tab.id}
@@ -848,175 +884,23 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
                   </div>
                 )}
 
-                {activeTab !== 'info' && activeTab !== 'personal' && (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 animate-in slide-in-from-right-4 duration-500">
-                    {activeTab === 'sales' && (
-                      <>
-                        <div className="col-span-2 p-8 bg-gradient-to-br from-primary-50 to-white dark:from-slate-800/40 dark:to-slate-900 rounded-[32px] border border-primary-100/50 dark:border-primary-900/20 flex justify-between items-center mb-4">
-                          <div className="flex items-center gap-4">
-                            <div className="w-12 h-12 bg-primary-100 dark:bg-primary-900/30 rounded-2xl flex items-center justify-center text-primary-600">
-                               <ShoppingCart className="w-6 h-6" />
-                            </div>
-                            <span className="font-black text-slate-900 dark:text-white">أقصى خصم مسموح به للفاتورة (%)</span>
-                          </div>
-                          <input 
-                            type="number" 
-                            value={editPermissions.max_invoice_discount_percent}
-                            onChange={(e) => handleNumberChange('max_invoice_discount_percent', e.target.value)}
-                            className="w-24 p-4 text-center bg-white dark:bg-slate-800 border-2 border-primary-100 dark:border-primary-800 rounded-2xl font-black text-primary-600 outline-none focus:border-primary-500 shadow-sm"
-                          />
+                {PERMISSION_MODULES.map(module => activeTab === module.id && (
+                  <div key={module.id} className="grid grid-cols-1 md:grid-cols-2 gap-4 animate-in slide-in-from-right-4 duration-500">
+                    <div className="col-span-2 mb-4">
+                      <div className="flex items-center gap-4 p-6 bg-slate-50 dark:bg-slate-800/40 rounded-[28px] border border-slate-100 dark:border-slate-800/60">
+                        <div className="w-12 h-12 bg-white dark:bg-slate-800 rounded-2xl flex items-center justify-center text-primary-600 shadow-sm">
+                          <ShieldCheck className="w-6 h-6" />
                         </div>
-                        {renderPermissionItem('can_change_price_sale', 'تغيير الأسعار أثناء البيع')}
-                        {renderPermissionItem('can_exceed_max_sale_limit', 'تجاوز الحد الأقصى للبيع')}
-                        {renderPermissionItem('can_view_stock_sale', 'رؤية رصيد الصنف أثناء البيع')}
-                        {renderPermissionItem('can_sell_no_stock', 'بيع أصناف ليس لها رصيد')}
-                        {renderPermissionItem('can_discount_sale_item', 'تعديل خصم كل صنف في سلة البيع')}
-                        {renderPermissionItem('can_give_total_discount', 'إعطاء خصومات على الإجمالي')}
-                        {renderPermissionItem('show_sales_report_invoice', 'إظهار تقرير المبيعات في الفاتورة')}
-                        {renderPermissionItem('show_suspended_invoices', 'إظهار الفواتير المعلقة')}
-                        {renderPermissionItem('can_change_price_return', 'تغيير السعر في المرتجع')}
-                        {renderPermissionItem('show_sale_price_return', 'إظهار سعر البيع في المرتجع')}
-                        {renderPermissionItem('can_sell_credit', 'البيع بالأجل')}
-                        {renderPermissionItem('show_contract_discounts', 'إظهار خصومات التعاقدات')}
-                        {renderPermissionItem('can_make_exchanges', 'عمل استبدالات في الفاتورة')}
-                        {renderPermissionItem('can_change_contract_discounts', 'تغيير خصومات التعاقدات')}
-                        {renderPermissionItem('can_view_delivery', 'معاينة وإدارة التوصيل المنزلي')}
-                        {renderPermissionItem('can_view_cogs', 'معاينة وتعديل تكلفة المبيعات')}
-                        {renderPermissionItem('can_view_receipts', 'معاينة سجل الفواتير والتقارير')}
-                        {renderPermissionItem('can_view_returns', 'معاينة وإجراء المرتجعات')}
-                      </>
-                    )}
-
-                    {activeTab === 'suspended' && (
-                      <>
-                        {renderPermissionItem('suspended_can_add_item', 'إضافة صنف للفاتورة المعلقة')}
-                        {renderPermissionItem('suspended_can_delete', 'حذف الفاتورة المعلقة')}
-                        {renderPermissionItem('suspended_can_discount_item', 'عمل خصم على صنف معلق')}
-                        {renderPermissionItem('suspended_can_modify_discount', 'تعديل خصم صنف معلق')}
-                        {renderPermissionItem('suspended_can_pay_credit', 'سداد الفاتورة المعلقة آجل')}
-                        {renderPermissionItem('suspended_can_change_delivery', 'تغيير مندوب التوصيل')}
-                        {renderPermissionItem('suspended_can_save_invoice', 'حفظ الفواتير المعلقة')}
-                      </>
-                    )}
-
-                    {activeTab === 'purchases' && (
-                      <>
-                        {renderPermissionItem('can_change_price_purchase', 'تغيير الأسعار أثناء الشراء')}
-                        {renderPermissionItem('can_purchase_above_master_price', 'الشراء بسعر أعلى من المحدد')}
-                        {renderPermissionItem('can_purchase_from_individuals', 'الشراء من أفراد')}
-                        {renderPermissionItem('can_view_purchases', 'الوصول لصفحة المشتريات الرئيسية')}
-                      </>
-                    )}
-
-                    {activeTab === 'inventory' && (
-                      <>
-                        <div className="col-span-2 mb-6">
-                           <div className="flex items-center gap-4 p-6 bg-slate-50 dark:bg-slate-800/40 rounded-[28px] border border-slate-100 dark:border-slate-800/60">
-                              <div className="w-12 h-12 bg-white dark:bg-slate-800 rounded-2xl flex items-center justify-center text-primary-600 shadow-sm">
-                                 <Box className="w-6 h-6" />
-                              </div>
-                              <div>
-                                 <h4 className="font-black text-slate-900 dark:text-white">إدارة المخازن والأصناف</h4>
-                                 <p className="text-slate-500 text-xs font-bold mt-0.5">التحكم في بيانات الأدوية والمخزون والجرد</p>
-                              </div>
-                           </div>
+                        <div>
+                          <h4 className="font-black text-slate-900 dark:text-white">{module.title}</h4>
+                          <p className="text-slate-500 text-xs font-bold mt-0.5">{module.description}</p>
                         </div>
-                        {renderPermissionItem('can_manage_inventory', 'إمكانية إدارة الأصناف (إضافة/تعديل)')}
-                        {renderPermissionItem('show_stock_periodic_inventory', 'إمكانية جرد المخزون')}
-                        {renderPermissionItem('preview_item_movements', 'معاينة حركات الأصناف')}
-                        {renderPermissionItem('show_cost_price', 'رؤية سعر التكلفة')}
-                        {renderPermissionItem('can_modify_unit_conversion', 'إمكانية تعديل معاملات التحويل')}
-                        {renderPermissionItem('can_view_low_stock', 'معاينة النواقص (Low Stock)')}
-                        {renderPermissionItem('can_view_opening_balances', 'معاينة الأرصدة الإفتتاحية')}
-                        {renderPermissionItem('can_view_settlement', 'معاينة تسوية المخزون')}
-                        {renderPermissionItem('can_view_stores', 'معاينة شاشة المخازن الرئيسية')}
-                        {renderPermissionItem('can_view_restock', 'معاينة شاشة إعادة التموين')}
-                      </>
-                    )}
-
-                    {activeTab === 'accounts' && (
-                      <>
-                        <div className="col-span-2 mb-6">
-                           <div className="flex items-center gap-4 p-6 bg-slate-50 dark:bg-slate-800/40 rounded-[28px] border border-slate-100 dark:border-slate-800/60">
-                              <div className="w-12 h-12 bg-white dark:bg-slate-800 rounded-2xl flex items-center justify-center text-primary-600 shadow-sm">
-                                 <Wallet className="w-6 h-6" />
-                              </div>
-                              <div>
-                                 <h4 className="font-black text-slate-900 dark:text-white">صلاحيات النظام المالي والحسابات</h4>
-                                 <p className="text-slate-500 text-xs font-bold mt-0.5">التحكم في الوصول للعمليات المالية والتقارير المحاسبية</p>
-                              </div>
-                           </div>
-                        </div>
-                        {renderPermissionItem('acc_can_view_general', 'الوصول للحسابات العامة')}
-                        {renderPermissionItem('acc_can_view_pos', 'نقطة البيع (المالية)')}
-                        {renderPermissionItem('acc_can_view_bank_accounts', 'الحسابات البنكية')}
-                        {renderPermissionItem('acc_can_define_expenses', 'تعريف المصروفات')}
-                        {renderPermissionItem('acc_can_process_cash_flow', 'صرف وتوريد نقدية')}
-                        {renderPermissionItem('acc_can_view_securities', 'حركة الأوراق المالية')}
-                        {renderPermissionItem('acc_can_make_daily_entries', 'القيود اليومية')}
-                        {renderPermissionItem('acc_can_view_notifications', 'الإشعارات المالية')}
-                        {renderPermissionItem('acc_can_collect_credit_cards', 'تحصيل بطاقات إئتمان')}
-                        {renderPermissionItem('acc_can_view_reports', 'تقارير الحسابات المحاسبية')}
-                        
-                        <div className="col-span-2 h-px bg-slate-100 dark:bg-slate-800 my-4" />
-                        
-                        {renderPermissionItem('can_select_pos_financial', 'إختيار نقطة البيع في الحسابات')}
-                        {renderPermissionItem('show_own_financial_only', 'رؤية الحركات المالية الخاصة فقط')}
-                        {renderPermissionItem('preview_drawer_details', 'معاينة تفاصيل تسليم الدرج')}
-                        {renderPermissionItem('hide_total_points_balance', 'إخفاء الإجمالي ورصيد النقاط')}
-                        {renderPermissionItem('acc_can_view_handover', 'معاينة وإجراء تسليم الدرج')}
-                      </>
-                    )}
-
-                    {activeTab === 'reports' && (
-                      <>
-                        <div className="col-span-2 mb-6">
-                           <div className="flex items-center gap-4 p-6 bg-slate-50 dark:bg-slate-800/40 rounded-[28px] border border-slate-100 dark:border-slate-800/60">
-                              <div className="w-12 h-12 bg-white dark:bg-slate-800 rounded-2xl flex items-center justify-center text-primary-600 shadow-sm">
-                                 <BarChart3 className="w-6 h-6" />
-                              </div>
-                              <div>
-                                 <h4 className="font-black text-slate-900 dark:text-white">نظام التقارير والإحصائيات</h4>
-                                 <p className="text-slate-500 text-xs font-bold mt-0.5">تحديد التقارير المسموح للموظف بالاطلاع عليها</p>
-                              </div>
-                           </div>
-                        </div>
-                        {renderPermissionItem('rep_can_view_sales', 'تقارير المبيعات')}
-                        {renderPermissionItem('rep_can_view_purchases', 'تقارير المشتريات')}
-                        {renderPermissionItem('rep_can_view_inventory', 'تقارير المخازن')}
-                        {renderPermissionItem('rep_can_view_financial', 'تقارير الحسابات والمالية')}
-                        {renderPermissionItem('rep_can_view_activity', 'تقارير مراقبة النشاط')}
-                        {renderPermissionItem('show_sales_report_invoice', 'إظهار تقرير المبيعات في الفاتورة')}
-                        {renderPermissionItem('show_total_sales_report', 'تقرير إجمالي المبيعات')}
-                      </>
-                    )}
-
-                    {activeTab === 'other' && (
-                      <>
-                        <div className="col-span-2 mb-6">
-                           <div className="flex items-center gap-4 p-6 bg-slate-50 dark:bg-slate-800/40 rounded-[28px] border border-slate-100 dark:border-slate-800/60">
-                              <div className="w-12 h-12 bg-white dark:bg-slate-800 rounded-2xl flex items-center justify-center text-primary-600 shadow-sm">
-                                 <SettingsIcon className="w-6 h-6" />
-                              </div>
-                              <div>
-                                 <h4 className="font-black text-slate-900 dark:text-white">خيارات إضافية ونظام التشغيل</h4>
-                                 <p className="text-slate-500 text-xs font-bold mt-0.5">إعدادات متفرقة تخص طريقة عمل البرنامج</p>
-                              </div>
-                           </div>
-                        </div>
-                        {renderPermissionItem('can_change_pos_device', 'تغيير نقطة البيع للجهاز')}
-                        {renderPermissionItem('can_settle_multiple_lines', 'تسوية بنود متعددة')}
-                        {renderPermissionItem('can_view_shifts', 'معاينة الشفتات النقدية')}
-                        {renderPermissionItem('can_view_audit', 'معاينة سجل المراقبة')}
-                        {renderPermissionItem('can_view_settings', 'معاينة وإدارة الإعدادات')}
-                        {renderPermissionItem('can_view_patients', 'معاينة وإدارة دليل المرضى')}
-                        {renderPermissionItem('can_view_expenses', 'معاينة شاشة المصروفات والأرباح')}
-                        {renderPermissionItem('can_view_staff_manage', 'معاينة وإدارة الموظفين')}
-                        {renderPermissionItem('can_view_staff_roles', 'معاينة وإدارة المسمى الوظيفي والوظائف')}
-                      </>
-                    )}
+                      </div>
+                    </div>
+                    {module.permissions.map(renderPermissionSetting)}
                   </div>
-                )}
+                ))}
+
               </div>
             </div>
 

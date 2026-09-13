@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { updateSession } from '@/utils/supabase/middleware';
+import { isOwnerOnlyStaffRoute } from '@/lib/auth/staff-policy';
 
 export async function middleware(request: NextRequest) {
   // 1. Update Supabase session (Cloud Brain)
@@ -35,18 +36,14 @@ export async function middleware(request: NextRequest) {
     }
   }
 
-  // Admin and Finance route protection
-  const adminRoutes = ['/staff', '/reports', '/settings', '/audit', '/sales/cogs', '/accounts/settings'];
-  const isAdminRoute = adminRoutes.some((route) =>
-    path.startsWith(route)
-  );
+  // Staff administration is deliberately owner-only. Other protected routes
+  // are authorized by the shared permission guard and their backend actions;
+  // hard-coding roles here would override permissions granted by the owner.
+  const isStaffRoute = isOwnerOnlyStaffRoute(path);
 
-  if (token && isAdminRoute) {
+  if (token && isStaffRoute) {
     const userRole = request.cookies.get('userRole')?.value;
-
-    // Only allow users with owner or manager roles
-    const allowedRoles = ['owner', 'admin'];
-    if (!userRole || !allowedRoles.includes(userRole)) {
+    if (userRole !== 'owner') {
       return NextResponse.redirect(new URL('/unauthorized', request.url));
     }
   }

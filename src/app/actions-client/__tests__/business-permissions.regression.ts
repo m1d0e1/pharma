@@ -27,7 +27,7 @@ import { addMasterDrugAction } from '@/app/actions-client/master-drugs';
 const item = { drug_id: 1, quantity_sold: 1, unit_price: 100, selected_unit: 'large' };
 
 describe('business permission enforcement', () => {
-  beforeEach(() => { permissions = {}; });
+  beforeEach(() => { permissions = { can_access_pos: true }; });
 
   it.each([
     [{ items: [item], payment_method: 'credit' }, 'البيع الآجل'],
@@ -46,7 +46,7 @@ describe('business permission enforcement', () => {
   });
 
   it('enforces the configured maximum invoice discount', async () => {
-    permissions = { can_give_total_discount: true, max_invoice_discount_percent: 5 };
+    permissions = { can_access_pos: true, can_give_total_discount: true, max_invoice_discount_percent: 5 };
     const result = await processCheckoutAction({ items: [item], payment_method: 'cash', total_discount: 10 });
     expect(result).toEqual({ success: false, error: 'نسبة الخصم تتجاوز الحد المسموح (5%)' });
   });

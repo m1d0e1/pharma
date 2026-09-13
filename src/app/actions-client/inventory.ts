@@ -556,7 +556,9 @@ export async function checkClinicalSafetyAction(patientId: string, activeIngredi
 export async function getLowStockAction(threshold?: number) {
   try {
     const user = await getLocalSession();
-    if (!user) return { success: false, error: 'غير مصرح' };
+    if (!user || (!hasUserPermissionSync(user, 'can_view_low_stock') && !hasUserPermissionSync(user, 'can_view_restock'))) {
+      return { success: false, error: 'غير مصرح' };
+    }
 
     const defaultLimit = Number(threshold) > 0 ? Number(threshold) : 10;
     const pharmacyId = user.pharmacy_id || 'local_default';
@@ -1098,11 +1100,33 @@ export async function getInventoryListAction(search?: string, drugId?: number) {
 }
 
 
-export async function getMovementsAction() { return { success: false, data: [] }; }
+export async function getMovementsAction() {
+  try {
+    const user = await getLocalSession();
+    if (!user || !hasUserPermissionSync(user, 'preview_item_movements')) {
+      return { success: false, error: 'غير مصرح', data: [] };
+    }
+    const data = await db.prepare(`
+      SELECT al.*, COALESCE(u.full_name, u.username, al.user_id, 'غير محدد') AS user_name,
+             u.username
+      FROM activity_log al
+      LEFT JOIN users u ON u.id = al.user_id
+      WHERE al.action IN (
+        'ADD_INVENTORY', 'UPDATE_INVENTORY', 'DELETE_INVENTORY', 'ADJUST_STOCK',
+        'OPENING_BALANCE', 'SALE', 'RETURN', 'PURCHASE', 'PURCHASE_RETURN'
+      )
+      ORDER BY al.created_at DESC
+      LIMIT 1000
+    `).all() as any[];
+    return { success: true, data };
+  } catch (error: any) {
+    return { success: false, error: error?.message || 'فشل تحميل حركات الأصناف', data: [] };
+  }
+}
 export async function getOpeningBalancesAction() {
   try {
     const user = await getLocalSession();
-    if (!user) return { success: false, error: 'غير مصرح' };
+    if (!user || !hasUserPermissionSync(user, 'can_view_opening_balances')) return { success: false, error: 'غير مصرح' };
     const pharmacyId = normalizePharmacyId(user.pharmacy_id);
 
     const data = await db.prepare(`
@@ -1151,7 +1175,7 @@ export async function addOpeningBalanceAction(data: {
 export async function getRestockItemsAction() {
   try {
     const user = await getLocalSession();
-    if (!user) return { success: false, error: 'غير مصرح' };
+    if (!user || !hasUserPermissionSync(user, 'can_view_restock')) return { success: false, error: 'غير مصرح' };
 
     const lowStockRes = await getLowStockAction(10);
     if (!lowStockRes.success) return { success: false, data: [] };

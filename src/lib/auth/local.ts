@@ -1,4 +1,5 @@
 // Universal Authentication Helper for local operations
+import { isOwnerOnlyStaffPermission, isStaffOwner } from './staff-policy';
 import { dbGet, dbExecute } from '@/lib/db/tauri';
 import { isTauri, isClient } from '@/lib/env';
 
@@ -268,6 +269,7 @@ export async function getLocalSession() {
 
 export async function getPermissionValue(permissionKey: string, defaultValue: any = null) {
   const user = await getLocalSession();
+  if (isOwnerOnlyStaffPermission(permissionKey)) return isStaffOwner(user);
   if (!user) return defaultValue;
 
   if (user.permissions) {
@@ -307,9 +309,12 @@ export function isOwnerOrAdmin(user: any): boolean {
 
 export function hasUserPermissionSync(user: any, permissionKey: string): boolean {
   if (!user) return false;
+  if (isOwnerOnlyStaffPermission(permissionKey)) return isStaffOwner(user);
   // Owner access is fixed; admin permissions are configurable in staff management.
   if (user.role === 'owner') return true;
-  if (!user.permissions) return false;
+  const legacyPosAccess = permissionKey === 'can_access_pos'
+    && ['admin', 'pharmacist', 'cashier'].includes(user.role);
+  if (!user.permissions) return legacyPosAccess;
   
   let perms = user.permissions;
   let attempts = 0;
@@ -324,12 +329,15 @@ export function hasUserPermissionSync(user: any, permissionKey: string): boolean
   
   if (!perms) return false;
   if (Array.isArray(perms)) {
-    return perms.includes(permissionKey);
+    return perms.includes(permissionKey) || (legacyPosAccess && !perms.includes('can_access_pos'));
   }
   if (typeof perms === 'object') {
+    if (permissionKey === 'can_access_pos' && !Object.prototype.hasOwnProperty.call(perms, permissionKey)) {
+      return legacyPosAccess;
+    }
     return perms[permissionKey] === true || perms[permissionKey] === 'true' || perms[permissionKey] == 1;
   }
-  return false;
+  return legacyPosAccess;
 }
 
 /**

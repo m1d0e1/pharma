@@ -4,14 +4,19 @@ import React, { useEffect, useState } from 'react';
 import { getLocalUsersClient } from '@/lib/settings/client';
 import { toast } from 'react-hot-toast';
 import { useRouter } from 'next/navigation';
+import { getClientSession } from '@/lib/auth/local';
+import { isStaffOwner } from '@/lib/auth/staff-policy';
 
 export default function LocalUserManagement() {
   const router = useRouter();
   const [users, setUsers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [allowed, setAllowed] = useState(false);
 
   useEffect(() => {
     const fetchUsers = async () => {
+      if (!isStaffOwner(await getClientSession())) { setLoading(false); return; }
+      setAllowed(true);
       const result = await getLocalUsersClient();
       if (result.success) {
         setUsers(result.data || []);
@@ -22,6 +27,8 @@ export default function LocalUserManagement() {
     };
     fetchUsers();
   }, []);
+
+  if (!allowed) return null;
 
   return (
     <div className="bg-white dark:bg-slate-900 p-8 rounded-[2rem] border border-slate-100 dark:border-slate-800 shadow-xl">

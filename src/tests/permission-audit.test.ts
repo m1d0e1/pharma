@@ -28,10 +28,10 @@ const TauriMenuRoutes = [
 ];
 
 describe('Permission-Route Mapping Audit', () => {
-  it('every menu route has a corresponding PAGE_PERMISSIONS entry (except / and /pos)', () => {
+  it('every menu route has a corresponding PAGE_PERMISSIONS entry (except /)', () => {
     const permittedRoutes = Object.values(PAGE_PERMISSIONS) as string[];
     for (const route of TauriMenuRoutes) {
-      if (route === '/' || route === '/pos') continue; // always accessible
+      if (route === '/') continue;
       if (route.startsWith('/stores/')) continue; // all under /stores checked via can_view_stores
       expect(permittedRoutes).toContain(route);
     }
@@ -43,7 +43,7 @@ describe('Permission-Route Mapping Audit', () => {
     expect(getRoutePermission('/stores/items/123')).toBe('can_view_stores');
     expect(getRoutePermission('/inventory/item-movements')).toBe('preview_item_movements');
     expect(getRoutePermission('/')).toBeUndefined();
-    expect(getRoutePermission('/pos')).toBeUndefined();
+    expect(getRoutePermission('/pos')).toBe('can_access_pos');
   });
 
   it('every PAGE_PERMISSIONS value maps to an existing menu route', () => {
@@ -53,7 +53,7 @@ describe('Permission-Route Mapping Audit', () => {
     }
   });
 
-  it('findUnprotectedRoutes returns zero unprotected routes (except root and /pos)', () => {
+  it('findUnprotectedRoutes returns zero unprotected routes (except root)', () => {
     const unprotected = findUnprotectedRoutes();
     if (unprotected.length > 0) console.log('UNPROTECTED ROUTES:', unprotected);
     expect(unprotected.length).toBe(0);

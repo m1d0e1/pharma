@@ -1,4 +1,5 @@
 import { Permission } from './roles';
+import { isOwnerOnlyStaffPermission, isStaffOwner } from './staff-policy';
 
 export interface User {
   id: string;
@@ -11,17 +12,18 @@ export interface User {
 
 export function hasPermission(user: User | null, permission: Permission): boolean {
   if (!user) return false;
+  if (isOwnerOnlyStaffPermission(permission)) return isStaffOwner(user);
   return user.permissions.includes(permission);
 }
 
 export function hasAnyPermission(user: User | null, permissions: Permission[]): boolean {
   if (!user) return false;
-  return permissions.some(p => user.permissions.includes(p));
+  return permissions.some(p => hasPermission(user, p));
 }
 
 export function hasAllPermissions(user: User | null, permissions: Permission[]): boolean {
   if (!user) return false;
-  return permissions.every(p => user.permissions.includes(p));
+  return permissions.every(p => hasPermission(user, p));
 }
 
 export function isOwner(user: User | null): boolean {
