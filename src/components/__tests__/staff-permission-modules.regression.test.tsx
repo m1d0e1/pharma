@@ -23,10 +23,10 @@ it('organizes every editable permission under its business module', async () => 
   await user.click(screen.getByRole('button', { name: 'تعديل' }));
   expect(screen.queryByRole('button', { name: 'خيارات أخرى' })).not.toBeInTheDocument();
 
-  for (const module of PERMISSION_MODULES) {
-    await user.click(screen.getByRole('button', { name: module.label }));
-    expect(screen.getAllByText(module.title).length).toBeGreaterThan(0);
-    for (const permission of module.permissions) {
+  for (const permModule of PERMISSION_MODULES) {
+    await user.click(screen.getByRole('button', { name: permModule.label }));
+    expect(screen.getAllByText(permModule.title).length).toBeGreaterThan(0);
+    for (const permission of permModule.permissions) {
       expect(screen.getAllByText(permission.label, { exact: false }).length).toBeGreaterThan(0);
     }
   }

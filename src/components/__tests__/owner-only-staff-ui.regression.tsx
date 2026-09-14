@@ -20,9 +20,9 @@ jest.mock('@/app/actions-client/users', () => ({
   getJobsAction: jest.fn(async () => ({ success: true, data: [] })),
 }));
 jest.mock('@/lib/settings/client', () => ({ getLocalUsersClient: jest.fn(async () => ({ success: true, data: [] })) }));
-jest.mock('@/components/admin/StaffAnalyticsClient', () => () => <div>performance content</div>);
-jest.mock('@/components/admin/StaffManagementClient', () => () => <div>management content</div>);
-jest.mock('@/components/admin/JobsManagementClient', () => () => <div>jobs content</div>);
+jest.mock('@/components/admin/StaffAnalyticsClient', () => function MockStaffAnalytics() { return <div>performance content</div>; });
+jest.mock('@/components/admin/StaffManagementClient', () => function MockStaffManagement() { return <div>management content</div>; });
+jest.mock('@/components/admin/JobsManagementClient', () => function MockJobsManagement() { return <div>jobs content</div>; });
 
 const permissions = Object.fromEntries(OWNER_ONLY_STAFF_PERMISSIONS.map(key => [key, true]));
 beforeEach(() => jest.clearAllMocks());
