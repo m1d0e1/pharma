@@ -182,6 +182,10 @@ export default function SuppliersManagementClient({
       toast.error('يرجى إدخال مبلغ دفع صحيح أكبر من الصفر');
       return;
     }
+    if (paymentMethod === 'check' && !checkNumber.trim()) {
+      toast.error('يرجى إدخال رقم الشيك');
+      return;
+    }
 
     setIsProcessingPayment(true);
     try {
@@ -625,9 +629,10 @@ export default function SuppliersManagementClient({
 
               {paymentMethod === 'check' && (
                 <div>
-                  <label className="block text-xs font-black text-slate-400 mb-1">رقم الشيك</label>
+                  <label className="block text-xs font-black text-slate-400 mb-1">رقم الشيك *</label>
                   <input
                     type="text"
+                    required
                     value={checkNumber}
                     onChange={(e) => setCheckNumber(e.target.value)}
                     placeholder="رقم الشيك البنكي..."

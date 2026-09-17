@@ -185,6 +185,7 @@ export async function getExpenseSummaryAction(month?: string) {
       SELECT COALESCE(SUM(total_amount), 0) as revenue
       FROM sales_invoices
       WHERE strftime('%Y-%m', created_at, 'localtime') = ?
+        AND (status IS NULL OR status = '' OR status IN ('completed', 'approved', 'delivered'))
     `).get(targetMonth) as any;
 
     const totalReturns = await db.prepare(`
@@ -213,7 +214,7 @@ export async function getExpenseSummaryAction(month?: string) {
       LEFT JOIN inventory i ON i.id = si.inventory_id
       LEFT JOIN master_drugs md ON md.id = si.drug_id
       WHERE strftime('%Y-%m', invoice.created_at, 'localtime') = ?
-        AND invoice.status IN ('completed', 'delivered')
+        AND (invoice.status IS NULL OR invoice.status = '' OR invoice.status IN ('completed', 'approved', 'delivered'))
         AND COALESCE(si.is_negative, 0) = 0
     `).get(targetMonth) as any;
 

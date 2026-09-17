@@ -1,7 +1,7 @@
 'use client';
 import React, { useEffect, useState } from 'react';
 import PurchasesReportsClient from '@/components/reports/PurchasesReportsClient';
-import { getClientSession } from '@/lib/auth/local';
+import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { useRouter } from 'next/navigation';
 import AccessDenied from '@/components/AccessDenied';
 
@@ -31,13 +31,13 @@ export default function PurchasesReportsPage() {
     );
   }
 
-  if (user.role !== 'owner' && user.role !== 'admin') {
+  if (!hasUserPermissionSync(user, 'rep_can_view_purchases')) {
     return <AccessDenied />;
   }
 
   return (
     <div className="container mx-auto py-8">
-      <PurchasesReportsClient userRole={user.role} />
+      <PurchasesReportsClient userRole={user.role} user={user} />
     </div>
   );
 }

@@ -527,20 +527,54 @@ export async function fetchDraftsAction() {
         WHERE si.invoice_id = ?
       `).all(draft.id) as any[];
 
+      const today = format(new Date(), 'yyyy-MM-dd');
+      const liveDrugIds = Array.from(new Set(
+        (items as any[])
+          .filter((item: any) => !item.is_negative)
+          .map((item: any) => item.drug_id)
+          .filter((drugId: any) => drugId !== null && drugId !== undefined)
+      ));
+      const liveBatches = liveDrugIds.length > 0 ? await db.prepare(`
+        SELECT id as inventory_id, drug_id, quantity, expiry_date, local_selling_price, strips_per_box
+        FROM inventory
+        WHERE drug_id IN (${liveDrugIds.map(() => '?').join(',')})
+          AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+          AND quantity > 0
+          AND (expiry_date IS NULL OR expiry_date >= ?)
+        ORDER BY CASE WHEN expiry_date IS NULL THEN 1 ELSE 0 END, expiry_date ASC, created_at ASC
+      `).all(...liveDrugIds, pharmacyId, pharmacyId, today) as any[] : [];
+
       return {
         ...draft,
-        items: (items as any[]).map((item: any) => ({
-          ...item,
-          trade_name: item.trade_name_en || item.trade_name,
-          units: {
-            large: item.large_unit || 'علبة',
-            medium: item.medium_unit,
-            small: item.small_unit,
-            large_to_medium: item.large_to_medium || 1,
-            medium_to_small: item.medium_to_small || 1
-          },
-          basePrice: item.official_price
-        }))
+        items: (items as any[]).map((item: any) => {
+          const batches = item.is_negative
+            ? []
+            : liveBatches
+                .filter((batch: any) => String(batch.drug_id) === String(item.drug_id))
+                .map((batch: any) => ({
+                  inventory_id: batch.inventory_id,
+                  quantity: batch.quantity,
+                  expiry_date: batch.expiry_date ? normalizeDateToYMD(batch.expiry_date) : null,
+                  unit_price: batch.local_selling_price || item.official_price,
+                  strips_per_box: Number(batch.strips_per_box) > 0
+                    ? Number(batch.strips_per_box)
+                    : (item.large_to_medium || 1),
+                }));
+          return {
+            ...item,
+            trade_name: item.trade_name_en || item.trade_name,
+            total_stock: batches.reduce((sum: number, batch: any) => sum + Number(batch.quantity || 0), 0),
+            batches,
+            units: {
+              large: item.large_unit || 'علبة',
+              medium: item.medium_unit,
+              small: item.small_unit,
+              large_to_medium: item.large_to_medium || 1,
+              medium_to_small: item.medium_to_small || 1
+            },
+            basePrice: item.official_price
+          };
+        })
       };
     }));
 
@@ -662,6 +696,9 @@ export async function processCheckoutAction(data: any) {
     let pointsEarned = 0;
 
     await dbTransaction(async () => {
+      try {
+        await db.exec('ALTER TABLE sales_invoices ADD COLUMN points_earned INTEGER DEFAULT 0');
+      } catch {}
       const today = format(new Date(), 'yyyy-MM-dd');
       let totalCogs = 0;
 
@@ -893,6 +930,7 @@ export async function processCheckoutAction(data: any) {
         if (pointsEarned > 0) {
           await db.prepare('UPDATE patients SET points_balance = points_balance + ? WHERE id = ?').run(pointsEarned, validatedData.patient_id);
         }
+        await db.prepare('UPDATE sales_invoices SET points_earned = ? WHERE id = ?').run(pointsEarned, saleId);
       }
     });
 

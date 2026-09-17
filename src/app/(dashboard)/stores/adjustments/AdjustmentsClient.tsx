@@ -3,8 +3,9 @@
 import React, { useState } from 'react'
 import { Activity, Search, RefreshCcw, AlertTriangle, Package, CheckCircle2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { dbSelect, dbExecute, dbTransaction } from '@/lib/db/tauri'
+import { dbSelect } from '@/lib/db/tauri'
 import { getClientSession } from '@/lib/auth/local'
+import { createStockAdjustmentAction } from '@/app/actions-client/master-drugs'
 import { toast } from 'react-hot-toast'
 
 export default function AdjustmentsClient({ reasons }: { reasons: any[] }) {
@@ -20,13 +21,17 @@ export default function AdjustmentsClient({ reasons }: { reasons: any[] }) {
     if (q.length > 2) {
       try {
         const searchPattern = `%${q}%`;
+        const user = await getClientSession();
+        const pharmacyId = user?.pharmacy_id || 'local_default';
+        const params: any[] = [searchPattern, searchPattern, searchPattern, pharmacyId, pharmacyId];
         const data = await dbSelect(`
           SELECT i.*, m.trade_name, m.trade_name_en, m.generic_name, m.barcode
           FROM inventory i
           JOIN master_drugs m ON i.drug_id = m.id
           WHERE (m.trade_name LIKE ? OR m.trade_name_en LIKE ? OR m.barcode LIKE ?)
+            AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
           LIMIT 20
-        `, [searchPattern, searchPattern, searchPattern]);
+        `, params);
         setResults(data);
       } catch (err) {
         console.error('Failed to search inventory:', err);
@@ -51,21 +56,12 @@ export default function AdjustmentsClient({ reasons }: { reasons: any[] }) {
 
     setIsSubmitting(true)
     try {
-      const user = await getClientSession();
-      const userId = user?.id || 'system';
-
-      await dbTransaction(async () => {
-        // 1. Record stock adjustment
-        await dbExecute(`
-          INSERT INTO stock_adjustments (inventory_id, reason_id, old_quantity, new_quantity, user_id)
-          VALUES (?, ?, ?, ?, ?)
-        `, [selectedItem.id, selectedReason, selectedItem.quantity, newQty, userId]);
-
-        // 2. Update inventory quantity
-        await dbExecute(`
-          UPDATE inventory SET quantity = ? WHERE id = ?
-        `, [newQty, selectedItem.id]);
+      const result = await createStockAdjustmentAction(String(selectedItem.id), {
+        reason_id: selectedReason,
+        old_quantity: Number(selectedItem.quantity),
+        new_quantity: newQty,
       });
+      if (!result.success) throw new Error(result.error || 'فشل إجراء التسوية');
 
       toast.success('تمت تسوية الكمية بنجاح')
       setSelectedItem(null)
@@ -162,9 +158,10 @@ export default function AdjustmentsClient({ reasons }: { reasons: any[] }) {
                 <label className="block text-xs font-black text-slate-400 uppercase tracking-widest mb-3 mr-2">الكمية الجديدة</label>
                 <input 
                   type="number"
+                  step="any"
                   className="w-full p-4 bg-slate-50 dark:bg-slate-800 border-none rounded-2xl font-black text-2xl text-center outline-none ring-2 ring-transparent focus:ring-primary-500/20 transition-all"
                   value={newQty}
-                  onChange={(e) => setNewQty(parseInt(e.target.value) || 0)}
+                  onChange={(e) => setNewQty(parseFloat(e.target.value) || 0)}
                 />
               </div>
 

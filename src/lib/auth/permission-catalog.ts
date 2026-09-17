@@ -44,6 +44,7 @@ export const PERMISSION_MODULES: readonly PermissionModule[] = [
     title: 'المبيعات وما بعد البيع',
     description: 'الفواتير والمرتجعات والاستبدال والتوصيل والتسوية',
     permissions: [
+      { key: 'can_view_sales', label: 'عرض شاشة المبيعات والتحصيل' },
       { key: 'can_view_receipts', label: 'عرض سجل فواتير البيع' },
       { key: 'can_view_returns', label: 'عرض وإجراء مرتجعات البيع' },
       { key: 'can_make_exchanges', label: 'إجراء الاستبدال ضمن المرتجع' },

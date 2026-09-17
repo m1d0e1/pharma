@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import CogsAdjustmentClient from '@/components/sales/CogsAdjustmentClient';
-import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
+import { getClientSession } from '@/lib/auth/local';
 import AccessDenied from '@/components/AccessDenied';
 
 export default function CogsAdjustmentPage() {

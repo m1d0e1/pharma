@@ -1,64 +1,52 @@
-import { dbExecute, dbSelect } from '@/lib/db/tauri';
-import { getLocalSession } from '@/lib/auth/local';
+import { dbExecute, dbSelect, dbTransaction } from '@/lib/db/tauri';
+import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { isStaffOwner } from '@/lib/auth/staff-policy';
-import { getSupabaseBrowserClient } from '@/lib/supabase';
+
+const LOCAL_PHARMACY_FIELDS: Record<string, string> = {
+  name: 'pharmacy_name',
+  name_en: 'pharmacy_name_en',
+  phone: 'pharmacy_phone',
+  address: 'pharmacy_address',
+  commercial_registry: 'pharmacy_commercial_registry',
+  tax_card: 'pharmacy_tax_card',
+  owner_name: 'pharmacy_owner_name',
+  owner_address: 'pharmacy_owner_address',
+  owner_phone: 'pharmacy_owner_phone',
+  owner_mobile: 'pharmacy_owner_mobile',
+  manager_name: 'pharmacy_manager_name',
+  manager_address: 'pharmacy_manager_address',
+  manager_phone: 'pharmacy_manager_phone',
+  manager_mobile: 'pharmacy_manager_mobile',
+};
+
+export async function getLocalPharmacySettingsClient() {
+  const rows = await dbSelect(
+    `SELECT key, value FROM config WHERE key IN (${Object.keys(LOCAL_PHARMACY_FIELDS).map(() => '?').join(',')})`,
+    Object.values(LOCAL_PHARMACY_FIELDS)
+  );
+  const byKey = Object.fromEntries((rows || []).map((row: any) => [row.key, row.value]));
+  return Object.fromEntries(
+    Object.entries(LOCAL_PHARMACY_FIELDS)
+      .filter(([, key]) => Object.prototype.hasOwnProperty.call(byKey, key))
+      .map(([field, key]) => [field, byKey[key] ?? ''])
+  );
+}
 
 export async function updatePharmacyClient(formData: any) {
   try {
-    // 1. Update Cloud (Supabase) if online
-    const supabase = getSupabaseBrowserClient();
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
-    
-    if (user && !authError) {
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('pharmacy_id')
-        .eq('id', user.id)
-        .single();
-
-      if (profile?.pharmacy_id) {
-        const { error: updateError } = await supabase
-          .from('pharmacies')
-          .update({
-            name: formData.name,
-            name_en: formData.name_en,
-            phone: formData.phone,
-            address: formData.address,
-            commercial_registry: formData.commercial_registry,
-            tax_card: formData.tax_card,
-            owner_name: formData.owner_name,
-            owner_address: formData.owner_address,
-            owner_phone: formData.owner_phone,
-            owner_mobile: formData.owner_mobile,
-            manager_name: formData.manager_name,
-            manager_address: formData.manager_address,
-            manager_phone: formData.manager_phone,
-            manager_mobile: formData.manager_mobile,
-          })
-          .eq('id', profile.pharmacy_id);
-
-        if (updateError) {
-          console.error('Client cloud update pharmacy error:', updateError);
-        }
-      }
+    const user = await getLocalSession();
+    if (!user || !hasUserPermissionSync(user, 'can_view_settings')) {
+      return { success: false, error: 'غير مصرح' };
     }
-
-    // 2. Update Local Enforcer (SQLite)
-    await dbExecute(`
-      INSERT INTO config (key, value) VALUES (?, ?)
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value
-    `, ['pharmacy_name', formData.name]);
-
-    await dbExecute(`
-      INSERT INTO config (key, value) VALUES (?, ?)
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value
-    `, ['pharmacy_phone', formData.phone]);
-
-    await dbExecute(`
-      INSERT INTO config (key, value) VALUES (?, ?)
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value
-    `, ['pharmacy_address', formData.address]);
-
+    // Pharmacy identity is local-first; cloud sync is read-only public catalog data.
+    await dbTransaction(async () => {
+      for (const [field, key] of Object.entries(LOCAL_PHARMACY_FIELDS)) {
+        await dbExecute(`
+          INSERT INTO config (key, value) VALUES (?, ?)
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        `, [key, formData[field] == null ? '' : String(formData[field])]);
+      }
+    });
     return { success: true };
   } catch (error) {
     console.error('Unexpected error in updatePharmacyClient:', error);
@@ -68,6 +56,9 @@ export async function updatePharmacyClient(formData: any) {
 
 export async function runDatabaseMaintenanceClient() {
   try {
+    if (!isStaffOwner(await getLocalSession())) {
+      return { success: false, error: 'غير مصرح - للمالك فقط' };
+    }
     await dbExecute('VACUUM');
     await dbExecute('ANALYZE');
     return { success: true, message: 'تم تحسين وضغط قاعدة البيانات وتحديث الفهارس بنجاح!' };

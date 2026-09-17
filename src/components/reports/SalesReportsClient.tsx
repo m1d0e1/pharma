@@ -14,10 +14,12 @@ import { getStaffAction } from '@/app/actions-client/users';
 import { getPatientsAction } from '@/app/actions-client/patients';
 import { format } from 'date-fns';
 import dynamic from 'next/dynamic';
+import { toast } from 'react-hot-toast';
+import { hasUserPermissionSync } from '@/lib/auth/local';
 
 const ReceiptDetailsModal = dynamic(() => import('@/components/receipts/ReceiptDetailsModal'), { ssr: false });
 
-export default function SalesReportsClient({ userRole }: { userRole?: string }) {
+export default function SalesReportsClient({ userRole, user }: { userRole?: string; user?: any }) {
   const [invoices, setInvoices] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedInvoice, setSelectedInvoice] = useState<string | null>(null);
@@ -59,6 +61,7 @@ export default function SalesReportsClient({ userRole }: { userRole?: string }) 
       patientId: filters.patientId === 'all' ? undefined : filters.patientId,
     });
     if (res.success) setInvoices(res.data || []);
+    else toast.error(res.error || 'فشل تحميل تقرير المبيعات');
     setLoading(false);
   };
 
@@ -67,6 +70,7 @@ export default function SalesReportsClient({ userRole }: { userRole?: string }) 
     setLoadingItems(true);
     const res = await getInvoiceDetailsAction(invoiceId);
     if (res.success) setInvoiceItems(res.data || []);
+    else toast.error(res.error || 'فشل تحميل تفاصيل الفاتورة');
     setLoadingItems(false);
   };
 
@@ -82,6 +86,7 @@ export default function SalesReportsClient({ userRole }: { userRole?: string }) 
   const creditSalesTotal = invoices
     .filter(i => i.payment_method === 'credit')
     .reduce((sum, inv) => sum + (Number(inv.total_amount || 0) - Number(inv.discount_amount || 0)), 0);
+  const reportUser = user || (userRole ? { role: userRole } : null);
 
   return (
     <div className="space-y-8 pb-20" dir="rtl">
@@ -96,12 +101,16 @@ export default function SalesReportsClient({ userRole }: { userRole?: string }) 
             <button 
               type="button"
               onClick={() => window.print()}
+              aria-label="طباعة تقرير المبيعات"
+              title="طباعة تقرير المبيعات"
               className="p-5 bg-slate-50 dark:bg-slate-800 text-slate-500 rounded-2xl border border-slate-100 dark:border-slate-700 hover:bg-slate-100 transition-all"
             >
               <Printer className="w-6 h-6" />
             </button>
             <button 
               type="button"
+              aria-label="تصدير تقرير المبيعات إلى CSV"
+              title="تصدير تقرير المبيعات إلى CSV"
               onClick={() => {
                 const headers = ['رقم الفاتورة', 'طريقة الدفع', 'التاريخ', 'العميل', 'الموظف', 'قيمة الفاتورة', 'الخصم', 'الصافي', 'الحالة'];
                 const rows = invoices.map(inv => [
@@ -216,7 +225,7 @@ export default function SalesReportsClient({ userRole }: { userRole?: string }) 
 
       {/* Reports Unified Navigation Tab Bar */}
       <div className="flex border-b border-slate-200 dark:border-slate-800 gap-6 text-sm">
-        {userRole === 'owner' && (
+        {hasUserPermissionSync(reportUser, 'rep_can_view_sales') && (
           <Link 
             href="/reports" 
             className="pb-4 border-b-2 border-transparent font-bold text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors flex items-center gap-2"
@@ -224,24 +233,30 @@ export default function SalesReportsClient({ userRole }: { userRole?: string }) 
             <span>📊</span> التحليلات والمخططات
           </Link>
         )}
-        <Link 
-          href="/reports/sales" 
-          className="pb-4 border-b-2 border-blue-600 font-black text-blue-600 dark:text-blue-400 flex items-center gap-2"
-        >
-          <span>🧾</span> تقرير فواتير المبيعات
-        </Link>
-        <Link 
-          href="/reports/purchases" 
-          className="pb-4 border-b-2 border-transparent font-bold text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors flex items-center gap-2"
-        >
-          <span>🛒</span> تقارير المشتريات
-        </Link>
-        <Link 
-          href="/reports/trial-balance" 
-          className="pb-4 border-b-2 border-transparent font-bold text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors flex items-center gap-2"
-        >
-          <span>⚖️</span> ميزان المراجعة
-        </Link>
+        {hasUserPermissionSync(reportUser, 'rep_can_view_sales') && (
+          <Link
+            href="/reports/sales"
+            className="pb-4 border-b-2 border-blue-600 font-black text-blue-600 dark:text-blue-400 flex items-center gap-2"
+          >
+            <span>🧾</span> تقرير فواتير المبيعات
+          </Link>
+        )}
+        {hasUserPermissionSync(reportUser, 'rep_can_view_purchases') && (
+          <Link
+            href="/reports/purchases"
+            className="pb-4 border-b-2 border-transparent font-bold text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors flex items-center gap-2"
+          >
+            <span>🛒</span> تقارير المشتريات
+          </Link>
+        )}
+        {hasUserPermissionSync(reportUser, 'acc_can_view_reports') && (
+          <Link
+            href="/reports/trial-balance"
+            className="pb-4 border-b-2 border-transparent font-bold text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors flex items-center gap-2"
+          >
+            <span>⚖️</span> ميزان المراجعة
+          </Link>
+        )}
       </div>
 
       {/* Sales Summary KPI Cards */}

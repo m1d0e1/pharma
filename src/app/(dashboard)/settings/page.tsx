@@ -6,15 +6,15 @@ import PharmacySettingsForm from '@/components/settings/PharmacySettingsForm';
 import SyncSettings from '@/components/settings/SyncSettings';
 import DbMaintenance from '@/components/settings/DbMaintenance';
 import LocalUserManagement from '@/components/settings/LocalUserManagement';
-import { getSupabaseBrowserClient } from '@/lib/supabase';
 import AccessDenied from '@/components/AccessDenied';
 import { useRouter } from 'next/navigation';
+import { getLocalPharmacySettingsClient } from '@/lib/settings/client';
 
 export default function SettingsPage() {
   const router = useRouter();
   const [user, setUser] = useState<any>(null);
   const [allowed, setAllowed] = useState(false);
-  const [cloudProfile, setCloudProfile] = useState<any>(null);
+  const [localPharmacy, setLocalPharmacy] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -31,19 +31,7 @@ export default function SettingsPage() {
 
         if (isAllowed) {
           setAllowed(true);
-          const supabase = getSupabaseBrowserClient();
-          if (supabase) {
-            const { data: authData } = await supabase.auth.getUser();
-
-            if (authData?.user) {
-              const { data } = await supabase
-                .from('profiles')
-                .select('*, pharmacies(*)')
-                .eq('id', authData.user.id)
-                .single();
-              setCloudProfile(data);
-            }
-          }
+          setLocalPharmacy(await getLocalPharmacySettingsClient());
         }
       } catch (err) {
         console.error('Failed to load settings data:', err);
@@ -66,6 +54,9 @@ export default function SettingsPage() {
     return <AccessDenied />;
   }
 
+  const pharmacySettings = localPharmacy || {};
+  const isOwner = user.role === 'owner';
+
   return (
     <div className="max-w-6xl mx-auto space-y-12 p-4 animate-in fade-in slide-in-from-bottom-6 duration-700" dir="rtl">
       {/* Header Section */}
@@ -73,39 +64,34 @@ export default function SettingsPage() {
         <div>
           <div className="flex items-center gap-3 mb-2 text-blue-600 dark:text-blue-400 font-black text-xs uppercase tracking-widest">
             <span className="w-8 h-[2px] bg-blue-500"></span>
-            Cloud Admin & Local Enforcer
+            Local Enforcer
           </div>
-          <h1 className="text-4xl md:text-5xl font-black text-slate-900 dark:text-white tracking-tight">إعدادات النظام الهجين</h1>
-          <p className="text-slate-500 dark:text-slate-400 mt-3 text-lg">تحكم في هوية صيدليتك، مزامنة السحابة، وإدارة المستخدمين المحليين.</p>
+          <h1 className="text-4xl md:text-5xl font-black text-slate-900 dark:text-white tracking-tight">إعدادات النظام المحلي</h1>
+          <p className="text-slate-500 dark:text-slate-400 mt-3 text-lg">تحكم في هوية صيدليتك، تحديث البيانات المرجعية العامة، وإدارة المستخدمين المحليين.</p>
         </div>
       </div>
 
       {/* Main Content */}
-      <PharmacySettingsForm pharmacy={(cloudProfile as any)?.pharmacies} />
+      <PharmacySettingsForm pharmacy={pharmacySettings} />
       
       {/* Enforcer Control Center */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+      {isOwner && <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         <SyncSettings />
         <DbMaintenance />
         <div className="lg:col-span-2">
           <LocalUserManagement />
         </div>
-      </div>
+      </div>}
 
       {/* Footer Info Card */}
       <div className="bg-slate-900 p-10 rounded-[3rem] shadow-2xl relative overflow-hidden">
          <div className="absolute top-0 right-0 w-64 h-64 bg-blue-500/10 blur-[100px] rounded-full"></div>
          <div className="relative z-10 flex flex-col md:flex-row items-center justify-between gap-8">
             <div className="max-w-xl">
-               <h4 className="text-2xl font-bold text-white mb-4">باقة الاشتراك (The Brain)</h4>
+               <h4 className="text-2xl font-bold text-white mb-4">الوضع المحلي أولاً</h4>
                <p className="text-slate-400 leading-relaxed">
-                 اشتراكك الحالي يتيح لك مزامنة عدد غير محدود من الأدوية والحصول على التحديثات الأمنية. في حالة انتهاء الاشتراك، سيظل &quot;The Local Enforcer&quot; يعمل محلياً ولكن لن تتمكن من المزامنة.
+                 المصادقة وإدارة المستخدمين وبيانات الصيدلية محلية. الاتصال بالسحابة اختياري لتحديث قائمة الأدوية والتفاعلات العامة فقط ولا يتحكم في تسجيل الدخول.
                </p>
-            </div>
-            <div className="bg-white/5 border border-white/10 p-8 rounded-3xl text-center min-w-[240px]">
-               <p className="text-xs text-slate-500 font-bold mb-2 uppercase tracking-widest">تاريخ التجديد القادم</p>
-               <p className="text-2xl font-black text-white">28 مايو 2026</p>
-               <button className="mt-6 text-sm font-black text-blue-400 hover:underline">إدارة الفواتير</button>
             </div>
          </div>
       </div>

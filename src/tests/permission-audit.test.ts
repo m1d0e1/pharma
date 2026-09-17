@@ -42,6 +42,8 @@ describe('Permission-Route Mapping Audit', () => {
     expect(getRoutePermission('/stores/shortages')).toBe('can_view_restock');
     expect(getRoutePermission('/stores/items/123')).toBe('can_view_stores');
     expect(getRoutePermission('/inventory/item-movements')).toBe('preview_item_movements');
+    expect(getRoutePermission('/sales')).toBe('can_view_sales');
+    expect(getRoutePermission('/sales/delivery')).toBe('can_view_delivery');
     expect(getRoutePermission('/')).toBeUndefined();
     expect(getRoutePermission('/pos')).toBe('can_access_pos');
   });

@@ -129,6 +129,8 @@ describe('shift receipts ui wiring', () => {
 
     const reportHeaderBtn = await screen.findByRole('button', { name: /عرض فواتير الوردية/ });
     expect(reportHeaderBtn).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'العودة' })).toBeInTheDocument();
+    expect(screen.getAllByRole('button').filter(button => !button.textContent?.trim() && !button.getAttribute('aria-label'))).toHaveLength(0);
 
     fireEvent.click(reportHeaderBtn);
 

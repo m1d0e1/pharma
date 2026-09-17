@@ -5,7 +5,8 @@ import { useRouter } from 'next/navigation'
 import { getClientSession } from '@/lib/auth/local'
 import { AlertCircle } from 'lucide-react'
 import BilingualManagementClient from '@/components/inventory/BilingualManagementClient'
-import { dbSelect, dbExecute } from '@/lib/db/tauri'
+import { dbSelect } from '@/lib/db/tauri'
+import { addAdjustmentReasonAction, updateAdjustmentReasonAction, deleteAdjustmentReasonAction } from '@/app/actions-client/master-drugs'
 
 export default function AdjustmentReasonsPage() {
   const router = useRouter();
@@ -35,35 +36,9 @@ export default function AdjustmentReasonsPage() {
     checkAuthAndLoad();
   }, [router]);
 
-  const handleAdd = async (data: { name_ar: string, name_en?: string }) => {
-    try {
-      const result = await dbExecute('INSERT INTO adjustment_reasons (name_ar, name_en) VALUES (?, ?)', [data.name_ar, data.name_en || null]);
-      await loadData();
-      return { success: true, id: result.lastInsertId };
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  }
-
-  const handleUpdate = async (id: number, data: { name_ar: string, name_en?: string }) => {
-    try {
-      await dbExecute('UPDATE adjustment_reasons SET name_ar = ?, name_en = ? WHERE id = ?', [data.name_ar, data.name_en || null, id]);
-      await loadData();
-      return { success: true };
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  }
-
-  const handleDelete = async (id: number) => {
-    try {
-      await dbExecute('DELETE FROM adjustment_reasons WHERE id = ?', [id]);
-      await loadData();
-      return { success: true };
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  }
+  const handleAdd = addAdjustmentReasonAction;
+  const handleUpdate = updateAdjustmentReasonAction;
+  const handleDelete = deleteAdjustmentReasonAction;
 
   if (loading) {
     return (

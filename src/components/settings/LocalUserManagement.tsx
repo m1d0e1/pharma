@@ -69,7 +69,7 @@ export default function LocalUserManagement() {
                 <span className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase ${
                   user.role === 'owner' ? 'bg-indigo-100 text-indigo-600' : 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300'
                 }`}>
-                  {user.role === 'owner' ? 'مالك' : 'صيدلي'}
+                  {user.role === 'owner' ? 'مالك' : user.role === 'admin' ? 'مدير النظام' : user.role === 'manager' ? 'مدير' : user.role === 'cashier' ? 'كاشير' : 'صيدلي'}
                 </span>
                 <button 
                   onClick={() => router.push(`/staff/manage?edit=${user.id}`)}

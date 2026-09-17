@@ -1,37 +1,10 @@
 import { getSupabaseBrowserClient } from '@/lib/supabase';
-import { dbExecute, dbTransaction, dbGet } from '@/lib/db/tauri';
+import { dbExecute, dbGet } from '@/lib/db/tauri';
 import { syncMasterDrugsToLocal } from '@/app/actions-client/sync';
 
 export async function syncFromCloudClient() {
   try {
     const supabase = getSupabaseBrowserClient();
-
-    // 1. Check Cloud User (Optional for public data sync)
-    console.log('Checking cloud auth...');
-    const { data, error: authError } = await supabase.auth.getUser();
-    const user = data?.user;
-    const isLoggedIn = !!user && !authError;
-
-    let profile: any = null;
-    if (isLoggedIn && user) {
-      const { data: p } = await supabase
-        .from('profiles')
-        .select('*, pharmacies(*)')
-        .eq('id', user.id)
-        .single();
-      profile = p;
-
-      if (profile?.pharmacy_id) {
-        // Save Pharmacy Config Locally
-        await dbExecute(`
-          INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)
-        `, ['pharmacy_id', profile.pharmacy_id]);
-        
-        await dbExecute(`
-          INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)
-        `, ['pharmacy_name', profile.pharmacies?.name || '']);
-      }
-    }
 
     // --- INCREMENTAL SYNC LOGIC ---
     
@@ -146,61 +119,7 @@ export async function syncFromCloudClient() {
     // Update last sync time for interactions
     await dbExecute('INSERT OR REPLACE INTO sync_metadata (table_name, last_synced_at) VALUES (?, ?)', ['cloud_drug_interactions', nowSyncTime]);
 
-    // 4. Fetch all Pharmacists for this Pharmacy (only if logged in)
-    let staffMembers: any[] | null = null;
     const syncedUsernames: string[] = [];
-    
-    if (profile?.pharmacy_id) {
-      const { data: staff } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('pharmacy_id', profile.pharmacy_id);
-      staffMembers = staff;
-
-      if (staffMembers) {
-        await dbTransaction(async () => {
-          const activeIds: string[] = [];
-
-          for (const member of staffMembers) {
-            let username = member.email || member.username;
-            
-            if (member.id === user.id) {
-              username = user.email || username;
-            }
-
-            if (!username) {
-              username = `user_${member.id.substring(0, 8)}`;
-            }
-
-            syncedUsernames.push(username);
-            activeIds.push(member.id);
-
-            await dbExecute(`
-              INSERT INTO users (id, username, role, full_name, pharmacy_id) 
-              VALUES (?, ?, ?, ?, ?)
-              ON CONFLICT(id) DO UPDATE SET
-                username = excluded.username,
-                role = excluded.role,
-                full_name = excluded.full_name,
-                pharmacy_id = excluded.pharmacy_id
-            `, [
-              member.id,
-              username,
-              member.role || 'pharmacist',
-              member.full_name || 'Pharmacist',
-              member.pharmacy_id
-            ]);
-          }
-
-          // Optional: deactivate users that are no longer in the cloud rather than deleting to preserve logs
-          if (activeIds.length > 0) {
-            const placeholders = activeIds.map(() => '?').join(',');
-            await dbExecute(`UPDATE users SET is_active = 0 WHERE id NOT IN (${placeholders})`, activeIds);
-            await dbExecute(`UPDATE users SET is_active = 1 WHERE id IN (${placeholders})`, activeIds);
-          }
-        });
-      }
-    }
 
     console.log(`Sync completed successfully on client. Synced ${allDrugs.length} drugs.`);
 

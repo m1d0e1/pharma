@@ -3,6 +3,7 @@ import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { isTauri } from '@/lib/env';
 
 const SETTLEMENT_PERMISSION = 'can_view_settlement';
+const SETTLEMENT_MUTATION_PERMISSION = 'can_manage_inventory';
 
 async function getSettlementContext() {
   const user = await getLocalSession();
@@ -57,6 +58,7 @@ export async function getNegativeStockInvoicesAction() {
         LEFT JOIN approved_returns ar
           ON ar.sale_item_id = si.id AND ar.invoice_id = si.invoice_id
         WHERE si.is_negative = 1
+          AND (s.status IS NULL OR s.status = '' OR LOWER(s.status) IN ('completed', 'approved', 'delivered'))
           AND (s.pharmacy_id = ? OR (s.pharmacy_id IS NULL AND ? = 'local_default'))
         ORDER BY s.created_at DESC
       `,
@@ -127,6 +129,7 @@ export async function getUnsettledSalesAction() {
         LEFT JOIN approved_returns ar
           ON ar.sale_item_id = si.id AND ar.invoice_id = si.invoice_id
         WHERE si.is_negative = 1
+          AND (s.status IS NULL OR s.status = '' OR LOWER(s.status) IN ('completed', 'approved', 'delivered'))
           AND (s.pharmacy_id = ? OR (s.pharmacy_id IS NULL AND ? = 'local_default'))
         ORDER BY s.created_at DESC
       `,
@@ -185,6 +188,9 @@ export async function settleSaleItemAction(itemId: number, inventoryId: string) 
   try {
     const context = await getSettlementContext();
     if (!context) return { success: false, error: 'Unauthorized' };
+    if (!hasUserPermissionSync(context.user, SETTLEMENT_MUTATION_PERMISSION)) {
+      return { success: false, error: 'Unauthorized: inventory management permission required' };
+    }
     if (!isTauri) {
       return { success: false, error: 'Settlement is available in the desktop app only.' };
     }

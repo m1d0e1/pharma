@@ -13,6 +13,7 @@ import { getPurchasesReportsAction, getPurchaseInvoiceDetailsAction, getSupplier
 import { getStaffAction } from '@/app/actions-client/users';
 import { format } from 'date-fns';
 import { toast } from 'react-hot-toast';
+import { hasUserPermissionSync } from '@/lib/auth/local';
 
 function optionalNumber(...values: unknown[]): number | undefined {
   for (const value of values) {
@@ -74,7 +75,7 @@ export function purchaseReportLineAmounts(item: Record<string, unknown>) {
   return { gross, discount: Math.max(0, gross - net), net };
 }
 
-export default function PurchasesReportsClient({ userRole }: { userRole?: string }) {
+export default function PurchasesReportsClient({ userRole, user }: { userRole?: string; user?: any }) {
   const [invoices, setInvoices] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedInvoice, setSelectedInvoice] = useState<string | null>(null);
@@ -117,6 +118,7 @@ export default function PurchasesReportsClient({ userRole }: { userRole?: string
       supplierId: filters.supplierId === 'all' ? undefined : filters.supplierId,
     });
     if (res.success) setInvoices(res.data || []);
+    else toast.error(res.error || 'فشل تحميل تقرير المشتريات');
     setLoading(false);
   };
 
@@ -125,6 +127,7 @@ export default function PurchasesReportsClient({ userRole }: { userRole?: string
     setLoadingItems(true);
     const res = await getPurchaseInvoiceDetailsAction(invoiceId);
     if (res.success) setInvoiceItems(res.data || []);
+    else toast.error(res.error || 'فشل تحميل تفاصيل فاتورة الشراء');
     setLoadingItems(false);
   };
 
@@ -169,6 +172,7 @@ export default function PurchasesReportsClient({ userRole }: { userRole?: string
   const creditPurchasesTotal = invoices
     .filter(i => i.payment_method === 'credit')
     .reduce((sum, inv) => sum + Number(inv.total_amount || 0), 0);
+  const reportUser = user || (userRole ? { role: userRole } : null);
 
   return (
     <div className="space-y-8 pb-20" dir="rtl">
@@ -312,7 +316,7 @@ export default function PurchasesReportsClient({ userRole }: { userRole?: string
 
       {/* Reports Unified Navigation Tab Bar */}
       <div className="flex border-b border-slate-200 dark:border-slate-800 gap-6 text-sm">
-        {userRole === 'owner' && (
+        {hasUserPermissionSync(reportUser, 'rep_can_view_sales') && (
           <Link 
             href="/reports" 
             className="pb-4 border-b-2 border-transparent font-bold text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors flex items-center gap-2"
@@ -320,24 +324,30 @@ export default function PurchasesReportsClient({ userRole }: { userRole?: string
             <span>📊</span> التحليلات والمخططات
           </Link>
         )}
-        <Link 
-          href="/reports/sales" 
-          className="pb-4 border-b-2 border-transparent font-bold text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors flex items-center gap-2"
-        >
-          <span>🧾</span> تقرير فواتير المبيعات
-        </Link>
-        <Link 
-          href="/reports/purchases" 
-          className="pb-4 border-b-2 border-blue-600 font-black text-blue-600 dark:text-blue-400 flex items-center gap-2"
-        >
-          <span>🛒</span> تقارير المشتريات
-        </Link>
-        <Link 
-          href="/reports/trial-balance" 
-          className="pb-4 border-b-2 border-transparent font-bold text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors flex items-center gap-2"
-        >
-          <span>⚖️</span> ميزان المراجعة
-        </Link>
+        {hasUserPermissionSync(reportUser, 'rep_can_view_sales') && (
+          <Link
+            href="/reports/sales"
+            className="pb-4 border-b-2 border-transparent font-bold text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors flex items-center gap-2"
+          >
+            <span>🧾</span> تقرير فواتير المبيعات
+          </Link>
+        )}
+        {hasUserPermissionSync(reportUser, 'rep_can_view_purchases') && (
+          <Link
+            href="/reports/purchases"
+            className="pb-4 border-b-2 border-blue-600 font-black text-blue-600 dark:text-blue-400 flex items-center gap-2"
+          >
+            <span>🛒</span> تقارير المشتريات
+          </Link>
+        )}
+        {hasUserPermissionSync(reportUser, 'acc_can_view_reports') && (
+          <Link
+            href="/reports/trial-balance"
+            className="pb-4 border-b-2 border-transparent font-bold text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors flex items-center gap-2"
+          >
+            <span>⚖️</span> ميزان المراجعة
+          </Link>
+        )}
       </div>
 
       {/* Purchases Summary KPI Cards */}

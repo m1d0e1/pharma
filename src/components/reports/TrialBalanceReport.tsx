@@ -8,6 +8,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import TableScrollContainer from '@/components/ui/TableScrollContainer';
 import { Printer, RefreshCw, Download, Calendar, Search, CheckCircle2, AlertCircle, TrendingUp, TrendingDown, Minus } from 'lucide-react';
 import { toast } from 'react-hot-toast';
+import { hasUserPermissionSync } from '@/lib/auth/local';
 
 // ponytail: label map — extend as chart of accounts grows
 const ACCOUNT_TYPE_LABEL: Record<string, string> = {
@@ -15,6 +16,7 @@ const ACCOUNT_TYPE_LABEL: Record<string, string> = {
   liability: 'التزامات',
   equity:    'حقوق الملكية',
   income:    'إيرادات',
+  revenue:   'إيرادات',
   expense:   'مصروفات',
 };
 
@@ -33,7 +35,7 @@ function balanceSummary(debit: number, credit: number, type: string) {
   return { text: `${amount} ج.م`, color: 'text-rose-600', Icon: TrendingDown };
 }
 
-export default function TrialBalanceReport({ userRole }: { userRole?: string }) {
+export default function TrialBalanceReport({ userRole, user }: { userRole?: string; user?: any }) {
   const [data, setData] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [startDate, setStartDate] = useState('');
@@ -65,8 +67,10 @@ export default function TrialBalanceReport({ userRole }: { userRole?: string }) 
     setStartDate(ns); setEndDate(ne); fetchData(ns, ne);
   };
 
+  const allAccounts = useMemo(() => data.filter(r => r.is_group === 0), [data]);
+
   const accounts = useMemo(() => {
-    const leaf = data.filter(r => r.is_group === 0);
+    const leaf = allAccounts;
     const q = searchTerm.trim().toLowerCase();
     if (!q) return leaf;
     return leaf.filter(r =>
@@ -74,18 +78,19 @@ export default function TrialBalanceReport({ userRole }: { userRole?: string }) 
       (r.name_ar || '').toLowerCase().includes(q) ||
       (r.name_en || '').toLowerCase().includes(q)
     );
-  }, [data, searchTerm]);
+  }, [allAccounts, searchTerm]);
 
   const totals = useMemo(() =>
-    accounts.reduce((acc, r) => ({
+    allAccounts.reduce((acc, r) => ({
       debit:         acc.debit         + (r.net_debit      || 0),
       credit:        acc.credit        + (r.net_credit     || 0),
       period_debit:  acc.period_debit  + (r.period_debit   || 0),
       period_credit: acc.period_credit + (r.period_credit  || 0),
     }), { debit: 0, credit: 0, period_debit: 0, period_credit: 0 }),
-  [accounts]);
+  [allAccounts]);
 
   const isBalanced = Math.abs(totals.debit - totals.credit) < 0.01;
+  const reportUser = user || (userRole ? { role: userRole } : null);
 
   const handleExport = () => {
     if (!accounts.length) { toast.error('لا توجد بيانات للتصدير'); return; }
@@ -134,20 +139,26 @@ export default function TrialBalanceReport({ userRole }: { userRole?: string }) 
       </div>
 
       <div className="flex border-b border-slate-200 dark:border-slate-800 gap-6 text-sm overflow-x-auto pb-1">
-        {userRole === 'owner' && (
+        {hasUserPermissionSync(reportUser, 'rep_can_view_sales') && (
           <Link href="/reports" className="pb-4 border-b-2 border-transparent font-bold text-slate-500 hover:text-slate-800 transition-colors flex items-center gap-2 shrink-0">
             📊 التحليلات والمخططات
           </Link>
         )}
-        <Link href="/reports/sales" className="pb-4 border-b-2 border-transparent font-bold text-slate-500 hover:text-slate-800 transition-colors flex items-center gap-2 shrink-0">
-          🧾 تقرير المبيعات
-        </Link>
-        <Link href="/reports/purchases" className="pb-4 border-b-2 border-transparent font-bold text-slate-500 hover:text-slate-800 transition-colors flex items-center gap-2 shrink-0">
-          🛒 تقارير المشتريات
-        </Link>
-        <Link href="/reports/trial-balance" className="pb-4 border-b-2 border-blue-600 font-black text-blue-600 dark:text-blue-400 flex items-center gap-2 shrink-0">
-          ⚖️ ميزان المراجعة
-        </Link>
+        {hasUserPermissionSync(reportUser, 'rep_can_view_sales') && (
+          <Link href="/reports/sales" className="pb-4 border-b-2 border-transparent font-bold text-slate-500 hover:text-slate-800 transition-colors flex items-center gap-2 shrink-0">
+            🧾 تقرير المبيعات
+          </Link>
+        )}
+        {hasUserPermissionSync(reportUser, 'rep_can_view_purchases') && (
+          <Link href="/reports/purchases" className="pb-4 border-b-2 border-transparent font-bold text-slate-500 hover:text-slate-800 transition-colors flex items-center gap-2 shrink-0">
+            🛒 تقارير المشتريات
+          </Link>
+        )}
+        {hasUserPermissionSync(reportUser, 'acc_can_view_reports') && (
+          <Link href="/reports/trial-balance" className="pb-4 border-b-2 border-blue-600 font-black text-blue-600 dark:text-blue-400 flex items-center gap-2 shrink-0">
+            ⚖️ ميزان المراجعة
+          </Link>
+        )}
       </div>
 
       <div className="bg-white dark:bg-slate-900 p-5 rounded-3xl shadow-sm border border-slate-100 dark:border-slate-800 space-y-4">

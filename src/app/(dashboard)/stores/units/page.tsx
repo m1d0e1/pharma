@@ -5,7 +5,8 @@ import { useRouter } from 'next/navigation'
 import { getClientSession } from '@/lib/auth/local'
 import { Ruler } from 'lucide-react'
 import BilingualManagementClient from '@/components/inventory/BilingualManagementClient'
-import { dbSelect, dbExecute } from '@/lib/db/tauri'
+import { dbSelect } from '@/lib/db/tauri'
+import { addUnitAction, updateUnitAction, deleteUnitAction } from '@/app/actions-client/master-drugs'
 
 export default function UnitsPage() {
   const router = useRouter();
@@ -35,35 +36,9 @@ export default function UnitsPage() {
     checkAuthAndLoad();
   }, [router]);
 
-  const handleAdd = async (item: { name_ar: string, name_en?: string }) => {
-    try {
-      const result = await dbExecute('INSERT INTO units (name_ar, name_en) VALUES (?, ?)', [item.name_ar, item.name_en || null]);
-      await loadData();
-      return { success: true, id: result.lastInsertId };
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  }
-
-  const handleUpdate = async (id: number, item: { name_ar: string, name_en?: string }) => {
-    try {
-      await dbExecute('UPDATE units SET name_ar = ?, name_en = ? WHERE id = ?', [item.name_ar, item.name_en || null, id]);
-      await loadData();
-      return { success: true };
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  }
-
-  const handleDelete = async (id: number) => {
-    try {
-      await dbExecute('DELETE FROM units WHERE id = ?', [id]);
-      await loadData();
-      return { success: true };
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  }
+  const handleAdd = addUnitAction;
+  const handleUpdate = updateUnitAction;
+  const handleDelete = deleteUnitAction;
 
   if (loading) {
     return (

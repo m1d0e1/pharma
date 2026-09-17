@@ -3,8 +3,13 @@ import { render, screen, waitFor } from '@testing-library/react';
 import SalesReportsClient from '@/components/reports/SalesReportsClient';
 import PurchasesReportsClient from '@/components/reports/PurchasesReportsClient';
 import PurchaseReportsClient from '@/components/reports/PurchaseReportsClient';
+import TrialBalanceReport from '@/components/reports/TrialBalanceReport';
+import ReportsPage from '@/app/(dashboard)/reports/page';
 import { getSalesReportsAction } from '@/app/actions-client/sales-reports';
 import { getPurchasesReportsAction, getPurchaseInvoicesAction } from '@/app/actions-client/purchases';
+import { getTrialBalanceAction } from '@/app/actions-client/finance';
+import { getReportsDataAction } from '@/app/actions-client/reports';
+import { getClientSession } from '@/lib/auth/local';
 import { getStaffAction } from '@/app/actions-client/users';
 import { getPatientsAction } from '@/app/actions-client/patients';
 import { getSuppliersAction } from '@/app/actions-client/purchases';
@@ -32,10 +37,91 @@ jest.mock('@/app/actions-client/patients', () => ({
 
 jest.mock('@/components/receipts/ReceiptDetailsModal', () => () => null);
 jest.mock('@/components/purchases/BarcodePrinter', () => () => null);
+jest.mock('@/components/dashboard/SalesCharts', () => () => null);
+
+jest.mock('@/app/actions-client/finance', () => ({
+  getTrialBalanceAction: jest.fn().mockResolvedValue({ success: true, data: [] }),
+}));
+
+jest.mock('@/app/actions-client/reports', () => ({
+  getReportsDataAction: jest.fn().mockResolvedValue({
+    success: true,
+    data: { salesHistoryRaw: [], topDrugsRaw: [], categoryRaw: [] },
+  }),
+}));
+
+jest.mock('@/lib/auth/local', () => ({
+  getClientSession: jest.fn(),
+  hasUserPermissionSync: (user: any, permission: string) => {
+    if (user?.role === 'owner') return true;
+    const permissions = user?.permissions;
+    if (Array.isArray(permissions)) return permissions.includes(permission);
+    return permissions?.[permission] === true;
+  },
+}));
 
 describe('Sales & Purchases Reports Totals Display', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    (getClientSession as jest.Mock).mockResolvedValue({ role: 'owner' });
+    (getTrialBalanceAction as jest.Mock).mockResolvedValue({ success: true, data: [] });
+    (getReportsDataAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: { salesHistoryRaw: [], topDrugsRaw: [], categoryRaw: [] },
+    });
+  });
+
+  it('hides denied report destinations from the report dashboard', async () => {
+    (getClientSession as jest.Mock).mockResolvedValue({
+      role: 'pharmacist',
+      permissions: {
+        rep_can_view_sales: true,
+        rep_can_view_purchases: false,
+        acc_can_view_reports: false,
+      },
+    });
+
+    render(<ReportsPage />);
+
+    expect(await screen.findByText('التقارير والتحليلات')).toBeInTheDocument();
+    expect(screen.getByText('تقرير فواتير المبيعات')).toBeInTheDocument();
+    expect(screen.queryByText('تقارير المشتريات')).not.toBeInTheDocument();
+    expect(screen.queryByText('ميزان المراجعة')).not.toBeInTheDocument();
+  });
+
+  it('gates each report client cross-tab by the target permission', async () => {
+    (getSalesReportsAction as jest.Mock).mockResolvedValue({ success: true, data: [] });
+    const salesUser = {
+      role: 'pharmacist',
+      permissions: { rep_can_view_sales: true, rep_can_view_purchases: false, acc_can_view_reports: false },
+    };
+    const sales = render(<SalesReportsClient user={salesUser} />);
+    await waitFor(() => expect(getSalesReportsAction).toHaveBeenCalled());
+    expect(screen.getByText('التحليلات والمخططات')).toBeInTheDocument();
+    expect(screen.getAllByText('تقرير فواتير المبيعات').length).toBeGreaterThan(0);
+    expect(screen.queryByText('تقارير المشتريات')).not.toBeInTheDocument();
+    expect(screen.queryByText('ميزان المراجعة')).not.toBeInTheDocument();
+    sales.unmount();
+
+    (getPurchasesReportsAction as jest.Mock).mockResolvedValue({ success: true, data: [] });
+    const purchasesUser = {
+      role: 'pharmacist',
+      permissions: { rep_can_view_sales: false, rep_can_view_purchases: true, acc_can_view_reports: false },
+    };
+    const purchases = render(<PurchasesReportsClient user={purchasesUser} />);
+    await waitFor(() => expect(getPurchasesReportsAction).toHaveBeenCalled());
+    expect(screen.queryByText('التحليلات والمخططات')).not.toBeInTheDocument();
+    expect(screen.queryByText('تقرير فواتير المبيعات')).not.toBeInTheDocument();
+    expect(screen.getAllByText('تقارير المشتريات').length).toBeGreaterThan(0);
+    expect(screen.queryByText('ميزان المراجعة')).not.toBeInTheDocument();
+    purchases.unmount();
+
+    render(<TrialBalanceReport user={{ role: 'pharmacist', permissions: { acc_can_view_reports: true } }} />);
+    await waitFor(() => expect(getTrialBalanceAction).toHaveBeenCalled());
+    expect(screen.queryByText('التحليلات والمخططات')).not.toBeInTheDocument();
+    expect(screen.queryByText('تقرير المبيعات')).not.toBeInTheDocument();
+    expect(screen.queryByText('تقارير المشتريات')).not.toBeInTheDocument();
+    expect(screen.getAllByText('ميزان المراجعة').length).toBeGreaterThan(0);
   });
 
   it('renders summary total KPI cards and table footer in SalesReportsClient', async () => {
@@ -79,6 +165,8 @@ describe('Sales & Purchases Reports Totals Display', () => {
       // Check footer row exists
       expect(screen.getByText('الإجمالي (2 فاتورة)')).toBeInTheDocument();
     });
+    expect(screen.getByRole('button', { name: 'طباعة تقرير المبيعات' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'تصدير تقرير المبيعات إلى CSV' })).toBeInTheDocument();
   });
 
   it('renders summary total KPI cards and table footer in PurchasesReportsClient', async () => {

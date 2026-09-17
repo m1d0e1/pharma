@@ -1,7 +1,7 @@
 'use client';
 import React, { useEffect, useState } from 'react';
 import SalesReportsClient from '@/components/reports/SalesReportsClient';
-import { getClientSession } from '@/lib/auth/local';
+import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { useRouter } from 'next/navigation';
 import AccessDenied from '@/components/AccessDenied';
 
@@ -31,13 +31,13 @@ export default function SalesReportsPage() {
     );
   }
 
-  if (user.role !== 'owner' && user.role !== 'admin') {
+  if (!hasUserPermissionSync(user, 'rep_can_view_sales')) {
     return <AccessDenied />;
   }
 
   return (
     <div className="container mx-auto py-8">
-      <SalesReportsClient userRole={user.role} />
+      <SalesReportsClient userRole={user.role} user={user} />
     </div>
   );
 }

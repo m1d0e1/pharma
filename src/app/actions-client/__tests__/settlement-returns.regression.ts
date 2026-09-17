@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 
 let mockDb: Database.Database;
+let canManageInventory = true;
 
 jest.mock('@/lib/db/tauri', () => ({
   dbSelect: jest.fn(async (sql: string, params: unknown[] = []) =>
@@ -9,18 +10,24 @@ jest.mock('@/lib/db/tauri', () => ({
 
 jest.mock('@/lib/auth/local', () => ({
   getLocalSession: jest.fn(async () => ({ id: 'admin', role: 'owner', pharmacy_id: null })),
-  hasUserPermissionSync: jest.fn(() => true),
+  hasUserPermissionSync: jest.fn((_user: unknown, key: string) =>
+    key === 'can_manage_inventory' ? canManageInventory : true),
 }));
 
-jest.mock('@/lib/env', () => ({ isTauri: false }));
+jest.mock('@/lib/env', () => ({ isTauri: true }));
+jest.mock('@tauri-apps/api/core', () => ({ invoke: jest.fn() }));
 
 import {
   getNegativeStockInvoicesAction,
   getUnsettledSalesAction,
+  settleSaleItemAction,
 } from '@/app/actions-client/settlement';
+import { invoke } from '@tauri-apps/api/core';
 
 describe('negative-stock settlement returns', () => {
   beforeEach(() => {
+    canManageInventory = true;
+    jest.clearAllMocks();
     mockDb = new Database(':memory:');
     mockDb.exec(`
       CREATE TABLE master_drugs (
@@ -30,7 +37,7 @@ describe('negative-stock settlement returns', () => {
         id TEXT PRIMARY KEY, drug_id INTEGER, pharmacy_id TEXT, quantity REAL, expiry_date TEXT
       );
       CREATE TABLE sales_invoices (
-        id TEXT PRIMARY KEY, pharmacy_id TEXT, created_at TEXT
+        id TEXT PRIMARY KEY, pharmacy_id TEXT, created_at TEXT, status TEXT
       );
       CREATE TABLE sales_items (
         id INTEGER PRIMARY KEY, invoice_id TEXT, drug_id INTEGER, quantity_sold REAL,
@@ -44,12 +51,14 @@ describe('negative-stock settlement returns', () => {
       INSERT INTO master_drugs VALUES (1, 'دواء', 'Drug', '123');
       INSERT INTO inventory VALUES ('batch', 1, NULL, 5, '2099-12-31');
       INSERT INTO sales_invoices VALUES
-        ('partial-sale', NULL, '2026-08-25 10:00:00'),
-        ('full-sale', NULL, '2026-08-25 11:00:00'),
-        ('other-sale', NULL, '2026-08-25 12:00:00');
+        ('partial-sale', NULL, '2026-08-25 10:00:00', 'completed'),
+        ('full-sale', NULL, '2026-08-25 11:00:00', 'completed'),
+        ('other-sale', NULL, '2026-08-25 12:00:00', 'completed'),
+        ('draft-sale', NULL, '2026-08-25 13:00:00', 'draft');
       INSERT INTO sales_items VALUES
         (1, 'partial-sale', 1, 4, 'small', 2, 1),
-        (2, 'full-sale', 1, 2, 'small', 2, 1);
+        (2, 'full-sale', 1, 2, 'small', 2, 1),
+        (3, 'draft-sale', 1, 1, 'large', 2, 1);
       INSERT INTO returns VALUES
         ('approved', 'partial-sale', 'APPROVED'),
         ('completed', 'partial-sale', 'completed'),
@@ -66,6 +75,19 @@ describe('negative-stock settlement returns', () => {
   });
 
   afterEach(() => mockDb.close());
+
+  it('keeps settlement readable but blocks the stock mutation without inventory-management permission', async () => {
+    canManageInventory = false;
+
+    const result = await settleSaleItemAction(1, 'batch');
+
+    expect(result).toEqual({
+      success: false,
+      error: 'Unauthorized: inventory management permission required',
+    });
+    expect(invoke).not.toHaveBeenCalled();
+    expect((await getUnsettledSalesAction()).success).toBe(true);
+  });
 
   it.each([
     ['invoice list', getNegativeStockInvoicesAction],

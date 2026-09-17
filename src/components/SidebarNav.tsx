@@ -2,6 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
+import { createPortal } from 'react-dom'
 import { 
   Home, 
   Package, 
@@ -36,17 +37,17 @@ import { cn } from '@/lib/utils'
 
 const navItems = [
   // Sales
-  { category: 'المبيعات', href: '/pos', label: 'فاتورة مبيعات جديدة', icon: PlusCircle, roles: ['owner', 'admin', 'pharmacist'] },
+  { category: 'المبيعات', href: '/pos', label: 'فاتورة مبيعات جديدة', icon: PlusCircle, roles: ['owner', 'admin', 'pharmacist'], permission: 'can_access_pos' },
   { category: 'المبيعات', href: '/', label: 'لوحة التحكم', icon: Home, roles: ['owner', 'admin', 'pharmacist'] },
   { category: 'المبيعات', href: '/receipts', label: 'الفواتير', icon: FileText, roles: ['owner', 'admin', 'pharmacist'], permission: 'can_view_receipts' },
-  { category: 'المبيعات', href: '/sales', label: 'المبيعات والتحصيل', icon: ShoppingCart, roles: ['owner', 'admin', 'pharmacist'] },
+  { category: 'المبيعات', href: '/sales', label: 'المبيعات والتحصيل', icon: ShoppingCart, roles: ['owner', 'admin', 'pharmacist'], permission: 'can_view_sales' },
   { category: 'المبيعات', href: '/sales/delivery', label: 'توصيل منزلي', icon: Bike, roles: ['owner', 'admin', 'pharmacist'], permission: 'can_view_delivery' },
-  { category: 'المبيعات', href: '/sales/cogs', label: 'تعديل التكلفة', icon: Edit3, roles: ['owner', 'admin'], permission: 'can_view_cogs' },
+  { category: 'المبيعات', href: '/sales/cogs', label: 'تعديل التكلفة', icon: Edit3, roles: ['owner'] },
   { category: 'المبيعات', href: '/sales/settlement', label: 'تسوية المبيعات', icon: ArrowLeftRight, roles: ['owner', 'admin', 'pharmacist'], permission: 'can_view_settlement' },
   { category: 'المبيعات', href: '/returns', label: 'مرتجعات العملاء', icon: RotateCcw, roles: ['owner', 'admin', 'pharmacist'], permission: 'can_view_returns' },
 
   // Inventory Ops
-  { category: 'العمليات المخزنية', href: '/inventory', label: 'المخزون', icon: Package, roles: ['owner', 'admin', 'pharmacist'] },
+  { category: 'العمليات المخزنية', href: '/inventory', label: 'المخزون', icon: Package, roles: ['owner', 'admin', 'pharmacist'], permission: 'can_view_stores' },
   { category: 'العمليات المخزنية', href: '/stores/shortages', label: 'كشكول النواقص', icon: AlertTriangle, roles: ['owner', 'admin', 'pharmacist'], permission: 'can_view_restock' },
   { category: 'العمليات المخزنية', href: '/inventory/item-movements', label: 'حركات الأصناف', icon: Activity, roles: ['owner', 'admin', 'pharmacist'], permission: 'preview_item_movements' },
   { category: 'العمليات المخزنية', href: '/restock', label: 'إعادة التموين', icon: Package, roles: ['owner', 'admin'], permission: 'can_view_restock' },
@@ -103,6 +104,7 @@ export default function SidebarNav({ userRole, userPermissions }: Props) {
   const router = useRouter()
   const [mounted, setMounted] = useState(false)
   const [permissions, setPermissions] = useState<any>(null)
+  const [showMobileMore, setShowMobileMore] = useState(false)
 
   useEffect(() => {
     setMounted(true)
@@ -131,6 +133,17 @@ export default function SidebarNav({ userRole, userPermissions }: Props) {
     }
     return item.roles.includes(userRole);
   });
+
+  const mobileRouteOrder = ['/', '/sales', '/inventory', '/inventory/low-stock', '/patients'];
+  const mobileNavItems = [
+    ...mobileRouteOrder
+      .map(href => filteredItems.find(item => item.href === href))
+      .filter((item): item is typeof navItems[number] => !!item),
+    ...filteredItems
+  ].filter((item, index, self) => self.findIndex(t => t.href === item.href) === index)
+   .slice(0, 5);
+  const mobileNavHrefs = new Set(mobileNavItems.map(item => item.href));
+  const mobileMoreItems = filteredItems.filter(item => !mobileNavHrefs.has(item.href));
 
   return (
     <>
@@ -192,19 +205,9 @@ export default function SidebarNav({ userRole, userPermissions }: Props) {
       </nav>
 
       {/* Mobile Bottom Navigation */}
-      <div className="lg:hidden fixed bottom-0 left-0 right-0 bg-gradient-glass dark:bg-gradient-glass-dark backdrop-blur-xl border-t border-slate-200/60 dark:border-slate-800/60 z-40 shadow-hard">
+      {mounted && createPortal(<nav aria-label="التنقل الرئيسي للجوال" className="lg:hidden fixed bottom-0 left-0 right-0 bg-gradient-glass dark:bg-gradient-glass-dark backdrop-blur-xl border-t border-slate-200/60 dark:border-slate-800/60 z-40 shadow-hard">
         <div className="flex justify-around p-3">
-          {(() => {
-            const mobileRouteOrder = ['/', '/sales', '/inventory', '/inventory/low-stock', '/patients'];
-            const mobileNavItems = [
-              ...mobileRouteOrder
-                .map(href => filteredItems.find(item => item.href === href))
-                .filter((item): item is typeof navItems[number] => !!item),
-              ...filteredItems
-            ].filter((item, index, self) => self.findIndex(t => t.href === item.href) === index)
-             .slice(0, 5);
-            
-            return mobileNavItems.map((item) => {
+          {mobileNavItems.map((item) => {
               const Icon = item.icon
               const isActive = pathname === item.href || 
                                (item.href !== '/' && pathname?.startsWith(item.href))
@@ -232,22 +235,34 @@ export default function SidebarNav({ userRole, userPermissions }: Props) {
                   <span className="text-[10px] mt-1.5 font-bold">{item.label}</span>
                 </Link>
               )
-            })
-          })()}
-          {filteredItems.length > 5 && (
+            })}
+          {mobileMoreItems.length > 0 && (
             <button
-              onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+              onClick={() => setShowMobileMore(v => !v)}
               className="flex flex-col items-center p-3 rounded-2xl text-slate-600 dark:text-slate-400"
               aria-label="المزيد من الخيارات"
             >
               <div className="w-10 h-10 rounded-xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center">
-                <span className="text-xs font-black">+{filteredItems.length - 5}</span>
+                <span className="text-xs font-black">+{mobileMoreItems.length}</span>
               </div>
               <span className="text-[10px] mt-1.5 font-bold">المزيد</span>
             </button>
           )}
         </div>
-      </div>
+        {showMobileMore && mobileMoreItems.length > 0 && (
+          <div className="absolute bottom-full left-3 right-3 mb-2 max-h-[60vh] overflow-y-auto rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-2xl p-2">
+            {mobileMoreItems.map(item => {
+              const Icon = item.icon
+              return (
+                <Link key={`more-${item.href}`} href={item.href} onClick={() => setShowMobileMore(false)} className="flex items-center gap-3 p-3 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800">
+                  <Icon className="w-4 h-4" />
+                  <span className="text-sm font-bold">{item.label}</span>
+                </Link>
+              )
+            })}
+          </div>
+        )}
+      </nav>, document.body)}
     </>
   )
 }

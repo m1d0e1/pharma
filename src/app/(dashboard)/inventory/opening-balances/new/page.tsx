@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { addOpeningBalanceAction } from '@/app/actions-client/inventory';
-import { searchDrugsAction } from '@/app/actions-client/sales';
+import { searchMasterDrugsAction } from '@/app/actions-client/master-drugs';
 import { Search, Save, ArrowRight } from 'lucide-react';
 import Link from 'next/link';
 import { toast } from 'react-hot-toast';
@@ -26,8 +26,12 @@ export default function NewOpeningBalanceClient() {
     const val = e.target.value;
     setSearchTerm(val);
     if (val.length > 2) {
-      const res = await searchDrugsAction(val, 20, byActive);
-      if (res.success) setSearchResults(res.data || []);
+      const res = await searchMasterDrugsAction({
+        query: val,
+        searchByActiveIngredient: byActive,
+        status: 'active',
+      });
+      if (res.success) setSearchResults((res.data || []).slice(0, 20));
     } else {
       setSearchResults([]);
     }

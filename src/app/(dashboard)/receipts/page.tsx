@@ -45,6 +45,7 @@ export default function ReceiptsPage() {
                 LEFT JOIN users u ON si.user_id = u.id
                 LEFT JOIN patients p ON si.patient_id = p.id
                 WHERE si.shift_id = ?
+                  AND (si.status IS NULL OR si.status = '' OR si.status IN ('completed', 'approved', 'delivered'))
                 ORDER BY si.created_at DESC
               `
               : `
@@ -63,6 +64,7 @@ export default function ReceiptsPage() {
                 FROM sales_invoices si
                 LEFT JOIN users u ON si.user_id = u.id
                 LEFT JOIN patients p ON si.patient_id = p.id
+                WHERE si.status IS NULL OR si.status = '' OR si.status IN ('completed', 'approved', 'delivered')
                 ORDER BY si.created_at DESC
                 LIMIT 200
               `;

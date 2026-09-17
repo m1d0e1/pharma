@@ -298,6 +298,37 @@ it('allows editing and deleting accounts from the Chart of Accounts table and tr
   });
 });
 
+it('keeps the Chart of Accounts read-only without daily-entry permission', async () => {
+  const sampleAccounts = [
+    { id: 1, code: '1', name_ar: 'الأصول', name_en: 'Assets', type: 'asset', is_group: 1, parent_id: null, balance: 100 },
+    { id: 2, code: '1.1', name_ar: 'الأصول المتداولة', name_en: 'Current Assets', type: 'asset', is_group: 1, parent_id: 1, balance: 100 },
+    { id: 3, code: '1.1.1', name_ar: 'الصندوق الفرعي', name_en: 'Sub Cash Drawer', type: 'asset', is_group: 0, parent_id: 2, balance: 100 },
+  ];
+  (getClientSession as jest.Mock).mockResolvedValue({
+    id: 'viewer-accounts',
+    role: 'pharmacist',
+    permissions: ['acc_can_view_general'],
+  });
+  (finance.getAccountsAction as jest.Mock).mockResolvedValue({ success: true, data: sampleAccounts });
+
+  const { fireEvent } = await import('@testing-library/react');
+  render(<AccountsManagementClient initialTab="chart_of_accounts" />);
+
+  const nestedGroup = await screen.findByText('الأصول المتداولة');
+  fireEvent.click(nestedGroup);
+  expect(await screen.findByText(/الصندوق الفرعي/)).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /إضافة حساب رئيسي/ })).not.toBeInTheDocument();
+  expect(screen.queryByTitle('إضافة حساب فرعي')).not.toBeInTheDocument();
+  expect(screen.queryByTitle('تعديل الحساب')).not.toBeInTheDocument();
+  expect(screen.queryByTitle('حذف الحساب')).not.toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole('button', { name: 'جدول' }));
+  expect(screen.queryByText('إجراءات')).not.toBeInTheDocument();
+  expect(screen.queryByTitle('إضافة حساب فرعي')).not.toBeInTheDocument();
+  expect(screen.queryByTitle('تعديل الحساب')).not.toBeInTheDocument();
+  expect(screen.queryByTitle('حذف الحساب')).not.toBeInTheDocument();
+});
+
 it('renders, searches, adds, edits, and deletes expense definitions dynamically with link to expenses', async () => {
   const sampleDefs = [
     { id: 1, code: '501', name_ar: 'كهرباء وإنارة', name_en: 'Electricity', created_at: '2026-06-01' },

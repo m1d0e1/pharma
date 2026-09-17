@@ -1184,17 +1184,52 @@ export async function completeOpeningBalanceAction(obId: string) {
 export async function createStockAdjustmentAction(inventoryId: string, data: { reason_id: number, old_quantity: number, new_quantity: number, notes?: string }) {
   try {
     const session = await getLocalSession();
-    if (!session || (!hasUserPermissionSync(session, 'can_view_settlement') && !hasUserPermissionSync(session, 'can_manage_inventory'))) return { success: false, error: 'Unauthorized' };
+    if (!session || !hasUserPermissionSync(session, 'can_manage_inventory')) return { success: false, error: 'Unauthorized' };
+    if (!Number.isFinite(Number(data.new_quantity)) || Number(data.new_quantity) < 0) return { success: false, error: 'الكمية الجديدة غير صالحة' };
+    const pharmacyId = session.pharmacy_id || 'local_default';
 
     const transaction = db.transaction(async () => {
+      const current = await db.prepare(
+        `SELECT quantity, cost_price FROM inventory
+         WHERE id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))`
+      ).get(inventoryId, pharmacyId, pharmacyId) as any;
+      if (!current) throw new Error('الصنف غير موجود في مخزون الصيدلية');
+      if (Math.abs(Number(current.quantity) - Number(data.old_quantity)) > 0.000001) {
+        throw new Error('تم تغيير الرصيد؛ حدّث الشاشة وحاول مرة أخرى');
+      }
+
       // 1. Record adjustment
       await db.prepare(`
         INSERT INTO stock_adjustments (inventory_id, reason_id, old_quantity, new_quantity, user_id)
         VALUES (?, ?, ?, ?, ?)
-      `).run(inventoryId, data.reason_id, data.old_quantity, data.new_quantity, session.id);
+      `).run(inventoryId, data.reason_id, current.quantity, data.new_quantity, session.id);
 
       // 2. Update inventory
-      await db.prepare('UPDATE inventory SET quantity = ? WHERE id = ?').run(data.new_quantity, inventoryId);
+      await db.prepare(
+        `UPDATE inventory SET quantity = ?
+         WHERE id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))`
+      ).run(data.new_quantity, inventoryId, pharmacyId, pharmacyId);
+
+      const diff = Number(data.new_quantity) - Number(current.quantity);
+      const value = Math.abs(diff) * Number(current.cost_price || 0);
+      if (value > 0) {
+        const getAccountId = async (category: string, fallback: number) =>
+          Number((await db.prepare('SELECT account_id FROM trial_balance_settings WHERE category = ?').get(category) as any)?.account_id || fallback);
+        const inventoryAccount = await getAccountId('inventory_asset', 10);
+        const adjustmentAccount = await getAccountId(diff > 0 ? 'inventory_adjustment_revenue' : 'inventory_adjustment_expense', diff > 0 ? 9 : 11);
+        const journalId = generateId();
+        await db.prepare(`
+          INSERT INTO daily_journals (id, date, description, created_by, total_amount)
+          VALUES (?, date('now', 'localtime'), ?, ?, ?)
+        `).run(journalId, `تسوية مخزون للصنف ${inventoryId}`, session.id, value);
+        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
+          .run(journalId, diff > 0 ? inventoryAccount : adjustmentAccount, 'debit', value);
+        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
+          .run(journalId, diff > 0 ? adjustmentAccount : inventoryAccount, 'credit', value);
+      }
+
+      await db.prepare('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)')
+        .run(session.id, 'STOCK_ADJUSTMENT', `تسوية المخزون ${inventoryId}: ${current.quantity} -> ${data.new_quantity}`);
     });
 
     await transaction();

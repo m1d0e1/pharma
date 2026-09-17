@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState, Suspense } from 'react';
-import { getClientSession } from '@/lib/auth/local';
+import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { getInventoryListAction } from '@/app/actions-client/inventory';
 import InventoryTable from '@/components/inventory/InventoryTable';
 import InventoryClientWrapper from '@/components/InventoryClientWrapper';
@@ -16,6 +16,7 @@ function InventoryPageContent() {
     return Number.isSafeInteger(value) && value > 0 ? value : undefined;
   });
   const [pharmacyId, setPharmacyId] = useState<string>('local_default');
+  const [canManageInventory, setCanManageInventory] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
 
@@ -28,6 +29,7 @@ function InventoryPageContent() {
         const localUser = await getClientSession();
         if (localUser && active) {
           setPharmacyId(localUser.pharmacy_id || 'local_default');
+          setCanManageInventory(hasUserPermissionSync(localUser, 'can_manage_inventory'));
         }
 
         const res = await getInventoryListAction(searchTerm, selectedDrugId);
@@ -73,7 +75,7 @@ function InventoryPageContent() {
           <h1 className="text-3xl font-bold text-slate-900 dark:text-white">المخزون الحالي</h1>
           <p className="text-slate-500 mt-1">تتبع الكميات، تواريخ الصلاحية، والأسعار لكل صنف دواء في الصيدلية</p>
         </div>
-        <InventoryClientWrapper pharmacyId={pharmacyId} onSuccess={refreshInventory} />
+        <InventoryClientWrapper pharmacyId={pharmacyId} onSuccess={refreshInventory} canManageInventory={canManageInventory} />
       </div>
       <InventoryTable 
         items={items} 
@@ -81,6 +83,7 @@ function InventoryPageContent() {
         setSearchTerm={updateSearchTerm}
         onRefresh={refreshInventory} 
         pharmacyId={pharmacyId}
+        canManageInventory={canManageInventory}
       />
     </div>
   );

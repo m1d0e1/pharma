@@ -112,6 +112,7 @@ interface PermissionSet {
   show_total_sales_report: boolean;
 
   // Page level permissions
+  can_view_sales: boolean;
   can_view_low_stock: boolean;
   can_view_opening_balances: boolean;
   can_view_settlement: boolean;
@@ -205,6 +206,7 @@ const defaultPermissions: PermissionSet = {
   show_total_sales_report: false,
 
   // New Page level permissions
+  can_view_sales: true,
   can_view_low_stock: true,
   can_view_opening_balances: false,
   can_view_settlement: true,

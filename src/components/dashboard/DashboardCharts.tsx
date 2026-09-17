@@ -80,7 +80,7 @@ export function DashboardCharts({ trendData = [], topItemsData = [] }: Dashboard
       return (
         <div className="bg-white/95 backdrop-blur-md p-4 rounded-xl shadow-xl border border-gray-100/50">
           <p className="font-bold text-gray-800 mb-1">{data.name}</p>
-          <p className="text-sm text-gray-600">الكمية المباعة: <span className="font-bold text-gray-900">{data.quantity}</span></p>
+          <p className="text-sm text-gray-600">الكمية المباعة: <span className="font-bold text-gray-900">{Number(data.quantity || 0).toLocaleString('ar-EG', { maximumFractionDigits: 2 })}</span></p>
           <p className="text-sm text-gray-600">الإيرادات: <span className="font-bold text-blue-600">{Number(data.revenue).toLocaleString('en-US')} ج.م</span></p>
         </div>
       );
@@ -189,7 +189,7 @@ export function DashboardCharts({ trendData = [], topItemsData = [] }: Dashboard
                   <div className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: PIE_LEGEND_COLORS[idx % PIE_LEGEND_COLORS.length] }} />
                   <span className="text-gray-700 truncate max-w-[140px]" title={item.name}>{item.name}</span>
                 </div>
-                <span className="font-bold text-gray-900">{item.quantity}</span>
+                <span className="font-bold text-gray-900">{Number(item.quantity || 0).toLocaleString('ar-EG', { maximumFractionDigits: 2 })}</span>
               </div>
             ))}
           </div>

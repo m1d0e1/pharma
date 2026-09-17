@@ -2,7 +2,7 @@ import React from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
 import DashboardPage from '@/app/(dashboard)/page';
 import { getLowStockAction } from '@/app/actions-client/inventory';
-import { dbGet } from '@/lib/db/tauri';
+import { dbGet, dbSelect } from '@/lib/db/tauri';
 
 jest.mock('next/dynamic', () => () => function DynamicStub() { return null; });
 jest.mock('next/link', () => function LinkStub({ href, children }: any) {
@@ -68,5 +68,18 @@ describe('dashboard low-stock wiring', () => {
 
     const title = await screen.findByText('تنبيهات المخزون');
     expect(title.closest('a')).toHaveTextContent('0');
+  });
+
+  it('counts delivered invoices as finalized dashboard revenue and demand', async () => {
+    render(<DashboardPage />);
+
+    await waitFor(() => expect(dbSelect).toHaveBeenCalled());
+
+    const getSql = (dbGet as jest.Mock).mock.calls.map(([sql]) => String(sql)).join('\n');
+    const selectSql = (dbSelect as jest.Mock).mock.calls.map(([sql]) => String(sql)).join('\n');
+
+    expect(getSql).toContain("status IN ('completed', 'approved', 'delivered')");
+    expect(selectSql).toContain("status IN ('completed', 'approved', 'delivered')");
+    expect(selectSql).toContain("s.status IN ('completed', 'approved', 'delivered')");
   });
 });

@@ -53,6 +53,9 @@ export default function DashboardPage() {
   const [newsBarEnabled, setNewsBarEnabled] = useState(true);
   const canAccessPos = hasUserPermissionSync(user, 'can_access_pos');
   const canViewShifts = hasUserPermissionSync(user, 'can_view_shifts');
+  const canViewInventory = hasUserPermissionSync(user, 'can_view_stores');
+  const canViewPatients = hasUserPermissionSync(user, 'can_view_patients');
+  const canViewReports = hasUserPermissionSync(user, 'rep_can_view_sales');
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -96,10 +99,20 @@ export default function DashboardPage() {
         setIsPharmacist(pharmacist);
 
         const todayStr = format(new Date(), 'yyyy-MM-dd');
+        const yesterdayStr = format(subDays(new Date(), 1), 'yyyy-MM-dd');
+        const pharmacyId = localUser.pharmacy_id || 'local_default';
 
         // 1. Fetch total master drugs
         const drugCountRow = await dbGet('SELECT COUNT(*) as count FROM master_drugs');
         setMasterDrugCount(drugCountRow?.count || 0);
+
+        if (!hasUserPermissionSync(localUser, 'rep_can_view_sales')) {
+          setStats([]);
+          setTrendData([]);
+          setTopItemsData([]);
+          setRecentTransactions([]);
+          return;
+        }
 
         // 2. Fetch KPIs
         // Sales today + COGS today
@@ -116,10 +129,25 @@ export default function DashboardPage() {
                   ), 0) 
                   FROM sales_items si
                   LEFT JOIN master_drugs md ON si.drug_id = md.id
-                  WHERE si.invoice_id IN (SELECT id FROM sales_invoices WHERE date(created_at, 'localtime') = ? AND status = 'completed')) as total_cogs
+                  WHERE si.invoice_id IN (
+                    SELECT id FROM sales_invoices
+                    WHERE date(created_at, 'localtime') = ?
+                      AND (status IS NULL OR status = '' OR status IN ('completed', 'approved', 'delivered'))
+                      AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+                  )) as total_cogs
           FROM sales_invoices
-          WHERE date(created_at, 'localtime') = ? AND status = 'completed'
-        `, [todayStr, todayStr]);
+          WHERE date(created_at, 'localtime') = ?
+            AND (status IS NULL OR status = '' OR status IN ('completed', 'approved', 'delivered'))
+            AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+        `, [todayStr, pharmacyId, pharmacyId, todayStr, pharmacyId, pharmacyId]);
+
+        const salesYesterdayRow = await dbGet(`
+          SELECT COALESCE(SUM(total_amount), 0) as total
+          FROM sales_invoices
+          WHERE date(created_at, 'localtime') = ?
+            AND (status IS NULL OR status = '' OR status IN ('completed', 'approved', 'delivered'))
+            AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+        `, [yesterdayStr, pharmacyId, pharmacyId]);
 
         // Current liquidity
         const cashAccRow = await dbGet("SELECT account_id FROM trial_balance_settings WHERE category = 'cash_drawer'");
@@ -135,7 +163,8 @@ export default function DashboardPage() {
           SELECT COALESCE(SUM(total_amount), 0) as total
           FROM sales_invoices
           WHERE payment_method = 'delivery' AND status = 'completed'
-        `);
+            AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+        `, [pharmacyId, pharmacyId]);
 
         // Shrinkage today
         const shrinkageRow = await dbGet(`
@@ -143,7 +172,8 @@ export default function DashboardPage() {
           FROM stock_adjustments sa
           JOIN inventory i ON sa.inventory_id = i.id
           WHERE date(sa.created_at, 'localtime') = ? AND new_quantity < old_quantity
-        `, [todayStr]);
+            AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
+        `, [todayStr, pharmacyId, pharmacyId]);
 
         // Keep this KPI on the same pharmacy-scoped, expiry-aware source as the
         // reorder widget and low-stock page so all three surfaces stay in sync.
@@ -159,7 +189,11 @@ export default function DashboardPage() {
           stock_alerts_count: stockAlertsCount
         };
 
-        const revenueChange = 12.5;
+        const todayRevenue = Number(kpis.sales_today || 0);
+        const yesterdayRevenue = Number(salesYesterdayRow?.total || 0);
+        const revenueChange = yesterdayRevenue > 0
+          ? ((todayRevenue - yesterdayRevenue) / yesterdayRevenue) * 100
+          : (todayRevenue > 0 ? 100 : 0);
 
         setStats([
           {
@@ -207,16 +241,16 @@ export default function DashboardPage() {
           )
           SELECT 
             d.date,
-            (SELECT COALESCE(SUM(total_amount), 0) FROM sales_invoices WHERE date(created_at, 'localtime') = d.date AND status = 'completed') as sales,
-            (SELECT COALESCE(SUM(total_refund), 0) FROM returns WHERE date(created_at, 'localtime') = d.date AND status = 'approved') as returns,
+            (SELECT COALESCE(SUM(total_amount), 0) FROM sales_invoices WHERE date(created_at, 'localtime') = d.date AND (status IS NULL OR status = '' OR status IN ('completed', 'approved', 'delivered')) AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))) as sales,
+            (SELECT COALESCE(SUM(total_refund), 0) FROM returns r WHERE date(r.created_at, 'localtime') = d.date AND status = 'approved' AND r.invoice_id IN (SELECT id FROM sales_invoices WHERE (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default')))) as returns,
             (SELECT COALESCE(SUM(si.quantity_sold * COALESCE(NULLIF(si.cost_price, 0), i.cost_price, m.base_price, 0)), 0) 
              FROM sales_items si 
              LEFT JOIN inventory i ON si.inventory_id = i.id
              LEFT JOIN master_drugs m ON i.drug_id = m.id
-             WHERE si.invoice_id IN (SELECT id FROM sales_invoices WHERE date(created_at, 'localtime') = d.date AND status = 'completed')) as cogs
+             WHERE si.invoice_id IN (SELECT id FROM sales_invoices WHERE date(created_at, 'localtime') = d.date AND (status IS NULL OR status = '' OR status IN ('completed', 'approved', 'delivered')) AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default')))) as cogs
           FROM dates d
           ORDER BY d.date ASC
-        `);
+        `, [pharmacyId, pharmacyId, pharmacyId, pharmacyId, pharmacyId, pharmacyId]);
         setTrendData(trend || []);
 
         // 3.5 Fetch Top Selling Items (Past 30 days)
@@ -230,11 +264,12 @@ export default function DashboardPage() {
           JOIN inventory i ON si.inventory_id = i.id
           JOIN master_drugs m ON i.drug_id = m.id
           WHERE date(s.created_at, 'localtime') >= date('now', '-30 days', 'localtime')
-            AND s.status = 'completed'
+            AND (s.status IS NULL OR s.status = '' OR s.status IN ('completed', 'approved', 'delivered'))
+            AND (s.pharmacy_id = ? OR (s.pharmacy_id IS NULL AND ? = 'local_default'))
           GROUP BY i.drug_id, name
           ORDER BY quantity DESC
           LIMIT 5
-        `);
+        `, [pharmacyId, pharmacyId]);
         setTopItemsData(topItems || []);
 
         // 4. Fetch Recent Transactions
@@ -242,9 +277,10 @@ export default function DashboardPage() {
           SELECT s.*, p.full_name as patient_name
           FROM sales_invoices s
           LEFT JOIN patients p ON s.patient_id = p.id
+          WHERE (s.pharmacy_id = ? OR (s.pharmacy_id IS NULL AND ? = 'local_default'))
           ORDER BY s.created_at DESC
           LIMIT 5
-        `);
+        `, [pharmacyId, pharmacyId]);
         setRecentTransactions(recent || []);
 
         // 5. Fetch Activity Logs (If Owner)
@@ -332,8 +368,8 @@ export default function DashboardPage() {
               الأدوية في الدليل: <span className="text-blue-600 dark:text-blue-400 text-lg">{masterDrugCount.toLocaleString()}</span>
             </p>
           </div>
-          <DrugSyncButton />
-          <InteractionsSyncButton />
+          {user?.role === 'owner' && <DrugSyncButton />}
+          {user?.role === 'owner' && <InteractionsSyncButton />}
           <button
             onClick={toggleNewsBar}
             className={`
@@ -443,7 +479,7 @@ export default function DashboardPage() {
           </div>
         </Link>}
 
-        <Link href="/inventory" className="flex items-center gap-4 p-5 bg-white dark:bg-slate-800 rounded-[2rem] shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all border border-teal-200/50 dark:border-teal-800/30 hover:border-teal-300/80 dark:hover:border-teal-600/50 group">
+        {canViewInventory && <Link href="/inventory" className="flex items-center gap-4 p-5 bg-white dark:bg-slate-800 rounded-[2rem] shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all border border-teal-200/50 dark:border-teal-800/30 hover:border-teal-300/80 dark:hover:border-teal-600/50 group">
           <div className="w-12 h-12 bg-emerald-100 dark:bg-emerald-900/30 rounded-2xl flex items-center justify-center text-emerald-600 group-hover:scale-110 transition-transform">
             <Package className="w-6 h-6" />
           </div>
@@ -451,9 +487,9 @@ export default function DashboardPage() {
             <p className="font-black text-slate-900 dark:text-white">المخزون</p>
             <p className="text-[10px] text-slate-500">إدارة الأصناف</p>
           </div>
-        </Link>
+        </Link>}
 
-        <Link href="/patients" className="flex items-center gap-4 p-5 bg-white dark:bg-slate-800 rounded-[2rem] shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all border border-purple-200/50 dark:border-purple-800/30 hover:border-purple-300/80 dark:hover:border-purple-600/50 group">
+        {canViewPatients && <Link href="/patients" className="flex items-center gap-4 p-5 bg-white dark:bg-slate-800 rounded-[2rem] shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all border border-purple-200/50 dark:border-purple-800/30 hover:border-purple-300/80 dark:hover:border-purple-600/50 group">
           <div className="w-12 h-12 bg-purple-100 dark:bg-purple-900/30 rounded-2xl flex items-center justify-center text-purple-600 group-hover:scale-110 transition-transform">
             <Users className="w-6 h-6" />
           </div>
@@ -461,9 +497,9 @@ export default function DashboardPage() {
             <p className="font-black text-slate-900 dark:text-white">المرضى</p>
             <p className="text-[10px] text-slate-500">سجل العملاء</p>
           </div>
-        </Link>
+        </Link>}
 
-        <Link href="/reports" className="flex items-center gap-4 p-5 bg-white dark:bg-slate-800 rounded-[2rem] shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all border border-amber-200/50 dark:border-amber-800/30 hover:border-amber-300/80 dark:hover:border-amber-600/50 group">
+        {canViewReports && <Link href="/reports" className="flex items-center gap-4 p-5 bg-white dark:bg-slate-800 rounded-[2rem] shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all border border-amber-200/50 dark:border-amber-800/30 hover:border-amber-300/80 dark:hover:border-amber-600/50 group">
           <div className="w-12 h-12 bg-orange-100 dark:bg-orange-900/30 rounded-2xl flex items-center justify-center text-orange-600 group-hover:scale-110 transition-transform">
             <ArrowUpLeft className="w-6 h-6" />
           </div>
@@ -471,7 +507,7 @@ export default function DashboardPage() {
             <p className="font-black text-slate-900 dark:text-white">التقارير</p>
             <p className="text-[10px] text-slate-500">تحليل الأداء</p>
           </div>
-        </Link>
+        </Link>}
       </div>
 
       {/* Charts & Widgets Grid */}
@@ -503,7 +539,7 @@ export default function DashboardPage() {
                   <p className="text-xs text-slate-500">{new Date(transaction.created_at).toLocaleTimeString('ar-EG')}</p>
                 </div>
                 <div className="text-right">
-                  <p className="font-bold text-blue-600 dark:text-blue-400 text-sm">ج.م {transaction.total_amount}</p>
+                  <p className="font-bold text-blue-600 dark:text-blue-400 text-sm">ج.م {Number(transaction.total_amount || 0).toLocaleString('ar-EG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
                 </div>
               </div>
             )) : (

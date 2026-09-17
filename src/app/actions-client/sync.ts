@@ -50,7 +50,6 @@ const db = {
 
 
 import { createClient } from '@/utils/supabase/client';
-import { getLocalSession, isOwnerOrAdmin } from '@/lib/auth/local';
 
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 
@@ -162,37 +161,11 @@ export async function syncMasterDrugsToLocal(drugList: any[]) {
 
 export async function syncFromCloudAction() {
   try {
-    const localUser = await getLocalSession();
-    const canSyncStaff = isOwnerOrAdmin(localUser);
-
     // 1. Initialize Local DB if not already done
     initLocalDb();
 
     // 2. Get Supabase Client (The Cloud Admin)
     const supabase = await createClient();
-
-    // 3. Check Cloud User (Optional for public data sync)
-    console.log('Checking cloud auth...');
-    const { data, error: authError } = await supabase.auth.getUser();
-    const user = data?.user;
-    const isLoggedIn = !!user && !authError;
-
-    let profile: any = null;
-    if (isLoggedIn && user) {
-      const { data: p } = await supabase
-        .from('profiles')
-        .select('*, pharmacies(*)')
-        .eq('id', user.id)
-        .single();
-      profile = p;
-
-      if (profile?.pharmacy_id) {
-        // Save Pharmacy Config Locally
-        const configStmt = db.prepare('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)');
-        await configStmt.run('pharmacy_id', profile.pharmacy_id);
-        await configStmt.run('pharmacy_name', profile.pharmacies?.name || '');
-      }
-    }
 
     // --- INCREMENTAL SYNC LOGIC ---
     
@@ -305,53 +278,7 @@ export async function syncFromCloudAction() {
     // Update last sync time for interactions
     await updateSyncMeta.run('cloud_drug_interactions', nowSyncTime);
 
-    // 6. Fetch all Pharmacists for this Pharmacy (only if logged in)
-    let staffMembers: any[] | null = null;
     const syncedUsernames: string[] = [];
-    
-    if (profile?.pharmacy_id && canSyncStaff) {
-      const { data: staff } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('pharmacy_id', profile.pharmacy_id);
-      staffMembers = staff;
-
-      // Clear existing users to ensure a clean sync of current cloud profiles
-      await db.prepare('DELETE FROM users').run();
-
-      if (staffMembers) {
-        const insertUser = db.prepare(`
-          INSERT OR REPLACE INTO users (id, username, role, full_name, pharmacy_id) 
-          VALUES (?, ?, ?, ?, ?)
-        `);
-
-        const userTransaction = db.transaction(async (staffList) => {
-          for (const member of staffList) {
-            let username = member.email || member.username;
-            
-            if (member.id === user.id) {
-              username = user.email || username;
-            }
-
-            if (!username) {
-              username = `user_${member.id.substring(0, 8)}`;
-            }
-
-            syncedUsernames.push(username);
-
-            await insertUser.run(
-              member.id,
-              username,
-              member.role || 'pharmacist',
-              member.full_name || 'Pharmacist',
-              member.pharmacy_id
-            );
-          }
-        });
-        await userTransaction(staffMembers);
-      }
-    }
-
     console.log(`Sync completed successfully. Synced ${allDrugs.length} drugs.`);
     console.log('Synced Usernames:', syncedUsernames);
     

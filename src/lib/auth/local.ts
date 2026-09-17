@@ -307,14 +307,23 @@ export function isOwnerOrAdmin(user: any): boolean {
   return user?.role === 'owner' || user?.role === 'admin';
 }
 
+function hasLegacyMissingPermissionAccess(user: any, permissionKey: string): boolean {
+  if (permissionKey === 'can_access_pos') {
+    return ['admin', 'pharmacist', 'cashier'].includes(user.role);
+  }
+  if (permissionKey === 'can_view_sales') {
+    return ['admin', 'manager', 'pharmacist', 'cashier'].includes(user.role);
+  }
+  return false;
+}
+
 export function hasUserPermissionSync(user: any, permissionKey: string): boolean {
   if (!user) return false;
   if (isOwnerOnlyStaffPermission(permissionKey)) return isStaffOwner(user);
   // Owner access is fixed; admin permissions are configurable in staff management.
   if (user.role === 'owner') return true;
-  const legacyPosAccess = permissionKey === 'can_access_pos'
-    && ['admin', 'pharmacist', 'cashier'].includes(user.role);
-  if (!user.permissions) return legacyPosAccess;
+  const legacyMissingAccess = hasLegacyMissingPermissionAccess(user, permissionKey);
+  if (!user.permissions) return legacyMissingAccess;
   
   let perms = user.permissions;
   let attempts = 0;
@@ -329,15 +338,15 @@ export function hasUserPermissionSync(user: any, permissionKey: string): boolean
   
   if (!perms) return false;
   if (Array.isArray(perms)) {
-    return perms.includes(permissionKey) || (legacyPosAccess && !perms.includes('can_access_pos'));
+    return perms.includes(permissionKey) || legacyMissingAccess;
   }
   if (typeof perms === 'object') {
-    if (permissionKey === 'can_access_pos' && !Object.prototype.hasOwnProperty.call(perms, permissionKey)) {
-      return legacyPosAccess;
+    if (!Object.prototype.hasOwnProperty.call(perms, permissionKey)) {
+      return legacyMissingAccess;
     }
     return perms[permissionKey] === true || perms[permissionKey] === 'true' || perms[permissionKey] == 1;
   }
-  return legacyPosAccess;
+  return legacyMissingAccess;
 }
 
 /**
@@ -353,12 +362,14 @@ export async function getClientSession() {
 
   try {
     const parsed = JSON.parse(stored);
-    try {
-      const dbUser = await dbGet(
-        'SELECT id, username, role, full_name, pharmacy_id, permissions FROM users WHERE id = ? AND is_active = 1',
-        [parsed.id]
-      );
-      if (dbUser) {
+    const attempts = isTauri ? 3 : 1;
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      try {
+        const dbUser = await dbGet(
+          'SELECT id, username, role, full_name, pharmacy_id, permissions FROM users WHERE id = ? AND is_active = 1',
+          [parsed.id]
+        );
+        if (!dbUser) return null;
         const updatedUser = {
           id: dbUser.id,
           username: dbUser.username,
@@ -369,9 +380,10 @@ export async function getClientSession() {
         };
         localStorage.setItem('pharma_session_user', JSON.stringify(updatedUser));
         return updatedUser;
+      } catch (_) {
+        if (attempt + 1 >= attempts) return null;
+        await new Promise(resolve => setTimeout(resolve, 100));
       }
-    } catch (_) {
-      return null;
     }
     return null;
   } catch (_) {

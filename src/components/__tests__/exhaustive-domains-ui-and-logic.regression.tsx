@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 
 // UI Components
 import InventoryTable from '@/components/inventory/InventoryTable';
+import InventoryClientWrapper from '@/components/InventoryClientWrapper';
 import AddInventoryModal from '@/components/AddInventoryModal';
 import EditInventoryModal from '@/components/EditInventoryModal';
 import PurchaseInvoiceClient from '@/app/(dashboard)/purchases/new/PurchaseInvoiceClient';
@@ -225,6 +226,7 @@ describe('Exhaustive Frontend UI & Business Logic Test Suite (All Domains & Feat
           setSearchTerm={jest.fn()}
           onRefresh={onRefresh}
           pharmacyId="pharmacy-1"
+          canManageInventory={true}
         />
       );
 
@@ -239,6 +241,30 @@ describe('Exhaustive Frontend UI & Business Logic Test Suite (All Domains & Feat
         expect(deleteInventoryAction).toHaveBeenCalledWith({ id: 'inv-1' });
         expect(onRefresh).toHaveBeenCalled();
       });
+    });
+
+    it('keeps inventory view/export/print available while hiding mutation controls for view-only users', () => {
+      render(
+        <>
+          <InventoryClientWrapper pharmacyId="pharmacy-1" canManageInventory={false} />
+          <InventoryTable
+            items={mockInventoryItems}
+            searchTerm=""
+            setSearchTerm={jest.fn()}
+            onRefresh={jest.fn()}
+            pharmacyId="pharmacy-1"
+            canManageInventory={false}
+          />
+        </>
+      );
+
+      expect(screen.queryByRole('button', { name: /إضافة دواء للمخزون/ })).not.toBeInTheDocument();
+      expect(screen.queryByText('استيراد Excel')).not.toBeInTheDocument();
+      expect(screen.queryByTitle('تعديل')).not.toBeInTheDocument();
+      expect(screen.queryByTitle('حذف')).not.toBeInTheDocument();
+      expect(screen.getAllByTitle('تفاصيل').length).toBeGreaterThan(0);
+      expect(screen.getByRole('button', { name: /تصدير Excel/ })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /طباعة النواقص/ })).toBeInTheDocument();
     });
 
     it('supports AddInventoryModal two-step search and submission', async () => {
@@ -312,9 +338,11 @@ describe('Exhaustive Frontend UI & Business Logic Test Suite (All Domains & Feat
 
       expect(screen.getByDisplayValue('15')).toBeInTheDocument();
       expect(screen.getByDisplayValue('30')).toBeInTheDocument();
+      expect(await screen.findByRole('option', { name: 'تلف أو كسر' })).toBeInTheDocument();
 
       const qtyInput = screen.getByDisplayValue('15');
       fireEvent.change(qtyInput, { target: { value: '18' } });
+      fireEvent.change(screen.getByRole('combobox'), { target: { value: '1' } });
 
       const submitBtn = screen.getByRole('button', { name: /حفظ التغييرات/i });
       fireEvent.click(submitBtn);
@@ -324,6 +352,7 @@ describe('Exhaustive Frontend UI & Business Logic Test Suite (All Domains & Feat
           id: 'inv-100',
           quantity: 18,
           local_selling_price: 30,
+          reason_id: 1,
         }));
         expect(onSuccess).toHaveBeenCalled();
       });

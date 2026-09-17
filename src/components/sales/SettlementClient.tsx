@@ -6,6 +6,7 @@ import { toast } from 'react-hot-toast'
 import { settleSaleItemAction, getDrugBatchesAction, getUnsettledSalesAction } from '@/app/actions-client/settlement'
 import { format } from 'date-fns'
 import { ar } from 'date-fns/locale'
+import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local'
 
 interface UnsettledItem {
   item_id: number
@@ -47,6 +48,15 @@ export default function SettlementClient({ initialItems }: { initialItems: Unset
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [isProcessing, setIsProcessing] = useState(false)
   const [isRefreshing, setIsRefreshing] = useState(false)
+  const [canManageInventory, setCanManageInventory] = useState(false)
+
+  useEffect(() => {
+    let active = true
+    void getClientSession().then(user => {
+      if (active) setCanManageInventory(hasUserPermissionSync(user, 'can_manage_inventory'))
+    })
+    return () => { active = false }
+  }, [])
 
   // Keep state synced if parent changes the items (e.g. initial load resolves)
   useEffect(() => {
@@ -198,12 +208,16 @@ export default function SettlementClient({ initialItems }: { initialItems: Unset
                   {formatDateSafe(item.created_at || (item as any).sale_date)}
                 </td>
                 <td className="p-6">
-                  <button
-                    onClick={() => handleOpenSettlement(item)}
-                    className="bg-purple-600 hover:bg-purple-700 text-white px-6 py-3 rounded-2xl font-black text-sm transition-all shadow-lg shadow-purple-500/20 active:scale-95"
-                  >
-                    تسوية الآن
-                  </button>
+                  {canManageInventory ? (
+                    <button
+                      onClick={() => handleOpenSettlement(item)}
+                      className="bg-purple-600 hover:bg-purple-700 text-white px-6 py-3 rounded-2xl font-black text-sm transition-all shadow-lg shadow-purple-500/20 active:scale-95"
+                    >
+                      تسوية الآن
+                    </button>
+                  ) : (
+                    <span className="text-xs font-bold text-slate-400">عرض فقط</span>
+                  )}
                 </td>
               </tr>
             ))}

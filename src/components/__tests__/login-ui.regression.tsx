@@ -30,7 +30,7 @@ it('reports a rejected local login without creating a session', async () => {
   expect(localStorage.getItem('pharma_session_user')).toBeNull();
 });
 
-it('shows synchronized usernames and selects one for local login', async () => {
+it('keeps user provisioning local when public catalog sync succeeds', async () => {
   (syncFromCloud as jest.Mock).mockResolvedValue({
     success: true,
     message: 'sync complete',
@@ -39,9 +39,9 @@ it('shows synchronized usernames and selects one for local login', async () => {
   const user = userEvent.setup();
   render(<LoginPage />);
 
-  await user.click(screen.getByRole('button', { name: /مزامنة كافة البيانات/ }));
-  const synchronizedUser = await screen.findByRole('button', { name: 'pharmacist@example.com' });
-  await user.click(synchronizedUser);
+  await user.click(screen.getByRole('button', { name: 'تحديث قائمة الأدوية والتفاعلات' }));
 
-  expect(screen.getByPlaceholderText('admin@pharmacy.com')).toHaveValue('pharmacist@example.com');
+  await waitFor(() => expect(syncFromCloud).toHaveBeenCalledTimes(1));
+  expect(screen.queryByRole('button', { name: 'pharmacist@example.com' })).not.toBeInTheDocument();
+  expect(screen.getByPlaceholderText('admin@pharmacy.com')).toHaveValue('');
 });

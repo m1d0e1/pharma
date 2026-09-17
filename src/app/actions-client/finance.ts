@@ -130,7 +130,7 @@ export async function addFinancialNoticeAction(rawData: z.infer<typeof noticeSch
         try {
           await db.prepare(`
             UPDATE suppliers 
-            SET current_balance = COALESCE(current_balance, 0) + ?
+            SET balance = COALESCE(balance, 0) + ?
             WHERE CAST(id AS TEXT) = ?
           `).run(signedAmount, data.target_id);
         } catch {}
@@ -192,7 +192,7 @@ export async function addPatientPaymentAction(rawData: z.infer<typeof paymentSch
     const data = paymentSchema.parse(rawData);
     const user = await getLocalSession();
     if (!user) return { success: false, error: 'غير مصرح' };
-    if (!hasUserPermissionSync(user, 'rep_can_view_financial') && !hasUserPermissionSync(user, 'can_view_patients')) {
+    if (!hasUserPermissionSync(user, 'can_view_patients') || !hasUserPermissionSync(user, 'acc_can_process_cash_flow')) {
       return { success: false, error: 'غير مصرح' };
     }
 
@@ -829,7 +829,7 @@ const addAccountSchema = z.object({
 export async function addAccountAction(rawData: z.infer<typeof addAccountSchema>) {
   try {
     const user = await getLocalSession();
-    if (!hasAnyFinancePermission(user, 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
+    if (!hasAnyFinancePermission(user, 'acc_can_make_daily_entries')) return { success: false, error: 'غير مصرح' };
 
     const data = addAccountSchema.parse(rawData);
     const res = await db.prepare(`
@@ -856,7 +856,7 @@ const updateAccountSchema = z.object({
 export async function updateAccountAction(id: number, rawData: z.infer<typeof updateAccountSchema>) {
   try {
     const user = await getLocalSession();
-    if (!hasAnyFinancePermission(user, 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
+    if (!hasAnyFinancePermission(user, 'acc_can_make_daily_entries')) return { success: false, error: 'غير مصرح' };
 
     const data = updateAccountSchema.parse(rawData);
     
@@ -882,7 +882,7 @@ export async function updateAccountAction(id: number, rawData: z.infer<typeof up
 export async function deleteAccountAction(id: number) {
   try {
     const user = await getLocalSession();
-    if (!hasAnyFinancePermission(user, 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
+    if (!hasAnyFinancePermission(user, 'acc_can_make_daily_entries')) return { success: false, error: 'غير مصرح' };
 
     const account = await db.prepare('SELECT * FROM accounts WHERE id = ?').get(id) as any;
     if (!account) return { success: false, error: 'الحساب غير موجود' };

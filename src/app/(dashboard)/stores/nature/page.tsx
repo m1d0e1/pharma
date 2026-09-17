@@ -5,7 +5,8 @@ import { useRouter } from 'next/navigation'
 import { getClientSession } from '@/lib/auth/local'
 import { FileText } from 'lucide-react'
 import BilingualManagementClient from '@/components/inventory/BilingualManagementClient'
-import { dbSelect, dbExecute } from '@/lib/db/tauri'
+import { dbSelect } from '@/lib/db/tauri'
+import { addItemNatureAction, updateItemNatureAction, deleteItemNatureAction } from '@/app/actions-client/master-drugs'
 
 export default function NaturePage() {
   const router = useRouter();
@@ -35,35 +36,9 @@ export default function NaturePage() {
     checkAuthAndLoad();
   }, [router]);
 
-  const handleAdd = async (item: { name_ar: string, name_en?: string }) => {
-    try {
-      const result = await dbExecute('INSERT INTO item_natures (name_ar, name_en) VALUES (?, ?)', [item.name_ar, item.name_en || null]);
-      await loadData();
-      return { success: true, id: result.lastInsertId };
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  }
-
-  const handleUpdate = async (id: number, item: { name_ar: string, name_en?: string }) => {
-    try {
-      await dbExecute('UPDATE item_natures SET name_ar = ?, name_en = ? WHERE id = ?', [item.name_ar, item.name_en || null, id]);
-      await loadData();
-      return { success: true };
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  }
-
-  const handleDelete = async (id: number) => {
-    try {
-      await dbExecute('DELETE FROM item_natures WHERE id = ?', [id]);
-      await loadData();
-      return { success: true };
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  }
+  const handleAdd = addItemNatureAction;
+  const handleUpdate = updateItemNatureAction;
+  const handleDelete = deleteItemNatureAction;
 
   if (loading) {
     return (

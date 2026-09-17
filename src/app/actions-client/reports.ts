@@ -79,7 +79,7 @@ export async function getShiftReportAction(shiftId: string) {
         SUM(COALESCE(remaining_amount, 0)) as remaining
       FROM sales_invoices
       WHERE shift_id = ?
-        AND (status IS NULL OR status = '' OR status IN ('completed', 'approved'))
+        AND (status IS NULL OR status = '' OR status IN ('completed', 'approved', 'delivered'))
       GROUP BY payment_method
     `).all(shiftId) as any[];
 
@@ -299,30 +299,39 @@ export async function getReportsDataAction() {
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
     const dateStr = localDate(thirtyDaysAgo);
+    const pharmacyId = user.pharmacy_id || 'local_default';
+    const pharmacyClause = ` AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))`;
+    const pharmacyParams = [pharmacyId, pharmacyId];
 
     const salesHistoryRaw = await dbSelect(`
       SELECT created_at, total_amount 
       FROM sales_invoices 
-      WHERE date(created_at, 'localtime') >= ?
-    `, [dateStr]) as any[];
+      WHERE date(created_at, 'localtime') >= ? AND (status IS NULL OR status = '' OR status IN ('completed', 'approved', 'delivered'))${pharmacyClause}
+    `, [dateStr, ...pharmacyParams]) as any[];
 
     const topDrugsRaw = await dbSelect(`
       SELECT md.trade_name, SUM(si.quantity_sold) as quantity_sold 
       FROM sales_items si
+      JOIN sales_invoices inv ON inv.id = si.invoice_id
       JOIN master_drugs md ON si.drug_id = md.id
+      WHERE (inv.pharmacy_id = ? OR (inv.pharmacy_id IS NULL AND ? = 'local_default'))
+        AND (inv.status IS NULL OR inv.status = '' OR inv.status IN ('completed', 'approved', 'delivered'))
       GROUP BY md.trade_name 
       ORDER BY quantity_sold DESC 
       LIMIT 5
-    `) as any[];
+    `, pharmacyParams) as any[];
 
     const categoryRaw = await dbSelect(`
       SELECT md.category, SUM(si.quantity_sold) as quantity_sold 
       FROM sales_items si
+      JOIN sales_invoices inv ON inv.id = si.invoice_id
       JOIN master_drugs md ON si.drug_id = md.id
+      WHERE (inv.pharmacy_id = ? OR (inv.pharmacy_id IS NULL AND ? = 'local_default'))
+        AND (inv.status IS NULL OR inv.status = '' OR inv.status IN ('completed', 'approved', 'delivered'))
       GROUP BY md.category 
       ORDER BY quantity_sold DESC 
       LIMIT 6
-    `) as any[];
+    `, pharmacyParams) as any[];
 
     return { 
       success: true, 

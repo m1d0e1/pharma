@@ -4,6 +4,7 @@ import React, { useState, useEffect, useCallback } from 'react'
 import * as LucideIcons from 'lucide-react'
 import { Plus, Trash2, Search, Save, X, Activity, Edit } from 'lucide-react'
 import { toast, Toaster } from 'react-hot-toast'
+import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local'
 
 interface Item {
   id: number;
@@ -35,9 +36,18 @@ export default function BilingualManagementClient({
   const [editingItem, setEditingItem] = useState<Item | null>(null);
   const [formData, setFormData] = useState({ name_ar: '', name_en: '' });
   const [isSaving, setIsSaving] = useState(false);
+  const [canManage, setCanManage] = useState(false);
 
   const ITEMS_PER_PAGE = 50;
   const [currentPage, setCurrentPage] = useState(1);
+
+  useEffect(() => {
+    let active = true;
+    getClientSession().then(user => {
+      if (active) setCanManage(hasUserPermissionSync(user, 'can_manage_inventory'));
+    });
+    return () => { active = false; };
+  }, []);
 
   // Reset to first page when searching
   const handleSearch = (val: string) => {
@@ -137,6 +147,7 @@ export default function BilingualManagementClient({
             onChange={(e) => handleSearch(e.target.value)}
           />
         </div>
+        {canManage && (
         <button 
           onClick={handleOpenAdd}
           className="px-8 py-4 bg-primary-600 text-white rounded-2xl font-black shadow-lg shadow-primary-500/20 hover:bg-primary-700 transition-all flex items-center gap-2"
@@ -144,6 +155,7 @@ export default function BilingualManagementClient({
           <Plus className="w-6 h-6" />
           إضافة {title} جديد
         </button>
+        )}
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -160,6 +172,7 @@ export default function BilingualManagementClient({
               <p className="text-slate-400 font-bold uppercase text-xs tracking-widest">{item.name_en || '---'}</p>
             </div>
             
+            {canManage && (
             <div className="mt-6 pt-6 border-t border-slate-50 dark:border-slate-800 flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-all">
                <button 
                  onClick={() => handleOpenEdit(item)}
@@ -176,6 +189,7 @@ export default function BilingualManagementClient({
                  </button>
                )}
             </div>
+            )}
           </div>
         ))}
         
@@ -208,7 +222,7 @@ export default function BilingualManagementClient({
         </div>
       )}
 
-      {isModalOpen && (
+      {canManage && isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
           <div className="bg-white dark:bg-slate-900 w-full max-w-md rounded-[32px] shadow-hard border border-slate-100 dark:border-slate-800 overflow-hidden animate-in zoom-in-95">
              <div className="p-8 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center">

@@ -22,7 +22,7 @@ jest.mock('@/lib/env', () => ({ isTauri: false }));
 
 import { processCheckoutAction } from '@/app/actions-client/sales';
 import { addExpenseAction } from '@/app/actions-client/expenses';
-import { addMasterDrugAction } from '@/app/actions-client/master-drugs';
+import { addMasterDrugAction, addUsageMethodAction } from '@/app/actions-client/master-drugs';
 
 const item = { drug_id: 1, quantity_sold: 1, unit_price: 100, selected_unit: 'large' };
 
@@ -54,5 +54,10 @@ describe('business permission enforcement', () => {
   it('rejects inventory mutation without inventory-management permission', async () => {
     const result = await addMasterDrugAction({ trade_name: 'Blocked', official_price: 10 });
     expect(result).toEqual({ success: false, error: 'غير مصرح' });
+  });
+
+  it('rejects shared master-data mutation without inventory-management permission', async () => {
+    const result = await addUsageMethodAction({ name_ar: 'Blocked' });
+    expect(result.success).toBe(false);
   });
 });

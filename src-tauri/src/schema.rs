@@ -596,6 +596,11 @@ async fn ensure_compatibility(
             "remaining_amount",
             "remaining_amount REAL DEFAULT 0",
         ),
+        (
+            "sales_invoices",
+            "points_earned",
+            "points_earned INTEGER DEFAULT 0",
+        ),
         ("returns", "approved_by", "approved_by TEXT"),
         ("return_items", "drug_id", "drug_id INTEGER"),
         ("return_items", "total_price", "total_price REAL"),

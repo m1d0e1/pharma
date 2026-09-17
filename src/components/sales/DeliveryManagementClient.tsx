@@ -133,7 +133,7 @@ export default function DeliveryManagementClient() {
                     closingId === inv.id && "opacity-50"
                   )}
                 >
-                  <CheckCircle className="w-6 h-6" /> إغلاق وتأكيد (F10)
+                  <CheckCircle className="w-6 h-6" /> إغلاق وتأكيد
                 </button>
               </div>
             </div>

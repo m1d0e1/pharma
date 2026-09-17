@@ -1,8 +1,8 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { 
-  Printer, ArrowRight, Download, Calendar, Clock, User, 
+import {
+  Printer, ArrowRight, Calendar, Clock, User,
   TrendingUp, TrendingDown, DollarSign, CreditCard, 
   ArrowUpRight, ArrowDownLeft, AlertCircle, CheckCircle,
   Receipt, ShoppingBag, RotateCcw
@@ -38,7 +38,7 @@ export default function ShiftReportClient({ shiftId }: { shiftId: string }) {
       {/* Header Actions */}
       <div className="flex justify-between items-center bg-white dark:bg-slate-900 p-6 rounded-[32px] border border-slate-100 dark:border-slate-800 shadow-sm sticky top-4 z-10 backdrop-blur-md bg-opacity-80">
         <div className="flex items-center gap-4">
-          <button onClick={() => window.history.back()} className="p-3 bg-slate-50 dark:bg-slate-800 rounded-2xl text-slate-400 hover:text-slate-800 transition-all">
+          <button onClick={() => window.history.back()} aria-label="العودة" title="العودة" className="p-3 bg-slate-50 dark:bg-slate-800 rounded-2xl text-slate-400 hover:text-slate-800 transition-all">
             <ArrowRight className="w-6 h-6" />
           </button>
           <div>
@@ -56,9 +56,6 @@ export default function ShiftReportClient({ shiftId }: { shiftId: string }) {
           </button>
           <button onClick={() => window.print()} className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black flex items-center gap-2 hover:bg-slate-800 transition-all shadow-lg">
             <Printer className="w-5 h-5" /> طباعة
-          </button>
-          <button className="p-3 bg-blue-50 text-blue-600 rounded-2xl hover:bg-blue-600 hover:text-white transition-all">
-            <Download className="w-6 h-6" />
           </button>
         </div>
       </div>

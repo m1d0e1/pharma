@@ -676,6 +676,8 @@ export default function POSPage() {
     resetPOS();
   }, [cart, resetPOS]);
 
+  const hasInvalidStockQuantity = cart.some(item => !item.isNegative && item.qty > Math.floor(stockInSelectedUnit(item) + 1e-9));
+
   const handleCheckout = async (status: 'completed' | 'draft' = 'completed', force = false) => {
     if (cart.length === 0) return;
     setIsProcessing(true);
@@ -805,6 +807,7 @@ export default function POSPage() {
       ...item,
       drug_id: String(item.drug_id),
       itemDiscountPercent: item.itemDiscountPercent || 0,
+      isNegative: Boolean(item.is_negative ?? item.isNegative),
       total_stock: item.total_stock || 0,
       reorder_point: item.reorder_point || 0,
       nearest_expiry: null,
@@ -1178,17 +1181,25 @@ export default function POSPage() {
                         <button tabIndex={-1} onClick={() => setCart(p => p.map(i => i.id === item.id ? {...i, qty: Math.max(1, i.qty-1)} : i))} className="w-4 h-4 flex items-center justify-center hover:bg-white dark:hover:bg-slate-700 rounded text-slate-500 font-bold text-xs">-</button>
                         <input 
                           type="number" 
+                          min={1}
+                          max={item.isNegative ? undefined : Math.max(1, Math.floor(stockInSelectedUnit(item)))}
                           value={item.qty} 
                           data-qty-input="true"
                           data-nav={`qty-input-${index}`}
                           onChange={(e) => {
                             const newQty = parseInt(e.target.value);
-                            setCart(p => p.map(i => i.id === item.id ? {...i, qty: isNaN(newQty) ? 1 : Math.max(1, newQty)} : i))
+                            const maxQty = item.isNegative ? Number.POSITIVE_INFINITY : Math.max(1, Math.floor(stockInSelectedUnit(item)));
+                            setCart(p => p.map(i => i.id === item.id ? {...i, qty: isNaN(newQty) ? 1 : Math.min(maxQty, Math.max(1, newQty))} : i))
                           }}
                           onKeyDown={handleInputKeyDown}
                           className="w-8 bg-transparent text-center font-bold text-xs outline-none focus:ring-1 focus:ring-blue-500 rounded p-0 text-[10px]"
                         />
-                        <button tabIndex={-1} onClick={() => setCart(p => p.map(i => i.id === item.id ? {...i, qty: i.qty+1} : i))} className="w-4 h-4 flex items-center justify-center hover:bg-white dark:hover:bg-slate-700 rounded text-slate-500 font-bold text-xs">+</button>
+                        <button
+                          tabIndex={-1}
+                          disabled={!item.isNegative && item.qty >= Math.floor(stockInSelectedUnit(item) + 1e-9)}
+                          onClick={() => setCart(p => p.map(i => i.id === item.id ? {...i, qty: i.isNegative ? i.qty + 1 : Math.min(i.qty + 1, Math.max(1, Math.floor(stockInSelectedUnit(i))))} : i))}
+                          className="w-4 h-4 flex items-center justify-center hover:bg-white dark:hover:bg-slate-700 rounded text-slate-500 disabled:opacity-30 font-bold text-xs"
+                        >+</button>
                       </div>
                     </td>
                     <td className="px-1 py-2 text-center w-14">
@@ -1265,7 +1276,7 @@ export default function POSPage() {
                </div>
                <button 
                  onClick={() => handleCheckout('completed')} 
-                 disabled={isProcessing || cart.length === 0} 
+                 disabled={isProcessing || cart.length === 0 || hasInvalidStockQuantity}
                  data-nav="checkout-button"
                  onKeyDown={handleInputKeyDown}
                  className="px-10 py-4 bg-emerald-500 text-white rounded-2xl font-black text-lg hover:bg-emerald-400 transition-all shadow-xl shadow-emerald-500/20 flex items-center gap-2"

@@ -115,6 +115,7 @@ const defaultOwnerPerms = {
   acc_can_make_daily_entries: true,
 
   // New Page level permissions
+  can_view_sales: true,
   can_view_low_stock: true,
   can_view_opening_balances: true,
   can_view_settlement: true,
@@ -243,6 +244,7 @@ export async function addUserAction(formData: {
       rep_can_view_shifts: false,
 
       // New Page level permissions
+      can_view_sales: true,
       can_view_low_stock: true,
       can_view_opening_balances: false,
       can_view_settlement: true,
@@ -292,6 +294,7 @@ export async function addUserAction(formData: {
       rep_can_view_shifts: true,
 
       // New Page level permissions
+      can_view_sales: true,
       can_view_low_stock: true,
       can_view_opening_balances: true,
       can_view_settlement: true,
@@ -349,16 +352,29 @@ export async function deleteUserAction(userId: string) {
     if (targetUser?.role === 'owner' && localUser.role !== 'owner') {
       return { success: false, error: 'لا يمكنك حذف حساب المالك' };
     }
-    
-    await dbTransaction(async () => {
-      // The open shift is shared. If its original creator is deactivated,
-      // move only that administrative ownership marker; transaction user_ids stay unchanged.
-      await db.prepare(`
-        UPDATE shifts SET user_id = ?
-        WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
-      `).run(localUser.id, userId);
-      await db.prepare('UPDATE users SET is_active = 0 WHERE id = ? AND is_active = 1').run(userId);
-    });
+
+    const openShift = await db.prepare(`
+      SELECT id, start_time
+      FROM shifts
+      WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
+      ORDER BY start_time DESC
+      LIMIT 1
+    `).get(userId) as any;
+    if (openShift) {
+      const { getHandoverDetailsAction } = await import('./handover');
+      const details = await getHandoverDetailsAction(String(openShift.id));
+      return {
+        success: false,
+        code: 'OPEN_SHIFT' as const,
+        error: 'لدى الموظف وردية مفتوحة ويجب تسويتها قبل تعطيل الحساب',
+        openShift: {
+          ...openShift,
+          expected_cash: details.success ? Number(details.data?.expected_cash || 0) : 0,
+        },
+      };
+    }
+
+    await db.prepare('UPDATE users SET is_active = 0 WHERE id = ? AND is_active = 1').run(userId);
     
     logActivity(localUser.id, 'DEACTIVATE_USER', `تعطيل المستخدم مع الاحتفاظ بسجلاته: ${targetUser.username}`);
 
@@ -379,7 +395,21 @@ export async function closeUserShiftAndDeactivateAction(data: {
   authorizerPassword: string;
   notes?: string;
 }) {
-  return deleteUserAction(data.userId);
+  const { processHandoverAction } = await import('./handover');
+  return processHandoverAction({
+    shiftId: data.shiftId,
+    actualCash: data.actualCash,
+    transferAmount: data.actualCash,
+    transferTargetId: '',
+    transferTargetType: 'treasury',
+    receiverUsername: '',
+    receiverPasswordHash: '',
+    closeOnly: true,
+    managedUserId: data.userId,
+    deactivateManagedUser: true,
+    authorizerPassword: data.authorizerPassword,
+    notes: data.notes,
+  });
 }
 
 export async function updateUserAction(userId: string, data: { 
@@ -444,6 +474,7 @@ export async function getStaffAction() {
     const user = await getLocalSession();
     if (!user) return { success: false, error: 'Unauthorized' };
 
+    const pharmacyId = user.pharmacy_id || 'local_default';
     const staff = await db.prepare(`
       SELECT 
         u.id,
@@ -456,8 +487,9 @@ export async function getStaffAction() {
       FROM users u
       LEFT JOIN employee_jobs ej ON u.job_id = ej.id
       WHERE u.is_active = 1
+        AND (u.pharmacy_id = ? OR (u.pharmacy_id IS NULL AND ? = 'local_default'))
       ORDER BY u.full_name ASC, u.username ASC
-    `).all() as any[];
+    `).all(pharmacyId, pharmacyId) as any[];
     return { success: true, data: staff || [] };
   } catch (error) {
     return { success: false, error: 'فشل جلب قائمة الموظفين' };
@@ -590,7 +622,7 @@ export async function getStaffPerformanceAction() {
         (SELECT COUNT(*) FROM returns r WHERE r.user_id = u.id) as returns_count,
         (SELECT COUNT(*) FROM shifts s WHERE s.user_id = u.id) as shifts_count
       FROM users u
-      LEFT JOIN sales_invoices si ON u.id = si.user_id AND (si.status IS NULL OR si.status != 'cancelled')
+      LEFT JOIN sales_invoices si ON u.id = si.user_id AND (si.status IS NULL OR si.status = '' OR si.status IN ('completed', 'approved', 'delivered'))
       WHERE u.is_active = 1
       GROUP BY u.id
       ORDER BY total_revenue DESC

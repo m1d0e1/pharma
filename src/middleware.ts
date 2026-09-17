@@ -1,12 +1,9 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
-import { updateSession } from '@/utils/supabase/middleware';
 import { isOwnerOnlyStaffRoute } from '@/lib/auth/staff-policy';
 
 export async function middleware(request: NextRequest) {
-  // 1. Update Supabase session (Cloud Brain)
-  // This prevents the "Invalid Refresh Token: Already Used" error
-  let response = await updateSession(request);
+  let response = NextResponse.next();
 
   const token = request.cookies.get('token')?.value;
   const path = request.nextUrl.pathname;

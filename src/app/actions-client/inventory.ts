@@ -202,13 +202,26 @@ export async function updateInventoryAction(formData: UpdateInventoryInput) {
     await secureCache.load();
 
     const current = await db.prepare(`
-      SELECT i.quantity, i.drug_id
+      SELECT i.quantity, i.drug_id, i.strips_per_box, m.large_to_medium
       FROM inventory i 
+      JOIN master_drugs m ON m.id = i.drug_id
       WHERE i.id = ?
         AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
-    `).get(id, pharmacyId, pharmacyId) as { quantity: number, drug_id: number };
+    `).get(id, pharmacyId, pharmacyId) as { quantity: number, drug_id: number, strips_per_box?: number, large_to_medium?: number };
 
     if (!current) return { success: false, error: 'الصنف غير موجود بالمخزون' };
+
+    if (Math.abs(Number(quantity) - Number(current.quantity)) > 0.000001 && !reason_id) {
+      return { success: false, error: 'يجب اختيار سبب عند تعديل كمية المخزون' };
+    }
+
+    const canModifyUnitConversion = hasUserPermissionSync(localUser, 'can_modify_unit_conversion');
+    if (large_to_medium !== undefined && large_to_medium !== null) {
+      const changesMasterConversion = Number(large_to_medium) !== Number(current.large_to_medium || 1);
+      if (changesMasterConversion && !canModifyUnitConversion) {
+        return { success: false, error: 'غير مصرح بتعديل معاملات التحويل' };
+      }
+    }
 
     let updateInvQuery = `
       UPDATE inventory 
@@ -226,7 +239,8 @@ export async function updateInventoryAction(formData: UpdateInventoryInput) {
 
     await db.prepare(updateInvQuery).run(...invParams);
 
-    if (large_to_medium !== undefined && large_to_medium !== null) {
+    if (large_to_medium !== undefined && large_to_medium !== null && canModifyUnitConversion) {
+      await db.prepare('UPDATE inventory SET strips_per_box = ? WHERE id = ?').run(large_to_medium, id);
       await db.prepare('UPDATE master_drugs SET large_to_medium = ? WHERE id = ?').run(large_to_medium, current.drug_id);
       secureCache.updateDrug(current.drug_id, { large_to_medium });
     }
@@ -598,7 +612,7 @@ export async function getLowStockAction(threshold?: number) {
         JOIN master_drugs m ON m.id = si.drug_id
         CROSS JOIN Params p
         WHERE si.is_negative = 0 
-          AND (inv.status IS NULL OR inv.status = '' OR inv.status IN ('completed', 'approved'))
+          AND (inv.status IS NULL OR inv.status = '' OR inv.status IN ('completed', 'approved', 'delivered'))
           AND (inv.pharmacy_id = p.pharmacy_id OR (inv.pharmacy_id IS NULL AND p.pharmacy_id = 'local_default'))
           AND inv.created_at >= datetime('now', '-30 days')
         GROUP BY si.drug_id
@@ -881,6 +895,7 @@ export async function getDrugDetailsFullAction(drugId: number | string) {
       FROM sales_items si
       JOIN sales_invoices invoice ON invoice.id = si.invoice_id
       WHERE si.drug_id = ?
+        AND (invoice.status IS NULL OR invoice.status = '' OR invoice.status IN ('completed', 'approved', 'delivered'))
         AND (invoice.pharmacy_id = ? OR (invoice.pharmacy_id IS NULL AND ? = 'local_default'))
       GROUP BY year, month
       ORDER BY year DESC, month DESC
@@ -1112,7 +1127,7 @@ export async function getMovementsAction() {
       FROM activity_log al
       LEFT JOIN users u ON u.id = al.user_id
       WHERE al.action IN (
-        'ADD_INVENTORY', 'UPDATE_INVENTORY', 'DELETE_INVENTORY', 'ADJUST_STOCK',
+        'ADD_INVENTORY', 'UPDATE_INVENTORY', 'DELETE_INVENTORY', 'ADJUST_STOCK', 'STOCK_ADJUSTMENT', 'ZERO_INVENTORY',
         'OPENING_BALANCE', 'SALE', 'RETURN', 'PURCHASE', 'PURCHASE_RETURN'
       )
       ORDER BY al.created_at DESC
@@ -1158,11 +1173,41 @@ export async function addOpeningBalanceAction(data: {
     }
 
     const batchNumber = 'OPEN-' + generateId().substring(0, 8);
-    
-    await db.prepare(`
-      INSERT INTO inventory (id, pharmacy_id, drug_id, batch_number, expiry_date, quantity, local_selling_price, cost_price)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(generateId(), session.pharmacy_id || 'local_default', data.drug_id, batchNumber, data.expiry_date, data.quantity, data.unit_price, data.cost_price);
+    const drug = await db.prepare(`
+      SELECT COALESCE(NULLIF(large_to_medium, 0), 1) AS large_to_medium,
+             COALESCE(trade_name_en, trade_name, active_ingredient) AS trade_name
+      FROM master_drugs
+      WHERE id = ?
+    `).get(data.drug_id) as any;
+    if (!drug) return { success: false, error: 'الصنف غير موجود' };
+
+    await dbTransaction(async () => {
+      await db.prepare(`
+        INSERT INTO inventory (id, pharmacy_id, drug_id, batch_number, expiry_date, quantity, local_selling_price, cost_price, strips_per_box)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(generateId(), session.pharmacy_id || 'local_default', data.drug_id, batchNumber, data.expiry_date, data.quantity, data.unit_price, data.cost_price, Number(drug.large_to_medium) || 1);
+
+      const amount = Number(data.quantity) * Number(data.cost_price);
+      if (amount > 0.000001) {
+        const inventorySetting = await db.prepare("SELECT account_id FROM trial_balance_settings WHERE category = 'inventory_asset' LIMIT 1").get() as any;
+        const equitySetting = await db.prepare("SELECT account_id FROM trial_balance_settings WHERE category = 'opening_balance_equity' LIMIT 1").get() as any;
+        const journalId = generateId();
+        await db.prepare(`
+          INSERT INTO daily_journals (id, date, description, created_by, total_amount)
+          VALUES (?, ?, ?, ?, ?)
+        `).run(journalId, localDate(), `رصيد افتتاحي للمخزون: ${drug.trade_name || `صنف #${data.drug_id}`} (${batchNumber})`, session.id, amount);
+        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
+          .run(journalId, Number(inventorySetting?.account_id || 10), 'debit', amount);
+        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
+          .run(journalId, Number(equitySetting?.account_id || 21), 'credit', amount);
+      }
+
+      await logActivity(
+        session.id,
+        'OPENING_BALANCE',
+        `رصيد افتتاحي ${data.quantity} من ${drug.trade_name || `صنف #${data.drug_id}`} (${batchNumber})`
+      );
+    });
 
     revalidatePath('/inventory');
     revalidatePath('/inventory/opening-balances');
@@ -1211,7 +1256,10 @@ export async function getRestockItemsAction() {
     return { success: false, error: error.message };
   }
 }
-export async function getAdjustmentsAction() { return { success: false, data: [] }; }
+export async function getAdjustmentsAction() {
+  const { getAdjustmentReasonsAction } = await import('./master-drugs');
+  return getAdjustmentReasonsAction();
+}
 export async function getUnusedDrugsAction() {
   const { getUnusedItemsAction } = await import('./master-drugs');
   return getUnusedItemsAction();

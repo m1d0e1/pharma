@@ -49,7 +49,7 @@ import {
   getPurchaseInvoiceDetailsAction,
   getPurchasesReportsAction,
 } from '@/app/actions-client/purchases';
-import { barcodeLookupAction, processCheckoutAction, searchDrugsAction } from '@/app/actions-client/sales';
+import { barcodeLookupAction, fetchDraftsAction, processCheckoutAction, searchDrugsAction } from '@/app/actions-client/sales';
 import { addOpeningBalanceAction } from '@/app/actions-client/inventory';
 import { getHandoverDetailsAction, getOpenShiftHandoverAction, getShiftCreditSalesAction, processHandoverAction } from '@/app/actions-client/handover';
 import { createCashMovementAction, getTreasuryDashboardAction } from '@/app/actions-client/finance';
@@ -171,18 +171,22 @@ describe('purchase reports and drawer handover regressions', () => {
     expect(mockDb.prepare('SELECT barcode FROM master_drugs WHERE id=9001').get()).toEqual({ barcode: '6220000000001' });
   });
 
-  it('deactivates the shared-shift creator without closing or losing the shared shift', async () => {
+  it('requires reconciliation before deactivating the shared-shift creator', async () => {
     mockDb.prepare(`UPDATE users SET password_hash = 'owner-hash', role = 'owner', is_active = 1 WHERE id = 'admin'`).run();
     mockDb.prepare(`INSERT INTO users (id, username, password_hash, role, full_name, is_active)
       VALUES ('cashier-delete', 'cashier_delete', 'cashier-hash', 'pharmacist', 'Cashier', 1)`).run();
     mockDb.prepare(`INSERT INTO shifts (id, user_id, start_time, starting_cash, status)
       VALUES ('delete-shift', 'cashier-delete', '2026-08-31 09:00:00', 100, 'open')`).run();
 
-    expect(await deleteUserAction('cashier-delete')).toMatchObject({ success: true });
+    expect(await deleteUserAction('cashier-delete')).toMatchObject({
+      success: false,
+      code: 'OPEN_SHIFT',
+      openShift: { id: 'delete-shift', expected_cash: 100 },
+    });
 
-    expect(mockDb.prepare('SELECT is_active FROM users WHERE id = ?').get('cashier-delete')).toEqual({ is_active: 0 });
+    expect(mockDb.prepare('SELECT is_active FROM users WHERE id = ?').get('cashier-delete')).toEqual({ is_active: 1 });
     expect(mockDb.prepare('SELECT user_id, status, starting_cash FROM shifts WHERE id = ?').get('delete-shift')).toEqual({
-      user_id: 'admin', status: 'open', starting_cash: 100,
+      user_id: 'cashier-delete', status: 'open', starting_cash: 100,
     });
   });
 
@@ -208,8 +212,35 @@ describe('purchase reports and drawer handover regressions', () => {
     });
 
     expect(created.success).toBe(true);
+    const draft = await createPurchaseInvoiceAction({
+      supplier_id: 1,
+      invoice_number: 'PO-REPORT-DRAFT',
+      invoice_date: '2026-07-24',
+      payment_method: 'credit',
+      status: 'draft',
+      cart: [{
+        id: 9001,
+        quantity: 1,
+        unit_id: 1,
+        expiry_date: '2028-01-31',
+        cost_price: 10,
+        selling_price: 15,
+        bonus_quantity: 0,
+        tax_percent: 0,
+        discount_percent: 0,
+        strips_per_box: 1,
+      }],
+    });
+    expect(draft.success).toBe(true);
+
     const report = await getPurchasesReportsAction({ invoiceNumber: 'PO-REPORT-1' });
     expect(report).toMatchObject({ success: true, invoiceCount: 1, totalSelling: 45 });
+
+    const financialReport = await getPurchasesReportsAction({});
+    expect(financialReport.data?.map((invoice: any) => invoice.invoice_number)).toEqual(['PO-REPORT-1']);
+
+    const draftReport = await getPurchasesReportsAction({ status: 'draft' });
+    expect(draftReport.data?.map((invoice: any) => invoice.invoice_number)).toEqual(['PO-REPORT-DRAFT']);
 
     const details = await getPurchaseInvoiceDetailsAction(created.id!);
     expect(details).toMatchObject({
@@ -644,6 +675,18 @@ describe('purchase reports and drawer handover regressions', () => {
     expect(await closeDeliveryInvoiceAction('delivery-invoice', 2)).toMatchObject({ success: true });
     expect(await closeDeliveryInvoiceAction('delivery-invoice', 2)).toMatchObject({ success: false });
 
+    expect(await getShiftReceiptsAction('delivery-origin-shift')).toMatchObject({
+      success: true,
+      data: [expect.objectContaining({ id: 'delivery-invoice', status: 'delivered', total_amount: 22 })],
+    });
+    expect(await getShiftReportAction('delivery-origin-shift')).toMatchObject({
+      success: true,
+      data: {
+        sales: [expect.objectContaining({ payment_method: 'delivery', count: 1, total: 22 })],
+        summary: { cashSales: 0, cashReceipts: 0 },
+      },
+    });
+
     expect(mockDb.prepare(`
       SELECT category, type, amount, shift_id
       FROM cash_movements
@@ -663,6 +706,41 @@ describe('purchase reports and drawer handover regressions', () => {
         disbursements: 13,
         expected_cash: 34,
       },
+    });
+  });
+
+  it('requires a check number and keeps supplier checks out of the cash drawer account', async () => {
+    mockDb.prepare('UPDATE suppliers SET balance = 20 WHERE id = 1').run();
+
+    expect(await addSupplierPaymentAction({
+      supplier_id: 1,
+      amount: 5,
+      payment_method: 'check',
+      check_number: '   ',
+    })).toMatchObject({ success: false, error: 'يرجى إدخال رقم الشيك' });
+    expect(mockDb.prepare('SELECT balance FROM suppliers WHERE id = 1').get()).toEqual({ balance: 20 });
+    expect((mockDb.prepare("SELECT COUNT(*) AS total FROM supplier_transactions WHERE type = 'payment'").get() as any).total).toBe(0);
+    expect((mockDb.prepare('SELECT COUNT(*) AS total FROM daily_journals').get() as any).total).toBe(0);
+
+    expect(await addSupplierPaymentAction({
+      supplier_id: 1,
+      amount: 5,
+      payment_method: 'check',
+      check_number: 'CHK-001',
+    })).toMatchObject({ success: true, remainingBalance: 15 });
+
+    const journal = mockDb.prepare('SELECT id FROM daily_journals ORDER BY rowid DESC LIMIT 1').get() as any;
+    const cashAccount = mockDb.prepare("SELECT account_id FROM trial_balance_settings WHERE category = 'cash_drawer' ORDER BY id LIMIT 1").get() as any;
+    const bankAccount = mockDb.prepare("SELECT account_id FROM trial_balance_settings WHERE category = 'bank_clearing' ORDER BY id LIMIT 1").get() as any;
+    const credit = mockDb.prepare("SELECT account_id, amount FROM journal_entries WHERE journal_id = ? AND type = 'credit'").get(journal.id) as any;
+    expect(credit).toEqual({ account_id: Number(bankAccount?.account_id || 6), amount: 5 });
+    if (cashAccount?.account_id && bankAccount?.account_id && cashAccount.account_id !== bankAccount.account_id) {
+      expect(credit.account_id).not.toBe(cashAccount.account_id);
+    }
+    expect((mockDb.prepare('SELECT COUNT(*) AS total FROM cash_movements').get() as any).total).toBe(0);
+    expect(mockDb.prepare("SELECT payment_method, notes FROM supplier_transactions WHERE type = 'payment' ORDER BY rowid DESC LIMIT 1").get()).toMatchObject({
+      payment_method: 'check',
+      notes: expect.stringContaining('CHK-001'),
     });
   });
 
@@ -909,8 +987,22 @@ describe('purchase reports and drawer handover regressions', () => {
       VALUES ('profit-batch', 9001, 10, 20, 2);
       INSERT INTO sales_invoices (id, user_id, total_amount, status, created_at)
       VALUES ('profit-sale', 'admin', 100, 'completed', '2026-08-15 10:00:00');
+      INSERT INTO sales_invoices (id, user_id, total_amount, status, created_at)
+      VALUES ('profit-draft', 'admin', 60, 'draft', '2026-08-15 11:00:00');
+      INSERT INTO sales_invoices (id, user_id, total_amount, status, created_at)
+      VALUES ('profit-approved', 'admin', 40, 'approved', '2026-08-15 12:00:00');
+      INSERT INTO sales_invoices (id, user_id, total_amount, status, created_at)
+      VALUES ('profit-delivered', 'admin', 30, 'delivered', '2026-08-15 13:00:00');
+      INSERT INTO sales_invoices (id, user_id, total_amount, status, created_at)
+      VALUES ('profit-legacy', 'admin', 20, NULL, '2026-08-15 14:00:00');
       INSERT INTO sales_items (invoice_id, inventory_id, drug_id, quantity_sold, unit_price, unit, cost_price)
       VALUES ('profit-sale', 'profit-batch', 9001, 2, 50, 'large', 20);
+      INSERT INTO sales_items (invoice_id, inventory_id, drug_id, quantity_sold, unit_price, unit, cost_price)
+      VALUES ('profit-approved', 'profit-batch', 9001, 1, 40, 'large', 10);
+      INSERT INTO sales_items (invoice_id, inventory_id, drug_id, quantity_sold, unit_price, unit, cost_price)
+      VALUES ('profit-delivered', 'profit-batch', 9001, 1, 30, 'large', 6);
+      INSERT INTO sales_items (invoice_id, inventory_id, drug_id, quantity_sold, unit_price, unit, cost_price)
+      VALUES ('profit-legacy', 'profit-batch', 9001, 1, 20, 'large', 5);
       INSERT INTO returns (id, invoice_id, user_id, total_refund, status, created_at)
       VALUES ('profit-return', 'profit-sale', 'admin', 30, 'approved', '2026-08-16 10:00:00');
       INSERT INTO return_items (return_id, inventory_id, drug_id, quantity_returned, unit_price, sale_item_id, unit)
@@ -922,11 +1014,11 @@ describe('purchase reports and drawer handover regressions', () => {
     expect(await getExpenseSummaryAction('2026-08')).toMatchObject({
       success: true,
       data: {
-        totalRevenue: 100,
+        totalRevenue: 190,
         totalReturns: 30,
-        totalCOGS: 30,
+        totalCOGS: 51,
         totalExpenses: 5,
-        netProfit: 35,
+        netProfit: 104,
       },
     });
   });
@@ -1072,7 +1164,58 @@ describe('purchase reports and drawer handover regressions', () => {
     expect(checkout.success).toBe(false);
   });
 
-  it('stores opening-balance retail price in the POS selling-price column', async () => {
+  it('rehydrates suspended POS invoices from current saleable stock without mutating inventory', async () => {
+    mockDb.prepare(`
+      INSERT INTO shifts (id, user_id, start_time, starting_cash, status)
+      VALUES ('draft-shift', 'admin', CURRENT_TIMESTAMP, 0, 'open')
+    `).run();
+    mockDb.exec(`
+      INSERT INTO inventory (id, pharmacy_id, drug_id, quantity, local_selling_price, cost_price, expiry_date, strips_per_box)
+      VALUES
+        ('draft-valid', NULL, 9001, 3, 15, 10, '2099-12-31', 10),
+        ('draft-expired', NULL, 9001, 7, 14, 9, '2020-01-01', 12),
+        ('draft-other', 'other-pharmacy', 9001, 20, 13, 8, '2099-12-31', 20);
+    `);
+
+    const saved = await processCheckoutAction({
+      items: [{
+        drug_id: 9001,
+        inventory_id: 'draft-valid',
+        quantity_sold: 1,
+        unit_price: 15,
+        selected_unit: 'large',
+      }],
+      payment_method: 'cash',
+      status: 'draft',
+    });
+    expect(saved.success).toBe(true);
+    expect(mockDb.prepare("SELECT quantity FROM inventory WHERE id='draft-valid'").get()).toEqual({ quantity: 3 });
+
+    mockDb.prepare("UPDATE inventory SET quantity = 2 WHERE id='draft-valid'").run();
+    const drafts = await fetchDraftsAction();
+    expect(drafts).toMatchObject({
+      success: true,
+      data: [expect.objectContaining({
+        items: [expect.objectContaining({
+          drug_id: 9001,
+          total_stock: 2,
+          batches: [expect.objectContaining({
+            inventory_id: 'draft-valid',
+            quantity: 2,
+            strips_per_box: 10,
+          })],
+        })],
+      })],
+    });
+    expect(mockDb.prepare("SELECT id,quantity FROM inventory WHERE drug_id=9001 ORDER BY id").all()).toEqual([
+      { id: 'draft-expired', quantity: 7 },
+      { id: 'draft-other', quantity: 20 },
+      { id: 'draft-valid', quantity: 2 },
+    ]);
+  });
+
+  it('stores opening-balance retail price, conversion, and activity log', async () => {
+    mockDb.prepare('UPDATE master_drugs SET large_to_medium = 6 WHERE id = 9001').run();
     const result = await addOpeningBalanceAction({
       drug_id: 9001,
       quantity: 4,
@@ -1083,11 +1226,48 @@ describe('purchase reports and drawer handover regressions', () => {
     expect(result.success).toBe(true);
 
     const row = mockDb.prepare(`
-      SELECT local_selling_price, unit_price
+      SELECT local_selling_price, unit_price, strips_per_box
       FROM inventory
       WHERE batch_number LIKE 'OPEN-%'
     `).get() as any;
-    expect(row).toMatchObject({ local_selling_price: 17, unit_price: 0 });
+    expect(row).toMatchObject({ local_selling_price: 17, unit_price: 0, strips_per_box: 6 });
+    expect(mockDb.prepare(`
+      SELECT action, details
+      FROM activity_log
+      WHERE action = 'OPENING_BALANCE'
+    `).get()).toMatchObject({
+      action: 'OPENING_BALANCE',
+      details: expect.stringContaining('Test Drug'),
+    });
+    const openingEquityAccount = (mockDb.prepare("SELECT account_id FROM trial_balance_settings WHERE category = 'opening_balance_equity'").get() as any).account_id;
+    expect(mockDb.prepare(`
+      SELECT je.account_id, je.type, je.amount
+      FROM journal_entries je
+      JOIN daily_journals dj ON dj.id = je.journal_id
+      WHERE dj.description LIKE 'رصيد افتتاحي للمخزون:%'
+      ORDER BY je.rowid
+    `).all()).toEqual([
+      { account_id: 10, type: 'debit', amount: 40 },
+      { account_id: openingEquityAccount, type: 'credit', amount: 40 },
+    ]);
+  });
+
+  it('rolls back opening stock and audit when opening-balance accounting fails', async () => {
+    mockDb.exec("CREATE TRIGGER fail_opening_journal BEFORE INSERT ON daily_journals BEGIN SELECT RAISE(ABORT,'injected opening journal failure'); END;");
+    const beforeInventory = (mockDb.prepare('SELECT COUNT(*) AS total FROM inventory').get() as any).total;
+    const beforeAudit = (mockDb.prepare("SELECT COUNT(*) AS total FROM activity_log WHERE action='OPENING_BALANCE'").get() as any).total;
+
+    const result = await addOpeningBalanceAction({
+      drug_id: 9001,
+      quantity: 4,
+      cost_price: 10,
+      unit_price: 17,
+      expiry_date: '2099-12-31',
+    });
+
+    expect(result.success).toBe(false);
+    expect((mockDb.prepare('SELECT COUNT(*) AS total FROM inventory').get() as any).total).toBe(beforeInventory);
+    expect((mockDb.prepare("SELECT COUNT(*) AS total FROM activity_log WHERE action='OPENING_BALANCE'").get() as any).total).toBe(beforeAudit);
   });
 
   it('rejects cumulative, mismatched, and duplicate purchase-return lines before changing stock', async () => {
@@ -1397,4 +1577,3 @@ describe('purchase reports and drawer handover regressions', () => {
     expect((mockDb.prepare("SELECT COUNT(*) AS total FROM shifts WHERE user_id = 'cashier-auto-1'").get() as any).total).toBe(2);
   });
 });
-

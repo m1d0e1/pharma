@@ -1,5 +1,4 @@
 import { createBrowserClient } from '@supabase/ssr'
-import { isTauri } from '@/lib/env'
 
 // Singleton pattern for Supabase browser client
 let supabaseInstance: ReturnType<typeof createBrowserClient> | null = null
@@ -23,8 +22,8 @@ export function getSupabaseBrowserClient() {
 
   supabaseInstance = createBrowserClient(supabaseUrl, supabaseAnonKey, {
     auth: {
-      persistSession: isTauri,
-      autoRefreshToken: isTauri,
+      persistSession: false,
+      autoRefreshToken: false,
       detectSessionInUrl: false
     }
   })

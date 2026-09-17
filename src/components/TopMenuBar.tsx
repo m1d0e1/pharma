@@ -59,7 +59,7 @@ const MENUS: Menu[] = [
       { type: 'separator' },
       { type: 'link', label: 'تقارير المبيعات',   href: '/reports/sales',    icon: BarChart3,      roles: ['owner','admin'], permission: 'rep_can_view_sales' },
       { type: 'link', label: 'توصيل منزلي',       href: '/sales/delivery',   icon: Bike,           roles: ['owner','admin','pharmacist'], permission: 'can_view_delivery' },
-      { type: 'link', label: 'تعديل التكلفة',     href: '/sales/cogs',       icon: Edit3,          roles: ['owner','admin'], permission: 'can_view_cogs' },
+      { type: 'link', label: 'تعديل التكلفة',     href: '/sales/cogs',       icon: Edit3,          roles: ['owner'] },
       { type: 'link', label: 'تسوية المبيعات',    href: '/sales/settlement',  icon: ArrowLeftRight, roles: ['owner','admin','pharmacist'], permission: 'can_view_settlement' },
     ],
   },

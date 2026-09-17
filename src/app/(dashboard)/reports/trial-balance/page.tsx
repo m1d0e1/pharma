@@ -1,7 +1,7 @@
 'use client';
 import React, { useEffect, useState } from 'react';
 import TrialBalanceReport from '@/components/reports/TrialBalanceReport';
-import { getClientSession } from '@/lib/auth/local';
+import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { useRouter } from 'next/navigation';
 import AccessDenied from '@/components/AccessDenied';
 import { Printer } from 'lucide-react';
@@ -32,7 +32,7 @@ export default function TrialBalanceReportPage() {
     );
   }
 
-  if (user.role !== 'owner' && user.role !== 'admin') {
+  if (!hasUserPermissionSync(user, 'acc_can_view_reports')) {
     return <AccessDenied />;
   }
 
@@ -45,7 +45,7 @@ export default function TrialBalanceReportPage() {
           طباعة التقرير
         </button>
       </div>
-      <TrialBalanceReport userRole={user.role} />
+      <TrialBalanceReport userRole={user.role} user={user} />
     </div>
   );
 }

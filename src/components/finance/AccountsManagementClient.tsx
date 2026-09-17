@@ -437,6 +437,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
   const largestCategoryLabel = largestCategory === 'لا يوجد' ? 'لا يوجد' : getCategoryDisplayName(largestCategory);
   const canProcessCash = hasConfiguredPermission(sessionUser, 'acc_can_process_cash_flow');
   const canManageExpenses = hasConfiguredPermission(sessionUser, 'acc_can_define_expenses');
+  const canManageAccounts = hasConfiguredPermission(sessionUser, 'acc_can_make_daily_entries');
   const filteredActivityLogs = activityLogs.filter(log => {
     if (!auditSearch.trim()) return true;
     const q = auditSearch.trim().toLowerCase();
@@ -1347,7 +1348,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
 
            {activeTab === 'trial_balance' && (
               <div className="animate-in fade-in slide-in-from-left-4">
-                 <TrialBalanceReport userRole={userRole} />
+                 <TrialBalanceReport userRole={userRole} user={sessionUser} />
               </div>
            )}
 
@@ -1427,12 +1428,14 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                              شجرة مرئية
                           </button>
                        </div>
-                       <button 
-                         onClick={() => setShowAddAccount({ show: true, parentId: null })}
-                         className="px-10 py-5 bg-slate-800 text-white rounded-[24px] font-black hover:bg-slate-900 transition-all shadow-xl flex items-center gap-3"
-                       >
-                          <Plus className="w-6 h-6" /> إضافة حساب رئيسي
-                       </button>
+                       {canManageAccounts && (
+                         <button
+                           onClick={() => setShowAddAccount({ show: true, parentId: null })}
+                           className="px-10 py-5 bg-slate-800 text-white rounded-[24px] font-black hover:bg-slate-900 transition-all shadow-xl flex items-center gap-3"
+                         >
+                            <Plus className="w-6 h-6" /> إضافة حساب رئيسي
+                         </button>
+                       )}
                     </div>
                  </div>
 
@@ -1445,14 +1448,14 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                                 <th className="px-8 py-6">إسم الحساب</th>
                                 <th className="px-8 py-6">النوع</th>
                                 <th className="px-8 py-6">الرصيد</th>
-                                <th className="px-8 py-6">إجراءات</th>
+                                {canManageAccounts && <th className="px-8 py-6">إجراءات</th>}
                              </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                              {loadingData ? (
-                                <tr><td colSpan={5} className="py-20 text-center text-slate-400 italic font-bold">جاري تحميل البيانات...</td></tr>
+                                <tr><td colSpan={canManageAccounts ? 5 : 4} className="py-20 text-center text-slate-400 italic font-bold">جاري تحميل البيانات...</td></tr>
                              ) : accounts.length === 0 ? (
-                                <tr><td colSpan={5} className="py-20 text-center text-slate-400 italic font-bold">لا توجد حسابات مسجلة</td></tr>
+                                <tr><td colSpan={canManageAccounts ? 5 : 4} className="py-20 text-center text-slate-400 italic font-bold">لا توجد حسابات مسجلة</td></tr>
                              ) : accounts.map(acc => (
                                 <tr key={`acc-${acc.id}`} className={cn(
                                   "hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors",
@@ -1468,16 +1471,16 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                                          acc.type === 'asset' ? "bg-emerald-100 text-emerald-600" :
                                          acc.type === 'liability' ? "bg-rose-100 text-rose-600" :
                                          acc.type === 'equity' ? "bg-blue-100 text-blue-600" :
-                                         acc.type === 'income' ? "bg-indigo-100 text-indigo-600" : "bg-amber-100 text-amber-600"
+                                         (acc.type === 'income' || acc.type === 'revenue') ? "bg-indigo-100 text-indigo-600" : "bg-amber-100 text-amber-600"
                                       )}>
                                          {acc.type === 'asset' ? 'أصول' : 
                                           acc.type === 'liability' ? 'خصوم' : 
                                           acc.type === 'equity' ? 'حقوق ملكية' : 
-                                          acc.type === 'income' ? 'إيرادات' : 'مصروفات'}
+                                          (acc.type === 'income' || acc.type === 'revenue') ? 'إيرادات' : 'مصروفات'}
                                       </span>
                                    </td>
                                    <td className="px-8 py-6 font-black">{acc.balance?.toLocaleString('en-US')} ج.م</td>
-                                   <td className="px-8 py-6">
+                                   {canManageAccounts && <td className="px-8 py-6">
                                       <div className="flex gap-2">
                                          <button 
                                            onClick={() => setShowAddAccount({ show: true, parentId: acc.id })}
@@ -1501,7 +1504,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                                             <Trash2 className="w-4 h-4" />
                                           </button>
                                       </div>
-                                   </td>
+                                   </td>}
                                 </tr>
                              ))}
                           </tbody>
@@ -1517,6 +1520,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                                 onAddSub={(id) => setShowAddAccount({ show: true, parentId: id })} 
                                 onEdit={(node) => setEditingAccount(node)}
                                 onDelete={(node) => handleDeleteAccount(node)}
+                                canManage={canManageAccounts}
                                 level={0}
                               />
                           ))}
@@ -1769,7 +1773,7 @@ function buildAccountTree(accounts: any[]) {
    return roots;
 }
 
-function AccountTreeNode({ node, onAddSub, onEdit, onDelete, level = 0 }: { node: any, onAddSub: (id: number) => void, onEdit: (node: any) => void, onDelete: (node: any) => void, level?: number }) {
+function AccountTreeNode({ node, onAddSub, onEdit, onDelete, canManage, level = 0 }: { node: any, onAddSub: (id: number) => void, onEdit: (node: any) => void, onDelete: (node: any) => void, canManage: boolean, level?: number }) {
    const [isExpanded, setIsExpanded] = useState(level < 1); // Expand root levels by default
 
    const typeConfigs: Record<string, { color: string, bg: string, label: string }> = {
@@ -1842,7 +1846,7 @@ function AccountTreeNode({ node, onAddSub, onEdit, onDelete, level = 0 }: { node
             </div>
 
             {/* Hover Actions */}
-            <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-all duration-200 pr-4">
+            {canManage && <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-all duration-200 pr-4">
                {node.is_group ? (
                   <button 
                     onClick={(e) => {
@@ -1869,7 +1873,7 @@ function AccountTreeNode({ node, onAddSub, onEdit, onDelete, level = 0 }: { node
                >
                  <Trash2 className="w-4 h-4" />
                </button>
-            </div>
+            </div>}
          </div>
 
          {/* Recursive Children */}
@@ -1882,6 +1886,7 @@ function AccountTreeNode({ node, onAddSub, onEdit, onDelete, level = 0 }: { node
                     onAddSub={onAddSub} 
                     onEdit={onEdit}
                     onDelete={onDelete}
+                    canManage={canManage}
                     level={level + 1} 
                   />
                ))}

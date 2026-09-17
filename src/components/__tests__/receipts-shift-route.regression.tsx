@@ -33,7 +33,7 @@ describe('receipts shift route', () => {
     const view = render(<ReceiptsPage />);
 
     await waitFor(() => expect(dbSelect).toHaveBeenCalledWith(
-      expect.stringContaining('WHERE si.shift_id = ?'),
+      expect.stringContaining("si.status IN ('completed', 'approved', 'delivered')"),
       ['shift-a'],
     ));
 
@@ -41,8 +41,18 @@ describe('receipts shift route', () => {
     view.rerender(<ReceiptsPage />);
 
     await waitFor(() => expect(dbSelect).toHaveBeenCalledWith(
-      expect.stringContaining('WHERE si.shift_id = ?'),
+      expect.stringContaining("si.status IN ('completed', 'approved', 'delivered')"),
       ['shift-b'],
+    ));
+  });
+
+  it('keeps drafts out of the unscoped receipt history', async () => {
+    currentShiftId = null;
+    render(<ReceiptsPage />);
+
+    await waitFor(() => expect(dbSelect).toHaveBeenCalledWith(
+      expect.stringContaining("si.status IN ('completed', 'approved', 'delivered')"),
+      [],
     ));
   });
 });

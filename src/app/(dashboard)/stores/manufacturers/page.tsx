@@ -2,7 +2,8 @@
 
 import React, { useEffect, useState } from 'react';
 import BilingualManagementClient from '@/components/inventory/BilingualManagementClient';
-import { dbSelect, dbExecute } from '@/lib/db/tauri';
+import { dbSelect } from '@/lib/db/tauri';
+import { addManufacturerAction, updateGenericBilingualAction, deleteGenericBilingualAction } from '@/app/actions-client/master-drugs';
 
 export default function ManufacturersPage() {
   const [manufacturers, setManufacturers] = useState<any[]>([]);
@@ -23,41 +24,9 @@ export default function ManufacturersPage() {
     loadManufacturers();
   }, []);
 
-  const handleAdd = async (data: { name_ar: string, name_en?: string }) => {
-    try {
-      const res = await dbExecute(
-        'INSERT INTO manufacturers (name_ar, name_en) VALUES (?, ?)',
-        [data.name_ar, data.name_en || null]
-      );
-      await loadManufacturers();
-      return { success: true, id: res.lastInsertId };
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  };
-
-  const handleUpdate = async (id: number, data: { name_ar: string, name_en?: string }) => {
-    try {
-      await dbExecute(
-        'UPDATE manufacturers SET name_ar = ?, name_en = ? WHERE id = ?',
-        [data.name_ar, data.name_en || null, id]
-      );
-      await loadManufacturers();
-      return { success: true };
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  };
-
-  const handleDelete = async (id: number) => {
-    try {
-      await dbExecute('DELETE FROM manufacturers WHERE id = ?', [id]);
-      await loadManufacturers();
-      return { success: true };
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  };
+  const handleAdd = addManufacturerAction;
+  const handleUpdate = (id: number, data: { name_ar: string, name_en?: string }) => updateGenericBilingualAction('manufacturers', id, data);
+  const handleDelete = (id: number) => deleteGenericBilingualAction('manufacturers', id);
 
   if (loading) {
     return (

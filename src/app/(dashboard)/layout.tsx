@@ -34,6 +34,7 @@ export default function DashboardLayout({
   const [pharmacyName, setPharmacyName] = useState<string>('فارما تيك');
   const [loading, setLoading] = useState(true);
   const [isTauri, setIsTauri] = useState(false);
+  const roleLabel = userRole === 'owner' ? 'مالك' : userRole === 'admin' ? 'مدير النظام' : userRole === 'manager' ? 'مدير' : userRole === 'cashier' ? 'كاشير' : 'صيدلي';
   const canAccessPos = hasUserPermissionSync({ role: userRole, permissions }, 'can_access_pos');
 
   const log = (m: string) => typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__?.invoke('log_frontend_error', { message: m });
@@ -68,30 +69,6 @@ export default function DashboardLayout({
             }
           } catch (dbErr) {
             console.error('Failed to fetch pharmacy name:', dbErr);
-          }
-        } else {
-          if (!isTauriRuntime) {
-            try {
-              const { getSupabaseBrowserClient } = await import('@/lib/supabase');
-              const supabase = getSupabaseBrowserClient();
-              const { data } = await supabase.auth.getUser();
-              if (data?.user) {
-                setUser({ email: data.user.email, id: data.user.id });
-                const { data: profile } = await supabase
-                  .from('profiles')
-                  .select('role, pharmacies(name)')
-                  .eq('id', data.user.id)
-                  .single();
-                if (profile) {
-                  setUserRole(profile.role || 'pharmacist');
-                  if ((profile as any).pharmacies?.name) {
-                    setPharmacyName((profile as any).pharmacies.name);
-                  }
-                }
-              }
-            } catch (sbErr) {
-              console.error('Supabase auth fallback error:', sbErr);
-            }
           }
         }
       } catch (err: any) {
@@ -328,6 +305,9 @@ export default function DashboardLayout({
           dir="rtl"
         >
           {backButton}
+          <div className="hidden" aria-hidden="true">
+            <SidebarNav userRole={userRole} userPermissions={permissions} />
+          </div>
           {/* 1. Main Toolbar/Header */}
           {!isPos && (
             <header className="sticky top-0 z-40 bg-white/80 dark:bg-slate-950/80 backdrop-blur-xl border-b border-slate-200/60 dark:border-slate-800/60 shadow-sm">
@@ -342,7 +322,7 @@ export default function DashboardLayout({
                     <div className="hidden sm:block">
                       <p className="text-sm font-black text-slate-900 dark:text-white leading-tight">{pharmacyName}</p>
                       <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-tight">
-                        {userRole === 'admin' || userRole === 'owner' ? '👑 مدير النظام' : '🧪 صيدلي'}
+                        {userRole === 'owner' || userRole === 'admin' ? '👑' : '🧪'} {roleLabel}
                       </p>
                     </div>
                   </Link>
@@ -410,7 +390,7 @@ export default function DashboardLayout({
                   <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-400 text-xs">
                     {userRole === 'admin' || userRole === 'owner' ? '👑' : '🧪'}
                   </span>
-                  {userRole === 'admin' || userRole === 'owner' ? 'مدير النظام' : 'صيدلي'}
+                  {roleLabel}
                 </p>
               </div>
             </div>
@@ -433,7 +413,7 @@ export default function DashboardLayout({
                   <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-400 text-xs">
                     {userRole === 'admin' || userRole === 'owner' ? '👑' : '🧪'}
                   </span>
-                  {userRole === 'admin' || userRole === 'owner' ? 'مدير' : 'صيدلي'}
+                  {roleLabel}
                 </p>
               </div>
               <ThemeToggle />
@@ -463,9 +443,6 @@ export default function DashboardLayout({
           <header className="sticky top-0 z-20 bg-gradient-glass dark:bg-gradient-glass-dark backdrop-blur-xl border-b border-slate-200/60 dark:border-slate-800/60 px-5 sm:px-7 py-4 sm:py-5">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-4 sm:gap-5">
-                <button className="lg:hidden p-3 rounded-2xl hover:bg-slate-100/80 dark:hover:bg-slate-800/80 transition-all duration-300 hover:shadow-md">
-                  <Menu className="w-6 h-6 text-slate-700 dark:text-slate-300" />
-                </button>
                 <div>
                   <h1 className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-white truncate max-w-[240px] sm:max-w-none leading-tight">
                     نظام إدارة الصيدليات الذكي
@@ -490,7 +467,7 @@ export default function DashboardLayout({
                       <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-400 text-xs">
                         {userRole === 'admin' || userRole === 'owner' ? '👑' : '🧪'}
                       </span>
-                      {userRole === 'admin' || userRole === 'owner' ? 'مدير' : 'صيدلي'}
+                      {roleLabel}
                     </p>
                   </div>
                 </div>

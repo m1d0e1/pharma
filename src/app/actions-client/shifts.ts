@@ -417,14 +417,14 @@ export async function getCurrentShiftStatsAction() {
     const countStats = await db.prepare(`
       SELECT COUNT(*) as transactions
       FROM sales_invoices
-      WHERE shift_id = ? AND (status IS NULL OR status = '' OR status IN ('completed', 'approved'))
+      WHERE shift_id = ? AND (status IS NULL OR status = '' OR status IN ('completed', 'approved', 'delivered'))
     `).get(shift.id) as any;
 
     // 2. Total sales revenue (all payment methods)
     const salesStats = await db.prepare(`
       SELECT COALESCE(SUM(total_amount), 0) as total_revenue
       FROM sales_invoices
-      WHERE shift_id = ? AND (status IS NULL OR status = '' OR status IN ('completed', 'approved'))
+      WHERE shift_id = ? AND (status IS NULL OR status = '' OR status IN ('completed', 'approved', 'delivered'))
     `).get(shift.id) as any;
 
     // 3. Cash-drawer sales revenue (cash & delivery)
@@ -549,7 +549,7 @@ export async function getShiftReceiptsAction(shiftId: string) {
       LEFT JOIN users u ON si.user_id = u.id
       LEFT JOIN patients p ON si.patient_id = p.id
       WHERE si.shift_id = ?
-        AND (si.status IS NULL OR si.status = '' OR si.status IN ('completed', 'approved'))
+        AND (si.status IS NULL OR si.status = '' OR si.status IN ('completed', 'approved', 'delivered'))
       ORDER BY si.created_at DESC
     `).all(shiftId) as any[];
 

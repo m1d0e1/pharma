@@ -149,6 +149,9 @@ export async function createReturnAction(data: {
     try {
       await db.exec('ALTER TABLE return_items ADD COLUMN unit TEXT');
     } catch(e) {}
+    try {
+      await db.exec('ALTER TABLE sales_invoices ADD COLUMN points_earned INTEGER DEFAULT 0');
+    } catch(e) {}
 
     const dbHeader = await db.prepare('SELECT * FROM sales_invoices WHERE id = ?').get(data.invoice_id) as any;
     if (!dbHeader) return { success: false, error: 'الفاتورة غير موجودة' };
@@ -199,6 +202,11 @@ export async function createReturnAction(data: {
 
     const returnId = generateId();
     const totalRefund = data.items.reduce((sum, i) => sum + (i.quantity * i.unit_price), 0);
+    const priorRefund = await db.prepare(`
+      SELECT COALESCE(SUM(total_refund), 0) AS total
+      FROM returns
+      WHERE invoice_id = ? AND LOWER(COALESCE(status, '')) IN ('approved', 'completed')
+    `).get(data.invoice_id) as any;
 
     try {
       // 3. Create return header
@@ -325,6 +333,23 @@ export async function createReturnAction(data: {
           `مرتجع مبيعات فاتورة #${data.invoice_id.slice(0, 8)}`,
           returnDate
         );
+      }
+
+      const invoiceTotal = Number(dbHeader?.total_amount || 0);
+      const pointsEarned = Math.max(0, Number(dbHeader?.points_earned || 0));
+      if (patientId && invoiceTotal > 0 && pointsEarned > 0) {
+        const targetReversed = (refunded: number) => refunded + 0.005 >= invoiceTotal
+          ? pointsEarned
+          : Math.floor(pointsEarned * (Math.max(0, refunded) / invoiceTotal));
+        const refundedBefore = Number(priorRefund?.total || 0);
+        const pointsToReverse = Math.max(
+          0,
+          targetReversed(refundedBefore + totalRefund) - targetReversed(refundedBefore)
+        );
+        if (pointsToReverse > 0) {
+          await db.prepare('UPDATE patients SET points_balance = MAX(0, COALESCE(points_balance, 0) - ?) WHERE id = ?')
+            .run(pointsToReverse, String(patientId));
+        }
       }
 
       logActivity(user.id, 'CREATE_RETURN', `مرتجع بقيمة ${totalRefund} ج.م للفاتورة ${data.invoice_id.slice(0,8)}`);

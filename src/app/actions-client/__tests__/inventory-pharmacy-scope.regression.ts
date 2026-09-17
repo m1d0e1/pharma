@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import { readFileSync } from 'fs';
 
 let mockDb: Database.Database;
-let mockSession: { id: string; role: string; pharmacy_id: string | null };
+let mockSession: { id: string; role: string; pharmacy_id: string | null; permissions?: unknown };
 
 jest.mock('@/lib/db/tauri', () => ({
   dbSelect: jest.fn(async (sql: string, params: unknown[] = []) => mockDb.prepare(sql).all(...params)),
@@ -30,13 +30,17 @@ jest.mock('@/lib/cache/secure_cache', () => ({
 }));
 
 jest.unmock('@/app/actions-client/inventory');
+jest.unmock('@/app/actions-client/master-drugs');
 
 import {
   getDrugDetailsFullAction,
   getInventoryAlertsAction,
   getInventoryListAction,
+  getLowStockAction,
+  getMovementsAction,
   getOpeningBalancesAction,
 } from '@/app/actions-client/inventory';
+import { createStockAdjustmentAction } from '@/app/actions-client/master-drugs';
 
 describe('inventory read models preserve pharmacy boundaries', () => {
   beforeEach(() => {
@@ -136,5 +140,62 @@ describe('inventory read models preserve pharmacy boundaries', () => {
     // After the rebuy-alert fix, drugId filter also excludes qty=0 lots
     expect(exactList.data?.map((item: any) => item.drug_id)).toEqual([9201]);
     expect(exactList.data?.map((item: any) => item.quantity)).toEqual([3]);
+  });
+
+  it('uses only finalized sales, including delivered invoices, for consumption and low-stock demand', async () => {
+    mockDb.exec(`
+      INSERT INTO sales_invoices (id, user_id, total_amount, status, pharmacy_id, created_at) VALUES
+        ('sale-completed', 'admin', 20, 'completed', NULL, CURRENT_TIMESTAMP),
+        ('sale-delivered', 'admin', 30, 'delivered', NULL, CURRENT_TIMESTAMP),
+        ('sale-draft', 'admin', 50, 'draft', NULL, CURRENT_TIMESTAMP),
+        ('sale-cancelled', 'admin', 70, 'cancelled', NULL, CURRENT_TIMESTAMP),
+        ('sale-foreign', 'admin', 110, 'completed', 'ph-2', CURRENT_TIMESTAMP);
+      INSERT INTO sales_items (invoice_id, drug_id, quantity_sold, unit_price, unit, is_negative) VALUES
+        ('sale-completed', 9201, 2, 10, 'large', 0),
+        ('sale-delivered', 9201, 3, 10, 'large', 0),
+        ('sale-draft', 9201, 5, 10, 'large', 0),
+        ('sale-cancelled', 9201, 7, 10, 'large', 0),
+        ('sale-foreign', 9201, 11, 10, 'large', 0);
+    `);
+
+    const details = await getDrugDetailsFullAction(9201);
+    expect(details.success).toBe(true);
+    expect(details.data?.consumption_stats).toEqual([
+      expect.objectContaining({ net_sales: 5, transactions: 2 }),
+    ]);
+
+    const lowStock = await getLowStockAction(10);
+    const item = lowStock.data?.find((row: any) => row.drug_id === 9201);
+    expect(item).toEqual(expect.objectContaining({ avg_monthly_usage: 5 }));
+  });
+
+  it('keeps stock adjustments in the local pharmacy, rejects negative quantity, and posts valuation entries', async () => {
+    mockDb.exec(`
+      UPDATE inventory SET cost_price = 5 WHERE id = 'local-active';
+      INSERT OR IGNORE INTO adjustment_reasons (id, name_ar) VALUES (9001, 'تصحيح اختبار');
+    `);
+
+    expect(await createStockAdjustmentAction('local-active', { reason_id: 9001, old_quantity: 2, new_quantity: -1 })).toEqual({
+      success: false,
+      error: 'الكمية الجديدة غير صالحة',
+    });
+
+    expect((await createStockAdjustmentAction('local-active', { reason_id: 9001, old_quantity: 2, new_quantity: 4 })).success).toBe(true);
+    expect(mockDb.prepare("SELECT quantity FROM inventory WHERE id = 'local-active'").get()).toEqual({ quantity: 4 });
+    expect(mockDb.prepare("SELECT quantity FROM inventory WHERE id = 'foreign-active'").get()).toEqual({ quantity: 7 });
+    expect(mockDb.prepare("SELECT COUNT(*) AS count FROM stock_adjustments WHERE inventory_id = 'local-active'").get()).toEqual({ count: 1 });
+    expect(mockDb.prepare("SELECT COUNT(*) AS count FROM journal_entries WHERE journal_id = 'test-id'").get()).toEqual({ count: 2 });
+  });
+
+  it('includes stock adjustments and zeroing in item movements', async () => {
+    mockDb.prepare(`INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)`).run('admin', 'STOCK_ADJUSTMENT', 'fractional adjustment');
+    mockDb.prepare(`INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)`).run('admin', 'ZERO_INVENTORY', 'manual zero');
+
+    const movements = await getMovementsAction();
+    expect(movements.success).toBe(true);
+    expect(movements.data?.map((row: any) => row.action)).toEqual(expect.arrayContaining([
+      'STOCK_ADJUSTMENT',
+      'ZERO_INVENTORY',
+    ]));
   });
 });

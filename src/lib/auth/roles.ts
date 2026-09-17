@@ -80,6 +80,7 @@ export const ROUTE_PERMISSIONS: Record<string, string> = {
   '/sales/delivery': 'can_view_delivery',
   '/sales/cogs': 'can_view_cogs',
   '/sales/settlement': 'can_view_settlement',
+  '/sales': 'can_view_sales',
   '/returns': 'can_view_returns',
   '/inventory/low-stock': 'can_view_low_stock',
   '/inventory/item-movements': 'preview_item_movements',

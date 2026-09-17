@@ -5,7 +5,8 @@ import { useRouter } from 'next/navigation'
 import { getClientSession } from '@/lib/auth/local'
 import { Activity } from 'lucide-react'
 import BilingualManagementClient from '@/components/inventory/BilingualManagementClient'
-import { dbSelect, dbExecute } from '@/lib/db/tauri'
+import { dbSelect } from '@/lib/db/tauri'
+import { addIndicationAction, updateIndicationAction, deleteIndicationAction } from '@/app/actions-client/master-drugs'
 
 export default function IndicationsPage() {
   const router = useRouter();
@@ -35,35 +36,9 @@ export default function IndicationsPage() {
     checkAuthAndLoad();
   }, [router]);
 
-  const handleAdd = async (item: { name_ar: string, name_en?: string }) => {
-    try {
-      const result = await dbExecute('INSERT INTO indications (name_ar, name_en) VALUES (?, ?)', [item.name_ar, item.name_en || null]);
-      await loadData();
-      return { success: true, id: result.lastInsertId };
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  }
-
-  const handleUpdate = async (id: number, item: { name_ar: string, name_en?: string }) => {
-    try {
-      await dbExecute('UPDATE indications SET name_ar = ?, name_en = ? WHERE id = ?', [item.name_ar, item.name_en || null, id]);
-      await loadData();
-      return { success: true };
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  }
-
-  const handleDelete = async (id: number) => {
-    try {
-      await dbExecute('DELETE FROM indications WHERE id = ?', [id]);
-      await loadData();
-      return { success: true };
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  }
+  const handleAdd = addIndicationAction;
+  const handleUpdate = updateIndicationAction;
+  const handleDelete = deleteIndicationAction;
 
   if (loading) {
     return (

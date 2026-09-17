@@ -123,6 +123,85 @@ describe('Patient Statement, Inventory Amount Editing, and Credit Returns', () =
     expect(adj.new_quantity).toBe(30);
   });
 
+  it('rejects quantity changes without an adjustment reason', async () => {
+    const updateRes = await updateInventoryAction({
+      id: 'inv-1',
+      quantity: 40,
+      local_selling_price: 25,
+    });
+
+    expect(updateRes).toEqual({ success: false, error: 'يجب اختيار سبب عند تعديل كمية المخزون' });
+    expect((mockDb.prepare('SELECT quantity, local_selling_price FROM inventory WHERE id = ?').get('inv-1') as any)).toEqual({
+      quantity: 50,
+      local_selling_price: 20,
+    });
+    expect(mockDb.prepare('SELECT COUNT(*) AS n FROM stock_adjustments WHERE inventory_id = ?').get('inv-1')).toEqual({ n: 0 });
+  });
+
+  it('still allows price-only inventory edits without an adjustment reason', async () => {
+    const updateRes = await updateInventoryAction({
+      id: 'inv-1',
+      quantity: 50,
+      local_selling_price: 25,
+    });
+
+    expect(updateRes).toEqual({ success: true });
+    expect((mockDb.prepare('SELECT quantity, local_selling_price FROM inventory WHERE id = ?').get('inv-1') as any)).toEqual({
+      quantity: 50,
+      local_selling_price: 25,
+    });
+    expect(mockDb.prepare('SELECT COUNT(*) AS n FROM stock_adjustments WHERE inventory_id = ?').get('inv-1')).toEqual({ n: 0 });
+  });
+
+  it('keeps the edited lot conversion in sync with the master drug', async () => {
+    mockDb.prepare('UPDATE inventory SET strips_per_box = 2 WHERE id = ?').run('inv-1');
+
+    const updateRes = await updateInventoryAction({
+      id: 'inv-1',
+      quantity: 50,
+      local_selling_price: 20,
+      large_to_medium: 3,
+    });
+
+    expect(updateRes).toEqual({ success: true });
+    expect((mockDb.prepare('SELECT strips_per_box FROM inventory WHERE id = ?').get('inv-1') as any).strips_per_box).toBe(3);
+    expect((mockDb.prepare('SELECT large_to_medium FROM master_drugs WHERE id = ?').get(101) as any).large_to_medium).toBe(3);
+  });
+
+  it('does not let ordinary inventory edits rewrite conversion data without conversion permission', async () => {
+    mockDb.prepare('UPDATE inventory SET strips_per_box = 2 WHERE id = ?').run('inv-1');
+    mockDb.prepare('UPDATE master_drugs SET large_to_medium = 3 WHERE id = ?').run(101);
+    mockSession = {
+      id: 'staff-1',
+      role: 'pharmacist',
+      pharmacy_id: 'local_default',
+      permissions: JSON.stringify({ can_manage_inventory: true, can_modify_unit_conversion: false }),
+    };
+
+    const updateRes = await updateInventoryAction({
+      id: 'inv-1',
+      quantity: 50,
+      local_selling_price: 25,
+      large_to_medium: 3,
+    });
+
+    expect(updateRes).toEqual({ success: true });
+    expect((mockDb.prepare('SELECT strips_per_box FROM inventory WHERE id = ?').get('inv-1') as any).strips_per_box).toBe(2);
+    expect((mockDb.prepare('SELECT large_to_medium FROM master_drugs WHERE id = ?').get(101) as any).large_to_medium).toBe(3);
+    expect((mockDb.prepare('SELECT local_selling_price FROM inventory WHERE id = ?').get('inv-1') as any).local_selling_price).toBe(25);
+
+    const deniedRes = await updateInventoryAction({
+      id: 'inv-1',
+      quantity: 50,
+      local_selling_price: 25,
+      large_to_medium: 4,
+    });
+
+    expect(deniedRes).toEqual({ success: false, error: 'غير مصرح بتعديل معاملات التحويل' });
+    expect((mockDb.prepare('SELECT strips_per_box FROM inventory WHERE id = ?').get('inv-1') as any).strips_per_box).toBe(2);
+    expect((mockDb.prepare('SELECT large_to_medium FROM master_drugs WHERE id = ?').get(101) as any).large_to_medium).toBe(3);
+  });
+
   it('fetches patient statement with credit sales, returns, and notices without crashing', async () => {
     // 1. Add credit sale
     mockDb.prepare(`

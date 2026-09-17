@@ -91,6 +91,23 @@ describe('Tauri Auth — loginLocal Tauri path', () => {
       expect.arrayContaining(['u1'])
     );
   });
+
+  it('retries a transient DB failure when restoring a stored Tauri session', async () => {
+    mockStorage.setItem('pharma_session_user', JSON.stringify({ id: 'u1', username: 'admin' }));
+    const { dbGet } = require('@/lib/db/tauri');
+    dbGet
+      .mockRejectedValueOnce(new Error('database is still opening'))
+      .mockResolvedValueOnce({
+        id: 'u1', username: 'admin', role: 'owner', full_name: 'Admin',
+        pharmacy_id: 'p1', permissions: '{}',
+      });
+
+    const { getClientSession } = await import('@/lib/auth/local');
+    const session = await getClientSession();
+
+    expect(session?.username).toBe('admin');
+    expect(dbGet).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('Tauri Auth — hasUserPermissionSync', () => {

@@ -60,6 +60,8 @@ export async function getPendingDeliveriesAction() {
     const user = await getLocalSession();
     if (!user || !hasUserPermissionSync(user, 'can_view_delivery')) return { success: false, error: 'غير مصرح' };
 
+    const pharmacyId = user.pharmacy_id || 'local_default';
+    const pharmacyClause = ` AND (si.pharmacy_id = ? OR (si.pharmacy_id IS NULL AND ? = 'local_default'))`;
     const invoices = await db.prepare(`
       SELECT 
         si.*, 
@@ -67,10 +69,10 @@ export async function getPendingDeliveriesAction() {
         p.address as patient_address,
         p.phone as patient_phone
       FROM sales_invoices si
-      JOIN patients p ON si.patient_id = p.id
-      WHERE si.payment_method = 'delivery' AND si.status = 'completed'
+      LEFT JOIN patients p ON si.patient_id = p.id
+      WHERE si.payment_method = 'delivery' AND si.status = 'completed'${pharmacyClause}
       ORDER BY si.created_at DESC
-    `).all() as any[];
+    `).all(pharmacyId, pharmacyId) as any[];
 
     return { success: true, data: invoices };
   } catch (error) {
@@ -85,14 +87,17 @@ export async function closeDeliveryInvoiceAction(invoiceId: string, deliveryFee:
     if (!Number.isFinite(deliveryFee) || deliveryFee < 0) return { success: false, error: 'رسوم التوصيل غير صالحة' };
 
     const transaction = db.transaction(async () => {
+      const pharmacyId = user.pharmacy_id || 'local_default';
+      const pharmacyClause = ` AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))`;
+      const invoiceParams = [invoiceId, pharmacyId, pharmacyId];
       // 1. Fetch invoice info to get total
-      const invoice = await db.prepare("SELECT total_amount FROM sales_invoices WHERE id = ? AND payment_method = 'delivery' AND status = 'completed'").get(invoiceId) as any;
+      const invoice = await db.prepare(`SELECT total_amount FROM sales_invoices WHERE id = ? AND payment_method = 'delivery' AND status = 'completed'${pharmacyClause}`).get(...invoiceParams) as any;
       if (!invoice) throw new Error('فاتورة التوصيل غير موجودة أو تم تحصيلها بالفعل');
       const shiftId = await requireOpenShiftId(user.id);
       const totalCollected = Number(invoice.total_amount || 0) + deliveryFee;
 
       // 2. Update invoice status and total
-      const updated = await db.prepare("UPDATE sales_invoices SET status = 'delivered', total_amount = ? WHERE id = ? AND status = 'completed'").run(totalCollected, invoiceId);
+      const updated = await db.prepare(`UPDATE sales_invoices SET status = 'delivered', total_amount = ? WHERE id = ? AND status = 'completed'${pharmacyClause}`).run(totalCollected, invoiceId, pharmacyId, pharmacyId);
       if (updated.changes !== 1) throw new Error('تم تحصيل فاتورة التوصيل بالفعل');
 
       // 3. Automatically record cash receipt (Handover from driver)
@@ -125,6 +130,9 @@ export async function getRepresentativeCashStatementAction() {
     if (!user || !hasUserPermissionSync(user, 'can_view_delivery')) return { success: false, error: 'غير مصرح' };
 
     // Get all pending delivery invoices (completed but not yet handed over)
+    const pharmacyId = user.pharmacy_id || 'local_default';
+    const pharmacyClause = ` AND (si.pharmacy_id = ? OR (si.pharmacy_id IS NULL AND ? = 'local_default'))`;
+    const pharmacyParams = [pharmacyId, pharmacyId];
     const pending = await db.prepare(`
       SELECT 
         si.id, 
@@ -133,10 +141,10 @@ export async function getRepresentativeCashStatementAction() {
         p.full_name as patient_name,
         u.full_name as created_by_name
       FROM sales_invoices si
-      JOIN patients p ON si.patient_id = p.id
+      LEFT JOIN patients p ON si.patient_id = p.id
       JOIN users u ON si.user_id = u.id
-      WHERE si.payment_method = 'delivery' AND si.status = 'completed'
-    `).all() as any[];
+      WHERE si.payment_method = 'delivery' AND si.status = 'completed'${pharmacyClause}
+    `).all(...pharmacyParams) as any[];
 
     const history = await db.prepare(`
       SELECT 
@@ -145,10 +153,10 @@ export async function getRepresentativeCashStatementAction() {
         si.created_at, 
         p.full_name as patient_name
       FROM sales_invoices si
-      JOIN patients p ON si.patient_id = p.id
-      WHERE si.payment_method = 'delivery' AND si.status = 'delivered'
+      LEFT JOIN patients p ON si.patient_id = p.id
+      WHERE si.payment_method = 'delivery' AND si.status = 'delivered'${pharmacyClause}
       ORDER BY si.created_at DESC LIMIT 20
-    `).all() as any[];
+    `).all(...pharmacyParams) as any[];
 
     const totalPending = pending.reduce((sum, inv) => sum + inv.total_amount, 0);
 

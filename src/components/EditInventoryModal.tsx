@@ -140,7 +140,7 @@ export default function EditInventoryModal({ item, onClose, onSuccess }: EditInv
             >
               <option value="">-- اختر سبب التعديل --</option>
               {reasons.map((r: any) => (
-                <option key={r.id} value={r.id}>{r.name}</option>
+                <option key={r.id} value={r.id}>{r.name_ar || r.name_en || r.reason || `#${r.id}`}</option>
               ))}
             </select>
           </div>

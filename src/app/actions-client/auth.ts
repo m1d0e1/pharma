@@ -53,8 +53,6 @@ const db = {
 import { getLocalSession, logoutLocal, loginLocal } from '@/lib/auth/local';
 import { isStaffOwner } from '@/lib/auth/staff-policy';
 
-import { createClient } from '@/utils/supabase/client';
-import { useRouter } from 'next/navigation';
 const redirect = (path) => {
   if (typeof window !== 'undefined') {
     window.location.href = path;
@@ -63,25 +61,6 @@ const redirect = (path) => {
 
 export async function loginLocalAction(username: string, password?: string) {
   return loginLocal(username, password);
-}
-
-export async function loginCloudAction(email: string, password: string) {
-  try {
-    const supabase = await createClient();
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
-      password
-    });
-
-    if (error) return { success: false, error: error.message };
-    
-    return { 
-      success: true, 
-      user: data.user 
-    };
-  } catch (error) {
-    return { success: false, error: 'حدث خطأ أثناء الاتصال بالسحابة' };
-  }
 }
 
 export async function getCurrentUserAction() {

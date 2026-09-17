@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'react-hot-toast';
-import { Shield, Lock, User, Loader2, Globe, CheckCircle2 } from 'lucide-react';
+import { Shield, Lock, User, Loader2, Globe } from 'lucide-react';
 import { loginLocalAction } from '@/app/actions-client/auth';
 import { syncFromCloud } from '@/lib/sync/universal';
 
@@ -11,7 +11,6 @@ export default function LoginPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
-  const [syncedUsers, setSyncedUsers] = useState<string[]>([]);
   const [formData, setFormData] = useState({
     username: '',
     password: '',
@@ -43,7 +42,7 @@ export default function LoginPage() {
       }
 
       if (result.error === 'المستخدم غير موجود') {
-        toast.error('المستخدم غير موجود محلياً. استخدم البريد الإلكتروني الذي قمت بمزامنته.');
+        toast.error('المستخدم غير موجود محلياً. اطلب من المالك إنشاء الحساب أو التحقق من اسم المستخدم.');
       } else {
         toast.error(result.error || 'فشل تسجيل الدخول');
       }
@@ -57,15 +56,12 @@ export default function LoginPage() {
 
   const handleInitialSync = async () => {
     setIsSyncing(true);
-    const toastId = toast.loading('جاري المزامنة مع السحابة (The Brain)... جلب كافة البيانات...');
+    const toastId = toast.loading('جاري تحديث قائمة الأدوية والتفاعلات العامة...');
     
     try {
       const result = await syncFromCloud();
       if (result.success) {
         toast.success(result.message || 'تمت المزامنة بنجاح!', { id: toastId });
-        if (result.syncedUsernames) {
-          setSyncedUsers(result.syncedUsernames);
-        }
       } else {
         toast.error(result.error || 'فشل الاتصال بالسحابة', { id: toastId });
       }
@@ -95,27 +91,6 @@ export default function LoginPage() {
             <h1 className="text-4xl font-black text-white tracking-tight">فارما تيك</h1>
             <h2 className="text-blue-400 text-lg font-bold mt-2">The Local Enforcer</h2>
           </div>
-
-          {syncedUsers.length > 0 && (
-            <div className="mb-8 p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-2xl animate-in fade-in slide-in-from-top-4 duration-500">
-               <div className="flex items-center gap-2 text-emerald-400 mb-2 font-bold text-sm">
-                  <CheckCircle2 className="w-4 h-4" />
-                  <span>تمت المزامنة! الحسابات المتاحة للدخول:</span>
-               </div>
-               <div className="flex flex-wrap gap-2">
-                  {syncedUsers.map(user => (
-                    <button 
-                      key={user}
-                      onClick={() => setFormData({ ...formData, username: user })}
-                      className="text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-1 rounded-lg border border-emerald-500/30 hover:bg-emerald-500/30 transition-all"
-                    >
-                      {user}
-                    </button>
-                  ))}
-               </div>
-               <p className="text-[10px] text-emerald-500/60 mt-3 italic">* أول عملية دخول ستقوم بضبط كلمة المرور الخاصة بك محلياً.</p>
-            </div>
-          )}
 
           {/* Form */}
           <form onSubmit={handleLogin} className="space-y-6">
@@ -168,7 +143,7 @@ export default function LoginPage() {
                className="w-full py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold rounded-2xl border border-slate-700 transition-all flex items-center justify-center gap-3 text-sm"
              >
                {isSyncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Globe className="w-4 h-4" />}
-               مزامنة كافة البيانات (أول مرة)
+               تحديث قائمة الأدوية والتفاعلات
              </button>
           </div>
         </div>

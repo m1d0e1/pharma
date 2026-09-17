@@ -4,7 +4,7 @@ import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import dynamic from 'next/dynamic';
 import { subDays, format, parseISO } from 'date-fns';
-import { getClientSession } from '@/lib/auth/local';
+import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { dbSelect } from '@/lib/db/tauri';
 import { getReportsDataAction } from '@/app/actions-client/reports';
 
@@ -26,7 +26,7 @@ export default function ReportsPage() {
         if (!localUser) return;
         setUser(localUser);
 
-        if (localUser.role !== 'owner') {
+        if (!hasUserPermissionSync(localUser, 'rep_can_view_sales')) {
           setLoading(false);
           return;
         }
@@ -104,7 +104,7 @@ export default function ReportsPage() {
     );
   }
 
-  if (!user || user.role !== 'owner') {
+  if (!user || !hasUserPermissionSync(user, 'rep_can_view_sales')) {
     return (
       <div className="flex flex-col items-center justify-center h-[60vh] text-center space-y-4" dir="rtl">
         <div className="text-6xl">🚫</div>
@@ -115,6 +115,14 @@ export default function ReportsPage() {
     );
   }
 
+  const exportReport = () => {
+    const rows = [['date', 'revenue'], ...salesHistory.map((d: any) => [d.date, d.revenue])];
+    const csv = '\uFEFF' + rows.map(row => row.join(',')).join('\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+    Object.assign(document.createElement('a'), { href: url, download: `sales_summary_${format(new Date(), 'yyyy-MM-dd')}.csv` }).click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="space-y-8 p-4" dir="rtl">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -123,7 +131,7 @@ export default function ReportsPage() {
           <p className="text-slate-500 dark:text-slate-400">نظرة عميقة على أداء المبيعات وحركة المخزون.</p>
         </div>
         <div className="flex gap-3">
-           <button className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-6 py-3 rounded-2xl font-bold text-sm shadow-sm hover:bg-slate-50 transition-all flex items-center gap-2">
+           <button onClick={exportReport} className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-6 py-3 rounded-2xl font-bold text-sm shadow-sm hover:bg-slate-50 transition-all flex items-center gap-2">
              <span>📥</span> تصدير التقرير
            </button>
         </div>
@@ -137,33 +145,37 @@ export default function ReportsPage() {
         >
           <span>📊</span> التحليلات والمخططات
         </Link>
-        <Link 
-          href="/reports/sales" 
-          className="pb-4 border-b-2 border-transparent font-bold text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors flex items-center gap-2"
-        >
-          <span>🧾</span> تقرير فواتير المبيعات
-        </Link>
-        <Link 
-          href="/reports/purchases" 
-          className="pb-4 border-b-2 border-transparent font-bold text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors flex items-center gap-2"
-        >
-          <span>🛒</span> تقارير المشتريات
-        </Link>
-        <Link 
-          href="/reports/trial-balance" 
-          className="pb-4 border-b-2 border-transparent font-bold text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors flex items-center gap-2"
-        >
-          <span>⚖️</span> ميزان المراجعة
-        </Link>
+        {hasUserPermissionSync(user, 'rep_can_view_sales') && (
+          <Link
+            href="/reports/sales"
+            className="pb-4 border-b-2 border-transparent font-bold text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors flex items-center gap-2"
+          >
+            <span>🧾</span> تقرير فواتير المبيعات
+          </Link>
+        )}
+        {hasUserPermissionSync(user, 'rep_can_view_purchases') && (
+          <Link
+            href="/reports/purchases"
+            className="pb-4 border-b-2 border-transparent font-bold text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors flex items-center gap-2"
+          >
+            <span>🛒</span> تقارير المشتريات
+          </Link>
+        )}
+        {hasUserPermissionSync(user, 'acc_can_view_reports') && (
+          <Link
+            href="/reports/trial-balance"
+            className="pb-4 border-b-2 border-transparent font-bold text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors flex items-center gap-2"
+          >
+            <span>⚖️</span> ميزان المراجعة
+          </Link>
+        )}
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <div className="bg-gradient-to-br from-blue-600 to-indigo-700 p-6 rounded-3xl text-white shadow-xl">
            <p className="text-blue-100 text-xs font-bold uppercase tracking-wider mb-2">إجمالي إيرادات الشهر</p>
            <h3 className="text-3xl font-black">{salesHistory.reduce((sum, d) => sum + d.revenue, 0).toLocaleString()} ج.م</h3>
-           <div className="mt-4 flex items-center gap-2 text-xs text-blue-200 bg-white/10 w-fit px-2 py-1 rounded-full font-bold">
-             <span>🚀</span> +12.5% منذ الشهر الماضي
-           </div>
+           <div className="mt-4 text-xs text-blue-200 font-bold">آخر 30 يوماً</div>
         </div>
         <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-xl">
            <p className="text-slate-500 text-xs font-bold uppercase tracking-wider mb-2">عدد العمليات</p>

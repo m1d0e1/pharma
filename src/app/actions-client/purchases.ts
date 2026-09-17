@@ -286,7 +286,7 @@ export async function addSupplierPaymentAction(rawData: {
 }) {
   try {
     const session = await getLocalSession();
-    if (!session || (!hasUserPermissionSync(session, 'can_view_suppliers') && !hasUserPermissionSync(session, 'can_view_purchases') && !hasUserPermissionSync(session, 'rep_can_view_financial'))) {
+    if (!session || !hasUserPermissionSync(session, 'can_view_suppliers') || !hasUserPermissionSync(session, 'acc_can_process_cash_flow')) {
       return { success: false, error: SUPPLIER_PERMISSION_ERROR };
     }
 
@@ -296,6 +296,8 @@ export async function addSupplierPaymentAction(rawData: {
     if (!Number.isFinite(amount) || amount <= 0) return { success: false, error: 'يرجى إدخال مبلغ صحيح أكبر من الصفر' };
 
     const paymentMethod = rawData.payment_method || 'cash';
+    const checkNumber = String(rawData.check_number || '').trim();
+    if (paymentMethod === 'check' && !checkNumber) return { success: false, error: 'يرجى إدخال رقم الشيك' };
     const paymentDate = rawData.date || localDate();
     if (!isBusinessDate(paymentDate)) return { success: false, error: 'تاريخ سداد المورد غير صالح' };
     const notes = rawData.notes ? String(rawData.notes).trim() : '';
@@ -321,8 +323,8 @@ export async function addSupplierPaymentAction(rawData: {
 
       // 2. Record in supplier_transactions
       const transactionNote = notes 
-        ? `سداد دفعة (${paymentMethod === 'check' ? `شيك ${rawData.check_number || ''}` : paymentMethod === 'bank' ? 'تحويل بنكي' : 'نقدي'}): ${notes}`
-        : `سداد دفعة للمورد (${paymentMethod === 'check' ? `شيك ${rawData.check_number || ''}` : paymentMethod === 'bank' ? 'تحويل بنكي' : 'نقدي'})`;
+        ? `سداد دفعة (${paymentMethod === 'check' ? `شيك ${checkNumber}` : paymentMethod === 'bank' ? 'تحويل بنكي' : 'نقدي'}): ${notes}`
+        : `سداد دفعة للمورد (${paymentMethod === 'check' ? `شيك ${checkNumber}` : paymentMethod === 'bank' ? 'تحويل بنكي' : 'نقدي'})`;
 
       await db.prepare(`
         INSERT INTO supplier_transactions (supplier_id, user_id, type, amount, reference_id, payment_method, notes, date, created_at)
@@ -357,9 +359,9 @@ export async function addSupplierPaymentAction(rawData: {
           return Number(setting?.account_id || fallback);
         };
         const payableAccountId = await getAccount('accounts_payable', 8);
-        const creditAccountId = paymentMethod === 'bank'
-          ? await getAccount('bank_clearing', 6)
-          : await getAccount('cash_drawer', 6);
+        const creditAccountId = paymentMethod === 'cash'
+          ? await getAccount('cash_drawer', 6)
+          : await getAccount('bank_clearing', 6);
 
         const journalId = generateId();
         await db.prepare(`
@@ -372,7 +374,7 @@ export async function addSupplierPaymentAction(rawData: {
         await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
           .run(journalId, creditAccountId, 'credit', amount);
       } catch (accErr) {
-        console.warn('Accounting entry for supplier payment failed gracefully:', accErr);
+        throw new Error('تعذر تسجيل القيد المحاسبي لدفعة المورد؛ تم إلغاء العملية');
       }
 
       await logActivity(session.id, 'SUPPLIER_PAYMENT', `Paid ${amount} to supplier #${supplierId} (${supplier.name_ar}) via ${paymentMethod}`);
@@ -1171,7 +1173,11 @@ export async function getPurchasesReportsAction(filters: any = {}) {
     if (filters.userId && filters.userId !== 'all') { sql += ' AND i.user_id = ?'; params.push(filters.userId); }
     if (filters.paymentMethod && filters.paymentMethod !== 'all') { sql += ' AND i.payment_method = ?'; params.push(filters.paymentMethod); }
     if (filters.supplierId && filters.supplierId !== 'all') { sql += ' AND i.supplier_id = ?'; params.push(filters.supplierId); }
-    if (filters.status && filters.status !== 'all') { sql += ' AND i.status = ?'; params.push(filters.status); }
+    if (filters.status && filters.status !== 'all') {
+      sql += ' AND i.status = ?'; params.push(filters.status);
+    } else {
+      sql += " AND i.status = 'completed'";
+    }
     if (filters.invoiceNumber) { sql += ' AND i.invoice_number LIKE ?'; params.push('%' + filters.invoiceNumber + '%'); }
     if (filters.drugName && filters.drugName.trim()) {
       sql += ' AND (md_search.trade_name LIKE ? OR md_search.trade_name_en LIKE ? OR md_search.active_ingredient LIKE ?)';

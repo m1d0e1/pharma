@@ -37,15 +37,15 @@ export default function SyncSettings() {
       <div className="flex items-center gap-4 mb-6">
         <div className="w-12 h-12 bg-white/10 rounded-2xl flex items-center justify-center text-2xl">🧠</div>
         <div>
-          <h4 className="text-xl font-bold">Cloud Admin (The Brain)</h4>
-          <p className="text-indigo-200 text-xs">تحميل قائمة الأدوية والتحقق من الاشتراك</p>
+          <h4 className="text-xl font-bold">تحديث البيانات المرجعية</h4>
+          <p className="text-indigo-200 text-xs">تحميل قائمة الأدوية والتفاعلات العامة</p>
         </div>
       </div>
 
       <div className="space-y-4">
         <div className="bg-white/5 border border-white/10 p-6 rounded-2xl">
           <p className="text-sm text-indigo-100 leading-relaxed mb-6">
-            يقوم هذا الإجراء بالاتصال بالسحابة لجلب أحدث قائمة أدوية معتمدة والتحقق من حالة اشتراك صيدليتك. بعد المزامنة، ستعمل الصيدلية بشكل محلي بالكامل.
+            الاتصال بالسحابة اختياري ويُستخدم فقط لجلب أحدث قائمة أدوية وتفاعلات عامة. تسجيل الدخول وإدارة المستخدمين يظلان محليين بالكامل.
           </p>
           
           <button 
@@ -53,7 +53,7 @@ export default function SyncSettings() {
             disabled={syncing}
             className="w-full py-4 bg-white text-indigo-900 rounded-2xl font-black shadow-xl hover:bg-indigo-50 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
           >
-            {syncing ? 'جاري المزامنة...' : 'مزامنة مع السحابة الآن'}
+            {syncing ? 'جاري التحديث...' : 'تحديث البيانات المرجعية الآن'}
             {!syncing && <span>⚡</span>}
           </button>
         </div>

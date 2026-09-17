@@ -74,9 +74,12 @@ export async function getSalesReportsAction(filters: {
       FROM sales_invoices si
       LEFT JOIN users u ON si.user_id = u.id
       LEFT JOIN patients p ON si.patient_id = p.id
-      WHERE 1=1
+      WHERE (si.status IS NULL OR si.status = '' OR si.status IN ('completed', 'approved', 'delivered'))
     `;
     const params: any[] = [];
+    const pharmacyId = user.pharmacy_id || filters.pharmacyId || 'local_default';
+    query += ` AND (si.pharmacy_id = ? OR (si.pharmacy_id IS NULL AND ? = 'local_default'))`;
+    params.push(pharmacyId, pharmacyId);
 
     if (filters.startDate) {
       query += ` AND date(si.created_at, 'localtime') >= ?`;
@@ -122,6 +125,8 @@ export async function getInvoiceDetailsAction(invoiceId: string) {
     const user = await getLocalSession();
     if (!user || !hasUserPermissionSync(user, 'rep_can_view_sales')) return { success: false, error: 'غير مصرح' };
 
+    const pharmacyId = user.pharmacy_id || 'local_default';
+    const pharmacyClause = ` AND (inv.pharmacy_id = ? OR (inv.pharmacy_id IS NULL AND ? = 'local_default'))`;
     const items = await db.prepare(`
       SELECT 
         si.*, 
@@ -142,9 +147,10 @@ export async function getInvoiceDetailsAction(invoiceId: string) {
         md.active_ingredient,
         md.barcode
       FROM sales_items si
+      JOIN sales_invoices inv ON inv.id = si.invoice_id
       LEFT JOIN master_drugs md ON si.drug_id = md.id
-      WHERE si.invoice_id = ?
-    `).all(invoiceId) as any[];
+      WHERE si.invoice_id = ?${pharmacyClause}
+    `).all(invoiceId, pharmacyId, pharmacyId) as any[];
 
     return { success: true, data: items };
   } catch (error) {

@@ -9,7 +9,7 @@ import {
 import Link from 'next/link';
 import { cn } from '@/lib/utils';
 import { getSalesDashboardStatsAction } from '@/app/actions-client/sales';
-import { getClientSession } from '@/lib/auth/local';
+import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 
 const salesModules = [
   { 
@@ -18,7 +18,8 @@ const salesModules = [
     icon: ShoppingCart, 
     href: '/pos', 
     color: 'bg-emerald-500',
-    roles: ['owner', 'admin', 'pharmacist']
+    roles: ['owner', 'admin', 'pharmacist'],
+    permission: 'can_access_pos'
   },
   { 
     title: 'فواتير البيع المعلقة', 
@@ -26,7 +27,8 @@ const salesModules = [
     icon: Clock, 
     href: '/pos?tab=drafts', 
     color: 'bg-amber-500',
-    roles: ['owner', 'admin', 'pharmacist']
+    roles: ['owner', 'admin', 'pharmacist'],
+    permission: 'can_access_pos'
   },
   { 
     title: 'مرتجع مبيعات', 
@@ -34,7 +36,8 @@ const salesModules = [
     icon: RotateCcw, 
     href: '/returns', 
     color: 'bg-rose-500',
-    roles: ['owner', 'admin', 'pharmacist']
+    roles: ['owner', 'admin', 'pharmacist'],
+    permission: 'can_view_returns'
   },
   { 
     title: 'تسوية مبيعات بدون رصيد', 
@@ -42,7 +45,8 @@ const salesModules = [
     icon: PackageSearch, 
     href: '/sales/settlement', 
     color: 'bg-purple-600',
-    roles: ['owner', 'admin', 'pharmacist']
+    roles: ['owner', 'admin', 'pharmacist'],
+    permission: 'can_view_settlement'
   },
   { 
     title: 'توصيل منزلي', 
@@ -50,7 +54,8 @@ const salesModules = [
     icon: Bike, 
     href: '/sales/delivery', 
     color: 'bg-rose-600',
-    roles: ['owner', 'admin', 'pharmacist']
+    roles: ['owner', 'admin', 'pharmacist'],
+    permission: 'can_view_delivery'
   },
   { 
     title: 'تعديل تكلفة المبيعات', 
@@ -58,7 +63,8 @@ const salesModules = [
     icon: Edit3, 
     href: '/sales/cogs', 
     color: 'bg-indigo-600',
-    roles: ['owner']
+    roles: ['owner'],
+    permission: 'can_view_cogs'
   },
   { 
     title: 'تقارير المبيعات', 
@@ -66,12 +72,14 @@ const salesModules = [
     icon: BarChart3, 
     href: '/reports/sales', 
     color: 'bg-slate-800',
-    roles: ['owner']
+    roles: ['owner'],
+    permission: 'rep_can_view_sales'
   },
 ];
 
 export default function SalesDashboardPage() {
   const [userRole, setUserRole] = React.useState<string>('pharmacist');
+  const [sessionUser, setSessionUser] = React.useState<any>(null);
   const [stats, setStats] = React.useState({
     todaySales: 0,
     salesChangeText: 'تحميل البيانات...',
@@ -87,6 +95,7 @@ export default function SalesDashboardPage() {
       const user = await getClientSession();
       if (user && user.role) {
         setUserRole(user.role);
+        setSessionUser(user);
       }
     }
     loadRole();
@@ -108,7 +117,9 @@ export default function SalesDashboardPage() {
     loadStats();
   }, []);
 
-  const filteredModules = salesModules.filter(m => m.roles.includes(userRole));
+  const filteredModules = salesModules.filter(m =>
+    m.roles.includes(userRole) && hasUserPermissionSync(sessionUser, m.permission)
+  );
 
   return (
     <div className="container mx-auto py-12 space-y-12" dir="rtl">
