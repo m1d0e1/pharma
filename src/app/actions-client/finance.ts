@@ -56,18 +56,18 @@ import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { format } from 'date-fns';
 import { z } from 'zod';
 import { patientOutstandingBalanceQuery } from '@/lib/patients/balance';
-import { ensurePermanentShiftForUser } from './shifts';
+import { ensurePermanentShiftForUser, getShiftForPharmacy } from './shifts';
 import { isBusinessDate, localDate } from '@/lib/time';
 
 const hasAnyFinancePermission = (user: any, ...permissions: string[]) =>
   !!user && permissions.some(permission => hasUserPermissionSync(user, permission));
 
 export async function requireOpenShiftId(userId: string, requestedShiftId?: string) {
+  const user = await db.prepare('SELECT pharmacy_id FROM users WHERE CAST(id AS TEXT) = CAST(? AS TEXT) LIMIT 1').get(userId) as any;
+  if (!user) throw new Error('المستخدم غير موجود');
+  const pharmacyId = user.pharmacy_id || 'local_default';
   const requestedShift = requestedShiftId
-    ? await db.prepare(`
-        SELECT id FROM shifts
-        WHERE id = ? AND status = 'open'
-      `).get(requestedShiftId) as any
+    ? await getShiftForPharmacy(requestedShiftId, pharmacyId, true)
     : null;
   if (requestedShift?.id) return String(requestedShift.id);
 
@@ -375,6 +375,7 @@ export async function getCashMovementsAction(filters?: {
     if (!hasAnyFinancePermission(user, 'acc_can_process_cash_flow', 'acc_can_view_general')) {
       return { success: false, error: 'غير مصرح' };
     }
+    const pharmacyId = user.pharmacy_id || 'local_default';
 
     let query = `
       SELECT cm.*, COALESCE(u.full_name, u.username, cm.user_id) AS user_name,
@@ -382,9 +383,9 @@ export async function getCashMovementsAction(filters?: {
       FROM cash_movements cm
       LEFT JOIN users u ON u.id = cm.user_id
       LEFT JOIN shifts s ON s.id = cm.shift_id
-      WHERE 1=1
+      WHERE (u.pharmacy_id = ? OR (u.pharmacy_id IS NULL AND ? = 'local_default'))
     `;
-    const params: any[] = [];
+    const params: any[] = [pharmacyId, pharmacyId];
 
     if (filters?.type) {
       query += ` AND cm.type = ?`;
@@ -423,6 +424,7 @@ export async function getTreasuryDashboardAction(detail?: TreasuryMetricKey) {
     if (detail && !['treasury', 'receipts', 'expenses', 'handovers'].includes(detail)) {
       return { success: false, error: 'نوع التفاصيل غير صالح' };
     }
+    const pharmacyId = user.pharmacy_id || 'local_default';
 
     // ponytail: one configured cash account and one summary keep every finance card on the same source of truth.
     let cashAccount = await db.prepare(`
@@ -446,29 +448,45 @@ export async function getTreasuryDashboardAction(detail?: TreasuryMetricKey) {
       cashAccount
         ? db.prepare(`
             SELECT
-              CAST(COALESCE(SUM(CASE WHEN type = 'debit' THEN amount ELSE -amount END), 0) AS REAL) AS total,
+              CAST(COALESCE(SUM(CASE WHEN je.type = 'debit' THEN je.amount ELSE -je.amount END), 0) AS REAL) AS total,
               COUNT(*) AS count
-            FROM journal_entries
-            WHERE account_id = ?
-          `).get(cashAccount.id)
+            FROM journal_entries je
+            JOIN daily_journals dj ON dj.id = je.journal_id
+            LEFT JOIN users u ON u.id = dj.created_by
+            WHERE je.account_id = ?
+              AND (u.pharmacy_id = ? OR (u.pharmacy_id IS NULL AND ? = 'local_default'))
+          `).get(cashAccount.id, pharmacyId, pharmacyId)
         : Promise.resolve({ total: 0, count: 0 }),
       db.prepare(`
-        SELECT CAST(COALESCE(SUM(amount), 0) AS REAL) AS total, COUNT(*) AS count
-        FROM cash_movements
-        WHERE type = 'receipt'
-          AND category NOT IN ('handover_received', 'cash_adjustment')
-          AND date(COALESCE(NULLIF(date, ''), created_at)) = date('now', 'localtime')
-      `).get(),
+        SELECT CAST(COALESCE(SUM(cm.amount), 0) AS REAL) AS total, COUNT(*) AS count
+        FROM cash_movements cm
+        LEFT JOIN users u ON u.id = cm.user_id
+        WHERE cm.type = 'receipt'
+          AND cm.category NOT IN ('handover_received', 'cash_adjustment')
+          AND date(COALESCE(NULLIF(cm.date, ''), cm.created_at)) = date('now', 'localtime')
+          AND (u.pharmacy_id = ? OR (u.pharmacy_id IS NULL AND ? = 'local_default'))
+      `).get(pharmacyId, pharmacyId),
       db.prepare(`
-        SELECT CAST(COALESCE(SUM(amount), 0) AS REAL) AS total, COUNT(*) AS count
-        FROM expenses
-        WHERE date(date) = date('now', 'localtime')
-      `).get(),
+        SELECT CAST(COALESCE(SUM(e.amount), 0) AS REAL) AS total, COUNT(*) AS count
+        FROM expenses e
+        LEFT JOIN users u ON u.id = e.user_id
+        WHERE date(e.date) = date('now', 'localtime')
+          AND (u.pharmacy_id = ? OR (u.pharmacy_id IS NULL AND ? = 'local_default'))
+      `).get(pharmacyId, pharmacyId),
       db.prepare(`
-        SELECT CAST(COALESCE(SUM(amount), 0) AS REAL) AS total, COUNT(*) AS count
-        FROM cash_movements
-        WHERE type = 'disbursement' AND category = 'handover'
-      `).get(),
+        SELECT CAST(COALESCE(SUM(cm.amount), 0) AS REAL) AS total, COUNT(*) AS count
+        FROM cash_movements cm
+        LEFT JOIN users u ON u.id = cm.user_id
+        WHERE cm.type = 'disbursement' AND cm.category = 'handover'
+          AND (u.pharmacy_id = ? OR (u.pharmacy_id IS NULL AND ? = 'local_default'))
+          AND strftime(
+            '%Y-%m',
+            CASE
+              WHEN cm.date IS NOT NULL AND TRIM(cm.date) <> '' THEN cm.date
+              ELSE datetime(cm.created_at, 'localtime')
+            END
+          ) = strftime('%Y-%m', 'now', 'localtime')
+      `).get(pharmacyId, pharmacyId),
     ]) as any[];
 
     let details: any[] = [];
@@ -484,9 +502,10 @@ export async function getTreasuryDashboardAction(detail?: TreasuryMetricKey) {
         JOIN daily_journals dj ON dj.id = je.journal_id
         LEFT JOIN users u ON u.id = dj.created_by
         WHERE je.account_id = ?
+          AND (u.pharmacy_id = ? OR (u.pharmacy_id IS NULL AND ? = 'local_default'))
         ORDER BY COALESCE(dj.created_at, dj.date) DESC, je.id DESC
         LIMIT 500
-      `).all(cashAccount.id) as any[];
+      `).all(cashAccount.id, pharmacyId, pharmacyId) as any[];
     } else if (detail === 'receipts') {
       details = await db.prepare(`
         SELECT cm.id, cm.date, cm.created_at,
@@ -499,9 +518,10 @@ export async function getTreasuryDashboardAction(detail?: TreasuryMetricKey) {
         WHERE cm.type = 'receipt'
           AND cm.category NOT IN ('handover_received', 'cash_adjustment')
           AND date(COALESCE(NULLIF(cm.date, ''), cm.created_at)) = date('now', 'localtime')
+          AND (u.pharmacy_id = ? OR (u.pharmacy_id IS NULL AND ? = 'local_default'))
         ORDER BY cm.created_at DESC
         LIMIT 500
-      `).all() as any[];
+      `).all(pharmacyId, pharmacyId) as any[];
     } else if (detail === 'expenses') {
       details = await db.prepare(`
         SELECT e.id, e.date, e.created_at,
@@ -512,9 +532,10 @@ export async function getTreasuryDashboardAction(detail?: TreasuryMetricKey) {
         FROM expenses e
         LEFT JOIN users u ON u.id = e.user_id
         WHERE date(e.date) = date('now', 'localtime')
+          AND (u.pharmacy_id = ? OR (u.pharmacy_id IS NULL AND ? = 'local_default'))
         ORDER BY e.created_at DESC
         LIMIT 500
-      `).all() as any[];
+      `).all(pharmacyId, pharmacyId) as any[];
     } else if (detail === 'handovers') {
       details = await db.prepare(`
         SELECT cm.id, cm.date, cm.created_at,
@@ -525,9 +546,17 @@ export async function getTreasuryDashboardAction(detail?: TreasuryMetricKey) {
         FROM cash_movements cm
         LEFT JOIN users u ON u.id = cm.user_id
         WHERE cm.type = 'disbursement' AND cm.category = 'handover'
+          AND (u.pharmacy_id = ? OR (u.pharmacy_id IS NULL AND ? = 'local_default'))
+          AND strftime(
+            '%Y-%m',
+            CASE
+              WHEN cm.date IS NOT NULL AND TRIM(cm.date) <> '' THEN cm.date
+              ELSE datetime(cm.created_at, 'localtime')
+            END
+          ) = strftime('%Y-%m', 'now', 'localtime')
         ORDER BY cm.created_at DESC
         LIMIT 500
-      `).all() as any[];
+      `).all(pharmacyId, pharmacyId) as any[];
     }
 
     const counts = {
@@ -920,18 +949,24 @@ export async function getJournalsAction(filters?: { dateFrom?: string; dateTo?: 
   try {
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_make_daily_entries', 'acc_can_view_reports')) return { success: false, error: 'غير مصرح' };
+    const pharmacyId = user.pharmacy_id || 'local_default';
 
-    let sql = `SELECT * FROM daily_journals WHERE 1=1`;
-    const params: any[] = [];
+    let sql = `
+      SELECT dj.*
+      FROM daily_journals dj
+      LEFT JOIN users u ON u.id = dj.created_by
+      WHERE (u.pharmacy_id = ? OR (u.pharmacy_id IS NULL AND ? = 'local_default'))
+    `;
+    const params: any[] = [pharmacyId, pharmacyId];
     if (filters?.dateFrom) {
-      sql += ` AND date(date) >= date(?)`;
+      sql += ` AND date(dj.date) >= date(?)`;
       params.push(filters.dateFrom);
     }
     if (filters?.dateTo) {
-      sql += ` AND date(date) <= date(?)`;
+      sql += ` AND date(dj.date) <= date(?)`;
       params.push(filters.dateTo);
     }
-    sql += ` ORDER BY date DESC, created_at DESC`;
+    sql += ` ORDER BY dj.date DESC, dj.created_at DESC`;
     const results = await db.prepare(sql).all(...params);
     return { success: true, data: results };
   } catch (error) {
@@ -944,6 +979,7 @@ export async function getJournalDetailsAction(journalId: string) {
   try {
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_make_daily_entries', 'acc_can_view_reports')) return { success: false, error: 'غير مصرح' };
+    const pharmacyId = user.pharmacy_id || 'local_default';
     const entries = await db.prepare(`
       SELECT e.*, a.name_ar as account_name, a.code as account_code,
              dj.description, dj.date,
@@ -952,9 +988,11 @@ export async function getJournalDetailsAction(journalId: string) {
       FROM journal_entries e
       JOIN daily_journals dj ON e.journal_id = dj.id
       JOIN accounts a ON e.account_id = a.id
+      LEFT JOIN users u ON u.id = dj.created_by
       WHERE e.journal_id = ?
+        AND (u.pharmacy_id = ? OR (u.pharmacy_id IS NULL AND ? = 'local_default'))
       ORDER BY e.type DESC, e.amount DESC
-    `).all(journalId);
+    `).all(journalId, pharmacyId, pharmacyId);
     return { success: true, data: entries };
   } catch (error) {
     console.error('Get journal details error:', error);
@@ -1083,25 +1121,46 @@ export async function seedFinanceTestDataAction() {
 
 export async function generateDailySnapshotAction(targetDate?: string) {
   try {
+    const user = await getLocalSession();
+    if (!user) return { success: false, error: 'غير مصرح' };
+    const pharmacyId = user.pharmacy_id || 'local_default';
     const date = targetDate || localDate();
     if (!isBusinessDate(date)) return { success: false, error: 'تاريخ الملخص غير صالح' };
     
-    const sales = await db.prepare("SELECT COALESCE(SUM(total_amount), 0) as total FROM sales_invoices WHERE date(created_at, 'localtime') = ? AND status = ?").get(date, 'completed') as any;
-    const returns = await db.prepare("SELECT COALESCE(SUM(total_refund), 0) as total FROM returns WHERE date(created_at, 'localtime') = ? AND status = ?").get(date, 'approved') as any;
-    const movements = await db.prepare("SELECT COALESCE(SUM(CASE WHEN type='receipt' THEN amount ELSE -amount END), 0) as net FROM cash_movements WHERE date(date) = ?").get(date) as any;
+    const sales = await db.prepare(`
+      SELECT COALESCE(SUM(total_amount), 0) as total
+      FROM sales_invoices
+      WHERE date(created_at, 'localtime') = ?
+        AND (status IS NULL OR status = '' OR status IN ('completed', 'approved', 'delivered'))
+        AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+    `).get(date, pharmacyId, pharmacyId) as any;
+    const returns = await db.prepare(`
+      SELECT COALESCE(SUM(r.total_refund), 0) as total
+      FROM returns r
+      WHERE date(r.created_at, 'localtime') = ?
+        AND LOWER(COALESCE(r.status, '')) IN ('approved', 'completed')
+        AND (r.pharmacy_id = ? OR (r.pharmacy_id IS NULL AND ? = 'local_default'))
+    `).get(date, pharmacyId, pharmacyId) as any;
+    const movements = await db.prepare(`
+      SELECT COALESCE(SUM(CASE WHEN cm.type='receipt' THEN cm.amount ELSE -cm.amount END), 0) as net
+      FROM cash_movements cm
+      LEFT JOIN users u ON u.id = cm.user_id
+      WHERE date(cm.date) = ?
+        AND (u.pharmacy_id = ? OR (u.pharmacy_id IS NULL AND ? = 'local_default'))
+    `).get(date, pharmacyId, pharmacyId) as any;
     
     // Simple net calculation for the dashboard pulse
     const net = (sales.total || 0) - (returns.total || 0) + (movements.net || 0);
 
     await db.prepare(`
-      INSERT INTO daily_financial_snapshots (date, total_sales, total_returns, total_cash_movements, net_profit)
-      VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT(date) DO UPDATE SET
+      INSERT INTO daily_financial_snapshots (date, pharmacy_id, total_sales, total_returns, total_cash_movements, net_profit)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(date, pharmacy_id) DO UPDATE SET
         total_sales = excluded.total_sales,
         total_returns = excluded.total_returns,
         total_cash_movements = excluded.total_cash_movements,
         net_profit = excluded.net_profit
-    `).run(date, sales.total, returns.total, movements.net, net);
+    `).run(date, pharmacyId, sales.total, returns.total, movements.net, net);
 
     return { success: true, data: { date, net } };
   } catch (error) {
@@ -1172,6 +1231,7 @@ export async function getTrialBalanceAction(startDate?: string, endDate?: string
   try {
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_view_reports')) return { success: false, error: 'غير مصرح' };
+    const pharmacyId = user.pharmacy_id || 'local_default';
 
     const cleanStart = startDate && startDate.trim().length > 0 ? startDate.trim() : null;
     const cleanEnd = endDate && endDate.trim().length > 0 ? endDate.trim() : null;
@@ -1185,6 +1245,8 @@ export async function getTrialBalanceAction(startDate?: string, endDate?: string
           date(COALESCE(dj.date, dj.created_at, '1970-01-01')) as entry_date
         FROM journal_entries je
         LEFT JOIN daily_journals dj ON je.journal_id = dj.id
+        LEFT JOIN users u ON u.id = dj.created_by
+        WHERE (u.pharmacy_id = ? OR (u.pharmacy_id IS NULL AND ? = 'local_default'))
       )
       SELECT 
         a.id,
@@ -1216,6 +1278,7 @@ export async function getTrialBalanceAction(startDate?: string, endDate?: string
       GROUP BY a.id
       ORDER BY a.code ASC
     `).all(
+      pharmacyId, pharmacyId,
       cleanStart, cleanStart,
       cleanStart, cleanStart,
       cleanStart, cleanStart, cleanEnd, cleanEnd,
@@ -1250,19 +1313,21 @@ export async function getFinancialNoticesAction() {
   try {
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_view_notifications')) return { success: false, error: 'غير مصرح' };
+    const pharmacyId = user.pharmacy_id || 'local_default';
     const results = await db.prepare(`
       SELECT n.*, u.full_name as user_name,
         CASE 
-          WHEN n.target_type = 'customer' THEN COALESCE(p.name, 'عميل')
-          WHEN n.target_type = 'supplier' THEN COALESCE(s.name, 'مورد')
+          WHEN n.target_type = 'customer' THEN COALESCE(p.full_name, 'عميل')
+          WHEN n.target_type = 'supplier' THEN COALESCE(s.name_ar, s.name_en, 'مورد')
           ELSE 'الصيدلية / عام'
         END as target_name
       FROM financial_notices n
       LEFT JOIN users u ON n.user_id = u.id
       LEFT JOIN patients p ON n.target_type = 'customer' AND n.target_id = p.id
       LEFT JOIN suppliers s ON n.target_type = 'supplier' AND CAST(n.target_id AS TEXT) = CAST(s.id AS TEXT)
+      WHERE (u.pharmacy_id = ? OR (u.pharmacy_id IS NULL AND ? = 'local_default'))
       ORDER BY n.created_at DESC LIMIT 200
-    `).all();
+    `).all(pharmacyId, pharmacyId);
     return { success: true, data: results };
   } catch (error) {
     console.error('Get financial notices error:', error);
@@ -1274,12 +1339,14 @@ export async function getActivityLogsAction() {
   try {
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'can_view_audit')) return { success: false, error: 'غير مصرح' };
+    const pharmacyId = user.pharmacy_id || 'local_default';
     const logs = await db.prepare(`
       SELECT a.*, u.full_name as user_name
       FROM activity_log a
       LEFT JOIN users u ON a.user_id = u.id
+      WHERE (u.pharmacy_id = ? OR (u.pharmacy_id IS NULL AND ? = 'local_default'))
       ORDER BY a.created_at DESC LIMIT 200
-    `).all();
+    `).all(pharmacyId, pharmacyId);
     return { success: true, data: logs };
   } catch (error) {
     console.error('Get activity logs error:', error);

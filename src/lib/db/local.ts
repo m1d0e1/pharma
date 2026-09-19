@@ -260,6 +260,7 @@ export function initLocalDb() {
       batch_number TEXT,
       min_stock_level INTEGER DEFAULT 10,
       strips_per_box INTEGER DEFAULT 1,
+      medium_to_small INTEGER DEFAULT 1,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
@@ -300,6 +301,21 @@ export function initLocalDb() {
       if (!e.message.includes('duplicate column name')) throw e;
     }
   }
+  if (!colInfo.some(c => c.name === 'medium_to_small')) {
+    try {
+      db.exec('ALTER TABLE inventory ADD COLUMN medium_to_small INTEGER DEFAULT 1');
+      db.exec(`
+        UPDATE inventory
+        SET medium_to_small = COALESCE((
+          SELECT NULLIF(md.medium_to_small, 0)
+          FROM master_drugs md
+          WHERE md.id = inventory.drug_id
+        ), 1)
+      `);
+    } catch (e: any) {
+      if (!e.message.includes('duplicate column name')) throw e;
+    }
+  }
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS sales_invoices (
@@ -322,6 +338,8 @@ export function initLocalDb() {
       unit TEXT,
       is_negative INTEGER DEFAULT 0,
       cost_price REAL DEFAULT 0,
+      large_to_medium INTEGER DEFAULT 1,
+      medium_to_small INTEGER DEFAULT 1,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -390,6 +408,7 @@ export function initLocalDb() {
       id TEXT PRIMARY KEY,
       invoice_id TEXT,
       user_id TEXT NOT NULL,
+      pharmacy_id TEXT,
       shift_id TEXT,
       reason TEXT,
       total_refund REAL,
@@ -606,6 +625,7 @@ export function initLocalDb() {
       tax_percent REAL DEFAULT 0,
       discount_percent REAL DEFAULT 0,
       strips_per_box INTEGER DEFAULT 1,
+      medium_to_small INTEGER DEFAULT 1,
       inventory_id TEXT,
       barcode TEXT,
       FOREIGN KEY (invoice_id) REFERENCES purchase_invoices (id),
@@ -801,14 +821,41 @@ export function initLocalDb() {
     );
 
     CREATE TABLE IF NOT EXISTS daily_financial_snapshots (
-      date TEXT PRIMARY KEY,
+      date TEXT NOT NULL,
+      pharmacy_id TEXT NOT NULL DEFAULT 'local_default',
       total_sales REAL DEFAULT 0,
       total_returns REAL DEFAULT 0,
       total_cash_movements REAL DEFAULT 0,
       net_profit REAL DEFAULT 0,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (date, pharmacy_id)
     );
   `);
+
+  const snapshotColumns = db.prepare("PRAGMA table_info(daily_financial_snapshots)").all() as any[];
+  if (!snapshotColumns.some(column => column.name === 'pharmacy_id')) {
+    db.exec(`
+      ALTER TABLE daily_financial_snapshots RENAME TO daily_financial_snapshots_legacy;
+      CREATE TABLE daily_financial_snapshots (
+        date TEXT NOT NULL,
+        pharmacy_id TEXT NOT NULL DEFAULT 'local_default',
+        total_sales REAL DEFAULT 0,
+        total_returns REAL DEFAULT 0,
+        total_cash_movements REAL DEFAULT 0,
+        net_profit REAL DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (date, pharmacy_id)
+      );
+      INSERT INTO daily_financial_snapshots (
+        date, pharmacy_id, total_sales, total_returns, total_cash_movements, net_profit, created_at
+      )
+      SELECT date, 'local_default', total_sales, total_returns, total_cash_movements, net_profit, created_at
+      FROM daily_financial_snapshots_legacy;
+      DROP TABLE daily_financial_snapshots_legacy;
+    `);
+  }
+  db.exec('DROP INDEX IF EXISTS idx_daily_snapshots_date');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_daily_snapshots_pharmacy_date ON daily_financial_snapshots(pharmacy_id, date)');
 
   // Performance Indexes
   db.exec(`
@@ -862,11 +909,22 @@ export function initLocalDb() {
   const purchaseItemColumns = db.prepare("PRAGMA table_info(purchase_invoice_items)").all() as any[];
   for (const col of [
     { name: 'strips_per_box', type: 'INTEGER DEFAULT 1' },
+    { name: 'medium_to_small', type: 'INTEGER DEFAULT 1' },
     { name: 'inventory_id', type: 'TEXT' },
     { name: 'barcode', type: 'TEXT' }
   ]) {
     if (!purchaseItemColumns.some(c => c.name === col.name)) {
       addColumnSafely('purchase_invoice_items', col.name, col.type);
+      if (col.name === 'medium_to_small') {
+        db.exec(`
+          UPDATE purchase_invoice_items
+          SET medium_to_small = COALESCE((
+            SELECT NULLIF(md.medium_to_small, 0)
+            FROM master_drugs md
+            WHERE md.id = purchase_invoice_items.drug_id
+          ), 1)
+        `);
+      }
     }
   }
   db.exec('UPDATE purchase_invoices SET updated_at = COALESCE(updated_at, created_at, CURRENT_TIMESTAMP) WHERE updated_at IS NULL');
@@ -895,6 +953,12 @@ export function initLocalDb() {
 
   // Migration: Add shift_id to sales_invoices if missing
   const salesColumns = db.prepare("PRAGMA table_info(sales_invoices)").all() as any[];
+  if (!salesColumns.some(c => c.name === 'user_id')) {
+    addColumnSafely('sales_invoices', 'user_id', 'TEXT');
+  }
+  if (!salesColumns.some(c => c.name === 'pharmacy_id')) {
+    addColumnSafely('sales_invoices', 'pharmacy_id', 'TEXT');
+  }
   if (!salesColumns.some(c => c.name === 'shift_id')) {
     addColumnSafely('sales_invoices', 'shift_id', 'TEXT');
   }
@@ -917,6 +981,18 @@ export function initLocalDb() {
   if (!salesColumns.some(c => c.name === 'remaining_amount')) {
     addColumnSafely('sales_invoices', 'remaining_amount', "REAL DEFAULT 0");
   }
+  db.exec(`
+    UPDATE sales_invoices
+    SET pharmacy_id = COALESCE(
+      (SELECT COALESCE(NULLIF(TRIM(u.pharmacy_id), ''), 'local_default')
+       FROM users u
+       WHERE CAST(u.id AS TEXT) = CAST(sales_invoices.user_id AS TEXT)
+          OR LOWER(u.username) = LOWER(CAST(sales_invoices.user_id AS TEXT))
+       LIMIT 1),
+      'local_default'
+    )
+    WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = ''
+  `);
 
   // Migration: Add shift_id and refund_method to returns
   const returnColumns = db.prepare("PRAGMA table_info(returns)").all() as any[];
@@ -926,6 +1002,25 @@ export function initLocalDb() {
   if (!returnColumns.some(c => c.name === 'refund_method')) {
     addColumnSafely('returns', 'refund_method', "TEXT DEFAULT 'cash'");
   }
+  if (!returnColumns.some(c => c.name === 'pharmacy_id')) {
+    addColumnSafely('returns', 'pharmacy_id', 'TEXT');
+  }
+  db.exec(`
+    UPDATE returns
+    SET pharmacy_id = COALESCE(
+      (SELECT COALESCE(NULLIF(TRIM(si.pharmacy_id), ''), 'local_default')
+       FROM sales_invoices si
+       WHERE si.id = returns.invoice_id),
+      (SELECT COALESCE(NULLIF(TRIM(u.pharmacy_id), ''), 'local_default')
+       FROM users u
+       WHERE CAST(u.id AS TEXT) = CAST(returns.user_id AS TEXT)
+          OR LOWER(u.username) = LOWER(CAST(returns.user_id AS TEXT))
+       LIMIT 1),
+      'local_default'
+    )
+    WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = ''
+  `);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_returns_pharmacy_created ON returns(pharmacy_id, created_at)');
 
   // Migration: Add sale_item_id and unit to return_items if missing
   const returnItemColumns = db.prepare("PRAGMA table_info(return_items)").all() as any[];
@@ -973,6 +1068,36 @@ export function initLocalDb() {
   if (!itemColumns.some(c => c.name === 'cost_price')) {
     addColumnSafely('sales_items', 'cost_price', "REAL DEFAULT 0");
   }
+  if (!itemColumns.some(c => c.name === 'large_to_medium')) {
+    addColumnSafely('sales_items', 'large_to_medium', "INTEGER DEFAULT 1");
+    db.exec(`
+      UPDATE sales_items
+      SET large_to_medium = COALESCE((
+        SELECT NULLIF(i.strips_per_box, 0)
+        FROM inventory i
+        WHERE i.id = sales_items.inventory_id
+      ), (
+        SELECT NULLIF(md.large_to_medium, 0)
+        FROM master_drugs md
+        WHERE md.id = sales_items.drug_id
+      ), 1)
+    `);
+  }
+  if (!itemColumns.some(c => c.name === 'medium_to_small')) {
+    addColumnSafely('sales_items', 'medium_to_small', "INTEGER DEFAULT 1");
+    db.exec(`
+      UPDATE sales_items
+      SET medium_to_small = COALESCE((
+        SELECT NULLIF(i.medium_to_small, 0)
+        FROM inventory i
+        WHERE i.id = sales_items.inventory_id
+      ), (
+        SELECT NULLIF(md.medium_to_small, 0)
+        FROM master_drugs md
+        WHERE md.id = sales_items.drug_id
+      ), 1)
+    `);
+  }
   if (!itemColumns.some(c => c.name === 'drug_id')) {
     addColumnSafely('sales_items', 'drug_id', "INTEGER");
     db.exec(`
@@ -999,6 +1124,61 @@ export function initLocalDb() {
   if (!shiftColumns.some(c => c.name === 'receiver_id')) {
     addColumnSafely('shifts', 'receiver_id', "TEXT");
   }
+  db.exec('DROP INDEX IF EXISTS idx_shifts_single_open');
+  db.exec(`
+    DROP TRIGGER IF EXISTS shifts_one_open_per_pharmacy_insert;
+    CREATE TRIGGER shifts_one_open_per_pharmacy_insert
+    BEFORE INSERT ON shifts
+    WHEN LOWER(COALESCE(NEW.status, '')) = 'open'
+     AND EXISTS (
+       SELECT 1
+       FROM shifts existing_shift
+       WHERE LOWER(COALESCE(existing_shift.status, '')) = 'open'
+         AND COALESCE((
+           SELECT COALESCE(NULLIF(TRIM(existing_owner.pharmacy_id), ''), 'local_default')
+           FROM users existing_owner
+           WHERE CAST(existing_owner.id AS TEXT) = CAST(existing_shift.user_id AS TEXT)
+              OR LOWER(existing_owner.username) = LOWER(CAST(existing_shift.user_id AS TEXT))
+           LIMIT 1
+         ), 'local_default') = COALESCE((
+           SELECT COALESCE(NULLIF(TRIM(new_owner.pharmacy_id), ''), 'local_default')
+           FROM users new_owner
+           WHERE CAST(new_owner.id AS TEXT) = CAST(NEW.user_id AS TEXT)
+              OR LOWER(new_owner.username) = LOWER(CAST(NEW.user_id AS TEXT))
+           LIMIT 1
+         ), 'local_default')
+     )
+    BEGIN
+      SELECT RAISE(ABORT, 'open shift already exists for pharmacy');
+    END;
+
+    DROP TRIGGER IF EXISTS shifts_one_open_per_pharmacy_update;
+    CREATE TRIGGER shifts_one_open_per_pharmacy_update
+    BEFORE UPDATE OF status, user_id ON shifts
+    WHEN LOWER(COALESCE(NEW.status, '')) = 'open'
+     AND EXISTS (
+       SELECT 1
+       FROM shifts existing_shift
+       WHERE existing_shift.id <> OLD.id
+         AND LOWER(COALESCE(existing_shift.status, '')) = 'open'
+         AND COALESCE((
+           SELECT COALESCE(NULLIF(TRIM(existing_owner.pharmacy_id), ''), 'local_default')
+           FROM users existing_owner
+           WHERE CAST(existing_owner.id AS TEXT) = CAST(existing_shift.user_id AS TEXT)
+              OR LOWER(existing_owner.username) = LOWER(CAST(existing_shift.user_id AS TEXT))
+           LIMIT 1
+         ), 'local_default') = COALESCE((
+           SELECT COALESCE(NULLIF(TRIM(new_owner.pharmacy_id), ''), 'local_default')
+           FROM users new_owner
+           WHERE CAST(new_owner.id AS TEXT) = CAST(NEW.user_id AS TEXT)
+              OR LOWER(new_owner.username) = LOWER(CAST(NEW.user_id AS TEXT))
+           LIMIT 1
+         ), 'local_default')
+     )
+    BEGIN
+      SELECT RAISE(ABORT, 'open shift already exists for pharmacy');
+    END;
+  `);
 
   // Migration 017: Cloud drug identity mappings
   try {

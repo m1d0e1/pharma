@@ -15,6 +15,7 @@ interface UnsettledItem {
   trade_name: string
   trade_name_en?: string
   quantity_sold: number
+  net_unreturned_quantity?: number
   unit_price: number
   unit: string
   created_at?: string
@@ -254,7 +255,7 @@ export default function SettlementClient({ initialItems }: { initialItems: Unset
               <div className="bg-amber-50 dark:bg-amber-900/20 p-4 rounded-2xl border border-amber-100 dark:border-amber-900/30 flex gap-4">
                  <AlertTriangle className="w-6 h-6 text-amber-600 shrink-0" />
                  <p className="text-xs font-bold text-amber-800 dark:text-amber-400">
-                   سيتم خصم <b>{selectedItem.quantity_sold}</b> {selectedItem.unit === 'large' ? 'وحدة كبرى' : 'وحدة'} من الدفعة المختارة وتغيير حالة الفاتورة لتصبح &quot;مستقرة&quot;.
+                   سيتم خصم <b>{selectedItem.net_unreturned_quantity ?? selectedItem.quantity_sold}</b> {selectedItem.unit === 'large' ? 'وحدة كبرى' : 'وحدة'} من الدفعة المختارة وتغيير حالة الفاتورة لتصبح &quot;مستقرة&quot;.
                  </p>
               </div>
 

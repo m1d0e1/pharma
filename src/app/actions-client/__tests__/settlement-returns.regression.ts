@@ -34,7 +34,7 @@ describe('negative-stock settlement returns', () => {
         id INTEGER PRIMARY KEY, trade_name TEXT, trade_name_en TEXT, barcode TEXT
       );
       CREATE TABLE inventory (
-        id TEXT PRIMARY KEY, drug_id INTEGER, pharmacy_id TEXT, quantity REAL, expiry_date TEXT
+        id TEXT PRIMARY KEY, drug_id INTEGER, pharmacy_id TEXT, quantity REAL, expiry_date TEXT, batch_number TEXT
       );
       CREATE TABLE sales_invoices (
         id TEXT PRIMARY KEY, pharmacy_id TEXT, created_at TEXT, status TEXT
@@ -49,7 +49,7 @@ describe('negative-stock settlement returns', () => {
       );
 
       INSERT INTO master_drugs VALUES (1, 'دواء', 'Drug', '123');
-      INSERT INTO inventory VALUES ('batch', 1, NULL, 5, '2099-12-31');
+      INSERT INTO inventory VALUES ('batch', 1, NULL, 5, '2099-12-31', 'BATCH-1');
       INSERT INTO sales_invoices VALUES
         ('partial-sale', NULL, '2026-08-25 10:00:00', 'completed'),
         ('full-sale', NULL, '2026-08-25 11:00:00', 'completed'),

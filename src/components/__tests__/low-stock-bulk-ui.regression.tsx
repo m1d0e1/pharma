@@ -90,6 +90,7 @@ describe('low stock alert multi-selection and bulky actions ui', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    localStorage.setItem('pharma_session_user', JSON.stringify({ id: 'buyer-1', pharmacy_id: 'local_default' }));
   });
 
   it('renders all low stock items with bulk toolbar buttons', () => {
@@ -140,7 +141,10 @@ describe('low stock alert multi-selection and bulky actions ui', () => {
     const convertBtn = screen.getByText('فاتورة مشتريات (3)');
     fireEvent.click(convertBtn);
 
-    expect(setItemSpy).toHaveBeenCalledWith('shortages_to_purchase', expect.stringContaining('Panadol Extra'));
+    expect(setItemSpy).toHaveBeenCalledWith(
+      'pharma_shortages_to_purchase_v2:["local_default","buyer-1"]',
+      expect.stringContaining('Panadol Extra')
+    );
     expect(mockPush).toHaveBeenCalledWith('/purchases/new');
   });
 

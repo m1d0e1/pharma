@@ -26,6 +26,11 @@ jest.mock('@/lib/auth/local', () => ({
   hasUserPermissionSync: jest.fn(() => true),
 }));
 
+jest.mock('@/app/actions-client/shifts', () => ({
+  ensurePermanentShiftForUser: jest.fn(async () => ({ id: 'shift-open' })),
+  getShiftForPharmacy: jest.fn(async () => null),
+}));
+
 jest.mock('next/cache', () => ({
   revalidatePath: jest.fn(),
 }));
@@ -100,7 +105,7 @@ describe('Finance Module Server Actions', () => {
     it('should create a cash movement, daily journal, and balanced double-entry journals', async () => {
       (dbExecute as jest.Mock).mockResolvedValue({ rowsAffected: 1 });
       (dbGet as jest.Mock)
-        .mockResolvedValueOnce({ id: 'shift-open' })
+        .mockResolvedValueOnce({ pharmacy_id: 'test-pharmacy-id' })
         .mockResolvedValueOnce({ account_id: 6 }) // Main Cash Account
         .mockResolvedValueOnce({ account_id: 11 }); // Category Account (Expense)
 
@@ -157,7 +162,7 @@ describe('Finance Module Server Actions', () => {
       (dbGet as jest.Mock)
         .mockResolvedValueOnce({ id: 'patient-1', full_name: 'Test Patient' })
         .mockResolvedValueOnce({ outstanding_balance: 300 })
-        .mockResolvedValueOnce({ id: 'shift-open' })
+        .mockResolvedValueOnce({ pharmacy_id: 'test-pharmacy-id' })
         .mockResolvedValueOnce({ account_id: 6 })
         .mockResolvedValueOnce({ account_id: 8 });
 
@@ -293,7 +298,7 @@ describe('Finance Module Server Actions', () => {
       expect(result.data.net).toBe(4400); 
       expect(dbExecute).toHaveBeenCalledWith(
         expect.stringContaining('INSERT INTO daily_financial_snapshots'),
-        ['2026-05-08', 5000, 500, -100, 4400]
+        ['2026-05-08', 'test-pharmacy-id', 5000, 500, -100, 4400]
       );
     });
   });

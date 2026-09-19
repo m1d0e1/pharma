@@ -156,6 +156,7 @@ export async function updateUserPermissionsAction(userId: string, permissions: a
       delete permissionsToSave.can_view_staff_manage;
       delete permissionsToSave.can_view_staff_roles;
       delete permissionsToSave.rep_can_view_activity;
+      delete permissionsToSave.can_view_cogs;
     }
     const permissionsJson = JSON.stringify(permissionsToSave);
 
@@ -192,6 +193,7 @@ export async function addUserAction(formData: {
     }
 
     const { username, full_name, role, password, job_id, qualification, hire_date, shift, code } = formData;
+    const pharmacyId = localUser.pharmacy_id || 'local_default';
     
     // Check if user exists
     const existing = await db.prepare('SELECT id FROM users WHERE username = ?').get(username);
@@ -315,12 +317,13 @@ export async function addUserAction(formData: {
       can_view_expenses: true,
       can_view_staff_manage: true,
       can_view_staff_roles: true
-    } : (role === 'owner' || role === 'admin') ? defaultOwnerPerms : {};
+    } : (role === 'owner' || role === 'admin') ? { ...defaultOwnerPerms } : {};
+    if (role !== 'owner') delete defaultPerms.can_view_cogs;
 
     await db.prepare(`
-      INSERT INTO users (id, username, full_name, role, password_hash, permissions, job_id, qualification, hire_date, shift, code)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, username, full_name, role, passwordHash, JSON.stringify(defaultPerms), job_id || null, qualification || null, hire_date || null, shift || null, code || null);
+      INSERT INTO users (id, username, full_name, role, password_hash, permissions, job_id, qualification, hire_date, shift, code, pharmacy_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, username, full_name, role, passwordHash, JSON.stringify(defaultPerms), job_id || null, qualification || null, hire_date || null, shift || null, code || null, pharmacyId);
 
     logActivity(localUser.id, 'ADD_USER', `أضاف مستخدماً جديداً: ${username} (${role})`);
 

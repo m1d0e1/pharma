@@ -52,12 +52,16 @@ const db = {
 
 import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { localDate } from '@/lib/time';
+import { getShiftForPharmacy } from './shifts';
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 
 export async function getShiftReportAction(shiftId: string) {
   try {
     const user = await getLocalSession();
     if (!user || (!hasUserPermissionSync(user, 'can_view_shifts') && !hasUserPermissionSync(user, 'rep_can_view_sales') && !hasUserPermissionSync(user, 'rep_can_view_shifts'))) return { success: false, error: 'غير مصرح' };
+    if (!await getShiftForPharmacy(shiftId, user.pharmacy_id)) {
+      return { success: false, error: 'الوردية غير موجودة أو لا تخص هذه الصيدلية' };
+    }
 
     // 1. Shift Basic Info
     const shift = await db.prepare(`
@@ -146,35 +150,47 @@ export async function getShiftReportAction(shiftId: string) {
 
 // Pre-compiled prepared statements for reports actions
 const getSalesTodayStmt = db.prepare(`
-  SELECT COALESCE(SUM(total_amount), 0) as total,
+  SELECT COALESCE(SUM(inv.total_amount), 0) as total,
          (SELECT COALESCE(SUM(
             CASE 
-              WHEN si.unit IN ('medium', 'strip', 'شريط') AND COALESCE(md.large_to_medium, 1) > 0 
-                THEN (si.quantity_sold / md.large_to_medium) * si.cost_price
-              WHEN si.unit = 'small' AND (COALESCE(md.large_to_medium, 1) * COALESCE(md.medium_to_small, 1)) > 0 
-                THEN (si.quantity_sold / (md.large_to_medium * md.medium_to_small)) * si.cost_price
+              WHEN si.unit IN ('medium', 'strip', 'شريط') AND COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(md.large_to_medium, 0), 1) > 0
+                THEN (si.quantity_sold / COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(md.large_to_medium, 0), 1)) * si.cost_price
+              WHEN si.unit = 'small' AND (COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(md.large_to_medium, 0), 1) * COALESCE(NULLIF(si.medium_to_small, 0), NULLIF(md.medium_to_small, 0), 1)) > 0
+                THEN (si.quantity_sold / (COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(md.large_to_medium, 0), 1) * COALESCE(NULLIF(si.medium_to_small, 0), NULLIF(md.medium_to_small, 0), 1))) * si.cost_price
               ELSE si.quantity_sold * si.cost_price
             END
           ), 0) 
           FROM sales_items si
           LEFT JOIN master_drugs md ON si.drug_id = md.id
-          WHERE si.invoice_id IN (SELECT id FROM sales_invoices WHERE date(created_at, 'localtime') = ? AND status = 'completed')) as total_cogs
-  FROM sales_invoices
-  WHERE date(created_at, 'localtime') = ? AND status = 'completed'
+          WHERE si.invoice_id IN (
+            SELECT id
+            FROM sales_invoices
+            WHERE date(created_at, 'localtime') = ?
+              AND (status IS NULL OR status = '' OR status IN ('completed', 'approved', 'delivered'))
+              AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+          )) as total_cogs
+  FROM sales_invoices inv
+  WHERE date(inv.created_at, 'localtime') = ?
+    AND (inv.status IS NULL OR inv.status = '' OR inv.status IN ('completed', 'approved', 'delivered'))
+    AND (inv.pharmacy_id = ? OR (inv.pharmacy_id IS NULL AND ? = 'local_default'))
 `);
 
 const getAccountIdStmt = db.prepare('SELECT account_id FROM trial_balance_settings WHERE category = ?');
 
 const getLiquidityStmt = db.prepare(`
-  SELECT COALESCE(SUM(CASE WHEN type = 'debit' THEN amount ELSE -amount END), 0) as balance
-  FROM journal_entries
-  WHERE account_id = ?
+  SELECT COALESCE(SUM(CASE WHEN je.type = 'debit' THEN je.amount ELSE -je.amount END), 0) as balance
+  FROM journal_entries je
+  JOIN daily_journals dj ON dj.id = je.journal_id
+  LEFT JOIN users u ON u.id = dj.created_by
+  WHERE je.account_id = ?
+    AND (u.pharmacy_id = ? OR (u.pharmacy_id IS NULL AND ? = 'local_default'))
 `);
 
 const getPendingDeliveryStmt = db.prepare(`
   SELECT COALESCE(SUM(total_amount), 0) as total
   FROM sales_invoices
   WHERE payment_method = 'delivery' AND status = 'completed'
+    AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
 `);
 
 const getShrinkageStmt = db.prepare(`
@@ -182,6 +198,7 @@ const getShrinkageStmt = db.prepare(`
   FROM stock_adjustments sa
   JOIN inventory i ON sa.inventory_id = i.id
   WHERE date(sa.created_at, 'localtime') = ? AND new_quantity < old_quantity
+    AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
 `);
 
 const getStockAlertsStmt = db.prepare(`
@@ -189,6 +206,7 @@ const getStockAlertsStmt = db.prepare(`
   FROM inventory i
   LEFT JOIN master_drugs m ON i.drug_id = m.id
   WHERE i.quantity <= COALESCE(m.reorder_point, 5)
+    AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
 `);
 
 const getSalesTrendStmt = db.prepare(`
@@ -202,14 +220,16 @@ const getSalesTrendStmt = db.prepare(`
   daily_sales AS (
     SELECT date(created_at, 'localtime') as date, SUM(total_amount) as total
     FROM sales_invoices
-    WHERE status = 'completed'
+    WHERE (status IS NULL OR status = '' OR status IN ('completed', 'approved', 'delivered'))
+      AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
     GROUP BY date(created_at, 'localtime')
   ),
   daily_returns AS (
-    SELECT date(created_at, 'localtime') as date, SUM(total_refund) as total
-    FROM returns
-    WHERE status = 'approved'
-    GROUP BY date(created_at, 'localtime')
+    SELECT date(r.created_at, 'localtime') as date, SUM(r.total_refund) as total
+    FROM returns r
+    WHERE LOWER(COALESCE(r.status, '')) IN ('approved', 'completed')
+      AND (r.pharmacy_id = ? OR (r.pharmacy_id IS NULL AND ? = 'local_default'))
+    GROUP BY date(r.created_at, 'localtime')
   )
   SELECT 
     d.date,
@@ -224,23 +244,26 @@ const getSalesTrendStmt = db.prepare(`
 
 
 const _getDashboardKPIs = unstable_cache(
-  async (today: string) => {
+  async (today: string, pharmacyId: string) => {
     // 1. Sales Today
-    const salesToday = await getSalesTodayStmt.get(today, today) as any;
+    const salesToday = await getSalesTodayStmt.get(
+      today, pharmacyId, pharmacyId,
+      today, pharmacyId, pharmacyId
+    ) as any;
 
     // 2. Current Liquidity (Cash Drawer Account Balance)
     const cashAccRow = await getAccountIdStmt.get('cash_drawer') as any;
     const cashAccId = cashAccRow?.account_id || 6;
-    const liquidity = await getLiquidityStmt.get(cashAccId) as any;
+    const liquidity = await getLiquidityStmt.get(cashAccId, pharmacyId, pharmacyId) as any;
 
     // 2.5 Pending Delivery Cash
-    const pendingDelivery = await getPendingDeliveryStmt.get() as any;
+    const pendingDelivery = await getPendingDeliveryStmt.get(pharmacyId, pharmacyId) as any;
 
     // 3. Inventory Shrinkage (Value of adjustments today)
-    const shrinkage = await getShrinkageStmt.get(today) as any;
+    const shrinkage = await getShrinkageStmt.get(today, pharmacyId, pharmacyId) as any;
 
     // 4. Critical Stock Alerts
-    const alerts = await getStockAlertsStmt.get() as any;
+    const alerts = await getStockAlertsStmt.get(pharmacyId, pharmacyId) as any;
 
     return {
       sales_today: salesToday.total,
@@ -261,7 +284,8 @@ export async function getDashboardKPIsAction() {
     if (!user || !hasUserPermissionSync(user, 'rep_can_view_sales')) return { success: false, error: 'غير مصرح' };
 
     const today = localDate();
-    const data = await _getDashboardKPIs(today);
+    const pharmacyId = user.pharmacy_id || 'local_default';
+    const data = await _getDashboardKPIs(today, pharmacyId);
     return { success: true, data };
   } catch (error) {
     console.error('KPI error:', error);
@@ -270,8 +294,12 @@ export async function getDashboardKPIsAction() {
 }
 
 const _getSalesTrend = unstable_cache(
-  async (dayParam: string) => {
-    return await getSalesTrendStmt.all(dayParam) as any[];
+  async (dayParam: string, pharmacyId: string) => {
+    return await getSalesTrendStmt.all(
+      dayParam,
+      pharmacyId, pharmacyId,
+      pharmacyId, pharmacyId
+    ) as any[];
   },
   ['sales-trend'],
   { revalidate: 30 }
@@ -282,7 +310,8 @@ export async function getSalesTrendAction(days: number = 30) {
     const user = await getLocalSession();
     if (!user || !hasUserPermissionSync(user, 'rep_can_view_sales')) return { success: false, error: 'غير مصرح' };
 
-    const results = await _getSalesTrend('-' + (days - 1) + ' days');
+    const pharmacyId = user.pharmacy_id || 'local_default';
+    const results = await _getSalesTrend('-' + (days - 1) + ' days', pharmacyId);
 
     return { success: true, data: results };
   } catch (error) {

@@ -53,6 +53,61 @@ const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, 
 
 import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 
+const normalizePharmacyId = (pharmacyId?: string | null) =>
+  pharmacyId && String(pharmacyId).trim() ? String(pharmacyId).trim() : 'local_default';
+
+async function resolveUserPharmacyId(userId: string | number) {
+  const row = await db.prepare(`
+    SELECT pharmacy_id
+    FROM users
+    WHERE CAST(id AS TEXT) = CAST(? AS TEXT)
+       OR LOWER(username) = LOWER(CAST(? AS TEXT))
+    LIMIT 1
+  `).get(userId, userId) as any;
+  if (!row) throw new Error('المستخدم غير موجود');
+  return normalizePharmacyId(row.pharmacy_id);
+}
+
+async function getOpenShiftForPharmacy(pharmacyId?: string | null) {
+  const scope = normalizePharmacyId(pharmacyId);
+  return await db.prepare(`
+    SELECT s.id, s.user_id, s.start_time, s.starting_cash, s.status
+    FROM shifts s
+    WHERE LOWER(COALESCE(s.status, '')) = 'open'
+      AND EXISTS (
+        SELECT 1
+        FROM users su
+        WHERE (CAST(su.id AS TEXT) = CAST(s.user_id AS TEXT)
+               OR LOWER(su.username) = LOWER(CAST(s.user_id AS TEXT)))
+          AND COALESCE(NULLIF(TRIM(su.pharmacy_id), ''), 'local_default') = ?
+      )
+    ORDER BY s.start_time ASC, s.rowid ASC
+    LIMIT 1
+  `).get(scope) as any;
+}
+
+export async function getShiftForPharmacy(
+  shiftId: string,
+  pharmacyId?: string | null,
+  openOnly = false
+) {
+  const scope = normalizePharmacyId(pharmacyId);
+  return await db.prepare(`
+    SELECT s.id, s.user_id, s.start_time, s.starting_cash, s.status
+    FROM shifts s
+    WHERE s.id = ?
+      ${openOnly ? "AND LOWER(COALESCE(s.status, '')) = 'open'" : ''}
+      AND EXISTS (
+        SELECT 1
+        FROM users su
+        WHERE (CAST(su.id AS TEXT) = CAST(s.user_id AS TEXT)
+               OR LOWER(su.username) = LOWER(CAST(s.user_id AS TEXT)))
+          AND COALESCE(NULLIF(TRIM(su.pharmacy_id), ''), 'local_default') = ?
+      )
+    LIMIT 1
+  `).get(shiftId, scope) as any;
+}
+
 /**
  * Return the pharmacy-wide open shift, creating it on first use.
  * userId is retained only as the creator; transaction rows store the acting user.
@@ -62,12 +117,8 @@ export async function ensurePermanentShiftForUser(
   startingCash = 0,
   notes = 'وردية مشتركة أُنشئت تلقائياً'
 ) {
-  const existing = await db.prepare(`
-    SELECT id, user_id, start_time, starting_cash, status
-    FROM shifts
-    WHERE status = 'open'
-    ORDER BY start_time ASC, rowid ASC LIMIT 1
-  `).get() as any;
+  const pharmacyId = await resolveUserPharmacyId(userId);
+  const existing = await getOpenShiftForPharmacy(pharmacyId);
   if (existing?.id) return existing;
 
   const shiftId = generateId();
@@ -75,16 +126,20 @@ export async function ensurePermanentShiftForUser(
     INSERT INTO shifts (id, user_id, starting_cash, notes, status)
     SELECT ?, ?, ?, ?, 'open'
     WHERE NOT EXISTS (
-      SELECT 1 FROM shifts WHERE status = 'open'
+      SELECT 1
+      FROM shifts s
+      WHERE LOWER(COALESCE(s.status, '')) = 'open'
+        AND EXISTS (
+          SELECT 1
+          FROM users su
+          WHERE (CAST(su.id AS TEXT) = CAST(s.user_id AS TEXT)
+                 OR LOWER(su.username) = LOWER(CAST(s.user_id AS TEXT)))
+            AND COALESCE(NULLIF(TRIM(su.pharmacy_id), ''), 'local_default') = ?
+        )
     )
-  `).run(shiftId, userId, startingCash, notes);
+  `).run(shiftId, userId, startingCash, notes, pharmacyId);
 
-  const created = await db.prepare(`
-    SELECT id, user_id, start_time, starting_cash, status
-    FROM shifts
-    WHERE status = 'open'
-    ORDER BY start_time ASC, rowid ASC LIMIT 1
-  `).get() as any;
+  const created = await getOpenShiftForPharmacy(pharmacyId);
   if (!created?.id) throw new Error('تعذر إنشاء الوردية المشتركة');
   return created;
 }
@@ -102,11 +157,11 @@ export async function openShiftAction(data: { starting_cash_amount: number; open
     }
 
     const targetUserId = data.user_id || user.id;
-    const alreadyOpen = await db.prepare(`
-      SELECT id FROM shifts
-      WHERE status = 'open'
-      ORDER BY start_time ASC, rowid ASC LIMIT 1
-    `).get() as any;
+    const targetPharmacyId = await resolveUserPharmacyId(targetUserId);
+    if (targetPharmacyId !== normalizePharmacyId(user.pharmacy_id)) {
+      return { success: false, error: 'غير مصرح بفتح وردية لصيدلية أخرى' };
+    }
+    const alreadyOpen = await getOpenShiftForPharmacy(targetPharmacyId);
     const shift = await ensurePermanentShiftForUser(
       targetUserId,
       data.starting_cash_amount,
@@ -136,11 +191,14 @@ export async function closeShiftAction(data: { shift_id?: string; ending_cash_am
       return { success: false, error: 'الرصيد الختامي غير صالح' };
     }
 
+    const pharmacyId = normalizePharmacyId(user.pharmacy_id);
     let shiftId = data.shift_id;
     if (!shiftId || shiftId === 'auto') {
-      const openShift = await db.prepare("SELECT id FROM shifts WHERE status = 'open' ORDER BY start_time ASC, rowid ASC LIMIT 1").get() as any;
+      const openShift = await getOpenShiftForPharmacy(pharmacyId);
       if (!openShift) return { success: false, error: 'لا توجد وردية مفتوحة لإغلاقها' };
       shiftId = openShift.id;
+    } else if (!await getShiftForPharmacy(shiftId, pharmacyId, true)) {
+      return { success: false, error: 'الوردية غير موجودة أو لا تخص هذه الصيدلية' };
     }
 
     const transaction = db.transaction(async () => {
@@ -254,8 +312,9 @@ export async function getShiftsAction(filter: { status: string }) {
     if (!user || !hasUserPermissionSync(user, 'can_view_shifts')) return { success: false, error: 'غير مصرح' };
 
     const isOwnerOrAdmin = user.role === 'owner' || user.role === 'admin';
+    const pharmacyId = normalizePharmacyId(user.pharmacy_id);
 
-    const params: any[] = [];
+    const params: any[] = [pharmacyId];
     if (filter.status !== 'all') {
       params.push(filter.status);
     }
@@ -302,7 +361,8 @@ export async function getShiftsAction(filter: { status: string }) {
         FROM cash_movements
         GROUP BY shift_id
       ) moves ON s.id = moves.shift_id
-      ${filter.status !== 'all' ? 'WHERE s.status = ?' : ''}
+      WHERE COALESCE(NULLIF(TRIM(u.pharmacy_id), ''), 'local_default') = ?
+      ${filter.status !== 'all' ? 'AND s.status = ?' : ''}
       ORDER BY COALESCE(datetime(s.start_time), s.start_time, s.rowid) DESC LIMIT 100
     `).all(...params) as any[];
     
@@ -371,6 +431,7 @@ export async function getCurrentShiftAction() {
     if (!user) return { success: false, error: 'غير مصرح' };
 
     const permanentShift = await ensurePermanentShiftForUser(user.id);
+    const pharmacyId = normalizePharmacyId(user.pharmacy_id);
     const shift = {
       id: permanentShift.id,
       user_id: permanentShift.user_id,
@@ -381,11 +442,18 @@ export async function getCurrentShiftAction() {
 
     const lastClosed = await db.prepare(`
       SELECT ending_cash
-      FROM shifts
-      WHERE status != 'open' AND ending_cash IS NOT NULL
-      ORDER BY COALESCE(end_time, start_time) DESC
+      FROM shifts s
+      WHERE s.status != 'open' AND s.ending_cash IS NOT NULL
+        AND EXISTS (
+          SELECT 1
+          FROM users su
+          WHERE (CAST(su.id AS TEXT) = CAST(s.user_id AS TEXT)
+                 OR LOWER(su.username) = LOWER(CAST(s.user_id AS TEXT)))
+            AND COALESCE(NULLIF(TRIM(su.pharmacy_id), ''), 'local_default') = ?
+        )
+      ORDER BY COALESCE(s.end_time, s.start_time) DESC
       LIMIT 1
-    `).get() as any;
+    `).get(pharmacyId) as any;
 
     const suggestedStartingCash = lastClosed && lastClosed.ending_cash !== null && lastClosed.ending_cash !== undefined
       ? Number(lastClosed.ending_cash)
@@ -503,12 +571,20 @@ export async function forceCloseAllShiftsAction() {
     if (!user || user.role !== 'owner') {
       return { success: false, error: 'غير مصرح - للمالك فقط' };
     }
+    const pharmacyId = normalizePharmacyId(user.pharmacy_id);
 
     await db.prepare(`
       UPDATE shifts 
       SET end_time = CURRENT_TIMESTAMP, status = 'closed', notes = 'إغلاق اضطراري من قبل المالك'
       WHERE status = 'open'
-    `).run();
+        AND EXISTS (
+          SELECT 1
+          FROM users su
+          WHERE (CAST(su.id AS TEXT) = CAST(shifts.user_id AS TEXT)
+                 OR LOWER(su.username) = LOWER(CAST(shifts.user_id AS TEXT)))
+            AND COALESCE(NULLIF(TRIM(su.pharmacy_id), ''), 'local_default') = ?
+        )
+    `).run(pharmacyId);
 
     logActivity(user.id, 'FORCE_CLOSE_SHIFTS', 'قام المالك بإغلاق جميع الورديات المفتوحة اضطرارياً');
 
@@ -528,6 +604,9 @@ export async function getShiftReceiptsAction(shiftId: string) {
     const user = await getLocalSession();
     if (!user || (!hasUserPermissionSync(user, 'can_view_shifts') && !hasUserPermissionSync(user, 'can_view_receipts') && !hasUserPermissionSync(user, 'rep_can_view_shifts'))) {
       return { success: false, error: 'غير مصرح' };
+    }
+    if (!await getShiftForPharmacy(shiftId, user.pharmacy_id)) {
+      return { success: false, error: 'الوردية غير موجودة أو لا تخص هذه الصيدلية' };
     }
 
     const invoicesData = await db.prepare(`

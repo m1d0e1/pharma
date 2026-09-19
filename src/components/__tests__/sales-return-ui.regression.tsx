@@ -6,6 +6,7 @@ import {
   getSalesInvoicesByDateAction,
   searchRecentReturnInvoicesAction,
 } from '@/app/actions-client/returns';
+import { toast } from 'react-hot-toast';
 
 const mockPush = jest.fn();
 
@@ -50,6 +51,11 @@ describe('rendered customer-return flow', () => {
         patient_name: 'Test Patient',
         user_name: 'Cashier',
         created_at: '2026-08-25T10:00:00.000Z',
+        total_amount: 30,
+        discount_amount: 0,
+        payment_method: 'credit',
+        status: 'completed',
+        already_refunded: 0,
         items: [{
           id: 'sale-item-1',
           inventory_id: 'batch-1',
@@ -107,6 +113,48 @@ describe('rendered customer-return flow', () => {
 
     await waitFor(() => expect(searchRecentReturnInvoicesAction).toHaveBeenCalledWith('6221000123456'));
     expect(await screen.findByText('Return Drug')).toBeInTheDocument();
+  });
+
+  it('previews the discounted refundable amount and reports the saved refund', async () => {
+    (searchRecentReturnInvoicesAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: [{ id: 'discounted-1234', total_amount: 90, payment_method: 'cash', created_at: '2026-08-25T12:00:00.000Z' }],
+    });
+    (getInvoiceForReturnAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: {
+        id: 'discounted-1234',
+        total_amount: 90,
+        discount_amount: 10,
+        payment_method: 'cash',
+        status: 'completed',
+        already_refunded: 0,
+        items: [{
+          id: 'discounted-item',
+          inventory_id: 'batch-discounted',
+          drug_name: 'Discounted Return Drug',
+          quantity_sold: 1,
+          returned_quantity: 0,
+          unit_price: 100,
+          unit: 'large',
+          large_to_medium: 1,
+          medium_to_small: 1,
+        }],
+      },
+    });
+    (createReturnAction as jest.Mock).mockResolvedValue({ success: true, returnId: 'return-discounted', totalRefund: 90 });
+
+    render(<SalesReturnClient />);
+    fireEvent.change(screen.getByPlaceholderText('امسح الباركود، أو اكتب اسم الدواء، أو رقم الفاتورة...'), {
+      target: { value: 'discounted' },
+    });
+    expect(await screen.findByText('Discounted Return Drug')).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '1' } });
+
+    expect(screen.getAllByText('90.00 ج.م').length).toBeGreaterThanOrEqual(2);
+    fireEvent.click(screen.getByRole('button', { name: 'تنفيذ المرتجع' }));
+    await waitFor(() => expect(createReturnAction).toHaveBeenCalled());
+    expect(toast.success).toHaveBeenCalledWith('تم تسجيل المرتجع بنجاح: 90.00 ج.م');
   });
 
   it('keeps the chosen receipt when lists refresh and older detail requests finish late', async () => {

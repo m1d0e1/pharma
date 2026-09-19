@@ -51,7 +51,7 @@ const db = {
 
 
 import { getLocalSession, hasUserPermissionSync, verifyPassword } from '@/lib/auth/local';
-import { ensurePermanentShiftForUser } from './shifts';
+import { ensurePermanentShiftForUser, getShiftForPharmacy } from './shifts';
 
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 
@@ -157,6 +157,9 @@ export async function getHandoverDetailsAction(shiftId: string) {
     if (!user || (!hasUserPermissionSync(user, 'acc_can_view_handover') && !hasUserPermissionSync(user, 'can_view_shifts'))) {
       return { success: false, error: 'غير مصرح' };
     }
+    if (!await getShiftForPharmacy(shiftId, user.pharmacy_id)) {
+      return { success: false, error: 'الوردية غير موجودة أو لا تخص هذه الصيدلية' };
+    }
     return { success: true, data: await loadHandoverDetails(shiftId) };
   } catch (error) {
     console.error('Get handover details error:', error);
@@ -191,6 +194,12 @@ export async function processHandoverAction(data: {
     if (!user || (isManagedClosure ? !canManageStaff : !hasUserPermissionSync(user, 'acc_can_view_handover'))) {
       return { success: false, error: 'غير مصرح' };
     }
+    const pharmacyId = user.pharmacy_id && String(user.pharmacy_id).trim()
+      ? String(user.pharmacy_id).trim()
+      : 'local_default';
+    if (!await getShiftForPharmacy(data.shiftId, pharmacyId, true)) {
+      return { success: false, error: 'الوردية غير موجودة أو لا تخص هذه الصيدلية' };
+    }
     if (managedUserId && String(managedUserId) === String(user.id)) {
       return { success: false, error: 'لا يمكنك تعطيل حسابك الخاص' };
     }
@@ -208,8 +217,12 @@ export async function processHandoverAction(data: {
     let managedUser: any = null;
     let receiver: any = null;
     if (managedUserId) {
-      managedUser = await db.prepare('SELECT id, username, role FROM users WHERE id = ? AND is_active = 1').get(managedUserId) as any;
+      managedUser = await db.prepare('SELECT id, username, role, pharmacy_id FROM users WHERE id = ? AND is_active = 1').get(managedUserId) as any;
       if (!managedUser) return { success: false, error: 'المستخدم غير موجود أو الحساب معطل بالفعل' };
+      const managedPharmacyId = managedUser.pharmacy_id && String(managedUser.pharmacy_id).trim()
+        ? String(managedUser.pharmacy_id).trim()
+        : 'local_default';
+      if (managedPharmacyId !== pharmacyId) return { success: false, error: 'المستخدم يتبع صيدلية أخرى' };
       if (managedUser.role === 'owner' && user.role !== 'owner') {
         return { success: false, error: 'لا يمكنك تعطيل حساب المالك' };
       }
@@ -219,8 +232,12 @@ export async function processHandoverAction(data: {
       }
     } else {
       // Validate receiver for a normal handover.
-      receiver = await db.prepare('SELECT id, password_hash FROM users WHERE username = ? AND is_active = 1').get(data.receiverUsername) as any;
+      receiver = await db.prepare('SELECT id, password_hash, pharmacy_id FROM users WHERE username = ? AND is_active = 1').get(data.receiverUsername) as any;
       if (!receiver) return { success: false, error: 'المستلم غير موجود' };
+      const receiverPharmacyId = receiver.pharmacy_id && String(receiver.pharmacy_id).trim()
+        ? String(receiver.pharmacy_id).trim()
+        : 'local_default';
+      if (receiverPharmacyId !== pharmacyId) return { success: false, error: 'المستلم يتبع صيدلية أخرى' };
       if (!data.receiverPasswordHash || !receiver.password_hash || !await verifyPassword(data.receiverPasswordHash, receiver.password_hash)) {
         return { success: false, error: 'كلمة مرور المستلم غير صحيحة' };
       }
@@ -357,8 +374,20 @@ export async function processHandoverAction(data: {
       if (nextShiftId) {
         const opened = await db.prepare(`
           INSERT INTO shifts(id,user_id,starting_cash,notes,status)
-          SELECT ?,?,?,?,'open' WHERE NOT EXISTS(SELECT 1 FROM shifts WHERE status='open')
-        `).run(nextShiftId,user.id,carriedCash,`وردية مشتركة بعد تسليم ${data.shiftId}`);
+          SELECT ?,?,?,?,'open'
+          WHERE NOT EXISTS(
+            SELECT 1
+            FROM shifts s
+            WHERE LOWER(COALESCE(s.status, '')) = 'open'
+              AND EXISTS (
+                SELECT 1
+                FROM users su
+                WHERE (CAST(su.id AS TEXT) = CAST(s.user_id AS TEXT)
+                       OR LOWER(su.username) = LOWER(CAST(s.user_id AS TEXT)))
+                  AND COALESCE(NULLIF(TRIM(su.pharmacy_id), ''), 'local_default') = ?
+              )
+          )
+        `).run(nextShiftId,user.id,carriedCash,`وردية مشتركة بعد تسليم ${data.shiftId}`,pharmacyId);
         if (opened.changes !== 1) throw new Error('توجد وردية أخرى مفتوحة؛ لم يتم التسليم. راجع إدارة الورديات');
         if (isInternalHandover && data.transferAmount > 0) {
           receiverShiftId = nextShiftId;
@@ -440,12 +469,7 @@ export async function getShiftCreditSalesAction(shiftId?: string) {
 
     if (!targetShiftId) return { success: true, data: [] };
 
-    const shift = await db.prepare(`
-      SELECT id
-      FROM shifts
-      WHERE id = ?
-        AND status = 'open'
-    `).get(targetShiftId) as any;
+    const shift = await getShiftForPharmacy(targetShiftId, user.pharmacy_id, true);
     if (!shift) return { success: false, error: 'الوردية المشتركة غير مفتوحة', data: [] };
 
     const items = await db.prepare(`

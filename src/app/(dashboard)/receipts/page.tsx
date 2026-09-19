@@ -26,6 +26,7 @@ export default function ReceiptsPage() {
 
           if (isAllowed) {
             setAllowed(true);
+            const pharmacyId = userObj.pharmacy_id || 'local_default';
             // Query 1: Fetch invoices (optionally filtered by shift_id)
             const sql = shiftId
               ? `
@@ -45,6 +46,7 @@ export default function ReceiptsPage() {
                 LEFT JOIN users u ON si.user_id = u.id
                 LEFT JOIN patients p ON si.patient_id = p.id
                 WHERE si.shift_id = ?
+                  AND (si.pharmacy_id = ? OR (si.pharmacy_id IS NULL AND ? = 'local_default'))
                   AND (si.status IS NULL OR si.status = '' OR si.status IN ('completed', 'approved', 'delivered'))
                 ORDER BY si.created_at DESC
               `
@@ -64,11 +66,15 @@ export default function ReceiptsPage() {
                 FROM sales_invoices si
                 LEFT JOIN users u ON si.user_id = u.id
                 LEFT JOIN patients p ON si.patient_id = p.id
-                WHERE si.status IS NULL OR si.status = '' OR si.status IN ('completed', 'approved', 'delivered')
+                WHERE (si.pharmacy_id = ? OR (si.pharmacy_id IS NULL AND ? = 'local_default'))
+                  AND (si.status IS NULL OR si.status = '' OR si.status IN ('completed', 'approved', 'delivered'))
                 ORDER BY si.created_at DESC
                 LIMIT 200
               `;
-            const invoicesData = await dbSelect(sql, shiftId ? [shiftId] : []);
+            const invoicesData = await dbSelect(
+              sql,
+              shiftId ? [shiftId, pharmacyId, pharmacyId] : [pharmacyId, pharmacyId]
+            );
 
         if (invoicesData.length === 0) {
           setInvoices([]);

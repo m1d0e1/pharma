@@ -119,6 +119,10 @@ export async function addInventoryAction(formData: AddInventoryInput) {
 
     const { drug_id, quantity, local_selling_price, expiry_date, barcode, unit, large_to_medium } = validationResult.data;
     const pharmacyId = normalizePharmacyId(localUser.pharmacy_id);
+    const conversion = await db.prepare(
+      'SELECT COALESCE(NULLIF(medium_to_small, 0), 1) AS medium_to_small FROM master_drugs WHERE id = ?'
+    ).get(drug_id) as any;
+    const mediumToSmall = Math.max(1, Number(conversion?.medium_to_small) || 1);
 
     // Step 4: Generate ID
     console.log('[addInventoryAction] Step 4: Generating UUID...');
@@ -131,9 +135,9 @@ export async function addInventoryAction(formData: AddInventoryInput) {
     
     // Begin Transaction using single queries (or standard run)
     await db.prepare(`
-      INSERT INTO inventory (id, pharmacy_id, drug_id, quantity, local_selling_price, expiry_date, barcode, strips_per_box)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, pharmacyId, drug_id, quantity, local_selling_price, expiry_date, barcode || null, large_to_medium || 1);
+      INSERT INTO inventory (id, pharmacy_id, drug_id, quantity, local_selling_price, expiry_date, barcode, strips_per_box, medium_to_small)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, pharmacyId, drug_id, quantity, local_selling_price, expiry_date, barcode || null, large_to_medium || 1, mediumToSmall);
     
     if (unit) {
       await db.prepare('UPDATE master_drugs SET large_unit = ? WHERE id = ?').run(unit, drug_id);
@@ -201,6 +205,7 @@ export async function updateInventoryAction(formData: UpdateInventoryInput) {
     const { secureCache } = await import('@/lib/cache/secure_cache');
     await secureCache.load();
 
+    const result = await dbTransaction(async () => {
     const current = await db.prepare(`
       SELECT i.quantity, i.drug_id, i.strips_per_box, m.large_to_medium
       FROM inventory i 
@@ -217,8 +222,8 @@ export async function updateInventoryAction(formData: UpdateInventoryInput) {
 
     const canModifyUnitConversion = hasUserPermissionSync(localUser, 'can_modify_unit_conversion');
     if (large_to_medium !== undefined && large_to_medium !== null) {
-      const changesMasterConversion = Number(large_to_medium) !== Number(current.large_to_medium || 1);
-      if (changesMasterConversion && !canModifyUnitConversion) {
+      const changesBatchConversion = Number(large_to_medium) !== Number(current.strips_per_box || current.large_to_medium || 1);
+      if (changesBatchConversion && !canModifyUnitConversion) {
         return { success: false, error: 'غير مصرح بتعديل معاملات التحويل' };
       }
     }
@@ -239,15 +244,14 @@ export async function updateInventoryAction(formData: UpdateInventoryInput) {
 
     await db.prepare(updateInvQuery).run(...invParams);
 
-    if (large_to_medium !== undefined && large_to_medium !== null && canModifyUnitConversion) {
+    if (large_to_medium !== undefined && large_to_medium !== null && canModifyUnitConversion
+        && Number(large_to_medium) !== Number(current.strips_per_box || current.large_to_medium || 1)) {
       await db.prepare('UPDATE inventory SET strips_per_box = ? WHERE id = ?').run(large_to_medium, id);
       await db.prepare('UPDATE master_drugs SET large_to_medium = ? WHERE id = ?').run(large_to_medium, current.drug_id);
-      secureCache.updateDrug(current.drug_id, { large_to_medium });
     }
 
     // Keep selling price aligned across master_drugs & inventory
     await db.prepare('UPDATE master_drugs SET official_price = ? WHERE id = ?').run(local_selling_price, current.drug_id);
-    secureCache.updateDrug(current.drug_id, { official_price: local_selling_price });
 
     // Direct SQL lookup for trade name
     const drugRow2 = await db.prepare('SELECT trade_name, trade_name_en, active_ingredient FROM master_drugs WHERE id = ?').get(current.drug_id) as any;
@@ -297,8 +301,11 @@ export async function updateInventoryAction(formData: UpdateInventoryInput) {
       `).run(id, reason_id, current.quantity, quantity, localUser.id);
     }
 
-    logActivity(localUser.id, 'UPDATE_INVENTORY', `عدل مخزون الصنف ${tradeName}: من ${current.quantity} إلى ${quantity}`);
+    await logActivity(localUser.id, 'UPDATE_INVENTORY', `عدل مخزون الصنف ${tradeName}: من ${current.quantity} إلى ${quantity}`);
+    return { success: true };
+    });
 
+    if (!result.success) return result;
     await secureCache.reload();
 
     revalidatePath('/inventory');
@@ -601,9 +608,12 @@ export async function getLowStockAction(threshold?: number) {
           SUM(
             CASE
               WHEN si.unit IN ('medium', 'strip', 'شريط') OR si.unit = m.medium_unit
-                THEN si.quantity_sold / COALESCE(NULLIF(m.large_to_medium, 0), 1)
+                THEN si.quantity_sold / COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(m.large_to_medium, 0), 1)
               WHEN si.unit = 'small' OR si.unit = m.small_unit
-                THEN si.quantity_sold / (COALESCE(NULLIF(m.large_to_medium, 0), 1) * COALESCE(NULLIF(m.medium_to_small, 0), 1))
+                THEN si.quantity_sold / (
+                  COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(m.large_to_medium, 0), 1)
+                  * COALESCE(NULLIF(si.medium_to_small, 0), NULLIF(m.medium_to_small, 0), 1)
+                )
               ELSE si.quantity_sold
             END
           ) AS avg_monthly_usage
@@ -1023,6 +1033,7 @@ export async function getInventoryListAction(search?: string, drugId?: number) {
         i.quantity,
         i.expiry_date,
         i.local_selling_price,
+        i.strips_per_box,
         COALESCE(NULLIF(i.barcode, ''), NULLIF(m.barcode, '')) AS barcode,
         i.barcode AS lot_barcode,
         m.barcode AS drug_barcode,
@@ -1171,10 +1182,17 @@ export async function addOpeningBalanceAction(data: {
     if (!session || (!hasUserPermissionSync(session, 'can_view_opening_balances') && !hasUserPermissionSync(session, 'can_manage_inventory'))) {
       return { success: false, error: 'Unauthorized' };
     }
+    if (!Number.isFinite(data.quantity) || data.quantity <= 0
+        || !Number.isFinite(data.cost_price) || data.cost_price < 0
+        || !Number.isFinite(data.unit_price) || data.unit_price < 0
+        || !isBusinessDate(data.expiry_date)) {
+      return { success: false, error: 'بيانات الرصيد الافتتاحي غير صالحة' };
+    }
 
     const batchNumber = 'OPEN-' + generateId().substring(0, 8);
     const drug = await db.prepare(`
       SELECT COALESCE(NULLIF(large_to_medium, 0), 1) AS large_to_medium,
+             COALESCE(NULLIF(medium_to_small, 0), 1) AS medium_to_small,
              COALESCE(trade_name_en, trade_name, active_ingredient) AS trade_name
       FROM master_drugs
       WHERE id = ?
@@ -1183,9 +1201,12 @@ export async function addOpeningBalanceAction(data: {
 
     await dbTransaction(async () => {
       await db.prepare(`
-        INSERT INTO inventory (id, pharmacy_id, drug_id, batch_number, expiry_date, quantity, local_selling_price, cost_price, strips_per_box)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(generateId(), session.pharmacy_id || 'local_default', data.drug_id, batchNumber, data.expiry_date, data.quantity, data.unit_price, data.cost_price, Number(drug.large_to_medium) || 1);
+        INSERT INTO inventory (id, pharmacy_id, drug_id, batch_number, expiry_date, quantity, local_selling_price, cost_price, strips_per_box, medium_to_small)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        generateId(), session.pharmacy_id || 'local_default', data.drug_id, batchNumber, data.expiry_date,
+        data.quantity, data.unit_price, data.cost_price, Number(drug.large_to_medium) || 1, Number(drug.medium_to_small) || 1
+      );
 
       const amount = Number(data.quantity) * Number(data.cost_price);
       if (amount > 0.000001) {

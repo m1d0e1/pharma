@@ -34,7 +34,7 @@ describe('receipts shift route', () => {
 
     await waitFor(() => expect(dbSelect).toHaveBeenCalledWith(
       expect.stringContaining("si.status IN ('completed', 'approved', 'delivered')"),
-      ['shift-a'],
+      ['shift-a', 'local_default', 'local_default'],
     ));
 
     currentShiftId = 'shift-b';
@@ -42,7 +42,7 @@ describe('receipts shift route', () => {
 
     await waitFor(() => expect(dbSelect).toHaveBeenCalledWith(
       expect.stringContaining("si.status IN ('completed', 'approved', 'delivered')"),
-      ['shift-b'],
+      ['shift-b', 'local_default', 'local_default'],
     ));
   });
 
@@ -52,7 +52,7 @@ describe('receipts shift route', () => {
 
     await waitFor(() => expect(dbSelect).toHaveBeenCalledWith(
       expect.stringContaining("si.status IN ('completed', 'approved', 'delivered')"),
-      [],
+      ['local_default', 'local_default'],
     ));
   });
 });

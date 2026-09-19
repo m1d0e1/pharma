@@ -36,6 +36,7 @@ describe('searchMasterDrugsAction search and filter browsing regression', () => 
         generic_name TEXT,
         active_ingredient TEXT,
         barcode TEXT,
+        base_price REAL DEFAULT 0,
         official_price REAL DEFAULT 0,
         category TEXT,
         manufacturer TEXT,
@@ -58,6 +59,10 @@ describe('searchMasterDrugsAction search and filter browsing regression', () => 
         (2, 'بنادول أزرق', 'Panadol Blue', 25, 1, 0, 0),
         (3, 'قياس ضغط', 'Blood Pressure Check', 10, 0, 1, 0),
         (4, 'دواء موقوف', 'Stopped Drug', 50, 1, 0, 1);
+    `);
+    mockDb.exec(`
+      INSERT INTO inventory (id, drug_id, quantity, cost_price)
+      VALUES ('positive-cost', 1, 2, 12.5), ('zero-cost', 2, 2, 0);
     `);
   });
 
@@ -99,5 +104,13 @@ describe('searchMasterDrugsAction search and filter browsing regression', () => 
     expect(res.success).toBe(true);
     expect(res.data?.length).toBe(1);
     expect(res.data?.[0].trade_name_en).toBe('Concor 5mg');
+  });
+
+  it('distinguishes known zero purchase cost from unknown cost', async () => {
+    const res = await searchMasterDrugsAction({ query: '', type: 'all', status: 'all' });
+    const byId = new Map(res.data?.map((drug: any) => [drug.id, drug]));
+    expect(byId.get(1)).toMatchObject({ purchase_price: 12.5, base_price: 12.5 });
+    expect(byId.get(2)).toMatchObject({ purchase_price: 0, base_price: 0 });
+    expect(byId.get(3)).toMatchObject({ purchase_price: null, base_price: 0 });
   });
 });

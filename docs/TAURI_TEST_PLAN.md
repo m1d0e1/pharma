@@ -55,7 +55,7 @@ Every exported action below needs at least a contract test against the current m
 |---|---|
 | `auth.ts` | `loginLocalAction`, `loginCloudAction`, `getCurrentUserAction`, `getLocalSessionAction`, `logoutLocalAction`, `getLocalUsersAction`. |
 | `sales.ts` | `searchDrugsAction`, `searchPatientsAction`, `barcodeLookupAction`, `fetchDraftsAction`, `processCheckoutAction`, `getSalesDashboardStatsAction`, `getRelevanceScore`. |
-| `returns.ts` | `getSalesInvoicesByDateAction`, `createReturnAction`, `getReturnsAction`, `searchInvoicesForReturnAction`, `searchRecentReturnInvoicesAction`, `getInvoiceForReturnAction`, `createGeneralReturnAction`. |
+| `returns.ts` | `getSalesInvoicesByDateAction`, `createReturnAction`, `getReturnsAction`, `searchInvoicesForReturnAction`, `searchRecentReturnInvoicesAction`, `getInvoiceForReturnAction`. |
 | `inventory.ts` | inventory CRUD; interaction/clinical checks; low-stock and alerts; negative-stock settlement; detail/list/movements/opening balances/restock/adjustments; unused-drug listing and deletion. |
 | `master-drugs.ts` | master-drug CRUD/search; units, categories, alternatives, indications, scientific groups, natures, usage methods, adjustment reasons and manufacturers; bilingual update/delete; drug-indication/alternative/interaction links; opening balances; shortages; stock adjustment; relevance score. |
 | `purchases.ts` | supplier CRUD/payment/transactions; invoice list/create/item/complete/detail/edit/delete/drafts; pending-invoice check; drug purchase history; orders; reports; purchase returns/details; inventory quantity. |
@@ -441,7 +441,7 @@ This is the function-level checklist used to prevent a grouped feature row from 
 - `purchase.ts`: `createPurchaseOrderAction`, `getPurchaseOrdersAction`, `updatePurchaseOrderStatusAction`.
 - `purchases.ts`: `getSuppliersAction`, `getSupplierTransactionsAction`, `addSupplierPaymentAction`, `addSupplierAction`, `updateSupplierAction`, `deleteSupplierAction`, `getPurchaseInvoicesAction`, `checkSupplierPendingInvoiceAction`, `createPurchaseInvoiceAction`, `addPurchaseInvoiceItemAction`, `completePurchaseInvoiceAction`, `getDrugPurchaseHistoryAction`, `createPurchaseOrderAction`, `getPurchaseOrdersAction`, `updatePurchaseOrderStatusAction`, `getPurchasesReportsAction`, `getPurchaseInvoiceDetailsAction`, `createPurchaseReturnAction`, `getPurchaseReturnsAction`, `deletePurchaseInvoiceAction`, `getDrugInventoryQuantityAction`, `getPurchaseReturnDetailsAction`, `getPurchaseInvoiceAction`, `getDraftPurchaseInvoicesAction`, `updateCompletedPurchaseInvoiceAction`.
 - `reports.ts`: `getShiftReportAction`, `getDashboardKPIsAction`, `getSalesTrendAction`, `getReportsDataAction`.
-- `returns.ts`: `getSalesInvoicesByDateAction`, `createReturnAction`, `getReturnsAction`, `searchInvoicesForReturnAction`, `searchRecentReturnInvoicesAction`, `getInvoiceForReturnAction`, `createGeneralReturnAction`.
+- `returns.ts`: `getSalesInvoicesByDateAction`, `createReturnAction`, `getReturnsAction`, `searchInvoicesForReturnAction`, `searchRecentReturnInvoicesAction`, `getInvoiceForReturnAction`.
 - `sales-reports.ts`: `getSalesReportsAction`, `getInvoiceDetailsAction`.
 - `sales.ts`: `searchDrugsAction`, `searchPatientsAction`, `barcodeLookupAction`, `fetchDraftsAction`, `processCheckoutAction`, `getSalesDashboardStatsAction`, `getRelevanceScore`.
 - `settings.ts`: `updatePharmacyAction`, `runDatabaseMaintenanceAction`.

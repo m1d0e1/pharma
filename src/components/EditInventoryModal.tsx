@@ -9,6 +9,7 @@ interface InventoryItem {
   id: string
   quantity: number
   local_selling_price: number
+  strips_per_box?: number | null
   expiry_date: string
   master_drugs: {
     trade_name: string
@@ -28,7 +29,8 @@ export default function EditInventoryModal({ item, onClose, onSuccess }: EditInv
   const [quantity, setQuantity] = useState(item.quantity.toString())
   const [localPrice, setLocalPrice] = useState(item.local_selling_price.toString())
   const [expiryDate, setExpiryDate] = useState(item.expiry_date ? item.expiry_date.split('T')[0] : '')
-  const [largeToMedium, setLargeToMedium] = useState(item.master_drugs?.large_to_medium?.toString() || '1')
+  const initialConversion = Number(item.strips_per_box) > 0 ? Number(item.strips_per_box) : (item.master_drugs?.large_to_medium || 1)
+  const [largeToMedium, setLargeToMedium] = useState(initialConversion.toString())
   const [reasonId, setReasonId] = useState<string>('')
   const [reasons, setReasons] = useState<any[]>([])
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -52,7 +54,7 @@ export default function EditInventoryModal({ item, onClose, onSuccess }: EditInv
       quantity: parseFloat(quantity),
       local_selling_price: parseFloat(localPrice),
       expiry_date: expiryDate || undefined,
-      large_to_medium: largeToMedium ? parseInt(largeToMedium) : undefined,
+      large_to_medium: Number(largeToMedium) !== initialConversion ? Number(largeToMedium) : undefined,
       reason_id: reasonId ? parseInt(reasonId) : undefined
     }
 

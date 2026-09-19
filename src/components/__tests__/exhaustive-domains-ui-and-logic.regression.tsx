@@ -173,6 +173,7 @@ describe('Exhaustive Frontend UI & Business Logic Test Suite (All Domains & Feat
 
   beforeEach(() => {
     mockPush.mockReset();
+    localStorage.setItem('pharma_session_user', JSON.stringify({ id: 'buyer-1', pharmacy_id: 'local_default' }));
     window.confirm = jest.fn(() => true);
   });
 
@@ -316,6 +317,15 @@ describe('Exhaustive Frontend UI & Business Logic Test Suite (All Domains & Feat
         }));
         expect(onSuccess).toHaveBeenCalled();
       });
+    });
+
+    it('preserves historical batch conversion when only the selling price changes', async () => {
+      (updateInventoryAction as jest.Mock).mockResolvedValue({ success: true });
+      render(<EditInventoryModal item={{ id: 'old-lot', quantity: 15, local_selling_price: 30, expiry_date: '2029-12-31', strips_per_box: 2, master_drugs: { trade_name: 'Old pack', large_to_medium: 3 } }} onClose={jest.fn()} onSuccess={jest.fn()} />);
+      expect(screen.getByDisplayValue('2')).toBeInTheDocument();
+      fireEvent.change(screen.getByDisplayValue('30'), { target: { value: '40' } });
+      fireEvent.click(screen.getByRole('button', { name: /حفظ التغييرات/i }));
+      await waitFor(() => expect(updateInventoryAction).toHaveBeenCalledWith(expect.objectContaining({ id: 'old-lot', quantity: 15, local_selling_price: 40, large_to_medium: undefined })));
     });
 
     it('supports EditInventoryModal updating quantities and reasons', async () => {
@@ -789,7 +799,10 @@ describe('Exhaustive Frontend UI & Business Logic Test Suite (All Domains & Feat
       const convertBtn = screen.getByRole('button', { name: /تحويل للمشتريات \(1\)/i });
       fireEvent.click(convertBtn);
 
-      expect(setItemSpy).toHaveBeenCalledWith('shortages_to_purchase', expect.stringContaining('Augmentin 1g'));
+      expect(setItemSpy).toHaveBeenCalledWith(
+        'pharma_shortages_to_purchase_v2:["local_default","buyer-1"]',
+        expect.stringContaining('Augmentin 1g')
+      );
       expect(mockPush).toHaveBeenCalledWith('/purchases/new');
     });
   });

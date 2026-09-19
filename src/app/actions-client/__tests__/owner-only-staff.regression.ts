@@ -68,7 +68,7 @@ it.each(['admin', 'manager', 'pharmacist', 'cashier', null])('blocks every staff
 it('lets the owner administer staff and jobs, read performance, and requires reconciliation before deactivating an open shift', async () => {
   expect((await staff.addUserAction({ username: 'new', full_name: 'New', role: 'pharmacist', password: 'secret123' })).success).toBe(true);
   expect((await staff.updateUserAction('new-staff', { username: 'updated', full_name: 'Updated', role: 'admin' })).success).toBe(true);
-  expect((await staff.updateUserPermissionsAction('new-staff', { can_view_purchases: true })).success).toBe(true);
+  expect((await staff.updateUserPermissionsAction('new-staff', { can_view_purchases: true, can_view_cogs: true })).success).toBe(true);
   expect((await staff.resetUserPasswordAction('new-staff', 'secret123')).success).toBe(true);
   expect(mockDb.prepare('SELECT username, role, permissions FROM users WHERE id = ?').get('new-staff')).toEqual({ username: 'updated', role: 'admin', permissions: '{"can_view_purchases":true}' });
   expect((await staff.addJobAction({ name_ar: 'صيدلي', min_salary: 10, max_salary: 20 })).success).toBe(true);

@@ -64,6 +64,43 @@ async function ensureReturnItemsSchema() {
     'ALTER TABLE return_items ADD COLUMN drug_id INTEGER',
     'ALTER TABLE return_items ADD COLUMN total_price REAL',
   ]) await dbExecute(sql).catch(() => {});
+  await dbExecute('ALTER TABLE returns ADD COLUMN pharmacy_id TEXT').catch(() => {});
+}
+
+function unitQuantityInLarge(
+  quantity: number,
+  unit: string | undefined,
+  largeToMedium: number,
+  mediumToSmall: number,
+  mediumUnit?: string,
+  smallUnit?: string,
+) {
+  const l2m = Math.max(1, Number(largeToMedium) || 1);
+  const m2s = Math.max(1, Number(mediumToSmall) || 1);
+  const value = String(unit || 'large').trim().toLowerCase();
+  const configuredMedium = String(mediumUnit || '').trim().toLowerCase();
+  const configuredSmall = String(smallUnit || '').trim().toLowerCase();
+  if (value === 'medium' || value === 'strip' || value === 'شريط' || (configuredMedium && value === configuredMedium)) return quantity / l2m;
+  if (value === 'small' || value === 'unit' || value === 'pill' || (configuredSmall && value === configuredSmall)) return quantity / (l2m * m2s);
+  return quantity;
+}
+
+function largeQuantityInUnit(
+  quantity: number,
+  unit: string | undefined,
+  largeToMedium: number,
+  mediumToSmall: number,
+  mediumUnit?: string,
+  smallUnit?: string,
+) {
+  const l2m = Math.max(1, Number(largeToMedium) || 1);
+  const m2s = Math.max(1, Number(mediumToSmall) || 1);
+  const value = String(unit || 'large').trim().toLowerCase();
+  const configuredMedium = String(mediumUnit || '').trim().toLowerCase();
+  const configuredSmall = String(smallUnit || '').trim().toLowerCase();
+  if (value === 'medium' || value === 'strip' || value === 'شريط' || (configuredMedium && value === configuredMedium)) return quantity * l2m;
+  if (value === 'small' || value === 'unit' || value === 'pill' || (configuredSmall && value === configuredSmall)) return quantity * l2m * m2s;
+  return quantity;
 }
 
 /**
@@ -71,6 +108,9 @@ async function ensureReturnItemsSchema() {
  */
 export async function getSalesInvoicesByDateAction(dateStr: string) {
   try {
+    const user = await getLocalSession();
+    if (!user || !hasUserPermissionSync(user, 'can_view_returns')) return { success: false, error: 'غير مصرح' };
+    const pharmacyId = user.pharmacy_id || 'local_default';
     await ensureReturnItemsSchema();
     const invoices = await db.prepare(`
        SELECT i.id, i.patient_id, i.total_amount, i.created_at, i.status, u.full_name as user_name,
@@ -79,7 +119,8 @@ export async function getSalesInvoicesByDateAction(dateStr: string) {
       LEFT JOIN users u ON i.user_id = u.id
       LEFT JOIN patients p ON i.patient_id = p.id
       WHERE date(i.created_at, 'localtime') = ?
-        AND (i.status IS NULL OR i.status = 'completed' OR i.status = 'approved' OR i.status = '')
+        AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
+        AND (i.status IS NULL OR i.status = 'completed' OR i.status = 'approved' OR i.status = 'delivered' OR i.status = '')
         AND EXISTS (
           SELECT 1
           FROM sales_items si
@@ -94,7 +135,7 @@ export async function getSalesInvoicesByDateAction(dateStr: string) {
             AND si.quantity_sold > COALESCE(ret.returned, 0)
         )
       ORDER BY i.created_at DESC
-    `).all(dateStr);
+    `).all(dateStr, pharmacyId, pharmacyId);
     return { success: true, data: invoices };
   } catch (err: any) {
     return { success: false, error: err.message };
@@ -116,6 +157,7 @@ export async function createReturnAction(data: {
     const user = await getLocalSession();
     if (!user || !hasUserPermissionSync(user, 'can_view_returns')) return { success: false, error: 'غير مصرح' };
     const shiftId = await requireOpenShiftId(String(user.id), data.shift_id);
+    const pharmacyId = user.pharmacy_id || 'local_default';
 
     if (isTauri) {
       const { invoke } = await import('@tauri-apps/api/core');
@@ -143,17 +185,17 @@ export async function createReturnAction(data: {
       return { success: true, returnId: result.return_id, totalRefund: result.total_refund };
     }
 
-    try {
-      await db.exec('ALTER TABLE return_items ADD COLUMN sale_item_id INTEGER');
-    } catch(e) {}
-    try {
-      await db.exec('ALTER TABLE return_items ADD COLUMN unit TEXT');
-    } catch(e) {}
+    await ensureReturnItemsSchema();
     try {
       await db.exec('ALTER TABLE sales_invoices ADD COLUMN points_earned INTEGER DEFAULT 0');
     } catch(e) {}
 
-    const dbHeader = await db.prepare('SELECT * FROM sales_invoices WHERE id = ?').get(data.invoice_id) as any;
+    const dbHeader = await db.prepare(`
+      SELECT *
+      FROM sales_invoices
+      WHERE id = ?
+        AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+    `).get(data.invoice_id, pharmacyId, pharmacyId) as any;
     if (!dbHeader) return { success: false, error: 'الفاتورة غير موجودة' };
     if (data.refund_method === 'patient_account' && !dbHeader.patient_id) {
       return { success: false, error: 'لا يمكن ترحيل المرتجع لحساب مريض لأن الفاتورة غير مرتبطة بمريض' };
@@ -172,8 +214,8 @@ export async function createReturnAction(data: {
         SELECT md.no_return, md.trade_name, si.drug_id
         FROM sales_items si
         LEFT JOIN master_drugs md ON si.drug_id = md.id
-        WHERE si.id = ?
-      `).get(item.sale_item_id) as any;
+        WHERE si.id = ? AND si.invoice_id = ?
+      `).get(item.sale_item_id, data.invoice_id) as any;
       
       if (drugCheck?.no_return) {
         return { success: false, error: `الصنف "${drugCheck.trade_name}" غير قابل للارتجاع` };
@@ -181,63 +223,151 @@ export async function createReturnAction(data: {
     }
 
     // 2. Validate: remaining quantity on invoice
-    const invoiceItems = await db.prepare('SELECT * FROM sales_items WHERE invoice_id = ?').all(data.invoice_id) as any[];
+    const invoiceItems = await db.prepare(`
+      SELECT si.*, md.medium_unit, md.small_unit
+      FROM sales_items si
+      LEFT JOIN master_drugs md ON md.id = si.drug_id
+      WHERE si.invoice_id = ?
+    `).all(data.invoice_id) as any[];
     const alreadyReturned = await db.prepare(`
-      SELECT ri.sale_item_id, SUM(ri.quantity_returned) as total
+      SELECT ri.sale_item_id, ri.quantity_returned, COALESCE(ri.unit, 'large') AS unit
       FROM return_items ri
       JOIN returns r ON ri.return_id = r.id
-      WHERE r.invoice_id = ? AND r.status = 'approved' AND ri.sale_item_id IS NOT NULL
-      GROUP BY ri.sale_item_id
+      WHERE r.invoice_id = ?
+        AND LOWER(COALESCE(r.status, '')) IN ('approved', 'completed')
+        AND ri.sale_item_id IS NOT NULL
     `).all(data.invoice_id) as any[];
 
+    const preparedReturns: any[] = [];
     for (const returnItem of data.items) {
       const soldItem = invoiceItems.find(si => si.id === returnItem.sale_item_id);
-      if (!soldItem) continue;
-
-      const returned = alreadyReturned.find(ar => ar.sale_item_id === returnItem.sale_item_id)?.total || 0;
-      if (returnItem.quantity > (soldItem.quantity_sold - returned + 0.000001)) {
+      if (!soldItem) {
+        return { success: false, error: `Sale item ${returnItem.sale_item_id} not found` };
+      }
+      const largeToMedium = Math.max(1, Number(soldItem.large_to_medium) || 1);
+      const mediumToSmall = Math.max(1, Number(soldItem.medium_to_small) || 1);
+      const restockQty = unitQuantityInLarge(
+        Number(returnItem.quantity),
+        returnItem.unit,
+        largeToMedium,
+        mediumToSmall,
+        soldItem.medium_unit,
+        soldItem.small_unit,
+      );
+      const returnedInSoldUnit = largeQuantityInUnit(
+        restockQty,
+        soldItem.unit,
+        largeToMedium,
+        mediumToSmall,
+        soldItem.medium_unit,
+        soldItem.small_unit,
+      );
+      const returned = alreadyReturned
+        .filter(ar => Number(ar.sale_item_id) === Number(returnItem.sale_item_id))
+        .reduce((sum, prior) => {
+          const priorLarge = unitQuantityInLarge(
+            Number(prior.quantity_returned) || 0,
+            prior.unit,
+            largeToMedium,
+            mediumToSmall,
+            soldItem.medium_unit,
+            soldItem.small_unit,
+          );
+          return sum + largeQuantityInUnit(
+            priorLarge,
+            soldItem.unit,
+            largeToMedium,
+            mediumToSmall,
+            soldItem.medium_unit,
+            soldItem.small_unit,
+          );
+        }, 0);
+      if (returnedInSoldUnit > (Number(soldItem.quantity_sold) - returned + 0.000001)) {
         return { success: false, error: `كمية المرتجع تتجاوز الكمية المتبقية للصنف "${returnItem.drug_name}"` };
       }
+      preparedReturns.push({
+        item: returnItem,
+        saleItem: soldItem,
+        largeToMedium,
+        mediumToSmall,
+        restockQty,
+        returnedInSoldUnit,
+      });
     }
 
     const returnId = generateId();
-    const totalRefund = data.items.reduce((sum, i) => sum + (i.quantity * i.unit_price), 0);
+    const grossRequestedRefund = preparedReturns.reduce(
+      (sum, prepared) => sum + prepared.returnedInSoldUnit * Number(prepared.saleItem.unit_price || 0),
+      0
+    );
+    const invoiceGross = invoiceItems.reduce(
+      (sum, item) => sum + Number(item.quantity_sold || 0) * Number(item.unit_price || 0),
+      0
+    );
     const priorRefund = await db.prepare(`
       SELECT COALESCE(SUM(total_refund), 0) AS total
       FROM returns
       WHERE invoice_id = ? AND LOWER(COALESCE(status, '')) IN ('approved', 'completed')
     `).get(data.invoice_id) as any;
+    const invoiceTotal = Number(dbHeader.total_amount || 0);
+    const merchandiseTotal = Math.max(0, invoiceGross - Number(dbHeader.discount_amount || 0));
+    const refundableInvoiceTotal =
+      String(dbHeader.status || '').toLowerCase() === 'delivered' &&
+      String(dbHeader.payment_method || '').toLowerCase() === 'delivery'
+        ? Math.min(invoiceTotal, merchandiseTotal)
+        : invoiceTotal;
+    const paidRatio = invoiceGross > 0 ? refundableInvoiceTotal / invoiceGross : 0;
+    const totalRefund = Math.min(
+      grossRequestedRefund * paidRatio,
+      Math.max(0, refundableInvoiceTotal - Number(priorRefund?.total || 0))
+    );
 
     try {
       // 3. Create return header
       await db.prepare(`
-        INSERT INTO returns (id, invoice_id, user_id, shift_id, reason, total_refund, refund_method, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'approved')
-      `).run(returnId, data.invoice_id, user.id, shiftId, data.reason, totalRefund, data.refund_method);
+        INSERT INTO returns (id, invoice_id, user_id, pharmacy_id, shift_id, reason, total_refund, refund_method, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved')
+      `).run(returnId, data.invoice_id, user.id, pharmacyId, shiftId, data.reason, totalRefund, data.refund_method);
 
       let totalCogsReversal = 0;
 
       // 4. Create return items and restock
-      for (const item of data.items) {
-        const saleItem = invoiceItems.find(si => si.id === item.sale_item_id);
+      for (const prepared of preparedReturns) {
+        const item = prepared.item;
+        const saleItem = prepared.saleItem;
         let finalInventoryId = item.inventory_id;
-        let drugId = saleItem ? saleItem.drug_id : null;
+        let drugId = saleItem.drug_id;
 
         // If drugId is not found, we can query it
         if (!drugId && finalInventoryId) {
-          const invRow = await db.prepare('SELECT drug_id FROM inventory WHERE id = ?').get(finalInventoryId) as any;
+          const invRow = await db.prepare(`
+            SELECT drug_id
+            FROM inventory
+            WHERE id = ?
+              AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+          `).get(finalInventoryId, pharmacyId, pharmacyId) as any;
           if (invRow) drugId = invRow.drug_id;
         }
 
         let inventoryExists = false;
         if (finalInventoryId) {
-          const checkInv = await db.prepare('SELECT 1 FROM inventory WHERE id = ?').get(finalInventoryId);
+          const checkInv = await db.prepare(`
+            SELECT 1
+            FROM inventory
+            WHERE id = ?
+              AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+          `).get(finalInventoryId, pharmacyId, pharmacyId);
           if (checkInv) inventoryExists = true;
         }
 
         if (!inventoryExists && drugId) {
-          // Try to find any inventory row for this drug
-          const existingInventory = await db.prepare('SELECT id FROM inventory WHERE drug_id = ? LIMIT 1').get(drugId) as any;
+          const existingInventory = await db.prepare(`
+            SELECT id
+            FROM inventory
+            WHERE drug_id = ?
+              AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+            LIMIT 1
+          `).get(drugId, pharmacyId, pharmacyId) as any;
           if (existingInventory?.id) {
             finalInventoryId = existingInventory.id;
           } else {
@@ -248,9 +378,18 @@ export async function createReturnAction(data: {
             const batchNum = 'RET-' + generateId().substring(0, 8);
             
             await db.prepare(`
-              INSERT INTO inventory (id, pharmacy_id, drug_id, batch_number, expiry_date, quantity, unit_price, cost_price)
-              VALUES (?, ?, ?, ?, ?, 0, ?, 0)
-            `).run(newInvId, user.pharmacy_id, drugId, batchNum, expiryStr, item.unit_price);
+              INSERT INTO inventory (id, pharmacy_id, drug_id, batch_number, expiry_date, quantity, unit_price, cost_price, strips_per_box, medium_to_small)
+              VALUES (?, ?, ?, ?, ?, 0, ?, 0, ?, ?)
+            `).run(
+              newInvId,
+              pharmacyId,
+              drugId,
+              batchNum,
+              expiryStr,
+              saleItem.unit_price,
+              prepared.largeToMedium,
+              prepared.mediumToSmall
+            );
             finalInventoryId = newInvId;
           }
         }
@@ -258,31 +397,20 @@ export async function createReturnAction(data: {
         await db.prepare(`
           INSERT INTO return_items (return_id, inventory_id, drug_name, quantity_returned, unit_price, sale_item_id, unit)
           VALUES (?, ?, ?, ?, ?, ?, ?)
-        `).run(returnId, finalInventoryId, item.drug_name, item.quantity, item.unit_price, item.sale_item_id || null, item.unit || 'large');
+        `).run(
+          returnId,
+          finalInventoryId,
+          item.drug_name,
+          prepared.returnedInSoldUnit,
+          saleItem.unit_price,
+          item.sale_item_id || null,
+          saleItem.unit || 'large'
+        );
 
-        const drugInfo = await db.prepare(`
-          SELECT
-            md.large_to_medium,
-            md.medium_to_small,
-            i.strips_per_box
-          FROM master_drugs md
-          LEFT JOIN inventory i ON i.id = ? AND i.drug_id = md.id
-          WHERE md.id = ?
-        `).get(finalInventoryId, drugId) as any;
-        const batchLargeToMedium = Number(drugInfo?.strips_per_box) > 0
-          ? Number(drugInfo.strips_per_box)
-          : (Number(drugInfo?.large_to_medium) || 1);
-        let restockQty = item.quantity;
-        if (item.unit === 'medium' || item.unit === 'strip' || item.unit === 'شريط') {
-          restockQty = item.quantity / batchLargeToMedium;
-        } else if (item.unit === 'small') {
-          restockQty = item.quantity / (batchLargeToMedium * (drugInfo?.medium_to_small || 1));
-        }
-
-        await db.prepare('UPDATE inventory SET quantity = quantity + ? WHERE id = ?').run(restockQty, finalInventoryId);
+        await db.prepare('UPDATE inventory SET quantity = quantity + ? WHERE id = ?').run(prepared.restockQty, finalInventoryId);
         
         // Calculate COGS reversal based on original cost
-        totalCogsReversal += (saleItem?.cost_price || 0) * restockQty;
+        totalCogsReversal += (saleItem.cost_price || 0) * prepared.restockQty;
       }
 
       // 5. Accounting Journal Entry. A patient-account refund reduces A/R;
@@ -373,6 +501,7 @@ export async function getReturnsAction() {
   try {
     const user = await getLocalSession();
     if (!user || !hasUserPermissionSync(user, 'can_view_returns')) return { success: false, error: 'غير مصرح' };
+    const pharmacyId = user.pharmacy_id || 'local_default';
 
     await ensureReturnItemsSchema();
 
@@ -382,9 +511,10 @@ export async function getReturnsAction() {
       LEFT JOIN users u ON r.user_id = u.id
       LEFT JOIN sales_invoices si ON r.invoice_id = si.id
       LEFT JOIN patients p ON si.patient_id = p.id
+      WHERE (r.pharmacy_id = ? OR (r.pharmacy_id IS NULL AND ? = 'local_default'))
       ORDER BY r.created_at DESC
       LIMIT 100
-    `).all() as any[];
+    `).all(pharmacyId, pharmacyId) as any[];
 
     // Get items for each return
     const returnsWithItems = await Promise.all(returns.map(async ret => {
@@ -413,6 +543,7 @@ export async function searchInvoicesForReturnAction(filters: {
   try {
     const user = await getLocalSession();
     if (!user || !hasUserPermissionSync(user, 'can_view_returns')) return { success: false, error: 'غير مصرح' };
+    const pharmacyId = user.pharmacy_id || 'local_default';
 
     let query = `
       SELECT DISTINCT si.id, si.total_amount, si.created_at, p.full_name as patient_name, u.full_name as user_name, si.payment_method
@@ -422,9 +553,10 @@ export async function searchInvoicesForReturnAction(filters: {
       LEFT JOIN sales_items sit ON sit.invoice_id = si.id
       LEFT JOIN master_drugs md ON sit.drug_id = md.id
       LEFT JOIN inventory inv ON sit.inventory_id = inv.id
-      WHERE (si.status IS NULL OR si.status = 'completed' OR si.status = 'approved' OR si.status = '')
+      WHERE (si.status IS NULL OR si.status = 'completed' OR si.status = 'approved' OR si.status = 'delivered' OR si.status = '')
+        AND (si.pharmacy_id = ? OR (si.pharmacy_id IS NULL AND ? = 'local_default'))
     `;
-    const params: any[] = [];
+    const params: any[] = [pharmacyId, pharmacyId];
 
     if (filters.dateFrom) {
       query += ` AND date(si.created_at, 'localtime') >= ?`;
@@ -471,6 +603,7 @@ export async function searchRecentReturnInvoicesAction(searchTerm: string, days?
   try {
     const user = await getLocalSession();
     if (!user || !hasUserPermissionSync(user, 'can_view_returns')) return { success: false, error: 'غير مصرح', data: [] };
+    const pharmacyId = user.pharmacy_id || 'local_default';
 
     await ensureReturnItemsSchema();
     const term = searchTerm.trim();
@@ -493,7 +626,8 @@ export async function searchRecentReturnInvoicesAction(searchTerm: string, days?
       LEFT JOIN sales_items sit ON sit.invoice_id = si.id
       LEFT JOIN master_drugs md ON sit.drug_id = md.id
       LEFT JOIN inventory inv ON sit.inventory_id = inv.id
-      WHERE (si.status IS NULL OR si.status = 'completed' OR si.status = 'approved' OR si.status = '')
+      WHERE (si.status IS NULL OR si.status = 'completed' OR si.status = 'approved' OR si.status = 'delivered' OR si.status = '')
+        AND (si.pharmacy_id = ? OR (si.pharmacy_id IS NULL AND ? = 'local_default'))
         ${dateFilter}
         AND (
           si.id LIKE ? OR
@@ -511,7 +645,10 @@ export async function searchRecentReturnInvoicesAction(searchTerm: string, days?
       LIMIT 100
     `;
     const wildcard = `%${term}%`;
-    const invoices = await db.prepare(query).all(wildcard, wildcard, wildcard, wildcard, wildcard, term, term, wildcard, wildcard, term) as any[];
+    const invoices = await db.prepare(query).all(
+      pharmacyId, pharmacyId,
+      wildcard, wildcard, wildcard, wildcard, wildcard, term, term, wildcard, wildcard, term
+    ) as any[];
     return { success: true, data: invoices };
   } catch (error: any) {
     console.error('searchRecentReturnInvoicesAction error:', error);
@@ -527,6 +664,7 @@ export async function getInvoiceForReturnAction(invoiceId: string) {
     await ensureReturnItemsSchema();
     const user = await getLocalSession();
     if (!user || !hasUserPermissionSync(user, 'can_view_returns')) return { success: false, error: 'غير مصرح' };
+    const pharmacyId = user.pharmacy_id || 'local_default';
 
     const invoice = await db.prepare(`
       SELECT si.*, p.full_name as patient_name, u.full_name as user_name
@@ -534,7 +672,8 @@ export async function getInvoiceForReturnAction(invoiceId: string) {
       LEFT JOIN patients p ON si.patient_id = p.id
       LEFT JOIN users u ON si.user_id = u.id
       WHERE si.id = ?
-    `).get(invoiceId) as any;
+        AND (si.pharmacy_id = ? OR (si.pharmacy_id IS NULL AND ? = 'local_default'))
+    `).get(invoiceId, pharmacyId, pharmacyId) as any;
 
     if (!invoice) return { success: false, error: 'الفاتورة غير موجودة' };
 
@@ -545,8 +684,10 @@ export async function getInvoiceForReturnAction(invoiceId: string) {
         md.trade_name_en,
         md.active_ingredient,
         md.id as drug_id,
-        md.large_to_medium,
-        md.medium_to_small,
+        md.medium_unit,
+        md.small_unit,
+        COALESCE(NULLIF(sit.large_to_medium, 0), NULLIF(i.strips_per_box, 0), NULLIF(md.large_to_medium, 0), 1) AS large_to_medium,
+        COALESCE(NULLIF(sit.medium_to_small, 0), NULLIF(i.medium_to_small, 0), NULLIF(md.medium_to_small, 0), 1) AS medium_to_small,
         i.expiry_date,
         COALESCE((
           SELECT SUM(ri.quantity_returned)
@@ -560,12 +701,19 @@ export async function getInvoiceForReturnAction(invoiceId: string) {
       WHERE sit.invoice_id = ?
     `).all(invoiceId, invoiceId) as any[];
 
+    const priorRefund = await db.prepare(`
+      SELECT COALESCE(SUM(total_refund), 0) AS total
+      FROM returns
+      WHERE invoice_id = ? AND LOWER(COALESCE(status, '')) IN ('approved', 'completed')
+    `).get(invoiceId) as any;
+
     const isGenericPlaceholder = (name?: string) => !name || /^Drug\s*#?\s*\d+$/i.test(String(name).trim());
 
     return {
       success: true,
       data: {
         ...invoice,
+        already_refunded: Number(priorRefund?.total || 0),
         items: items.map(i => {
           let resolvedName = i.trade_name;
           if (isGenericPlaceholder(resolvedName)) {
@@ -587,7 +735,9 @@ export async function getInvoiceForReturnAction(invoiceId: string) {
             unit: i.unit,
             expiry_date: i.expiry_date,
             large_to_medium: i.large_to_medium,
-            medium_to_small: i.medium_to_small
+            medium_to_small: i.medium_to_small,
+            medium_unit: i.medium_unit,
+            small_unit: i.small_unit,
           };
         })
       }
@@ -595,153 +745,5 @@ export async function getInvoiceForReturnAction(invoiceId: string) {
   } catch (error) {
     console.error('Get invoice details error:', error);
     return { success: false, error: 'فشل جلب بيانات الفاتورة' };
-  }
-}
-
-/**
- * Create a general return (not linked to a specific invoice, or multiple)
- * Also handles exchanges (substitute items)
- */
-export async function createGeneralReturnAction(data: {
-  patient_id?: string;
-  shift_id?: string;
-  reason: string;
-  returnItems: { 
-    drug_id: number | string; 
-    inventory_id?: string; 
-    drug_name: string; 
-    quantity: number; 
-    unit_price: number;
-    unit: string;
-  }[];
-  saleItems: {
-    drug_id: number | string;
-    inventory_id: string;
-    drug_name: string;
-    quantity: number;
-    unit_price: number;
-    unit: string;
-  }[];
-  paid_amount: number;
-  refund_method: 'cash' | 'patient_account' | 'coupon';
-}) {
-  try {
-    const user = await getLocalSession();
-    if (!user || !hasUserPermissionSync(user, 'can_view_returns')) return { success: false, error: 'غير مصرح' };
-    if (data.saleItems.length > 0 && !hasUserPermissionSync(user, 'can_make_exchanges')) {
-      return { success: false, error: 'غير مصرح بعمل الاستبدالات' };
-    }
-    const shiftId = await requireOpenShiftId(String(user.id), data.shift_id);
-
-    const returnId = generateId();
-    const totalReturn = data.returnItems.reduce((sum, i) => sum + (i.quantity * i.unit_price), 0);
-    const totalSale = data.saleItems.reduce((sum, i) => sum + (i.quantity * i.unit_price), 0);
-    const netAmount = totalSale - totalReturn; // Positive if customer owes us, Negative if we owe customer
-
-    try {
-      // 1. Create Return Header (marking it as General)
-      await db.prepare(`
-        INSERT INTO returns (id, invoice_id, user_id, shift_id, reason, total_refund, refund_method, status)
-        VALUES (?, NULL, ?, ?, ?, ?, ?, 'approved')
-      `).run(returnId, user.id, shiftId, data.reason, totalReturn, data.refund_method);
-
-      // 2. Process Return Items (Restock)
-      for (const item of data.returnItems) {
-        let finalInventoryId = item.inventory_id;
-
-        let inventoryExists = false;
-        if (finalInventoryId) {
-          const checkInv = await db.prepare('SELECT 1 FROM inventory WHERE id = ?').get(finalInventoryId);
-          if (checkInv) inventoryExists = true;
-        }
-
-        if (!inventoryExists && item.drug_id) {
-          // Try to find any inventory row for this drug
-          const existingInventory = await db.prepare('SELECT id FROM inventory WHERE drug_id = ? LIMIT 1').get(item.drug_id) as any;
-          if (existingInventory?.id) {
-            finalInventoryId = existingInventory.id;
-          } else {
-            const newInvId = generateId();
-            const defaultExpiry = new Date();
-            defaultExpiry.setFullYear(defaultExpiry.getFullYear() + 2);
-            const expiryStr = localDate(defaultExpiry);
-            const batchNum = 'RET-' + generateId().substring(0, 8);
-            
-            await db.prepare(`
-              INSERT INTO inventory (id, pharmacy_id, drug_id, batch_number, expiry_date, quantity, unit_price, cost_price)
-              VALUES (?, ?, ?, ?, ?, 0, ?, 0)
-            `).run(newInvId, user?.pharmacy_id || 'local_default', item.drug_id, batchNum, expiryStr, item.unit_price);
-            
-            finalInventoryId = newInvId;
-          }
-        }
-
-        await db.prepare(`
-          INSERT INTO return_items (return_id, inventory_id, drug_name, quantity_returned, unit_price)
-          VALUES (?, ?, ?, ?, ?)
-        `).run(returnId, finalInventoryId, item.drug_name, item.quantity, item.unit_price);
-
-        const drugInfo = await db.prepare('SELECT large_to_medium, medium_to_small FROM master_drugs WHERE id = ?').get(item.drug_id) as any;
-        
-        let restockQty = item.quantity;
-        if (item.unit === 'medium') {
-          restockQty = item.quantity / (drugInfo?.large_to_medium || 1);
-        } else if (item.unit === 'small') {
-          restockQty = item.quantity / ((drugInfo?.large_to_medium || 1) * (drugInfo?.medium_to_small || 1));
-        }
-
-        await db.prepare('UPDATE inventory SET quantity = quantity + ? WHERE id = ?').run(restockQty, finalInventoryId);
-      }
-
-      // 3. Process Sale Items (Exchanges) if any
-      if (data.saleItems.length > 0) {
-        const saleInvoiceId = generateId();
-        await db.prepare(`
-          INSERT INTO sales_invoices (id, patient_id, user_id, shift_id, total_amount, paid_amount, payment_method, status)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 'completed')
-        `).run(
-          saleInvoiceId, 
-          data.patient_id || null, 
-          user.id, 
-          shiftId,
-          totalSale, 
-          data.paid_amount, 
-          data.refund_method === 'cash' ? 'cash' : 'credit'
-        );
-
-        for (const item of data.saleItems) {
-          await db.prepare(`
-            INSERT INTO sales_items (invoice_id, inventory_id, drug_id, quantity_sold, unit_price, unit)
-            VALUES (?, ?, ?, ?, ?, ?)
-          `).run(saleInvoiceId, item.inventory_id, item.drug_id, item.quantity, item.unit_price, item.unit);
-
-          // Restock logic should also be unit aware here if it was a return, but this is the SALE part
-          // Deduct from inventory (unit aware)
-          const drugInfo = await db.prepare('SELECT large_to_medium, medium_to_small FROM master_drugs WHERE id = ?').get(item.drug_id) as any;
-          let deductionQty = item.quantity;
-          if (item.unit === 'medium') {
-            deductionQty = item.quantity / (drugInfo.large_to_medium || 1);
-          } else if (item.unit === 'small') {
-            deductionQty = item.quantity / ((drugInfo.large_to_medium || 1) * (drugInfo.medium_to_small || 1));
-          }
-
-          await db.prepare('UPDATE inventory SET quantity = quantity - ? WHERE id = ?').run(deductionQty, item.inventory_id);
-        }
-        
-        // Link the return to this new sale invoice if possible
-        await db.prepare('UPDATE returns SET invoice_id = ? WHERE id = ?').run(saleInvoiceId, returnId);
-      }
-
-      logActivity(user.id, 'GENERAL_RETURN', `مرتجع عام بقيمة ${totalReturn} ج.م ومبيعات بديلة بقيمة ${totalSale} ج.م`);
-
-      revalidatePath('/returns');
-      revalidatePath('/inventory');
-      return { success: true, returnId, netAmount };
-    } catch (error) {
-      throw error;
-    }
-  } catch (error) {
-    console.error('General return error:', error);
-    return { success: false, error: 'فشل تنفيذ المرتجع العام' };
   }
 }

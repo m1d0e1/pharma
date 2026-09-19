@@ -242,7 +242,7 @@ export default function DashboardPage() {
           SELECT 
             d.date,
             (SELECT COALESCE(SUM(total_amount), 0) FROM sales_invoices WHERE date(created_at, 'localtime') = d.date AND (status IS NULL OR status = '' OR status IN ('completed', 'approved', 'delivered')) AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))) as sales,
-            (SELECT COALESCE(SUM(total_refund), 0) FROM returns r WHERE date(r.created_at, 'localtime') = d.date AND status = 'approved' AND r.invoice_id IN (SELECT id FROM sales_invoices WHERE (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default')))) as returns,
+            (SELECT COALESCE(SUM(total_refund), 0) FROM returns r WHERE date(r.created_at, 'localtime') = d.date AND status IN ('approved', 'completed') AND (r.pharmacy_id = ? OR (r.pharmacy_id IS NULL AND ? = 'local_default'))) as returns,
             (SELECT COALESCE(SUM(si.quantity_sold * COALESCE(NULLIF(si.cost_price, 0), i.cost_price, m.base_price, 0)), 0) 
              FROM sales_items si 
              LEFT JOIN inventory i ON si.inventory_id = i.id

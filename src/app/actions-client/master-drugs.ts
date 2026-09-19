@@ -535,11 +535,22 @@ export async function searchMasterDrugsAction(queryOrOptions: string | {
       WHERE drug_id IN (${ids.map(() => '?').join(',')}) AND quantity > 0
       GROUP BY drug_id
     `).all(...ids) as any[] : [];
-    const purchasePrices = new Map(costs.map(row => [String(row.drug_id), Number(row.purchase_price) || 0]));
+    const purchasePrices = new Map(costs.map(row => {
+      const value = row.purchase_price == null ? null : Number(row.purchase_price);
+      return [String(row.drug_id), Number.isFinite(value) ? value : null];
+    }));
 
     return {
       success: true,
-      data: merged.map(drug => ({ ...drug, base_price: purchasePrices.get(String(drug.id)) || drug.base_price || 0 }))
+      data: merged.map(drug => {
+        const key = String(drug.id);
+        const purchasePrice = purchasePrices.has(key) ? purchasePrices.get(key) : null;
+        return {
+          ...drug,
+          purchase_price: purchasePrice,
+          base_price: purchasePrice ?? drug.base_price ?? 0,
+        };
+      })
     };
   } catch (error: any) {
     console.error('Search master drugs error:', error);

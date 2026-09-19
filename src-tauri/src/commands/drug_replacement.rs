@@ -567,9 +567,13 @@ mod tests {
             include_str!("../../migrations/009_rebuild_master_drugs_fts.sql"),
             include_str!("../../migrations/011_shift_cash_difference_account.sql"),
             include_str!("../../migrations/017_cloud_drug_identity.sql"),
+            include_str!("../../migrations/018_unit_conversion_snapshots.sql"),
         ] {
             sqlx::raw_sql(sql).execute(&mut db).await.unwrap();
         }
+        let mut tx = db.begin().await.unwrap();
+        crate::schema::ensure_compatibility(&mut tx).await.unwrap();
+        tx.commit().await.unwrap();
         sqlx::raw_sql("INSERT INTO users(id,username,role,is_active) VALUES('admin','replacement-admin','admin',1),('cashier','replacement-cashier','cashier',1) ON CONFLICT(id) DO UPDATE SET role=excluded.role,is_active=1;
           INSERT INTO master_drugs(id,trade_name,barcode,official_price,large_to_medium,notes) VALUES(10,'Old name','123',20,2,'keep'),(20,'Correct name',NULL,25,2,NULL);
           INSERT INTO inventory(id,drug_id,pharmacy_id,quantity,cost_price,local_selling_price,strips_per_box,barcode,expiry_date,batch_number) VALUES('old-lot',10,'local_default',1.5,10,20,2,'123','2030-01-01','old'),('target-lot',20,'local_default',0.5,11,22,2,NULL,'2030-02-01','other');

@@ -200,8 +200,10 @@ CREATE INDEX IF NOT EXISTS idx_cash_movements_type ON cash_movements(type);
 -- DAILY FINANCIAL SNAPSHOTS INDEXES
 -- ============================================
 
--- Index for date lookups (unique)
-CREATE UNIQUE INDEX IF NOT EXISTS idx_daily_snapshots_date ON daily_financial_snapshots(date);
+-- Snapshots are unique per pharmacy/date; the table primary key enforces uniqueness.
+DROP INDEX IF EXISTS idx_daily_snapshots_date;
+CREATE INDEX IF NOT EXISTS idx_daily_snapshots_pharmacy_date
+ON daily_financial_snapshots(pharmacy_id, date);
 
 -- ============================================
 -- REFILL REMINDERS INDEXES

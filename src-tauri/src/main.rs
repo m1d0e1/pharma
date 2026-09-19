@@ -564,6 +564,30 @@ fn main() {
             sql: include_str!("../migrations/017_cloud_drug_identity.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 18,
+            description: "unit_conversion_snapshots",
+            sql: include_str!("../migrations/018_unit_conversion_snapshots.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 19,
+            description: "shift_pharmacy_scope",
+            sql: include_str!("../migrations/019_shift_pharmacy_scope.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 20,
+            description: "daily_snapshot_pharmacy_scope",
+            sql: include_str!("../migrations/020_daily_snapshot_pharmacy_scope.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 21,
+            description: "returns_pharmacy_scope",
+            sql: include_str!("../migrations/021_returns_pharmacy_scope.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()

@@ -57,6 +57,15 @@ export default function SalesReturnClient() {
 
   const [selectedIndex, setSelectedIndex] = useState<number>(-1);
 
+  const unitKind = (item: any, unit?: string) => {
+    const value = String(unit || 'large').trim().toLowerCase();
+    const mediumUnit = String(item.medium_unit || '').trim().toLowerCase();
+    const smallUnit = String(item.small_unit || '').trim().toLowerCase();
+    if (value === 'medium' || value === 'strip' || value === 'شريط' || (mediumUnit && value === mediumUnit)) return 'medium';
+    if (value === 'small' || value === 'unit' || value === 'pill' || (smallUnit && value === smallUnit)) return 'small';
+    return 'large';
+  };
+
   // Fetch invoices by date or search term (all receipts)
   React.useEffect(() => {
     let cancelled = false;
@@ -106,7 +115,7 @@ export default function SalesReturnClient() {
       setItemsToReturn([]);
       setIsSearching(false);
     }
-  }, [selectedIndex, invoicesByDate]);
+  }, [selectedIndex, invoicesByDate]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Scroll selected button into view
   React.useEffect(() => {
@@ -174,6 +183,7 @@ export default function SalesReturnClient() {
       // Initialize return items with 0 quantity
       setItemsToReturn(res.data.items.map((item: any) => ({
         ...item,
+        unit: unitKind(item, item.unit),
         return_quantity: 0,
         original_unit: item.unit,
         base_price: item.unit_price // Treat the initial price as base_price to calculate upon
@@ -188,16 +198,18 @@ export default function SalesReturnClient() {
   const toLargeQty = (item: any, quantity: number, unit: string) => {
     const l2m = item.large_to_medium || 1;
     const m2s = item.medium_to_small || 1;
-    if (unit === 'medium') return quantity / l2m;
-    if (unit === 'small') return quantity / (l2m * m2s);
+    const kind = unitKind(item, unit);
+    if (kind === 'medium') return quantity / l2m;
+    if (kind === 'small') return quantity / (l2m * m2s);
     return quantity;
   };
 
   const fromLargeQty = (item: any, quantity: number, unit: string) => {
     const l2m = item.large_to_medium || 1;
     const m2s = item.medium_to_small || 1;
-    if (unit === 'medium') return quantity * l2m;
-    if (unit === 'small') return quantity * l2m * m2s;
+    const kind = unitKind(item, unit);
+    if (kind === 'medium') return quantity * l2m;
+    if (kind === 'small') return quantity * l2m * m2s;
     return quantity;
   };
 
@@ -220,8 +232,19 @@ export default function SalesReturnClient() {
     });
   };
 
-  const totalRefund = itemsToReturn.reduce((sum, item) => sum + ((item.return_quantity || 0) * item.unit_price), 0);
   const activeReturns = itemsToReturn.filter(i => i.return_quantity > 0);
+  const grossRequestedRefund = activeReturns.reduce((sum, item) => sum + ((item.return_quantity || 0) * item.unit_price), 0);
+  const invoiceGross = itemsToReturn.reduce((sum, item) => sum + (Number(item.quantity_sold || 0) * Number(item.base_price || item.unit_price || 0)), 0);
+  const invoiceTotal = Number(invoice?.total_amount ?? invoiceGross);
+  const merchandiseTotal = Math.max(0, invoiceGross - Number(invoice?.discount_amount || 0));
+  const refundableInvoiceTotal =
+    String(invoice?.status || '').toLowerCase() === 'delivered' && String(invoice?.payment_method || '').toLowerCase() === 'delivery'
+      ? Math.min(invoiceTotal, merchandiseTotal)
+      : invoiceTotal;
+  const paidRatio = invoiceGross > 0 ? refundableInvoiceTotal / invoiceGross : 0;
+  const remainingInvoiceRefund = Math.max(0, refundableInvoiceTotal - Number(invoice?.already_refunded || 0));
+  const totalRefund = Math.min(grossRequestedRefund * paidRatio, remainingInvoiceRefund);
+  const previewScale = grossRequestedRefund > 0 ? totalRefund / grossRequestedRefund : 0;
 
   const handleSubmit = async () => {
     if (!invoice) return;
@@ -246,7 +269,8 @@ export default function SalesReturnClient() {
     });
 
     if (res.success) {
-      toast.success('تم تسجيل المرتجع بنجاح');
+      const savedRefund = Number(res.totalRefund);
+      toast.success(Number.isFinite(savedRefund) ? `تم تسجيل المرتجع بنجاح: ${savedRefund.toFixed(2)} ج.م` : 'تم تسجيل المرتجع بنجاح');
       router.push('/returns');
     } else {
       toast.error('فشل حفظ المرتجع: ' + res.error);
@@ -451,7 +475,7 @@ export default function SalesReturnClient() {
                             </select>
                           </td>
                           <td className="p-3 font-semibold text-center text-slate-800 dark:text-slate-200">
-                            {((item.return_quantity || 0) * item.unit_price).toFixed(2)} ج.م
+                            {(((item.return_quantity || 0) * item.unit_price) * previewScale).toFixed(2)} ج.م
                           </td>
                         </tr>
                       ))}

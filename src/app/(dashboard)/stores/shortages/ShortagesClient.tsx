@@ -10,6 +10,7 @@ import { cn } from '@/lib/utils'
 import { toast } from 'react-hot-toast'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
+import { purchaseShortageHandoffStorageKey } from '@/lib/purchases/storage'
 import {
   getShortagesAction,
   syncLowStockToShortagesAction,
@@ -232,7 +233,9 @@ export default function ShortagesClient({ initialData }: { initialData: any[] })
     }
 
     try {
-      sessionStorage.setItem('shortages_to_purchase', JSON.stringify(itemsToConvert))
+      const storageKey = purchaseShortageHandoffStorageKey()
+      if (!storageKey) throw new Error('Missing signed-in purchase scope')
+      sessionStorage.setItem(storageKey, JSON.stringify(itemsToConvert))
       toast.success(`جاري تحويل ${itemsToConvert.length} صنف وتحديث حالتها إلى (قيد الطلب)...`)
       router.push('/purchases/new')
 

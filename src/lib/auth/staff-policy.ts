@@ -6,6 +6,7 @@ export const OWNER_ONLY_STAFF_PERMISSIONS = [
   'rep_can_view_activity',
   'manage_staff',
   'can_manage_users',
+  'can_view_cogs',
 ];
 
 export function isStaffOwner(user: { role?: string } | null | undefined): boolean {

@@ -108,6 +108,7 @@ describe('Comprehensive UI Flow Regression Suite for all Added Features', () => 
 
   beforeEach(() => {
     mockPush.mockReset();
+    localStorage.setItem('pharma_session_user', JSON.stringify({ id: 'buyer-1', pharmacy_id: 'local_default' }));
     window.confirm = jest.fn(() => true);
   });
 
@@ -495,7 +496,10 @@ describe('Comprehensive UI Flow Regression Suite for all Added Features', () => 
       const convertBtn = screen.getByRole('button', { name: /تحويل للمشتريات \(2\)/ });
       fireEvent.click(convertBtn);
 
-      expect(setItemSpy).toHaveBeenCalledWith('shortages_to_purchase', expect.stringContaining('Panadol Extra'));
+      expect(setItemSpy).toHaveBeenCalledWith(
+        'pharma_shortages_to_purchase_v2:["local_default","buyer-1"]',
+        expect.stringContaining('Panadol Extra')
+      );
       expect(mockPush).toHaveBeenCalledWith('/purchases/new');
     });
 

@@ -118,7 +118,7 @@ it('opens the real POS-management tab from its dedicated route', async () => {
   expect(screen.getByRole('button', { name: /إضافة نقطة بيع/ })).toBeEnabled();
 });
 
-it('shows the total money recorded by completed shift handovers', async () => {
+it('shows the current-month total money recorded by completed shift handovers', async () => {
   (finance.getTreasuryDashboardAction as jest.Mock).mockResolvedValue({
     success: true,
     data: {
@@ -134,7 +134,7 @@ it('shows the total money recorded by completed shift handovers', async () => {
 
   render(<AccountsManagementClient initialTab="treasury" />);
 
-  const handoverCard = (await screen.findByText('إجمالي تسليمات الورديات')).parentElement;
+  const handoverCard = (await screen.findByText('تسليمات الورديات هذا الشهر')).parentElement;
   await waitFor(() => expect(handoverCard).toHaveTextContent('150.5 ج.م'));
 });
 
@@ -168,7 +168,7 @@ it('opens authoritative details from every treasury summary card', async () => {
     ['رصيد الخزينة', 'treasury'],
     ['توريدات اليوم', 'receipts'],
     ['المصروفات اليومية', 'expenses'],
-    ['إجمالي تسليمات الورديات', 'handovers'],
+    ['تسليمات الورديات هذا الشهر', 'handovers'],
   ] as const) {
     fireEvent.click(await screen.findByRole('button', { name: `عرض تفاصيل ${label}` }));
     await waitFor(() => expect(finance.getTreasuryDashboardAction).toHaveBeenCalledWith(metric));

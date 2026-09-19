@@ -7,9 +7,11 @@ import {
   createPurchaseInvoiceAction,
   getSuppliersAction,
 } from '@/app/actions-client/purchases';
+import { dbGet } from '@/lib/db/tauri';
 
 const mockPush = jest.fn();
 const draftKey = 'pharma_purchase_draft_v2:["local_default","buyer-1"]';
+const shortageHandoffKey = 'pharma_shortages_to_purchase_v2:["local_default","buyer-1"]';
 
 jest.mock('next/navigation', () => ({
   useRouter: () => ({ push: mockPush }),
@@ -172,7 +174,7 @@ describe('rendered purchase-invoice flow', () => {
     expect(createPurchaseInvoiceAction).not.toHaveBeenCalled();
     second.unmount();
 
-    sessionStorage.setItem('shortages_to_purchase', JSON.stringify([{ drug_id: 202, trade_name: 'Shortage Drug', requested_quantity: 4, official_price: 30 }]));
+    sessionStorage.setItem(shortageHandoffKey, JSON.stringify([{ drug_id: 202, trade_name: 'Shortage Drug', requested_quantity: 4, official_price: 30 }]));
     render(<PurchaseInvoiceClient />);
     expect(await screen.findByText('Purchase Drug')).toBeInTheDocument();
     expect(screen.getAllByText('Shortage Drug')).toHaveLength(2);
@@ -180,7 +182,7 @@ describe('rendered purchase-invoice flow', () => {
     expect(combined.cart[0]).toEqual(before.cart[0]);
     expect(combined.cart[1]).toMatchObject({ id: 202, quantity: 4 });
     expect(combined.invoiceHeader).toEqual(before.invoiceHeader);
-    expect(sessionStorage.getItem('shortages_to_purchase')).toBeNull();
+    expect(sessionStorage.getItem(shortageHandoffKey)).toBeNull();
   });
 
   it('isolates users and clears the order only after confirmed cancellation', async () => {
@@ -206,6 +208,55 @@ describe('rendered purchase-invoice flow', () => {
     render(<PurchaseInvoiceClient />);
     await screen.findByRole('option', { name: 'مورد اختبار' });
     expect(screen.queryByText('Purchase Drug')).not.toBeInTheDocument();
+  });
+
+  it('does not import a shortage handoff created by another pharmacy user', async () => {
+    localStorage.setItem('pharma_session_user', JSON.stringify({ id: 'buyer-1', pharmacy_id: 'ph-1' }));
+    sessionStorage.setItem(
+      'pharma_shortages_to_purchase_v2:["ph-1","buyer-1"]',
+      JSON.stringify([{ drug_id: 202, trade_name: 'Foreign Shortage Drug', requested_quantity: 4, official_price: 30 }])
+    );
+    localStorage.setItem('pharma_session_user', JSON.stringify({ id: 'buyer-2', pharmacy_id: 'ph-2' }));
+
+    render(<PurchaseInvoiceClient />);
+    await screen.findByRole('option', { name: 'مورد اختبار' });
+
+    expect(screen.queryByText('Foreign Shortage Drug')).not.toBeInTheDocument();
+  });
+
+  it('scopes historical unit-conversion fallback to the signed-in pharmacy', async () => {
+    localStorage.setItem('pharma_session_user', JSON.stringify({ id: 'buyer-1', pharmacy_id: 'ph-1' }));
+    (searchMasterDrugsAction as jest.Mock).mockResolvedValueOnce({
+      success: true,
+      data: [{
+        id: 303,
+        trade_name: 'Fallback Drug',
+        trade_name_en: 'Fallback Drug',
+        official_price: 20,
+        base_price: 12,
+        large_to_medium: null,
+      }],
+    });
+    (dbGet as jest.Mock)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ strips_per_box: 4 });
+
+    render(<PurchaseInvoiceClient />);
+    fireEvent.change(screen.getByPlaceholderText('اسم الصنف أو الباركود...'), { target: { value: 'Fallback' } });
+    fireEvent.click(await screen.findByRole('button', { name: /Fallback Drug/ }));
+
+    await waitFor(() => {
+      expect(dbGet).toHaveBeenNthCalledWith(
+        1,
+        expect.stringContaining('pharmacy_id = ?'),
+        [303, 'ph-1', 'ph-1']
+      );
+      expect(dbGet).toHaveBeenNthCalledWith(
+        2,
+        expect.stringContaining('JOIN purchase_invoices pi'),
+        [303, 'ph-1', 'ph-1']
+      );
+    });
   });
 
   it('keeps a failed submission, but clears a saved draft even when leaving to another module', async () => {

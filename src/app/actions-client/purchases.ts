@@ -66,6 +66,15 @@ const db = {
   }
 };
 
+async function getOwnedPurchaseInvoice(invoiceId: string, pharmacyId: string) {
+  return db.prepare(`
+    SELECT *
+    FROM purchase_invoices
+    WHERE id = ?
+      AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+  `).get(invoiceId, pharmacyId, pharmacyId) as Promise<any>;
+}
+
 function normalizeDateToYMD(dateStr: string | null | undefined): string | null {
   if (!dateStr) return null;
   dateStr = dateStr.trim();
@@ -100,6 +109,10 @@ async function addToInventory(data: {
   barcode?: string | null;
 }) {
   const pharmacyId = data.pharmacyId || 'local_default';
+  const conversion = await db.prepare(
+    'SELECT COALESCE(NULLIF(medium_to_small, 0), 1) AS medium_to_small FROM master_drugs WHERE id = ?'
+  ).get(data.drugId) as any;
+  const mediumToSmall = Math.max(1, Number(conversion?.medium_to_small) || 1);
   const existing = await db.prepare(`
     SELECT id
     FROM inventory
@@ -126,6 +139,7 @@ async function addToInventory(data: {
           expiry_date = ?,
           batch_number = ?,
           strips_per_box = ?,
+          medium_to_small = ?,
           barcode = CASE
             WHEN (barcode IS NULL OR TRIM(barcode) = '') AND ? != '' THEN ?
             ELSE barcode
@@ -139,6 +153,7 @@ async function addToInventory(data: {
       data.expiryDate,
       data.batchNumber,
       data.stripsPerBox,
+      mediumToSmall,
       data.barcode?.trim() || '',
       data.barcode?.trim() || '',
       existing.id
@@ -148,8 +163,8 @@ async function addToInventory(data: {
 
   const inventoryId = generateId();
   await db.prepare(`
-    INSERT INTO inventory (id, drug_id, pharmacy_id, quantity, local_selling_price, cost_price, expiry_date, batch_number, strips_per_box, barcode)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO inventory (id, drug_id, pharmacy_id, quantity, local_selling_price, cost_price, expiry_date, batch_number, strips_per_box, medium_to_small, barcode)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     inventoryId,
     data.drugId,
@@ -160,9 +175,17 @@ async function addToInventory(data: {
     data.expiryDate,
     data.batchNumber,
     data.stripsPerBox,
+    mediumToSmall,
     data.barcode?.trim() || null
   );
   return inventoryId;
+}
+
+async function purchaseMediumToSmall(drugId: number | string) {
+  const row = await db.prepare(
+    'SELECT COALESCE(NULLIF(medium_to_small, 0), 1) AS medium_to_small FROM master_drugs WHERE id = ?'
+  ).get(drugId) as any;
+  return Math.max(1, Number(row?.medium_to_small) || 1);
 }
 
 async function assertPurchaseBarcodesAvailable(cart: any[] = []) {
@@ -661,11 +684,12 @@ export async function createPurchaseInvoiceAction(data: {
 
       if (data.cart && data.cart.length > 0) {
         const itemStmt = await db.prepare(`
-          INSERT INTO purchase_invoice_items (invoice_id, drug_id, quantity, unit_id, expiry_date, cost_price, selling_price, bonus_quantity, tax_percent, discount_percent, strips_per_box, barcode)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO purchase_invoice_items (invoice_id, drug_id, quantity, unit_id, expiry_date, cost_price, selling_price, bonus_quantity, tax_percent, discount_percent, strips_per_box, medium_to_small, barcode)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
         for (const item of data.cart) {
           const normExpiry = normalizeDateToYMD(item.expiry_date);
+          const mediumToSmall = await purchaseMediumToSmall(item.id);
           const purchaseItemResult = await itemStmt.run(
             id,
             item.id,
@@ -678,6 +702,7 @@ export async function createPurchaseInvoiceAction(data: {
             item.tax_percent || 0,
             item.discount_percent || 0,
             item.strips_per_box || 1,
+            mediumToSmall,
             item.barcode || null
           );
 
@@ -825,13 +850,18 @@ export async function addPurchaseInvoiceItemAction(invoiceId: string, item: {
   try {
     const session = await getLocalSession();
     if (!session || !hasUserPermissionSync(session, 'can_view_purchases')) return { success: false, error: 'Unauthorized' };
+    const pharmacyId = session.pharmacy_id || 'local_default';
+    if (!await getOwnedPurchaseInvoice(invoiceId, pharmacyId)) {
+      return { success: false, error: 'Purchase invoice not found in this pharmacy' };
+    }
 
     const stmt = await db.prepare(`
-      INSERT INTO purchase_invoice_items (invoice_id, drug_id, quantity, unit_id, expiry_date, cost_price, selling_price, bonus_quantity, tax_percent, discount_percent, strips_per_box)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO purchase_invoice_items (invoice_id, drug_id, quantity, unit_id, expiry_date, cost_price, selling_price, bonus_quantity, tax_percent, discount_percent, strips_per_box, medium_to_small)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     
     const normExpiry = normalizeDateToYMD(item.expiry_date);
+    const mediumToSmall = await purchaseMediumToSmall(item.drug_id);
     await stmt.run(
       invoiceId,
       item.drug_id,
@@ -843,7 +873,8 @@ export async function addPurchaseInvoiceItemAction(invoiceId: string, item: {
       item.bonus_quantity || 0,
       item.tax_percent || 0,
       item.discount_percent || 0,
-      item.strips_per_box || 1
+      item.strips_per_box || 1,
+      mediumToSmall
     );
 
     if (item.strips_per_box) {
@@ -861,10 +892,13 @@ export async function completePurchaseInvoiceAction(invoiceId: string) {
   try {
     const session = await getLocalSession();
     if (!session || !hasUserPermissionSync(session, 'can_view_purchases')) return { success: false, error: 'Unauthorized' };
+    const pharmacyId = session.pharmacy_id || 'local_default';
+    const ownedInvoice = await getOwnedPurchaseInvoice(invoiceId, pharmacyId);
+    if (!ownedInvoice) return { success: false, error: 'Purchase invoice not found in this pharmacy' };
 
     const transaction = db.transaction(async () => {
       // 1. Get invoice and items
-      const invoice = await db.prepare('SELECT * FROM purchase_invoices WHERE id = ?').get(invoiceId) as any;
+      const invoice = ownedInvoice;
       const items = await db.prepare('SELECT * FROM purchase_invoice_items WHERE invoice_id = ?').all(invoiceId) as any[];
       await assertPurchaseBarcodesAvailable(items.map(item => ({ ...item, id: item.drug_id })));
 
@@ -1286,7 +1320,8 @@ export async function getPurchaseInvoiceDetailsAction(invoiceId: string) {
                'صنف #' || pii.drug_id
              ) AS trade_name_en,
              COALESCE(NULLIF(pii.barcode, ''), NULLIF(lot.barcode, ''), d.barcode) AS barcode,
-             d.large_to_medium, d.medium_to_small,
+             d.large_to_medium,
+             COALESCE(NULLIF(pii.medium_to_small, 0), NULLIF(d.medium_to_small, 0), 1) AS medium_to_small,
              d.official_price as base_price, u.name_en as unit,
              COALESCE(pii.selling_price, d.official_price, 0) as selling_price,
              lot.expiry_date AS inventory_expiry_date,
@@ -1446,7 +1481,7 @@ async function validatePurchaseReturnRequest(
   const invoiceLines = await dbSelect<any>(`
     SELECT pii.id, pii.drug_id, pii.quantity, pii.inventory_id,
            COALESCE(NULLIF(pii.strips_per_box, 0), NULLIF(md.large_to_medium, 0), 1) AS large_to_medium,
-           COALESCE(md.medium_to_small, 1) AS medium_to_small
+           COALESCE(NULLIF(pii.medium_to_small, 0), NULLIF(md.medium_to_small, 0), 1) AS medium_to_small
     FROM purchase_invoice_items pii
     JOIN master_drugs md ON md.id = pii.drug_id
     WHERE pii.invoice_id = ? AND pii.id IN (${placeholders})
@@ -2020,12 +2055,13 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
       
       let totalAmount = 0;
       const itemStmt = await db.prepare(`
-        INSERT INTO purchase_invoice_items (invoice_id, drug_id, quantity, unit_id, expiry_date, cost_price, selling_price, bonus_quantity, tax_percent, discount_percent, strips_per_box, barcode)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO purchase_invoice_items (invoice_id, drug_id, quantity, unit_id, expiry_date, cost_price, selling_price, bonus_quantity, tax_percent, discount_percent, strips_per_box, medium_to_small, barcode)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       
       for (const item of data.cart) {
         const normExpiry = normalizeDateToYMD(item.expiry_date);
+        const mediumToSmall = await purchaseMediumToSmall(item.id);
         const purchaseItemResult = await itemStmt.run(
           data.id,
           item.id,
@@ -2038,6 +2074,7 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
           item.tax_percent || 0,
           item.discount_percent || 0,
           item.strips_per_box || 1,
+          mediumToSmall,
           item.barcode || null
         );
         const inventoryId = inventoryIdsByDrug.get(String(item.id));

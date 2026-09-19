@@ -546,7 +546,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                     <StatCard label="رصيد الخزينة" value={treasuryBalance.toLocaleString('en-US')} color="emerald" icon={Wallet} onClick={() => openTreasuryMetric('treasury')} active={selectedTreasuryMetric === 'treasury'} />
                     <StatCard label="توريدات اليوم" value={todayReceipts.toLocaleString('en-US')} color="blue" icon={ArrowRightLeft} onClick={() => openTreasuryMetric('receipts')} active={selectedTreasuryMetric === 'receipts'} />
                     <StatCard label="المصروفات اليومية" value={todayExpenses.toLocaleString('en-US')} color="rose" icon={Receipt} onClick={() => openTreasuryMetric('expenses')} active={selectedTreasuryMetric === 'expenses'} />
-                    <StatCard label="إجمالي تسليمات الورديات" value={totalShiftHandovers.toLocaleString('en-US')} color="blue" icon={ShieldCheck} onClick={() => openTreasuryMetric('handovers')} active={selectedTreasuryMetric === 'handovers'} />
+                    <StatCard label="تسليمات الورديات هذا الشهر" value={totalShiftHandovers.toLocaleString('en-US')} color="blue" icon={ShieldCheck} onClick={() => openTreasuryMetric('handovers')} active={selectedTreasuryMetric === 'handovers'} />
                  </div>
 
                  {selectedTreasuryMetric && (
@@ -1689,7 +1689,7 @@ function TreasuryMetricDetails({
     treasury: 'تفاصيل رصيد الخزينة',
     receipts: 'تفاصيل توريدات اليوم',
     expenses: 'تفاصيل المصروفات اليومية',
-    handovers: 'تفاصيل تسليمات الورديات',
+    handovers: 'تفاصيل تسليمات الورديات - الشهر الحالي',
   };
 
   return (

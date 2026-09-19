@@ -95,6 +95,7 @@ export async function closeDeliveryInvoiceAction(invoiceId: string, deliveryFee:
       if (!invoice) throw new Error('فاتورة التوصيل غير موجودة أو تم تحصيلها بالفعل');
       const shiftId = await requireOpenShiftId(user.id);
       const totalCollected = Number(invoice.total_amount || 0) + deliveryFee;
+      const originalTotal = Number(invoice.total_amount || 0);
 
       // 2. Update invoice status and total
       const updated = await db.prepare(`UPDATE sales_invoices SET status = 'delivered', total_amount = ? WHERE id = ? AND status = 'completed'${pharmacyClause}`).run(totalCollected, invoiceId, pharmacyId, pharmacyId);
@@ -111,6 +112,53 @@ export async function closeDeliveryInvoiceAction(invoiceId: string, deliveryFee:
         totalCollected, `Delivery Closed: Invoice #${invoiceId.substring(0, 8)} (incl. Fee: ${deliveryFee})`,
         format(new Date(), 'yyyy-MM-dd')
       );
+
+      const getAccountId = async (category: string, fallback: number) => {
+        const setting = await db.prepare('SELECT account_id FROM trial_balance_settings WHERE category = ? LIMIT 1').get(category) as any;
+        return Number(setting?.account_id || fallback);
+      };
+      const cashAccount = await getAccountId('cash_drawer', 6);
+      const receivableAccount = await getAccountId('accounts_receivable', 8);
+      const salesAccount = await getAccountId('sales_revenue', 9);
+      const originalPosting = await db.prepare(`
+        SELECT
+          COALESCE(SUM(CASE WHEN je.account_id = ? AND je.type = 'debit' THEN je.amount ELSE 0 END), 0) AS cash_debit,
+          COALESCE(SUM(CASE WHEN je.account_id = ? AND je.type = 'debit' THEN je.amount ELSE 0 END), 0) AS receivable_debit
+        FROM journal_entries je
+        JOIN daily_journals dj ON dj.id = je.journal_id
+        WHERE dj.description LIKE ?
+      `).get(cashAccount, receivableAccount, `%${invoiceId.substring(0, 8)}%`) as any;
+      const legacyCashPosting = originalTotal > 0.000001
+        && Number(originalPosting?.cash_debit || 0) + 0.005 >= originalTotal
+        && Number(originalPosting?.receivable_debit || 0) + 0.005 < originalTotal;
+
+      if (legacyCashPosting) {
+        const correctionId = generateId();
+        await db.prepare(`
+          INSERT INTO daily_journals (id, date, description, created_by, total_amount)
+          VALUES (?, ?, ?, ?, ?)
+        `).run(correctionId, format(new Date(), 'yyyy-MM-dd'), `تصحيح محاسبة توصيل قديم #${invoiceId.substring(0, 8)}`, user.id, originalTotal);
+        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
+          .run(correctionId, receivableAccount, 'debit', originalTotal);
+        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
+          .run(correctionId, cashAccount, 'credit', originalTotal);
+        await db.prepare('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)')
+          .run(user.id, 'LEGACY_DELIVERY_ACCOUNTING_CORRECTED', `Reclassified legacy delivery invoice ${invoiceId} from cash to receivable before collection`);
+      }
+
+      const journalId = generateId();
+      await db.prepare(`
+        INSERT INTO daily_journals (id, date, description, created_by, total_amount)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(journalId, format(new Date(), 'yyyy-MM-dd'), `تحصيل توصيل فاتورة #${invoiceId.substring(0, 8)}`, user.id, totalCollected);
+      await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
+        .run(journalId, cashAccount, 'debit', totalCollected);
+      await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
+        .run(journalId, receivableAccount, 'credit', originalTotal);
+      if (deliveryFee > 0.000001) {
+        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
+          .run(journalId, salesAccount, 'credit', deliveryFee);
+      }
 
       // 4. Log Activity
       await db.prepare('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)').run(user.id, 'DELIVERY_CLOSED', `Closed delivery invoice ${invoiceId} with fee ${deliveryFee}. Total collected: ${totalCollected}`);

@@ -59,6 +59,13 @@ describe('inventory-linked reorder and shortage notebook regression', () => {
     mockDb.exec(readFileSync('src-tauri/migrations/001_initial.sql', 'utf8'));
     mockDb.exec(readFileSync('src-tauri/migrations/012_shortages_pharmacy_scope.sql', 'utf8'));
     mockDb.exec(readFileSync('src-tauri/migrations/013_shift_handover_details.sql', 'utf8'));
+    mockDb.exec(readFileSync('src-tauri/migrations/018_unit_conversion_snapshots.sql', 'utf8'));
+    mockDb.exec(`
+      ALTER TABLE inventory ADD COLUMN medium_to_small INTEGER DEFAULT 1;
+      ALTER TABLE purchase_invoice_items ADD COLUMN medium_to_small INTEGER DEFAULT 1;
+      ALTER TABLE sales_items ADD COLUMN large_to_medium INTEGER DEFAULT 1;
+      ALTER TABLE sales_items ADD COLUMN medium_to_small INTEGER DEFAULT 1;
+    `);
     mockDb.pragma('foreign_keys = ON');
     mockDb.exec(`
       INSERT INTO master_drugs (
@@ -82,12 +89,15 @@ describe('inventory-linked reorder and shortage notebook regression', () => {
         ('draft-sale', NULL, 'admin', 100, 'draft', CURRENT_TIMESTAMP),
         ('foreign-sale', 'ph-2', 'admin', 100, 'completed', CURRENT_TIMESTAMP);
 
-      INSERT INTO sales_items (invoice_id, drug_id, quantity_sold, unit, is_negative)
+      INSERT INTO sales_items (
+        invoice_id, drug_id, quantity_sold, unit, is_negative,
+        large_to_medium, medium_to_small
+      )
       VALUES
-        ('recent-sale', 9101, 10, 'شريط', 0),
-        ('recent-sale', 9101, 100, 'قرص', 0),
-        ('draft-sale', 9101, 1000, 'علبة', 0),
-        ('foreign-sale', 9101, 1000, 'علبة', 0);
+        ('recent-sale', 9101, 10, 'شريط', 0, 10, 10),
+        ('recent-sale', 9101, 100, 'قرص', 0, 10, 10),
+        ('draft-sale', 9101, 1000, 'علبة', 0, 10, 10),
+        ('foreign-sale', 9101, 1000, 'علبة', 0, 10, 10);
     `);
   });
 
@@ -203,6 +213,17 @@ describe('inventory-linked reorder and shortage notebook regression', () => {
     const received = await updateShortageStatusAction(replenishedItem.id, 'received');
     expect(received.success).toBe(true);
     expect((await getShortagesAction()).data?.some((item: any) => item.drug_id === 9101)).toBe(false);
+  });
+
+  it('keeps reorder usage on the conversion captured when the sale happened', async () => {
+    mockDb.prepare('UPDATE master_drugs SET large_to_medium = 20, medium_to_small = 5 WHERE id = 9101').run();
+
+    const lowStock = await getLowStockAction(10);
+    expect(lowStock.success).toBe(true);
+    expect(lowStock.data?.find((item: any) => item.drug_id === 9101)).toMatchObject({
+      avg_monthly_usage: 2,
+      reorder_point: 5,
+    });
   });
 
   it('supports bulk status update and bulk delete on several shortage items', async () => {

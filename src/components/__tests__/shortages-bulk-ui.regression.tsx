@@ -74,6 +74,7 @@ describe('shortages multi-selection and bulk actions ui', () => {
 
   beforeEach(() => {
     mockPush.mockReset();
+    localStorage.setItem('pharma_session_user', JSON.stringify({ id: 'buyer-1', pharmacy_id: 'local_default' }));
     window.confirm = jest.fn(() => true);
     (deleteShortagesBulkAction as jest.Mock).mockReset().mockResolvedValue({ success: true, count: 2 });
     (updateShortagesStatusBulkAction as jest.Mock).mockReset().mockResolvedValue({ success: true, count: 2 });
@@ -132,7 +133,10 @@ describe('shortages multi-selection and bulk actions ui', () => {
     const bulkPurchaseBtn = await screen.findByRole('button', { name: /تحويل للمشتريات \(1\)/ });
     fireEvent.click(bulkPurchaseBtn);
 
-    expect(setItemSpy).toHaveBeenCalledWith('shortages_to_purchase', expect.stringContaining('Panadol Extra'));
+    expect(setItemSpy).toHaveBeenCalledWith(
+      'pharma_shortages_to_purchase_v2:["local_default","buyer-1"]',
+      expect.stringContaining('Panadol Extra')
+    );
     expect(mockPush).toHaveBeenCalledWith('/purchases/new');
   });
 });

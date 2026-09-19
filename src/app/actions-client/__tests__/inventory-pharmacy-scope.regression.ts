@@ -47,6 +47,11 @@ describe('inventory read models preserve pharmacy boundaries', () => {
     mockSession = { id: 'admin', role: 'owner', pharmacy_id: null };
     mockDb = new Database(':memory:');
     mockDb.exec(readFileSync('src-tauri/migrations/001_initial.sql', 'utf8'));
+    // Native startup adds these compatibility columns before actions can run.
+    mockDb.exec(`
+      ALTER TABLE sales_items ADD COLUMN large_to_medium INTEGER DEFAULT 1;
+      ALTER TABLE sales_items ADD COLUMN medium_to_small INTEGER DEFAULT 1;
+    `);
     mockDb.pragma('foreign_keys = ON');
     mockDb.exec(`
       INSERT INTO master_drugs (id, trade_name, trade_name_en)

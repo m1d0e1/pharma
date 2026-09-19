@@ -115,12 +115,6 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
    const [minPrice, setMinPrice] = useState<string>('');
    const [maxPrice, setMaxPrice] = useState<string>('');
 
-   useEffect(() => {
-      if (!searchTerm.trim() && filterType === 'all' && filterStatus === 'all' && !minPrice && !maxPrice) {
-         setItems(initialItems || []);
-      }
-   }, [initialItems]);
-
    const [contextMenu, setContextMenu] = useState<{ x: number, y: number, drugId: number | string } | null>(null);
 
    const [isModalOpen, setIsModalOpen] = useState(false);
@@ -381,8 +375,9 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
       setIsModalOpen(true);
    };
 
-    const openEditModal = (item: MasterDrug) => {
-       setEditingItem(item);
+    const openEditModal = async (item: MasterDrug) => {
+       const fresh = await dbSelect('SELECT * FROM master_drugs WHERE id = ?', [item.id]);
+       setEditingItem((fresh && fresh[0]) || item);
        setPurchaseHistory([]); // Reset previous
        if (item.id) loadPurchaseHistory(item.id);
        setActiveTab('basic');
@@ -1021,8 +1016,7 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
               icon={Edit} 
               label="تعديل بيانات الصنف" 
               onClick={() => {
-                
-                const drug = items.find(i => String(i.id) === String(contextMenu.drugId)); if (drug) { setEditingItem(drug); setIsModalOpen(true); } setContextMenu(null);
+                const drug = items.find(i => String(i.id) === String(contextMenu.drugId)); if (drug) void openEditModal(drug); setContextMenu(null);
               }} 
             />
             <div className="h-px bg-slate-100 dark:bg-slate-800 my-1 mx-2" />

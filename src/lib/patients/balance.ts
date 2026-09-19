@@ -13,7 +13,7 @@ export function patientOutstandingBalanceExpression(patientAlias = 'p'): string 
       FROM sales_invoices si
       WHERE si.patient_id = ${patientAlias}.id
         AND si.payment_method = 'credit'
-        AND si.status = 'completed'
+        AND (si.status IS NULL OR si.status = '' OR LOWER(si.status) IN ('completed', 'approved', 'delivered'))
     ) -
     (
       SELECT COALESCE(SUM(CAST(r.total_refund AS REAL)), 0)

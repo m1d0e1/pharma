@@ -4,6 +4,7 @@ import '@testing-library/jest-dom';
 import ItemsManagementClient from '../inventory/ItemsManagementClient';
 import { searchMasterDrugsAction, deleteMasterDrugAction, archiveMasterDrugAction } from '@/app/actions-client/master-drugs';
 import { replaceDrugAction } from '@/app/actions-client/drug-replacement';
+import { dbSelect } from '@/lib/db/tauri';
 
 jest.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(),
@@ -146,5 +147,32 @@ describe('ItemsManagementClient auto-refresh and total count regression', () => 
       expect(screen.getByText('Panadol Blue')).toBeInTheDocument();
       expect(screen.getByText('Concor 5mg')).toBeInTheDocument();
     });
+  });
+
+  it('re-reads the full drug card before editing a lightweight search result', async () => {
+    const lightweight = { ...sampleItems[0], min_limit: undefined, max_limit: undefined, reorder_point: undefined, default_purchase_qty: undefined };
+    (searchMasterDrugsAction as jest.Mock).mockResolvedValue({ success: true, data: [lightweight] });
+    (dbSelect as jest.Mock).mockImplementation(async (sql: string) => (
+      sql.includes('SELECT * FROM master_drugs')
+        ? [{ ...lightweight, min_limit: 3, reorder_point: 6, max_limit: 20, default_purchase_qty: 9 }]
+        : []
+    ));
+
+    render(<ItemsManagementClient initialItems={sampleItems} totalCount={100} />);
+    const searchInput = screen.getByPlaceholderText(/Search by English Trade Name/i);
+    fireEvent.change(searchInput, { target: { value: 'Concor' } });
+    await waitFor(() => expect(searchMasterDrugsAction).toHaveBeenCalled());
+
+    fireEvent.contextMenu(screen.getByText('Concor 5mg').closest('tr')!);
+    fireEvent.click(screen.getByRole('button', { name: 'تعديل بيانات الصنف' }));
+    await waitFor(() => expect(dbSelect).toHaveBeenCalledWith('SELECT * FROM master_drugs WHERE id = ?', [1]));
+
+    fireEvent.click(screen.getByRole('button', { name: 'خيارات متقدمة' }));
+    expect(screen.getByDisplayValue('3')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('6')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('20')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'الوحدات والأسعار' }));
+    expect(screen.getByDisplayValue('9')).toBeInTheDocument();
   });
 });

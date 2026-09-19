@@ -121,6 +121,7 @@ export async function getUnsettledSalesAction() {
             WHERE i.drug_id = si.drug_id
               AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
               AND i.quantity > 0
+              AND COALESCE(i.batch_number, '') NOT LIKE 'RET-%'
               AND (i.expiry_date IS NULL OR i.expiry_date >= DATE('now', 'localtime'))
           ) AS current_stock_balance
         FROM sales_items si
@@ -170,6 +171,7 @@ export async function getDrugBatchesAction(drugId: number) {
         WHERE drug_id = ?
           AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
           AND quantity > 0
+          AND COALESCE(batch_number, '') NOT LIKE 'RET-%'
           AND (expiry_date IS NULL OR expiry_date >= DATE('now', 'localtime'))
         ORDER BY CASE WHEN expiry_date IS NULL THEN 1 ELSE 0 END,
                  expiry_date ASC,

@@ -225,7 +225,7 @@ pub(crate) async fn create_purchase_return_on_connection(
                    CAST(COALESCE(pii.tax_percent, 0) AS REAL) AS line_tax_percent,
                    CAST(COALESCE(pii.discount_percent, 0) AS REAL) AS line_discount_percent,
                    CAST(COALESCE(NULLIF(pii.strips_per_box, 0), NULLIF(md.large_to_medium, 0), 1) AS REAL) AS large_to_medium,
-                   CAST(COALESCE(NULLIF(md.medium_to_small, 0), 1) AS REAL) AS medium_to_small,
+                   CAST(COALESCE(NULLIF(pii.medium_to_small, 0), NULLIF(md.medium_to_small, 0), 1) AS REAL) AS medium_to_small,
                    COALESCE(NULLIF(md.trade_name, ''), 'Drug ' || pii.drug_id) AS drug_name
             FROM purchase_invoice_items pii
             LEFT JOIN master_drugs md ON md.id = pii.drug_id
@@ -509,16 +509,44 @@ pub(crate) async fn create_purchase_return_on_connection(
     } else {
         let permanent_shift_id = Uuid::new_v4().to_string();
         sqlx::query(
-            "INSERT INTO shifts (id, user_id, status) SELECT ?, ?, 'open' WHERE NOT EXISTS (SELECT 1 FROM shifts WHERE status = 'open')",
+            r#"
+            INSERT INTO shifts (id, user_id, status)
+            SELECT ?, ?, 'open'
+            WHERE NOT EXISTS (
+              SELECT 1
+              FROM shifts s
+              WHERE LOWER(COALESCE(s.status, '')) = 'open'
+                AND EXISTS (
+                  SELECT 1
+                  FROM users su
+                  WHERE CAST(su.id AS TEXT) = CAST(s.user_id AS TEXT)
+                    AND COALESCE(NULLIF(TRIM(su.pharmacy_id), ''), 'local_default') = ?
+                )
+            )
+            "#,
         )
         .bind(&permanent_shift_id)
         .bind(&user_id)
+        .bind(&invoice_pharmacy)
         .execute(&mut *connection)
         .await
         .map_err(|error| error.to_string())?;
         let shift_id = sqlx::query_scalar::<_, String>(
-            "SELECT id FROM shifts WHERE status = 'open' ORDER BY rowid ASC LIMIT 1",
+            r#"
+            SELECT s.id
+            FROM shifts s
+            WHERE LOWER(COALESCE(s.status, '')) = 'open'
+              AND EXISTS (
+                SELECT 1
+                FROM users su
+                WHERE CAST(su.id AS TEXT) = CAST(s.user_id AS TEXT)
+                  AND COALESCE(NULLIF(TRIM(su.pharmacy_id), ''), 'local_default') = ?
+              )
+            ORDER BY s.rowid ASC
+            LIMIT 1
+            "#,
         )
+        .bind(&invoice_pharmacy)
         .fetch_optional(&mut *connection)
         .await
         .map_err(|error| error.to_string())?;
@@ -725,7 +753,7 @@ mod tests {
             CREATE TABLE purchase_invoices (id TEXT PRIMARY KEY, supplier_id INTEGER, pharmacy_id TEXT, status TEXT, tax_percent REAL, expenses REAL, discount_value REAL, discount_percent REAL);
             CREATE TABLE master_drugs (id INTEGER PRIMARY KEY, trade_name TEXT, large_to_medium INTEGER, medium_to_small INTEGER);
             CREATE TABLE inventory (id TEXT PRIMARY KEY, drug_id INTEGER, pharmacy_id TEXT, quantity REAL, cost_price REAL, updated_at TEXT);
-            CREATE TABLE purchase_invoice_items (id INTEGER PRIMARY KEY, invoice_id TEXT, drug_id INTEGER, quantity REAL, cost_price REAL, bonus_quantity REAL, tax_percent REAL, discount_percent REAL, strips_per_box INTEGER, inventory_id TEXT);
+            CREATE TABLE purchase_invoice_items (id INTEGER PRIMARY KEY, invoice_id TEXT, drug_id INTEGER, quantity REAL, cost_price REAL, bonus_quantity REAL, tax_percent REAL, discount_percent REAL, strips_per_box INTEGER, medium_to_small INTEGER, inventory_id TEXT);
             CREATE TABLE purchase_returns (id TEXT PRIMARY KEY, purchase_invoice_id TEXT, supplier_id INTEGER, user_id TEXT, reason TEXT, total_amount REAL, refund_method TEXT, status TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
             CREATE TABLE purchase_return_items (id INTEGER PRIMARY KEY AUTOINCREMENT, purchase_return_id TEXT, purchase_invoice_item_id INTEGER, inventory_id TEXT, drug_id INTEGER, drug_name TEXT, quantity_returned REAL, unit_price REAL, total_price REAL, unit TEXT, reason TEXT);
             CREATE TABLE supplier_transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, supplier_id INTEGER, type TEXT, amount REAL, reference_id TEXT, notes TEXT);
@@ -743,7 +771,7 @@ mod tests {
             INSERT INTO purchase_invoices VALUES ('purchase-1', 7, NULL, 'completed', 5, 0, 0, 10);
             INSERT INTO master_drugs VALUES (42, 'Stored Drug', 99, 10);
             INSERT INTO inventory VALUES ('exact-lot', 42, NULL, 3, 83.16, NULL);
-            INSERT INTO purchase_invoice_items VALUES (11, 'purchase-1', 42, 2, 120, 1, 10, 0, 12, 'exact-lot');
+            INSERT INTO purchase_invoice_items VALUES (11, 'purchase-1', 42, 2, 120, 1, 10, 0, 12, 2, 'exact-lot');
             "#,
         )
         .execute(&mut first)
@@ -830,17 +858,25 @@ mod tests {
             .unwrap_err()
             .contains("Duplicate"));
 
+        sqlx::query("UPDATE master_drugs SET large_to_medium = 77, medium_to_small = 99 WHERE id = 42")
+            .execute(&mut first)
+            .await
+            .unwrap();
+        let mut historical_small = payload(24.0);
+        historical_small.items[0].unit = Some("small".into());
         sqlx::query("BEGIN IMMEDIATE")
             .execute(&mut first)
             .await
             .unwrap();
-        create_purchase_return_on_connection(&mut first, &payload(12.0))
+        create_purchase_return_on_connection(&mut first, &historical_small)
             .await
             .unwrap();
 
         let mut second = connect_test(&path).await;
         let concurrent = tokio::spawn(async move {
-            let result = run_purchase_return_transaction(&mut second, payload(12.0)).await;
+            let mut over_return = payload(24.0);
+            over_return.items[0].unit = Some("small".into());
+            let result = run_purchase_return_transaction(&mut second, over_return).await;
             second.close().await.unwrap();
             result
         });

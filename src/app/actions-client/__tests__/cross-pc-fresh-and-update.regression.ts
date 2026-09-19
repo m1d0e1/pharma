@@ -98,10 +98,42 @@ function applyAllMigrations(db: Database.Database) {
     '014_inventory_performance.sql',
     '015_shared_open_shift.sql',
     '016_financial_expense_wiring.sql',
+    '017_cloud_drug_identity.sql',
+    '018_unit_conversion_snapshots.sql',
+    '019_shift_pharmacy_scope.sql',
+    '020_daily_snapshot_pharmacy_scope.sql',
+    '021_returns_pharmacy_scope.sql',
+    '021_returns_pharmacy_scope.sql',
   ];
   for (const file of files) {
     const sql = readFileSync(`src-tauri/migrations/${file}`, 'utf8');
     db.exec(sql);
+  }
+  applyLocalSchemaRepairs(db);
+}
+
+function applyV0292OrV0293Migrations(db: Database.Database) {
+  const files = [
+    '001_initial.sql',
+    '002_performance.sql',
+    '003_sync_metadata.sql',
+    '004_return_items_patch.sql',
+    '005_purchase_return_details.sql',
+    '006_accounting_upgrade_seed.sql',
+    '007_purchase_inventory_links.sql',
+    '008_patient_accounting.sql',
+    '009_rebuild_master_drugs_fts.sql',
+    '010_shift_handover_indexes.sql',
+    '011_shift_cash_difference_account.sql',
+    '012_shortages_pharmacy_scope.sql',
+    '013_shift_handover_details.sql',
+    '014_inventory_performance.sql',
+    '015_shared_open_shift.sql',
+    '016_financial_expense_wiring.sql',
+    '017_cloud_drug_identity.sql',
+  ];
+  for (const file of files) {
+    db.exec(readFileSync(`src-tauri/migrations/${file}`, 'utf8'));
   }
 }
 
@@ -120,6 +152,10 @@ function applyLocalSchemaRepairs(db: Database.Database) {
   addCol('shortages', 'notes', 'TEXT');
   addCol('shortages', 'created_at', 'DATETIME');
   addCol('purchase_invoice_items', 'barcode', 'TEXT');
+  addCol('purchase_invoice_items', 'medium_to_small', 'INTEGER DEFAULT 1');
+  addCol('inventory', 'medium_to_small', 'INTEGER DEFAULT 1');
+  addCol('sales_items', 'large_to_medium', 'INTEGER DEFAULT 1');
+  addCol('sales_items', 'medium_to_small', 'INTEGER DEFAULT 1');
   addCol('shifts', 'receiver_id', 'TEXT');
   addCol('shifts', 'actual_cash', 'REAL');
   addCol('shifts', 'transfer_amount', 'REAL DEFAULT 0');
@@ -127,12 +163,77 @@ function applyLocalSchemaRepairs(db: Database.Database) {
   addCol('shifts', 'cash_difference', 'REAL DEFAULT 0');
   addCol('cash_movements', 'source_type', 'TEXT');
   addCol('cash_movements', 'target_name', 'TEXT');
+  addCol('sales_invoices', 'user_id', 'TEXT');
+  addCol('sales_invoices', 'pharmacy_id', 'TEXT');
+  addCol('returns', 'pharmacy_id', 'TEXT');
 
   db.exec('CREATE INDEX IF NOT EXISTS idx_shortages_pharmacy_drug_status ON shortages(pharmacy_id, drug_id, status)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_shortages_pharmacy_status ON shortages(pharmacy_id, status)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_shortages_drug_id ON shortages(drug_id)');
   db.exec("UPDATE shortages SET pharmacy_id = 'local_default' WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = ''");
   db.exec('UPDATE shortages SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL');
+  db.exec(`
+    UPDATE sales_invoices
+    SET pharmacy_id = COALESCE(
+      (SELECT COALESCE(NULLIF(TRIM(u.pharmacy_id), ''), 'local_default')
+       FROM users u
+       WHERE CAST(u.id AS TEXT) = CAST(sales_invoices.user_id AS TEXT)
+          OR LOWER(u.username) = LOWER(CAST(sales_invoices.user_id AS TEXT))
+       LIMIT 1),
+      'local_default'
+    )
+    WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = '';
+
+    UPDATE returns
+    SET pharmacy_id = COALESCE(
+      (SELECT COALESCE(NULLIF(TRIM(si.pharmacy_id), ''), 'local_default')
+       FROM sales_invoices si
+       WHERE si.id = returns.invoice_id),
+      (SELECT COALESCE(NULLIF(TRIM(u.pharmacy_id), ''), 'local_default')
+       FROM users u
+       WHERE CAST(u.id AS TEXT) = CAST(returns.user_id AS TEXT)
+          OR LOWER(u.username) = LOWER(CAST(returns.user_id AS TEXT))
+       LIMIT 1),
+      'local_default'
+    )
+    WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = '';
+  `);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_returns_pharmacy_created ON returns(pharmacy_id, created_at)');
+  db.exec(`
+    UPDATE inventory
+    SET medium_to_small = COALESCE((
+      SELECT NULLIF(md.medium_to_small, 0)
+      FROM master_drugs md
+      WHERE md.id = inventory.drug_id
+    ), 1);
+
+    UPDATE purchase_invoice_items
+    SET medium_to_small = COALESCE((
+      SELECT NULLIF(md.medium_to_small, 0)
+      FROM master_drugs md
+      WHERE md.id = purchase_invoice_items.drug_id
+    ), 1);
+
+    UPDATE sales_items
+    SET large_to_medium = COALESCE((
+          SELECT NULLIF(i.strips_per_box, 0)
+          FROM inventory i
+          WHERE i.id = sales_items.inventory_id
+        ), (
+          SELECT NULLIF(md.large_to_medium, 0)
+          FROM master_drugs md
+          WHERE md.id = sales_items.drug_id
+        ), 1),
+        medium_to_small = COALESCE((
+          SELECT NULLIF(i.medium_to_small, 0)
+          FROM inventory i
+          WHERE i.id = sales_items.inventory_id
+        ), (
+          SELECT NULLIF(md.medium_to_small, 0)
+          FROM master_drugs md
+          WHERE md.id = sales_items.drug_id
+        ), 1);
+  `);
   db.exec(`
     CREATE TRIGGER IF NOT EXISTS shortages_set_created_at
     AFTER INSERT ON shortages
@@ -387,13 +488,81 @@ describe('Cross-computer consistency across fresh install and update', () => {
     expect(journals.some((j: any) => j.description === 'تسوية نقدية يدوية')).toBe(true);
   });
 
-  it('behaves identically on an UPDATE / UPGRADE installation', async () => {
+  it.each(['v0.2.92', 'v0.2.93'])('behaves identically when updating from %s', async () => {
     mockDb = new Database(':memory:');
-    // Start with ONLY initial schema (no newer migrations applied yet)
-    mockDb.exec(readFileSync('src-tauri/migrations/001_initial.sql', 'utf8'));
+    applyV0292OrV0293Migrations(mockDb);
+    mockDb.exec(`
+      INSERT INTO users (id, username, password_hash, role, full_name, is_active)
+      VALUES ('legacy-unit-user', 'legacy-unit-user', 'hash', 'owner', 'Legacy Unit User', 1);
+      INSERT INTO suppliers (id, name_ar, balance)
+      VALUES (99, 'Legacy Unit Supplier', 0);
+      INSERT INTO master_drugs (
+        id, trade_name, trade_name_en, official_price,
+        large_to_medium, medium_to_small, medium_unit, small_unit
+      ) VALUES (
+        5999, 'وحدة قديمة', 'Legacy Unit Drug', 120,
+        12, 10, 'strip', 'tablet'
+      );
+      INSERT INTO inventory (
+        id, drug_id, quantity, local_selling_price, cost_price,
+        expiry_date, strips_per_box
+      ) VALUES (
+        'legacy-unit-lot', 5999, 1, 120, 60,
+        '2099-12-31', 12
+      );
+      INSERT INTO purchase_invoices (
+        id, supplier_id, user_id, invoice_number, invoice_date,
+        payment_method, status, total_amount
+      ) VALUES (
+        'legacy-unit-purchase', 99, 'legacy-unit-user', 'LEGACY-UNIT-P',
+        '2026-08-01', 'credit', 'completed', 60
+      );
+      INSERT INTO purchase_invoice_items (
+        invoice_id, drug_id, quantity, cost_price, selling_price,
+        strips_per_box, inventory_id
+      ) VALUES (
+        'legacy-unit-purchase', 5999, 1, 60, 120,
+        12, 'legacy-unit-lot'
+      );
+      INSERT INTO sales_invoices (
+        id, user_id, total_amount, payment_method, status
+      ) VALUES (
+        'legacy-unit-sale', 'legacy-unit-user', 10, 'cash', 'completed'
+      );
+      INSERT INTO sales_items (
+        invoice_id, inventory_id, drug_id, quantity_sold,
+        unit_price, unit, cost_price
+      ) VALUES (
+        'legacy-unit-sale', 'legacy-unit-lot', 5999, 10,
+        1, 'small', 60
+      );
+    `);
 
-    // Apply incremental schema repairs (simulating local.ts update logic)
+    for (const file of [
+      '018_unit_conversion_snapshots.sql',
+      '019_shift_pharmacy_scope.sql',
+      '020_daily_snapshot_pharmacy_scope.sql',
+      '021_returns_pharmacy_scope.sql',
+      '021_returns_pharmacy_scope.sql',
+    ]) {
+      mockDb.exec(readFileSync(`src-tauri/migrations/${file}`, 'utf8'));
+    }
+
+    // Simulate current local.ts compatibility repair on a real immediately-previous schema.
     applyLocalSchemaRepairs(mockDb);
+    expect(mockDb.prepare(
+      'SELECT medium_to_small FROM inventory WHERE id = ?'
+    ).get('legacy-unit-lot')).toEqual({ medium_to_small: 10 });
+    expect(mockDb.prepare(
+      'SELECT medium_to_small FROM purchase_invoice_items WHERE invoice_id = ?'
+    ).get('legacy-unit-purchase')).toEqual({ medium_to_small: 10 });
+    expect(mockDb.prepare(
+      'SELECT large_to_medium, medium_to_small FROM sales_items WHERE invoice_id = ?'
+    ).get('legacy-unit-sale')).toEqual({ large_to_medium: 12, medium_to_small: 10 });
+    mockDb.exec(`
+      UPDATE master_drugs SET large_to_medium = 77, medium_to_small = 99 WHERE id = 5999;
+      UPDATE inventory SET strips_per_box = 77, medium_to_small = 99 WHERE id = 'legacy-unit-lot';
+    `);
     seedBaselineEntities(mockDb);
 
     // 1. Open shift
@@ -402,6 +571,33 @@ describe('Cross-computer consistency across fresh install and update', () => {
     const shift = (await getCurrentShiftAction()).data;
     expect(shift).toBeDefined();
     expect(shift?.status).toBe('open');
+
+    const historicalSaleItem = mockDb.prepare(
+      'SELECT id FROM sales_items WHERE invoice_id = ?'
+    ).get('legacy-unit-sale') as any;
+    const stockBeforeHistoricalReturn = Number((mockDb.prepare(
+      'SELECT quantity FROM inventory WHERE id = ?'
+    ).get('legacy-unit-lot') as any).quantity);
+    expect(await createReturnAction({
+      invoice_id: 'legacy-unit-sale',
+      shift_id: shift!.id,
+      refund_method: 'cash',
+      reason: 'upgrade historical unit snapshot',
+      items: [{
+        sale_item_id: Number(historicalSaleItem.id),
+        inventory_id: 'legacy-unit-lot',
+        drug_name: 'Legacy Unit Drug',
+        quantity: 10,
+        unit_price: 999,
+        unit: 'small',
+      }],
+    })).toMatchObject({ success: true, totalRefund: 10 });
+    expect(Number((mockDb.prepare(
+      'SELECT quantity FROM inventory WHERE id = ?'
+    ).get('legacy-unit-lot') as any).quantity)).toBeCloseTo(
+      stockBeforeHistoricalReturn + 10 / (12 * 10),
+      8
+    );
 
     // 2. Shortage & Low Stock Alert for Drug 5002 (reorder=5, stock=0)
     await addToShortagesAction({ drug_id: 5002, qty: 10 });
@@ -459,8 +655,8 @@ describe('Cross-computer consistency across fresh install and update', () => {
     // 7. Close Shift with Handover
     const handoverRes = await processHandoverAction({
       shiftId: shift!.id,
-      actualCash: 120, // 100 starting + 20 sale = 120
-      transferAmount: 80,
+      actualCash: 110, // 100 starting + 20 sale - 10 historical cash refund
+      transferAmount: 70,
       transferTargetId: 'vault',
       transferTargetType: 'treasury',
       receiverUsername: 'admin',
@@ -700,6 +896,137 @@ describe('Cross-computer consistency across fresh install and update', () => {
         INSERT INTO shifts (id, user_id, starting_cash, status)
         VALUES ('duplicate-open', 'legacy-b', 0, 'open')
       `).run()).toThrow();
+
+      legacyDb.prepare("UPDATE users SET pharmacy_id = 'ph-1' WHERE id = 'legacy-a'").run();
+      legacyDb.prepare("UPDATE users SET pharmacy_id = 'ph-2' WHERE id = 'legacy-b'").run();
+      legacyDb.exec(readFileSync('src-tauri/migrations/019_shift_pharmacy_scope.sql', 'utf8'));
+      legacyDb.prepare(`
+        INSERT INTO shifts (id, user_id, starting_cash, status)
+        VALUES ('ph2-open', 'legacy-b', 0, 'open')
+      `).run();
+      expect(legacyDb.prepare("SELECT id FROM shifts WHERE status = 'open' ORDER BY id").all()).toEqual([
+        { id: 'ph2-open' },
+        { id: 'shared-oldest' },
+      ]);
+      expect(() => legacyDb.prepare(`
+        INSERT INTO shifts (id, user_id, starting_cash, status)
+        VALUES ('ph1-duplicate', 'legacy-a', 0, 'open')
+      `).run()).toThrow();
+    } finally {
+      legacyDb.close();
+    }
+  });
+
+  it('upgrades date-only financial snapshots without losing the legacy row or cross-pharmacy independence', () => {
+    const legacyDb = new Database(':memory:');
+    try {
+      legacyDb.exec(`
+        CREATE TABLE daily_financial_snapshots (
+          date TEXT PRIMARY KEY,
+          total_sales REAL DEFAULT 0,
+          total_returns REAL DEFAULT 0,
+          total_cash_movements REAL DEFAULT 0,
+          net_profit REAL DEFAULT 0,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO daily_financial_snapshots
+          (date, total_sales, total_returns, total_cash_movements, net_profit)
+        VALUES ('2026-09-19', 100, 10, 5, 95);
+      `);
+
+      legacyDb.exec(readFileSync('src-tauri/migrations/020_daily_snapshot_pharmacy_scope.sql', 'utf8'));
+
+      expect(legacyDb.prepare(`
+        SELECT date, pharmacy_id, total_sales, total_returns, total_cash_movements, net_profit
+        FROM daily_financial_snapshots
+      `).all()).toEqual([{
+        date: '2026-09-19',
+        pharmacy_id: 'local_default',
+        total_sales: 100,
+        total_returns: 10,
+        total_cash_movements: 5,
+        net_profit: 95,
+      }]);
+      legacyDb.prepare(`
+        INSERT INTO daily_financial_snapshots (date, pharmacy_id, total_sales)
+        VALUES ('2026-09-19', 'ph-2', 70)
+      `).run();
+      expect((legacyDb.prepare(`
+        SELECT COUNT(*) AS total
+        FROM daily_financial_snapshots
+        WHERE date = '2026-09-19'
+      `).get() as any).total).toBe(2);
+      expect(() => legacyDb.prepare(`
+        INSERT INTO daily_financial_snapshots (date, pharmacy_id, total_sales)
+        VALUES ('2026-09-19', 'local_default', 999)
+      `).run()).toThrow();
+    } finally {
+      legacyDb.close();
+    }
+  });
+
+  it('snapshots return ownership so later staff moves do not reassign history', () => {
+    const legacyDb = new Database(':memory:');
+    try {
+      legacyDb.exec(`
+        CREATE TABLE users (
+          id TEXT PRIMARY KEY,
+          username TEXT,
+          role TEXT,
+          pharmacy_id TEXT
+        );
+        CREATE TABLE sales_invoices (
+          id TEXT PRIMARY KEY,
+          user_id TEXT,
+          pharmacy_id TEXT
+        );
+        CREATE TABLE returns (
+          id TEXT PRIMARY KEY,
+          invoice_id TEXT,
+          user_id TEXT,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE shortages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          drug_id INTEGER,
+          requested_quantity REAL,
+          status TEXT,
+          created_at TEXT
+        );
+        CREATE TABLE purchase_invoice_items (id INTEGER PRIMARY KEY, drug_id INTEGER);
+        CREATE TABLE inventory (id TEXT PRIMARY KEY, drug_id INTEGER, strips_per_box INTEGER DEFAULT 1);
+        CREATE TABLE sales_items (id INTEGER PRIMARY KEY, drug_id INTEGER, inventory_id TEXT);
+        CREATE TABLE shifts (id TEXT PRIMARY KEY);
+        CREATE TABLE cash_movements (id TEXT PRIMARY KEY);
+        CREATE TABLE master_drugs (id INTEGER PRIMARY KEY, large_to_medium INTEGER, medium_to_small INTEGER);
+
+        INSERT INTO users VALUES
+          ('u1', 'u1', 'admin', 'ph-1'),
+          ('u2', 'u2', 'admin', 'ph-2');
+        INSERT INTO sales_invoices VALUES
+          ('s1', 'u1', 'ph-1');
+        INSERT INTO returns (id, invoice_id, user_id) VALUES
+          ('invoice-return', 's1', 'u1'),
+          ('general-return', NULL, 'u1');
+      `);
+
+      legacyDb.exec(readFileSync('src-tauri/migrations/021_returns_pharmacy_scope.sql', 'utf8'));
+      applyLocalSchemaRepairs(legacyDb);
+
+      expect(legacyDb.prepare(
+        'SELECT id, pharmacy_id FROM returns ORDER BY id'
+      ).all()).toEqual([
+        { id: 'general-return', pharmacy_id: 'ph-1' },
+        { id: 'invoice-return', pharmacy_id: 'ph-1' },
+      ]);
+
+      legacyDb.prepare("UPDATE users SET pharmacy_id = 'ph-2' WHERE id = 'u1'").run();
+      expect(legacyDb.prepare(
+        'SELECT id, pharmacy_id FROM returns ORDER BY id'
+      ).all()).toEqual([
+        { id: 'general-return', pharmacy_id: 'ph-1' },
+        { id: 'invoice-return', pharmacy_id: 'ph-1' },
+      ]);
     } finally {
       legacyDb.close();
     }

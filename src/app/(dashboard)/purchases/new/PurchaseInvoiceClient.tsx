@@ -23,6 +23,7 @@ import {
   Save
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { purchaseShortageHandoffStorageKey } from '@/lib/purchases/storage'
 import { searchMasterDrugsAction } from '@/app/actions-client/master-drugs'
 import { 
   getSuppliersAction, 
@@ -165,9 +166,10 @@ export default function PurchaseInvoiceClient() {
     }
 
     try {
-      const stored = sessionStorage.getItem('shortages_to_purchase');
+      const shortageStorageKey = purchaseShortageHandoffStorageKey();
+      const stored = shortageStorageKey && sessionStorage.getItem(shortageStorageKey);
       if (stored) {
-        sessionStorage.removeItem('shortages_to_purchase');
+        sessionStorage.removeItem(shortageStorageKey!);
         const items = JSON.parse(stored);
         if (Array.isArray(items) && items.length > 0) {
           const newItems: PurchaseItem[] = items.map((item: any) => ({
@@ -444,11 +446,32 @@ export default function PurchaseInvoiceClient() {
     if (!finalStripsPerBox) {
       try {
         const { dbGet } = await import('@/lib/db/tauri');
-        const row = await dbGet('SELECT strips_per_box FROM inventory WHERE drug_id = ? AND strips_per_box > 0 ORDER BY expiry_date DESC LIMIT 1', [drug.id]) as any;
+        const sessionUser = JSON.parse(localStorage.getItem('pharma_session_user') || 'null');
+        const pharmacyId = sessionUser?.pharmacy_id || 'local_default';
+        const row = await dbGet(
+          `SELECT strips_per_box
+           FROM inventory
+           WHERE drug_id = ?
+             AND strips_per_box > 0
+             AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+           ORDER BY expiry_date DESC
+           LIMIT 1`,
+          [drug.id, pharmacyId, pharmacyId]
+        ) as any;
         if (row && row.strips_per_box) {
           finalStripsPerBox = row.strips_per_box;
         } else {
-          const row2 = await dbGet('SELECT strips_per_box FROM purchase_invoice_items WHERE drug_id = ? AND strips_per_box > 0 ORDER BY id DESC LIMIT 1', [drug.id]) as any;
+          const row2 = await dbGet(
+            `SELECT pii.strips_per_box
+             FROM purchase_invoice_items pii
+             JOIN purchase_invoices pi ON pi.id = pii.invoice_id
+             WHERE pii.drug_id = ?
+               AND pii.strips_per_box > 0
+               AND (pi.pharmacy_id = ? OR (pi.pharmacy_id IS NULL AND ? = 'local_default'))
+             ORDER BY pii.id DESC
+             LIMIT 1`,
+            [drug.id, pharmacyId, pharmacyId]
+          ) as any;
           if (row2 && row2.strips_per_box) {
             finalStripsPerBox = row2.strips_per_box;
           }

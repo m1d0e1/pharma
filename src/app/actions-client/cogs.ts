@@ -100,8 +100,8 @@ export async function updateSoldItemCostAction(itemId: number | string, newCost:
       const item = await db.prepare(`
         SELECT si.id, si.invoice_id, si.quantity_sold, si.unit,
                COALESCE(si.cost_price, 0) AS old_cost,
-               COALESCE(NULLIF(inv.strips_per_box, 0), NULLIF(md.large_to_medium, 0), 1) AS large_to_medium,
-               COALESCE(NULLIF(md.medium_to_small, 0), 1) AS medium_to_small,
+               COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(inv.strips_per_box, 0), NULLIF(md.large_to_medium, 0), 1) AS large_to_medium,
+               COALESCE(NULLIF(si.medium_to_small, 0), NULLIF(inv.medium_to_small, 0), NULLIF(md.medium_to_small, 0), 1) AS medium_to_small,
                COALESCE((
                  SELECT SUM(ri.quantity_returned)
                  FROM return_items ri

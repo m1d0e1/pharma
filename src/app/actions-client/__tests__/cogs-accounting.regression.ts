@@ -38,9 +38,9 @@ describe('sold-item COGS accounting correction', () => {
     mockDb = new Database(':memory:');
     mockDb.exec(`
       CREATE TABLE master_drugs (id INTEGER PRIMARY KEY, trade_name TEXT, trade_name_en TEXT, active_ingredient TEXT, large_to_medium REAL, medium_to_small REAL);
-      CREATE TABLE inventory (id TEXT PRIMARY KEY, strips_per_box REAL, cost_price REAL);
+      CREATE TABLE inventory (id TEXT PRIMARY KEY, strips_per_box REAL, medium_to_small REAL, cost_price REAL);
       CREATE TABLE sales_invoices (id TEXT PRIMARY KEY, status TEXT, created_at TEXT);
-      CREATE TABLE sales_items (id INTEGER PRIMARY KEY, invoice_id TEXT, inventory_id TEXT, drug_id INTEGER, quantity_sold REAL, unit TEXT, cost_price REAL);
+      CREATE TABLE sales_items (id INTEGER PRIMARY KEY, invoice_id TEXT, inventory_id TEXT, drug_id INTEGER, quantity_sold REAL, unit TEXT, cost_price REAL, large_to_medium REAL DEFAULT 1, medium_to_small REAL DEFAULT 1);
       CREATE TABLE returns (id TEXT PRIMARY KEY, invoice_id TEXT, status TEXT);
       CREATE TABLE return_items (return_id TEXT, sale_item_id INTEGER, quantity_returned REAL);
       CREATE TABLE trial_balance_settings (category TEXT PRIMARY KEY, account_id INTEGER);
@@ -49,9 +49,10 @@ describe('sold-item COGS accounting correction', () => {
       CREATE TABLE activity_log (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, action TEXT, details TEXT);
 
       INSERT INTO master_drugs VALUES (1, 'Drug', 'Drug', 'Ingredient', 10, 2);
-      INSERT INTO inventory VALUES ('batch', 10, 50);
+      INSERT INTO inventory VALUES ('batch', 10, 2, 50);
       INSERT INTO sales_invoices VALUES ('sale', 'completed', '2026-09-17 10:00:00');
-      INSERT INTO sales_items VALUES (1, 'sale', 'batch', 1, 10, 'medium', 50);
+      INSERT INTO sales_items (id, invoice_id, inventory_id, drug_id, quantity_sold, unit, cost_price, large_to_medium, medium_to_small)
+      VALUES (1, 'sale', 'batch', 1, 10, 'medium', 50, 10, 2);
       INSERT INTO returns VALUES ('return', 'sale', 'approved');
       INSERT INTO return_items VALUES ('return', 1, 2);
       INSERT INTO trial_balance_settings VALUES ('cogs_expense', 11), ('inventory_asset', 10);
@@ -76,7 +77,7 @@ describe('sold-item COGS accounting correction', () => {
         ('legacy-null-sale', NULL, '2026-09-17 13:00:00'),
         ('legacy-blank-sale', '', '2026-09-17 14:00:00'),
         ('draft-sale', 'draft', '2026-09-17 15:00:00');
-      INSERT INTO sales_items VALUES
+      INSERT INTO sales_items (id, invoice_id, inventory_id, drug_id, quantity_sold, unit, cost_price) VALUES
         (2, 'delivered-sale', 'batch', 1, 1, 'large', 40),
         (3, 'approved-sale', 'batch', 1, 1, 'large', 40),
         (4, 'legacy-null-sale', 'batch', 1, 1, 'large', 40),

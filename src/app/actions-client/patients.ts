@@ -237,7 +237,7 @@ export async function getPatientProfileAction(patientId: string) {
     const purchaseHistory = await db.prepare(`
       SELECT si.id as invoice_id, si.total_amount, si.payment_method, si.created_at
       FROM sales_invoices si
-      WHERE si.patient_id = ? AND si.status = 'completed'
+      WHERE si.patient_id = ? AND (si.status IS NULL OR si.status = '' OR LOWER(si.status) IN ('completed', 'approved', 'delivered'))
       ORDER BY si.created_at DESC
       LIMIT 50
     `).all(patientId) as any[];
@@ -261,7 +261,8 @@ export async function getPatientProfileAction(patientId: string) {
 
     const totalSpent = await db.prepare(`
       SELECT COALESCE(SUM(CAST(total_amount AS REAL)), 0) as total
-      FROM sales_invoices WHERE patient_id = ? AND status = 'completed'
+      FROM sales_invoices
+      WHERE patient_id = ? AND (status IS NULL OR status = '' OR LOWER(status) IN ('completed', 'approved', 'delivered'))
     `).get(patientId) as any;
 
     const payments = await db.prepare(`
@@ -448,7 +449,7 @@ export async function getPatientStatementAction(patientId: string) {
              NULL as notes,
              (SELECT full_name FROM users WHERE id = user_id) as user_name
       FROM sales_invoices
-      WHERE patient_id = ? AND status = 'completed'
+      WHERE patient_id = ? AND (status IS NULL OR status = '' OR LOWER(status) IN ('completed', 'approved', 'delivered'))
       
       UNION ALL
       
@@ -559,7 +560,7 @@ export async function getPatientStatementAction(patientId: string) {
              'بيع' as action
       FROM sales_items si
       JOIN sales_invoices sinv ON si.invoice_id = sinv.id
-      WHERE sinv.patient_id = ? AND sinv.status = 'completed'
+      WHERE sinv.patient_id = ? AND (sinv.status IS NULL OR sinv.status = '' OR LOWER(sinv.status) IN ('completed', 'approved', 'delivered'))
       
       UNION ALL
       
@@ -769,6 +770,7 @@ export async function getReceiptDetailsAction(invoiceId: string) {
     if (!user || (!hasUserPermissionSync(user, 'can_view_patients') && !hasUserPermissionSync(user, 'can_view_receipts'))) {
       return { success: false, error: 'غير مصرح' };
     }
+    const pharmacyId = user.pharmacy_id || 'local_default';
 
     const inv = await db.prepare(`
       SELECT si.id, si.total_amount, si.created_at, si.payment_method,
@@ -777,7 +779,8 @@ export async function getReceiptDetailsAction(invoiceId: string) {
       LEFT JOIN users u ON si.user_id = u.id
       LEFT JOIN patients p ON si.patient_id = p.id
       WHERE si.id = ?
-    `).get(invoiceId) as any;
+        AND (si.pharmacy_id = ? OR (si.pharmacy_id IS NULL AND ? = 'local_default'))
+    `).get(invoiceId, pharmacyId, pharmacyId) as any;
 
     if (!inv) return { success: false, error: 'الفاتورة غير موجودة' };
 

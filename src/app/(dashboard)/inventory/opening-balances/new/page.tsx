@@ -15,7 +15,7 @@ export default function NewOpeningBalanceClient() {
   const [selectedDrug, setSelectedDrug] = useState<any>(null);
   
   const [quantity, setQuantity] = useState(1);
-  const [costPrice, setCostPrice] = useState(0);
+  const [costPrice, setCostPrice] = useState<number | ''>('');
   const [unitPrice, setUnitPrice] = useState(0);
   const [expiryDate, setExpiryDate] = useState('');
   const [searchByActive, setSearchByActive] = useState(false);
@@ -39,7 +39,12 @@ export default function NewOpeningBalanceClient() {
 
   const selectDrug = (drug: any) => {
     setSelectedDrug(drug);
-    setCostPrice(drug.cost_price || 0);
+    const knownPurchaseCost = drug.purchase_price != null
+      ? Number(drug.purchase_price)
+      : Number(drug.base_price) > 0
+        ? Number(drug.base_price)
+        : Number.NaN;
+    setCostPrice(Number.isFinite(knownPurchaseCost) && knownPurchaseCost >= 0 ? knownPurchaseCost : '');
     setUnitPrice(Number(drug.min_price ?? drug.official_price ?? 0));
     setSearchTerm('');
     setSearchResults([]);
@@ -49,6 +54,7 @@ export default function NewOpeningBalanceClient() {
     if (!selectedDrug) return toast.error('يرجى اختيار صنف');
     if (!expiryDate) return toast.error('يرجى تحديد تاريخ الصلاحية');
     if (quantity <= 0) return toast.error('الكمية يجب أن تكون أكبر من 0');
+    if (costPrice === '' || !Number.isFinite(costPrice) || costPrice < 0) return toast.error('يرجى إدخال سعر تكلفة صحيح، أو صفر للصنف المجاني');
 
     setIsSubmitting(true);
     const res = await addOpeningBalanceAction({
@@ -151,8 +157,9 @@ export default function NewOpeningBalanceClient() {
                 />
               </div>
               <div>
-                <label className="block text-sm font-bold mb-2">تاريخ الصلاحية</label>
+                <label htmlFor="opening-expiry" className="block text-sm font-bold mb-2">تاريخ الصلاحية</label>
                 <input
+                  id="opening-expiry"
                   type="date"
                   value={expiryDate}
                   onChange={(e) => setExpiryDate(e.target.value)}
@@ -160,12 +167,14 @@ export default function NewOpeningBalanceClient() {
                 />
               </div>
               <div>
-                <label className="block text-sm font-bold mb-2">سعر التكلفة (للعلبة)</label>
+                <label htmlFor="opening-cost" className="block text-sm font-bold mb-2">سعر التكلفة (للعلبة)</label>
                 <input
+                  id="opening-cost"
                   type="number"
+                  min="0"
                   step="0.01"
                   value={costPrice}
-                  onChange={(e) => setCostPrice(Number(e.target.value))}
+                  onChange={(e) => setCostPrice(e.target.value === '' ? '' : Number(e.target.value))}
                   className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-800 rounded-xl outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>

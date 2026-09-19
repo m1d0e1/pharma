@@ -12,6 +12,7 @@ import { toast } from 'react-hot-toast'
 import { cn } from '@/lib/utils'
 import { getLowStockAction } from '@/app/actions-client/inventory'
 import { addToShortagesAction } from '@/app/actions-client/shortages'
+import { purchaseShortageHandoffStorageKey } from '@/lib/purchases/storage'
 
 interface ReorderItem {
   drug_id: number
@@ -149,7 +150,9 @@ export default function ReorderAlerts() {
         cost_price: item.official_price || 0
       }))
 
-      sessionStorage.setItem('shortages_to_purchase', JSON.stringify(formatted))
+      const storageKey = purchaseShortageHandoffStorageKey()
+      if (!storageKey) throw new Error('Missing signed-in purchase scope')
+      sessionStorage.setItem(storageKey, JSON.stringify(formatted))
       toast.success(`جاري تحويل ${targetItems.length} صنف إلى فاتورة مشتريات...`)
       router.push('/purchases/new')
     } catch (e) {

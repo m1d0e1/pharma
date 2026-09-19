@@ -2,6 +2,7 @@
 import TableScrollContainer from '@/components/ui/TableScrollContainer';
 
 import React, { useState, useMemo } from 'react';
+import { purchaseShortageHandoffStorageKey } from '@/lib/purchases/storage';
 import {
   Search, 
   ArrowLeft, 
@@ -204,7 +205,9 @@ export default function LowStockClient({ initialItems }: Props) {
         cost_price: item.official_price || 0
       }));
 
-      sessionStorage.setItem('shortages_to_purchase', JSON.stringify(formattedForPurchase));
+      const storageKey = purchaseShortageHandoffStorageKey();
+      if (!storageKey) throw new Error('Missing signed-in purchase scope');
+      sessionStorage.setItem(storageKey, JSON.stringify(formattedForPurchase));
       toast.success(`جاري تحويل ${itemsToConvert.length} صنف إلى فاتورة مشتريات...`);
       router.push('/purchases/new');
     } catch (e) {

@@ -1,6 +1,6 @@
 
 import { dbSelect, dbExecute, dbGet, dbTransaction, generateId } from '@/lib/db/tauri';
-import { ensurePermanentShiftForUser } from './shifts';
+import { ensurePermanentShiftForUser, getShiftForPharmacy } from './shifts';
 const logActivity = async (userId: string, action: string, details: string) => {
   try {
     await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [userId, action, details]);
@@ -108,7 +108,7 @@ async function validateCheckoutPrices(items: z.infer<typeof CheckoutItemSchema>[
       ? await db.prepare(`
           SELECT COALESCE(i.local_selling_price, md.official_price, 0) AS large_price,
                  COALESCE(NULLIF(i.strips_per_box, 0), NULLIF(md.large_to_medium, 0), 1) AS large_to_medium,
-                 COALESCE(NULLIF(md.medium_to_small, 0), 1) AS medium_to_small,
+                 COALESCE(NULLIF(i.medium_to_small, 0), NULLIF(md.medium_to_small, 0), 1) AS medium_to_small,
                  md.medium_unit, md.small_unit
           FROM inventory i
           JOIN master_drugs md ON md.id = i.drug_id
@@ -117,7 +117,7 @@ async function validateCheckoutPrices(items: z.infer<typeof CheckoutItemSchema>[
       : await db.prepare(`
           SELECT COALESCE(MIN(i.local_selling_price), md.official_price, 0) AS large_price,
                  COALESCE(NULLIF(MAX(i.strips_per_box), 0), NULLIF(md.large_to_medium, 0), 1) AS large_to_medium,
-                 COALESCE(NULLIF(md.medium_to_small, 0), 1) AS medium_to_small,
+                 COALESCE(NULLIF(MAX(i.medium_to_small), 0), NULLIF(md.medium_to_small, 0), 1) AS medium_to_small,
                  md.medium_unit, md.small_unit
           FROM master_drugs md
           LEFT JOIN inventory i ON i.drug_id = md.id
@@ -621,10 +621,7 @@ export async function processCheckoutAction(data: any) {
     }
     const requestedShiftId = validatedData.shift_id ? String(validatedData.shift_id) : null;
     const requestedShift = requestedShiftId
-      ? await db.prepare(`
-          SELECT id FROM shifts
-          WHERE id = ? AND status = 'open'
-        `).get(requestedShiftId) as any
+      ? await getShiftForPharmacy(requestedShiftId, pharmacyId, true)
       : null;
     const permanentShift = requestedShift || await ensurePermanentShiftForUser(userId);
     const shiftId = permanentShift?.id ? String(permanentShift.id) : null;
@@ -736,15 +733,15 @@ export async function processCheckoutAction(data: any) {
         if (validatedData.status === 'completed') {
           if (item.is_negative) {
             await db.prepare(`
-              INSERT INTO sales_items (invoice_id, inventory_id, drug_id, quantity_sold, unit_price, unit, is_negative, cost_price, created_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            `).run(saleId, null, item.drug_id, item.quantity_sold, item.unit_price, item.selected_unit, 1, 0);
+              INSERT INTO sales_items (invoice_id, inventory_id, drug_id, quantity_sold, unit_price, unit, is_negative, cost_price, large_to_medium, medium_to_small, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            `).run(saleId, null, item.drug_id, item.quantity_sold, item.unit_price, item.selected_unit, 1, 0, fallbackLargeToMedium, mediumToSmall);
             continue;
           }
 
           const batches = item.inventory_id 
             ? await db.prepare(`
-                SELECT id, quantity, cost_price, expiry_date, strips_per_box
+                SELECT id, quantity, cost_price, expiry_date, strips_per_box, medium_to_small
                 FROM inventory
                 WHERE id = ? AND drug_id = ?
                   AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
@@ -752,7 +749,7 @@ export async function processCheckoutAction(data: any) {
                   AND (expiry_date IS NULL OR expiry_date >= ?)
               `).all(item.inventory_id, item.drug_id, pharmacyId, pharmacyId, today) as any[]
             : await db.prepare(`
-                SELECT id, quantity, cost_price, expiry_date, strips_per_box
+                SELECT id, quantity, cost_price, expiry_date, strips_per_box, medium_to_small
                 FROM inventory
                 WHERE drug_id = ?
                   AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
@@ -769,11 +766,14 @@ export async function processCheckoutAction(data: any) {
             const batchLargeToMedium = Number(batch.strips_per_box) > 0
               ? Number(batch.strips_per_box)
               : fallbackLargeToMedium;
+            const batchMediumToSmall = Number(batch.medium_to_small) > 0
+              ? Number(batch.medium_to_small)
+              : mediumToSmall;
             const stockPerSelectedUnit = saleStockQty(
               1,
               item.selected_unit,
               batchLargeToMedium,
-              mediumToSmall,
+              batchMediumToSmall,
               drugInfo?.medium_unit,
               drugInfo?.small_unit
             );
@@ -792,11 +792,14 @@ export async function processCheckoutAction(data: any) {
             const batchLargeToMedium = Number(batch.strips_per_box) > 0
               ? Number(batch.strips_per_box)
               : fallbackLargeToMedium;
+            const batchMediumToSmall = Number(batch.medium_to_small) > 0
+              ? Number(batch.medium_to_small)
+              : mediumToSmall;
             const stockPerSelectedUnit = saleStockQty(
               1,
               item.selected_unit,
               batchLargeToMedium,
-              mediumToSmall,
+              batchMediumToSmall,
               drugInfo?.medium_unit,
               drugInfo?.small_unit
             );
@@ -825,9 +828,9 @@ export async function processCheckoutAction(data: any) {
             }
             
             await db.prepare(`
-              INSERT INTO sales_items (invoice_id, inventory_id, drug_id, quantity_sold, unit_price, unit, is_negative, cost_price, created_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            `).run(saleId, batch.id, item.drug_id, quantityInSelectedUnit, item.unit_price, item.selected_unit, 0, batch.cost_price || 0);
+              INSERT INTO sales_items (invoice_id, inventory_id, drug_id, quantity_sold, unit_price, unit, is_negative, cost_price, large_to_medium, medium_to_small, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            `).run(saleId, batch.id, item.drug_id, quantityInSelectedUnit, item.unit_price, item.selected_unit, 0, batch.cost_price || 0, batchLargeToMedium, batchMediumToSmall);
 
             totalCogs += (batch.cost_price || 0) * deductFromThisBatch;
             remainingSelectedUnits -= quantityInSelectedUnit;
@@ -861,9 +864,9 @@ export async function processCheckoutAction(data: any) {
           `).run(pharmacyId, item.drug_id, pharmacyId, pharmacyId, today, pharmacyId);
         } else {
           await db.prepare(`
-            INSERT INTO sales_items (invoice_id, inventory_id, drug_id, quantity_sold, unit_price, unit, is_negative, cost_price, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-          `).run(saleId, null, item.drug_id, item.quantity_sold, item.unit_price, item.selected_unit, item.is_negative ? 1 : 0, 0);
+            INSERT INTO sales_items (invoice_id, inventory_id, drug_id, quantity_sold, unit_price, unit, is_negative, cost_price, large_to_medium, medium_to_small, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+          `).run(saleId, null, item.drug_id, item.quantity_sold, item.unit_price, item.selected_unit, item.is_negative ? 1 : 0, 0, fallbackLargeToMedium, mediumToSmall);
         }
       }
 
@@ -891,7 +894,7 @@ export async function processCheckoutAction(data: any) {
         };
 
         let debitAccount = accounts.cash;
-        if (validatedData.payment_method === 'credit') debitAccount = accounts.receivable;
+        if (validatedData.payment_method === 'credit' || validatedData.payment_method === 'delivery') debitAccount = accounts.receivable;
         if (validatedData.payment_method === 'visa' || validatedData.payment_method === 'check') debitAccount = accounts.bank;
         if (validatedData.payment_method === 'wallet') {
           debitAccount = await getAccountId('patient_wallet_liability') || 7;

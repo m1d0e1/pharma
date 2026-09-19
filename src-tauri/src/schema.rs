@@ -141,6 +141,18 @@ async fn has_column(
         .any(|row| row.get::<String, _>("name") == column))
 }
 
+async fn table_exists_in_transaction(
+    transaction: &mut Transaction<'_, Sqlite>,
+    table: &str,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?)",
+    )
+    .bind(table)
+    .fetch_one(&mut **transaction)
+    .await
+}
+
 async fn add_column(
     transaction: &mut Transaction<'_, Sqlite>,
     table: &str,
@@ -233,7 +245,34 @@ async fn repair_unambiguous_shift_links(
     Ok(repaired)
 }
 
-async fn ensure_compatibility(
+async fn repair_unambiguous_user_pharmacy(
+    transaction: &mut Transaction<'_, Sqlite>,
+) -> Result<u64, sqlx::Error> {
+    if !has_column(transaction, "users", "pharmacy_id").await?
+        || !has_column(transaction, "users", "role").await?
+    {
+        return Ok(0);
+    }
+
+    let scopes: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT TRIM(pharmacy_id) FROM users WHERE pharmacy_id IS NOT NULL AND TRIM(pharmacy_id) != ''",
+    )
+    .fetch_all(&mut **transaction)
+    .await?;
+    if scopes.len() != 1 {
+        return Ok(0);
+    }
+
+    sqlx::query(
+        "UPDATE users SET pharmacy_id = ? WHERE (pharmacy_id IS NULL OR TRIM(pharmacy_id) = '') AND LOWER(COALESCE(role, '')) != 'owner'",
+    )
+    .bind(&scopes[0])
+    .execute(&mut **transaction)
+    .await
+    .map(|result| result.rows_affected())
+}
+
+pub(crate) async fn ensure_compatibility(
     transaction: &mut Transaction<'_, Sqlite>,
 ) -> Result<(), sqlx::Error> {
     sqlx::raw_sql(
@@ -562,6 +601,16 @@ async fn ensure_compatibility(
             "stop_dealing INTEGER DEFAULT 0",
         ),
         (
+            "master_drugs",
+            "large_to_medium",
+            "large_to_medium INTEGER DEFAULT 1",
+        ),
+        (
+            "master_drugs",
+            "medium_to_small",
+            "medium_to_small INTEGER DEFAULT 1",
+        ),
+        (
             "inventory",
             "min_stock_level",
             "min_stock_level INTEGER DEFAULT 5",
@@ -700,6 +749,9 @@ async fn ensure_compatibility(
         ("users", "role", "role TEXT DEFAULT 'cashier'"),
         ("users", "full_name", "full_name TEXT"),
         ("users", "pharmacy_id", "pharmacy_id TEXT"),
+        ("sales_invoices", "user_id", "user_id TEXT"),
+        ("sales_invoices", "pharmacy_id", "pharmacy_id TEXT"),
+        ("returns", "pharmacy_id", "pharmacy_id TEXT"),
         (
             "users",
             "permissions",
@@ -725,6 +777,223 @@ async fn ensure_compatibility(
         add_column(transaction, table, column, definition).await?;
     }
 
+    // A withdrawn legacy import could place EAN/barcode-sized numbers into unit
+    // conversion columns. These values are unmistakably not package ratios and
+    // must not be frozen into the historical snapshot columns below.
+    sqlx::query(
+        "UPDATE master_drugs SET large_to_medium = 1 WHERE ABS(COALESCE(large_to_medium, 1)) >= 1000000",
+    )
+    .execute(&mut **transaction)
+    .await?;
+    sqlx::query(
+        "UPDATE master_drugs SET medium_to_small = 1 WHERE ABS(COALESCE(medium_to_small, 1)) >= 1000000",
+    )
+    .execute(&mut **transaction)
+    .await?;
+    sqlx::query(
+        r#"
+        UPDATE inventory
+        SET strips_per_box = COALESCE((
+          SELECT CASE
+            WHEN md.large_to_medium > 0 AND ABS(md.large_to_medium) < 1000000
+            THEN md.large_to_medium
+          END
+          FROM master_drugs md
+          WHERE md.id = inventory.drug_id
+        ), 1)
+        WHERE ABS(COALESCE(strips_per_box, 1)) >= 1000000
+        "#,
+    )
+    .execute(&mut **transaction)
+    .await?;
+    if table_exists_in_transaction(transaction, "purchase_invoice_items").await?
+        && has_column(transaction, "purchase_invoice_items", "strips_per_box").await?
+    {
+        sqlx::query(
+            r#"
+            UPDATE purchase_invoice_items
+            SET strips_per_box = COALESCE((
+              SELECT CASE
+                WHEN md.large_to_medium > 0 AND ABS(md.large_to_medium) < 1000000
+                THEN md.large_to_medium
+              END
+              FROM master_drugs md
+              WHERE md.id = purchase_invoice_items.drug_id
+            ), 1)
+            WHERE ABS(COALESCE(strips_per_box, 1)) >= 1000000
+            "#,
+        )
+        .execute(&mut **transaction)
+        .await?;
+    }
+
+    if table_exists_in_transaction(transaction, "inventory").await?
+        && !has_column(transaction, "inventory", "medium_to_small").await?
+    {
+        add_column(
+            transaction,
+            "inventory",
+            "medium_to_small",
+            "medium_to_small INTEGER DEFAULT 1",
+        )
+        .await?;
+        sqlx::query(
+            r#"
+            UPDATE inventory
+            SET medium_to_small = COALESCE((
+              SELECT CASE
+                WHEN md.medium_to_small > 0 AND ABS(md.medium_to_small) < 1000000
+                THEN md.medium_to_small
+              END
+              FROM master_drugs md
+              WHERE md.id = inventory.drug_id
+            ), 1)
+            "#,
+        )
+        .execute(&mut **transaction)
+        .await?;
+    }
+
+    if table_exists_in_transaction(transaction, "purchase_invoice_items").await?
+        && !has_column(transaction, "purchase_invoice_items", "medium_to_small").await?
+    {
+        add_column(
+            transaction,
+            "purchase_invoice_items",
+            "medium_to_small",
+            "medium_to_small INTEGER DEFAULT 1",
+        )
+        .await?;
+        sqlx::query(
+            r#"
+            UPDATE purchase_invoice_items
+            SET medium_to_small = COALESCE((
+              SELECT CASE
+                WHEN md.medium_to_small > 0 AND ABS(md.medium_to_small) < 1000000
+                THEN md.medium_to_small
+              END
+              FROM master_drugs md
+              WHERE md.id = purchase_invoice_items.drug_id
+            ), 1)
+            "#,
+        )
+        .execute(&mut **transaction)
+        .await?;
+    }
+
+    if table_exists_in_transaction(transaction, "sales_items").await? {
+        if !has_column(transaction, "sales_items", "large_to_medium").await? {
+            add_column(
+                transaction,
+                "sales_items",
+                "large_to_medium",
+                "large_to_medium INTEGER DEFAULT 1",
+            )
+            .await?;
+            sqlx::query(
+                r#"
+                UPDATE sales_items
+                SET large_to_medium = COALESCE((
+                  SELECT CASE
+                    WHEN i.strips_per_box > 0 AND ABS(i.strips_per_box) < 1000000
+                    THEN i.strips_per_box
+                  END
+                  FROM inventory i
+                  WHERE i.id = sales_items.inventory_id
+                ), (
+                  SELECT CASE
+                    WHEN md.large_to_medium > 0 AND ABS(md.large_to_medium) < 1000000
+                    THEN md.large_to_medium
+                  END
+                  FROM master_drugs md
+                  WHERE md.id = sales_items.drug_id
+                ), 1)
+                "#,
+            )
+            .execute(&mut **transaction)
+            .await?;
+        }
+
+        if !has_column(transaction, "sales_items", "medium_to_small").await? {
+            add_column(
+                transaction,
+                "sales_items",
+                "medium_to_small",
+                "medium_to_small INTEGER DEFAULT 1",
+            )
+            .await?;
+            sqlx::query(
+                r#"
+                UPDATE sales_items
+                SET medium_to_small = COALESCE((
+                  SELECT CASE
+                    WHEN i.medium_to_small > 0 AND ABS(i.medium_to_small) < 1000000
+                    THEN i.medium_to_small
+                  END
+                  FROM inventory i
+                  WHERE i.id = sales_items.inventory_id
+                ), (
+                  SELECT CASE
+                    WHEN md.medium_to_small > 0 AND ABS(md.medium_to_small) < 1000000
+                    THEN md.medium_to_small
+                  END
+                  FROM master_drugs md
+                  WHERE md.id = sales_items.drug_id
+                ), 1)
+                "#,
+            )
+            .execute(&mut **transaction)
+            .await?;
+        }
+
+        sqlx::query(
+            r#"
+            UPDATE sales_items
+            SET large_to_medium = COALESCE((
+              SELECT CASE
+                WHEN i.strips_per_box > 0 AND ABS(i.strips_per_box) < 1000000
+                THEN i.strips_per_box
+              END
+              FROM inventory i
+              WHERE i.id = sales_items.inventory_id
+            ), (
+              SELECT CASE
+                WHEN md.large_to_medium > 0 AND ABS(md.large_to_medium) < 1000000
+                THEN md.large_to_medium
+              END
+              FROM master_drugs md
+              WHERE md.id = sales_items.drug_id
+            ), 1)
+            WHERE ABS(COALESCE(large_to_medium, 1)) >= 1000000
+            "#,
+        )
+        .execute(&mut **transaction)
+        .await?;
+        sqlx::query(
+            r#"
+            UPDATE sales_items
+            SET medium_to_small = COALESCE((
+              SELECT CASE
+                WHEN i.medium_to_small > 0 AND ABS(i.medium_to_small) < 1000000
+                THEN i.medium_to_small
+              END
+              FROM inventory i
+              WHERE i.id = sales_items.inventory_id
+            ), (
+              SELECT CASE
+                WHEN md.medium_to_small > 0 AND ABS(md.medium_to_small) < 1000000
+                THEN md.medium_to_small
+              END
+              FROM master_drugs md
+              WHERE md.id = sales_items.drug_id
+            ), 1)
+            WHERE ABS(COALESCE(medium_to_small, 1)) >= 1000000
+            "#,
+        )
+        .execute(&mut **transaction)
+        .await?;
+    }
+
     sqlx::query(
         "UPDATE shortages SET pharmacy_id = 'local_default' WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = ''",
     )
@@ -748,6 +1017,51 @@ async fn ensure_compatibility(
 
     // ponytail: only one matching user/time window is safe to repair automatically.
     repair_unambiguous_shift_links(transaction).await?;
+    // ponytail: legacy staff can inherit a pharmacy only when exactly one scope exists.
+    repair_unambiguous_user_pharmacy(transaction).await?;
+
+    sqlx::query(
+        r#"
+        UPDATE sales_invoices
+        SET pharmacy_id = COALESCE(
+          (SELECT COALESCE(NULLIF(TRIM(u.pharmacy_id), ''), 'local_default')
+           FROM users u
+           WHERE CAST(u.id AS TEXT) = CAST(sales_invoices.user_id AS TEXT)
+              OR LOWER(u.username) = LOWER(CAST(sales_invoices.user_id AS TEXT))
+           LIMIT 1),
+          'local_default'
+        )
+        WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = ''
+        "#,
+    )
+    .execute(&mut **transaction)
+    .await?;
+
+    sqlx::query(
+        r#"
+        UPDATE returns
+        SET pharmacy_id = COALESCE(
+          (SELECT COALESCE(NULLIF(TRIM(si.pharmacy_id), ''), 'local_default')
+           FROM sales_invoices si
+           WHERE si.id = returns.invoice_id),
+          (SELECT COALESCE(NULLIF(TRIM(u.pharmacy_id), ''), 'local_default')
+           FROM users u
+           WHERE CAST(u.id AS TEXT) = CAST(returns.user_id AS TEXT)
+              OR LOWER(u.username) = LOWER(CAST(returns.user_id AS TEXT))
+           LIMIT 1),
+          'local_default'
+        )
+        WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = ''
+        "#,
+    )
+    .execute(&mut **transaction)
+    .await?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_returns_pharmacy_created ON returns(pharmacy_id, created_at)",
+    )
+    .execute(&mut **transaction)
+    .await?;
 
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_shortages_pharmacy_drug_status ON shortages(pharmacy_id, drug_id, status)",
@@ -1873,6 +2187,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn repairs_only_unambiguous_legacy_staff_pharmacy() {
+        let mut connection = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        sqlx::raw_sql(
+            r#"
+            CREATE TABLE users (id TEXT PRIMARY KEY, role TEXT, pharmacy_id TEXT);
+            INSERT INTO users VALUES
+              ('owner-one', 'owner', 'ph-1'),
+              ('legacy-staff', 'pharmacist', NULL),
+              ('legacy-cashier', 'cashier', ''),
+              ('legacy-owner', 'owner', NULL);
+            "#,
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+
+        let mut transaction = connection.begin().await.unwrap();
+        assert_eq!(repair_unambiguous_user_pharmacy(&mut transaction).await.unwrap(), 2);
+        transaction.commit().await.unwrap();
+
+        let repaired: Vec<(String, Option<String>)> =
+            sqlx::query_as("SELECT id, pharmacy_id FROM users ORDER BY id")
+                .fetch_all(&mut connection)
+                .await
+                .unwrap();
+        assert_eq!(
+            repaired,
+            vec![
+                ("legacy-cashier".into(), Some("ph-1".into())),
+                ("legacy-owner".into(), None),
+                ("legacy-staff".into(), Some("ph-1".into())),
+                ("owner-one".into(), Some("ph-1".into())),
+            ]
+        );
+
+        sqlx::raw_sql(
+            r#"
+            INSERT INTO users VALUES ('owner-two', 'owner', 'ph-2');
+            INSERT INTO users VALUES ('ambiguous-staff', 'pharmacist', NULL);
+            "#,
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+        let mut transaction = connection.begin().await.unwrap();
+        assert_eq!(repair_unambiguous_user_pharmacy(&mut transaction).await.unwrap(), 0);
+        transaction.commit().await.unwrap();
+        let ambiguous: Option<String> =
+            sqlx::query_scalar("SELECT pharmacy_id FROM users WHERE id = 'ambiguous-staff'")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
+        assert_eq!(ambiguous, None);
+    }
+
+    #[tokio::test]
     async fn legacy_name_repair_handles_duplicate_catalog_name_drift() {
         let seed_path =
             std::env::temp_dir().join(format!("pharma-catalog-seed-{}.db", uuid::Uuid::new_v4()));
@@ -2939,6 +3309,95 @@ mod tests {
         .await
         .unwrap();
         connection
+    }
+
+    #[tokio::test]
+    async fn snapshot_backfill_rejects_barcode_sized_conversion_outliers() {
+        let mut connection = representative_purchase_database(true).await;
+        sqlx::raw_sql(
+            r#"
+            CREATE TABLE sales_items (
+              id INTEGER PRIMARY KEY,
+              invoice_id TEXT,
+              inventory_id TEXT,
+              drug_id INTEGER,
+              quantity_sold REAL,
+              unit_price REAL,
+              unit TEXT,
+              cost_price REAL
+            );
+            UPDATE inventory
+            SET strips_per_box = 6224010000000
+            WHERE id = 'legacy-exact';
+            UPDATE purchase_invoice_items
+            SET strips_per_box = 6224010000000
+            WHERE invoice_id = 'legacy-exact-invoice';
+            INSERT INTO sales_items
+              (id, invoice_id, inventory_id, drug_id, quantity_sold, unit_price, unit, cost_price)
+            VALUES
+              (1, 'legacy-exact-invoice', 'legacy-exact', 9100, 1, 10, 'large', 10),
+              (2, 'legacy-fallback-invoice', 'legacy-fallback', 9101, 1, 10, 'large', 10);
+            UPDATE master_drugs SET large_to_medium = 6223000000000 WHERE id = 9101;
+            UPDATE inventory SET strips_per_box = 6223000000000 WHERE id = 'legacy-fallback';
+            "#,
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+
+        prepare_connection(&mut connection).await.unwrap();
+
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT strips_per_box FROM inventory WHERE id = 'legacy-exact'")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap(),
+            10
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT strips_per_box FROM purchase_invoice_items WHERE invoice_id = 'legacy-exact-invoice'")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap(),
+            10
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT large_to_medium FROM master_drugs WHERE id = 9101")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT strips_per_box FROM inventory WHERE id = 'legacy-fallback'")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap(),
+            1
+        );
+
+        let snapshots = sqlx::query(
+            "SELECT id, large_to_medium, medium_to_small FROM sales_items ORDER BY id",
+        )
+        .fetch_all(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(snapshots[0].get::<i64, _>("large_to_medium"), 10);
+        assert_eq!(snapshots[0].get::<i64, _>("medium_to_small"), 1);
+        assert_eq!(snapshots[1].get::<i64, _>("large_to_medium"), 1);
+        assert_eq!(snapshots[1].get::<i64, _>("medium_to_small"), 1);
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("PRAGMA integrity_check")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap(),
+            "ok"
+        );
+        assert!(sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(&mut connection)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]

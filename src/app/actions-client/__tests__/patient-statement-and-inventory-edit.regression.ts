@@ -49,8 +49,8 @@ jest.unmock('@/app/actions-client/inventory');
 jest.unmock('@/app/actions-client/patients');
 jest.unmock('@/app/actions-client/returns');
 
-import { updateInventoryAction } from '@/app/actions-client/inventory';
-import { getPatientProfileAction, getPatientStatementAction } from '@/app/actions-client/patients';
+import { getInventoryListAction, updateInventoryAction } from '@/app/actions-client/inventory';
+import { getPatientProfileAction, getPatientStatementAction, getReceiptDetailsAction } from '@/app/actions-client/patients';
 import { createReturnAction } from '@/app/actions-client/returns';
 import { patientOutstandingBalanceQuery } from '@/lib/patients/balance';
 
@@ -95,6 +95,20 @@ describe('Patient Statement, Inventory Amount Editing, and Credit Returns', () =
 
   afterEach(() => {
     mockDb.close();
+  });
+
+  it('keeps every realized credit-sale status in patient debt while excluding drafts', () => {
+    mockDb.prepare(`
+      INSERT INTO sales_invoices (id, user_id, patient_id, total_amount, payment_method, status)
+      VALUES
+        ('credit-approved', 'admin', 'pat-1', 20, 'credit', 'approved'),
+        ('credit-delivered', 'admin', 'pat-1', 30, 'credit', 'delivered'),
+        ('credit-legacy-null', 'admin', 'pat-1', 40, 'credit', NULL),
+        ('credit-legacy-blank', 'admin', 'pat-1', 50, 'credit', ''),
+        ('credit-draft', 'admin', 'pat-1', 900, 'credit', 'draft')
+    `).run();
+
+    expect((mockDb.prepare(patientOutstandingBalanceQuery()).get('pat-1') as any).outstanding_balance).toBe(240);
   });
 
   it('updates inventory quantity and price with stock adjustments', async () => {
@@ -153,7 +167,27 @@ describe('Patient Statement, Inventory Amount Editing, and Credit Returns', () =
     expect(mockDb.prepare('SELECT COUNT(*) AS n FROM stock_adjustments WHERE inventory_id = ?').get('inv-1')).toEqual({ n: 0 });
   });
 
-  it('keeps the edited lot conversion in sync with the master drug', async () => {
+  it('preserves a historical lot conversion on price-only edits and exposes it to the editor', async () => {
+    mockDb.prepare('UPDATE inventory SET strips_per_box = 2 WHERE id = ?').run('inv-1');
+    mockDb.prepare('UPDATE master_drugs SET large_to_medium = 3 WHERE id = ?').run(101);
+    const listed = await getInventoryListAction();
+    expect(listed.data?.find(item => item.id === 'inv-1')).toMatchObject({ strips_per_box: 2, master_drugs: { large_to_medium: 3 } });
+    expect(await updateInventoryAction({ id: 'inv-1', quantity: 50, local_selling_price: 25 })).toEqual({ success: true });
+    expect(await updateInventoryAction({ id: 'inv-1', quantity: 50, local_selling_price: 26, large_to_medium: 2 })).toEqual({ success: true });
+    expect(mockDb.prepare('SELECT strips_per_box, quantity FROM inventory WHERE id = ?').get('inv-1')).toEqual({ strips_per_box: 2, quantity: 50 });
+    expect(mockDb.prepare('SELECT large_to_medium FROM master_drugs WHERE id = ?').get(101)).toEqual({ large_to_medium: 3 });
+  });
+
+  it('rolls back inventory, catalog, and conversion changes when journal creation fails', async () => {
+    mockDb.exec("UPDATE inventory SET strips_per_box = 2 WHERE id = 'inv-1'; CREATE TRIGGER reject_edit_journal BEFORE INSERT ON daily_journals BEGIN SELECT RAISE(ABORT, 'test journal failure'); END;");
+    const result = await updateInventoryAction({ id: 'inv-1', quantity: 40, local_selling_price: 25, large_to_medium: 3, reason_id: 1 });
+    expect(result.success).toBe(false);
+    expect(mockDb.prepare('SELECT quantity, local_selling_price, strips_per_box FROM inventory WHERE id = ?').get('inv-1')).toEqual({ quantity: 50, local_selling_price: 20, strips_per_box: 2 });
+    expect(mockDb.prepare('SELECT official_price, large_to_medium FROM master_drugs WHERE id = ?').get(101)).toEqual({ official_price: 20, large_to_medium: 2 });
+    expect(mockDb.prepare('SELECT COUNT(*) AS n FROM stock_adjustments').get()).toEqual({ n: 0 });
+  });
+
+  it('applies an explicitly edited lot conversion to the lot and master drug', async () => {
     mockDb.prepare('UPDATE inventory SET strips_per_box = 2 WHERE id = ?').run('inv-1');
 
     const updateRes = await updateInventoryAction({
@@ -182,7 +216,7 @@ describe('Patient Statement, Inventory Amount Editing, and Credit Returns', () =
       id: 'inv-1',
       quantity: 50,
       local_selling_price: 25,
-      large_to_medium: 3,
+      large_to_medium: 2,
     });
 
     expect(updateRes).toEqual({ success: true });
@@ -240,6 +274,20 @@ describe('Patient Statement, Inventory Amount Editing, and Credit Returns', () =
       expect.objectContaining({ type: 'توريد نقدية', notes: 'دفعة من الفرع الرئيسي' }),
       expect.objectContaining({ type: 'إشعار مدين (إضافة)', balance_effect: 20 }),
     ]));
+  });
+
+  it('keeps receipt drill-down inside the signed-in pharmacy', async () => {
+    mockDb.exec(`
+      INSERT INTO sales_invoices (id, pharmacy_id, patient_id, total_amount, payment_method, status, user_id, created_at) VALUES
+        ('receipt-local', 'local_default', 'pat-1', 20, 'cash', 'completed', 'admin', CURRENT_TIMESTAMP),
+        ('receipt-foreign', 'ph-2', 'pat-1', 30, 'cash', 'completed', 'admin', CURRENT_TIMESTAMP);
+      INSERT INTO sales_items (invoice_id, drug_id, inventory_id, quantity_sold, unit_price, cost_price, unit) VALUES
+        ('receipt-local', 101, 'inv-1', 1, 20, 10, 'large'),
+        ('receipt-foreign', 101, 'inv-1', 1, 30, 10, 'large');
+    `);
+
+    expect(await getReceiptDetailsAction('receipt-local')).toMatchObject({ success: true, data: { id: 'receipt-local' } });
+    expect(await getReceiptDetailsAction('receipt-foreign')).toMatchObject({ success: false });
   });
 
   it('correctly calculates patient balance when returning a drug from a debit/credit sale', async () => {
