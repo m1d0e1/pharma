@@ -69,6 +69,9 @@ describe('Patient Statement, Inventory Amount Editing, and Credit Returns', () =
     mockSession = { id: 'admin', role: 'owner', pharmacy_id: 'local_default' };
     mockDb = new Database(':memory:');
     applyMigrations(mockDb);
+    mockDb.exec("ALTER TABLE shifts ADD COLUMN pharmacy_id TEXT");
+    mockDb.exec("ALTER TABLE returns ADD COLUMN pharmacy_id TEXT");
+    mockDb.exec("ALTER TABLE financial_notices ADD COLUMN pharmacy_id TEXT");
     mockDb.pragma('foreign_keys = OFF');
 
     // Seed basic user, account, drug
@@ -274,6 +277,76 @@ describe('Patient Statement, Inventory Amount Editing, and Credit Returns', () =
       expect.objectContaining({ type: 'توريد نقدية', notes: 'دفعة من الفرع الرئيسي' }),
       expect.objectContaining({ type: 'إشعار مدين (إضافة)', balance_effect: 20 }),
     ]));
+  });
+
+  it('keeps the patient ledger chain-wide while hiding foreign-branch statement documents and items', async () => {
+    mockSession = { id: 'admin', role: 'owner', pharmacy_id: 'ph-1' };
+    mockDb.exec(`
+      INSERT INTO sales_invoices (id, pharmacy_id, patient_id, total_amount, payment_method, status, user_id, created_at) VALUES
+        ('stmt-local-sale', 'ph-1', 'pat-1', 40, 'credit', 'completed', 'admin', '2026-08-20 10:00:00'),
+        ('stmt-foreign-sale', 'ph-2', 'pat-1', 60, 'credit', 'completed', 'admin', '2026-08-21 10:00:00');
+      INSERT INTO sales_items (id, invoice_id, drug_id, quantity_sold, unit_price, cost_price, unit) VALUES
+        (801, 'stmt-local-sale', 101, 2, 20, 10, 'large'),
+        (802, 'stmt-foreign-sale', 101, 3, 20, 10, 'large');
+
+      INSERT INTO returns (id, invoice_id, user_id, pharmacy_id, reason, total_refund, refund_method, status, created_at) VALUES
+        ('stmt-local-return', 'stmt-local-sale', 'admin', 'ph-1', 'local return', 20, 'cash', 'completed', '2026-08-22 10:00:00'),
+        ('stmt-foreign-return', 'stmt-foreign-sale', 'admin', 'ph-2', 'foreign return', 20, 'cash', 'completed', '2026-08-23 10:00:00');
+      INSERT INTO return_items (return_id, drug_id, drug_name, quantity_returned, unit_price, unit) VALUES
+        ('stmt-local-return', 101, 'Panadol local', 1, 20, 'large'),
+        ('stmt-foreign-return', 101, 'Panadol foreign', 1, 20, 'large');
+
+      INSERT INTO financial_notices (id, user_id, pharmacy_id, target_type, target_id, type, amount, reason, notes, date) VALUES
+        ('stmt-local-notice', 'admin', 'ph-1', 'customer', 'pat-1', 'debit', 7, 'local notice', 'local detail', '2026-08-24'),
+        ('stmt-foreign-notice', 'admin', 'ph-2', 'customer', 'pat-1', 'debit', 11, 'foreign notice', 'foreign detail', '2026-08-25'),
+        ('stmt-foreign-enrichment', 'admin', 'ph-2', 'customer', 'pat-1', 'debit', 13, 'ledger note', 'FOREIGN ENRICHMENT', '2026-08-26');
+
+      INSERT INTO patient_transactions (id, patient_id, user_id, type, amount, payment_method, notes, date) VALUES
+        ('stmt-shared-ledger', 'pat-1', 'admin', 'payment', 5, 'cash', 'shared ledger payment', '2026-08-27'),
+        ('stmt-shared-adjustment', 'pat-1', 'admin', 'adjustment', 13, 'cash', 'ledger note', '2026-08-26');
+    `);
+
+    const res = await getPatientStatementAction('pat-1');
+    expect(res.success).toBe(true);
+    expect(res.data?.patient.full_name).toBe('الحاجه مجده');
+
+    const docs = res.data?.movements.map((row: any) => row.doc_no) || [];
+    expect(docs).toEqual(expect.arrayContaining([
+      'stmt-local-sale',
+      'stmt-local-return',
+      'stmt-local-notice',
+      'stmt-shared-ledger',
+      'stmt-shared-adjustment',
+    ]));
+    expect(docs).not.toEqual(expect.arrayContaining([
+      'stmt-foreign-sale',
+      'stmt-foreign-return',
+      'stmt-foreign-notice',
+      'stmt-foreign-enrichment',
+    ]));
+
+    const sharedAdjustment = res.data?.movements.find((row: any) => row.doc_no === 'stmt-shared-adjustment');
+    expect(sharedAdjustment?.notes).toBe('ledger note');
+
+    expect(res.data?.items.map((row: any) => row.invoice_id)).toEqual(expect.arrayContaining([
+      'stmt-local-sale',
+      'stmt-local-return',
+    ]));
+    expect(res.data?.items.map((row: any) => row.invoice_id)).not.toEqual(expect.arrayContaining([
+      'stmt-foreign-sale',
+      'stmt-foreign-return',
+    ]));
+    expect(res.data?.notices.map((row: any) => row.id)).toEqual(['stmt-local-notice']);
+
+    // Outstanding balance deliberately remains the shared patient ledger definition.
+    expect(res.data?.currentBalance).toBe(226);
+
+    const profile = await getPatientProfileAction('pat-1');
+    expect(profile.success).toBe(true);
+    expect(profile.data?.full_name).toBe('الحاجه مجده');
+    expect(profile.data?.purchaseHistory.map((row: any) => row.invoice_id)).toEqual(['stmt-local-sale']);
+    expect(profile.data?.totalSpent).toBe(40);
+    expect(profile.data?.outstandingBalance).toBe(226);
   });
 
   it('keeps receipt drill-down inside the signed-in pharmacy', async () => {

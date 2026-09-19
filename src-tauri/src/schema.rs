@@ -268,8 +268,300 @@ async fn repair_unambiguous_user_pharmacy(
     )
     .bind(&scopes[0])
     .execute(&mut **transaction)
-    .await
-    .map(|result| result.rows_affected())
+        .await
+        .map(|result| result.rows_affected())
+}
+
+async fn snapshot_branch_local_pharmacy_scope(
+    transaction: &mut Transaction<'_, Sqlite>,
+) -> Result<(), sqlx::Error> {
+    let users_ready = table_exists_in_transaction(transaction, "users").await?
+        && has_column(transaction, "users", "id").await?
+        && has_column(transaction, "users", "username").await?
+        && has_column(transaction, "users", "pharmacy_id").await?;
+
+    let sales_ready = table_exists_in_transaction(transaction, "sales_invoices").await?;
+    if sales_ready {
+        add_column(transaction, "sales_invoices", "pharmacy_id", "pharmacy_id TEXT").await?;
+        if users_ready && has_column(transaction, "sales_invoices", "user_id").await? {
+            sqlx::query(
+                r#"
+                UPDATE sales_invoices
+                SET pharmacy_id = COALESCE(
+                  (SELECT NULLIF(TRIM(u.pharmacy_id), '')
+                   FROM users u
+                   WHERE CAST(u.id AS TEXT) = CAST(sales_invoices.user_id AS TEXT)
+                      OR LOWER(u.username) = LOWER(CAST(sales_invoices.user_id AS TEXT))
+                   LIMIT 1),
+                  'local_default'
+                )
+                WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = ''
+                "#,
+            )
+            .execute(&mut **transaction)
+            .await?;
+        } else {
+            sqlx::query("UPDATE sales_invoices SET pharmacy_id = 'local_default' WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = ''")
+                .execute(&mut **transaction)
+                .await?;
+        }
+    }
+
+    let returns_ready = table_exists_in_transaction(transaction, "returns").await?;
+    if returns_ready {
+        add_column(transaction, "returns", "pharmacy_id", "pharmacy_id TEXT").await?;
+        let has_invoice_id = has_column(transaction, "returns", "invoice_id").await?;
+        let has_user_id = has_column(transaction, "returns", "user_id").await?;
+        if sales_ready && has_invoice_id && users_ready && has_user_id {
+            sqlx::query(
+                r#"
+                UPDATE returns
+                SET pharmacy_id = COALESCE(
+                  (SELECT NULLIF(TRIM(si.pharmacy_id), '') FROM sales_invoices si WHERE si.id = returns.invoice_id),
+                  (SELECT NULLIF(TRIM(u.pharmacy_id), '')
+                   FROM users u
+                   WHERE CAST(u.id AS TEXT) = CAST(returns.user_id AS TEXT)
+                      OR LOWER(u.username) = LOWER(CAST(returns.user_id AS TEXT))
+                   LIMIT 1),
+                  'local_default'
+                )
+                WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = ''
+                "#,
+            )
+            .execute(&mut **transaction)
+            .await?;
+        } else if sales_ready && has_invoice_id {
+            sqlx::query(
+                "UPDATE returns SET pharmacy_id = COALESCE((SELECT NULLIF(TRIM(si.pharmacy_id), '') FROM sales_invoices si WHERE si.id = returns.invoice_id), 'local_default') WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = ''",
+            )
+            .execute(&mut **transaction)
+            .await?;
+        } else if users_ready && has_user_id {
+            sqlx::query(
+                r#"
+                UPDATE returns
+                SET pharmacy_id = COALESCE(
+                  (SELECT NULLIF(TRIM(u.pharmacy_id), '') FROM users u
+                   WHERE CAST(u.id AS TEXT) = CAST(returns.user_id AS TEXT)
+                      OR LOWER(u.username) = LOWER(CAST(returns.user_id AS TEXT)) LIMIT 1),
+                  'local_default'
+                )
+                WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = ''
+                "#,
+            )
+            .execute(&mut **transaction)
+            .await?;
+        } else {
+            sqlx::query("UPDATE returns SET pharmacy_id = 'local_default' WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = ''")
+                .execute(&mut **transaction)
+                .await?;
+        }
+    }
+
+    let shifts_ready = table_exists_in_transaction(transaction, "shifts").await?;
+    if shifts_ready {
+        add_column(transaction, "shifts", "pharmacy_id", "pharmacy_id TEXT").await?;
+        let has_user_id = has_column(transaction, "shifts", "user_id").await?;
+        if users_ready && has_user_id {
+            sqlx::query(
+                r#"
+                UPDATE shifts
+                SET pharmacy_id = COALESCE(
+                  (SELECT NULLIF(TRIM(u.pharmacy_id), '') FROM users u
+                   WHERE CAST(u.id AS TEXT) = CAST(shifts.user_id AS TEXT)
+                      OR LOWER(u.username) = LOWER(CAST(shifts.user_id AS TEXT)) LIMIT 1),
+                  'local_default'
+                )
+                WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = ''
+                "#,
+            )
+            .execute(&mut **transaction)
+            .await?;
+        } else {
+            sqlx::query("UPDATE shifts SET pharmacy_id = 'local_default' WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = ''")
+                .execute(&mut **transaction)
+                .await?;
+        }
+
+        if has_column(transaction, "shifts", "status").await? {
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_shifts_pharmacy_status ON shifts(pharmacy_id, status)")
+                .execute(&mut **transaction)
+                .await?;
+        }
+
+        if users_ready && has_user_id && has_column(transaction, "shifts", "status").await? {
+            sqlx::raw_sql(
+                r#"
+                DROP TRIGGER IF EXISTS shifts_one_open_per_pharmacy_insert;
+                CREATE TRIGGER shifts_one_open_per_pharmacy_insert
+                BEFORE INSERT ON shifts
+                WHEN LOWER(COALESCE(NEW.status, '')) = 'open'
+                 AND EXISTS (
+                   SELECT 1 FROM shifts existing_shift
+                   WHERE LOWER(COALESCE(existing_shift.status, '')) = 'open'
+                     AND COALESCE(NULLIF(TRIM(existing_shift.pharmacy_id), ''), 'local_default') =
+                         COALESCE(
+                           NULLIF(TRIM(NEW.pharmacy_id), ''),
+                           (SELECT NULLIF(TRIM(new_owner.pharmacy_id), '') FROM users new_owner
+                            WHERE CAST(new_owner.id AS TEXT) = CAST(NEW.user_id AS TEXT)
+                               OR LOWER(new_owner.username) = LOWER(CAST(NEW.user_id AS TEXT)) LIMIT 1),
+                           'local_default'
+                         )
+                 )
+                BEGIN SELECT RAISE(ABORT, 'open shift already exists for pharmacy'); END;
+
+                DROP TRIGGER IF EXISTS shifts_one_open_per_pharmacy_update;
+                CREATE TRIGGER shifts_one_open_per_pharmacy_update
+                BEFORE UPDATE OF status, user_id, pharmacy_id ON shifts
+                WHEN LOWER(COALESCE(NEW.status, '')) = 'open'
+                 AND EXISTS (
+                   SELECT 1 FROM shifts existing_shift
+                   WHERE existing_shift.id <> OLD.id
+                     AND LOWER(COALESCE(existing_shift.status, '')) = 'open'
+                     AND COALESCE(NULLIF(TRIM(existing_shift.pharmacy_id), ''), 'local_default') =
+                         COALESCE(
+                           NULLIF(TRIM(NEW.pharmacy_id), ''),
+                           (SELECT NULLIF(TRIM(new_owner.pharmacy_id), '') FROM users new_owner
+                            WHERE CAST(new_owner.id AS TEXT) = CAST(NEW.user_id AS TEXT)
+                               OR LOWER(new_owner.username) = LOWER(CAST(NEW.user_id AS TEXT)) LIMIT 1),
+                           'local_default'
+                         )
+                 )
+                BEGIN SELECT RAISE(ABORT, 'open shift already exists for pharmacy'); END;
+
+                DROP TRIGGER IF EXISTS shifts_snapshot_pharmacy_insert;
+                CREATE TRIGGER shifts_snapshot_pharmacy_insert
+                AFTER INSERT ON shifts
+                WHEN NEW.pharmacy_id IS NULL OR TRIM(NEW.pharmacy_id) = ''
+                BEGIN
+                  UPDATE shifts SET pharmacy_id = COALESCE(
+                    (SELECT NULLIF(TRIM(u.pharmacy_id), '') FROM users u
+                     WHERE CAST(u.id AS TEXT) = CAST(NEW.user_id AS TEXT)
+                        OR LOWER(u.username) = LOWER(CAST(NEW.user_id AS TEXT)) LIMIT 1),
+                    'local_default'
+                  ) WHERE id = NEW.id;
+                END;
+                "#,
+            )
+            .execute(&mut **transaction)
+            .await?;
+        }
+    }
+
+    let cash_ready = table_exists_in_transaction(transaction, "cash_movements").await?;
+    if cash_ready {
+        add_column(transaction, "cash_movements", "pharmacy_id", "pharmacy_id TEXT").await?;
+        let has_user_id = has_column(transaction, "cash_movements", "user_id").await?;
+        let has_shift_id = has_column(transaction, "cash_movements", "shift_id").await?;
+        if shifts_ready && has_shift_id && users_ready && has_user_id {
+            sqlx::query(
+                r#"
+                UPDATE cash_movements
+                SET pharmacy_id = COALESCE(
+                  (SELECT NULLIF(TRIM(s.pharmacy_id), '') FROM shifts s WHERE s.id = cash_movements.shift_id LIMIT 1),
+                  (SELECT NULLIF(TRIM(u.pharmacy_id), '') FROM users u
+                   WHERE CAST(u.id AS TEXT) = CAST(cash_movements.user_id AS TEXT)
+                      OR LOWER(u.username) = LOWER(CAST(cash_movements.user_id AS TEXT)) LIMIT 1),
+                  'local_default'
+                )
+                WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = ''
+                "#,
+            )
+            .execute(&mut **transaction)
+            .await?;
+        } else if users_ready && has_user_id {
+            sqlx::query(
+                r#"
+                UPDATE cash_movements SET pharmacy_id = COALESCE(
+                  (SELECT NULLIF(TRIM(u.pharmacy_id), '') FROM users u
+                   WHERE CAST(u.id AS TEXT) = CAST(cash_movements.user_id AS TEXT)
+                      OR LOWER(u.username) = LOWER(CAST(cash_movements.user_id AS TEXT)) LIMIT 1),
+                  'local_default'
+                ) WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = ''
+                "#,
+            )
+            .execute(&mut **transaction)
+            .await?;
+        } else {
+            sqlx::query("UPDATE cash_movements SET pharmacy_id = 'local_default' WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = ''")
+                .execute(&mut **transaction)
+                .await?;
+        }
+        if has_column(transaction, "cash_movements", "date").await? {
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_cash_movements_pharmacy_date ON cash_movements(pharmacy_id, date)")
+                .execute(&mut **transaction)
+                .await?;
+        }
+        if users_ready && has_user_id && has_column(transaction, "cash_movements", "id").await? {
+            let trigger_sql = if shifts_ready && has_shift_id {
+                r#"
+                DROP TRIGGER IF EXISTS cash_movements_snapshot_pharmacy_insert;
+                CREATE TRIGGER cash_movements_snapshot_pharmacy_insert AFTER INSERT ON cash_movements
+                WHEN NEW.pharmacy_id IS NULL OR TRIM(NEW.pharmacy_id) = ''
+                BEGIN
+                  UPDATE cash_movements SET pharmacy_id = COALESCE(
+                    (SELECT NULLIF(TRIM(s.pharmacy_id), '') FROM shifts s WHERE s.id = NEW.shift_id LIMIT 1),
+                    (SELECT NULLIF(TRIM(u.pharmacy_id), '') FROM users u
+                     WHERE CAST(u.id AS TEXT) = CAST(NEW.user_id AS TEXT)
+                        OR LOWER(u.username) = LOWER(CAST(NEW.user_id AS TEXT)) LIMIT 1),
+                    'local_default'
+                  ) WHERE id = NEW.id;
+                END;
+                "#
+            } else {
+                r#"
+                DROP TRIGGER IF EXISTS cash_movements_snapshot_pharmacy_insert;
+                CREATE TRIGGER cash_movements_snapshot_pharmacy_insert AFTER INSERT ON cash_movements
+                WHEN NEW.pharmacy_id IS NULL OR TRIM(NEW.pharmacy_id) = ''
+                BEGIN
+                  UPDATE cash_movements SET pharmacy_id = COALESCE(
+                    (SELECT NULLIF(TRIM(u.pharmacy_id), '') FROM users u
+                     WHERE CAST(u.id AS TEXT) = CAST(NEW.user_id AS TEXT)
+                        OR LOWER(u.username) = LOWER(CAST(NEW.user_id AS TEXT)) LIMIT 1),
+                    'local_default'
+                  ) WHERE id = NEW.id;
+                END;
+                "#
+            };
+            sqlx::raw_sql(trigger_sql).execute(&mut **transaction).await?;
+        }
+    }
+
+    for (table, actor, date_column, index_name) in [
+        ("daily_journals", "created_by", "date", "idx_daily_journals_pharmacy_date"),
+        ("expenses", "user_id", "date", "idx_expenses_pharmacy_date"),
+        ("financial_notices", "user_id", "created_at", "idx_financial_notices_pharmacy_created"),
+        ("activity_log", "user_id", "created_at", "idx_activity_log_pharmacy_created"),
+        ("purchase_orders", "user_id", "created_at", "idx_purchase_orders_pharmacy_created"),
+    ] {
+        if !table_exists_in_transaction(transaction, table).await? {
+            continue;
+        }
+        add_column(transaction, table, "pharmacy_id", "pharmacy_id TEXT").await?;
+        let actor_ready = has_column(transaction, table, actor).await?;
+        if users_ready && actor_ready {
+            let sql = format!(
+                "UPDATE {table} SET pharmacy_id = COALESCE((SELECT NULLIF(TRIM(u.pharmacy_id), '') FROM users u WHERE CAST(u.id AS TEXT) = CAST({table}.{actor} AS TEXT) OR LOWER(u.username) = LOWER(CAST({table}.{actor} AS TEXT)) LIMIT 1), 'local_default') WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = ''"
+            );
+            sqlx::query(&sql).execute(&mut **transaction).await?;
+        } else {
+            let sql = format!("UPDATE {table} SET pharmacy_id = 'local_default' WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = ''");
+            sqlx::query(&sql).execute(&mut **transaction).await?;
+        }
+        if has_column(transaction, table, date_column).await? {
+            let sql = format!("CREATE INDEX IF NOT EXISTS {index_name} ON {table}(pharmacy_id, {date_column})");
+            sqlx::query(&sql).execute(&mut **transaction).await?;
+        }
+        if users_ready && actor_ready && has_column(transaction, table, "id").await? {
+            let trigger_name = format!("{table}_snapshot_pharmacy_insert");
+            let sql = format!(
+                "DROP TRIGGER IF EXISTS {trigger_name}; CREATE TRIGGER {trigger_name} AFTER INSERT ON {table} WHEN NEW.pharmacy_id IS NULL OR TRIM(NEW.pharmacy_id) = '' BEGIN UPDATE {table} SET pharmacy_id = COALESCE((SELECT NULLIF(TRIM(u.pharmacy_id), '') FROM users u WHERE CAST(u.id AS TEXT) = CAST(NEW.{actor} AS TEXT) OR LOWER(u.username) = LOWER(CAST(NEW.{actor} AS TEXT)) LIMIT 1), 'local_default') WHERE id = NEW.id; END;"
+            );
+            sqlx::raw_sql(&sql).execute(&mut **transaction).await?;
+        }
+    }
+
+    Ok(())
 }
 
 pub(crate) async fn ensure_compatibility(
@@ -431,6 +723,15 @@ pub(crate) async fn ensure_compatibility(
           FOREIGN KEY (shift_id) REFERENCES shifts (id)
         );
 
+        CREATE TABLE IF NOT EXISTS activity_log (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT,
+          pharmacy_id TEXT,
+          action TEXT,
+          details TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
         CREATE TABLE IF NOT EXISTS stock_adjustments (
           id TEXT PRIMARY KEY,
           pharmacy_id TEXT,
@@ -481,8 +782,25 @@ pub(crate) async fn ensure_compatibility(
         CREATE TABLE IF NOT EXISTS opening_balances (id TEXT PRIMARY KEY, date TEXT, notes TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS opening_balance_items (id INTEGER PRIMARY KEY AUTOINCREMENT, opening_balance_id TEXT, drug_id INTEGER, quantity REAL, cost_price REAL);
         CREATE TABLE IF NOT EXISTS adjustment_reasons (id INTEGER PRIMARY KEY AUTOINCREMENT, reason TEXT);
-        CREATE TABLE IF NOT EXISTS purchase_orders (id TEXT PRIMARY KEY, supplier_id INTEGER, status TEXT DEFAULT 'pending', total_amount REAL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP);
-        CREATE TABLE IF NOT EXISTS purchase_order_items (id INTEGER PRIMARY KEY AUTOINCREMENT, order_id TEXT, drug_id INTEGER, quantity INTEGER, cost_price REAL);
+        CREATE TABLE IF NOT EXISTS purchase_orders (
+          id TEXT PRIMARY KEY,
+          user_id TEXT,
+          pharmacy_id TEXT,
+          supplier_name TEXT,
+          status TEXT DEFAULT 'pending',
+          total_amount REAL DEFAULT 0,
+          notes TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS purchase_order_items (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          po_id TEXT,
+          drug_id INTEGER,
+          quantity INTEGER,
+          expected_price REAL,
+          received_quantity INTEGER DEFAULT 0
+        );
         CREATE TABLE IF NOT EXISTS sync_metadata (key TEXT PRIMARY KEY, value TEXT, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP);
 
         CREATE VIRTUAL TABLE IF NOT EXISTS master_drugs_fts USING fts5(
@@ -752,6 +1070,23 @@ pub(crate) async fn ensure_compatibility(
         ("sales_invoices", "user_id", "user_id TEXT"),
         ("sales_invoices", "pharmacy_id", "pharmacy_id TEXT"),
         ("returns", "pharmacy_id", "pharmacy_id TEXT"),
+        ("activity_log", "user_id", "user_id TEXT"),
+        ("activity_log", "pharmacy_id", "pharmacy_id TEXT"),
+        ("activity_log", "action", "action TEXT"),
+        ("activity_log", "details", "details TEXT"),
+        ("activity_log", "created_at", "created_at DATETIME"),
+        ("purchase_orders", "user_id", "user_id TEXT"),
+        ("purchase_orders", "pharmacy_id", "pharmacy_id TEXT"),
+        ("purchase_orders", "supplier_name", "supplier_name TEXT"),
+        ("purchase_orders", "notes", "notes TEXT"),
+        ("purchase_orders", "updated_at", "updated_at DATETIME"),
+        ("purchase_order_items", "po_id", "po_id TEXT"),
+        ("purchase_order_items", "expected_price", "expected_price REAL"),
+        (
+            "purchase_order_items",
+            "received_quantity",
+            "received_quantity INTEGER DEFAULT 0",
+        ),
         (
             "users",
             "permissions",
@@ -775,6 +1110,25 @@ pub(crate) async fn ensure_compatibility(
         ("employee_jobs", "created_at", "created_at DATETIME"),
     ] {
         add_column(transaction, table, column, definition).await?;
+    }
+
+    if has_column(transaction, "purchase_order_items", "order_id").await?
+        && has_column(transaction, "purchase_order_items", "po_id").await?
+    {
+        sqlx::query(
+            "UPDATE purchase_order_items SET po_id = order_id WHERE (po_id IS NULL OR TRIM(po_id) = '') AND order_id IS NOT NULL",
+        )
+        .execute(&mut **transaction)
+        .await?;
+    }
+    if has_column(transaction, "purchase_order_items", "cost_price").await?
+        && has_column(transaction, "purchase_order_items", "expected_price").await?
+    {
+        sqlx::query(
+            "UPDATE purchase_order_items SET expected_price = cost_price WHERE expected_price IS NULL AND cost_price IS NOT NULL",
+        )
+        .execute(&mut **transaction)
+        .await?;
     }
 
     // A withdrawn legacy import could place EAN/barcode-sized numbers into unit
@@ -1015,8 +1369,12 @@ pub(crate) async fn ensure_compatibility(
     .execute(&mut **transaction)
     .await?;
 
-    // ponytail: only one matching user/time window is safe to repair automatically.
+    // Repair only unambiguous legacy shift links before snapshotting branch ownership.
     repair_unambiguous_shift_links(transaction).await?;
+
+    // Snapshot branch-local finance ownership before any legacy user pharmacy repair.
+    snapshot_branch_local_pharmacy_scope(transaction).await?;
+
     // ponytail: legacy staff can inherit a pharmacy only when exactly one scope exists.
     repair_unambiguous_user_pharmacy(transaction).await?;
 
@@ -2243,6 +2601,123 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn finance_scope_snapshot_survives_legacy_staff_repair_and_staff_move() {
+        let mut connection = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        sqlx::raw_sql(
+            r#"
+            CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT, role TEXT, pharmacy_id TEXT);
+            INSERT INTO users VALUES
+              ('known', 'known', 'admin', 'ph-1'),
+              ('legacy', 'legacy', 'pharmacist', NULL);
+
+            CREATE TABLE sales_invoices (id TEXT PRIMARY KEY, user_id TEXT, pharmacy_id TEXT);
+            INSERT INTO sales_invoices VALUES ('sale-known', 'known', NULL), ('sale-legacy', 'legacy', NULL);
+
+            CREATE TABLE returns (id TEXT PRIMARY KEY, invoice_id TEXT, user_id TEXT, pharmacy_id TEXT);
+            INSERT INTO returns VALUES ('return-known', 'sale-known', 'known', NULL), ('return-legacy', 'sale-legacy', 'legacy', NULL);
+
+            CREATE TABLE shifts (id TEXT PRIMARY KEY, user_id TEXT, status TEXT, start_time TEXT, end_time TEXT);
+            INSERT INTO shifts VALUES ('shift-known', 'known', 'closed', '2026-01-01', '2026-01-01'), ('shift-legacy', 'legacy', 'closed', '2026-01-01', '2026-01-01');
+
+            CREATE TABLE cash_movements (id TEXT PRIMARY KEY, user_id TEXT, shift_id TEXT, date TEXT);
+            INSERT INTO cash_movements VALUES ('cash-known', 'known', 'shift-known', '2026-01-01'), ('cash-legacy', 'legacy', 'shift-legacy', '2026-01-01');
+
+            CREATE TABLE daily_journals (id TEXT PRIMARY KEY, created_by TEXT, date TEXT);
+            INSERT INTO daily_journals VALUES ('journal-known', 'known', '2026-01-01'), ('journal-legacy', 'legacy', '2026-01-01');
+
+            CREATE TABLE expenses (id TEXT PRIMARY KEY, user_id TEXT, date TEXT);
+            INSERT INTO expenses VALUES ('expense-known', 'known', '2026-01-01'), ('expense-legacy', 'legacy', '2026-01-01');
+
+            CREATE TABLE financial_notices (id TEXT PRIMARY KEY, user_id TEXT, created_at TEXT);
+            INSERT INTO financial_notices VALUES ('notice-known', 'known', '2026-01-01'), ('notice-legacy', 'legacy', '2026-01-01');
+
+            CREATE TABLE activity_log (id INTEGER PRIMARY KEY, user_id TEXT, action TEXT, created_at TEXT);
+            INSERT INTO activity_log VALUES (1, 'known', 'KNOWN', '2026-01-01'), (2, 'legacy', 'LEGACY', '2026-01-01');
+
+            CREATE TABLE purchase_orders (id TEXT PRIMARY KEY, user_id TEXT, status TEXT, created_at TEXT);
+            INSERT INTO purchase_orders VALUES ('po-known', 'known', 'pending', '2026-01-01'), ('po-legacy', 'legacy', 'pending', '2026-01-01');
+            "#,
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+
+        let mut transaction = connection.begin().await.unwrap();
+        snapshot_branch_local_pharmacy_scope(&mut transaction)
+            .await
+            .unwrap();
+        assert_eq!(
+            repair_unambiguous_user_pharmacy(&mut transaction).await.unwrap(),
+            1
+        );
+        transaction.commit().await.unwrap();
+
+        for table in [
+            "sales_invoices",
+            "returns",
+            "shifts",
+            "cash_movements",
+            "daily_journals",
+            "expenses",
+            "financial_notices",
+            "purchase_orders",
+        ] {
+            let rows: Vec<String> = sqlx::query_scalar(&format!(
+                "SELECT pharmacy_id FROM {table} ORDER BY id"
+            ))
+            .fetch_all(&mut connection)
+            .await
+            .unwrap();
+            assert_eq!(rows, vec!["ph-1".to_string(), "local_default".to_string()], "{table}");
+        }
+        let activity_rows: Vec<String> = sqlx::query_scalar(
+            "SELECT pharmacy_id FROM activity_log ORDER BY id",
+        )
+        .fetch_all(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(activity_rows, vec!["ph-1".to_string(), "local_default".to_string()]);
+
+        sqlx::query("UPDATE users SET pharmacy_id = 'ph-2' WHERE id = 'known'")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO cash_movements (id, user_id, shift_id, date) VALUES ('cash-after-move', 'known', 'shift-known', '2026-01-02')")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+
+        let historical: String = sqlx::query_scalar(
+            "SELECT pharmacy_id FROM daily_journals WHERE id = 'journal-known'",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(historical, "ph-1");
+        let historical_activity: String = sqlx::query_scalar(
+            "SELECT pharmacy_id FROM activity_log WHERE id = 1",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(historical_activity, "ph-1");
+        let historical_po: String = sqlx::query_scalar(
+            "SELECT pharmacy_id FROM purchase_orders WHERE id = 'po-known'",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(historical_po, "ph-1");
+        let shifted_cash: String = sqlx::query_scalar(
+            "SELECT pharmacy_id FROM cash_movements WHERE id = 'cash-after-move'",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(shifted_cash, "ph-1");
+    }
+
+    #[tokio::test]
     async fn legacy_name_repair_handles_duplicate_catalog_name_drift() {
         let seed_path =
             std::env::temp_dir().join(format!("pharma-catalog-seed-{}.db", uuid::Uuid::new_v4()));
@@ -2871,6 +3346,24 @@ mod tests {
               bonus_quantity REAL,
               expiry_date TEXT
             );
+            CREATE TABLE purchase_orders (
+              id TEXT PRIMARY KEY,
+              supplier_id INTEGER,
+              status TEXT,
+              total_amount REAL,
+              created_at DATETIME
+            );
+            INSERT INTO purchase_orders (id, supplier_id, status, total_amount, created_at)
+            VALUES ('legacy-po', 1, 'pending', 25, '2026-01-01');
+            CREATE TABLE purchase_order_items (
+              id INTEGER PRIMARY KEY,
+              order_id TEXT,
+              drug_id INTEGER,
+              quantity INTEGER,
+              cost_price REAL
+            );
+            INSERT INTO purchase_order_items (id, order_id, drug_id, quantity, cost_price)
+            VALUES (1, 'legacy-po', 1, 5, 5);
             CREATE TABLE activity_log (id INTEGER PRIMARY KEY, action TEXT, created_at DATETIME);
             CREATE TABLE shifts (id TEXT PRIMARY KEY, user_id TEXT, status TEXT);
             CREATE TABLE units (id INTEGER PRIMARY KEY, name_ar TEXT, name_en TEXT);
@@ -2958,6 +3451,17 @@ mod tests {
             ("financial_notices", "target_id"),
             ("cash_movements", "source_type"),
             ("cash_movements", "target_name"),
+            ("activity_log", "user_id"),
+            ("activity_log", "pharmacy_id"),
+            ("activity_log", "details"),
+            ("purchase_orders", "user_id"),
+            ("purchase_orders", "pharmacy_id"),
+            ("purchase_orders", "supplier_name"),
+            ("purchase_orders", "notes"),
+            ("purchase_orders", "updated_at"),
+            ("purchase_order_items", "po_id"),
+            ("purchase_order_items", "expected_price"),
+            ("purchase_order_items", "received_quantity"),
             ("shortages", "pharmacy_id"),
             ("shortages", "priority"),
             ("shortages", "notes"),
@@ -2974,6 +3478,14 @@ mod tests {
             assert!(has_column(&mut transaction, table, column).await.unwrap());
             transaction.commit().await.unwrap();
         }
+
+        let legacy_po_item: (String, f64, i64) = sqlx::query_as(
+            "SELECT po_id, expected_price, received_quantity FROM purchase_order_items WHERE id = 1",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(legacy_po_item, ("legacy-po".into(), 5.0, 0));
 
         for (category, code) in [
             ("bank_clearing", "1.1.4"),

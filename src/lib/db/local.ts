@@ -346,6 +346,7 @@ export function initLocalDb() {
     CREATE TABLE IF NOT EXISTS activity_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id TEXT,
+      pharmacy_id TEXT,
       action TEXT,
       details TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -354,6 +355,7 @@ export function initLocalDb() {
     CREATE TABLE IF NOT EXISTS shifts (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
+      pharmacy_id TEXT,
       start_time DATETIME DEFAULT CURRENT_TIMESTAMP,
       end_time DATETIME,
       starting_cash REAL DEFAULT 0,
@@ -447,6 +449,7 @@ export function initLocalDb() {
     CREATE TABLE IF NOT EXISTS expenses (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
+      pharmacy_id TEXT,
       category TEXT NOT NULL,
       amount REAL NOT NULL,
       description TEXT,
@@ -458,6 +461,7 @@ export function initLocalDb() {
     CREATE TABLE IF NOT EXISTS purchase_orders (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
+      pharmacy_id TEXT,
       supplier_name TEXT,
       status TEXT DEFAULT 'pending', -- pending, completed, cancelled
       total_amount REAL DEFAULT 0,
@@ -686,6 +690,7 @@ export function initLocalDb() {
     CREATE TABLE IF NOT EXISTS financial_notices (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
+      pharmacy_id TEXT,
       target_type TEXT NOT NULL, -- customer, supplier, pharmacy
       target_id TEXT,
       type TEXT NOT NULL, -- credit (خصم), debit (إضافة)
@@ -701,6 +706,7 @@ export function initLocalDb() {
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
       shift_id TEXT,
+      pharmacy_id TEXT,
       type TEXT NOT NULL, -- disbursement (صرف), receipt (توريد)
       category TEXT NOT NULL,
       sub_category TEXT,
@@ -795,6 +801,7 @@ export function initLocalDb() {
       date TEXT NOT NULL,
       description TEXT,
       created_by TEXT,
+      pharmacy_id TEXT,
       total_amount REAL NOT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
@@ -1124,6 +1131,101 @@ export function initLocalDb() {
   if (!shiftColumns.some(c => c.name === 'receiver_id')) {
     addColumnSafely('shifts', 'receiver_id', "TEXT");
   }
+  addColumnSafely('shifts', 'pharmacy_id', 'TEXT');
+  addColumnSafely('cash_movements', 'pharmacy_id', 'TEXT');
+  addColumnSafely('daily_journals', 'pharmacy_id', 'TEXT');
+  addColumnSafely('expenses', 'pharmacy_id', 'TEXT');
+  addColumnSafely('financial_notices', 'pharmacy_id', 'TEXT');
+  addColumnSafely('activity_log', 'pharmacy_id', 'TEXT');
+  addColumnSafely('purchase_orders', 'pharmacy_id', 'TEXT');
+
+  db.exec(`
+    UPDATE shifts
+    SET pharmacy_id = COALESCE(
+      (SELECT NULLIF(TRIM(u.pharmacy_id), '')
+       FROM users u
+       WHERE CAST(u.id AS TEXT) = CAST(shifts.user_id AS TEXT)
+          OR LOWER(u.username) = LOWER(CAST(shifts.user_id AS TEXT))
+       LIMIT 1),
+      'local_default'
+    )
+    WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = '';
+
+    UPDATE cash_movements
+    SET pharmacy_id = COALESCE(
+      (SELECT NULLIF(TRIM(s.pharmacy_id), '') FROM shifts s WHERE s.id = cash_movements.shift_id LIMIT 1),
+      (SELECT NULLIF(TRIM(u.pharmacy_id), '')
+       FROM users u
+       WHERE CAST(u.id AS TEXT) = CAST(cash_movements.user_id AS TEXT)
+          OR LOWER(u.username) = LOWER(CAST(cash_movements.user_id AS TEXT))
+       LIMIT 1),
+      'local_default'
+    )
+    WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = '';
+
+    UPDATE daily_journals
+    SET pharmacy_id = COALESCE(
+      (SELECT NULLIF(TRIM(u.pharmacy_id), '')
+       FROM users u
+       WHERE CAST(u.id AS TEXT) = CAST(daily_journals.created_by AS TEXT)
+          OR LOWER(u.username) = LOWER(CAST(daily_journals.created_by AS TEXT))
+       LIMIT 1),
+      'local_default'
+    )
+    WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = '';
+
+    UPDATE expenses
+    SET pharmacy_id = COALESCE(
+      (SELECT NULLIF(TRIM(u.pharmacy_id), '')
+       FROM users u
+       WHERE CAST(u.id AS TEXT) = CAST(expenses.user_id AS TEXT)
+          OR LOWER(u.username) = LOWER(CAST(expenses.user_id AS TEXT))
+       LIMIT 1),
+      'local_default'
+    )
+    WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = '';
+
+    UPDATE financial_notices
+    SET pharmacy_id = COALESCE(
+      (SELECT NULLIF(TRIM(u.pharmacy_id), '')
+       FROM users u
+       WHERE CAST(u.id AS TEXT) = CAST(financial_notices.user_id AS TEXT)
+          OR LOWER(u.username) = LOWER(CAST(financial_notices.user_id AS TEXT))
+       LIMIT 1),
+      'local_default'
+    )
+    WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = '';
+
+    UPDATE activity_log
+    SET pharmacy_id = COALESCE(
+      (SELECT NULLIF(TRIM(u.pharmacy_id), '')
+       FROM users u
+       WHERE CAST(u.id AS TEXT) = CAST(activity_log.user_id AS TEXT)
+          OR LOWER(u.username) = LOWER(CAST(activity_log.user_id AS TEXT))
+       LIMIT 1),
+      'local_default'
+    )
+    WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = '';
+
+    UPDATE purchase_orders
+    SET pharmacy_id = COALESCE(
+      (SELECT NULLIF(TRIM(u.pharmacy_id), '')
+       FROM users u
+       WHERE CAST(u.id AS TEXT) = CAST(purchase_orders.user_id AS TEXT)
+          OR LOWER(u.username) = LOWER(CAST(purchase_orders.user_id AS TEXT))
+       LIMIT 1),
+      'local_default'
+    )
+    WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = '';
+
+    CREATE INDEX IF NOT EXISTS idx_shifts_pharmacy_status ON shifts(pharmacy_id, status);
+    CREATE INDEX IF NOT EXISTS idx_cash_movements_pharmacy_date ON cash_movements(pharmacy_id, date);
+    CREATE INDEX IF NOT EXISTS idx_daily_journals_pharmacy_date ON daily_journals(pharmacy_id, date);
+    CREATE INDEX IF NOT EXISTS idx_expenses_pharmacy_date ON expenses(pharmacy_id, date);
+    CREATE INDEX IF NOT EXISTS idx_financial_notices_pharmacy_created ON financial_notices(pharmacy_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_activity_log_pharmacy_created ON activity_log(pharmacy_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_purchase_orders_pharmacy_created ON purchase_orders(pharmacy_id, created_at);
+  `);
   db.exec('DROP INDEX IF EXISTS idx_shifts_single_open');
   db.exec(`
     DROP TRIGGER IF EXISTS shifts_one_open_per_pharmacy_insert;
@@ -1134,19 +1236,16 @@ export function initLocalDb() {
        SELECT 1
        FROM shifts existing_shift
        WHERE LOWER(COALESCE(existing_shift.status, '')) = 'open'
-         AND COALESCE((
-           SELECT COALESCE(NULLIF(TRIM(existing_owner.pharmacy_id), ''), 'local_default')
-           FROM users existing_owner
-           WHERE CAST(existing_owner.id AS TEXT) = CAST(existing_shift.user_id AS TEXT)
-              OR LOWER(existing_owner.username) = LOWER(CAST(existing_shift.user_id AS TEXT))
-           LIMIT 1
-         ), 'local_default') = COALESCE((
-           SELECT COALESCE(NULLIF(TRIM(new_owner.pharmacy_id), ''), 'local_default')
-           FROM users new_owner
-           WHERE CAST(new_owner.id AS TEXT) = CAST(NEW.user_id AS TEXT)
-              OR LOWER(new_owner.username) = LOWER(CAST(NEW.user_id AS TEXT))
-           LIMIT 1
-         ), 'local_default')
+         AND COALESCE(NULLIF(TRIM(existing_shift.pharmacy_id), ''), 'local_default') =
+             COALESCE(
+               NULLIF(TRIM(NEW.pharmacy_id), ''),
+               (SELECT COALESCE(NULLIF(TRIM(new_owner.pharmacy_id), ''), 'local_default')
+                FROM users new_owner
+                WHERE CAST(new_owner.id AS TEXT) = CAST(NEW.user_id AS TEXT)
+                   OR LOWER(new_owner.username) = LOWER(CAST(NEW.user_id AS TEXT))
+                LIMIT 1),
+               'local_default'
+             )
      )
     BEGIN
       SELECT RAISE(ABORT, 'open shift already exists for pharmacy');
@@ -1154,29 +1253,125 @@ export function initLocalDb() {
 
     DROP TRIGGER IF EXISTS shifts_one_open_per_pharmacy_update;
     CREATE TRIGGER shifts_one_open_per_pharmacy_update
-    BEFORE UPDATE OF status, user_id ON shifts
+    BEFORE UPDATE OF status, user_id, pharmacy_id ON shifts
     WHEN LOWER(COALESCE(NEW.status, '')) = 'open'
      AND EXISTS (
        SELECT 1
        FROM shifts existing_shift
        WHERE existing_shift.id <> OLD.id
          AND LOWER(COALESCE(existing_shift.status, '')) = 'open'
-         AND COALESCE((
-           SELECT COALESCE(NULLIF(TRIM(existing_owner.pharmacy_id), ''), 'local_default')
-           FROM users existing_owner
-           WHERE CAST(existing_owner.id AS TEXT) = CAST(existing_shift.user_id AS TEXT)
-              OR LOWER(existing_owner.username) = LOWER(CAST(existing_shift.user_id AS TEXT))
-           LIMIT 1
-         ), 'local_default') = COALESCE((
-           SELECT COALESCE(NULLIF(TRIM(new_owner.pharmacy_id), ''), 'local_default')
-           FROM users new_owner
-           WHERE CAST(new_owner.id AS TEXT) = CAST(NEW.user_id AS TEXT)
-              OR LOWER(new_owner.username) = LOWER(CAST(NEW.user_id AS TEXT))
-           LIMIT 1
-         ), 'local_default')
+         AND COALESCE(NULLIF(TRIM(existing_shift.pharmacy_id), ''), 'local_default') =
+             COALESCE(
+               NULLIF(TRIM(NEW.pharmacy_id), ''),
+               (SELECT COALESCE(NULLIF(TRIM(new_owner.pharmacy_id), ''), 'local_default')
+                FROM users new_owner
+                WHERE CAST(new_owner.id AS TEXT) = CAST(NEW.user_id AS TEXT)
+                   OR LOWER(new_owner.username) = LOWER(CAST(NEW.user_id AS TEXT))
+                LIMIT 1),
+               'local_default'
+             )
      )
     BEGIN
       SELECT RAISE(ABORT, 'open shift already exists for pharmacy');
+    END;
+
+    DROP TRIGGER IF EXISTS shifts_snapshot_pharmacy_insert;
+    CREATE TRIGGER shifts_snapshot_pharmacy_insert
+    AFTER INSERT ON shifts
+    WHEN NEW.pharmacy_id IS NULL OR TRIM(NEW.pharmacy_id) = ''
+    BEGIN
+      UPDATE shifts
+      SET pharmacy_id = COALESCE(
+        (SELECT NULLIF(TRIM(u.pharmacy_id), '') FROM users u
+         WHERE CAST(u.id AS TEXT) = CAST(NEW.user_id AS TEXT)
+            OR LOWER(u.username) = LOWER(CAST(NEW.user_id AS TEXT)) LIMIT 1),
+        'local_default'
+      ) WHERE id = NEW.id;
+    END;
+
+    DROP TRIGGER IF EXISTS cash_movements_snapshot_pharmacy_insert;
+    CREATE TRIGGER cash_movements_snapshot_pharmacy_insert
+    AFTER INSERT ON cash_movements
+    WHEN NEW.pharmacy_id IS NULL OR TRIM(NEW.pharmacy_id) = ''
+    BEGIN
+      UPDATE cash_movements
+      SET pharmacy_id = COALESCE(
+        (SELECT NULLIF(TRIM(s.pharmacy_id), '') FROM shifts s WHERE s.id = NEW.shift_id LIMIT 1),
+        (SELECT NULLIF(TRIM(u.pharmacy_id), '') FROM users u
+         WHERE CAST(u.id AS TEXT) = CAST(NEW.user_id AS TEXT)
+            OR LOWER(u.username) = LOWER(CAST(NEW.user_id AS TEXT)) LIMIT 1),
+        'local_default'
+      ) WHERE id = NEW.id;
+    END;
+
+    DROP TRIGGER IF EXISTS daily_journals_snapshot_pharmacy_insert;
+    CREATE TRIGGER daily_journals_snapshot_pharmacy_insert
+    AFTER INSERT ON daily_journals
+    WHEN NEW.pharmacy_id IS NULL OR TRIM(NEW.pharmacy_id) = ''
+    BEGIN
+      UPDATE daily_journals
+      SET pharmacy_id = COALESCE(
+        (SELECT NULLIF(TRIM(u.pharmacy_id), '') FROM users u
+         WHERE CAST(u.id AS TEXT) = CAST(NEW.created_by AS TEXT)
+            OR LOWER(u.username) = LOWER(CAST(NEW.created_by AS TEXT)) LIMIT 1),
+        'local_default'
+      ) WHERE id = NEW.id;
+    END;
+
+    DROP TRIGGER IF EXISTS expenses_snapshot_pharmacy_insert;
+    CREATE TRIGGER expenses_snapshot_pharmacy_insert
+    AFTER INSERT ON expenses
+    WHEN NEW.pharmacy_id IS NULL OR TRIM(NEW.pharmacy_id) = ''
+    BEGIN
+      UPDATE expenses
+      SET pharmacy_id = COALESCE(
+        (SELECT NULLIF(TRIM(u.pharmacy_id), '') FROM users u
+         WHERE CAST(u.id AS TEXT) = CAST(NEW.user_id AS TEXT)
+            OR LOWER(u.username) = LOWER(CAST(NEW.user_id AS TEXT)) LIMIT 1),
+        'local_default'
+      ) WHERE id = NEW.id;
+    END;
+
+    DROP TRIGGER IF EXISTS financial_notices_snapshot_pharmacy_insert;
+    CREATE TRIGGER financial_notices_snapshot_pharmacy_insert
+    AFTER INSERT ON financial_notices
+    WHEN NEW.pharmacy_id IS NULL OR TRIM(NEW.pharmacy_id) = ''
+    BEGIN
+      UPDATE financial_notices
+      SET pharmacy_id = COALESCE(
+        (SELECT NULLIF(TRIM(u.pharmacy_id), '') FROM users u
+         WHERE CAST(u.id AS TEXT) = CAST(NEW.user_id AS TEXT)
+            OR LOWER(u.username) = LOWER(CAST(NEW.user_id AS TEXT)) LIMIT 1),
+        'local_default'
+      ) WHERE id = NEW.id;
+    END;
+
+    DROP TRIGGER IF EXISTS activity_log_snapshot_pharmacy_insert;
+    CREATE TRIGGER activity_log_snapshot_pharmacy_insert
+    AFTER INSERT ON activity_log
+    WHEN NEW.pharmacy_id IS NULL OR TRIM(NEW.pharmacy_id) = ''
+    BEGIN
+      UPDATE activity_log
+      SET pharmacy_id = COALESCE(
+        (SELECT NULLIF(TRIM(u.pharmacy_id), '') FROM users u
+         WHERE CAST(u.id AS TEXT) = CAST(NEW.user_id AS TEXT)
+            OR LOWER(u.username) = LOWER(CAST(NEW.user_id AS TEXT)) LIMIT 1),
+        'local_default'
+      ) WHERE id = NEW.id;
+    END;
+
+    DROP TRIGGER IF EXISTS purchase_orders_snapshot_pharmacy_insert;
+    CREATE TRIGGER purchase_orders_snapshot_pharmacy_insert
+    AFTER INSERT ON purchase_orders
+    WHEN NEW.pharmacy_id IS NULL OR TRIM(NEW.pharmacy_id) = ''
+    BEGIN
+      UPDATE purchase_orders
+      SET pharmacy_id = COALESCE(
+        (SELECT NULLIF(TRIM(u.pharmacy_id), '') FROM users u
+         WHERE CAST(u.id AS TEXT) = CAST(NEW.user_id AS TEXT)
+            OR LOWER(u.username) = LOWER(CAST(NEW.user_id AS TEXT)) LIMIT 1),
+        'local_default'
+      ) WHERE id = NEW.id;
     END;
   `);
 

@@ -1046,6 +1046,7 @@ export async function createPurchaseOrderAction(data: { supplier_name: string; n
   try {
     const user = await getLocalSession();
     if (!user || !hasUserPermissionSync(user, 'can_view_purchases')) return { success: false, error: 'Unauthorized' };
+    const pharmacyId = user.pharmacy_id || 'local_default';
 
     if (!data.supplier_name?.trim()) return { success: false, error: 'Supplier name is required' };
     if (!data.items || data.items.length === 0) return { success: false, error: 'لا توجد أصناف في الطلب' };
@@ -1063,9 +1064,10 @@ export async function createPurchaseOrderAction(data: { supplier_name: string; n
     const total_amount = data.items.reduce((sum, item) => sum + (item.quantity * item.expected_price), 0);
 
     await dbTransaction(async () => {
-      await dbExecute('INSERT INTO purchase_orders (id, user_id, supplier_name, total_amount, notes) VALUES (?, ?, ?, ?, ?)', [
+      await dbExecute('INSERT INTO purchase_orders (id, user_id, pharmacy_id, supplier_name, total_amount, notes) VALUES (?, ?, ?, ?, ?, ?)', [
         po_id,
         user.id,
+        pharmacyId,
         data.supplier_name.trim(),
         total_amount,
         data.notes || null
@@ -1081,7 +1083,6 @@ export async function createPurchaseOrderAction(data: { supplier_name: string; n
       }
 
       // Mark items as ordered in shortages
-      const pharmacyId = user.pharmacy_id || 'local_default';
       for (const item of data.items) {
         await dbExecute(`
           UPDATE shortages 
@@ -1118,7 +1119,7 @@ export async function getPurchaseOrdersAction() {
       FROM purchase_orders po 
       LEFT JOIN users u ON po.user_id = u.id 
       LEFT JOIN purchase_order_items pii ON pii.po_id = po.id 
-      WHERE u.pharmacy_id = ? OR (u.pharmacy_id IS NULL AND ? = 'local_default')
+      WHERE po.pharmacy_id = ? OR (po.pharmacy_id IS NULL AND ? = 'local_default')
       GROUP BY po.id 
       ORDER BY po.created_at DESC
     `).all(pharmacyId, pharmacyId);
@@ -1139,11 +1140,7 @@ export async function updatePurchaseOrderStatusAction(poId: string, status: stri
       UPDATE purchase_orders
       SET status = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ? AND status = 'pending'
-        AND EXISTS (
-          SELECT 1 FROM users creator
-          WHERE creator.id = purchase_orders.user_id
-            AND (creator.pharmacy_id = ? OR (creator.pharmacy_id IS NULL AND ? = 'local_default'))
-        )
+        AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
     `).run(status, poId, pharmacyId, pharmacyId);
     if (result.changes !== 1) return { success: false, error: 'Purchase order is missing or no longer pending' };
 

@@ -15,6 +15,10 @@ jest.mock('@/lib/db/tauri', () => ({
   dbExecute: jest.fn().mockResolvedValue({ rowsAffected: 0 }),
 }));
 
+jest.mock('@/lib/auth/local', () => ({
+  getClientSession: jest.fn().mockResolvedValue({ id: 'user-1', role: 'owner', pharmacy_id: 'ph-1' }),
+}));
+
 jest.mock('@/app/actions-client/master-drugs', () => ({
   addMasterDrugAction: jest.fn(),
   deleteMasterDrugAction: jest.fn(),
@@ -166,6 +170,14 @@ describe('ItemsManagementClient auto-refresh and total count regression', () => 
     fireEvent.contextMenu(screen.getByText('Concor 5mg').closest('tr')!);
     fireEvent.click(screen.getByRole('button', { name: 'تعديل بيانات الصنف' }));
     await waitFor(() => expect(dbSelect).toHaveBeenCalledWith('SELECT * FROM master_drugs WHERE id = ?', [1]));
+    await waitFor(() => expect((dbSelect as jest.Mock).mock.calls.some(([sql]) =>
+      String(sql).includes('FROM purchase_invoice_items pii')
+    )).toBe(true));
+    const purchaseHistoryCall = (dbSelect as jest.Mock).mock.calls.find(([sql]) =>
+      String(sql).includes('FROM purchase_invoice_items pii')
+    );
+    expect(String(purchaseHistoryCall![0])).toContain('pi.pharmacy_id = ?');
+    expect(purchaseHistoryCall![1]).toEqual([1, 'ph-1', 'ph-1']);
 
     fireEvent.click(screen.getByRole('button', { name: 'خيارات متقدمة' }));
     expect(screen.getByDisplayValue('3')).toBeInTheDocument();

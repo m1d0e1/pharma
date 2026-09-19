@@ -44,6 +44,7 @@ function insertOriginalSale(invoiceId: string, debitAccount: number) {
     INSERT INTO daily_journals (id, date, description, created_by, total_amount)
     VALUES (?, '2026-09-18', ?, 'admin', 100)
   `).run(`sale-${invoiceId}`, `Sales invoice ${invoiceId.slice(0, 8)}`);
+  mockDb.prepare("UPDATE daily_journals SET pharmacy_id = 'ph-1' WHERE id = ?").run(`sale-${invoiceId}`);
   mockDb.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, 100)')
     .run(`sale-${invoiceId}`, debitAccount, 'debit');
   mockDb.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, 9, ?, 100)')
@@ -66,6 +67,7 @@ describe('delivery collection accounting compatibility', () => {
         id TEXT PRIMARY KEY,
         user_id TEXT,
         shift_id TEXT,
+        pharmacy_id TEXT,
         type TEXT,
         category TEXT,
         amount REAL,
@@ -78,15 +80,34 @@ describe('delivery collection accounting compatibility', () => {
         date TEXT,
         description TEXT,
         created_by TEXT,
+        pharmacy_id TEXT,
         total_amount REAL
       );
       CREATE TABLE journal_entries (journal_id TEXT, account_id INTEGER, type TEXT, amount REAL);
       CREATE TABLE activity_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id TEXT,
+        pharmacy_id TEXT,
         action TEXT,
         details TEXT
       );
+      CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT, pharmacy_id TEXT);
+      INSERT INTO users VALUES ('admin', 'admin', 'ph-1');
+      CREATE TRIGGER daily_journals_snapshot_pharmacy_insert AFTER INSERT ON daily_journals
+      WHEN NEW.pharmacy_id IS NULL OR TRIM(NEW.pharmacy_id) = ''
+      BEGIN
+        UPDATE daily_journals SET pharmacy_id = 'ph-1' WHERE id = NEW.id;
+      END;
+      CREATE TRIGGER cash_movements_snapshot_pharmacy_insert AFTER INSERT ON cash_movements
+      WHEN NEW.pharmacy_id IS NULL OR TRIM(NEW.pharmacy_id) = ''
+      BEGIN
+        UPDATE cash_movements SET pharmacy_id = 'ph-1' WHERE id = NEW.id;
+      END;
+      CREATE TRIGGER activity_log_snapshot_pharmacy_insert AFTER INSERT ON activity_log
+      WHEN NEW.pharmacy_id IS NULL OR TRIM(NEW.pharmacy_id) = ''
+      BEGIN
+        UPDATE activity_log SET pharmacy_id = 'ph-1' WHERE id = NEW.id;
+      END;
       INSERT INTO trial_balance_settings VALUES
         ('cash_drawer', 6),
         ('accounts_receivable', 8),
@@ -154,5 +175,21 @@ describe('delivery collection accounting compatibility', () => {
     expect(cashNet.total).toBe(105);
     expect(receivableNet.total).toBe(0);
     expect(salesNet.total).toBe(105);
+  });
+
+  it('ignores a matching legacy journal from another pharmacy when deciding whether to reclassify', async () => {
+    mockDb.prepare(`
+      INSERT INTO sales_invoices (id, pharmacy_id, total_amount, payment_method, status)
+      VALUES ('modern-foreign-collision', 'ph-1', 100, 'delivery', 'completed')
+    `).run();
+    mockDb.prepare(`
+      INSERT INTO daily_journals (id, date, description, created_by, pharmacy_id, total_amount)
+      VALUES ('foreign-sale', '2026-09-18', 'Sales invoice modern-f', 'admin', 'ph-2', 100)
+    `).run();
+    mockDb.prepare("INSERT INTO journal_entries VALUES ('foreign-sale', 6, 'debit', 100)").run();
+    mockDb.prepare("INSERT INTO journal_entries VALUES ('foreign-sale', 9, 'credit', 100)").run();
+
+    expect(await closeDeliveryInvoiceAction('modern-foreign-collision', 0)).toEqual({ success: true });
+    expect((mockDb.prepare("SELECT COUNT(*) AS n FROM activity_log WHERE action = 'LEGACY_DELIVERY_ACCOUNTING_CORRECTED'").get() as any).n).toBe(0);
   });
 });

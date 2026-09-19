@@ -178,23 +178,31 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
   const handleExportAll = async () => {
     try {
       const toastId = toast.loading('جاري تصدير المخزون الحالي...');
+      const exportPharmacyId = pharmacyId || 'local_default';
       const all = await dbSelect(`
         SELECT i.*, md.trade_name, md.trade_name_en, COALESCE(NULLIF(i.barcode, ''), NULLIF(md.barcode, ''), (
                  SELECT ii.barcode FROM inventory ii
-                 WHERE ii.drug_id = i.drug_id AND ii.barcode IS NOT NULL AND ii.barcode != ''
+                 WHERE ii.drug_id = i.drug_id
+                   AND ii.barcode IS NOT NULL AND ii.barcode != ''
+                   AND (ii.pharmacy_id = ? OR (ii.pharmacy_id IS NULL AND ? = 'local_default'))
                  LIMIT 1
                )) AS resolved_barcode
         FROM inventory i
         JOIN master_drugs md ON i.drug_id = md.id
-      `);
+        WHERE (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
+      `, [exportPharmacyId, exportPharmacyId, exportPharmacyId, exportPharmacyId]);
       const inventoryRows = all.map((row: any) => {
         const { resolved_barcode, ...item } = row;
         return { ...item, barcode: barcodeValue(item.barcode) || barcodeValue(resolved_barcode) };
       });
       const drugs = await dbSelect(`
         SELECT md.* FROM master_drugs md
-        WHERE EXISTS (SELECT 1 FROM inventory i WHERE i.drug_id = md.id)
-      `);
+        WHERE EXISTS (
+          SELECT 1 FROM inventory i
+          WHERE i.drug_id = md.id
+            AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
+        )
+      `, [exportPharmacyId, exportPharmacyId]);
       
       const { save } = await import('@tauri-apps/plugin-dialog');
       const filePath = await save({

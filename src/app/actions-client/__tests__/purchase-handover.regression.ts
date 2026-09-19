@@ -86,6 +86,72 @@ describe('purchase reports and drawer handover regressions', () => {
       ALTER TABLE sales_items ADD COLUMN large_to_medium INTEGER DEFAULT 1;
       ALTER TABLE sales_items ADD COLUMN medium_to_small INTEGER DEFAULT 1;
       ALTER TABLE returns ADD COLUMN pharmacy_id TEXT;
+      ALTER TABLE shifts ADD COLUMN pharmacy_id TEXT;
+      ALTER TABLE cash_movements ADD COLUMN pharmacy_id TEXT;
+      ALTER TABLE daily_journals ADD COLUMN pharmacy_id TEXT;
+      ALTER TABLE expenses ADD COLUMN pharmacy_id TEXT;
+      ALTER TABLE financial_notices ADD COLUMN pharmacy_id TEXT;
+
+      CREATE TRIGGER shifts_snapshot_pharmacy_insert
+      AFTER INSERT ON shifts
+      WHEN NEW.pharmacy_id IS NULL OR TRIM(NEW.pharmacy_id) = ''
+      BEGIN
+        UPDATE shifts SET pharmacy_id = COALESCE(
+          (SELECT NULLIF(TRIM(u.pharmacy_id), '') FROM users u
+           WHERE CAST(u.id AS TEXT) = CAST(NEW.user_id AS TEXT)
+              OR LOWER(u.username) = LOWER(CAST(NEW.user_id AS TEXT)) LIMIT 1),
+          'local_default'
+        ) WHERE id = NEW.id;
+      END;
+
+      CREATE TRIGGER cash_movements_snapshot_pharmacy_insert
+      AFTER INSERT ON cash_movements
+      WHEN NEW.pharmacy_id IS NULL OR TRIM(NEW.pharmacy_id) = ''
+      BEGIN
+        UPDATE cash_movements SET pharmacy_id = COALESCE(
+          (SELECT NULLIF(TRIM(s.pharmacy_id), '') FROM shifts s WHERE s.id = NEW.shift_id LIMIT 1),
+          (SELECT NULLIF(TRIM(u.pharmacy_id), '') FROM users u
+           WHERE CAST(u.id AS TEXT) = CAST(NEW.user_id AS TEXT)
+              OR LOWER(u.username) = LOWER(CAST(NEW.user_id AS TEXT)) LIMIT 1),
+          'local_default'
+        ) WHERE id = NEW.id;
+      END;
+
+      CREATE TRIGGER daily_journals_snapshot_pharmacy_insert
+      AFTER INSERT ON daily_journals
+      WHEN NEW.pharmacy_id IS NULL OR TRIM(NEW.pharmacy_id) = ''
+      BEGIN
+        UPDATE daily_journals SET pharmacy_id = COALESCE(
+          (SELECT NULLIF(TRIM(u.pharmacy_id), '') FROM users u
+           WHERE CAST(u.id AS TEXT) = CAST(NEW.created_by AS TEXT)
+              OR LOWER(u.username) = LOWER(CAST(NEW.created_by AS TEXT)) LIMIT 1),
+          'local_default'
+        ) WHERE id = NEW.id;
+      END;
+
+      CREATE TRIGGER expenses_snapshot_pharmacy_insert
+      AFTER INSERT ON expenses
+      WHEN NEW.pharmacy_id IS NULL OR TRIM(NEW.pharmacy_id) = ''
+      BEGIN
+        UPDATE expenses SET pharmacy_id = COALESCE(
+          (SELECT NULLIF(TRIM(u.pharmacy_id), '') FROM users u
+           WHERE CAST(u.id AS TEXT) = CAST(NEW.user_id AS TEXT)
+              OR LOWER(u.username) = LOWER(CAST(NEW.user_id AS TEXT)) LIMIT 1),
+          'local_default'
+        ) WHERE id = NEW.id;
+      END;
+
+      CREATE TRIGGER financial_notices_snapshot_pharmacy_insert
+      AFTER INSERT ON financial_notices
+      WHEN NEW.pharmacy_id IS NULL OR TRIM(NEW.pharmacy_id) = ''
+      BEGIN
+        UPDATE financial_notices SET pharmacy_id = COALESCE(
+          (SELECT NULLIF(TRIM(u.pharmacy_id), '') FROM users u
+           WHERE CAST(u.id AS TEXT) = CAST(NEW.user_id AS TEXT)
+              OR LOWER(u.username) = LOWER(CAST(NEW.user_id AS TEXT)) LIMIT 1),
+          'local_default'
+        ) WHERE id = NEW.id;
+      END;
     `);
     const purchaseItemColumns = mockDb.prepare('PRAGMA table_info(purchase_invoice_items)').all() as any[];
     if (!purchaseItemColumns.some(column => column.name === 'barcode')) {

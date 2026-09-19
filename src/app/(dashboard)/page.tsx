@@ -53,6 +53,7 @@ export default function DashboardPage() {
   const [newsBarEnabled, setNewsBarEnabled] = useState(true);
   const canAccessPos = hasUserPermissionSync(user, 'can_access_pos');
   const canViewShifts = hasUserPermissionSync(user, 'can_view_shifts');
+  const canViewAudit = hasUserPermissionSync(user, 'can_view_audit');
   const canViewInventory = hasUserPermissionSync(user, 'can_view_stores');
   const canViewPatients = hasUserPermissionSync(user, 'can_view_patients');
   const canViewReports = hasUserPermissionSync(user, 'rep_can_view_sales');
@@ -153,10 +154,12 @@ export default function DashboardPage() {
         const cashAccRow = await dbGet("SELECT account_id FROM trial_balance_settings WHERE category = 'cash_drawer'");
         const cashAccId = cashAccRow?.account_id || 6;
         const liquidityRow = await dbGet(`
-          SELECT COALESCE(SUM(CASE WHEN type = 'debit' THEN amount ELSE -amount END), 0) as balance
-          FROM journal_entries
-          WHERE account_id = ?
-        `, [cashAccId]);
+          SELECT COALESCE(SUM(CASE WHEN je.type = 'debit' THEN je.amount ELSE -je.amount END), 0) as balance
+          FROM journal_entries je
+          JOIN daily_journals dj ON dj.id = je.journal_id
+          WHERE je.account_id = ?
+            AND (dj.pharmacy_id = ? OR (dj.pharmacy_id IS NULL AND ? = 'local_default'))
+        `, [cashAccId, pharmacyId, pharmacyId]);
 
         // Pending delivery cash
         const pendingDeliveryRow = await dbGet(`
@@ -284,14 +287,15 @@ export default function DashboardPage() {
         setRecentTransactions(recent || []);
 
         // 5. Fetch Activity Logs (If Owner)
-        if (owner) {
+        if (hasUserPermissionSync(localUser, 'can_view_audit')) {
           const logs = await dbSelect(`
             SELECT a.*, u.full_name 
             FROM activity_log a 
             JOIN users u ON a.user_id = u.id 
+            WHERE (a.pharmacy_id = ? OR (a.pharmacy_id IS NULL AND ? = 'local_default'))
             ORDER BY a.created_at DESC 
             LIMIT 5
-          `);
+          `, [pharmacyId, pharmacyId]);
           setActivityLogs(logs || []);
         }
       } catch (err: any) {
@@ -547,9 +551,9 @@ export default function DashboardPage() {
             )}
           </div>
           
-          {isOwner && activityLogs.length > 0 && (
+          {canViewAudit && activityLogs.length > 0 && (
             <div className="mt-8 pt-8 border-t border-slate-100 dark:border-slate-800">
-              <h2 className="text-sm font-bold text-slate-400 mb-3">سجل النشاط المحلي (الأونر)</h2>
+              <h2 className="text-sm font-bold text-slate-400 mb-3">سجل النشاط المحلي</h2>
               <div className="space-y-3">
                 {activityLogs.map((log: any) => (
                   <div key={log.id} className="text-xs flex items-start gap-2 p-2 rounded-lg bg-slate-50 dark:bg-slate-800/50">

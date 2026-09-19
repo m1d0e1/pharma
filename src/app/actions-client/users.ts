@@ -144,8 +144,13 @@ export async function updateUserPermissionsAction(userId: string, permissions: a
     if (!isStaffOwner(localUser)) {
       return { success: false, error: 'غير مصرح - للمالك فقط' };
     }
+    const pharmacyId = localUser.pharmacy_id || 'local_default';
 
-    const targetUser = await db.prepare('SELECT username, role FROM users WHERE id = ?').get(userId) as { username: string; role: string };
+    const targetUser = await db.prepare(`
+      SELECT username, role FROM users
+      WHERE id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+    `).get(userId, pharmacyId, pharmacyId) as { username: string; role: string };
+    if (!targetUser) return { success: false, error: 'المستخدم غير موجود في هذه الصيدلية' };
 
     if (targetUser?.role === 'owner' && localUser.role !== 'owner') {
       return { success: false, error: 'لا يمكنك تعديل صلاحيات المالك' };
@@ -160,7 +165,10 @@ export async function updateUserPermissionsAction(userId: string, permissions: a
     }
     const permissionsJson = JSON.stringify(permissionsToSave);
 
-    await db.prepare('UPDATE users SET permissions = ? WHERE id = ?').run(permissionsJson, userId);
+    await db.prepare(`
+      UPDATE users SET permissions = ?
+      WHERE id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+    `).run(permissionsJson, userId, pharmacyId, pharmacyId);
 
     // Log the activity
     logActivity(localUser.id, 'UPDATE_PERMISSIONS', `حدث صلاحيات المستخدم: ${targetUser?.username || userId}`);
@@ -343,13 +351,17 @@ export async function deleteUserAction(userId: string) {
     if (!isStaffOwner(localUser)) {
       return { success: false, error: 'غير مصرح بإدارة المستخدمين' };
     }
+    const pharmacyId = localUser.pharmacy_id || 'local_default';
 
     // Don't allow deleting self
     if (localUser.id === userId) {
       return { success: false, error: 'لا يمكنك حذف حسابك الخاص' };
     }
 
-    const targetUser = await db.prepare('SELECT username, role, is_active FROM users WHERE id = ?').get(userId) as { username: string; role: string; is_active: number };
+    const targetUser = await db.prepare(`
+      SELECT username, role, is_active FROM users
+      WHERE id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+    `).get(userId, pharmacyId, pharmacyId) as { username: string; role: string; is_active: number };
     if (!targetUser) return { success: false, error: 'المستخدم غير موجود' };
     
     if (targetUser?.role === 'owner' && localUser.role !== 'owner') {
@@ -360,9 +372,10 @@ export async function deleteUserAction(userId: string) {
       SELECT id, start_time
       FROM shifts
       WHERE CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
+        AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
       ORDER BY start_time DESC
       LIMIT 1
-    `).get(userId) as any;
+    `).get(userId, pharmacyId, pharmacyId) as any;
     if (openShift) {
       const { getHandoverDetailsAction } = await import('./handover');
       const details = await getHandoverDetailsAction(String(openShift.id));
@@ -377,7 +390,11 @@ export async function deleteUserAction(userId: string) {
       };
     }
 
-    await db.prepare('UPDATE users SET is_active = 0 WHERE id = ? AND is_active = 1').run(userId);
+    await db.prepare(`
+      UPDATE users SET is_active = 0
+      WHERE id = ? AND is_active = 1
+        AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+    `).run(userId, pharmacyId, pharmacyId);
     
     logActivity(localUser.id, 'DEACTIVATE_USER', `تعطيل المستخدم مع الاحتفاظ بسجلاته: ${targetUser.username}`);
 
@@ -431,16 +448,25 @@ export async function updateUserAction(userId: string, data: {
     if (!isStaffOwner(localUser)) {
       return { success: false, error: 'غير مصرح - للمالك فقط' };
     }
+    const pharmacyId = localUser.pharmacy_id || 'local_default';
 
     const { username, full_name, role, password, job_id, qualification, hire_date, shift, code } = data;
 
-    const targetUser = await db.prepare('SELECT role FROM users WHERE id = ?').get(userId) as { role: string };
+    const targetUser = await db.prepare(`
+      SELECT role FROM users
+      WHERE id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+    `).get(userId, pharmacyId, pharmacyId) as { role: string };
+    if (!targetUser) return { success: false, error: 'المستخدم غير موجود في هذه الصيدلية' };
     if (targetUser?.role === 'owner' && localUser.role !== 'owner') {
       return { success: false, error: 'لا يمكنك تعديل حساب المالك' };
     }
 
     if (targetUser?.role === 'owner' && role !== 'owner') {
-      const owners = await db.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'owner' AND is_active = 1").get() as { count: number };
+      const owners = await db.prepare(`
+        SELECT COUNT(*) AS count FROM users
+        WHERE role = 'owner' AND is_active = 1
+          AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+      `).get(pharmacyId, pharmacyId) as { count: number };
       if (owners.count <= 1) return { success: false, error: 'لا يمكن تغيير دور المالك الوحيد؛ أضف مالكاً آخر أولاً' };
     }
 
@@ -457,9 +483,15 @@ export async function updateUserAction(userId: string, data: {
       }
     };
       const passwordHash = await bcrypt.hash(password, 10);
-      await db.prepare('UPDATE users SET username = ?, full_name = ?, role = ?, password_hash = ?, job_id = ?, qualification = ?, hire_date = ?, shift = ?, code = ? WHERE id = ?').run(username, full_name, role, passwordHash, job_id || null, qualification || null, hire_date || null, shift || null, code || null, userId);
+      await db.prepare(`
+        UPDATE users SET username = ?, full_name = ?, role = ?, password_hash = ?, job_id = ?, qualification = ?, hire_date = ?, shift = ?, code = ?
+        WHERE id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+      `).run(username, full_name, role, passwordHash, job_id || null, qualification || null, hire_date || null, shift || null, code || null, userId, pharmacyId, pharmacyId);
     } else {
-      await db.prepare('UPDATE users SET username = ?, full_name = ?, role = ?, job_id = ?, qualification = ?, hire_date = ?, shift = ?, code = ? WHERE id = ?').run(username, full_name, role, job_id || null, qualification || null, hire_date || null, shift || null, code || null, userId);
+      await db.prepare(`
+        UPDATE users SET username = ?, full_name = ?, role = ?, job_id = ?, qualification = ?, hire_date = ?, shift = ?, code = ?
+        WHERE id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+      `).run(username, full_name, role, job_id || null, qualification || null, hire_date || null, shift || null, code || null, userId, pharmacyId, pharmacyId);
     }
 
     logActivity(localUser.id, 'UPDATE_USER', `حدث بيانات المستخدم: ${username}`);
@@ -549,12 +581,17 @@ export async function resetUserPasswordAction(userId: string, newPassword: strin
     if (!isStaffOwner(localUser)) {
       return { success: false, error: 'غير مصرح - للمالك فقط' };
     }
+    const pharmacyId = localUser.pharmacy_id || 'local_default';
 
     if (!newPassword || newPassword.length < 6) {
       return { success: false, error: 'يجب أن تكون كلمة المرور 6 أحرف على الأقل' };
     }
 
-    const targetUser = await db.prepare('SELECT role, username FROM users WHERE id = ?').get(userId) as { role: string, username: string };
+    const targetUser = await db.prepare(`
+      SELECT role, username FROM users
+      WHERE id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+    `).get(userId, pharmacyId, pharmacyId) as { role: string, username: string };
+    if (!targetUser) return { success: false, error: 'المستخدم غير موجود في هذه الصيدلية' };
     if (targetUser?.role === 'owner' && localUser.role !== 'owner') {
       return { success: false, error: 'لا يمكنك إعادة تعيين كلمة مرور المالك' };
     }
@@ -571,7 +608,10 @@ export async function resetUserPasswordAction(userId: string, newPassword: strin
     };
     const passwordHash = await bcrypt.hash(newPassword, 10);
 
-    await db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(passwordHash, userId);
+    await db.prepare(`
+      UPDATE users SET password_hash = ?
+      WHERE id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+    `).run(passwordHash, userId, pharmacyId, pharmacyId);
 
     const target = await db.prepare('SELECT username FROM users WHERE id = ?').get(userId) as { username: string };
     logActivity(localUser.id, 'PASSWORD_RESET', `إعادة تعيين كلمة مرور المستخدم: ${target?.username || userId}`);
@@ -589,6 +629,7 @@ export async function getStaffManagementDataAction() {
     if (!isStaffOwner(user)) {
       return { success: false, error: 'غير مصرح - للمالك فقط' };
     }
+    const pharmacyId = user.pharmacy_id || 'local_default';
 
     const users = await db.prepare(`
       SELECT u.id, u.username, u.full_name, u.role, u.is_active, u.permissions,
@@ -596,8 +637,9 @@ export async function getStaffManagementDataAction() {
       FROM users u
       LEFT JOIN employee_jobs ej ON u.job_id = ej.id
       WHERE u.is_active = 1
+        AND (u.pharmacy_id = ? OR (u.pharmacy_id IS NULL AND ? = 'local_default'))
       ORDER BY u.full_name ASC, u.username ASC
-    `).all() as any[];
+    `).all(pharmacyId, pharmacyId) as any[];
 
     const jobs = await db.prepare('SELECT * FROM employee_jobs ORDER BY name_ar ASC').all() as any[];
 
@@ -613,6 +655,7 @@ export async function getStaffPerformanceAction() {
     if (!isStaffOwner(user)) {
       return { success: false, error: 'غير مصرح' };
     }
+    const pharmacyId = user.pharmacy_id || 'local_default';
 
     const metrics = await db.prepare(`
       SELECT 
@@ -622,14 +665,26 @@ export async function getStaffPerformanceAction() {
         u.role,
         COUNT(DISTINCT si.id) as transactions,
         COALESCE(SUM(si.total_amount), 0) as total_revenue,
-        (SELECT COUNT(*) FROM returns r WHERE r.user_id = u.id) as returns_count,
-        (SELECT COUNT(*) FROM shifts s WHERE s.user_id = u.id) as shifts_count
+        (SELECT COUNT(*) FROM returns r
+          WHERE r.user_id = u.id
+            AND (r.pharmacy_id = ? OR (r.pharmacy_id IS NULL AND ? = 'local_default'))) as returns_count,
+        (SELECT COUNT(*) FROM shifts s
+          WHERE s.user_id = u.id
+            AND (s.pharmacy_id = ? OR (s.pharmacy_id IS NULL AND ? = 'local_default'))) as shifts_count
       FROM users u
-      LEFT JOIN sales_invoices si ON u.id = si.user_id AND (si.status IS NULL OR si.status = '' OR si.status IN ('completed', 'approved', 'delivered'))
+      LEFT JOIN sales_invoices si ON u.id = si.user_id
+        AND (si.status IS NULL OR si.status = '' OR si.status IN ('completed', 'approved', 'delivered'))
+        AND (si.pharmacy_id = ? OR (si.pharmacy_id IS NULL AND ? = 'local_default'))
       WHERE u.is_active = 1
+        AND (u.pharmacy_id = ? OR (u.pharmacy_id IS NULL AND ? = 'local_default'))
       GROUP BY u.id
       ORDER BY total_revenue DESC
-    `).all() as any[];
+    `).all(
+      pharmacyId, pharmacyId,
+      pharmacyId, pharmacyId,
+      pharmacyId, pharmacyId,
+      pharmacyId, pharmacyId
+    ) as any[];
 
     const mapped = (metrics || []).map((member: any) => {
       const transactions = Number(member.transactions || 0);

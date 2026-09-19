@@ -51,6 +51,7 @@ describe('inventory read models preserve pharmacy boundaries', () => {
     mockDb.exec(`
       ALTER TABLE sales_items ADD COLUMN large_to_medium INTEGER DEFAULT 1;
       ALTER TABLE sales_items ADD COLUMN medium_to_small INTEGER DEFAULT 1;
+      ALTER TABLE activity_log ADD COLUMN pharmacy_id TEXT;
     `);
     mockDb.pragma('foreign_keys = ON');
     mockDb.exec(`

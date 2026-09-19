@@ -44,13 +44,20 @@ beforeEach(() => {
       password_hash TEXT, permissions TEXT, job_id INTEGER, qualification TEXT, hire_date TEXT, shift TEXT, code TEXT);
     CREATE TABLE employee_jobs (id INTEGER PRIMARY KEY, name_ar TEXT, name_en TEXT, min_salary REAL, max_salary REAL);
     CREATE TABLE activity_log (user_id TEXT, action TEXT, details TEXT);
-    CREATE TABLE shifts (id TEXT, user_id TEXT, status TEXT, start_time TEXT);
-    CREATE TABLE sales_invoices (id TEXT, user_id TEXT, total_amount REAL, status TEXT);
-    CREATE TABLE returns (id TEXT, user_id TEXT);
-    INSERT INTO users (id, username, role, password_hash) VALUES ('owner', 'owner', 'owner', 'private-hash'), ('staff', 'staff', 'admin', 'private-hash');
-    INSERT INTO shifts VALUES ('shift', 'staff', 'open', '2026-08-31 09:00:00');
-    INSERT INTO sales_invoices VALUES ('sale', 'staff', 125, 'completed');
-    INSERT INTO sales_invoices VALUES ('draft-sale', 'staff', 60, 'draft');
+    CREATE TABLE shifts (id TEXT, user_id TEXT, pharmacy_id TEXT, status TEXT, start_time TEXT);
+    CREATE TABLE sales_invoices (id TEXT, user_id TEXT, pharmacy_id TEXT, total_amount REAL, status TEXT);
+    CREATE TABLE returns (id TEXT, user_id TEXT, pharmacy_id TEXT);
+    INSERT INTO users (id, username, role, pharmacy_id, password_hash) VALUES
+      ('owner', 'owner', 'owner', NULL, 'private-hash'),
+      ('staff', 'staff', 'admin', NULL, 'private-hash'),
+      ('foreign-staff', 'foreign-staff', 'admin', 'ph-2', 'private-hash');
+    INSERT INTO shifts VALUES
+      ('shift', 'staff', NULL, 'open', '2026-08-31 09:00:00'),
+      ('foreign-shift', 'foreign-staff', 'ph-2', 'closed', '2026-08-31 10:00:00');
+    INSERT INTO sales_invoices VALUES ('sale', 'staff', NULL, 125, 'completed');
+    INSERT INTO sales_invoices VALUES ('draft-sale', 'staff', NULL, 60, 'draft');
+    INSERT INTO sales_invoices VALUES ('foreign-sale', 'foreign-staff', 'ph-2', 999, 'completed');
+    INSERT INTO returns VALUES ('foreign-return', 'foreign-staff', 'ph-2');
   `);
   mockUser = { id: 'owner', role: 'owner', permissions: {} };
   jest.clearAllMocks();
@@ -80,10 +87,29 @@ it('lets the owner administer staff and jobs, read performance, and requires rec
   const performance = await staff.getStaffPerformanceAction();
   expect(performance.success).toBe(true);
   expect(performance.data?.find((row: any) => row.id === 'staff')?.totalRevenue).toBe(125);
+  expect(performance.data?.some((row: any) => row.id === 'foreign-staff')).toBe(false);
   expect(await staff.deleteUserAction('staff')).toEqual(expect.objectContaining({ success: false, code: 'OPEN_SHIFT', openShift: expect.objectContaining({ id: 'shift' }) }));
   expect(mockDb.prepare("SELECT is_active FROM users WHERE id = 'staff'").get()).toEqual({ is_active: 1 });
   expect(mockDb.prepare('SELECT user_id FROM shifts').get()).toEqual({ user_id: 'staff' });
   expect(mockDb.prepare('SELECT user_id FROM sales_invoices').get()).toEqual({ user_id: 'staff' });
+});
+
+it('keeps staff management and mutations inside the owner pharmacy', async () => {
+  const management = await staff.getStaffManagementDataAction();
+  expect(management.success).toBe(true);
+  expect(management.users?.some((row: any) => row.id === 'foreign-staff')).toBe(false);
+
+  expect((await staff.updateUserPermissionsAction('foreign-staff', { can_view_purchases: true })).success).toBe(false);
+  expect((await staff.updateUserAction('foreign-staff', {
+    username: 'foreign-edited', full_name: 'Foreign Edited', role: 'admin'
+  })).success).toBe(false);
+  expect((await staff.resetUserPasswordAction('foreign-staff', 'secret123')).success).toBe(false);
+  expect((await staff.deleteUserAction('foreign-staff')).success).toBe(false);
+
+  expect(mockDb.prepare("SELECT username, is_active FROM users WHERE id = 'foreign-staff'").get()).toEqual({
+    username: 'foreign-staff',
+    is_active: 1,
+  });
 });
 
 it('deactivates directly when the user has no open shift', async () => {

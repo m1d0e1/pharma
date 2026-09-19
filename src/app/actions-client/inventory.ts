@@ -1132,6 +1132,7 @@ export async function getMovementsAction() {
     if (!user || !hasUserPermissionSync(user, 'preview_item_movements')) {
       return { success: false, error: 'غير مصرح', data: [] };
     }
+    const pharmacyId = user.pharmacy_id || 'local_default';
     const data = await db.prepare(`
       SELECT al.*, COALESCE(u.full_name, u.username, al.user_id, 'غير محدد') AS user_name,
              u.username
@@ -1141,9 +1142,10 @@ export async function getMovementsAction() {
         'ADD_INVENTORY', 'UPDATE_INVENTORY', 'DELETE_INVENTORY', 'ADJUST_STOCK', 'STOCK_ADJUSTMENT', 'ZERO_INVENTORY',
         'OPENING_BALANCE', 'SALE', 'RETURN', 'PURCHASE', 'PURCHASE_RETURN'
       )
+        AND (al.pharmacy_id = ? OR (al.pharmacy_id IS NULL AND ? = 'local_default'))
       ORDER BY al.created_at DESC
       LIMIT 1000
-    `).all() as any[];
+    `).all(pharmacyId, pharmacyId) as any[];
     return { success: true, data };
   } catch (error: any) {
     return { success: false, error: error?.message || 'فشل تحميل حركات الأصناف', data: [] };

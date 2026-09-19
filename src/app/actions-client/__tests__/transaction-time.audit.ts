@@ -30,7 +30,8 @@ beforeEach(() => {
   for (const file of ['001_initial.sql','008_patient_accounting.sql','011_shift_cash_difference_account.sql','013_shift_handover_details.sql']) {
     mockDb.exec(readFileSync(`src-tauri/migrations/${file}`, 'utf8'));
   }
-  mockDb.exec("INSERT INTO shifts(id,user_id,starting_cash,status) VALUES('audit-shift','admin',100,'open')");
+  mockDb.exec("ALTER TABLE shifts ADD COLUMN pharmacy_id TEXT");
+  mockDb.exec("INSERT INTO shifts(id,user_id,pharmacy_id,starting_cash,status) VALUES('audit-shift','admin','local_default',100,'open')");
 });
 afterEach(() => mockDb.close());
 

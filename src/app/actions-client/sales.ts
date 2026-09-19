@@ -957,21 +957,26 @@ export async function getSalesDashboardStatsAction() {
   try {
     const localUser = await getLocalSession();
     if (!localUser || !hasUserPermissionSync(localUser, 'rep_can_view_sales')) return { success: false, error: 'غير مصرح' };
+    const pharmacyId = localUser.pharmacy_id || 'local_default';
 
     // Today's Sales
     const todaySalesRow = await db.prepare(`
       SELECT COALESCE(SUM(total_amount), 0) as total 
       FROM sales_invoices 
-      WHERE DATE(created_at, 'localtime') = DATE('now', 'localtime') AND status IN ('completed', 'delivered')
-    `).get() as any;
+      WHERE DATE(created_at, 'localtime') = DATE('now', 'localtime')
+        AND status IN ('completed', 'delivered')
+        AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+    `).get(pharmacyId, pharmacyId) as any;
     const todaySales = todaySalesRow?.total || 0;
 
     // Yesterday's Sales
     const yesterdaySalesRow = await db.prepare(`
       SELECT COALESCE(SUM(total_amount), 0) as total 
       FROM sales_invoices 
-      WHERE DATE(created_at, 'localtime') = DATE('now', '-1 day', 'localtime') AND status IN ('completed', 'delivered')
-    `).get() as any;
+      WHERE DATE(created_at, 'localtime') = DATE('now', '-1 day', 'localtime')
+        AND status IN ('completed', 'delivered')
+        AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+    `).get(pharmacyId, pharmacyId) as any;
     const yesterdaySales = yesterdaySalesRow?.total || 0;
 
     let salesChangeText = 'استقرار المبيعات مقارنة بالمساء';
@@ -990,15 +995,19 @@ export async function getSalesDashboardStatsAction() {
     const deliveryCountRow = await db.prepare(`
       SELECT COUNT(*) as total 
       FROM sales_invoices 
-      WHERE payment_method = 'delivery' AND DATE(created_at, 'localtime') = DATE('now', 'localtime')
-    `).get() as any;
+      WHERE payment_method = 'delivery'
+        AND DATE(created_at, 'localtime') = DATE('now', 'localtime')
+        AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+    `).get(pharmacyId, pharmacyId) as any;
     const deliveryCount = deliveryCountRow?.total || 0;
 
     const pendingDeliveryRow = await db.prepare(`
       SELECT COUNT(*) as pending 
       FROM sales_invoices 
-      WHERE payment_method = 'delivery' AND status = 'completed'
-    `).get() as any;
+      WHERE payment_method = 'delivery'
+        AND status = 'completed'
+        AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+    `).get(pharmacyId, pharmacyId) as any;
     const pendingDeliveryCount = pendingDeliveryRow?.pending || 0;
     const pendingDeliveryCountText = `يوجد ${pendingDeliveryCount} طلبات قيد الانتظار`;
 
@@ -1006,15 +1015,19 @@ export async function getSalesDashboardStatsAction() {
     const todayAvgInvoiceRow = await db.prepare(`
       SELECT COALESCE(AVG(total_amount), 0) as avg_val 
       FROM sales_invoices 
-      WHERE DATE(created_at, 'localtime') = DATE('now', 'localtime') AND status IN ('completed', 'delivered')
-    `).get() as any;
+      WHERE DATE(created_at, 'localtime') = DATE('now', 'localtime')
+        AND status IN ('completed', 'delivered')
+        AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+    `).get(pharmacyId, pharmacyId) as any;
     const averageInvoice = Math.round(todayAvgInvoiceRow?.avg_val || 0);
 
     const yesterdayAvgInvoiceRow = await db.prepare(`
       SELECT COALESCE(AVG(total_amount), 0) as avg_val 
       FROM sales_invoices 
-      WHERE DATE(created_at, 'localtime') = DATE('now', '-1 day', 'localtime') AND status IN ('completed', 'delivered')
-    `).get() as any;
+      WHERE DATE(created_at, 'localtime') = DATE('now', '-1 day', 'localtime')
+        AND status IN ('completed', 'delivered')
+        AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+    `).get(pharmacyId, pharmacyId) as any;
     const yesterdayAverageInvoice = Math.round(yesterdayAvgInvoiceRow?.avg_val || 0);
 
     let averageInvoiceChangeText = 'أداء مستقر للموظفين';

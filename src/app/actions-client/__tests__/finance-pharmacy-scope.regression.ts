@@ -45,11 +45,12 @@ describe('finance pharmacy scope', () => {
         full_name TEXT,
         pharmacy_id TEXT
       );
-      CREATE TABLE shifts (id TEXT PRIMARY KEY, status TEXT);
+      CREATE TABLE shifts (id TEXT PRIMARY KEY, pharmacy_id TEXT, status TEXT);
       CREATE TABLE cash_movements (
         id TEXT PRIMARY KEY,
         user_id TEXT,
         shift_id TEXT,
+        pharmacy_id TEXT,
         type TEXT,
         category TEXT,
         amount REAL,
@@ -61,6 +62,7 @@ describe('finance pharmacy scope', () => {
       CREATE TABLE expenses (
         id TEXT PRIMARY KEY,
         user_id TEXT,
+        pharmacy_id TEXT,
         category TEXT,
         amount REAL,
         description TEXT,
@@ -85,6 +87,7 @@ describe('finance pharmacy scope', () => {
         date TEXT,
         description TEXT,
         created_by TEXT,
+        pharmacy_id TEXT,
         total_amount REAL,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
       );
@@ -101,6 +104,7 @@ describe('finance pharmacy scope', () => {
       CREATE TABLE financial_notices (
         id TEXT PRIMARY KEY,
         user_id TEXT,
+        pharmacy_id TEXT,
         target_type TEXT,
         target_id TEXT,
         type TEXT,
@@ -113,6 +117,7 @@ describe('finance pharmacy scope', () => {
       CREATE TABLE activity_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id TEXT,
+        pharmacy_id TEXT,
         action TEXT,
         details TEXT,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -153,29 +158,29 @@ describe('finance pharmacy scope', () => {
       INSERT INTO suppliers VALUES (2, 'Supplier Two', 'Supplier Two');
 
       INSERT INTO cash_movements
-        (id, user_id, type, category, amount, notes, date)
+        (id, user_id, pharmacy_id, type, category, amount, notes, date)
       VALUES
-        ('m1', 'u1', 'receipt', 'collection', 10, 'ph1 receipt', date('now', 'localtime')),
-        ('m2', 'u2', 'receipt', 'collection', 20, 'ph2 receipt', date('now', 'localtime'));
+        ('m1', 'u1', 'ph-1', 'receipt', 'collection', 10, 'ph1 receipt', date('now', 'localtime')),
+        ('m2', 'u2', 'ph-2', 'receipt', 'collection', 20, 'ph2 receipt', date('now', 'localtime'));
       INSERT INTO expenses
-        (id, user_id, category, amount, description, date)
+        (id, user_id, pharmacy_id, category, amount, description, date)
       VALUES
-        ('e1', 'u1', 'rent', 3, 'ph1 expense', date('now', 'localtime')),
-        ('e2', 'u2', 'rent', 7, 'ph2 expense', date('now', 'localtime'));
+        ('e1', 'u1', 'ph-1', 'rent', 3, 'ph1 expense', date('now', 'localtime')),
+        ('e2', 'u2', 'ph-2', 'rent', 7, 'ph2 expense', date('now', 'localtime'));
       INSERT INTO daily_journals
-        (id, date, description, created_by, total_amount)
+        (id, date, description, created_by, pharmacy_id, total_amount)
       VALUES
-        ('j1', date('now', 'localtime'), 'ph1 journal', 'u1', 100),
-        ('j2', date('now', 'localtime'), 'ph2 journal', 'u2', 200);
+        ('j1', date('now', 'localtime'), 'ph1 journal', 'u1', 'ph-1', 100),
+        ('j2', date('now', 'localtime'), 'ph2 journal', 'u2', 'ph-2', 200);
       INSERT INTO journal_entries (journal_id, account_id, type, amount)
       VALUES ('j1', 6, 'debit', 100), ('j2', 6, 'debit', 200);
       INSERT INTO financial_notices
-        (id, user_id, target_type, target_id, type, amount, reason, date)
+        (id, user_id, pharmacy_id, target_type, target_id, type, amount, reason, date)
       VALUES
-        ('n1', 'u1', 'customer', 'p1', 'debit', 5, 'ph1 notice', date('now', 'localtime')),
-        ('n2', 'u2', 'supplier', '2', 'debit', 8, 'ph2 notice', date('now', 'localtime'));
-      INSERT INTO activity_log (user_id, action, details)
-      VALUES ('u1', 'PH1', 'ph1 log'), ('u2', 'PH2', 'ph2 log');
+        ('n1', 'u1', 'ph-1', 'customer', 'p1', 'debit', 5, 'ph1 notice', date('now', 'localtime')),
+        ('n2', 'u2', 'ph-2', 'supplier', '2', 'debit', 8, 'ph2 notice', date('now', 'localtime'));
+      INSERT INTO activity_log (user_id, pharmacy_id, action, details)
+      VALUES ('u1', 'ph-1', 'PH1', 'ph1 log'), ('u2', 'ph-2', 'PH2', 'ph2 log');
       INSERT INTO sales_invoices VALUES
         ('sale-1', 'ph-1', 30, 'completed', datetime('now', 'localtime')),
         ('sale-2', 'ph-2', 70, 'completed', datetime('now', 'localtime'));
@@ -218,6 +223,7 @@ describe('finance pharmacy scope', () => {
       expect.objectContaining({ id: 'n1', target_name: 'Patient One' }),
     ]);
 
+    mockDb.prepare("UPDATE users SET pharmacy_id = 'ph-2' WHERE id = 'u1'").run();
     expect((await getActivityLogsAction()).data?.map((row: any) => row.action)).toEqual(['PH1']);
   });
 

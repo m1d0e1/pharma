@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react'
 import { Search, Plus, Trash2, X, Activity, FlaskConical, Save } from 'lucide-react'
 import { toast, Toaster } from 'react-hot-toast'
 import { dbSelect, dbExecute } from '@/lib/db/tauri'
+import { getClientSession } from '@/lib/auth/local'
 import { cn } from '@/lib/utils'
 
 interface MasterDrug {
@@ -66,6 +67,9 @@ export default function DrugAlternativesClient() {
   }, [altSearchTerm]);
 
   const selectDrug = async (drug: MasterDrug) => {
+    const user = await getClientSession();
+    if (!user) return;
+    const pharmacyId = user.pharmacy_id || 'local_default';
     setSelectedDrug(drug);
     setSearchTerm('');
     setSearchResults([]);
@@ -74,7 +78,9 @@ export default function DrugAlternativesClient() {
       const data = await dbSelect(`
         SELECT m.*,
                CASE WHEN m.active_ingredient = ? AND m.active_ingredient IS NOT NULL AND m.active_ingredient != '' THEN 1 ELSE 0 END as is_auto,
-               (SELECT SUM(quantity) FROM inventory WHERE drug_id = m.id) as total_stock
+               (SELECT SUM(quantity) FROM inventory
+                WHERE drug_id = m.id
+                  AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))) as total_stock
         FROM master_drugs m
         WHERE (m.active_ingredient = ? 
                AND m.active_ingredient IS NOT NULL 
@@ -85,7 +91,7 @@ export default function DrugAlternativesClient() {
                UNION
                SELECT drug_id FROM drug_alternatives WHERE alternative_id = ?
            )
-      `, [drug.active_ingredient, drug.active_ingredient, drug.id, drug.id, drug.id]);
+      `, [drug.active_ingredient, pharmacyId, pharmacyId, drug.active_ingredient, drug.id, drug.id, drug.id]);
       setAlternatives((data as any[]).sort((a: any, b: any) => (b.total_stock || 0) - (a.total_stock || 0)));
 
       // Fetch Interactions (Conflicts + Food)
@@ -169,13 +175,18 @@ export default function DrugAlternativesClient() {
       return;
     }
     try {
+      const user = await getClientSession();
+      if (!user) return;
+      const pharmacyId = user.pharmacy_id || 'local_default';
       await dbExecute('INSERT OR IGNORE INTO drug_alternatives (drug_id, alternative_id) VALUES (?, ?)', [selectedDrug.id, alt.id]);
       
       // Re-fetch to maintain proper list order and flags
       const data = await dbSelect(`
         SELECT m.*,
                CASE WHEN m.active_ingredient = ? AND m.active_ingredient IS NOT NULL AND m.active_ingredient != '' THEN 1 ELSE 0 END as is_auto,
-               (SELECT SUM(quantity) FROM inventory WHERE drug_id = m.id) as total_stock
+               (SELECT SUM(quantity) FROM inventory
+                WHERE drug_id = m.id
+                  AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))) as total_stock
         FROM master_drugs m
         WHERE (m.active_ingredient = ? 
                AND m.active_ingredient IS NOT NULL 
@@ -186,7 +197,7 @@ export default function DrugAlternativesClient() {
                UNION
                SELECT drug_id FROM drug_alternatives WHERE alternative_id = ?
            )
-      `, [selectedDrug.active_ingredient, selectedDrug.active_ingredient, selectedDrug.id, selectedDrug.id, selectedDrug.id]);
+      `, [selectedDrug.active_ingredient, pharmacyId, pharmacyId, selectedDrug.active_ingredient, selectedDrug.id, selectedDrug.id, selectedDrug.id]);
       setAlternatives((data as any[]).sort((a: any, b: any) => (b.total_stock || 0) - (a.total_stock || 0)));
       
       toast.success('تمت إضافة البديل');
@@ -203,13 +214,18 @@ export default function DrugAlternativesClient() {
        return;
     }
     try {
+      const user = await getClientSession();
+      if (!user) return;
+      const pharmacyId = user.pharmacy_id || 'local_default';
       await dbExecute('DELETE FROM drug_alternatives WHERE (drug_id = ? AND alternative_id = ?) OR (drug_id = ? AND alternative_id = ?)', [selectedDrug.id, altId, altId, selectedDrug.id]);
       
       // Re-fetch
       const data = await dbSelect(`
         SELECT m.*,
                CASE WHEN m.active_ingredient = ? AND m.active_ingredient IS NOT NULL AND m.active_ingredient != '' THEN 1 ELSE 0 END as is_auto,
-               (SELECT SUM(quantity) FROM inventory WHERE drug_id = m.id) as total_stock
+               (SELECT SUM(quantity) FROM inventory
+                WHERE drug_id = m.id
+                  AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))) as total_stock
         FROM master_drugs m
         WHERE (m.active_ingredient = ? 
                AND m.active_ingredient IS NOT NULL 
@@ -220,7 +236,7 @@ export default function DrugAlternativesClient() {
                UNION
                SELECT drug_id FROM drug_alternatives WHERE alternative_id = ?
            )
-      `, [selectedDrug.active_ingredient, selectedDrug.active_ingredient, selectedDrug.id, selectedDrug.id, selectedDrug.id]);
+      `, [selectedDrug.active_ingredient, pharmacyId, pharmacyId, selectedDrug.active_ingredient, selectedDrug.id, selectedDrug.id, selectedDrug.id]);
       setAlternatives((data as any[]).sort((a: any, b: any) => (b.total_stock || 0) - (a.total_stock || 0)));
       toast.success('تمت إزالة البديل');
     } catch (err: any) {

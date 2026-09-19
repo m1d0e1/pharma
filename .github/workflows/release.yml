@@ -88,7 +88,7 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: "Pharma App v__VERSION__"
-          releaseBody: "Offline-first stabilization release with local-only authentication, hardened permissions, draft-safe financial reporting, corrected COGS/opening-balance/loyalty accounting, negative-stock settlement safeguards, inventory and purchase-flow fixes, and expanded regression coverage. Includes x64 and x86 installers. Windows 7 requires UCRT and WebView2 109; clean Windows 7 validation remains pending."
+          releaseBody: "Branch-isolation and data-safety stabilization release with immutable pharmacy ownership for historical finance, shift, activity, return and purchase-order records; scoped dashboard, inventory, patient-history and audit views; hardened native return permissions; guarded legacy upgrades; and expanded regression coverage. Includes x64 and x86 installers with signed Tauri updater metadata. Windows Authenticode signing is applied only when the optional certificate secrets are configured. Windows 7 requires UCRT and WebView2 109."
           releaseDraft: false
           prerelease: false
           uploadUpdaterJson: true

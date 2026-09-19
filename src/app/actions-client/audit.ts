@@ -8,9 +8,12 @@ const logActivity = async (userId, action, details) => {
   }
 };
 const initLocalDb = () => {};
-const clearAuditLogs = async () => {
+const clearAuditLogs = async (pharmacyId: string) => {
   try {
-    await dbExecute('DELETE FROM activity_log');
+    await dbExecute(
+      "DELETE FROM activity_log WHERE pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default')",
+      [pharmacyId, pharmacyId]
+    );
     return true;
   } catch (e) {
     console.error('Failed to clear activity logs:', e);
@@ -62,8 +65,9 @@ export async function clearAuditLogsAction() {
     if (!user || user.role !== 'owner') {
       return { success: false, error: 'غير مصرح - للمالك فقط' };
     }
+    const pharmacyId = user.pharmacy_id || 'local_default';
 
-    const success = await clearAuditLogs();
+    const success = await clearAuditLogs(pharmacyId);
     if (success) {
       await logActivity(user.id, 'CLEAR_LOGS', 'قام المالك بمسح جميع سجلات النشاط');
       revalidatePath('/audit');
@@ -83,6 +87,7 @@ export async function getAuditLogsAction() {
     if (!user || !hasUserPermissionSync(user, 'can_view_audit')) {
       return { success: false, error: 'غير مصرح' };
     }
+    const pharmacyId = user.pharmacy_id || 'local_default';
 
     const todayStart = localDate();
     const sevenDaysAgo = new Date();
@@ -93,32 +98,37 @@ export async function getAuditLogsAction() {
       SELECT al.*, u.full_name, u.role
       FROM activity_log al 
       LEFT JOIN users u ON al.user_id = u.id 
+      WHERE (al.pharmacy_id = ? OR (al.pharmacy_id IS NULL AND ? = 'local_default'))
       ORDER BY al.created_at DESC 
       LIMIT 100
-    `).all() as any[];
+    `).all(pharmacyId, pharmacyId) as any[];
 
     const todayCountRes = await db.prepare(`
-      SELECT COUNT(*) as count FROM activity_log WHERE date(created_at, 'localtime') >= ?
-    `).get(todayStart) as any;
+      SELECT COUNT(*) as count FROM activity_log
+      WHERE date(created_at, 'localtime') >= ?
+        AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+    `).get(todayStart, pharmacyId, pharmacyId) as any;
 
     const userActivity = await db.prepare(`
       SELECT u.full_name, COUNT(al.id) as actions
       FROM activity_log al
       LEFT JOIN users u ON al.user_id = u.id
       WHERE date(al.created_at, 'localtime') >= ?
+        AND (al.pharmacy_id = ? OR (al.pharmacy_id IS NULL AND ? = 'local_default'))
       GROUP BY u.full_name
       ORDER BY actions DESC
       LIMIT 5
-    `).all(sevenDaysAgoStart) as any[];
+    `).all(sevenDaysAgoStart, pharmacyId, pharmacyId) as any[];
 
     const actionTypes = await db.prepare(`
       SELECT action, COUNT(id) as count
       FROM activity_log
       WHERE date(created_at, 'localtime') >= ?
+        AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
       GROUP BY action
       ORDER BY count DESC
       LIMIT 5
-    `).all(sevenDaysAgoStart) as any[];
+    `).all(sevenDaysAgoStart, pharmacyId, pharmacyId) as any[];
 
     return { 
       success: true, 

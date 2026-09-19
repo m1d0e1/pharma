@@ -181,9 +181,8 @@ const getLiquidityStmt = db.prepare(`
   SELECT COALESCE(SUM(CASE WHEN je.type = 'debit' THEN je.amount ELSE -je.amount END), 0) as balance
   FROM journal_entries je
   JOIN daily_journals dj ON dj.id = je.journal_id
-  LEFT JOIN users u ON u.id = dj.created_by
   WHERE je.account_id = ?
-    AND (u.pharmacy_id = ? OR (u.pharmacy_id IS NULL AND ? = 'local_default'))
+    AND (dj.pharmacy_id = ? OR (dj.pharmacy_id IS NULL AND ? = 'local_default'))
 `);
 
 const getPendingDeliveryStmt = db.prepare(`

@@ -500,12 +500,7 @@ async fn resolve_open_shift(
             FROM shifts s
             WHERE s.id = ?
               AND LOWER(COALESCE(s.status, '')) = 'open'
-              AND EXISTS (
-                SELECT 1
-                FROM users su
-                WHERE CAST(su.id AS TEXT) = CAST(s.user_id AS TEXT)
-                  AND COALESCE(NULLIF(TRIM(su.pharmacy_id), ''), 'local_default') = ?
-              )
+              AND COALESCE(NULLIF(TRIM(s.pharmacy_id), ''), 'local_default') = ?
             "#,
         )
         .bind(shift_id)
@@ -523,12 +518,7 @@ async fn resolve_open_shift(
         SELECT s.id
         FROM shifts s
         WHERE LOWER(COALESCE(s.status, '')) = 'open'
-          AND EXISTS (
-            SELECT 1
-            FROM users su
-            WHERE CAST(su.id AS TEXT) = CAST(s.user_id AS TEXT)
-              AND COALESCE(NULLIF(TRIM(su.pharmacy_id), ''), 'local_default') = ?
-          )
+          AND COALESCE(NULLIF(TRIM(s.pharmacy_id), ''), 'local_default') = ?
         ORDER BY s.rowid ASC
         LIMIT 1
         "#,
@@ -547,23 +537,19 @@ async fn resolve_open_shift(
     let shift_id = Uuid::new_v4().to_string();
     sqlx::query(
         r#"
-        INSERT INTO shifts (id, user_id, status)
-        SELECT ?, ?, 'open'
+        INSERT INTO shifts (id, user_id, pharmacy_id, status)
+        SELECT ?, ?, ?, 'open'
         WHERE NOT EXISTS (
           SELECT 1
           FROM shifts s
           WHERE LOWER(COALESCE(s.status, '')) = 'open'
-            AND EXISTS (
-              SELECT 1
-              FROM users su
-              WHERE CAST(su.id AS TEXT) = CAST(s.user_id AS TEXT)
-                AND COALESCE(NULLIF(TRIM(su.pharmacy_id), ''), 'local_default') = ?
-            )
+            AND COALESCE(NULLIF(TRIM(s.pharmacy_id), ''), 'local_default') = ?
         )
         "#,
     )
     .bind(&shift_id)
     .bind(user_id)
+    .bind(&pharmacy_id)
     .bind(&pharmacy_id)
     .execute(&mut **tx)
     .await
@@ -574,12 +560,7 @@ async fn resolve_open_shift(
         SELECT s.id
         FROM shifts s
         WHERE LOWER(COALESCE(s.status, '')) = 'open'
-          AND EXISTS (
-            SELECT 1
-            FROM users su
-            WHERE CAST(su.id AS TEXT) = CAST(s.user_id AS TEXT)
-              AND COALESCE(NULLIF(TRIM(su.pharmacy_id), ''), 'local_default') = ?
-          )
+          AND COALESCE(NULLIF(TRIM(s.pharmacy_id), ''), 'local_default') = ?
         ORDER BY s.rowid ASC
         LIMIT 1
         "#,
@@ -630,14 +611,32 @@ async fn create_return_tx(
         .await
         .ok();
 
-    if sqlx::query("SELECT 1 FROM users WHERE CAST(id AS TEXT) = ?")
-        .bind(&payload.user_id)
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(|e| e.to_string())?
-        .is_none()
-    {
-        return Err(format!("Return user '{}' does not exist", payload.user_id));
+    let user = sqlx::query(
+        "SELECT pharmacy_id, role, permissions FROM users WHERE CAST(id AS TEXT) = CAST(? AS TEXT) AND COALESCE(is_active, 1) = 1",
+    )
+    .bind(&payload.user_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| e.to_string())?
+    .ok_or_else(|| "Unauthorized: active user required".to_string())?;
+    let user_role: Option<String> = user.try_get("role").ok();
+    let user_permissions: Option<String> = user.try_get("permissions").ok();
+    if !user_has_permission(
+        user_role.as_deref(),
+        user_permissions.as_deref(),
+        "can_view_returns",
+        false,
+    ) {
+        return Err("Unauthorized: can_view_returns permission required".into());
+    }
+    let user_pharmacy = normalize_pharmacy_id(
+        user.try_get::<Option<String>, _>("pharmacy_id")
+            .unwrap_or(None)
+            .as_deref(),
+    );
+    let requested_pharmacy = normalize_pharmacy_id(payload.pharmacy_id.as_deref());
+    if user_pharmacy != requested_pharmacy {
+        return Err("User belongs to another pharmacy".into());
     }
 
     payload.shift_id =
@@ -676,7 +675,6 @@ async fn create_return_tx(
         .try_get::<Option<String>, _>("pharmacy_id")
         .unwrap_or(None);
     let invoice_pharmacy = normalize_pharmacy_id(invoice_pharmacy_raw.as_deref());
-    let requested_pharmacy = normalize_pharmacy_id(payload.pharmacy_id.as_deref());
     if requested_pharmacy != invoice_pharmacy {
         return Err("Sales invoice belongs to another pharmacy".into());
     }
@@ -1480,7 +1478,7 @@ async fn settle_negative_sale_item_tx(
     payload: &NegativeStockSettlementPayload,
 ) -> Result<NegativeStockSettlementResult, String> {
     let user = sqlx::query(
-        "SELECT role, permissions FROM users WHERE CAST(id AS TEXT) = CAST(? AS TEXT) AND COALESCE(is_active, 1) = 1",
+        "SELECT pharmacy_id, role, permissions FROM users WHERE CAST(id AS TEXT) = CAST(? AS TEXT) AND COALESCE(is_active, 1) = 1",
     )
     .bind(&payload.user_id)
     .fetch_optional(&mut **tx)
@@ -1496,6 +1494,14 @@ async fn settle_negative_sale_item_tx(
         false,
     ) {
         return Err("Unauthorized: can_manage_inventory permission required".into());
+    }
+    let user_pharmacy = normalize_pharmacy_id(
+        user.try_get::<Option<String>, _>("pharmacy_id")
+            .unwrap_or(None)
+            .as_deref(),
+    );
+    if user_pharmacy != normalize_pharmacy_id(Some(&payload.pharmacy_id)) {
+        return Err("User belongs to another pharmacy".into());
     }
 
     let sale_item = sqlx::query(
@@ -1744,7 +1750,7 @@ async fn process_checkout_tx(
     }
 
     let user = sqlx::query(
-        "SELECT role, permissions FROM users WHERE CAST(id AS TEXT) = CAST(? AS TEXT) AND COALESCE(is_active, 1) = 1",
+        "SELECT pharmacy_id, role, permissions FROM users WHERE CAST(id AS TEXT) = CAST(? AS TEXT) AND COALESCE(is_active, 1) = 1",
     )
     .bind(&payload.user_id)
     .fetch_optional(&mut **tx)
@@ -1753,6 +1759,14 @@ async fn process_checkout_tx(
     .ok_or_else(|| "Unauthorized: active user required".to_string())?;
     let user_role: Option<String> = user.try_get("role").ok();
     let user_permissions: Option<String> = user.try_get("permissions").ok();
+    let user_pharmacy = normalize_pharmacy_id(
+        user.try_get::<Option<String>, _>("pharmacy_id")
+            .unwrap_or(None)
+            .as_deref(),
+    );
+    if user_pharmacy != normalize_pharmacy_id(Some(&payload.pharmacy_id)) {
+        return Err("User belongs to another pharmacy".into());
+    }
     if !user_has_permission(user_role.as_deref(), user_permissions.as_deref(), "can_access_pos", true) {
         return Err("Unauthorized: can_access_pos permission required".into());
     }
@@ -4209,7 +4223,7 @@ mod tests {
             "CREATE TABLE journal_entries (journal_id TEXT, account_id INTEGER, type TEXT, amount REAL)",
             "CREATE TABLE trial_balance_settings (category TEXT, account_id INTEGER)",
             "CREATE TABLE cash_movements (id TEXT, user_id TEXT, shift_id TEXT, type TEXT, amount REAL, category TEXT, notes TEXT, date TEXT)",
-            "CREATE TABLE shifts (id TEXT, user_id TEXT, status TEXT)",
+            "CREATE TABLE shifts (id TEXT, user_id TEXT, pharmacy_id TEXT, status TEXT)",
             "CREATE TABLE activity_log (user_id TEXT, action TEXT, details TEXT)",
             "CREATE TABLE shortages (id INTEGER PRIMARY KEY AUTOINCREMENT, drug_id INTEGER, pharmacy_id TEXT, requested_quantity REAL, status TEXT)",
         ] {
@@ -5545,8 +5559,8 @@ mod tests {
             "CREATE TABLE master_drugs (id INTEGER PRIMARY KEY, trade_name TEXT, no_return INTEGER, large_to_medium INTEGER, medium_to_small INTEGER, medium_unit TEXT, small_unit TEXT)",
             "CREATE TABLE inventory (id TEXT PRIMARY KEY, pharmacy_id TEXT, drug_id INTEGER, batch_number TEXT, expiry_date TEXT, quantity REAL, unit_price REAL, local_selling_price REAL, cost_price REAL, strips_per_box INTEGER, medium_to_small INTEGER, created_at TEXT, updated_at TEXT)",
             "CREATE TABLE sales_invoices (id TEXT PRIMARY KEY, patient_id TEXT, pharmacy_id TEXT, total_amount REAL, discount_amount REAL, payment_method TEXT, status TEXT, points_earned INTEGER DEFAULT 0)",
-            "CREATE TABLE users (id TEXT PRIMARY KEY, pharmacy_id TEXT)",
-            "CREATE TABLE shifts (id TEXT, user_id TEXT, status TEXT, start_time TEXT)",
+            "CREATE TABLE users (id TEXT PRIMARY KEY, pharmacy_id TEXT, role TEXT, permissions TEXT, is_active INTEGER DEFAULT 1)",
+            "CREATE TABLE shifts (id TEXT, user_id TEXT, pharmacy_id TEXT, status TEXT, start_time TEXT)",
             "CREATE TABLE patients (id TEXT PRIMARY KEY, wallet_balance REAL, points_balance REAL DEFAULT 0)",
             "CREATE TABLE sales_items (id INTEGER PRIMARY KEY, invoice_id TEXT, inventory_id TEXT, drug_id INTEGER, quantity_sold REAL, unit_price REAL, unit TEXT, cost_price REAL, large_to_medium INTEGER DEFAULT 1, medium_to_small INTEGER DEFAULT 1)",
             "CREATE TABLE returns (id TEXT PRIMARY KEY, invoice_id TEXT, user_id TEXT, pharmacy_id TEXT, shift_id TEXT, reason TEXT, total_refund REAL, refund_method TEXT, status TEXT)",
@@ -5566,7 +5580,7 @@ mod tests {
             .execute(&mut conn)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO users VALUES ('admin', 'ph-1')")
+        sqlx::query("INSERT INTO users (id, pharmacy_id, role, permissions) VALUES ('admin', 'ph-1', 'admin', json_object('can_view_returns', 1)), ('denied', 'ph-1', 'pharmacist', '{}')")
             .execute(&mut conn)
             .await
             .unwrap();
@@ -5605,7 +5619,13 @@ mod tests {
             .await
             .unwrap_err();
         tx.rollback().await.unwrap();
-        assert!(user_error.contains("does not exist"));
+        assert!(user_error.contains("active user required"));
+        let mut tx = conn.begin().await.unwrap();
+        let permission_error = create_return_tx(&mut tx, invalid_return("denied", "ph-1"))
+            .await
+            .unwrap_err();
+        tx.rollback().await.unwrap();
+        assert!(permission_error.contains("can_view_returns"));
         let mut tx = conn.begin().await.unwrap();
         let pharmacy_error = create_return_tx(&mut tx, invalid_return("admin", "ph-2"))
             .await
@@ -5987,7 +6007,7 @@ mod tests {
         ] {
             sqlx::query(sql).execute(&mut conn).await.unwrap();
         }
-        sqlx::query("INSERT INTO users VALUES ('admin', 'owner', '{}', 1, 'ph-1'), ('viewer', 'pharmacist', '{\"can_view_settlement\":true,\"can_manage_inventory\":false}', 1, 'ph-1')")
+        sqlx::query("INSERT INTO users VALUES ('admin', 'owner', '{}', 1, 'ph-1'), ('viewer', 'pharmacist', '{\"can_view_settlement\":true,\"can_manage_inventory\":false}', 1, 'ph-1'), ('foreign-admin', 'owner', '{}', 1, 'ph-2'), ('local-admin', 'owner', '{}', 1, NULL)")
             .execute(&mut conn)
             .await
             .unwrap();
@@ -6055,6 +6075,16 @@ mod tests {
         .unwrap_err();
         tx.rollback().await.unwrap();
         assert!(permission_error.contains("can_manage_inventory"));
+
+        let mut tx = conn.begin().await.unwrap();
+        let user_pharmacy_error = settle_negative_sale_item_tx(
+            &mut tx,
+            &payload_for(1, "valid", "ph-1", "foreign-admin"),
+        )
+        .await
+        .unwrap_err();
+        tx.rollback().await.unwrap();
+        assert!(user_pharmacy_error.contains("another pharmacy"));
 
         let mut tx = conn.begin().await.unwrap();
         let draft_error = settle_negative_sale_item_tx(&mut tx, &payload(5, "valid", "ph-1"))
@@ -6223,10 +6253,12 @@ mod tests {
         assert_eq!(fully_returned_status, 0);
 
         let mut tx = conn.begin().await.unwrap();
-        let legacy =
-            settle_negative_sale_item_tx(&mut tx, &payload(2, "legacy-local", "local_default"))
-                .await
-                .unwrap();
+        let legacy = settle_negative_sale_item_tx(
+            &mut tx,
+            &payload_for(2, "legacy-local", "local_default", "local-admin"),
+        )
+        .await
+        .unwrap();
         tx.commit().await.unwrap();
         assert_eq!(legacy.deducted_quantity, 1.0);
         assert_eq!(legacy.cogs_amount, 25.0);
@@ -6292,7 +6324,7 @@ mod tests {
             "CREATE TABLE trial_balance_settings (category TEXT, account_id INTEGER)",
             "CREATE TABLE accounts (id INTEGER PRIMARY KEY, code TEXT)",
             "CREATE TABLE patients (id TEXT PRIMARY KEY, credit_limit REAL, wallet_balance REAL, loyalty_level TEXT, points_balance INTEGER, opening_balance REAL DEFAULT 0)",
-            "CREATE TABLE shifts (id TEXT PRIMARY KEY, user_id TEXT, start_time TEXT, status TEXT)",
+            "CREATE TABLE shifts (id TEXT PRIMARY KEY, user_id TEXT, pharmacy_id TEXT, start_time TEXT, status TEXT)",
             "CREATE TABLE returns (invoice_id TEXT, total_refund REAL, refund_method TEXT, status TEXT)",
             "CREATE TABLE patient_transactions (patient_id TEXT, type TEXT, amount REAL, date TEXT, user_id TEXT, notes TEXT)",
             "CREATE TABLE financial_notices (target_type TEXT, target_id TEXT, type TEXT, amount REAL, date TEXT, user_id TEXT, reason TEXT)",
@@ -6302,7 +6334,7 @@ mod tests {
         ] {
             sqlx::query(sql).execute(&mut conn).await.unwrap();
         }
-        sqlx::query("INSERT INTO users VALUES ('admin', 'owner', '{}', 1, 'local_default')")
+        sqlx::query("INSERT INTO users VALUES ('admin', 'owner', '{}', 1, 'local_default'), ('foreign-admin', 'owner', '{}', 1, 'ph-2')")
             .execute(&mut conn)
             .await
             .unwrap();
@@ -6343,6 +6375,15 @@ mod tests {
             total_discount: 0.0,
             additional_fees: 0.0,
         };
+
+        let mut foreign_user_payload = cash_payload(Some("full"));
+        foreign_user_payload.user_id = "foreign-admin".into();
+        let mut tx = conn.begin().await.unwrap();
+        let user_pharmacy_error = process_checkout_tx(&mut tx, foreign_user_payload, 69.0)
+            .await
+            .unwrap_err();
+        tx.rollback().await.unwrap();
+        assert!(user_pharmacy_error.contains("another pharmacy"));
 
         let mut stale_patient = cash_payload(Some("full"));
         stale_patient.patient_id = Some("missing-patient".into());

@@ -49,6 +49,7 @@ import {
   completePurchaseInvoiceAction,
   updateCompletedPurchaseInvoiceAction,
   createPurchaseOrderAction,
+  getPurchaseOrdersAction,
   updatePurchaseOrderStatusAction,
 } from '@/app/actions-client/purchases';
 
@@ -65,6 +66,7 @@ describe('inventory-linked reorder and shortage notebook regression', () => {
       ALTER TABLE purchase_invoice_items ADD COLUMN medium_to_small INTEGER DEFAULT 1;
       ALTER TABLE sales_items ADD COLUMN large_to_medium INTEGER DEFAULT 1;
       ALTER TABLE sales_items ADD COLUMN medium_to_small INTEGER DEFAULT 1;
+      ALTER TABLE purchase_orders ADD COLUMN pharmacy_id TEXT;
     `);
     mockDb.pragma('foreign_keys = ON');
     mockDb.exec(`
@@ -280,6 +282,15 @@ describe('inventory-linked reorder and shortage notebook regression', () => {
       ]
     });
     expect(poResult.success).toBe(true);
+    expect(mockDb.prepare('SELECT pharmacy_id FROM purchase_orders WHERE id = ?').get(poResult.po_id)).toEqual({
+      pharmacy_id: 'local_default',
+    });
+
+    // Historical ownership belongs to the order row, not the creator's mutable current pharmacy.
+    mockDb.prepare("UPDATE users SET pharmacy_id = 'ph-2' WHERE id = 'admin'").run();
+    const visibleOrders = await getPurchaseOrdersAction();
+    expect(visibleOrders.success).toBe(true);
+    expect(visibleOrders.data?.map((order: any) => order.id)).toContain(poResult.po_id);
 
     // Status in shortages should now be 'ordered'
     const listAfterPO = (await getShortagesAction()).data || [];

@@ -227,6 +227,7 @@ export async function getPatientProfileAction(patientId: string) {
   try {
     const user = await getLocalSession();
     if (!canManagePatients(user)) return { success: false, error: 'غير مصرح' };
+    const pharmacyId = user.pharmacy_id || 'local_default';
 
     const patient = await db.prepare('SELECT * FROM patients WHERE id = ?').get(patientId) as any;
     if (!patient) return { success: false, error: 'المريض غير موجود' };
@@ -238,9 +239,10 @@ export async function getPatientProfileAction(patientId: string) {
       SELECT si.id as invoice_id, si.total_amount, si.payment_method, si.created_at
       FROM sales_invoices si
       WHERE si.patient_id = ? AND (si.status IS NULL OR si.status = '' OR LOWER(si.status) IN ('completed', 'approved', 'delivered'))
+        AND (si.pharmacy_id = ? OR (si.pharmacy_id IS NULL AND ? = 'local_default'))
       ORDER BY si.created_at DESC
       LIMIT 50
-    `).all(patientId) as any[];
+    `).all(patientId, pharmacyId, pharmacyId) as any[];
 
     if (purchaseHistory.length > 0) {
       const placeholders = purchaseHistory.map(() => '?').join(',');
@@ -263,7 +265,8 @@ export async function getPatientProfileAction(patientId: string) {
       SELECT COALESCE(SUM(CAST(total_amount AS REAL)), 0) as total
       FROM sales_invoices
       WHERE patient_id = ? AND (status IS NULL OR status = '' OR LOWER(status) IN ('completed', 'approved', 'delivered'))
-    `).get(patientId) as any;
+        AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+    `).get(patientId, pharmacyId, pharmacyId) as any;
 
     const payments = await db.prepare(`
       SELECT pt.*, u.full_name AS user_name
@@ -430,6 +433,7 @@ export async function getPatientStatementAction(patientId: string) {
   try {
     const user = await getLocalSession();
     if (!user) return { success: false, error: 'غير مصرح' };
+    const pharmacyId = user.pharmacy_id || 'local_default';
 
     const { hasUserPermissionSync } = await import('@/lib/auth/local');
     const allowed = hasUserPermissionSync(user, 'can_view_patients') ||
@@ -450,6 +454,7 @@ export async function getPatientStatementAction(patientId: string) {
              (SELECT full_name FROM users WHERE id = user_id) as user_name
       FROM sales_invoices
       WHERE patient_id = ? AND (status IS NULL OR status = '' OR LOWER(status) IN ('completed', 'approved', 'delivered'))
+        AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
       
       UNION ALL
       
@@ -459,9 +464,14 @@ export async function getPatientStatementAction(patientId: string) {
              refund_method as payment_method,
              reason as notes,
              (SELECT full_name FROM users WHERE id = user_id) as user_name
-      FROM returns
-      WHERE status IN ('approved', 'completed')
-        AND invoice_id IN (SELECT id FROM sales_invoices WHERE patient_id = ?)
+      FROM returns r
+      WHERE r.status IN ('approved', 'completed')
+        AND (r.pharmacy_id = ? OR (r.pharmacy_id IS NULL AND ? = 'local_default'))
+        AND r.invoice_id IN (
+          SELECT id FROM sales_invoices
+          WHERE patient_id = ?
+            AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+        )
 
       UNION ALL
 
@@ -493,6 +503,7 @@ export async function getPatientStatementAction(patientId: string) {
           WHERE pt.type = 'adjustment'
             AND fn.target_type = 'customer'
             AND fn.target_id = pt.patient_id
+            AND (fn.pharmacy_id = ? OR (fn.pharmacy_id IS NULL AND ? = 'local_default'))
             AND ABS(CAST(pt.amount AS REAL) - CASE WHEN fn.type = 'debit' THEN ABS(CAST(fn.amount AS REAL)) ELSE -ABS(CAST(fn.amount AS REAL)) END) < 0.000001
             AND COALESCE(pt.date, '') = COALESCE(fn.date, '')
             AND COALESCE(pt.user_id, '') = COALESCE(fn.user_id, '')
@@ -532,6 +543,7 @@ export async function getPatientStatementAction(patientId: string) {
       FROM financial_notices fn
       WHERE fn.target_type = 'customer'
         AND fn.target_id = ?
+        AND (fn.pharmacy_id = ? OR (fn.pharmacy_id IS NULL AND ? = 'local_default'))
         AND NOT EXISTS (
           SELECT 1
           FROM patient_transactions mirrored
@@ -548,7 +560,12 @@ export async function getPatientStatementAction(patientId: string) {
         )
       
       ORDER BY occurred_at DESC
-    `).all(patientId, patientId, patientId, patientId) as any[];
+    `).all(
+      patientId, pharmacyId, pharmacyId,
+      pharmacyId, pharmacyId, patientId, pharmacyId, pharmacyId,
+      pharmacyId, pharmacyId, patientId,
+      patientId, pharmacyId, pharmacyId,
+    ) as any[];
     const movements = rawMovements.map(({ occurred_at, ...movement }: any) => ({
       ...movement,
       date: occurred_at,
@@ -561,6 +578,7 @@ export async function getPatientStatementAction(patientId: string) {
       FROM sales_items si
       JOIN sales_invoices sinv ON si.invoice_id = sinv.id
       WHERE sinv.patient_id = ? AND (sinv.status IS NULL OR sinv.status = '' OR LOWER(sinv.status) IN ('completed', 'approved', 'delivered'))
+        AND (sinv.pharmacy_id = ? OR (sinv.pharmacy_id IS NULL AND ? = 'local_default'))
       
       UNION ALL
       
@@ -570,9 +588,14 @@ export async function getPatientStatementAction(patientId: string) {
       JOIN returns r ON ri.return_id = r.id
       JOIN sales_invoices sinv ON r.invoice_id = sinv.id
       WHERE sinv.patient_id = ? AND r.status IN ('approved', 'completed')
+        AND (r.pharmacy_id = ? OR (r.pharmacy_id IS NULL AND ? = 'local_default'))
+        AND (sinv.pharmacy_id = ? OR (sinv.pharmacy_id IS NULL AND ? = 'local_default'))
       
       ORDER BY occurred_at DESC
-    `).all(patientId, patientId) as any[];
+    `).all(
+      patientId, pharmacyId, pharmacyId,
+      patientId, pharmacyId, pharmacyId, pharmacyId, pharmacyId,
+    ) as any[];
 
     // Use direct SQL JOIN to get drug names instead of loading full 191K cache
     const drugIdList = rawItems.filter((item: any) => item.drug_id).map((item: any) => item.drug_id);
@@ -618,8 +641,9 @@ export async function getPatientStatementAction(patientId: string) {
         FROM financial_notices fn
         LEFT JOIN users u ON u.id = fn.user_id
         WHERE fn.target_type = 'customer' AND fn.target_id = ?
+          AND (fn.pharmacy_id = ? OR (fn.pharmacy_id IS NULL AND ? = 'local_default'))
         ORDER BY fn.date DESC, fn.created_at DESC
-      `).all(patientId) as any[];
+      `).all(patientId, pharmacyId, pharmacyId) as any[];
     } catch (noticeErr) {
       console.warn('financial_notices query skipped in statement:', noticeErr);
     }

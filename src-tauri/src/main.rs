@@ -588,6 +588,12 @@ fn main() {
             sql: include_str!("../migrations/021_returns_pharmacy_scope.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 22,
+            description: "finance_pharmacy_scope",
+            sql: include_str!("../migrations/022_finance_pharmacy_scope.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()

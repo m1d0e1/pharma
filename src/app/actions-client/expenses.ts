@@ -109,14 +109,15 @@ export async function getExpensesAction(filter?: { from?: string; to?: string; c
   try {
     const user = await getLocalSession();
     if (!user || (!hasUserPermissionSync(user, 'can_view_expenses') && !hasUserPermissionSync(user, 'acc_can_define_expenses'))) return { success: false, error: 'غير مصرح' };
+    const pharmacyId = user.pharmacy_id || 'local_default';
 
     let query = `
       SELECT e.*, u.full_name as user_name 
       FROM expenses e 
       JOIN users u ON e.user_id = u.id 
-      WHERE 1=1
+      WHERE (e.pharmacy_id = ? OR (e.pharmacy_id IS NULL AND ? = 'local_default'))
     `;
-    const params: any[] = [];
+    const params: any[] = [pharmacyId, pharmacyId];
 
     if (filter?.from) {
       query += ' AND e.date >= ?';
@@ -147,8 +148,12 @@ export async function deleteExpenseAction(id: string) {
   try {
     const user = await getLocalSession();
     if (!user || !hasUserPermissionSync(user, 'acc_can_define_expenses')) return { success: false, error: 'غير مصرح' };
+    const pharmacyId = user.pharmacy_id || 'local_default';
 
-    const expense = await db.prepare('SELECT id FROM expenses WHERE id = ?').get(id);
+    const expense = await db.prepare(`
+      SELECT id FROM expenses
+      WHERE id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+    `).get(id, pharmacyId, pharmacyId);
     if (!expense) return { success: false, error: 'المصروف غير موجود' };
 
     return {
@@ -167,6 +172,7 @@ export async function getExpenseSummaryAction(month?: string) {
   try {
     const user = await getLocalSession();
     if (!user || (!hasUserPermissionSync(user, 'can_view_expenses') && !hasUserPermissionSync(user, 'acc_can_define_expenses'))) return { success: false, error: 'غير مصرح' };
+    const pharmacyId = user.pharmacy_id || 'local_default';
 
     const targetMonth = month || localMonth();
     if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(targetMonth)) return { success: false, error: 'الشهر غير صالح' };
@@ -175,9 +181,10 @@ export async function getExpenseSummaryAction(month?: string) {
       SELECT category, SUM(amount) as total 
       FROM expenses 
       WHERE date LIKE ? || '%'
+        AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
       GROUP BY category 
       ORDER BY total DESC
-    `).all(targetMonth) as any[];
+    `).all(targetMonth, pharmacyId, pharmacyId) as any[];
 
     const totalExpenses = byCategory.reduce((sum, c) => sum + c.total, 0);
 
@@ -186,14 +193,16 @@ export async function getExpenseSummaryAction(month?: string) {
       FROM sales_invoices
       WHERE strftime('%Y-%m', created_at, 'localtime') = ?
         AND (status IS NULL OR status = '' OR status IN ('completed', 'approved', 'delivered'))
-    `).get(targetMonth) as any;
+        AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+    `).get(targetMonth, pharmacyId, pharmacyId) as any;
 
     const totalReturns = await db.prepare(`
       SELECT COALESCE(SUM(total_refund), 0) as refunds
       FROM returns
       WHERE strftime('%Y-%m', created_at, 'localtime') = ?
         AND status IN ('approved', 'completed')
-    `).get(targetMonth) as any;
+        AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+    `).get(targetMonth, pharmacyId, pharmacyId) as any;
 
     const soldCogs = await db.prepare(`
       SELECT COALESCE(SUM(
@@ -216,7 +225,8 @@ export async function getExpenseSummaryAction(month?: string) {
       WHERE strftime('%Y-%m', invoice.created_at, 'localtime') = ?
         AND (invoice.status IS NULL OR invoice.status = '' OR invoice.status IN ('completed', 'approved', 'delivered'))
         AND COALESCE(si.is_negative, 0) = 0
-    `).get(targetMonth) as any;
+        AND (invoice.pharmacy_id = ? OR (invoice.pharmacy_id IS NULL AND ? = 'local_default'))
+    `).get(targetMonth, pharmacyId, pharmacyId) as any;
 
     const returnedCogs = await db.prepare(`
       SELECT COALESCE(SUM(
@@ -239,7 +249,8 @@ export async function getExpenseSummaryAction(month?: string) {
       LEFT JOIN master_drugs md ON md.id = COALESCE(ri.drug_id, si.drug_id)
       WHERE strftime('%Y-%m', r.created_at, 'localtime') = ?
         AND r.status IN ('approved', 'completed')
-    `).get(targetMonth) as any;
+        AND (r.pharmacy_id = ? OR (r.pharmacy_id IS NULL AND ? = 'local_default'))
+    `).get(targetMonth, pharmacyId, pharmacyId) as any;
 
     const revenue = Number(totalRevenue?.revenue || 0);
     const refunds = Number(totalReturns?.refunds || 0);

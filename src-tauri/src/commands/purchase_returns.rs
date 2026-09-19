@@ -510,23 +510,19 @@ pub(crate) async fn create_purchase_return_on_connection(
         let permanent_shift_id = Uuid::new_v4().to_string();
         sqlx::query(
             r#"
-            INSERT INTO shifts (id, user_id, status)
-            SELECT ?, ?, 'open'
+            INSERT INTO shifts (id, user_id, pharmacy_id, status)
+            SELECT ?, ?, ?, 'open'
             WHERE NOT EXISTS (
               SELECT 1
               FROM shifts s
               WHERE LOWER(COALESCE(s.status, '')) = 'open'
-                AND EXISTS (
-                  SELECT 1
-                  FROM users su
-                  WHERE CAST(su.id AS TEXT) = CAST(s.user_id AS TEXT)
-                    AND COALESCE(NULLIF(TRIM(su.pharmacy_id), ''), 'local_default') = ?
-                )
+                AND COALESCE(NULLIF(TRIM(s.pharmacy_id), ''), 'local_default') = ?
             )
             "#,
         )
         .bind(&permanent_shift_id)
         .bind(&user_id)
+        .bind(&invoice_pharmacy)
         .bind(&invoice_pharmacy)
         .execute(&mut *connection)
         .await
@@ -536,12 +532,7 @@ pub(crate) async fn create_purchase_return_on_connection(
             SELECT s.id
             FROM shifts s
             WHERE LOWER(COALESCE(s.status, '')) = 'open'
-              AND EXISTS (
-                SELECT 1
-                FROM users su
-                WHERE CAST(su.id AS TEXT) = CAST(s.user_id AS TEXT)
-                  AND COALESCE(NULLIF(TRIM(su.pharmacy_id), ''), 'local_default') = ?
-              )
+              AND COALESCE(NULLIF(TRIM(s.pharmacy_id), ''), 'local_default') = ?
             ORDER BY s.rowid ASC
             LIMIT 1
             "#,

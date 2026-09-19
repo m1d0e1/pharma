@@ -127,7 +127,8 @@ export async function closeDeliveryInvoiceAction(invoiceId: string, deliveryFee:
         FROM journal_entries je
         JOIN daily_journals dj ON dj.id = je.journal_id
         WHERE dj.description LIKE ?
-      `).get(cashAccount, receivableAccount, `%${invoiceId.substring(0, 8)}%`) as any;
+          AND (dj.pharmacy_id = ? OR (dj.pharmacy_id IS NULL AND ? = 'local_default'))
+      `).get(cashAccount, receivableAccount, `%${invoiceId.substring(0, 8)}%`, pharmacyId, pharmacyId) as any;
       const legacyCashPosting = originalTotal > 0.000001
         && Number(originalPosting?.cash_debit || 0) + 0.005 >= originalTotal
         && Number(originalPosting?.receivable_debit || 0) + 0.005 < originalTotal;

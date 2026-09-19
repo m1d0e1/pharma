@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { dbSelect } from '@/lib/db/tauri';
+import { getClientSession } from '@/lib/auth/local';
 import { localDate } from '@/lib/time';
 
 export default function ExpiryWidget() {
@@ -11,6 +12,9 @@ export default function ExpiryWidget() {
   useEffect(() => {
     async function loadExpiringItems() {
       try {
+        const user = await getClientSession();
+        if (!user) return;
+        const pharmacyId = user.pharmacy_id || 'local_default';
         const thirtyDaysFromNow = new Date();
         thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
         const dateStr = localDate(thirtyDaysFromNow);
@@ -23,9 +27,10 @@ export default function ExpiryWidget() {
           FROM inventory i
           JOIN master_drugs m ON i.drug_id = m.id
           WHERE i.expiry_date <= ? AND i.quantity > 0
+            AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
           ORDER BY i.expiry_date ASC
           LIMIT 5
-        `, [dateStr]);
+        `, [dateStr, pharmacyId, pharmacyId]);
 
         const { secureCache } = require('@/lib/cache/secure_cache');
         await secureCache.load();

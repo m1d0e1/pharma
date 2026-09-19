@@ -74,13 +74,7 @@ async function getOpenShiftForPharmacy(pharmacyId?: string | null) {
     SELECT s.id, s.user_id, s.start_time, s.starting_cash, s.status
     FROM shifts s
     WHERE LOWER(COALESCE(s.status, '')) = 'open'
-      AND EXISTS (
-        SELECT 1
-        FROM users su
-        WHERE (CAST(su.id AS TEXT) = CAST(s.user_id AS TEXT)
-               OR LOWER(su.username) = LOWER(CAST(s.user_id AS TEXT)))
-          AND COALESCE(NULLIF(TRIM(su.pharmacy_id), ''), 'local_default') = ?
-      )
+      AND COALESCE(NULLIF(TRIM(s.pharmacy_id), ''), 'local_default') = ?
     ORDER BY s.start_time ASC, s.rowid ASC
     LIMIT 1
   `).get(scope) as any;
@@ -97,13 +91,7 @@ export async function getShiftForPharmacy(
     FROM shifts s
     WHERE s.id = ?
       ${openOnly ? "AND LOWER(COALESCE(s.status, '')) = 'open'" : ''}
-      AND EXISTS (
-        SELECT 1
-        FROM users su
-        WHERE (CAST(su.id AS TEXT) = CAST(s.user_id AS TEXT)
-               OR LOWER(su.username) = LOWER(CAST(s.user_id AS TEXT)))
-          AND COALESCE(NULLIF(TRIM(su.pharmacy_id), ''), 'local_default') = ?
-      )
+      AND COALESCE(NULLIF(TRIM(s.pharmacy_id), ''), 'local_default') = ?
     LIMIT 1
   `).get(shiftId, scope) as any;
 }
@@ -123,21 +111,15 @@ export async function ensurePermanentShiftForUser(
 
   const shiftId = generateId();
   await db.prepare(`
-    INSERT INTO shifts (id, user_id, starting_cash, notes, status)
-    SELECT ?, ?, ?, ?, 'open'
+    INSERT INTO shifts (id, user_id, pharmacy_id, starting_cash, notes, status)
+    SELECT ?, ?, ?, ?, ?, 'open'
     WHERE NOT EXISTS (
       SELECT 1
       FROM shifts s
       WHERE LOWER(COALESCE(s.status, '')) = 'open'
-        AND EXISTS (
-          SELECT 1
-          FROM users su
-          WHERE (CAST(su.id AS TEXT) = CAST(s.user_id AS TEXT)
-                 OR LOWER(su.username) = LOWER(CAST(s.user_id AS TEXT)))
-            AND COALESCE(NULLIF(TRIM(su.pharmacy_id), ''), 'local_default') = ?
-        )
+        AND COALESCE(NULLIF(TRIM(s.pharmacy_id), ''), 'local_default') = ?
     )
-  `).run(shiftId, userId, startingCash, notes, pharmacyId);
+  `).run(shiftId, userId, pharmacyId, startingCash, notes, pharmacyId);
 
   const created = await getOpenShiftForPharmacy(pharmacyId);
   if (!created?.id) throw new Error('تعذر إنشاء الوردية المشتركة');
@@ -361,7 +343,7 @@ export async function getShiftsAction(filter: { status: string }) {
         FROM cash_movements
         GROUP BY shift_id
       ) moves ON s.id = moves.shift_id
-      WHERE COALESCE(NULLIF(TRIM(u.pharmacy_id), ''), 'local_default') = ?
+      WHERE COALESCE(NULLIF(TRIM(s.pharmacy_id), ''), 'local_default') = ?
       ${filter.status !== 'all' ? 'AND s.status = ?' : ''}
       ORDER BY COALESCE(datetime(s.start_time), s.start_time, s.rowid) DESC LIMIT 100
     `).all(...params) as any[];
@@ -444,13 +426,7 @@ export async function getCurrentShiftAction() {
       SELECT ending_cash
       FROM shifts s
       WHERE s.status != 'open' AND s.ending_cash IS NOT NULL
-        AND EXISTS (
-          SELECT 1
-          FROM users su
-          WHERE (CAST(su.id AS TEXT) = CAST(s.user_id AS TEXT)
-                 OR LOWER(su.username) = LOWER(CAST(s.user_id AS TEXT)))
-            AND COALESCE(NULLIF(TRIM(su.pharmacy_id), ''), 'local_default') = ?
-        )
+        AND COALESCE(NULLIF(TRIM(s.pharmacy_id), ''), 'local_default') = ?
       ORDER BY COALESCE(s.end_time, s.start_time) DESC
       LIMIT 1
     `).get(pharmacyId) as any;
@@ -577,13 +553,7 @@ export async function forceCloseAllShiftsAction() {
       UPDATE shifts 
       SET end_time = CURRENT_TIMESTAMP, status = 'closed', notes = 'إغلاق اضطراري من قبل المالك'
       WHERE status = 'open'
-        AND EXISTS (
-          SELECT 1
-          FROM users su
-          WHERE (CAST(su.id AS TEXT) = CAST(shifts.user_id AS TEXT)
-                 OR LOWER(su.username) = LOWER(CAST(shifts.user_id AS TEXT)))
-            AND COALESCE(NULLIF(TRIM(su.pharmacy_id), ''), 'local_default') = ?
-        )
+        AND COALESCE(NULLIF(TRIM(pharmacy_id), ''), 'local_default') = ?
     `).run(pharmacyId);
 
     logActivity(user.id, 'FORCE_CLOSE_SHIFTS', 'قام المالك بإغلاق جميع الورديات المفتوحة اضطرارياً');

@@ -35,6 +35,7 @@ import { cn } from '@/lib/utils'
 import { toast, Toaster } from 'react-hot-toast'
 import { useSearchParams } from 'next/navigation'
 import { dbSelect, dbExecute } from '@/lib/db/tauri'
+import { getClientSession } from '@/lib/auth/local'
 import { findDrugBarcodeConflict } from '@/app/actions-client/drug-replacement';
 import DrugReplacementDialog from '@/components/master-drugs/DrugReplacementDialog';
 import {
@@ -183,15 +184,19 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
 
    const loadPurchaseHistory = async (drugId: number) => {
       try {
+         const user = await getClientSession();
+         if (!user) return;
+         const pharmacyId = user.pharmacy_id || 'local_default';
          const data = await dbSelect(`
            SELECT pi.invoice_date, pi.invoice_number, pii.quantity, pii.cost_price, s.name_ar as supplier_name
            FROM purchase_invoice_items pii
            JOIN purchase_invoices pi ON pii.invoice_id = pi.id
            JOIN suppliers s ON pi.supplier_id = s.id
            WHERE pii.drug_id = ? AND pi.status = 'completed'
+             AND (pi.pharmacy_id = ? OR (pi.pharmacy_id IS NULL AND ? = 'local_default'))
            ORDER BY pi.invoice_date DESC
            LIMIT 5
-         `, [drugId]);
+         `, [drugId, pharmacyId, pharmacyId]);
          setPurchaseHistory(data);
       } catch (err) {
          console.error('Failed to load purchase history:', err);

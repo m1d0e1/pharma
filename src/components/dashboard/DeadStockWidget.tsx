@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { dbSelect } from '@/lib/db/tauri';
+import { getClientSession } from '@/lib/auth/local';
 
 export default function DeadStockWidget() {
   const [items, setItems] = useState<any[]>([]);
@@ -10,6 +11,9 @@ export default function DeadStockWidget() {
   useEffect(() => {
     async function loadDeadStock() {
       try {
+        const user = await getClientSession();
+        if (!user) return;
+        const pharmacyId = user.pharmacy_id || 'local_default';
         const results = await dbSelect(`
           SELECT 
             MIN(i.id) as id, 
@@ -19,18 +23,23 @@ export default function DeadStockWidget() {
             m.active_ingredient, m.generic_name, m.manufacturer,
             (julianday('now') - julianday(
               COALESCE(
-                (SELECT MAX(si.created_at) FROM sales_items si WHERE si.drug_id = i.drug_id),
+                (SELECT MAX(si.created_at)
+                 FROM sales_items si
+                 JOIN sales_invoices sinv ON sinv.id = si.invoice_id
+                 WHERE si.drug_id = i.drug_id
+                   AND (sinv.pharmacy_id = ? OR (sinv.pharmacy_id IS NULL AND ? = 'local_default'))),
                 MIN(i.created_at)
               )
             )) / 30 as months_idle
           FROM inventory i
           JOIN master_drugs m ON i.drug_id = m.id
-          WHERE i.quantity > 0 
+          WHERE i.quantity > 0
+            AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
           GROUP BY i.drug_id
           HAVING months_idle >= 1
           ORDER BY months_idle DESC
           LIMIT 5
-        `);
+        `, [pharmacyId, pharmacyId, pharmacyId, pharmacyId]);
 
         const { secureCache } = require('@/lib/cache/secure_cache');
         await secureCache.load();

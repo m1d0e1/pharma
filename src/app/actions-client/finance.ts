@@ -383,7 +383,7 @@ export async function getCashMovementsAction(filters?: {
       FROM cash_movements cm
       LEFT JOIN users u ON u.id = cm.user_id
       LEFT JOIN shifts s ON s.id = cm.shift_id
-      WHERE (u.pharmacy_id = ? OR (u.pharmacy_id IS NULL AND ? = 'local_default'))
+      WHERE (cm.pharmacy_id = ? OR (cm.pharmacy_id IS NULL AND ? = 'local_default'))
     `;
     const params: any[] = [pharmacyId, pharmacyId];
 
@@ -454,7 +454,7 @@ export async function getTreasuryDashboardAction(detail?: TreasuryMetricKey) {
             JOIN daily_journals dj ON dj.id = je.journal_id
             LEFT JOIN users u ON u.id = dj.created_by
             WHERE je.account_id = ?
-              AND (u.pharmacy_id = ? OR (u.pharmacy_id IS NULL AND ? = 'local_default'))
+              AND (dj.pharmacy_id = ? OR (dj.pharmacy_id IS NULL AND ? = 'local_default'))
           `).get(cashAccount.id, pharmacyId, pharmacyId)
         : Promise.resolve({ total: 0, count: 0 }),
       db.prepare(`
@@ -464,21 +464,21 @@ export async function getTreasuryDashboardAction(detail?: TreasuryMetricKey) {
         WHERE cm.type = 'receipt'
           AND cm.category NOT IN ('handover_received', 'cash_adjustment')
           AND date(COALESCE(NULLIF(cm.date, ''), cm.created_at)) = date('now', 'localtime')
-          AND (u.pharmacy_id = ? OR (u.pharmacy_id IS NULL AND ? = 'local_default'))
+          AND (cm.pharmacy_id = ? OR (cm.pharmacy_id IS NULL AND ? = 'local_default'))
       `).get(pharmacyId, pharmacyId),
       db.prepare(`
         SELECT CAST(COALESCE(SUM(e.amount), 0) AS REAL) AS total, COUNT(*) AS count
         FROM expenses e
         LEFT JOIN users u ON u.id = e.user_id
         WHERE date(e.date) = date('now', 'localtime')
-          AND (u.pharmacy_id = ? OR (u.pharmacy_id IS NULL AND ? = 'local_default'))
+          AND (e.pharmacy_id = ? OR (e.pharmacy_id IS NULL AND ? = 'local_default'))
       `).get(pharmacyId, pharmacyId),
       db.prepare(`
         SELECT CAST(COALESCE(SUM(cm.amount), 0) AS REAL) AS total, COUNT(*) AS count
         FROM cash_movements cm
         LEFT JOIN users u ON u.id = cm.user_id
         WHERE cm.type = 'disbursement' AND cm.category = 'handover'
-          AND (u.pharmacy_id = ? OR (u.pharmacy_id IS NULL AND ? = 'local_default'))
+          AND (cm.pharmacy_id = ? OR (cm.pharmacy_id IS NULL AND ? = 'local_default'))
           AND strftime(
             '%Y-%m',
             CASE
@@ -502,7 +502,7 @@ export async function getTreasuryDashboardAction(detail?: TreasuryMetricKey) {
         JOIN daily_journals dj ON dj.id = je.journal_id
         LEFT JOIN users u ON u.id = dj.created_by
         WHERE je.account_id = ?
-          AND (u.pharmacy_id = ? OR (u.pharmacy_id IS NULL AND ? = 'local_default'))
+          AND (dj.pharmacy_id = ? OR (dj.pharmacy_id IS NULL AND ? = 'local_default'))
         ORDER BY COALESCE(dj.created_at, dj.date) DESC, je.id DESC
         LIMIT 500
       `).all(cashAccount.id, pharmacyId, pharmacyId) as any[];
@@ -518,7 +518,7 @@ export async function getTreasuryDashboardAction(detail?: TreasuryMetricKey) {
         WHERE cm.type = 'receipt'
           AND cm.category NOT IN ('handover_received', 'cash_adjustment')
           AND date(COALESCE(NULLIF(cm.date, ''), cm.created_at)) = date('now', 'localtime')
-          AND (u.pharmacy_id = ? OR (u.pharmacy_id IS NULL AND ? = 'local_default'))
+          AND (cm.pharmacy_id = ? OR (cm.pharmacy_id IS NULL AND ? = 'local_default'))
         ORDER BY cm.created_at DESC
         LIMIT 500
       `).all(pharmacyId, pharmacyId) as any[];
@@ -532,7 +532,7 @@ export async function getTreasuryDashboardAction(detail?: TreasuryMetricKey) {
         FROM expenses e
         LEFT JOIN users u ON u.id = e.user_id
         WHERE date(e.date) = date('now', 'localtime')
-          AND (u.pharmacy_id = ? OR (u.pharmacy_id IS NULL AND ? = 'local_default'))
+          AND (e.pharmacy_id = ? OR (e.pharmacy_id IS NULL AND ? = 'local_default'))
         ORDER BY e.created_at DESC
         LIMIT 500
       `).all(pharmacyId, pharmacyId) as any[];
@@ -546,7 +546,7 @@ export async function getTreasuryDashboardAction(detail?: TreasuryMetricKey) {
         FROM cash_movements cm
         LEFT JOIN users u ON u.id = cm.user_id
         WHERE cm.type = 'disbursement' AND cm.category = 'handover'
-          AND (u.pharmacy_id = ? OR (u.pharmacy_id IS NULL AND ? = 'local_default'))
+          AND (cm.pharmacy_id = ? OR (cm.pharmacy_id IS NULL AND ? = 'local_default'))
           AND strftime(
             '%Y-%m',
             CASE
@@ -955,7 +955,7 @@ export async function getJournalsAction(filters?: { dateFrom?: string; dateTo?: 
       SELECT dj.*
       FROM daily_journals dj
       LEFT JOIN users u ON u.id = dj.created_by
-      WHERE (u.pharmacy_id = ? OR (u.pharmacy_id IS NULL AND ? = 'local_default'))
+      WHERE (dj.pharmacy_id = ? OR (dj.pharmacy_id IS NULL AND ? = 'local_default'))
     `;
     const params: any[] = [pharmacyId, pharmacyId];
     if (filters?.dateFrom) {
@@ -990,7 +990,7 @@ export async function getJournalDetailsAction(journalId: string) {
       JOIN accounts a ON e.account_id = a.id
       LEFT JOIN users u ON u.id = dj.created_by
       WHERE e.journal_id = ?
-        AND (u.pharmacy_id = ? OR (u.pharmacy_id IS NULL AND ? = 'local_default'))
+        AND (dj.pharmacy_id = ? OR (dj.pharmacy_id IS NULL AND ? = 'local_default'))
       ORDER BY e.type DESC, e.amount DESC
     `).all(journalId, pharmacyId, pharmacyId);
     return { success: true, data: entries };
@@ -1144,9 +1144,8 @@ export async function generateDailySnapshotAction(targetDate?: string) {
     const movements = await db.prepare(`
       SELECT COALESCE(SUM(CASE WHEN cm.type='receipt' THEN cm.amount ELSE -cm.amount END), 0) as net
       FROM cash_movements cm
-      LEFT JOIN users u ON u.id = cm.user_id
       WHERE date(cm.date) = ?
-        AND (u.pharmacy_id = ? OR (u.pharmacy_id IS NULL AND ? = 'local_default'))
+        AND (cm.pharmacy_id = ? OR (cm.pharmacy_id IS NULL AND ? = 'local_default'))
     `).get(date, pharmacyId, pharmacyId) as any;
     
     // Simple net calculation for the dashboard pulse
@@ -1245,8 +1244,7 @@ export async function getTrialBalanceAction(startDate?: string, endDate?: string
           date(COALESCE(dj.date, dj.created_at, '1970-01-01')) as entry_date
         FROM journal_entries je
         LEFT JOIN daily_journals dj ON je.journal_id = dj.id
-        LEFT JOIN users u ON u.id = dj.created_by
-        WHERE (u.pharmacy_id = ? OR (u.pharmacy_id IS NULL AND ? = 'local_default'))
+        WHERE (dj.pharmacy_id = ? OR (dj.pharmacy_id IS NULL AND ? = 'local_default'))
       )
       SELECT 
         a.id,
@@ -1325,7 +1323,7 @@ export async function getFinancialNoticesAction() {
       LEFT JOIN users u ON n.user_id = u.id
       LEFT JOIN patients p ON n.target_type = 'customer' AND n.target_id = p.id
       LEFT JOIN suppliers s ON n.target_type = 'supplier' AND CAST(n.target_id AS TEXT) = CAST(s.id AS TEXT)
-      WHERE (u.pharmacy_id = ? OR (u.pharmacy_id IS NULL AND ? = 'local_default'))
+      WHERE (n.pharmacy_id = ? OR (n.pharmacy_id IS NULL AND ? = 'local_default'))
       ORDER BY n.created_at DESC LIMIT 200
     `).all(pharmacyId, pharmacyId);
     return { success: true, data: results };
@@ -1344,7 +1342,7 @@ export async function getActivityLogsAction() {
       SELECT a.*, u.full_name as user_name
       FROM activity_log a
       LEFT JOIN users u ON a.user_id = u.id
-      WHERE (u.pharmacy_id = ? OR (u.pharmacy_id IS NULL AND ? = 'local_default'))
+      WHERE (a.pharmacy_id = ? OR (a.pharmacy_id IS NULL AND ? = 'local_default'))
       ORDER BY a.created_at DESC LIMIT 200
     `).all(pharmacyId, pharmacyId);
     return { success: true, data: logs };

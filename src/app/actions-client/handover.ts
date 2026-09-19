@@ -373,21 +373,15 @@ export async function processHandoverAction(data: {
       if (shiftUpdate.changes !== 1) throw new Error('تم إغلاق الوردية أو تعديلها بالفعل');
       if (nextShiftId) {
         const opened = await db.prepare(`
-          INSERT INTO shifts(id,user_id,starting_cash,notes,status)
-          SELECT ?,?,?,?,'open'
+          INSERT INTO shifts(id,user_id,pharmacy_id,starting_cash,notes,status)
+          SELECT ?,?,?,?,?, 'open'
           WHERE NOT EXISTS(
             SELECT 1
             FROM shifts s
             WHERE LOWER(COALESCE(s.status, '')) = 'open'
-              AND EXISTS (
-                SELECT 1
-                FROM users su
-                WHERE (CAST(su.id AS TEXT) = CAST(s.user_id AS TEXT)
-                       OR LOWER(su.username) = LOWER(CAST(s.user_id AS TEXT)))
-                  AND COALESCE(NULLIF(TRIM(su.pharmacy_id), ''), 'local_default') = ?
-              )
+              AND COALESCE(NULLIF(TRIM(s.pharmacy_id), ''), 'local_default') = ?
           )
-        `).run(nextShiftId,user.id,carriedCash,`وردية مشتركة بعد تسليم ${data.shiftId}`,pharmacyId);
+        `).run(nextShiftId,user.id,pharmacyId,carriedCash,`وردية مشتركة بعد تسليم ${data.shiftId}`,pharmacyId);
         if (opened.changes !== 1) throw new Error('توجد وردية أخرى مفتوحة؛ لم يتم التسليم. راجع إدارة الورديات');
         if (isInternalHandover && data.transferAmount > 0) {
           receiverShiftId = nextShiftId;

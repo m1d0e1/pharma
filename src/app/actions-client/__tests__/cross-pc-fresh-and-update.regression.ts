@@ -103,7 +103,7 @@ function applyAllMigrations(db: Database.Database) {
     '019_shift_pharmacy_scope.sql',
     '020_daily_snapshot_pharmacy_scope.sql',
     '021_returns_pharmacy_scope.sql',
-    '021_returns_pharmacy_scope.sql',
+    '022_finance_pharmacy_scope.sql',
   ];
   for (const file of files) {
     const sql = readFileSync(`src-tauri/migrations/${file}`, 'utf8');
@@ -161,8 +161,13 @@ function applyLocalSchemaRepairs(db: Database.Database) {
   addCol('shifts', 'transfer_amount', 'REAL DEFAULT 0');
   addCol('shifts', 'transfer_target', "TEXT DEFAULT 'vault'");
   addCol('shifts', 'cash_difference', 'REAL DEFAULT 0');
+  addCol('shifts', 'pharmacy_id', 'TEXT');
   addCol('cash_movements', 'source_type', 'TEXT');
   addCol('cash_movements', 'target_name', 'TEXT');
+  addCol('cash_movements', 'pharmacy_id', 'TEXT');
+  addCol('daily_journals', 'pharmacy_id', 'TEXT');
+  addCol('expenses', 'pharmacy_id', 'TEXT');
+  addCol('financial_notices', 'pharmacy_id', 'TEXT');
   addCol('sales_invoices', 'user_id', 'TEXT');
   addCol('sales_invoices', 'pharmacy_id', 'TEXT');
   addCol('returns', 'pharmacy_id', 'TEXT');
@@ -173,6 +178,52 @@ function applyLocalSchemaRepairs(db: Database.Database) {
   db.exec("UPDATE shortages SET pharmacy_id = 'local_default' WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = ''");
   db.exec('UPDATE shortages SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL');
   db.exec(`
+    UPDATE shifts
+    SET pharmacy_id = COALESCE(
+      (SELECT NULLIF(TRIM(u.pharmacy_id), '') FROM users u
+       WHERE CAST(u.id AS TEXT) = CAST(shifts.user_id AS TEXT)
+          OR LOWER(u.username) = LOWER(CAST(shifts.user_id AS TEXT)) LIMIT 1),
+      'local_default'
+    )
+    WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = '';
+
+    UPDATE cash_movements
+    SET pharmacy_id = COALESCE(
+      (SELECT NULLIF(TRIM(s.pharmacy_id), '') FROM shifts s WHERE s.id = cash_movements.shift_id LIMIT 1),
+      (SELECT NULLIF(TRIM(u.pharmacy_id), '') FROM users u
+       WHERE CAST(u.id AS TEXT) = CAST(cash_movements.user_id AS TEXT)
+          OR LOWER(u.username) = LOWER(CAST(cash_movements.user_id AS TEXT)) LIMIT 1),
+      'local_default'
+    )
+    WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = '';
+
+    UPDATE daily_journals
+    SET pharmacy_id = COALESCE(
+      (SELECT NULLIF(TRIM(u.pharmacy_id), '') FROM users u
+       WHERE CAST(u.id AS TEXT) = CAST(daily_journals.created_by AS TEXT)
+          OR LOWER(u.username) = LOWER(CAST(daily_journals.created_by AS TEXT)) LIMIT 1),
+      'local_default'
+    )
+    WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = '';
+
+    UPDATE expenses
+    SET pharmacy_id = COALESCE(
+      (SELECT NULLIF(TRIM(u.pharmacy_id), '') FROM users u
+       WHERE CAST(u.id AS TEXT) = CAST(expenses.user_id AS TEXT)
+          OR LOWER(u.username) = LOWER(CAST(expenses.user_id AS TEXT)) LIMIT 1),
+      'local_default'
+    )
+    WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = '';
+
+    UPDATE financial_notices
+    SET pharmacy_id = COALESCE(
+      (SELECT NULLIF(TRIM(u.pharmacy_id), '') FROM users u
+       WHERE CAST(u.id AS TEXT) = CAST(financial_notices.user_id AS TEXT)
+          OR LOWER(u.username) = LOWER(CAST(financial_notices.user_id AS TEXT)) LIMIT 1),
+      'local_default'
+    )
+    WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = '';
+
     UPDATE sales_invoices
     SET pharmacy_id = COALESCE(
       (SELECT COALESCE(NULLIF(TRIM(u.pharmacy_id), ''), 'local_default')
@@ -197,6 +248,68 @@ function applyLocalSchemaRepairs(db: Database.Database) {
       'local_default'
     )
     WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = '';
+  `);
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS shifts_snapshot_pharmacy_insert
+    AFTER INSERT ON shifts
+    WHEN NEW.pharmacy_id IS NULL OR TRIM(NEW.pharmacy_id) = ''
+    BEGIN
+      UPDATE shifts SET pharmacy_id = COALESCE(
+        (SELECT NULLIF(TRIM(u.pharmacy_id), '') FROM users u
+         WHERE CAST(u.id AS TEXT) = CAST(NEW.user_id AS TEXT)
+            OR LOWER(u.username) = LOWER(CAST(NEW.user_id AS TEXT)) LIMIT 1),
+        'local_default'
+      ) WHERE id = NEW.id;
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS cash_movements_snapshot_pharmacy_insert
+    AFTER INSERT ON cash_movements
+    WHEN NEW.pharmacy_id IS NULL OR TRIM(NEW.pharmacy_id) = ''
+    BEGIN
+      UPDATE cash_movements SET pharmacy_id = COALESCE(
+        (SELECT NULLIF(TRIM(s.pharmacy_id), '') FROM shifts s WHERE s.id = NEW.shift_id LIMIT 1),
+        (SELECT NULLIF(TRIM(u.pharmacy_id), '') FROM users u
+         WHERE CAST(u.id AS TEXT) = CAST(NEW.user_id AS TEXT)
+            OR LOWER(u.username) = LOWER(CAST(NEW.user_id AS TEXT)) LIMIT 1),
+        'local_default'
+      ) WHERE id = NEW.id;
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS daily_journals_snapshot_pharmacy_insert
+    AFTER INSERT ON daily_journals
+    WHEN NEW.pharmacy_id IS NULL OR TRIM(NEW.pharmacy_id) = ''
+    BEGIN
+      UPDATE daily_journals SET pharmacy_id = COALESCE(
+        (SELECT NULLIF(TRIM(u.pharmacy_id), '') FROM users u
+         WHERE CAST(u.id AS TEXT) = CAST(NEW.created_by AS TEXT)
+            OR LOWER(u.username) = LOWER(CAST(NEW.created_by AS TEXT)) LIMIT 1),
+        'local_default'
+      ) WHERE id = NEW.id;
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS expenses_snapshot_pharmacy_insert
+    AFTER INSERT ON expenses
+    WHEN NEW.pharmacy_id IS NULL OR TRIM(NEW.pharmacy_id) = ''
+    BEGIN
+      UPDATE expenses SET pharmacy_id = COALESCE(
+        (SELECT NULLIF(TRIM(u.pharmacy_id), '') FROM users u
+         WHERE CAST(u.id AS TEXT) = CAST(NEW.user_id AS TEXT)
+            OR LOWER(u.username) = LOWER(CAST(NEW.user_id AS TEXT)) LIMIT 1),
+        'local_default'
+      ) WHERE id = NEW.id;
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS financial_notices_snapshot_pharmacy_insert
+    AFTER INSERT ON financial_notices
+    WHEN NEW.pharmacy_id IS NULL OR TRIM(NEW.pharmacy_id) = ''
+    BEGIN
+      UPDATE financial_notices SET pharmacy_id = COALESCE(
+        (SELECT NULLIF(TRIM(u.pharmacy_id), '') FROM users u
+         WHERE CAST(u.id AS TEXT) = CAST(NEW.user_id AS TEXT)
+            OR LOWER(u.username) = LOWER(CAST(NEW.user_id AS TEXT)) LIMIT 1),
+        'local_default'
+      ) WHERE id = NEW.id;
+    END;
   `);
   db.exec('CREATE INDEX IF NOT EXISTS idx_returns_pharmacy_created ON returns(pharmacy_id, created_at)');
   db.exec(`
@@ -996,8 +1109,11 @@ describe('Cross-computer consistency across fresh install and update', () => {
         CREATE TABLE purchase_invoice_items (id INTEGER PRIMARY KEY, drug_id INTEGER);
         CREATE TABLE inventory (id TEXT PRIMARY KEY, drug_id INTEGER, strips_per_box INTEGER DEFAULT 1);
         CREATE TABLE sales_items (id INTEGER PRIMARY KEY, drug_id INTEGER, inventory_id TEXT);
-        CREATE TABLE shifts (id TEXT PRIMARY KEY);
-        CREATE TABLE cash_movements (id TEXT PRIMARY KEY);
+        CREATE TABLE shifts (id TEXT PRIMARY KEY, user_id TEXT, status TEXT, start_time TEXT, end_time TEXT);
+        CREATE TABLE cash_movements (id TEXT PRIMARY KEY, user_id TEXT, shift_id TEXT, date TEXT);
+        CREATE TABLE daily_journals (id TEXT PRIMARY KEY, created_by TEXT, date TEXT);
+        CREATE TABLE expenses (id TEXT PRIMARY KEY, user_id TEXT, date TEXT);
+        CREATE TABLE financial_notices (id TEXT PRIMARY KEY, user_id TEXT, created_at TEXT);
         CREATE TABLE master_drugs (id INTEGER PRIMARY KEY, large_to_medium INTEGER, medium_to_small INTEGER);
 
         INSERT INTO users VALUES

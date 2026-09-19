@@ -53,7 +53,7 @@ describe('report KPI pharmacy scope', () => {
       );
       CREATE TABLE accounts (id INTEGER PRIMARY KEY);
       CREATE TABLE trial_balance_settings (category TEXT PRIMARY KEY, account_id INTEGER);
-      CREATE TABLE daily_journals (id TEXT PRIMARY KEY, created_by TEXT);
+      CREATE TABLE daily_journals (id TEXT PRIMARY KEY, created_by TEXT, pharmacy_id TEXT);
       CREATE TABLE journal_entries (journal_id TEXT, account_id INTEGER, type TEXT, amount REAL);
       CREATE TABLE inventory (
         id TEXT PRIMARY KEY,
@@ -87,7 +87,7 @@ describe('report KPI pharmacy scope', () => {
         ('ph1-delivery', 'ph-1', 'delivery', 'completed', 50, datetime('now')),
         ('ph2-sale', 'ph-2', 'delivery', 'completed', 200, datetime('now'));
 
-      INSERT INTO daily_journals VALUES ('j1', 'u1'), ('j2', 'u2');
+      INSERT INTO daily_journals VALUES ('j1', 'u1', 'ph-1'), ('j2', 'u2', 'ph-2');
       INSERT INTO journal_entries VALUES ('j1', 6, 'debit', 30), ('j2', 6, 'debit', 90);
 
       INSERT INTO master_drugs VALUES (1, 1, 1, 5);
