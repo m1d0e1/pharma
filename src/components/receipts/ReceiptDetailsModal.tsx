@@ -58,24 +58,44 @@ export default function ReceiptDetailsModal({ invoice, onClose, autoPrint = fals
   const autoPrintDone = React.useRef(false)
 
   useEffect(() => {
+    let active = true
     setMounted(true)
     async function loadInfo() {
-      const name = await getConfigAction('pharmacy_name')
-      const phone = await getConfigAction('pharmacy_phone')
-      const address = await getConfigAction('pharmacy_address')
-      
-      const info = {
-        name: name.value || 'صيدلية فارما تيك',
-        phone: phone.value || '',
-        address: address.value || ''
+      let info: PharmacyInfo = {
+        name: 'صيدلية فارما تيك',
+        phone: '',
+        address: ''
       }
+      try {
+        const [name, phone, address] = await Promise.all([
+          getConfigAction('pharmacy_name'),
+          getConfigAction('pharmacy_phone'),
+          getConfigAction('pharmacy_address')
+        ])
+        info = {
+          name: name.value || 'صيدلية فارما تيك',
+          phone: phone.value || '',
+          address: address.value || ''
+        }
+      } catch (error) {
+        console.error('Receipt pharmacy info load failed:', error)
+      }
+      if (!active) return
       setPharmacyInfo(info)
       if (autoPrint && !autoPrintDone.current) {
         autoPrintDone.current = true
-        printHtmlContent(generateReceiptHtml(invoice, info))
+        try {
+          printHtmlContent(generateReceiptHtml(invoice, info))
+        } catch (error) {
+          console.error('Receipt print failed:', error)
+          toast.error('فشلت عملية الطباعة')
+        }
       }
     }
     loadInfo()
+    return () => {
+      active = false
+    }
   }, [autoPrint, invoice])
 
   const formatDate = (dateStr: string) => {
@@ -95,8 +115,13 @@ export default function ReceiptDetailsModal({ invoice, onClose, autoPrint = fals
   }
 
   const handlePrint = () => {
-    const html = generateReceiptHtml(invoice, pharmacyInfo);
-    printHtmlContent(html);
+    try {
+      const html = generateReceiptHtml(invoice, pharmacyInfo);
+      printHtmlContent(html);
+    } catch (error) {
+      console.error('Receipt print failed:', error);
+      toast.error('فشلت عملية الطباعة');
+    }
   };
 
   const handleWhatsApp = () => {

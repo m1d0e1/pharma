@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { syncFromCloud } from '@/lib/sync/universal';
 import { toast } from 'react-hot-toast';
 import { useRouter } from 'next/navigation';
@@ -9,8 +9,11 @@ export default function SyncSettings() {
   const router = useRouter();
   const [syncing, setSyncing] = useState(false);
   const [lastSync, setLastSync] = useState<string | null>(null);
+  const syncingRef = useRef(false);
 
   const handleSync = async () => {
+    if (syncingRef.current) return;
+    syncingRef.current = true;
     setSyncing(true);
     console.log('Starting sync...');
     try {
@@ -19,15 +22,21 @@ export default function SyncSettings() {
       if (result.success) {
         toast.success(result.message || 'تمت المزامنة بنجاح');
         setLastSync(new Date().toLocaleString('ar-EG'));
-        router.refresh();
+        try {
+          router.refresh();
+        } catch (refreshError) {
+          console.error('Post-sync refresh failed:', refreshError);
+        }
       } else {
         toast.error(result.error || 'فشل المزامنة');
       }
     } catch (err) {
       console.error('Sync execution error:', err);
       toast.error('حدث خطأ أثناء تنفيذ المزامنة');
+    } finally {
+      syncingRef.current = false;
+      setSyncing(false);
     }
-    setSyncing(false);
   };
 
   return (

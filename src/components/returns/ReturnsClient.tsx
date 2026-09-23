@@ -12,30 +12,52 @@ export default function ReturnsClient({ title, type = 'sales' }: { title: string
   const [searchTerm, setSearchTerm] = useState('');
   const [returns, setReturns] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedReturn, setSelectedReturn] = useState<any>(null);
   const [detailsLoading, setDetailsLoading] = useState(false);
+  const [detailsError, setDetailsError] = useState<string | null>(null);
+  const loadRequestRef = React.useRef(0);
+  const detailsRequestRef = React.useRef(0);
 
   const newReturnLink = type === 'sales' ? '/returns/new' : '/purchases/returns/new';
   const placeholderText = type === 'sales' ? 'بحث برقم المرتجع أو الفاتورة...' : 'بحث برقم المرتجع أو المورد...';
 
-  useEffect(() => {
-    async function fetchData() {
+  const fetchData = React.useCallback(async () => {
+      const requestId = ++loadRequestRef.current;
       setLoading(true);
+      setLoadError(null);
+      try {
       if (type === 'sales') {
         const res = await getReturnsAction();
+        if (requestId !== loadRequestRef.current) return;
         if (res.success && res.data) {
           setReturns(res.data);
+        } else {
+          setReturns([]);
+          setLoadError(res.error || 'فشل تحميل المرتجعات');
         }
       } else {
         const res = await getPurchaseReturnsAction();
+        if (requestId !== loadRequestRef.current) return;
         if (res.success && res.data) {
           setReturns(res.data);
+        } else {
+          setReturns([]);
+          setLoadError(res.error || 'فشل تحميل المرتجعات');
         }
       }
-      setLoading(false);
-    }
-    fetchData();
+      } catch {
+        if (requestId !== loadRequestRef.current) return;
+        setReturns([]);
+        setLoadError('فشل تحميل المرتجعات');
+      } finally {
+      if (requestId === loadRequestRef.current) setLoading(false);
+      }
   }, [type]);
+
+  useEffect(() => {
+    void fetchData();
+  }, [fetchData]);
 
   const filteredReturns = returns.filter(r => 
     r.id?.includes(searchTerm) || 
@@ -44,11 +66,24 @@ export default function ReturnsClient({ title, type = 'sales' }: { title: string
   );
 
   const openReturn = async (r: any) => {
+    const requestId = ++detailsRequestRef.current;
+    setDetailsError(null);
     if (type === 'purchases') {
       setDetailsLoading(true);
-      const res = await getPurchaseReturnDetailsAction(r.id);
-      setDetailsLoading(false);
-      if (res.success) setSelectedReturn(res.data);
+      try {
+        const res = await getPurchaseReturnDetailsAction(r.id);
+        if (requestId !== detailsRequestRef.current) return;
+        if (res.success) {
+          setSelectedReturn(res.data);
+        } else {
+          setDetailsError(res.error || 'فشل تحميل تفاصيل المرتجع');
+        }
+      } catch {
+        if (requestId !== detailsRequestRef.current) return;
+        setDetailsError('فشل تحميل تفاصيل المرتجع');
+      } finally {
+        if (requestId === detailsRequestRef.current) setDetailsLoading(false);
+      }
     } else {
       setSelectedReturn(r);
     }
@@ -86,6 +121,18 @@ export default function ReturnsClient({ title, type = 'sales' }: { title: string
           <div className="p-12 text-center flex flex-col items-center justify-center">
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-500 mb-4"></div>
             <p className="text-slate-500">جاري تحميل المرتجعات...</p>
+          </div>
+        ) : loadError ? (
+          <div className="p-12 text-center flex flex-col items-center justify-center gap-4">
+            <h3 className="text-lg font-bold text-rose-600">{loadError}</h3>
+            <p className="text-slate-500">تعذر التحقق من سجل المرتجعات الحالي.</p>
+            <button
+              type="button"
+              onClick={() => void fetchData()}
+              className="px-5 py-2.5 rounded-xl bg-primary-600 text-white font-bold hover:bg-primary-700"
+            >
+              إعادة المحاولة
+            </button>
           </div>
         ) : filteredReturns.length === 0 ? (
           <div className="p-12 text-center flex flex-col items-center justify-center">
@@ -134,6 +181,7 @@ export default function ReturnsClient({ title, type = 'sales' }: { title: string
       </div>
 
       {detailsLoading && <div className="text-center text-sm text-slate-500">جاري تحميل تفاصيل المرتجع...</div>}
+      {detailsError && <div className="text-center text-sm font-bold text-rose-600">{detailsError}</div>}
       {selectedReturn && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setSelectedReturn(null)}>
           <div className="max-h-[90vh] w-full max-w-5xl overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl dark:bg-slate-900" onClick={e => e.stopPropagation()} dir="rtl">

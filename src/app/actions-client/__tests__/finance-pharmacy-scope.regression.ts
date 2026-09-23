@@ -182,13 +182,13 @@ describe('finance pharmacy scope', () => {
       INSERT INTO activity_log (user_id, pharmacy_id, action, details)
       VALUES ('u1', 'ph-1', 'PH1', 'ph1 log'), ('u2', 'ph-2', 'PH2', 'ph2 log');
       INSERT INTO sales_invoices VALUES
-        ('sale-1', 'ph-1', 30, 'completed', datetime('now', 'localtime')),
-        ('sale-2', 'ph-2', 70, 'completed', datetime('now', 'localtime'));
+        ('sale-1', 'ph-1', 30, 'completed', datetime('now')),
+        ('sale-2', 'ph-2', 70, 'completed', datetime('now'));
       INSERT INTO returns VALUES
-        ('return-1', 'sale-1', 'u1', 'ph-1', 4, 'approved', datetime('now', 'localtime')),
-        ('return-2', 'sale-2', 'u2', 'ph-2', 9, 'approved', datetime('now', 'localtime')),
-        ('general-return-1', NULL, 'u1', 'ph-1', 6, 'approved', datetime('now', 'localtime')),
-        ('general-return-2', NULL, 'u2', 'ph-2', 11, 'approved', datetime('now', 'localtime'));
+        ('return-1', 'sale-1', 'u1', 'ph-1', 4, 'approved', datetime('now')),
+        ('return-2', 'sale-2', 'u2', 'ph-2', 9, 'approved', datetime('now')),
+        ('general-return-1', NULL, 'u1', 'ph-1', 6, 'approved', datetime('now')),
+        ('general-return-2', NULL, 'u2', 'ph-2', 11, 'approved', datetime('now'));
     `);
   });
 

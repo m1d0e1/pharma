@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { X, Save, ArrowLeftRight, Lock, User, AlertCircle, ShieldCheck, Eye, Receipt, Phone, UserCheck, Calendar } from 'lucide-react';
 import { getHandoverDetailsAction, processHandoverAction, getOpenShiftHandoverAction, getShiftCreditSalesAction } from '@/app/actions-client/handover';
 import { getCurrentShiftAction } from '@/app/actions-client/shifts';
@@ -22,7 +22,14 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
   const [banks, setBanks] = useState<any[]>([]);
   const [staff, setStaff] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [processing, setProcessing] = useState(false);
+  const processingRef = useRef(false);
+  const handleClose = () => {
+    if (processingRef.current) return;
+    onClose();
+  };
 
   // Credit breakdown popup state
   const [showCreditModal, setShowCreditModal] = useState(false);
@@ -47,6 +54,7 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
     setShowCreditModal(false);
     setLoadingCredit(false);
     setLoading(true);
+    setLoadError(false);
     setProcessing(false);
     setForm({
       actualCash: 0,
@@ -63,60 +71,69 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
 
     async function loadData() {
       setLoading(true);
+      setLoadError(false);
 
-      const { getClientSession } = await import('@/lib/auth/local');
-      const sessionUser = await getClientSession();
-      if (cancelled) return;
-      const activeUserName = sessionUser?.full_name || sessionUser?.username || 'المستخدم الحالي';
-      setActiveUserDisplay(activeUserName);
-      setUserRole(sessionUser?.role || 'pharmacist');
-
-      const shiftRes = await getCurrentShiftAction();
-      if (cancelled) return;
-      let activeShiftId = shiftRes.data?.id;
-      if (!activeShiftId) {
-        const openShiftRes = await getOpenShiftHandoverAction();
+      try {
+        const { getClientSession } = await import('@/lib/auth/local');
+        const sessionUser = await getClientSession();
         if (cancelled) return;
-        activeShiftId = openShiftRes.data?.id;
-      }
+        const activeUserName = sessionUser?.full_name || sessionUser?.username || 'المستخدم الحالي';
+        setActiveUserDisplay(activeUserName);
+        setUserRole(sessionUser?.role || 'pharmacist');
 
-      if (activeShiftId) {
-        setShiftId(activeShiftId);
-        const detailsRes = await getHandoverDetailsAction(activeShiftId);
+        const shiftRes = await getCurrentShiftAction();
         if (cancelled) return;
-        if (detailsRes.success && detailsRes.data) {
-          setDetails({
-            ...detailsRes.data,
-            user_name: activeUserName
-          });
-          setForm(prev => ({
-            ...prev,
-            actualCash: prev.actualCash || 0
-          }));
+        let activeShiftId = shiftRes.data?.id;
+        if (!activeShiftId) {
+          const openShiftRes = await getOpenShiftHandoverAction();
+          if (cancelled) return;
+          activeShiftId = openShiftRes.data?.id;
+        }
+
+        if (activeShiftId) {
+          setShiftId(activeShiftId);
+          const detailsRes = await getHandoverDetailsAction(activeShiftId);
+          if (cancelled) return;
+          if (detailsRes.success && detailsRes.data) {
+            setDetails({
+              ...detailsRes.data,
+              user_name: activeUserName
+            });
+            setForm(prev => ({
+              ...prev,
+              actualCash: prev.actualCash || 0
+            }));
+          }
+        }
+
+        const banksRes = await getBanksAction();
+        if (cancelled) return;
+        if (banksRes.success) setBanks(banksRes.data || []);
+
+        const staffRes = await getStaffAction();
+        if (cancelled) return;
+        if (staffRes.success) {
+          setStaff(staffRes.data || []);
+          if (staffRes.data && staffRes.data.length > 0) {
+            setForm(prev => ({ ...prev, receiverUsername: staffRes.data[0].username }));
+          }
+        }
+      } catch {
+        if (!cancelled) {
+          setLoadError(true);
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
         }
       }
-
-      const banksRes = await getBanksAction();
-      if (cancelled) return;
-      if (banksRes.success) setBanks(banksRes.data || []);
-
-      const staffRes = await getStaffAction();
-      if (cancelled) return;
-      if (staffRes.success) {
-        setStaff(staffRes.data || []);
-        if (staffRes.data && staffRes.data.length > 0) {
-          setForm(prev => ({ ...prev, receiverUsername: staffRes.data[0].username }));
-        }
-      }
-
-      setLoading(false);
     }
 
     loadData();
     return () => {
       cancelled = true;
     };
-  }, [isOpen]);
+  }, [isOpen, loadAttempt]);
 
   const handleOpenCreditDetails = async () => {
     setShowCreditModal(true);
@@ -150,7 +167,7 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
       if (e.key === 'Escape') {
         if (showCreditModal) {
           setShowCreditModal(false);
-        } else {
+        } else if (!processingRef.current) {
           onClose();
         }
       }
@@ -181,27 +198,35 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
       toast.error('يرجى اختيار المستلم');
       return;
     }
+    if (processingRef.current) return;
 
+    processingRef.current = true;
     setProcessing(true);
-    const res = await processHandoverAction({
-      shiftId,
-      actualCash: form.actualCash,
-      transferAmount: form.transferAmount,
-      transferTargetId: form.transferTargetId,
-      transferTargetType: form.transferTargetType,
-      receiverUsername: form.receiverUsername,
-      receiverPasswordHash: form.receiverPassword,
-      notes: form.notes,
-      autoOpenNewShift: true
-    });
+    try {
+      const res = await processHandoverAction({
+        shiftId,
+        actualCash: form.actualCash,
+        transferAmount: form.transferAmount,
+        transferTargetId: form.transferTargetId,
+        transferTargetType: form.transferTargetType,
+        receiverUsername: form.receiverUsername,
+        receiverPasswordHash: form.receiverPassword,
+        notes: form.notes,
+        autoOpenNewShift: true
+      });
 
-    if (res.success) {
-      toast.success(`تم التسليم وإغلاق الوردية وفتح وردية مشتركة جديدة (الرصيد ${Number(res.remainingCash ?? 0).toFixed(2)} ج.م)`);
-      onClose();
-    } else {
-      toast.error(res.error || 'فشل تسليم الدرج');
+      if (res.success) {
+        toast.success(`تم التسليم وإغلاق الوردية وفتح وردية مشتركة جديدة (الرصيد ${Number(res.remainingCash ?? 0).toFixed(2)} ج.م)`);
+        onClose();
+      } else {
+        toast.error(res.error || 'فشل تسليم الدرج');
+      }
+    } catch {
+      toast.error('فشل تسليم الدرج');
+    } finally {
+      processingRef.current = false;
+      setProcessing(false);
     }
-    setProcessing(false);
   };
 
   const formattedStartTime = details?.start_time
@@ -219,8 +244,9 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
             <span className="font-bold text-sm">تسليم درج</span>
           </div>
           <button 
-            onClick={onClose} 
-            className="w-6 h-6 rounded bg-slate-700/50 hover:bg-rose-600 flex items-center justify-center text-xs transition-colors"
+            onClick={handleClose}
+            disabled={processing}
+            className="w-6 h-6 rounded bg-slate-700/50 hover:bg-rose-600 flex items-center justify-center text-xs transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <X className="w-4 h-4" />
           </button>
@@ -230,6 +256,18 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
         {loading ? (
           <div className="p-12 text-center font-bold text-slate-600 dark:text-slate-400 animate-pulse">
             جاري تحميل بيانات الوردية والدرج...
+          </div>
+        ) : loadError ? (
+          <div className="p-12 text-center">
+            <AlertCircle className="w-10 h-10 text-rose-500 mx-auto mb-4" />
+            <p className="font-black text-slate-800 dark:text-slate-100">تعذر تحميل بيانات الوردية والدرج</p>
+            <button
+              type="button"
+              onClick={() => setLoadAttempt(attempt => attempt + 1)}
+              className="mt-4 px-5 py-2 rounded-lg bg-blue-700 hover:bg-blue-800 text-white text-sm font-black transition-colors"
+            >
+              إعادة المحاولة
+            </button>
           </div>
         ) : (
           <form onSubmit={handleSubmit} className="p-6 space-y-5">
@@ -259,7 +297,7 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
                 </div>
 
                 <div className="grid grid-cols-3 items-center gap-2">
-                  <label className="col-span-1 text-slate-700 dark:text-slate-300">الرصيد الإفتتاحي</label>
+                  <label className="col-span-1 text-slate-700 dark:text-slate-300">نقدية بداية الوردية بالدرج</label>
                   <input 
                     type="text" 
                     readOnly 
@@ -309,14 +347,14 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
 
               <div className="space-y-2 text-xs font-bold">
                 <div className="grid grid-cols-3 items-center gap-2">
-                  <label className="col-span-1 text-slate-700 dark:text-slate-300">النقدية الفعلية بالدرج</label>
+                  <label className="col-span-1 text-slate-700 dark:text-slate-300">النقدية المعدودة فعليًا في درج الوردية</label>
                   <input 
                     type="number" 
                     step="0.01" 
                     min="0"
                     value={form.actualCash} 
                     onChange={(e) => setForm({ ...form, actualCash: parseFloat(e.target.value) || 0 })}
-                    placeholder="أدخل النقدية الفعلية..."
+                    placeholder="أدخل النقدية المعدودة في درج الوردية..."
                     className="col-span-2 px-3 py-1.5 bg-white dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded font-black text-slate-900 dark:text-white text-center focus:ring-2 focus:ring-blue-500 outline-none"
                   />
                 </div>
@@ -356,7 +394,7 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
                 </div>
 
                 <div className="grid grid-cols-3 items-center gap-2">
-                  <label className="col-span-1 text-slate-700 dark:text-slate-300">الباقي بالدرج</label>
+                  <label className="col-span-1 text-slate-700 dark:text-slate-300">النقدية المرحلة إلى درج الوردية التالية</label>
                   <input 
                     type="text" 
                     readOnly 
@@ -423,8 +461,9 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
               </button>
               <button 
                 type="button" 
-                onClick={onClose} 
-                className="px-8 py-2 bg-slate-300 hover:bg-slate-400 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-900 dark:text-white rounded border border-slate-500 font-black text-sm shadow transition-all active:translate-y-0.5"
+                onClick={handleClose}
+                disabled={processing}
+                className="px-8 py-2 bg-slate-300 hover:bg-slate-400 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-900 dark:text-white rounded border border-slate-500 font-black text-sm shadow transition-all active:translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 إغلاق C
               </button>

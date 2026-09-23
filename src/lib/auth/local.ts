@@ -322,8 +322,9 @@ export function hasUserPermissionSync(user: any, permissionKey: string): boolean
   if (isOwnerOnlyStaffPermission(permissionKey)) return isStaffOwner(user);
   // Owner access is fixed; admin permissions are configurable in staff management.
   if (user.role === 'owner') return true;
-  const legacyMissingAccess = hasLegacyMissingPermissionAccess(user, permissionKey);
-  if (!user.permissions) return legacyMissingAccess;
+  // Only a genuinely absent legacy column gets role defaults. Any stored value,
+  // including malformed or keyless JSON, is an explicit permission payload.
+  if (user.permissions == null) return hasLegacyMissingPermissionAccess(user, permissionKey);
   
   let perms = user.permissions;
   let attempts = 0;
@@ -331,22 +332,20 @@ export function hasUserPermissionSync(user: any, permissionKey: string): boolean
     try {
       perms = JSON.parse(perms);
     } catch (e) {
-      break;
+      return false;
     }
     attempts++;
   }
   
   if (!perms) return false;
   if (Array.isArray(perms)) {
-    return perms.includes(permissionKey) || legacyMissingAccess;
+    return perms.includes(permissionKey);
   }
   if (typeof perms === 'object') {
-    if (!Object.prototype.hasOwnProperty.call(perms, permissionKey)) {
-      return legacyMissingAccess;
-    }
+    if (!Object.prototype.hasOwnProperty.call(perms, permissionKey)) return false;
     return perms[permissionKey] === true || perms[permissionKey] === 'true' || perms[permissionKey] == 1;
   }
-  return legacyMissingAccess;
+  return false;
 }
 
 /**

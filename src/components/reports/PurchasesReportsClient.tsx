@@ -1,7 +1,7 @@
 'use client';
 import TableScrollContainer from '@/components/ui/TableScrollContainer';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { 
   Search, Filter, Calendar, User, ShoppingBag, 
@@ -14,6 +14,7 @@ import { getStaffAction } from '@/app/actions-client/users';
 import { format } from 'date-fns';
 import { toast } from 'react-hot-toast';
 import { hasUserPermissionSync } from '@/lib/auth/local';
+import { useHotkeys } from 'react-hotkeys-hook';
 
 function optionalNumber(...values: unknown[]): number | undefined {
   for (const value of values) {
@@ -84,6 +85,8 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
 
   const [staff, setStaff] = useState<any[]>([]);
   const [suppliers, setSuppliers] = useState<any[]>([]);
+  const searchRequestRef = useRef(0);
+  const invoiceDetailsRequestRef = useRef(0);
 
   const [filters, setFilters] = useState({
     startDate: format(new Date(), 'yyyy-MM-dd'),
@@ -97,38 +100,86 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
 
   useEffect(() => {
     async function loadData() {
-      const staffRes = await getStaffAction();
-      if (staffRes.success) setStaff(staffRes.data || []);
+      const [staffResult, supplierResult] = await Promise.allSettled([
+        getStaffAction(),
+        getSuppliersAction(),
+      ]);
+      let metadataFailed = false;
 
-      const supplierRes = await getSuppliersAction();
-      if (supplierRes.success) setSuppliers(supplierRes.data || []);
+      if (staffResult.status === 'fulfilled' && staffResult.value.success) {
+        setStaff(staffResult.value.data || []);
+      } else {
+        metadataFailed = true;
+      }
+      if (supplierResult.status === 'fulfilled' && supplierResult.value.success) {
+        setSuppliers(supplierResult.value.data || []);
+      } else {
+        metadataFailed = true;
+      }
+      if (metadataFailed) toast.error('تعذر تحميل بعض فلاتر تقرير المشتريات');
 
-      handleSearch();
+      await handleSearch();
     }
-    loadData();
+    void loadData();
     // Initial load uses the default filters; edited filters run only when Search is pressed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleSearch = async () => {
+    const requestId = ++searchRequestRef.current;
     setLoading(true);
-    const res = await getPurchasesReportsAction({
-      ...filters,
-      userId: filters.userId === 'all' ? undefined : filters.userId,
-      supplierId: filters.supplierId === 'all' ? undefined : filters.supplierId,
-    });
-    if (res.success) setInvoices(res.data || []);
-    else toast.error(res.error || 'فشل تحميل تقرير المشتريات');
-    setLoading(false);
+    try {
+      const res = await getPurchasesReportsAction({
+        ...filters,
+        userId: filters.userId === 'all' ? undefined : filters.userId,
+        supplierId: filters.supplierId === 'all' ? undefined : filters.supplierId,
+      });
+      if (requestId !== searchRequestRef.current) return;
+      if (res.success) {
+        const nextInvoices = res.data || [];
+        setInvoices(nextInvoices);
+        if (selectedInvoice && !nextInvoices.some((invoice: any) => invoice.id === selectedInvoice)) {
+          invoiceDetailsRequestRef.current += 1;
+          setSelectedInvoice(null);
+          setInvoiceItems([]);
+          setLoadingItems(false);
+        }
+      } else toast.error(res.error || 'فشل تحميل تقرير المشتريات');
+    } catch (err) {
+      if (requestId !== searchRequestRef.current) return;
+      console.error('Purchases report search error:', err);
+      toast.error('فشل تحميل تقرير المشتريات');
+    } finally {
+      if (requestId === searchRequestRef.current) setLoading(false);
+    }
   };
 
+  useHotkeys('f', (event) => {
+    event.preventDefault();
+    void handleSearch();
+  }, { enableOnFormTags: false }, [filters, selectedInvoice]);
+
   const handleInvoiceClick = async (invoiceId: string) => {
+    const requestId = ++invoiceDetailsRequestRef.current;
     setSelectedInvoice(invoiceId);
+    setInvoiceItems([]);
     setLoadingItems(true);
-    const res = await getPurchaseInvoiceDetailsAction(invoiceId);
-    if (res.success) setInvoiceItems(res.data || []);
-    else toast.error(res.error || 'فشل تحميل تفاصيل فاتورة الشراء');
-    setLoadingItems(false);
+    try {
+      const res = await getPurchaseInvoiceDetailsAction(invoiceId);
+      if (requestId !== invoiceDetailsRequestRef.current) return;
+      if (res.success) setInvoiceItems(res.data || []);
+      else {
+        toast.error(res.error || 'فشل تحميل تفاصيل فاتورة الشراء');
+        setSelectedInvoice(null);
+      }
+    } catch (err) {
+      if (requestId !== invoiceDetailsRequestRef.current) return;
+      console.error('Purchase report invoice details error:', err);
+      toast.error('فشل تحميل تفاصيل فاتورة الشراء');
+      setSelectedInvoice(null);
+    } finally {
+      if (requestId === invoiceDetailsRequestRef.current) setLoadingItems(false);
+    }
   };
 
   const handleExport = async () => {
@@ -432,7 +483,13 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
                 ) : invoices.map((inv) => (
                   <tr 
                     key={inv.id} 
+                    tabIndex={0}
                     onClick={() => handleInvoiceClick(inv.id)}
+                    onKeyDown={(event) => {
+                      if (event.target === event.currentTarget && event.key === 'Enter') {
+                        void handleInvoiceClick(inv.id);
+                      }
+                    }}
                     className={cn(
                       "hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors cursor-pointer group",
                       selectedInvoice === inv.id ? "bg-blue-50/50 dark:bg-blue-900/10" : ""

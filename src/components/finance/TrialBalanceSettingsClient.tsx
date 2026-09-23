@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Plus, Search, Save, X, ChevronDown, ChevronLeft, FolderOpen, 
   Landmark, Receipt, CheckCircle, AlertCircle
@@ -32,28 +32,56 @@ export default function TrialBalanceSettingsClient() {
   const [expenses, setExpenses] = useState<any[]>([]);
   const [settings, setSettings] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const [savingMapping, setSavingMapping] = useState(false);
+  const savingMappingRef = useRef(false);
+  const loadRequestRef = useRef(0);
   const [activeCategory, setActiveCategory] = useState<'bank' | 'expense'>('bank');
   
   const [showPicker, setShowPicker] = useState<{ show: boolean, targetId?: string, targetName?: string, category: string, targetType?: string } | null>(null);
 
   useEffect(() => {
-    loadData();
+    void loadData();
+    return () => {
+      loadRequestRef.current += 1;
+    };
   }, []);
 
-  async function loadData() {
-    setLoading(true);
-    const [accRes, bankRes, expRes, setRes] = await Promise.all([
-      getAccountsAction(),
-      getBanksAction(),
-      getExpenseDefinitionsAction(),
-      getTrialBalanceSettingsAction()
-    ]);
+  async function loadData(preserveExisting = false) {
+    const requestId = ++loadRequestRef.current;
+    if (!preserveExisting) setLoading(true);
+    if (preserveExisting) setRefreshError(null);
+    else setLoadError(null);
+    try {
+      const [accRes, bankRes, expRes, setRes] = await Promise.all([
+        getAccountsAction(),
+        getBanksAction(),
+        getExpenseDefinitionsAction(),
+        getTrialBalanceSettingsAction()
+      ]);
+      if (requestId !== loadRequestRef.current) return;
 
-    if (accRes.success) setAccounts(accRes.data as any[]);
-    if (bankRes.success) setBanks(bankRes.data as any[]);
-    if (expRes.success) setExpenses(expRes.data as any[]);
-    if (setRes.success) setSettings(setRes.data as any[]);
-    setLoading(false);
+      const failed = [accRes, bankRes, expRes, setRes].find(res => !res.success);
+      if (failed) {
+        if (preserveExisting) setRefreshError('تعذر تحديث إعدادات ميزان المراجعة');
+        else setLoadError(failed.error || 'فشل تحميل إعدادات ميزان المراجعة');
+        return;
+      }
+
+      setAccounts((accRes.data || []) as any[]);
+      setBanks((bankRes.data || []) as any[]);
+      setExpenses((expRes.data || []) as any[]);
+      setSettings((setRes.data || []) as any[]);
+      setLoadError(null);
+      setRefreshError(null);
+    } catch {
+      if (requestId !== loadRequestRef.current) return;
+      if (preserveExisting) setRefreshError('تعذر تحديث إعدادات ميزان المراجعة');
+      else setLoadError('فشل تحميل إعدادات ميزان المراجعة');
+    } finally {
+      if (requestId === loadRequestRef.current && !preserveExisting) setLoading(false);
+    }
   }
 
   const getMapping = (category: string, id?: string, name?: string) => {
@@ -63,29 +91,66 @@ export default function TrialBalanceSettingsClient() {
   };
 
   const handleSelectAccount = async (accountId: number) => {
-    if (!showPicker) return;
+    if (!showPicker || savingMappingRef.current) return;
 
-    const res = await saveTrialBalanceSettingAction({
-      category: showPicker.category,
-      target_type: showPicker.targetType,
-      target_id: showPicker.targetId,
-      target_name: showPicker.targetName,
-      account_id: accountId
-    });
+    savingMappingRef.current = true;
+    setSavingMapping(true);
+    try {
+      const res = await saveTrialBalanceSettingAction({
+        category: showPicker.category,
+        target_type: showPicker.targetType,
+        target_id: showPicker.targetId,
+        target_name: showPicker.targetName,
+        account_id: accountId
+      });
 
-    if (res.success) {
-      toast.success('تم ربط الحساب بنجاح');
-      loadData();
-      setShowPicker(null);
-    } else {
-      toast.error(res.error || 'فشل الربط');
+      if (res.success) {
+        toast.success('تم ربط الحساب بنجاح');
+        setShowPicker(null);
+        void loadData(true);
+      } else {
+        toast.error(res.error || 'فشل الربط');
+      }
+    } catch {
+      toast.error('فشل الربط');
+    } finally {
+      savingMappingRef.current = false;
+      setSavingMapping(false);
     }
   };
 
   if (loading) return <div className="p-20 text-center font-black animate-pulse">جاري تحميل الإعدادات...</div>;
+  if (loadError) {
+    return (
+      <div className="p-20 text-center space-y-4">
+        <AlertCircle className="w-10 h-10 text-rose-500 mx-auto" />
+        <p className="font-black text-slate-800 dark:text-white">تعذر تحميل إعدادات ميزان المراجعة</p>
+        <p className="text-sm font-bold text-slate-500">{loadError}</p>
+        <button
+          type="button"
+          onClick={() => void loadData()}
+          className="px-5 py-2 rounded-xl bg-blue-600 text-white font-black hover:bg-blue-700"
+        >
+          إعادة المحاولة
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-8" dir="rtl">
+      {refreshError && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-amber-800">
+          <span className="font-black">{refreshError}</span>
+          <button
+            type="button"
+            onClick={() => void loadData(true)}
+            className="px-4 py-2 rounded-xl bg-amber-700 text-white text-xs font-black"
+          >
+            إعادة تحميل الإعدادات
+          </button>
+        </div>
+      )}
       <div className="bg-white dark:bg-slate-900 p-8 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-sm">
         <h2 className="text-2xl font-black text-slate-800 dark:text-white mb-2">إعدادات ميزان المراجعة</h2>
         <p className="text-slate-500 font-bold">ربط الكيانات (بنوك، نقدية، مصروفات) بشجرة الحسابات العامة</p>
@@ -149,8 +214,9 @@ export default function TrialBalanceSettingsClient() {
                 <div>
                    <h3 className="text-2xl font-black">اختيار الحساب المحاسبي</h3>
                    <p className="text-slate-500 font-bold">ربط &quot;{showPicker.targetName}&quot; بحساب من الشجرة</p>
+                   {savingMapping && <p className="text-xs font-black text-blue-600 mt-2">جاري الربط...</p>}
                 </div>
-                <button onClick={() => setShowPicker(null)} className="w-12 h-12 bg-slate-100 dark:bg-slate-800 rounded-2xl flex items-center justify-center text-slate-500 hover:text-rose-500 transition-all">
+                <button disabled={savingMapping} onClick={() => setShowPicker(null)} className="w-12 h-12 bg-slate-100 dark:bg-slate-800 rounded-2xl flex items-center justify-center text-slate-500 hover:text-rose-500 transition-all disabled:opacity-50">
                    <X className="w-6 h-6" />
                 </button>
              </div>
@@ -158,6 +224,7 @@ export default function TrialBalanceSettingsClient() {
                 <AccountTree 
                   accounts={accounts} 
                   onSelect={(accId) => handleSelectAccount(accId)} 
+                  disabled={savingMapping}
                 />
              </div>
           </div>
@@ -234,7 +301,7 @@ function MappingRow({ name, mapping, onLink }: any) {
   );
 }
 
-function AccountTree({ accounts, onSelect }: { accounts: Account[], onSelect: (id: number) => void }) {
+function AccountTree({ accounts, onSelect, disabled = false }: { accounts: Account[], onSelect: (id: number) => void, disabled?: boolean }) {
   const [expanded, setExpanded] = useState<Record<number, boolean>>({});
 
   const toggle = (id: number) => setExpanded(prev => ({ ...prev, [id]: !prev[id] }));
@@ -264,9 +331,10 @@ function AccountTree({ accounts, onSelect }: { accounts: Account[], onSelect: (i
         )}
         <div className={cn(
           "flex items-center gap-3 px-4 py-2 rounded-xl transition-all cursor-pointer",
-          node.is_group ? "font-black text-slate-800 dark:text-white" : "font-bold text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+          node.is_group ? "font-black text-slate-800 dark:text-white" : "font-bold text-slate-500 hover:bg-blue-50 hover:text-blue-600",
+          disabled && !node.is_group && "pointer-events-none opacity-50"
         )}
-        onClick={() => !node.is_group && onSelect(node.id)}>
+        onClick={() => !node.is_group && !disabled && onSelect(node.id)}>
           {node.is_group ? <FolderOpen className="w-4 h-4 text-amber-500" /> : <Receipt className="w-4 h-4 text-blue-500" />}
           <span className="text-xs font-mono opacity-50">{node.code}</span>
           <span>{node.name_ar}</span>

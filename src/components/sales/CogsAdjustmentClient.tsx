@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { 
   Edit3, Search, DollarSign, 
   TrendingDown, TrendingUp, History,
@@ -17,12 +17,31 @@ export default function CogsAdjustmentClient() {
   const [loading, setLoading] = useState(false);
   const [adjustingId, setAdjustingId] = useState<number | null>(null);
   const [newCosts, setNewCosts] = useState<Record<number, number>>({});
+  const searchTermRef = useRef(searchTerm);
+  const searchRequestRef = useRef(0);
+  const pendingUpdateIdsRef = useRef(new Set<number>());
 
   const handleSearch = async () => {
+    const term = searchTermRef.current;
+    const requestId = ++searchRequestRef.current;
     setLoading(true);
-    const res = await getSoldItemsForCogsAdjustmentAction(searchTerm);
-    if (res.success) setItems(res.data || []);
-    setLoading(false);
+    try {
+      const res = await getSoldItemsForCogsAdjustmentAction(term);
+      if (requestId !== searchRequestRef.current) return;
+      if (res.success) {
+        setItems(res.data || []);
+      } else {
+        toast.error(res.error || 'فشل البحث');
+      }
+    } catch {
+      if (requestId === searchRequestRef.current) {
+        toast.error('فشل البحث');
+      }
+    } finally {
+      if (requestId === searchRequestRef.current) {
+        setLoading(false);
+      }
+    }
   };
 
   const handleUpdate = async (itemId: number) => {
@@ -31,16 +50,24 @@ export default function CogsAdjustmentClient() {
       toast.error('يرجى إدخال تكلفة صحيحة');
       return;
     }
+    if (pendingUpdateIdsRef.current.has(itemId)) return;
 
+    pendingUpdateIdsRef.current.add(itemId);
     setAdjustingId(itemId);
-    const res = await updateSoldItemCostAction(itemId, cost);
-    if (res.success) {
-      toast.success('تم تعديل تكلفة الصنف المباع بنجاح');
-      handleSearch();
-    } else {
-      toast.error(res.error || 'فشل التعديل');
+    try {
+      const res = await updateSoldItemCostAction(itemId, cost);
+      if (res.success) {
+        toast.success('تم تعديل تكلفة الصنف المباع بنجاح');
+        void handleSearch();
+      } else {
+        toast.error(res.error || 'فشل التعديل');
+      }
+    } catch {
+      toast.error('فشل التعديل');
+    } finally {
+      pendingUpdateIdsRef.current.delete(itemId);
+      setAdjustingId(null);
     }
-    setAdjustingId(null);
   };
 
   return (
@@ -61,7 +88,10 @@ export default function CogsAdjustmentClient() {
               className="w-full pr-14 pl-6 py-4 bg-slate-50 dark:bg-slate-800 border-none rounded-2xl font-bold outline-none focus:ring-2 ring-blue-500"
               placeholder="ابحث باسم الصنف أو رقم الفاتورة..."
               value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
+              onChange={(e) => {
+                setSearchTerm(e.target.value);
+                searchTermRef.current = e.target.value;
+              }}
               onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
             />
           </div>

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import dynamic from 'next/dynamic';
 import { subDays, format } from 'date-fns';
@@ -32,6 +32,7 @@ const ReceiptDetailsModal = dynamic(() => import('@/components/receipts/ReceiptD
 
 import { getInvoiceDetailsAction } from '@/app/actions-client/sales-reports';
 import { getLowStockAction } from '@/app/actions-client/inventory';
+import { toast } from 'react-hot-toast';
 
 export default function DashboardPage() {
   const [user, setUser] = useState<any>(null);
@@ -42,12 +43,14 @@ export default function DashboardPage() {
   const [recentTransactions, setRecentTransactions] = useState<any[]>([]);
   const [activityLogs, setActivityLogs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [masterDrugCount, setMasterDrugCount] = useState(0);
   const [isOwner, setIsOwner] = useState(false);
   
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(null);
   const [invoiceItems, setInvoiceItems] = useState<any[]>([]);
   const [loadingReceipt, setLoadingReceipt] = useState(false);
+  const invoiceDetailsRequestRef = useRef(0);
   const [isPharmacist, setIsPharmacist] = useState(false);
   const [isTauri, setIsTauri] = useState(false);
   const [newsBarEnabled, setNewsBarEnabled] = useState(true);
@@ -72,6 +75,10 @@ export default function DashboardPage() {
     }
   }, []);
 
+  useEffect(() => () => {
+    invoiceDetailsRequestRef.current += 1;
+  }, []);
+
   const toggleNewsBar = () => {
     const nextState = !newsBarEnabled;
     localStorage.setItem('news_bar_enabled', nextState.toString());
@@ -82,12 +89,11 @@ export default function DashboardPage() {
     window.dispatchEvent(new Event('news-bar-toggle'));
   };
 
-  useEffect(() => {
+  const loadDashboardData = useCallback(async () => {
     const log = (m: string) => typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__?.invoke('log_frontend_error', { message: m });
-    log('PAGE: mount');
-    setIsTauri(isTauriRuntime);
-    async function loadDashboardData() {
-      try {
+    setLoading(true);
+    setLoadError(false);
+    try {
         log('PAGE: loadDashboardData start');
         const localUser = await getClientSession();
         log('PAGE: loadDashboardData user=' + (localUser ? localUser.username : 'NULL'));
@@ -298,17 +304,22 @@ export default function DashboardPage() {
           `, [pharmacyId, pharmacyId]);
           setActivityLogs(logs || []);
         }
-      } catch (err: any) {
-        log('PAGE: loadDashboardData error=' + err.message + ' stack=' + err.stack);
-        console.error('Failed to load dashboard data:', err);
-      } finally {
-        log('PAGE: loadDashboardData finally');
-        setLoading(false);
-      }
+    } catch (err: any) {
+      log('PAGE: loadDashboardData error=' + err.message + ' stack=' + err.stack);
+      console.error('Failed to load dashboard data:', err);
+      setLoadError(true);
+    } finally {
+      log('PAGE: loadDashboardData finally');
+      setLoading(false);
     }
-
-    loadDashboardData();
   }, []);
+
+  useEffect(() => {
+    const log = (m: string) => typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__?.invoke('log_frontend_error', { message: m });
+    log('PAGE: mount');
+    setIsTauri(isTauriRuntime);
+    void loadDashboardData();
+  }, [loadDashboardData]);
 
   if (loading) {
     return (
@@ -335,6 +346,21 @@ export default function DashboardPage() {
           ))}
         </div>
         <div className="bg-slate-100 dark:bg-slate-800 p-6 rounded-3xl animate-pulse h-24" />
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-4 py-24" dir="rtl">
+        <p className="font-black text-rose-600">تعذر تحميل لوحة التحكم</p>
+        <button
+          type="button"
+          onClick={() => void loadDashboardData()}
+          className="px-6 py-3 rounded-2xl bg-slate-900 text-white font-black"
+        >
+          إعادة المحاولة
+        </button>
       </div>
     );
   }
@@ -530,11 +556,28 @@ export default function DashboardPage() {
               <div 
                 key={transaction.id} 
                 onClick={async () => {
+                  const requestId = ++invoiceDetailsRequestRef.current;
                   setSelectedInvoiceId(transaction.id);
                   setLoadingReceipt(true);
-                  const res = await getInvoiceDetailsAction(transaction.id);
-                  if (res.success) setInvoiceItems(res.data || []);
-                  setLoadingReceipt(false);
+                  try {
+                    const res = await getInvoiceDetailsAction(transaction.id);
+                    if (requestId !== invoiceDetailsRequestRef.current) return;
+                    if (res.success) {
+                      setInvoiceItems(res.data || []);
+                    } else {
+                      toast.error(res.error || 'فشل تحميل تفاصيل الفاتورة');
+                      setSelectedInvoiceId(null);
+                    }
+                  } catch (error) {
+                    if (requestId !== invoiceDetailsRequestRef.current) return;
+                    console.error('Failed to load dashboard invoice details:', error);
+                    toast.error('فشل تحميل تفاصيل الفاتورة');
+                    setSelectedInvoiceId(null);
+                  } finally {
+                    if (requestId === invoiceDetailsRequestRef.current) {
+                      setLoadingReceipt(false);
+                    }
+                  }
                 }}
                 className="flex items-center justify-between p-4 rounded-xl border border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/30 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
               >

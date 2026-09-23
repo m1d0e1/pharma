@@ -51,8 +51,10 @@ import { usePOSStore } from '@/store/usePOSStore';
 
 // Mocks Setup
 const mockPush = jest.fn();
+const mockReplace = jest.fn();
+const mockRouter = { push: mockPush, replace: mockReplace };
 jest.mock('next/navigation', () => ({
-  useRouter: () => ({ push: mockPush, replace: jest.fn() }),
+  useRouter: () => mockRouter,
   useSearchParams: () => new URLSearchParams(),
 }));
 
@@ -86,6 +88,7 @@ jest.mock('@/app/actions-client/inventory', () => ({
   addInventoryAction: jest.fn(),
   updateInventoryAction: jest.fn(),
   deleteInventoryAction: jest.fn(),
+  importInventoryWorkbookAction: jest.fn(),
 }));
 
 jest.mock('@/app/actions-client/purchases', () => ({
@@ -330,6 +333,7 @@ describe('Exhaustive Frontend UI & Business Logic Test Suite (All Domains & Feat
 
     it('supports EditInventoryModal updating quantities and reasons', async () => {
       (updateInventoryAction as jest.Mock).mockResolvedValue({ success: true });
+      (updateInventoryAction as jest.Mock).mockClear();
       const onSuccess = jest.fn();
 
       render(
@@ -352,9 +356,15 @@ describe('Exhaustive Frontend UI & Business Logic Test Suite (All Domains & Feat
 
       const qtyInput = screen.getByDisplayValue('15');
       fireEvent.change(qtyInput, { target: { value: '18' } });
-      fireEvent.change(screen.getByRole('combobox'), { target: { value: '1' } });
+      const reasonSelect = screen.getByRole('combobox');
+      expect(reasonSelect).toBeRequired();
+      expect(screen.getByText('سبب التعديل (مطلوب عند تغيير الكمية)')).toBeInTheDocument();
 
       const submitBtn = screen.getByRole('button', { name: /حفظ التغييرات/i });
+      fireEvent.click(submitBtn);
+      expect(updateInventoryAction).not.toHaveBeenCalled();
+
+      fireEvent.change(reasonSelect, { target: { value: '1' } });
       fireEvent.click(submitBtn);
 
       await waitFor(() => {
@@ -803,7 +813,7 @@ describe('Exhaustive Frontend UI & Business Logic Test Suite (All Domains & Feat
         'pharma_shortages_to_purchase_v2:["local_default","buyer-1"]',
         expect.stringContaining('Augmentin 1g')
       );
-      expect(mockPush).toHaveBeenCalledWith('/purchases/new');
+      await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/purchases/new'));
     });
   });
 });

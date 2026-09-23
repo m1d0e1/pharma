@@ -25,9 +25,6 @@ interface AddInventoryModalProps {
 }
 
 export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: AddInventoryModalProps) {
-  useHotkeys('esc', () => { if(typeof onClose === 'function') onClose(); }, { enableOnFormTags: true });
-
-
   const [step, setStep] = useState<1 | 2>(1)
   const [searchTerm, setSearchTerm] = useState('')
   const [searchResults, setSearchResults] = useState<MasterDrug[]>([])
@@ -47,6 +44,14 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
   const [searchByActive, setSearchByActive] = useState(false)
   const [errors, setErrors] = useState<Record<string, boolean>>({})
   const barcodeRef = useRef<HTMLInputElement>(null)
+  const searchRequestRef = useRef(0)
+  const submissionRef = useRef(false)
+
+  const handleClose = () => {
+    if (submissionRef.current) return
+    onClose()
+  }
+  useHotkeys('esc', handleClose, { enableOnFormTags: true });
 
   useEffect(() => {
     if (step === 2) setTimeout(() => barcodeRef.current?.focus(), 0)
@@ -61,23 +66,44 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
   }, [])
 
   useEffect(() => {
+    const requestId = ++searchRequestRef.current
+
+    if (searchTerm.length < 2) {
+      setSearchResults([])
+      setIsSearching(false)
+      return () => {
+        if (searchRequestRef.current === requestId) searchRequestRef.current += 1
+      }
+    }
+
     const delayDebounceFn = setTimeout(async () => {
-      if (searchTerm.length >= 2) {
-        setIsSearching(true)
+      if (searchRequestRef.current !== requestId) return
+      setIsSearching(true)
+
+      try {
         const result = await searchMasterDrugsAction({ query: searchTerm, searchByActiveIngredient: searchByActive })
-        
+        if (searchRequestRef.current !== requestId) return
+
         if (result.success && result.data) {
           setSearchResults(result.data)
         } else {
           toast.error(result.error || 'فشل البحث المحلي')
         }
-        setIsSearching(false)
-      } else {
-        setSearchResults([])
+      } catch {
+        if (searchRequestRef.current === requestId) {
+          toast.error('فشل البحث المحلي')
+        }
+      } finally {
+        if (searchRequestRef.current === requestId) {
+          setIsSearching(false)
+        }
       }
     }, 300)
 
-    return () => clearTimeout(delayDebounceFn)
+    return () => {
+      clearTimeout(delayDebounceFn)
+      if (searchRequestRef.current === requestId) searchRequestRef.current += 1
+    }
   }, [searchTerm, searchByActive])
 
   // ponytail: default strips per box to 1 for single-unit dosage forms
@@ -178,6 +204,8 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
       return
     }
 
+    if (submissionRef.current) return
+    submissionRef.current = true
     setIsSubmitting(true)
 
     // Prepare form data for Server Action
@@ -194,10 +222,17 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
 
     console.log('[AddInventoryModal] Submitting formData:', JSON.stringify(formData))
 
-    // Call Server Action
-    const result = await addInventoryAction(formData)
+    let result: Awaited<ReturnType<typeof addInventoryAction>> | undefined
+    try {
+      result = await addInventoryAction(formData)
+    } catch {
+      toast.error('حدث خطأ أثناء الإضافة. يرجى المحاولة مرة أخرى.')
+    } finally {
+      submissionRef.current = false
+      setIsSubmitting(false)
+    }
 
-    setIsSubmitting(false)
+    if (!result) return
 
     console.log('[AddInventoryModal] Result:', JSON.stringify(result))
 
@@ -229,8 +264,9 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
             </p>
           </div>
           <button 
-            onClick={onClose} 
-            className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center hover:bg-white/30 transition-colors text-2xl font-bold"
+            onClick={handleClose}
+            disabled={isSubmitting}
+            className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center hover:bg-white/30 transition-colors text-2xl font-bold disabled:opacity-50 disabled:cursor-not-allowed"
           >
             &times;
           </button>

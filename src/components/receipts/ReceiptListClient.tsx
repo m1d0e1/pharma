@@ -48,8 +48,17 @@ export default function ReceiptListClient({ initialInvoices }: Props) {
         address: address.value || ''
       })
     }
-    loadInfo()
+    void loadInfo().catch(() => {
+      // Keep the initial fallback metadata when config loading is unavailable.
+    })
   }, [])
+
+  React.useEffect(() => {
+    setSelectedInvoice(current => {
+      if (!current) return null;
+      return initialInvoices.find(invoice => invoice.id === current.id) || null;
+    });
+  }, [initialInvoices]);
 
   const filteredInvoices = initialInvoices.filter(inv => {
     const term = searchTerm.toLowerCase();
@@ -71,8 +80,13 @@ export default function ReceiptListClient({ initialInvoices }: Props) {
   }
 
   const handleDirectPrint = (inv: Invoice) => {
-    const html = generateReceiptHtml(inv, pharmacyInfo);
-    printHtmlContent(html);
+    try {
+      const html = generateReceiptHtml(inv, pharmacyInfo);
+      printHtmlContent(html);
+    } catch (error) {
+      console.error('Receipt print failed:', error);
+      toast.error('فشلت عملية الطباعة');
+    }
   };
 
   const handleDirectWhatsApp = (inv: Invoice) => {
@@ -115,7 +129,17 @@ export default function ReceiptListClient({ initialInvoices }: Props) {
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {filteredInvoices.map((inv) => (
-                <tr key={inv.id} className="group hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors cursor-pointer" onClick={() => setSelectedInvoice(inv)}>
+                <tr
+                  key={inv.id}
+                  tabIndex={0}
+                  className="group hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors cursor-pointer"
+                  onClick={() => setSelectedInvoice(inv)}
+                  onKeyDown={(event) => {
+                    if (event.target === event.currentTarget && event.key === 'Enter') {
+                      setSelectedInvoice(inv);
+                    }
+                  }}
+                >
                   <td className="px-8 py-5 font-mono text-sm text-blue-600 font-bold">
                     #{inv.id.substring(0, 8)}
                   </td>

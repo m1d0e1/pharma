@@ -90,6 +90,19 @@ export default function DashboardLayout({
     let active = true;
     let unlistenNavigate: (() => void) | undefined;
     let unlistenAction: (() => void) | undefined;
+    let shortcutsEscHandler: ((event: KeyboardEvent) => void) | undefined;
+    let shortcutsCleanupTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const clearShortcutsListener = () => {
+      if (shortcutsEscHandler) {
+        window.removeEventListener('keydown', shortcutsEscHandler);
+        shortcutsEscHandler = undefined;
+      }
+      if (shortcutsCleanupTimer) {
+        clearTimeout(shortcutsCleanupTimer);
+        shortcutsCleanupTimer = undefined;
+      }
+    };
 
     const setupListeners = async () => {
       try {
@@ -124,6 +137,7 @@ export default function DashboardLayout({
             }
           }
           if (action === 'shortcuts') {
+            clearShortcutsListener();
             toast.success(
               'اختصارات لوحة المفاتيح:\n' +
               'Insert: تمييز البحث (الكاشير) / إضافة صنف (المخزون)\n' +
@@ -136,14 +150,14 @@ export default function DashboardLayout({
               '(اضغط ESC للإغلاق)',
               { duration: 10000, id: 'shortcuts-toast' }
             );
-            const handleEsc = (e: KeyboardEvent) => {
+            shortcutsEscHandler = (e: KeyboardEvent) => {
               if (e.key === 'Escape') {
                 toast.dismiss('shortcuts-toast');
-                window.removeEventListener('keydown', handleEsc);
+                clearShortcutsListener();
               }
             };
-            window.addEventListener('keydown', handleEsc);
-            setTimeout(() => window.removeEventListener('keydown', handleEsc), 10000);
+            window.addEventListener('keydown', shortcutsEscHandler);
+            shortcutsCleanupTimer = setTimeout(clearShortcutsListener, 10000);
           }
         if (action === 'update') {
           const toastId = toast.loading('جاري البحث عن تحديثات...', { duration: 15000 });
@@ -212,9 +226,14 @@ export default function DashboardLayout({
           }
         }
         if (action === 'logout') {
-          const { logoutLocal } = await import('@/lib/auth/local');
-          await logoutLocal();
-          router.push('/login');
+          try {
+            const { logoutLocal } = await import('@/lib/auth/local');
+            await logoutLocal();
+            router.push('/login');
+          } catch (err) {
+            console.error('Failed to logout from native menu', err);
+            toast.error('تعذر تسجيل الخروج. حاول مرة أخرى.');
+          }
         }
         });
       } catch (err) {
@@ -226,6 +245,7 @@ export default function DashboardLayout({
 
     return () => {
       active = false;
+      clearShortcutsListener();
       if (unlistenNavigate) unlistenNavigate();
       if (unlistenAction) unlistenAction();
     };
@@ -267,8 +287,13 @@ export default function DashboardLayout({
 
   const handleLogout = async (e: React.FormEvent) => {
     e.preventDefault();
-    await logoutLocal();
-    router.push('/login');
+    try {
+      await logoutLocal();
+      router.push('/login');
+    } catch (err) {
+      console.error('Failed to logout', err);
+      toast.error('تعذر تسجيل الخروج. حاول مرة أخرى.');
+    }
   };
 
   if (loading) {

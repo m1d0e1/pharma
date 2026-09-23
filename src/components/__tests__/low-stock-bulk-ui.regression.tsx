@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import LowStockClient, { LowStockItem } from '@/app/(dashboard)/inventory/low-stock/LowStockClient';
 import ReorderAlerts from '@/components/dashboard/ReorderAlerts';
 import { addToShortagesAction } from '@/app/actions-client/shortages';
@@ -208,6 +208,71 @@ describe('low stock alert multi-selection and bulky actions ui', () => {
     });
   });
 
+  it('keeps failed reorder-alert selections and reports returned bulk shortage failures', async () => {
+    (getLowStockAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: mockItems.map(i => ({
+        drug_id: i.drug_id,
+        trade_name: i.trade_name,
+        trade_name_en: i.trade_name_en,
+        current_stock: i.quantity,
+        reorder_point: i.reorder_point,
+        deficit: i.deficit,
+        avg_monthly_usage: 5,
+        default_purchase_qty: i.default_purchase_qty,
+        official_price: i.official_price,
+      })),
+    });
+    (addToShortagesAction as jest.Mock).mockResolvedValue({ success: false, error: 'shortage write rejected' });
+
+    render(<ReorderAlerts />);
+    await screen.findByText('تحديد الكل');
+    fireEvent.click(screen.getByText('تحديد الكل'));
+    fireEvent.click(screen.getByText('إضافة للكشكول'));
+
+    await waitFor(() => expect(addToShortagesAction).toHaveBeenCalledTimes(3));
+    expect(toast.error).toHaveBeenCalledWith('تعذر إضافة 3 صنف إلى كشكول النواقص');
+    expect(screen.getByText('3')).toBeInTheDocument();
+    expect(screen.getByText('صنف محدد')).toBeInTheDocument();
+    expect(toast.success).not.toHaveBeenCalledWith(expect.stringContaining('0 صنف'));
+  });
+
+  it('blocks same-tick duplicate single-item notebook writes in ReorderAlerts', async () => {
+    (getLowStockAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: [{
+        drug_id: mockItems[0].drug_id,
+        trade_name: mockItems[0].trade_name,
+        trade_name_en: mockItems[0].trade_name_en,
+        current_stock: mockItems[0].quantity,
+        reorder_point: mockItems[0].reorder_point,
+        deficit: mockItems[0].deficit,
+        avg_monthly_usage: 5,
+        default_purchase_qty: mockItems[0].default_purchase_qty,
+        official_price: mockItems[0].official_price,
+      }],
+    });
+    let resolveAdd!: (value: { success: boolean; error?: string }) => void;
+    const pending = new Promise<{ success: boolean; error?: string }>(resolve => {
+      resolveAdd = resolve;
+    });
+    (addToShortagesAction as jest.Mock).mockReturnValue(pending);
+
+    render(<ReorderAlerts />);
+    const addButton = await screen.findByTitle('إضافة لكشكول النواقص');
+    act(() => {
+      addButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      addButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(addToShortagesAction).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveAdd({ success: false, error: 'stop' });
+      await pending;
+    });
+  });
+
   it('hides every current reorder alert without deleting data and restores them from inventory refresh', async () => {
     (getLowStockAction as jest.Mock).mockResolvedValue({
       success: true,
@@ -228,5 +293,91 @@ describe('low stock alert multi-selection and bulky actions ui', () => {
     fireEvent.click(screen.getByRole('button', { name: 'تحديث ومزامنة من المخزون' }));
     await waitFor(() => expect(getLowStockAction).toHaveBeenCalledTimes(2));
     expect(await screen.findByText('Panadol Extra')).toBeInTheDocument();
+  });
+
+  it('preserves selected low-stock rows and reports failure when bulk shortage writes are rejected', async () => {
+    (addToShortagesAction as jest.Mock).mockResolvedValue({ success: false, error: 'shortage write rejected' });
+    render(<LowStockClient initialItems={mockItems} />);
+
+    fireEvent.click(screen.getByText('تحديد الكل (3)'));
+    fireEvent.click(screen.getByText('إضافة للكشكول (3)'));
+
+    await waitFor(() => expect(addToShortagesAction).toHaveBeenCalledTimes(3));
+    expect(toast.error).toHaveBeenCalledWith('تعذر إضافة 3 صنف إلى كشكول النواقص');
+    expect(screen.getByText('تم تحديد 3 صنف')).toBeInTheDocument();
+    expect(toast.success).not.toHaveBeenCalledWith(expect.stringContaining('0 صنف'));
+  });
+
+  it('blocks repeated low-stock bulk notebook writes while the first bulk operation is pending', async () => {
+    let resolvePending: (value: any) => void = () => {};
+    const pending = new Promise(resolve => { resolvePending = resolve; });
+    (addToShortagesAction as jest.Mock).mockImplementation(() => pending);
+    render(<LowStockClient initialItems={mockItems} />);
+    fireEvent.click(screen.getByText('تحديد الكل (3)'));
+    const bulkAdd = screen.getByText('إضافة للكشكول (3)');
+
+    act(() => {
+      fireEvent.click(bulkAdd);
+      fireEvent.click(bulkAdd);
+    });
+
+    expect(addToShortagesAction).toHaveBeenCalledTimes(3);
+    await act(async () => resolvePending({ success: false, error: 'pending test' }));
+  });
+
+  it('blocks same-tick duplicate single-item notebook writes in LowStockClient', async () => {
+    let resolveAdd!: (value: { success: boolean; error?: string }) => void;
+    const pending = new Promise<{ success: boolean; error?: string }>(resolve => {
+      resolveAdd = resolve;
+    });
+    (addToShortagesAction as jest.Mock).mockReturnValue(pending);
+
+    render(<LowStockClient initialItems={[mockItems[0]]} />);
+    const addButton = screen.getByRole('button', { name: 'إضافة للكشكول' });
+
+    act(() => {
+      addButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      addButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(addToShortagesAction).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveAdd({ success: false, error: 'stop' });
+      await pending;
+    });
+  });
+
+  it('blocks repeated reorder-alert bulk notebook writes while the first bulk operation is pending', async () => {
+    (getLowStockAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: mockItems.map(i => ({
+        drug_id: i.drug_id,
+        trade_name: i.trade_name,
+        trade_name_en: i.trade_name_en,
+        current_stock: i.quantity,
+        reorder_point: i.reorder_point,
+        deficit: i.deficit,
+        avg_monthly_usage: 5,
+        default_purchase_qty: i.default_purchase_qty,
+        official_price: i.official_price,
+      })),
+    });
+    let resolvePending: (value: any) => void = () => {};
+    const pending = new Promise(resolve => { resolvePending = resolve; });
+    (addToShortagesAction as jest.Mock).mockImplementation(() => pending);
+    render(<ReorderAlerts />);
+    await screen.findByText('تحديد الكل');
+    fireEvent.click(screen.getByText('تحديد الكل'));
+    const bulkAdd = screen.getByText('إضافة للكشكول');
+
+    act(() => {
+      fireEvent.click(bulkAdd);
+      fireEvent.click(bulkAdd);
+    });
+
+    expect(addToShortagesAction).toHaveBeenCalledTimes(1);
+    await act(async () => resolvePending({ success: false, error: 'pending test' }));
+    await waitFor(() => expect(addToShortagesAction).toHaveBeenCalledTimes(3));
   });
 });

@@ -50,6 +50,7 @@ jest.unmock('@/app/actions-client/patients');
 jest.unmock('@/app/actions-client/returns');
 
 import { getInventoryListAction, updateInventoryAction } from '@/app/actions-client/inventory';
+import { getAdjustmentReasonsAction } from '@/app/actions-client/master-drugs';
 import { getPatientProfileAction, getPatientStatementAction, getReceiptDetailsAction } from '@/app/actions-client/patients';
 import { createReturnAction } from '@/app/actions-client/returns';
 import { patientOutstandingBalanceQuery } from '@/lib/patients/balance';
@@ -440,6 +441,11 @@ describe('Patient Statement, Inventory Amount Editing, and Credit Returns', () =
     mockDb.exec(`DROP TABLE IF EXISTS adjustment_reasons; CREATE TABLE adjustment_reasons (id INTEGER PRIMARY KEY, reason TEXT);`);
     mockDb.prepare(`INSERT INTO adjustment_reasons (id, reason) VALUES (5, 'هالك مخزني')`).run();
 
+    expect(await getAdjustmentReasonsAction()).toEqual({
+      success: true,
+      data: [{ id: 5, reason: 'هالك مخزني' }],
+    });
+
     // 1. Update inventory with legacy reason column and string price as owner
     mockSession = { id: 'admin', role: 'owner', pharmacy_id: 'local_default' };
     mockPermission = true;
@@ -453,10 +459,11 @@ describe('Patient Statement, Inventory Amount Editing, and Credit Returns', () =
     });
 
     expect(updateRes).toEqual({ success: true });
+    expect(mockDb.prepare('SELECT reason_id FROM stock_adjustments WHERE inventory_id = ?').get('inv-1')).toEqual({ reason_id: 5 });
 
-    // 2. Fetch patient statement as cashier who only has can_sell permission
-    mockSession = { id: 'cashier-1', role: 'cashier', pharmacy_id: 'local_default', permissions: JSON.stringify({ can_sell: true }) };
-    mockPermission = false; // doesn't have can_view_patients, but has can_sell
+    // 2. Fetch patient statement as a cashier explicitly allowed to use the POS.
+    mockSession = { id: 'cashier-1', role: 'cashier', pharmacy_id: 'local_default', permissions: JSON.stringify({ can_access_pos: true }) };
+    mockPermission = false; // doesn't have can_view_patients, but has can_access_pos
 
     const statementRes = await getPatientStatementAction('pat-1');
     expect(statementRes.success).toBe(true);

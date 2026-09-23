@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { format } from 'date-fns';
 import { ar } from 'date-fns/locale';
 import { Search, Filter, Eye, CheckCircle2, XCircle, Clock } from 'lucide-react';
@@ -21,6 +21,7 @@ export default function PurchaseOrdersClient({ initialOrders }: Props) {
   const [orders, setOrders] = useState(initialOrders);
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('all');
+  const pendingOrderIdsRef = useRef(new Set<string>());
 
   const filtered = orders.filter((o: any) => {
     const matchSearch = String(o.id || '').toLowerCase().includes(search.toLowerCase()) || 
@@ -30,14 +31,22 @@ export default function PurchaseOrdersClient({ initialOrders }: Props) {
   });
 
   const handleStatusUpdate = async (poId: string, newStatus: string) => {
-    const result = await updatePurchaseOrderStatusAction(poId, newStatus);
-    if (result.success) {
-      toast.success(newStatus === 'completed'
-        ? 'تم إغلاق أمر الشراء؛ سجّل فاتورة الشراء لإضافة المخزون وإزالة النواقص'
-        : 'تم إلغاء أمر الشراء');
-      setOrders(orders.map(o => o.id === poId ? { ...o, status: newStatus } : o));
-    } else {
-      toast.error(result.error || 'فشل التحديث');
+    if (pendingOrderIdsRef.current.has(poId)) return;
+    pendingOrderIdsRef.current.add(poId);
+    try {
+      const result = await updatePurchaseOrderStatusAction(poId, newStatus);
+      if (result.success) {
+        toast.success(newStatus === 'completed'
+          ? 'تم إغلاق أمر الشراء؛ سجّل فاتورة الشراء لإضافة المخزون وإزالة النواقص'
+          : 'تم إلغاء أمر الشراء');
+        setOrders(currentOrders => currentOrders.map(o => o.id === poId ? { ...o, status: newStatus } : o));
+      } else {
+        toast.error(result.error || 'فشل التحديث');
+      }
+    } catch {
+      toast.error('فشل التحديث');
+    } finally {
+      pendingOrderIdsRef.current.delete(poId);
     }
   };
 

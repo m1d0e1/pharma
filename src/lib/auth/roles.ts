@@ -92,6 +92,8 @@ export const ROUTE_PERMISSIONS: Record<string, string> = {
   '/purchases/suppliers': 'can_view_suppliers',
   '/purchases': 'can_view_purchases',
   '/inventory': 'can_view_stores',
+  '/stores/delete-items': 'can_manage_inventory',
+  '/stores/adjustments': 'can_manage_inventory',
   '/stores': 'can_view_stores',
   '/accounts/cash-transactions': 'acc_can_process_cash_flow',
   '/accounts/settings/trial-balance': 'acc_can_view_general',

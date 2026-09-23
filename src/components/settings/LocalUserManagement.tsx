@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { getLocalUsersClient } from '@/lib/settings/client';
 import { toast } from 'react-hot-toast';
 import { useRouter } from 'next/navigation';
@@ -12,21 +12,62 @@ export default function LocalUserManagement() {
   const [users, setUsers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [allowed, setAllowed] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const loadRequestRef = useRef(0);
 
-  useEffect(() => {
-    const fetchUsers = async () => {
-      if (!isStaffOwner(await getClientSession())) { setLoading(false); return; }
+  const fetchUsers = React.useCallback(async () => {
+    const requestId = ++loadRequestRef.current;
+    setLoading(true);
+    setLoadError('');
+    try {
+      const session = await getClientSession();
+      if (requestId !== loadRequestRef.current) return;
+      if (!isStaffOwner(session)) {
+        setAllowed(false);
+        return;
+      }
       setAllowed(true);
       const result = await getLocalUsersClient();
+      if (requestId !== loadRequestRef.current) return;
       if (result.success) {
         setUsers(result.data || []);
       } else {
         toast.error(result.error || 'فشل تحميل المستخدمين');
+        setLoadError('تعذر تحميل المستخدمين المحليين');
       }
-      setLoading(false);
-    };
-    fetchUsers();
+    } catch (err) {
+      if (requestId !== loadRequestRef.current) return;
+      console.error('Failed to load local users:', err);
+      toast.error('فشل تحميل المستخدمين');
+      setLoadError('تعذر تحميل المستخدمين المحليين');
+    } finally {
+      if (requestId === loadRequestRef.current) {
+        setLoading(false);
+      }
+    }
   }, []);
+
+  useEffect(() => {
+    void fetchUsers();
+    return () => {
+      loadRequestRef.current += 1;
+    };
+  }, [fetchUsers]);
+
+  if (!allowed && loadError) {
+    return (
+      <div className="flex flex-col items-center gap-3 py-6">
+        <p className="text-center text-rose-600 font-black">{loadError}</p>
+        <button
+          type="button"
+          onClick={fetchUsers}
+          className="px-5 py-2.5 bg-slate-900 text-white rounded-xl font-black text-xs"
+        >
+          إعادة المحاولة
+        </button>
+      </div>
+    );
+  }
 
   if (!allowed) return null;
 
@@ -48,6 +89,17 @@ export default function LocalUserManagement() {
       <div className="space-y-4">
         {loading ? (
           <p className="text-center py-4 text-slate-400">جاري التحميل...</p>
+        ) : loadError ? (
+          <div className="flex flex-col items-center gap-3 py-6">
+            <p className="text-center text-rose-600 font-black">{loadError}</p>
+            <button
+              type="button"
+              onClick={fetchUsers}
+              className="px-5 py-2.5 bg-slate-900 text-white rounded-xl font-black text-xs"
+            >
+              إعادة المحاولة
+            </button>
+          </div>
         ) : users.length === 0 ? (
           <p className="text-center py-4 text-slate-400">لا يوجد مستخدمين محليين. قم بالمزامنة مع السحابة أولاً.</p>
         ) : (

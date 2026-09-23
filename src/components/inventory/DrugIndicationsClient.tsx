@@ -1,9 +1,11 @@
 'use client'
 
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { Search, Plus, Trash2, ChevronLeft, Stethoscope, Package, Loader2 } from 'lucide-react'
 import { toast, Toaster } from 'react-hot-toast'
-import { dbSelect, dbExecute } from '@/lib/db/tauri'
+import { dbSelect } from '@/lib/db/tauri'
+import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local'
+import { addDrugIndicationAction, deleteDrugIndicationAction } from '@/app/actions-client/master-drugs'
 
 interface Indication {
   id: number;
@@ -30,14 +32,29 @@ export default function DrugIndicationsClient({ indications }: Props) {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<Drug[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+  const [canManage, setCanManage] = useState(false);
+  const linkedRequestRef = useRef(0);
+  const searchRequestRef = useRef(0);
+  const mutationKeysRef = useRef<Set<string>>(new Set());
+  const selectedIndicationRef = useRef<number | null>(selectedIndicationId);
 
   useEffect(() => {
+    let active = true;
+    getClientSession().then(user => {
+      if (active) setCanManage(hasUserPermissionSync(user, 'can_manage_inventory'));
+    });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    selectedIndicationRef.current = selectedIndicationId;
     if (selectedIndicationId) {
       fetchLinkedDrugs(selectedIndicationId);
     }
   }, [selectedIndicationId]);
 
   const fetchLinkedDrugs = async (id: number) => {
+    const requestId = ++linkedRequestRef.current;
     setIsLoading(true);
     try {
       const data = await dbSelect(`
@@ -45,18 +62,26 @@ export default function DrugIndicationsClient({ indications }: Props) {
         JOIN drug_indications i ON m.id = i.drug_id
         WHERE i.indication_id = ?
       `, [id]);
-      setLinkedDrugs(data);
+      if (requestId === linkedRequestRef.current) {
+        setLinkedDrugs(data);
+      }
     } catch (err) {
-      console.error('Failed to fetch linked drugs:', err);
+      if (requestId === linkedRequestRef.current) {
+        console.error('Failed to fetch linked drugs:', err);
+      }
     } finally {
-      setIsLoading(false);
+      if (requestId === linkedRequestRef.current) {
+        setIsLoading(false);
+      }
     }
   };
 
   const handleSearch = async (query: string) => {
+    const requestId = ++searchRequestRef.current;
     setSearchQuery(query);
     if (query.length < 2) {
       setSearchResults([]);
+      setIsSearching(false);
       return;
     }
     setIsSearching(true);
@@ -67,39 +92,63 @@ export default function DrugIndicationsClient({ indications }: Props) {
         WHERE (trade_name LIKE ? OR trade_name_en LIKE ? OR active_ingredient LIKE ? OR barcode LIKE ?) 
         LIMIT 100
       `, [likeQuery, likeQuery, likeQuery, likeQuery]);
-      setSearchResults(data);
+      if (requestId === searchRequestRef.current) {
+        setSearchResults(data);
+      }
     } catch (err) {
-      console.error('Failed to search drugs:', err);
+      if (requestId === searchRequestRef.current) {
+        console.error('Failed to search drugs:', err);
+      }
     } finally {
-      setIsSearching(false);
+      if (requestId === searchRequestRef.current) {
+        setIsSearching(false);
+      }
     }
   };
 
   const handleAddLink = async (drugId: number) => {
     if (!selectedIndicationId) return;
+    const indicationId = selectedIndicationId;
+    const mutationKey = `add:${indicationId}:${drugId}`;
+    if (mutationKeysRef.current.has(mutationKey)) return;
+    mutationKeysRef.current.add(mutationKey);
     try {
-      await dbExecute('INSERT OR IGNORE INTO drug_indications (drug_id, indication_id) VALUES (?, ?)', [drugId, selectedIndicationId]);
+      const result = await addDrugIndicationAction(drugId, indicationId);
+      if (!result.success) throw new Error(result.error || 'فشل الربط');
       toast.success('تم ربط الصنف بنجاح');
-      fetchLinkedDrugs(selectedIndicationId);
+      if (selectedIndicationRef.current === indicationId) {
+        void fetchLinkedDrugs(indicationId);
+      }
       setSearchQuery('');
       setSearchResults([]);
     } catch (err: any) {
       console.error(err);
       toast.error(err.message || 'فشل الربط');
+    } finally {
+      mutationKeysRef.current.delete(mutationKey);
     }
   };
 
   const handleRemoveLink = async (drugId: number) => {
     if (!selectedIndicationId) return;
+    const indicationId = selectedIndicationId;
+    const mutationKey = `remove:${indicationId}:${drugId}`;
+    if (mutationKeysRef.current.has(mutationKey)) return;
     if (!confirm('هل أنت متأكد من حذف هذا الربط؟')) return;
-    
+    mutationKeysRef.current.add(mutationKey);
+
     try {
-      await dbExecute('DELETE FROM drug_indications WHERE drug_id = ? AND indication_id = ?', [drugId, selectedIndicationId]);
+      const result = await deleteDrugIndicationAction(drugId, indicationId);
+      if (!result.success) throw new Error(result.error || 'فشل الحذف');
       toast.success('تم حذف الربط');
-      fetchLinkedDrugs(selectedIndicationId);
+      if (selectedIndicationRef.current === indicationId) {
+        void fetchLinkedDrugs(indicationId);
+      }
     } catch (err: any) {
       console.error(err);
       toast.error(err.message || 'فشل الحذف');
+    } finally {
+      mutationKeysRef.current.delete(mutationKey);
     }
   };
 
@@ -141,7 +190,7 @@ export default function DrugIndicationsClient({ indications }: Props) {
       {/* Linked Drugs Main */}
       <div className="lg:col-span-8 flex flex-col gap-8">
         {/* Search/Add Box */}
-        <div className="bg-white dark:bg-slate-900 p-8 rounded-[40px] shadow-soft border border-slate-100 dark:border-slate-800 relative">
+        {canManage && <div className="bg-white dark:bg-slate-900 p-8 rounded-[40px] shadow-soft border border-slate-100 dark:border-slate-800 relative">
           <h3 className="text-lg font-black text-slate-900 dark:text-white mb-4">إضافة صنف لهذا الداعي</h3>
           <div className="relative">
             <Search className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
@@ -165,6 +214,7 @@ export default function DrugIndicationsClient({ indications }: Props) {
                     </div>
                     <button 
                       onClick={() => handleAddLink(drug.id)}
+                      aria-label={`ربط ${drug.trade_name}`}
                       className="p-2 bg-primary-100 text-primary-600 rounded-xl hover:bg-primary-600 hover:text-white transition-all"
                     >
                        <Plus className="w-5 h-5" />
@@ -173,7 +223,7 @@ export default function DrugIndicationsClient({ indications }: Props) {
                ))}
             </div>
           )}
-        </div>
+        </div>}
 
         {/* Linked Items List */}
         <div className="bg-white dark:bg-slate-900 p-8 rounded-[40px] shadow-soft border border-slate-100 dark:border-slate-800 flex-1 min-h-[400px]">
@@ -198,7 +248,7 @@ export default function DrugIndicationsClient({ indications }: Props) {
                         <th className="py-4 font-black text-slate-400 text-sm">اسم الصنف</th>
                         <th className="py-4 font-black text-slate-400 text-sm">الشركة</th>
                         <th className="py-4 font-black text-slate-400 text-sm text-center">السعر</th>
-                        <th className="py-4 font-black text-slate-400 text-sm">إجراء</th>
+                        {canManage && <th className="py-4 font-black text-slate-400 text-sm">إجراء</th>}
                      </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-50 dark:divide-slate-800">
@@ -216,14 +266,15 @@ export default function DrugIndicationsClient({ indications }: Props) {
                            <td className="py-5 text-center">
                               <span className="font-black text-primary-600">{drug.official_price} <span className="text-[10px]">ج.م</span></span>
                            </td>
-                           <td className="py-5">
+                           {canManage && <td className="py-5">
                               <button 
                                 onClick={() => handleRemoveLink(drug.id)}
+                                aria-label={`حذف ربط ${drug.trade_name}`}
                                 className="p-3 text-slate-300 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-2xl transition-all"
                               >
                                  <Trash2 className="w-5 h-5" />
                               </button>
-                           </td>
+                           </td>}
                         </tr>
                      ))}
                   </tbody>

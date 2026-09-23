@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { addInteractionAction, checkDrugInteractions, getInteractionsAction } from '@/app/actions-client/interactions';
 import { toast } from 'react-hot-toast';
 import { useRouter } from 'next/navigation';
@@ -34,6 +34,9 @@ export default function InteractionsClient({ initialInteractions, totalCount, us
   const [checkerInput, setCheckerInput] = useState('');
   const [checkerResults, setCheckerResults] = useState<any>(null);
   const [checkerLoading, setCheckerLoading] = useState(false);
+  const fetchRequestRef = useRef(0);
+  const addSubmissionRef = useRef(false);
+  const checkerRequestRef = useRef(0);
 
   const [form, setForm] = useState({
     ingredient_a: '',
@@ -43,10 +46,17 @@ export default function InteractionsClient({ initialInteractions, totalCount, us
     recommendation: '',
   });
 
+  const handleToggleAddForm = () => {
+    if (addSubmissionRef.current) return;
+    setShowAddForm(current => !current);
+  };
+
   const fetchInteractions = useCallback(async (p: number, s: string, sev: string) => {
+    const requestId = ++fetchRequestRef.current;
     setLoading(true);
     try {
       const res = await getInteractionsAction(p, 50, s, sev);
+      if (requestId !== fetchRequestRef.current) return;
       if (res.success) {
         setInteractions(res.data || []);
         setTotal(res.total || 0);
@@ -54,9 +64,13 @@ export default function InteractionsClient({ initialInteractions, totalCount, us
         toast.error(res.error || 'فشل تحميل البيانات');
       }
     } catch (error) {
-      toast.error('حدث خطأ أثناء الاتصال بالخادم');
+      if (requestId === fetchRequestRef.current) {
+        toast.error('حدث خطأ أثناء الاتصال بالخادم');
+      }
     } finally {
-      setLoading(false);
+      if (requestId === fetchRequestRef.current) {
+        setLoading(false);
+      }
     }
   }, []);
 
@@ -73,14 +87,22 @@ export default function InteractionsClient({ initialInteractions, totalCount, us
 
   const handleAdd = async (e: React.FormEvent) => {
     e.preventDefault();
-    const result = await addInteractionAction(form);
-    if (result.success) {
-      toast.success('تم إضافة التفاعل بنجاح');
-      setShowAddForm(false);
-      setForm({ ingredient_a: '', ingredient_b: '', severity: 'moderate', description_ar: '', recommendation: '' });
-      fetchInteractions(1, debouncedSearch, severityFilter);
-    } else {
-      toast.error(result.error || 'فشل الإضافة');
+    if (addSubmissionRef.current) return;
+    addSubmissionRef.current = true;
+    try {
+      const result = await addInteractionAction(form);
+      if (result.success) {
+        toast.success('تم إضافة التفاعل بنجاح');
+        setShowAddForm(false);
+        setForm({ ingredient_a: '', ingredient_b: '', severity: 'moderate', description_ar: '', recommendation: '' });
+        void fetchInteractions(page, debouncedSearch, severityFilter);
+      } else {
+        toast.error(result.error || 'فشل الإضافة');
+      }
+    } catch {
+      toast.error('فشل الإضافة');
+    } finally {
+      addSubmissionRef.current = false;
     }
   };
 
@@ -90,17 +112,27 @@ export default function InteractionsClient({ initialInteractions, totalCount, us
       toast.error('أدخل مادتين فعالتين على الأقل مفصولتين بفاصلة');
       return;
     }
+    const requestId = ++checkerRequestRef.current;
     setCheckerLoading(true);
     try {
       const result = await checkDrugInteractions(ingredients);
+      if (requestId !== checkerRequestRef.current) return;
       if (result.success) {
         setCheckerResults(result.data);
         if (result.data.interactions.length === 0 && result.data.allergies.length === 0) {
           toast.success('✅ لا توجد تفاعلات معروفة');
         }
+      } else {
+        toast.error(result.error || 'فشل فحص التفاعلات');
+      }
+    } catch {
+      if (requestId === checkerRequestRef.current) {
+        toast.error('حدث خطأ أثناء فحص التفاعلات');
       }
     } finally {
-      setCheckerLoading(false);
+      if (requestId === checkerRequestRef.current) {
+        setCheckerLoading(false);
+      }
     }
   };
 
@@ -181,7 +213,7 @@ export default function InteractionsClient({ initialInteractions, totalCount, us
 
         {userRole === 'owner' && (
           <button
-            onClick={() => setShowAddForm(!showAddForm)}
+            onClick={handleToggleAddForm}
             className="bg-blue-600 text-white px-5 py-2.5 rounded-xl font-bold text-sm hover:bg-blue-700 transition-all flex items-center gap-2"
           >
             <Plus className="w-4 h-4" /> إضافة تفاعل
@@ -204,7 +236,7 @@ export default function InteractionsClient({ initialInteractions, totalCount, us
           <textarea required value={form.description_ar} onChange={e => setForm({...form, description_ar: e.target.value})} placeholder="وصف التفاعل بالتفصيل..." className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-4 py-3 rounded-xl font-bold" rows={2} />
           <div className="flex gap-3 pt-2">
             <button type="submit" className="bg-emerald-600 text-white px-10 py-3 rounded-xl font-bold hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-200 dark:shadow-none">حفظ</button>
-            <button type="button" onClick={() => setShowAddForm(false)} className="bg-slate-200 dark:bg-slate-800 px-8 py-3 rounded-xl font-bold hover:bg-slate-300 dark:hover:bg-slate-700 transition-all">إلغاء</button>
+            <button type="button" onClick={handleToggleAddForm} className="bg-slate-200 dark:bg-slate-800 px-8 py-3 rounded-xl font-bold hover:bg-slate-300 dark:hover:bg-slate-700 transition-all">إلغاء</button>
           </div>
         </form>
       )}

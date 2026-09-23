@@ -10,9 +10,8 @@ import { useReactToPrint } from 'react-to-print'
 
 import { useHotkeys } from 'react-hotkeys-hook'
 import AddInventoryModal from '../AddInventoryModal'
-import { deleteInventoryAction } from '@/app/actions-client/inventory'
+import { deleteInventoryAction, importInventoryWorkbookAction } from '@/app/actions-client/inventory'
 import { dbSelect } from '@/lib/db/tauri'
-import { importInventoryWorkbookRows } from '@/lib/inventory/import'
 import { Download, Upload } from 'lucide-react'
 
 interface InventoryItem {
@@ -21,6 +20,7 @@ interface InventoryItem {
   quantity: number
   expiry_date: string
   local_selling_price: number
+  cost_price?: number | null
   barcode?: string
   master_drugs: {
     trade_name: string
@@ -59,6 +59,7 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
   const [sort, setSort] = useState<{ key: string; dir: 'asc' | 'desc' } | null>(null);
   const itemsPerPage = 50;
   const printRef = useRef<HTMLDivElement>(null);
+  const deletingIdsRef = useRef<Set<string>>(new Set());
   const handlePrint = useReactToPrint({
     contentRef: printRef,
     documentTitle: 'تقرير النواقص',
@@ -77,8 +78,10 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
   }, []);
 
   const handleForceDelete = async (id: string) => {
+    if (deletingIdsRef.current.has(id)) return;
     if (!confirm('هل أنت متأكد من حذف هذا الصنف نهائياً من المخزون؟')) return;
 
+    deletingIdsRef.current.add(id);
     try {
       const result = await deleteInventoryAction({ id });
       if (result.success) {
@@ -89,6 +92,8 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
       }
     } catch (e) {
       toast.error('حدث خطأ أثناء الحذف');
+    } finally {
+      deletingIdsRef.current.delete(id);
     }
   }
 
@@ -149,21 +154,28 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
     setCurrentPage(1);
   }, [searchTerm]);
 
-  const { totalQuantity, totalValue, uniqueDrugsCount } = useMemo(() => {
+  const { totalQuantity, totalValue, totalCost, uncostedLots, uniqueDrugsCount } = useMemo(() => {
     let qty = 0;
     let val = 0;
+    let cost = 0;
+    let uncosted = 0;
     const drugIds = new Set<number>();
     for (let i = 0; i < filteredItems.length; i++) {
       const item = filteredItems[i];
-      const q = item.quantity || 0;
+      const q = Number(item.quantity) || 0;
       qty += q;
       val += q * (item.local_selling_price || 0);
+      cost += q * (item.cost_price || 0);
+      if (q > 0 && !(Number(item.cost_price) > 0)) uncosted++;
       if (item.drug_id) drugIds.add(item.drug_id);
     }
-    return { totalQuantity: qty, totalValue: val, uniqueDrugsCount: drugIds.size };
+    return { totalQuantity: qty, totalValue: val, totalCost: cost, uncostedLots: uncosted, uniqueDrugsCount: drugIds.size };
   }, [filteredItems]);
 
   const totalPages = Math.ceil(filteredItems.length / itemsPerPage);
+  useEffect(() => {
+    setCurrentPage(prev => Math.min(prev, Math.max(1, totalPages)));
+  }, [totalPages]);
   const paginatedItems = useMemo(() => {
     return sortedItems.slice(
       (currentPage - 1) * itemsPerPage,
@@ -255,7 +267,11 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
 
           toast.loading(`جاري استيراد ${data.length} سجل مخزون (تشغيلات)...`, { id: toastId });
 
-          const imported = await importInventoryWorkbookRows(data, drugs, pharmacyId || 'local_default');
+          const importResult = await importInventoryWorkbookAction(data, drugs);
+          if (!importResult.success || !importResult.data) {
+            throw new Error(importResult.error || 'فشل استيراد بيانات المخزون');
+          }
+          const imported = importResult.data;
 
           const { secureCache } = await import('@/lib/cache/secure_cache');
           await secureCache.reload();
@@ -322,7 +338,7 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
           <div>
             <p className="text-xs font-black text-blue-600 dark:text-blue-400 uppercase tracking-widest">إجمالي كمية الأدوية المتوفرة</p>
             <p className="text-3xl font-black text-slate-900 dark:text-white mt-2">
-              {totalQuantity.toLocaleString('ar-EG')} <span className="text-sm font-bold text-slate-500">وحدة</span>
+              {totalQuantity.toLocaleString('ar-EG')} <span className="text-sm font-bold text-slate-500">وحدة كبيرة (تشمل الكسور)</span>
             </p>
           </div>
           <div className="text-4xl bg-blue-500/15 dark:bg-blue-500/30 p-4 rounded-2xl">📦</div>
@@ -340,15 +356,22 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
 
         <div className="bg-gradient-to-r from-emerald-500/10 to-teal-500/10 dark:from-emerald-500/20 dark:to-teal-500/20 border border-emerald-100 dark:border-emerald-900/50 p-6 rounded-3xl flex justify-between items-center shadow-sm">
           <div>
-            <p className="text-xs font-black text-emerald-600 dark:text-emerald-400 uppercase tracking-widest">إجمالي قيمة المخزون الحالي</p>
+            <p className="text-xs font-black text-emerald-600 dark:text-emerald-400 uppercase tracking-widest">قيمة المخزون بسعر البيع</p>
             <p className="text-3xl font-black text-emerald-600 dark:text-emerald-400 mt-2">
               {totalValue.toLocaleString('ar-EG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <span className="text-sm font-bold">ج.م</span>
             </p>
+            <p className="text-sm mt-2 text-slate-600 dark:text-slate-300">
+              التكلفة المسجلة: {totalCost.toLocaleString('ar-EG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ج.م
+            </p>
+            {uncostedLots > 0 && <p className="text-xs mt-2 text-amber-700 dark:text-amber-400">
+              تنبيه: {uncostedLots.toLocaleString('ar-EG')} دفعة بتكلفة صفرية أو غير مسجلة؛ راجع التكلفة قبل الاعتماد على التقييم.
+            </p>}
           </div>
           <div className="text-4xl bg-emerald-500/15 dark:bg-emerald-500/30 p-4 rounded-2xl">💰</div>
         </div>
       </div>
 
+      <p className="text-sm text-slate-500">الإجماليات تخص جميع دفعات نتيجة البحث، وليس الصفحة الحالية فقط. تشمل الكميات منتهية الصلاحية؛ قيمة البيع ليست إيرادًا محققًا أو رصيد خزينة.</p>
       <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-xl overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-right border-collapse">

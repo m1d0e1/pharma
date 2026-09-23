@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { updatePharmacyClient } from '@/lib/settings/client';
 import { toast } from 'react-hot-toast';
 
@@ -11,22 +11,31 @@ interface PharmacySettingsFormProps {
 export default function PharmacySettingsForm({ pharmacy: rawPharmacy }: PharmacySettingsFormProps) {
   const pharmacy = Array.isArray(rawPharmacy) ? rawPharmacy[0] : rawPharmacy;
   const [loading, setLoading] = useState(false);
+  const savingRef = useRef(false);
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    if (savingRef.current) return;
+    savingRef.current = true;
     setLoading(true);
 
     const formData = new FormData(e.currentTarget);
     const data = Object.fromEntries(formData.entries());
 
-    const result = await updatePharmacyClient(data);
+    try {
+      const result = await updatePharmacyClient(data);
 
-    if (result.success) {
-      toast.success('تم تحديث بيانات الصيدلية بنجاح');
-    } else {
-      toast.error(result.error || 'فشل تحديث البيانات');
+      if (result.success) {
+        toast.success('تم تحديث بيانات الصيدلية بنجاح');
+      } else {
+        toast.error(result.error || 'فشل تحديث البيانات');
+      }
+    } catch {
+      toast.error('فشل تحديث البيانات');
+    } finally {
+      savingRef.current = false;
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   return (

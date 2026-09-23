@@ -32,6 +32,8 @@ interface Props {
   onUpdate: (id: number, data: { name_ar: string; name_en?: string; phone?: string; address?: string }) => Promise<{ success: boolean; error?: string }>;
   onDelete: (id: number) => Promise<{ success: boolean; error?: string }>;
   onRefresh: () => Promise<void>;
+  canMutate?: boolean;
+  canPay?: boolean;
 }
 
 export default function SuppliersManagementClient({
@@ -39,7 +41,9 @@ export default function SuppliersManagementClient({
   onAdd,
   onUpdate,
   onDelete,
-  onRefresh
+  onRefresh,
+  canMutate = false,
+  canPay = false,
 }: Props) {
   const [suppliers, setSuppliers] = useState<SupplierItem[]>(initialData);
   const [searchTerm, setSearchTerm] = useState('');
@@ -50,6 +54,8 @@ export default function SuppliersManagementClient({
   const [editingSupplier, setEditingSupplier] = useState<SupplierItem | null>(null);
   const [formData, setFormData] = useState({ name_ar: '', name_en: '', phone: '', address: '' });
   const [isSavingSupplier, setIsSavingSupplier] = useState(false);
+  const supplierSaveRef = React.useRef(false);
+  const deletingSupplierIdsRef = React.useRef(new Set<number>());
 
   // Payment Modal
   const [paymentSupplier, setPaymentSupplier] = useState<SupplierItem | null>(null);
@@ -59,11 +65,14 @@ export default function SuppliersManagementClient({
   const [paymentNotes, setPaymentNotes] = useState('');
   const [paymentDate, setPaymentDate] = useState(localDate());
   const [isProcessingPayment, setIsProcessingPayment] = useState(false);
+  const paymentSubmissionRef = React.useRef(false);
 
   // Statement / History Modal
   const [statementSupplier, setStatementSupplier] = useState<SupplierItem | null>(null);
   const [statementTransactions, setStatementTransactions] = useState<any[]>([]);
   const [isLoadingStatement, setIsLoadingStatement] = useState(false);
+  const [statementLoadError, setStatementLoadError] = useState('');
+  const statementRequestRef = React.useRef(0);
 
   React.useEffect(() => {
     setSuppliers(initialData);
@@ -98,12 +107,14 @@ export default function SuppliersManagementClient({
 
   // Add / Edit Handlers
   const handleOpenAdd = () => {
+    if (!canMutate) return;
     setEditingSupplier(null);
     setFormData({ name_ar: '', name_en: '', phone: '', address: '' });
     setIsAddEditOpen(true);
   };
 
   const handleOpenEdit = (s: SupplierItem) => {
+    if (!canMutate) return;
     setEditingSupplier(s);
     setFormData({ 
       name_ar: s.name_ar, 
@@ -115,10 +126,13 @@ export default function SuppliersManagementClient({
   };
 
   const handleSaveSupplier = async () => {
+    if (!canMutate) return;
     if (!formData.name_ar.trim()) {
       toast.error('يرجى إدخال اسم المورد بالعربي');
       return;
     }
+    if (supplierSaveRef.current) return;
+    supplierSaveRef.current = true;
     setIsSavingSupplier(true);
     try {
       if (editingSupplier) {
@@ -143,12 +157,16 @@ export default function SuppliersManagementClient({
     } catch {
       toast.error('حدث خطأ أثناء الحفظ');
     } finally {
+      supplierSaveRef.current = false;
       setIsSavingSupplier(false);
     }
   };
 
   const handleDeleteSupplier = async (id: number) => {
+    if (!canMutate) return;
+    if (deletingSupplierIdsRef.current.has(id)) return;
     if (!confirm('هل أنت متأكد من رغبتك في حذف هذا المورد؟')) return;
+    deletingSupplierIdsRef.current.add(id);
     try {
       const res = await onDelete(id);
       if (res.success) {
@@ -159,11 +177,14 @@ export default function SuppliersManagementClient({
       }
     } catch {
       toast.error('حدث خطأ أثناء الحذف');
+    } finally {
+      deletingSupplierIdsRef.current.delete(id);
     }
   };
 
   // Payment Handlers
   const handleOpenPayment = (s: SupplierItem) => {
+    if (!canPay) return;
     setPaymentSupplier(s);
     const balance = Math.max(0, Number(s.balance || 0));
     setPaymentAmount(balance > 0 ? String(balance) : '');
@@ -186,7 +207,9 @@ export default function SuppliersManagementClient({
       toast.error('يرجى إدخال رقم الشيك');
       return;
     }
+    if (paymentSubmissionRef.current) return;
 
+    paymentSubmissionRef.current = true;
     setIsProcessingPayment(true);
     try {
       const res = await addSupplierPaymentAction({
@@ -208,25 +231,36 @@ export default function SuppliersManagementClient({
     } catch {
       toast.error('حدث خطأ أثناء تنفيذ عملية السداد');
     } finally {
+      paymentSubmissionRef.current = false;
       setIsProcessingPayment(false);
     }
   };
 
   // Statement / History Handlers
   const handleOpenStatement = async (s: SupplierItem) => {
+    const requestId = ++statementRequestRef.current;
     setStatementSupplier(s);
+    setStatementTransactions([]);
+    setStatementLoadError('');
     setIsLoadingStatement(true);
     try {
       const res = await getSupplierTransactionsAction(s.id);
+      if (requestId !== statementRequestRef.current) return;
       if (res.success) {
         setStatementTransactions(res.data || []);
       } else {
+        setStatementLoadError('تعذر تحميل كشف حساب المورد');
         toast.error(res.error || 'فشل جلب كشف الحساب');
       }
     } catch {
-      toast.error('حدث خطأ أثناء جلب كشف الحساب');
+      if (requestId === statementRequestRef.current) {
+        setStatementLoadError('تعذر تحميل كشف حساب المورد');
+        toast.error('حدث خطأ أثناء جلب كشف الحساب');
+      }
     } finally {
-      setIsLoadingStatement(false);
+      if (requestId === statementRequestRef.current) {
+        setIsLoadingStatement(false);
+      }
     }
   };
 
@@ -319,13 +353,15 @@ export default function SuppliersManagementClient({
             </button>
           </div>
 
-          <button
-            onClick={handleOpenAdd}
-            className="px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white font-black text-xs rounded-2xl shadow-lg shadow-primary-500/20 flex items-center gap-2 transition-all active:scale-95 whitespace-nowrap"
-          >
-            <Plus className="w-4 h-4" />
-            <span>إضافة مورد جديد</span>
-          </button>
+          {canMutate && (
+            <button
+              onClick={handleOpenAdd}
+              className="px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white font-black text-xs rounded-2xl shadow-lg shadow-primary-500/20 flex items-center gap-2 transition-all active:scale-95 whitespace-nowrap"
+            >
+              <Plus className="w-4 h-4" />
+              <span>إضافة مورد جديد</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -367,22 +403,24 @@ export default function SuppliersManagementClient({
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-1">
-                    <button
-                      onClick={() => handleOpenEdit(supplier)}
-                      className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-xl transition-all"
-                      title="تعديل"
-                    >
-                      <Edit className="w-4 h-4" />
-                    </button>
-                    <button
-                      onClick={() => handleDeleteSupplier(supplier.id)}
-                      className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/20 rounded-xl transition-all"
-                      title="حذف"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
+                  {canMutate && (
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => handleOpenEdit(supplier)}
+                        className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-xl transition-all"
+                        title="تعديل"
+                      >
+                        <Edit className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => handleDeleteSupplier(supplier.id)}
+                        className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/20 rounded-xl transition-all"
+                        title="حذف"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 {/* Contact details */}
@@ -420,13 +458,15 @@ export default function SuppliersManagementClient({
                 </div>
 
                 <div className="grid grid-cols-2 gap-2">
-                  <button
-                    onClick={() => handleOpenPayment(supplier)}
-                    className="w-full py-2.5 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-black text-xs shadow-md shadow-emerald-500/10 flex items-center justify-center gap-1.5 transition-all active:scale-95"
-                  >
-                    <CreditCard className="w-4 h-4" />
-                    <span>سداد دفعة</span>
-                  </button>
+                  {canPay && (
+                    <button
+                      onClick={() => handleOpenPayment(supplier)}
+                      className="w-full py-2.5 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-black text-xs shadow-md shadow-emerald-500/10 flex items-center justify-center gap-1.5 transition-all active:scale-95"
+                    >
+                      <CreditCard className="w-4 h-4" />
+                      <span>سداد دفعة</span>
+                    </button>
+                  )}
 
                   <button
                     onClick={() => handleOpenStatement(supplier)}
@@ -450,7 +490,7 @@ export default function SuppliersManagementClient({
       </div>
 
       {/* Add / Edit Supplier Modal */}
-      {isAddEditOpen && (
+      {canMutate && isAddEditOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in">
           <div className="bg-white dark:bg-slate-900 rounded-[32px] max-w-lg w-full p-8 border border-slate-100 dark:border-slate-800 shadow-2xl space-y-6">
             <div className="flex justify-between items-center pb-4 border-b border-slate-100 dark:border-slate-800">
@@ -533,7 +573,7 @@ export default function SuppliersManagementClient({
       )}
 
       {/* Supplier Payment Modal */}
-      {paymentSupplier && (
+      {canPay && paymentSupplier && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in">
           <div className="bg-white dark:bg-slate-900 rounded-[32px] max-w-lg w-full p-8 border border-slate-100 dark:border-slate-800 shadow-2xl space-y-6">
             <div className="flex justify-between items-center pb-4 border-b border-slate-100 dark:border-slate-800">
@@ -703,6 +743,17 @@ export default function SuppliersManagementClient({
             <div className="overflow-y-auto flex-1 custom-scrollbar">
               {isLoadingStatement ? (
                 <div className="py-16 text-center text-slate-400 font-bold">جاري تحميل كشف الحساب...</div>
+              ) : statementLoadError ? (
+                <div className="py-16 text-center space-y-4">
+                  <p className="font-black text-rose-600 dark:text-rose-400">{statementLoadError}</p>
+                  <button
+                    type="button"
+                    onClick={() => void handleOpenStatement(statementSupplier)}
+                    className="px-5 py-2.5 rounded-xl bg-rose-600 text-white font-black text-xs"
+                  >
+                    إعادة المحاولة
+                  </button>
+                </div>
               ) : statementTransactions.length === 0 ? (
                 <div className="py-16 text-center text-slate-400 font-bold">لا توجد حركات مسجلة لهذا المورد حتى الآن</div>
               ) : (

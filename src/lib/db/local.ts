@@ -1565,6 +1565,33 @@ export function initLocalDb() {
     db.exec('DELETE FROM product_categories;');
   } catch (e) {}
 
+  // Keep mandatory stock-adjustment reasons usable on fresh and legacy databases.
+  try {
+    const reasonColumns = db.prepare('PRAGMA table_info(adjustment_reasons)').all() as any[];
+    for (const column of [
+      { name: 'name_ar', type: 'TEXT' },
+      { name: 'name_en', type: 'TEXT' },
+      { name: 'reason', type: 'TEXT' },
+    ]) {
+      if (!reasonColumns.some(c => c.name === column.name)) {
+        db.exec(`ALTER TABLE adjustment_reasons ADD COLUMN ${column.name} ${column.type}`);
+      }
+    }
+    db.exec(`
+      INSERT INTO adjustment_reasons (name_ar, name_en, reason)
+      SELECT seed.name_ar, seed.name_en, seed.reason
+      FROM (
+        SELECT 'جرد وتصحيح رصيد' AS name_ar, 'Stock count correction' AS name_en, 'جرد وتصحيح رصيد' AS reason
+        UNION ALL SELECT 'تلف أو كسر', 'Damage or breakage', 'تلف أو كسر'
+        UNION ALL SELECT 'منتهي الصلاحية', 'Expired stock', 'منتهي الصلاحية'
+        UNION ALL SELECT 'خطأ إدخال', 'Entry correction', 'خطأ إدخال'
+      ) AS seed
+      WHERE NOT EXISTS (SELECT 1 FROM adjustment_reasons);
+    `);
+  } catch (e) {
+    console.warn('Failed to ensure adjustment reasons:', e);
+  }
+
   // Seed item natures if empty
   const naturesCount = db.prepare('SELECT COUNT(*) as count FROM item_natures').get() as { count: number };
   if (naturesCount.count === 0) {

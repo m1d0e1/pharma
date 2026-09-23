@@ -17,6 +17,12 @@ describe('fresh local database bootstrap', () => {
     expect(columns('return_items')).toEqual(expect.arrayContaining(['sale_item_id', 'unit', 'drug_id', 'total_price']));
     expect(columns('purchase_return_items')).toEqual(expect.arrayContaining(['purchase_invoice_item_id', 'unit']));
     expect(columns('master_drugs_fts')).toEqual(expect.arrayContaining(['manufacturer', 'category']));
+    expect(db.prepare('SELECT name_ar FROM adjustment_reasons ORDER BY id').all()).toEqual([
+      { name_ar: 'جرد وتصحيح رصيد' },
+      { name_ar: 'تلف أو كسر' },
+      { name_ar: 'منتهي الصلاحية' },
+      { name_ar: 'خطأ إدخال' },
+    ]);
     expect(db.prepare('PRAGMA integrity_check').get()).toEqual({ integrity_check: 'ok' });
 
     closeDatabase();

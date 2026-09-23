@@ -202,4 +202,79 @@ describe('rendered customer-return flow', () => {
     expect(await screen.findByText('Second Receipt Drug')).toBeInTheDocument();
     expect(screen.queryByText('Wrong First Receipt Drug')).not.toBeInTheDocument();
   });
+
+  it('preserves the prepared sales return and restores submit controls when creation throws', async () => {
+    (createReturnAction as jest.Mock).mockRejectedValueOnce(new Error('bridge unavailable'));
+    render(<SalesReturnClient />);
+    fireEvent.change(screen.getByPlaceholderText('امسح الباركود، أو اكتب اسم الدواء، أو رقم الفاتورة...'), {
+      target: { value: 'Return Drug' },
+    });
+
+    expect(await screen.findByText('Return Drug')).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'تنفيذ المرتجع' }));
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('حدث خطأ أثناء حفظ المرتجع'));
+    expect(mockPush).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'تنفيذ المرتجع' })).toBeEnabled();
+    expect(screen.getByRole('spinbutton')).toHaveValue(1);
+  });
+
+  it('keeps a committed sales return acknowledged and locked when post-save navigation throws', async () => {
+    mockPush.mockImplementationOnce(() => { throw new Error('navigation unavailable'); });
+    (createReturnAction as jest.Mock).mockResolvedValueOnce({ success: true, returnId: 'return-committed', totalRefund: 10 });
+    render(<SalesReturnClient />);
+    fireEvent.change(screen.getByPlaceholderText('امسح الباركود، أو اكتب اسم الدواء، أو رقم الفاتورة...'), {
+      target: { value: 'Return Drug' },
+    });
+
+    expect(await screen.findByText('Return Drug')).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'تنفيذ المرتجع' }));
+
+    await waitFor(() => expect(createReturnAction).toHaveBeenCalledTimes(1));
+    expect(toast.success).toHaveBeenCalledWith('تم تسجيل المرتجع بنجاح: 10.00 ج.م');
+    expect(toast.error).toHaveBeenCalledWith('تم تسجيل المرتجع بنجاح لكن تعذر فتح قائمة المرتجعات');
+    expect(toast.error).not.toHaveBeenCalledWith('حدث خطأ أثناء حفظ المرتجع');
+    expect(screen.getByRole('button', { name: 'تم حفظ المرتجع' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'تم حفظ المرتجع' }));
+    expect(createReturnAction).toHaveBeenCalledTimes(1);
+  });
+
+  it('blocks repeated sales-return submission while the first financial write is pending', async () => {
+    let resolveCreate: (value: { success: boolean; error?: string }) => void = () => {};
+    (createReturnAction as jest.Mock).mockImplementation(() => new Promise(resolve => {
+      resolveCreate = resolve;
+    }));
+    render(<SalesReturnClient />);
+    fireEvent.change(screen.getByPlaceholderText('امسح الباركود، أو اكتب اسم الدواء، أو رقم الفاتورة...'), {
+      target: { value: 'Return Drug' },
+    });
+
+    expect(await screen.findByText('Return Drug')).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '1' } });
+    const submit = screen.getByRole('button', { name: 'تنفيذ المرتجع' });
+
+    act(() => {
+      submit.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      submit.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(createReturnAction).toHaveBeenCalledTimes(1);
+    await act(async () => resolveCreate({ success: false, error: 'تعذر الحفظ مؤقتاً' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'تنفيذ المرتجع' })).toBeEnabled());
+  });
+
+  it('surfaces a thrown invoice search and remains usable for a later search', async () => {
+    (searchRecentReturnInvoicesAction as jest.Mock).mockRejectedValueOnce(new Error('bridge unavailable'));
+    render(<SalesReturnClient />);
+    const searchInput = screen.getByPlaceholderText('امسح الباركود، أو اكتب اسم الدواء، أو رقم الفاتورة...');
+
+    fireEvent.change(searchInput, { target: { value: 'first-fails' } });
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('فشل تحميل فواتير المبيعات'));
+
+    fireEvent.change(searchInput, { target: { value: 'Return Drug' } });
+    expect(await screen.findByText('Return Drug')).toBeInTheDocument();
+    expect(searchRecentReturnInvoicesAction).toHaveBeenLastCalledWith('Return Drug');
+  });
 });

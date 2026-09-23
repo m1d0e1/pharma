@@ -54,6 +54,8 @@ export default function SalesReturnClient() {
   const [refundMethod, setRefundMethod] = useState<'cash' | 'patient_account'>('cash');
   const [isSearching, setIsSearching] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isCommitted, setIsCommitted] = useState(false);
+  const submissionRef = React.useRef(false);
 
   const [selectedIndex, setSelectedIndex] = useState<number>(-1);
 
@@ -71,30 +73,38 @@ export default function SalesReturnClient() {
     let cancelled = false;
     async function fetchInvoices() {
       setIsSearching(true);
-      if (searchTerm.trim()) {
-        const res = await searchRecentReturnInvoicesAction(searchTerm);
-        if (cancelled) return;
-        setIsSearching(false);
-        if (res.success) {
-          const list = res.data || [];
-          const preservedIndex = list.findIndex((item: any) => item.id === selectedInvoiceIdRef.current);
-          const nextIndex = preservedIndex >= 0 ? preservedIndex : (list.length > 0 ? 0 : -1);
-          selectedInvoiceIdRef.current = nextIndex >= 0 ? list[nextIndex].id : '';
-          setInvoicesByDate(list);
-          setSelectedIndex(nextIndex);
+      try {
+        if (searchTerm.trim()) {
+          const res = await searchRecentReturnInvoicesAction(searchTerm);
+          if (cancelled) return;
+          if (res.success) {
+            const list = res.data || [];
+            const preservedIndex = list.findIndex((item: any) => item.id === selectedInvoiceIdRef.current);
+            const nextIndex = preservedIndex >= 0 ? preservedIndex : (list.length > 0 ? 0 : -1);
+            selectedInvoiceIdRef.current = nextIndex >= 0 ? list[nextIndex].id : '';
+            setInvoicesByDate(list);
+            setSelectedIndex(nextIndex);
+          } else {
+            toast.error(res.error || 'فشل تحميل فواتير المبيعات');
+          }
+        } else {
+          const res = await getSalesInvoicesByDateAction(selectedDate);
+          if (cancelled) return;
+          if (res.success) {
+            const list = res.data || [];
+            const preservedIndex = list.findIndex((item: any) => item.id === selectedInvoiceIdRef.current);
+            const nextIndex = preservedIndex >= 0 ? preservedIndex : (list.length > 0 ? 0 : -1);
+            selectedInvoiceIdRef.current = nextIndex >= 0 ? list[nextIndex].id : '';
+            setInvoicesByDate(list);
+            setSelectedIndex(nextIndex);
+          } else {
+            toast.error(res.error || 'فشل تحميل فواتير المبيعات');
+          }
         }
-      } else {
-        const res = await getSalesInvoicesByDateAction(selectedDate);
-        if (cancelled) return;
-        setIsSearching(false);
-        if (res.success) {
-          const list = res.data || [];
-          const preservedIndex = list.findIndex((item: any) => item.id === selectedInvoiceIdRef.current);
-          const nextIndex = preservedIndex >= 0 ? preservedIndex : (list.length > 0 ? 0 : -1);
-          selectedInvoiceIdRef.current = nextIndex >= 0 ? list[nextIndex].id : '';
-          setInvoicesByDate(list);
-          setSelectedIndex(nextIndex);
-        }
+      } catch {
+        if (!cancelled) toast.error('فشل تحميل فواتير المبيعات');
+      } finally {
+        if (!cancelled) setIsSearching(false);
       }
     }
     const timer = setTimeout(fetchInvoices, 250);
@@ -173,25 +183,33 @@ export default function SalesReturnClient() {
     }
     
     setIsSearching(true);
-    const res = await getInvoiceForReturnAction(invId);
-    if (requestId !== detailRequestRef.current) return;
-    setIsSearching(false);
-    
-    if (res.success && res.data) {
-      setInvoice(res.data);
-      if (!res.data.patient_id) setRefundMethod('cash');
-      // Initialize return items with 0 quantity
-      setItemsToReturn(res.data.items.map((item: any) => ({
-        ...item,
-        unit: unitKind(item, item.unit),
-        return_quantity: 0,
-        original_unit: item.unit,
-        base_price: item.unit_price // Treat the initial price as base_price to calculate upon
-      })));
-    } else {
-      toast.error(res.error || 'فاتورة غير موجودة');
-      setInvoice(null);
-      setItemsToReturn([]);
+    try {
+      const res = await getInvoiceForReturnAction(invId);
+      if (requestId !== detailRequestRef.current) return;
+      if (res.success && res.data) {
+        setInvoice(res.data);
+        if (!res.data.patient_id) setRefundMethod('cash');
+        // Initialize return items with 0 quantity
+        setItemsToReturn(res.data.items.map((item: any) => ({
+          ...item,
+          unit: unitKind(item, item.unit),
+          return_quantity: 0,
+          original_unit: item.unit,
+          base_price: item.unit_price // Treat the initial price as base_price to calculate upon
+        })));
+      } else {
+        toast.error(res.error || 'فاتورة غير موجودة');
+        setInvoice(null);
+        setItemsToReturn([]);
+      }
+    } catch {
+      if (requestId === detailRequestRef.current) {
+        toast.error('فشل تحميل تفاصيل الفاتورة');
+        setInvoice(null);
+        setItemsToReturn([]);
+      }
+    } finally {
+      if (requestId === detailRequestRef.current) setIsSearching(false);
     }
   };
 
@@ -252,28 +270,43 @@ export default function SalesReturnClient() {
       return toast.error('يرجى تحديد كمية لمرتجع واحد على الأقل');
     }
 
+    if (submissionRef.current) return;
+    submissionRef.current = true;
     setIsSubmitting(true);
-    const res = await createReturnAction({
-      invoice_id: invoiceId,
-      refund_method: refundMethod,
-      reason,
-      patient_id: invoice.patient_id || undefined,
-      items: activeReturns.map(i => ({
-        sale_item_id: i.id,
-        inventory_id: i.inventory_id,
-        drug_name: i.drug_name,
-        quantity: i.return_quantity,
-        unit_price: i.unit_price,
-        unit: i.unit
-      }))
-    });
+    let committed = false;
+    try {
+      const res = await createReturnAction({
+        invoice_id: invoiceId,
+        refund_method: refundMethod,
+        reason,
+        patient_id: invoice.patient_id || undefined,
+        items: activeReturns.map(i => ({
+          sale_item_id: i.id,
+          inventory_id: i.inventory_id,
+          drug_name: i.drug_name,
+          quantity: i.return_quantity,
+          unit_price: i.unit_price,
+          unit: i.unit
+        }))
+      });
 
-    if (res.success) {
-      const savedRefund = Number(res.totalRefund);
-      toast.success(Number.isFinite(savedRefund) ? `تم تسجيل المرتجع بنجاح: ${savedRefund.toFixed(2)} ج.م` : 'تم تسجيل المرتجع بنجاح');
-      router.push('/returns');
-    } else {
-      toast.error('فشل حفظ المرتجع: ' + res.error);
+      if (res.success) {
+        committed = true;
+        setIsCommitted(true);
+        const savedRefund = Number(res.totalRefund);
+        toast.success(Number.isFinite(savedRefund) ? `تم تسجيل المرتجع بنجاح: ${savedRefund.toFixed(2)} ج.م` : 'تم تسجيل المرتجع بنجاح');
+        try {
+          router.push('/returns');
+        } catch {
+          toast.error('تم تسجيل المرتجع بنجاح لكن تعذر فتح قائمة المرتجعات');
+        }
+      } else {
+        toast.error('فشل حفظ المرتجع: ' + res.error);
+      }
+    } catch {
+      toast.error('حدث خطأ أثناء حفظ المرتجع');
+    } finally {
+      if (!committed) submissionRef.current = false;
       setIsSubmitting(false);
     }
   };
@@ -495,11 +528,11 @@ export default function SalesReturnClient() {
                   
                   <button
                     onClick={handleSubmit}
-                    disabled={isSubmitting || activeReturns.length === 0}
+                    disabled={isSubmitting || isCommitted || activeReturns.length === 0}
                     className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white p-3.5 rounded-xl font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed mt-6 shadow-md shadow-blue-500/10"
                   >
                     <Save className="w-5 h-5" />
-                    {isSubmitting ? 'جاري الحفظ...' : 'تنفيذ المرتجع'}
+                    {isCommitted ? 'تم حفظ المرتجع' : isSubmitting ? 'جاري الحفظ...' : 'تنفيذ المرتجع'}
                   </button>
                 </div>
 

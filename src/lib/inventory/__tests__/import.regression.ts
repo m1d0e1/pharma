@@ -10,6 +10,7 @@ jest.mock('@/lib/db/tauri', () => ({
 }));
 
 import {
+  importMasterDrugWorkbookRows,
   importInventoryWorkbookRows,
   type InventoryImportDatabase,
 } from '@/lib/inventory/import';
@@ -363,5 +364,27 @@ describe('inventory workbook drug identity preflight', () => {
       quantity: 5,
       pharmacy_id: 'active-pharmacy',
     });
+  });
+});
+
+describe('master drug workbook import transaction', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    freshDatabase(db);
+    db.pragma('foreign_keys = ON');
+  });
+
+  afterEach(() => db.close());
+
+  it('rolls back earlier catalog rows when a later row is invalid', async () => {
+    await expect(importMasterDrugWorkbookRows([
+      { id: 8001, trade_name: 'VALID IMPORTED DRUG', official_price: 10 },
+      { id: 8002, trade_name: null, official_price: 20 },
+    ], adapter(db))).rejects.toThrow();
+
+    expect(db.prepare('SELECT COUNT(*) AS count FROM master_drugs WHERE id IN (8001, 8002)').get())
+      .toEqual({ count: 0 });
   });
 });

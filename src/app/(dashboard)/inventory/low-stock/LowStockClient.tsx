@@ -1,7 +1,7 @@
 'use client';
 import TableScrollContainer from '@/components/ui/TableScrollContainer';
 
-import React, { useState, useMemo } from 'react';
+import React, { useRef, useState, useMemo } from 'react';
 import { purchaseShortageHandoffStorageKey } from '@/lib/purchases/storage';
 import {
   Search, 
@@ -62,8 +62,10 @@ export default function LowStockClient({ initialItems }: Props) {
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<'all' | 'out_of_stock' | 'critical' | 'low'>('all');
   const [savingDrugId, setSavingDrugId] = useState<number | null>(null);
+  const savingDrugIdsRef = useRef(new Set<number>());
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [isBulkAdding, setIsBulkAdding] = useState(false);
+  const bulkAddRef = useRef(false);
   const [isPoModalOpen, setIsPoModalOpen] = useState(false);
   const [poItems, setPoItems] = useState<any[]>([]);
   const [viewMode, setViewMode] = useState<'grid' | 'table'>('grid');
@@ -115,6 +117,8 @@ export default function LowStockClient({ initialItems }: Props) {
   };
 
   const addToNotebook = async (item: LowStockItem) => {
+    if (savingDrugIdsRef.current.has(item.drug_id)) return;
+    savingDrugIdsRef.current.add(item.drug_id);
     const suggestedQuantity = getSuggestedQuantity(item);
 
     setSavingDrugId(item.drug_id);
@@ -125,7 +129,8 @@ export default function LowStockClient({ initialItems }: Props) {
     } catch (error: any) {
       toast.error(error.message || 'فشل الإضافة إلى كشكول النواقص');
     } finally {
-      setSavingDrugId(null);
+      savingDrugIdsRef.current.delete(item.drug_id);
+      setSavingDrugId(current => current === item.drug_id ? null : current);
     }
   };
 
@@ -138,24 +143,36 @@ export default function LowStockClient({ initialItems }: Props) {
       toast.error('لا توجد أصناف للإضافة');
       return;
     }
+    if (bulkAddRef.current) return;
 
+    bulkAddRef.current = true;
     setIsBulkAdding(true);
     try {
-      let successCount = 0;
-      await Promise.all(
+      const results = await Promise.all(
         itemsToAdd.map(async (item) => {
           const qty = getSuggestedQuantity(item);
           const res = await addToShortagesAction({ drug_id: item.drug_id, qty });
-          if (res.success) successCount++;
+          return { item, success: res.success };
         })
       );
 
-      toast.success(`تمت إضافة وتحديث ${successCount} صنف في كشكول النواقص بنجاح`);
-      setSelectedIds([]);
+      const successCount = results.filter(result => result.success).length;
+      const failedDrugIds = results
+        .filter(result => !result.success)
+        .map(result => result.item.drug_id);
+
+      if (successCount > 0) {
+        toast.success(`تمت إضافة وتحديث ${successCount} صنف في كشكول النواقص بنجاح`);
+      }
+      if (failedDrugIds.length > 0) {
+        toast.error(`تعذر إضافة ${failedDrugIds.length} صنف إلى كشكول النواقص`);
+      }
+      setSelectedIds(prev => prev.filter(id => failedDrugIds.includes(id)));
     } catch (err: any) {
       console.error(err);
       toast.error('حدث خطأ أثناء الإضافة الجماعية لكشكول النواقص');
     } finally {
+      bulkAddRef.current = false;
       setIsBulkAdding(false);
     }
   };

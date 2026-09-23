@@ -96,7 +96,7 @@ interface Props {
   userPermissions?: any
 }
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { hasUserPermissionSync } from '@/lib/auth/local'
 
 export default function SidebarNav({ userRole, userPermissions }: Props) {
@@ -105,14 +105,16 @@ export default function SidebarNav({ userRole, userPermissions }: Props) {
   const [mounted, setMounted] = useState(false)
   const [permissions, setPermissions] = useState<any>(null)
   const [showMobileMore, setShowMobileMore] = useState(false)
+  const permissionsRequestRef = useRef(0)
 
   useEffect(() => {
     setMounted(true)
+    const requestId = ++permissionsRequestRef.current
     async function refreshPermissions() {
       try {
         const { getClientSession } = await import('@/lib/auth/local')
         const userObj = await getClientSession()
-        if (userObj && userObj.permissions) {
+        if (requestId === permissionsRequestRef.current && userObj && userObj.permissions) {
           const parsed = typeof userObj.permissions === 'string' ? JSON.parse(userObj.permissions) : userObj.permissions
           setPermissions(parsed)
         }
@@ -121,6 +123,9 @@ export default function SidebarNav({ userRole, userPermissions }: Props) {
       }
     }
     if (!userPermissions) refreshPermissions()
+    return () => {
+      if (permissionsRequestRef.current === requestId) permissionsRequestRef.current += 1
+    }
   }, [pathname, userPermissions])
 
   const effectivePermissions = userPermissions ?? permissions ?? {}

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { addOpeningBalanceAction } from '@/app/actions-client/inventory';
 import { searchMasterDrugsAction } from '@/app/actions-client/master-drugs';
@@ -21,23 +21,40 @@ export default function NewOpeningBalanceClient() {
   const [searchByActive, setSearchByActive] = useState(false);
   
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isCommitted, setIsCommitted] = useState(false);
+  const searchRequestId = useRef(0);
+  const submissionRef = useRef(false);
 
   const handleSearch = async (e: React.ChangeEvent<HTMLInputElement>, byActive = searchByActive) => {
     const val = e.target.value;
+    const requestId = ++searchRequestId.current;
     setSearchTerm(val);
     if (val.length > 2) {
-      const res = await searchMasterDrugsAction({
-        query: val,
-        searchByActiveIngredient: byActive,
-        status: 'active',
-      });
-      if (res.success) setSearchResults((res.data || []).slice(0, 20));
+      try {
+        const res = await searchMasterDrugsAction({
+          query: val,
+          searchByActiveIngredient: byActive,
+          status: 'active',
+        });
+        if (requestId !== searchRequestId.current) return;
+        if (res.success) {
+          setSearchResults((res.data || []).slice(0, 20));
+        } else {
+          setSearchResults([]);
+          toast.error(res.error || 'فشل البحث في كتالوج الأدوية');
+        }
+      } catch {
+        if (requestId !== searchRequestId.current) return;
+        setSearchResults([]);
+        toast.error('فشل البحث في كتالوج الأدوية');
+      }
     } else {
       setSearchResults([]);
     }
   };
 
   const selectDrug = (drug: any) => {
+    searchRequestId.current += 1;
     setSelectedDrug(drug);
     const knownPurchaseCost = drug.purchase_price != null
       ? Number(drug.purchase_price)
@@ -56,21 +73,36 @@ export default function NewOpeningBalanceClient() {
     if (quantity <= 0) return toast.error('الكمية يجب أن تكون أكبر من 0');
     if (costPrice === '' || !Number.isFinite(costPrice) || costPrice < 0) return toast.error('يرجى إدخال سعر تكلفة صحيح، أو صفر للصنف المجاني');
 
+    if (submissionRef.current) return;
+    submissionRef.current = true;
     setIsSubmitting(true);
-    const res = await addOpeningBalanceAction({
-      drug_id: selectedDrug.id,
-      quantity,
-      cost_price: costPrice,
-      unit_price: unitPrice,
-      expiry_date: expiryDate
-    });
-    setIsSubmitting(false);
+    let committed = false;
+    try {
+      const res = await addOpeningBalanceAction({
+        drug_id: selectedDrug.id,
+        quantity,
+        cost_price: costPrice,
+        unit_price: unitPrice,
+        expiry_date: expiryDate
+      });
 
-    if (res.success) {
-      toast.success('تم إضافة الرصيد الإفتتاحي بنجاح');
-      router.push('/inventory/opening-balances');
-    } else {
-      toast.error('حدث خطأ: ' + res.error);
+      if (res.success) {
+        committed = true;
+        setIsCommitted(true);
+        toast.success('تم إضافة الرصيد الإفتتاحي بنجاح');
+        try {
+          router.push('/inventory/opening-balances');
+        } catch {
+          toast.error('تم إضافة الرصيد الإفتتاحي بنجاح لكن تعذر فتح قائمة الأرصدة الإفتتاحية');
+        }
+      } else {
+        toast.error('حدث خطأ: ' + res.error);
+      }
+    } catch {
+      toast.error('حدث خطأ أثناء حفظ الرصيد الإفتتاحي');
+    } finally {
+      if (!committed) submissionRef.current = false;
+      setIsSubmitting(false);
     }
   };
 
@@ -194,11 +226,11 @@ export default function NewOpeningBalanceClient() {
           <div className="pt-6">
             <button
               onClick={handleSubmit}
-              disabled={isSubmitting || !selectedDrug}
+              disabled={isSubmitting || isCommitted || !selectedDrug}
               className="w-full py-4 bg-blue-600 text-white rounded-xl font-black hover:bg-blue-700 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
             >
               <Save className="w-5 h-5" />
-              {isSubmitting ? 'جاري الحفظ...' : 'حفظ الرصيد الإفتتاحي'}
+              {isCommitted ? 'تم حفظ الرصيد الإفتتاحي' : isSubmitting ? 'جاري الحفظ...' : 'حفظ الرصيد الإفتتاحي'}
             </button>
           </div>
         </div>

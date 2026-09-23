@@ -1,7 +1,7 @@
 'use client'
 import { useHotkeys } from 'react-hotkeys-hook';
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { 
   User, Phone, MapPin, Calendar, CreditCard, HeartPulse, Save, X, Activity, 
   History, Award, ShieldCheck, Trash2, PlusCircle, AlertCircle, FileText
@@ -20,6 +20,7 @@ import ReceiptDetailsModal from '../receipts/ReceiptDetailsModal'
 import { CustomerStatementContent, FinancialNoticeForm } from '../finance/FinancialComponents'
 import { Plus } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local'
 
 interface Props {
   patientId: string
@@ -28,34 +29,43 @@ interface Props {
 }
 
 export default function PatientProfileModal({ patientId, onClose, onSuccess }: Props) {
+  const [canProcessPatientPayments, setCanProcessPatientPayments] = useState(false)
   useHotkeys('esc', () => { if(typeof onClose === 'function') onClose(); }, { enableOnFormTags: true });
   useHotkeys('f1', (e) => {
+    if (!canProcessPatientPayments) return;
     e.preventDefault();
     setActiveTab('payments');
     setShowPaymentForm(true);
-  }, { enableOnFormTags: true });
+  }, { enableOnFormTags: true }, [canProcessPatientPayments]);
 
   const [activeTab, setActiveTab] = useState<'profile' | 'finance' | 'medical' | 'history' | 'statement' | 'payments' | 'notices'>('profile')
   const [loading, setLoading] = useState(true)
+  const [refreshError, setRefreshError] = useState(false)
   const [data, setData] = useState<any>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const profileSubmissionRef = useRef(false)
+  const profileRequestRef = useRef(0)
   const [showStatement, setShowStatement] = useState(false)
   const [selectedReceipt, setSelectedReceipt] = useState<any>(null)
   const [loadingReceipt, setLoadingReceipt] = useState(false)
+  const receiptRequestRef = useRef(0)
 
   const handleOpenReceipt = async (invoiceId: string) => {
+    const requestId = ++receiptRequestRef.current
+    setLoadingReceipt(true)
     try {
-      setLoadingReceipt(true)
       const res = await getReceiptDetailsAction(invoiceId)
-      setLoadingReceipt(false)
+      if (requestId !== receiptRequestRef.current) return
       if (res.success && res.data) {
         setSelectedReceipt(res.data)
       } else {
         toast.error(res.error || 'فشل تحميل تفاصيل الفاتورة')
       }
     } catch {
-      setLoadingReceipt(false)
+      if (requestId !== receiptRequestRef.current) return
       toast.error('حدث خطأ أثناء تحميل الفاتورة')
+    } finally {
+      if (requestId === receiptRequestRef.current) setLoadingReceipt(false)
     }
   }
 
@@ -66,6 +76,9 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
   const [paymentNotes, setPaymentNotes] = useState('')
   const [paymentDate, setPaymentDate] = useState(format(new Date(), 'yyyy-MM-dd'))
   const [isSubmittingPayment, setIsSubmittingPayment] = useState(false)
+  const paymentSubmissionRef = useRef(false)
+  const [isToppingUpWallet, setIsToppingUpWallet] = useState(false)
+  const walletTopUpRef = useRef(false)
 
   // Allergy Form States
   const [showAllergyForm, setShowAllergyForm] = useState(false)
@@ -73,6 +86,9 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
   const [allergySeverity, setAllgySeverity] = useState('mild')
   const [allergyNotes, setAllergyNotes] = useState('')
   const [isSubmittingAllergy, setIsSubmittingAllergy] = useState(false)
+  const allergySubmissionRef = useRef(false)
+  const [deletingAllergyIds, setDeletingAllergyIds] = useState<Set<number>>(() => new Set())
+  const deletingAllergyIdsRef = useRef<Set<number>>(new Set())
 
   // Condition Form States
   const [showConditionForm, setShowConditionForm] = useState(false)
@@ -80,6 +96,7 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
   const [conditionMedications, setConditionMedications] = useState('')
   const [conditionNotes, setConditionNotes] = useState('')
   const [isSubmittingCondition, setIsSubmittingCondition] = useState(false)
+  const conditionSubmissionRef = useRef(false)
 
   // Form State
   const [formData, setFormData] = useState({
@@ -103,127 +120,236 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
   })
 
   useEffect(() => {
-    fetchProfile()
+    void fetchProfile()
+    return () => {
+      profileRequestRef.current += 1
+    }
     // patientId is the only changing input that should trigger a profile reload.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [patientId])
 
-  const fetchProfile = async () => {
-    setLoading(true)
-    const res = await getPatientProfileAction(patientId)
-    if (res.success) {
-      setData(res.data)
-      setFormData({
-        full_name: res.data.full_name || '',
-        name_en: res.data.name_en || '',
-        phone: res.data.phone || '',
-        mobile: res.data.mobile || '',
-        address: res.data.address || '',
-        area: res.data.area || '',
-        birth_date: res.data.birth_date || '',
-        gender: res.data.gender || 'male',
-        insurance_number: res.data.insurance_number || '',
-        car_number: res.data.car_number || '',
-        credit_limit: res.data.credit_limit || 0,
-        opening_balance: res.data.opening_balance || 0,
-        points_balance: res.data.points_balance || 0,
-        point_value: res.data.point_value || 1,
-        customer_type: res.data.customer_type || 'individual',
-        payment_method: res.data.payment_method || 'cash',
-        notes: res.data.notes || ''
-      })
-    } else {
-      toast.error(res.error || 'فشل جلب ملف المريض')
-      onClose()
+  useEffect(() => {
+    let active = true
+    getClientSession().then(user => {
+      if (active) setCanProcessPatientPayments(hasUserPermissionSync(user, 'acc_can_process_cash_flow'))
+    })
+    return () => { active = false }
+  }, [])
+
+  const fetchProfile = async (preserveOnFailure = false) => {
+    const requestId = ++profileRequestRef.current
+    if (!preserveOnFailure) setLoading(true)
+    setRefreshError(false)
+    try {
+      const res = await getPatientProfileAction(patientId)
+      if (requestId !== profileRequestRef.current) return
+      if (res.success) {
+        setData(res.data)
+        setFormData({
+          full_name: res.data.full_name || '',
+          name_en: res.data.name_en || '',
+          phone: res.data.phone || '',
+          mobile: res.data.mobile || '',
+          address: res.data.address || '',
+          area: res.data.area || '',
+          birth_date: res.data.birth_date || '',
+          gender: res.data.gender || 'male',
+          insurance_number: res.data.insurance_number || '',
+          car_number: res.data.car_number || '',
+          credit_limit: res.data.credit_limit || 0,
+          opening_balance: res.data.opening_balance || 0,
+          points_balance: res.data.points_balance || 0,
+          point_value: res.data.point_value || 1,
+          customer_type: res.data.customer_type || 'individual',
+          payment_method: res.data.payment_method || 'cash',
+          notes: res.data.notes || ''
+        })
+      } else {
+        if (preserveOnFailure) {
+          setRefreshError(true)
+        } else {
+          toast.error(res.error || 'فشل جلب ملف المريض')
+          onClose()
+        }
+      }
+    } catch {
+      if (requestId !== profileRequestRef.current) return
+      if (preserveOnFailure) {
+        setRefreshError(true)
+      } else {
+        toast.error('فشل جلب ملف المريض')
+        onClose()
+      }
+    } finally {
+      if (requestId === profileRequestRef.current && !preserveOnFailure) setLoading(false)
     }
-    setLoading(false)
   }
 
   const handleUpdate = async (e?: React.FormEvent) => {
     if (e) e.preventDefault()
+    if (profileSubmissionRef.current) return
+    profileSubmissionRef.current = true
     setIsSubmitting(true)
-    const res = await updatePatientAction(patientId, formData as any)
-    setIsSubmitting(false)
-    if (res.success) {
-      toast.success('تم تحديث البيانات بنجاح')
-      onSuccess()
-    } else {
-      toast.error(res.error || 'فشل التحديث')
+    try {
+      const res = await updatePatientAction(patientId, formData as any)
+      if (res.success) {
+        toast.success('تم تحديث البيانات بنجاح')
+        onSuccess()
+      } else {
+        toast.error(res.error || 'فشل التحديث')
+      }
+    } catch {
+      toast.error('حدث خطأ أثناء تحديث البيانات')
+    } finally {
+      profileSubmissionRef.current = false
+      setIsSubmitting(false)
     }
   }
 
   const handleAddPayment = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (paymentSubmissionRef.current) return
     const amt = parseFloat(paymentAmount)
     if (isNaN(amt) || amt <= 0) {
       toast.error('يرجى إدخال مبلغ صحيح')
       return
     }
 
+    paymentSubmissionRef.current = true
     setIsSubmittingPayment(true)
-    const res = await addPatientPaymentAction({
-      patient_id: patientId,
-      amount: amt,
-      payment_method: paymentMethod,
-      notes: paymentNotes,
-      date: paymentDate
-    })
-    setIsSubmittingPayment(false)
+    try {
+      const res = await addPatientPaymentAction({
+        patient_id: patientId,
+        amount: amt,
+        payment_method: paymentMethod,
+        notes: paymentNotes,
+        date: paymentDate
+      })
 
-    if (res.success) {
-      toast.success('تم تسجيل الدفعة بنجاح')
-      setShowPaymentForm(false)
-      setPaymentAmount('')
-      setPaymentNotes('')
-      setPaymentDate(format(new Date(), 'yyyy-MM-dd'))
-      fetchProfile()
-    } else {
-      toast.error(res.error || 'فشل إضافة الدفعة')
+      if (res.success) {
+        toast.success('تم تسجيل الدفعة بنجاح')
+        setShowPaymentForm(false)
+        setPaymentAmount('')
+        setPaymentNotes('')
+        setPaymentDate(format(new Date(), 'yyyy-MM-dd'))
+        void fetchProfile(true)
+      } else {
+        toast.error(res.error || 'فشل إضافة الدفعة')
+      }
+    } catch {
+      toast.error('حدث خطأ أثناء إضافة الدفعة')
+    } finally {
+      paymentSubmissionRef.current = false
+      setIsSubmittingPayment(false)
+    }
+  }
+
+  const handleWalletTopUp = async () => {
+    if (walletTopUpRef.current) return
+    const amt = (document.getElementById('topup-amount') as HTMLInputElement | null)?.value || ''
+    if (!amt || parseFloat(amt) <= 0) {
+      toast.error('يرجى إدخال مبلغ صحيح')
+      return
+    }
+
+    walletTopUpRef.current = true
+    setIsToppingUpWallet(true)
+    try {
+      const { updatePatientWalletAction } = await import('@/app/actions-client/patients')
+      const res = await updatePatientWalletAction(patientId, parseFloat(amt), 'شحن يدوي من الملف الشخصي')
+      if (res.success) {
+        toast.success('تم شحن المحفظة بنجاح')
+        void fetchProfile(true)
+      } else {
+        toast.error(res.error || 'فشل شحن المحفظة')
+      }
+    } catch {
+      toast.error('حدث خطأ أثناء شحن المحفظة')
+    } finally {
+      walletTopUpRef.current = false
+      setIsToppingUpWallet(false)
     }
   }
 
   const handleAddAllergy = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (allergySubmissionRef.current) return
     if (!allergenName.trim()) return
+    allergySubmissionRef.current = true
     setIsSubmittingAllergy(true)
-    const res = await addPatientAllergyAction({
-      patient_id: patientId,
-      allergen: allergenName,
-      severity: allergySeverity,
-      notes: allergyNotes
-    })
-    setIsSubmittingAllergy(false)
-    if (res.success) {
-      toast.success('تمت إضافة الحساسية')
-      setShowAllergyForm(false)
-      setAllergenName('')
-      setAllergyNotes('')
-      fetchProfile()
-    } else {
-      toast.error(res.error || 'فشل إضافة الحساسية')
+    try {
+      const res = await addPatientAllergyAction({
+        patient_id: patientId,
+        allergen: allergenName,
+        severity: allergySeverity,
+        notes: allergyNotes
+      })
+      if (res.success) {
+        toast.success('تمت إضافة الحساسية')
+        setShowAllergyForm(false)
+        setAllergenName('')
+        setAllergyNotes('')
+        void fetchProfile(true)
+      } else {
+        toast.error(res.error || 'فشل إضافة الحساسية')
+      }
+    } catch {
+      toast.error('حدث خطأ أثناء إضافة الحساسية')
+    } finally {
+      allergySubmissionRef.current = false
+      setIsSubmittingAllergy(false)
     }
   }
 
   const handleAddCondition = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (conditionSubmissionRef.current) return
     if (!conditionName.trim()) return
+    conditionSubmissionRef.current = true
     setIsSubmittingCondition(true)
-    const res = await addPatientConditionAction({
-      patient_id: patientId,
-      condition_name: conditionName,
-      medications: conditionMedications,
-      notes: conditionNotes
-    })
-    setIsSubmittingCondition(false)
-    if (res.success) {
-      toast.success('تمت إضافة الحالة المرضية')
-      setShowConditionForm(false)
-      setConditionName('')
-      setConditionMedications('')
-      setConditionNotes('')
-      fetchProfile()
-    } else {
-      toast.error(res.error || 'فشل إضافة الحالة المرضية')
+    try {
+      const res = await addPatientConditionAction({
+        patient_id: patientId,
+        condition_name: conditionName,
+        medications: conditionMedications,
+        notes: conditionNotes
+      })
+      if (res.success) {
+        toast.success('تمت إضافة الحالة المرضية')
+        setShowConditionForm(false)
+        setConditionName('')
+        setConditionMedications('')
+        setConditionNotes('')
+        void fetchProfile(true)
+      } else {
+        toast.error(res.error || 'فشل إضافة الحالة المرضية')
+      }
+    } catch {
+      toast.error('حدث خطأ أثناء إضافة الحالة المرضية')
+    } finally {
+      conditionSubmissionRef.current = false
+      setIsSubmittingCondition(false)
+    }
+  }
+
+  const handleDeleteAllergy = async (id: number) => {
+    if (deletingAllergyIdsRef.current.has(id)) return
+
+    deletingAllergyIdsRef.current.add(id)
+    setDeletingAllergyIds(new Set(deletingAllergyIdsRef.current))
+    try {
+      const res = await deletePatientAllergyAction(id)
+      if (res.success) {
+        toast.success('تم حذف الحساسية')
+        await fetchProfile(true)
+      } else {
+        toast.error(res.error || 'فشل حذف الحساسية')
+      }
+    } catch {
+      toast.error('فشل حذف الحساسية')
+    } finally {
+      deletingAllergyIdsRef.current.delete(id)
+      setDeletingAllergyIds(new Set(deletingAllergyIdsRef.current))
     }
   }
 
@@ -271,6 +397,19 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
              </button>
           </div>
         </div>
+
+        {refreshError && (
+          <div className="flex items-center justify-between gap-3 border-b border-amber-200 bg-amber-50 px-6 py-3 text-amber-800">
+            <span className="font-black text-sm">تم الحفظ لكن تعذر تحديث ملف العميل</span>
+            <button
+              type="button"
+              onClick={() => void fetchProfile(true)}
+              className="rounded-xl bg-white px-3 py-2 text-xs font-black shadow-sm ring-1 ring-amber-200"
+            >
+              إعادة تحميل ملف العميل
+            </button>
+          </div>
+        )}
 
         {/* Tabs */}
         <div className="flex bg-slate-50 dark:bg-slate-800/50 p-2 border-b border-slate-100 dark:border-slate-800 shrink-0 overflow-x-auto no-scrollbar">
@@ -419,19 +558,11 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                         />
                      </div>
                      <button 
-                        onClick={async () => {
-                           const amt = (document.getElementById('topup-amount') as HTMLInputElement).value;
-                           if (!amt || parseFloat(amt) <= 0) return toast.error('يرجى إدخال مبلغ صحيح');
-                           const { updatePatientWalletAction } = await import('@/app/actions-client/patients');
-                           const res = await updatePatientWalletAction(patientId, parseFloat(amt), 'شحن يدوي من الملف الشخصي');
-                           if (res.success) {
-                              toast.success('تم شحن المحفظة بنجاح');
-                              fetchProfile();
-                           }
-                        }}
-                        className="px-12 py-5 bg-purple-600 text-white rounded-2xl font-black hover:bg-purple-700 transition-all shadow-xl shadow-purple-500/20"
+                        onClick={() => void handleWalletTopUp()}
+                        disabled={isToppingUpWallet}
+                        className="px-12 py-5 bg-purple-600 text-white rounded-2xl font-black hover:bg-purple-700 transition-all shadow-xl shadow-purple-500/20 disabled:opacity-50"
                      >
-                        تأكيد الشحن
+                        {isToppingUpWallet ? 'جاري الشحن...' : 'تأكيد الشحن'}
                      </button>
                   </div>
                </div>
@@ -509,11 +640,10 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                             <p className="font-black text-rose-900 dark:text-rose-200 text-lg">{a.allergen}</p>
                             <p className="text-[10px] font-bold text-rose-500 uppercase tracking-widest">{a.severity}</p>
                           </div>
-                          <button 
-                            onClick={async () => {
-                               await deletePatientAllergyAction(a.id);
-                               fetchProfile();
-                            }}
+                          <button
+                            disabled={deletingAllergyIds.has(a.id)}
+                            aria-label={deletingAllergyIds.has(a.id) ? `جاري حذف حساسية ${a.allergen}` : `حذف حساسية ${a.allergen}`}
+                            onClick={() => handleDeleteAllergy(a.id)}
                             className="p-3 hover:bg-rose-100 dark:hover:bg-rose-800 rounded-2xl transition-colors opacity-0 group-hover:opacity-100"
                           >
                              <Trash2 className="w-5 h-5 text-rose-600" />
@@ -659,12 +789,14 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                       <h3 className="text-2xl font-black text-slate-800 dark:text-white">توريدات نقدية جديدة</h3>
                       <p className="text-slate-500 font-bold">إضافة دفعة نقدية لحساب العميل</p>
                    </div>
-                   <button 
-                     onClick={() => setShowPaymentForm(true)}
-                     className="px-8 py-4 bg-emerald-600 text-white rounded-2xl font-black hover:bg-emerald-700 transition-all shadow-xl shadow-emerald-500/20 flex items-center gap-2"
-                   >
-                      <PlusCircle className="w-6 h-6" /> إضافة توريد (F1)
-                   </button>
+                   {canProcessPatientPayments && (
+                     <button
+                       onClick={() => setShowPaymentForm(true)}
+                       className="px-8 py-4 bg-emerald-600 text-white rounded-2xl font-black hover:bg-emerald-700 transition-all shadow-xl shadow-emerald-500/20 flex items-center gap-2"
+                     >
+                        <PlusCircle className="w-6 h-6" /> إضافة توريد (F1)
+                     </button>
+                   )}
                 </div>
 
                  {showPaymentForm && (

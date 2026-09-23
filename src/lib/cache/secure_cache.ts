@@ -94,6 +94,17 @@ class SecureCache {
     }
   }
 
+  addDrug(drug: MasterDrug) {
+    if (!this.loaded) return;
+    const existing = this.drugs.get(drug.id);
+    if (existing) {
+      Object.assign(existing, drug);
+      return;
+    }
+    this.drugs.set(drug.id, drug);
+    this.drugsList.push(drug);
+  }
+
   getDrug(id: number): MasterDrug | undefined {
     return this.drugs.get(id);
   }

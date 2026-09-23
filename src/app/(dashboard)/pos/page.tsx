@@ -124,12 +124,16 @@ const POSSearchSidebar = memo(forwardRef<POSSearchSidebarRef, POSSearchSidebarPr
     const [searchByActive, setSearchByActive] = useState(false);
     const [searchResults, setSearchResults] = useState<DrugItem[]>([]);
     const [isLoading, setIsLoading] = useState(false);
+    const [searchError, setSearchError] = useState(false);
+    const [searchRetry, setSearchRetry] = useState(0);
     const inputRef = useRef<HTMLInputElement>(null);
+    const searchRequestRef = useRef(0);
 
     useImperativeHandle(ref, () => ({
       clear: () => {
         setSearchTerm('');
         setSearchResults([]);
+        setSearchError(false);
       },
       focus: () => {
         inputRef.current?.focus();
@@ -137,33 +141,42 @@ const POSSearchSidebar = memo(forwardRef<POSSearchSidebarRef, POSSearchSidebarPr
     }));
 
     useEffect(() => {
+      const requestId = ++searchRequestRef.current;
       const searchDrugs = async () => {
         if (searchTerm.length < 2) {
           setSearchResults([]);
+          setSearchError(false);
+          setIsLoading(false);
           return;
         }
 
         setIsLoading(true);
+        setSearchError(false);
         try {
           const res = await searchDrugsAction(searchTerm, 20, searchByActive);
+          if (requestId !== searchRequestRef.current) return;
           if (res.success) {
             setSearchResults(res.data || []);
           } else {
             setSearchResults([]);
+            setSearchError(true);
           }
         } catch (error: any) {
+          if (requestId !== searchRequestRef.current) return;
           console.error('Drug search error:', error);
           setSearchResults([]);
+          setSearchError(true);
         } finally {
-          setIsLoading(false);
+          if (requestId === searchRequestRef.current) setIsLoading(false);
         }
       };
 
       const timer = setTimeout(searchDrugs, 150);
       return () => {
+        searchRequestRef.current += 1;
         clearTimeout(timer);
       };
-    }, [searchTerm, searchByActive]);
+    }, [searchTerm, searchByActive, searchRetry]);
 
     return (
       <div className="bg-white dark:bg-slate-900 p-5 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-xl flex flex-col min-h-0 flex-1">
@@ -244,6 +257,17 @@ const POSSearchSidebar = memo(forwardRef<POSSearchSidebarRef, POSSearchSidebarPr
         <div className="flex-1 overflow-auto space-y-2">
           {isLoading ? (
             <div className="py-10 flex justify-center"><Loader2 className="w-6 h-6 animate-spin text-blue-500" /></div>
+          ) : searchError ? (
+            <div className="py-8 text-center space-y-3">
+              <p className="text-sm font-black text-rose-600">تعذر البحث عن الأصناف</p>
+              <button
+                type="button"
+                onClick={() => setSearchRetry(value => value + 1)}
+                className="px-4 py-2 rounded-xl bg-slate-900 text-white text-xs font-black"
+              >
+                إعادة البحث عن الأصناف
+              </button>
+            </div>
           ) : searchResults.map(drug => (
             <button 
               key={drug.id} 
@@ -293,12 +317,16 @@ export default function POSPage() {
     resetPOS
   } = usePOSStore();
   const [isProcessing, setIsProcessing] = useState(false);
+  const checkoutLockRef = useRef(false);
   const [alternatives, setAlternatives] = useState<DrugItem[]>([]);
   const searchSidebarRef = useRef<POSSearchSidebarRef>(null);
 
   // Patient Selection
   const [patientSearch, setPatientSearch] = useState('');
   const [patientResults, setPatientResults] = useState<Patient[]>([]);
+  const [patientSearchError, setPatientSearchError] = useState(false);
+  const [patientSearchRetry, setPatientSearchRetry] = useState(0);
+  const patientSearchRequestRef = useRef(0);
 
   const [completedInvoice, setCompletedInvoice] = useState<any>(null);
   const [autoPrintReceipt, setAutoPrintReceipt] = useState(false);
@@ -315,6 +343,7 @@ export default function POSPage() {
   const [canSellNoStock, setCanSellNoStock] = useState(false);
   const [maxInvoiceDiscountPercent, setMaxInvoiceDiscountPercent] = useState(0);
   const [isUserLoading, setIsUserLoading] = useState(true);
+  const [userLoadError, setUserLoadError] = useState(false);
   const [pendingInteractions, setPendingInteractions] = useState<any[]>([]);
   const [showInteractionModal, setShowInteractionModal] = useState(false);
   const [isCheckingInteractions, setIsCheckingInteractions] = useState(false);
@@ -435,11 +464,12 @@ export default function POSPage() {
     }
   }, [handleNavigationKey]);
 
-  useEffect(() => {
-    async function loadUser() {
+  const loadUser = useCallback(async () => {
+    setIsUserLoading(true);
+    setUserLoadError(false);
+    try {
       const userObj = await getClientSession();
       if (!userObj) {
-        setIsUserLoading(false);
         router.push('/login');
         return;
       }
@@ -466,15 +496,22 @@ export default function POSPage() {
         setCurrentUserName(res.user.full_name);
         setCurrentUser({ id: res.user.id, pharmacy_id: res.user.pharmacy_id });
       }
+    } catch (error) {
+      console.error('Failed to load POS user:', error);
+      setUserLoadError(true);
+    } finally {
       setIsUserLoading(false);
     }
-    loadUser();
+  }, [router, setCart]);
+
+  useEffect(() => {
+    void loadUser();
 
     // Auto-focus barcode/drug search box on load
     setTimeout(() => {
       searchSidebarRef.current?.focus();
     }, 150);
-  }, [router, setCart]);
+  }, [loadUser]);
 
   // Redirect if coming from drafts tab
   useEffect(() => {
@@ -498,27 +535,37 @@ export default function POSPage() {
 
   // Handle Patient Search Debounce
   useEffect(() => {
+    const requestId = ++patientSearchRequestRef.current;
     const searchPatients = async () => {
       if (patientSearch.length < 2) {
         setPatientResults([]);
+        setPatientSearchError(false);
         return;
       }
+      setPatientSearchError(false);
       try {
         const { searchPatientsAction } = await import('@/app/actions-client/patients');
         const res = await searchPatientsAction(patientSearch);
+        if (requestId !== patientSearchRequestRef.current) return;
         if (res.success) {
           setPatientResults(res.data || []);
         } else {
           setPatientResults([]);
+          setPatientSearchError(true);
         }
       } catch (error) {
+        if (requestId !== patientSearchRequestRef.current) return;
         console.error('Patient search error:', error);
         setPatientResults([]);
+        setPatientSearchError(true);
       }
     };
     const timer = setTimeout(searchPatients, 300);
-    return () => clearTimeout(timer);
-  }, [patientSearch]);
+    return () => {
+      patientSearchRequestRef.current += 1;
+      clearTimeout(timer);
+    };
+  }, [patientSearch, patientSearchRetry]);
 
   // Fetch full patient info when selectedPatient changes and has missing fields (like credit_limit)
   useEffect(() => {
@@ -679,7 +726,8 @@ export default function POSPage() {
   const hasInvalidStockQuantity = cart.some(item => !item.isNegative && item.qty > Math.floor(stockInSelectedUnit(item) + 1e-9));
 
   const handleCheckout = async (status: 'completed' | 'draft' = 'completed', force = false) => {
-    if (cart.length === 0) return;
+    if (cart.length === 0 || checkoutLockRef.current) return;
+    checkoutLockRef.current = true;
     setIsProcessing(true);
 
     try {
@@ -690,7 +738,12 @@ export default function POSPage() {
         const ingredients = cart.map(i => i.active_ingredient);
         
         const safetyRes = await checkDrugInteractions(ingredients, selectedPatient?.id);
-        if (safetyRes.success && safetyRes.data) {
+        if (!safetyRes.success) {
+          setAutoPrintReceipt(false);
+          toast.error(safetyRes.error || 'فشل فحص التفاعلات الدوائية');
+          return;
+        }
+        if (safetyRes.data) {
           interactionRes = { success: true, interactions: safetyRes.data.interactions };
           clinicalAlerts = safetyRes.data.allergies;
         }
@@ -764,6 +817,7 @@ export default function POSPage() {
       console.error('Checkout error:', error);
       toast.error('فشلت العملية');
     } finally {
+      checkoutLockRef.current = false;
       setIsProcessing(false);
     }
   };
@@ -795,6 +849,7 @@ export default function POSPage() {
       }
     } catch (error) {
       console.error('Fetch drafts error:', error);
+      toast.error('فشل تحميل المسودات');
     } finally {
       setIsLoadingDrafts(false);
     }
@@ -914,6 +969,21 @@ export default function POSPage() {
     );
   }
 
+  if (userLoadError) {
+    return (
+      <div className="flex flex-col justify-center items-center py-12 gap-4" dir="rtl">
+        <p className="font-black text-rose-600">تعذر تحميل نقطة البيع</p>
+        <button
+          type="button"
+          onClick={() => void loadUser()}
+          className="px-6 py-3 rounded-2xl bg-slate-900 text-white font-black"
+        >
+          إعادة المحاولة
+        </button>
+      </div>
+    );
+  }
+
   if (!isAllowed) {
     return <AccessDenied />;
   }
@@ -1014,9 +1084,10 @@ export default function POSPage() {
                   value={patientSearch}
                   onChange={(e) => setPatientSearch(e.target.value)}
                   onDoubleClick={async () => {
+                    const requestId = ++patientSearchRequestRef.current;
                     const { searchPatientsAction } = await import('@/app/actions-client/patients');
                     const res = await searchPatientsAction('', true);
-                    if (res.success && res.data) {
+                    if (requestId === patientSearchRequestRef.current && res.success && res.data) {
                       setPatientResults(res.data);
                     }
                   }}
@@ -1026,7 +1097,18 @@ export default function POSPage() {
                 />
                 {(patientResults.length > 0 || (patientSearch.length >= 2)) && (
                   <div className="absolute top-full left-0 right-0 max-h-64 overflow-y-auto bg-white dark:bg-slate-800 shadow-2xl rounded-2xl mt-2 z-50 border border-slate-100 dark:border-slate-700 p-2">
-                    {patientResults.map(p => (
+                    {patientSearchError ? (
+                      <div className="py-5 text-center space-y-3">
+                        <p className="text-xs font-black text-rose-600">تعذر البحث عن العملاء</p>
+                        <button
+                          type="button"
+                          onClick={() => setPatientSearchRetry(value => value + 1)}
+                          className="px-4 py-2 rounded-xl bg-slate-900 text-white text-xs font-black"
+                        >
+                          إعادة البحث عن العملاء
+                        </button>
+                      </div>
+                    ) : patientResults.map(p => (
                       <button 
                         key={p.id}
                         onClick={() => {

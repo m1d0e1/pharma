@@ -7,6 +7,7 @@ import {
   getPurchaseInvoiceDetailsAction,
   searchPurchaseInvoicesForReturnAction,
 } from '@/app/actions-client/purchases';
+import { toast } from 'react-hot-toast';
 
 const mockPush = jest.fn();
 
@@ -166,5 +167,78 @@ describe('rendered purchase-return flow', () => {
 
     expect(await screen.findByText('Second Purchase Receipt Drug')).toBeInTheDocument();
     expect(screen.queryByText('Wrong First Purchase Receipt Drug')).not.toBeInTheDocument();
+  });
+
+  it('preserves the prepared purchase return and restores submit controls when creation throws', async () => {
+    (createPurchaseReturnAction as jest.Mock).mockRejectedValueOnce(new Error('bridge unavailable'));
+    render(<PurchaseReturnClient />);
+
+    const searchInput = screen.getByPlaceholderText(/امسح الباركود، أو اكتب اسم الدواء/);
+    fireEvent.change(searchInput, { target: { value: '6221000999' } });
+    expect(await screen.findByText('Panadol Extra')).toBeInTheDocument();
+    fireEvent.change(screen.getByDisplayValue('0'), { target: { value: '2' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'تنفيذ المرتجع' }));
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('حدث خطأ أثناء إنشاء مرتجع المشتريات'));
+    expect(mockPush).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'تنفيذ المرتجع' })).toBeEnabled();
+    expect(screen.getByDisplayValue('2')).toBeInTheDocument();
+  });
+
+  it('keeps a committed purchase return acknowledged and locked when post-save navigation throws', async () => {
+    mockPush.mockImplementationOnce(() => { throw new Error('navigation unavailable'); });
+    (createPurchaseReturnAction as jest.Mock).mockResolvedValueOnce({ success: true, id: 'return-committed' });
+    render(<PurchaseReturnClient />);
+
+    const searchInput = screen.getByPlaceholderText(/امسح الباركود، أو اكتب اسم الدواء/);
+    fireEvent.change(searchInput, { target: { value: '6221000999' } });
+    expect(await screen.findByText('Panadol Extra')).toBeInTheDocument();
+    fireEvent.change(screen.getByDisplayValue('0'), { target: { value: '2' } });
+    fireEvent.click(screen.getByRole('button', { name: 'تنفيذ المرتجع' }));
+
+    await waitFor(() => expect(createPurchaseReturnAction).toHaveBeenCalledTimes(1));
+    expect(toast.success).toHaveBeenCalledWith('تم إنشاء مرتجع المشتريات بنجاح');
+    expect(toast.error).toHaveBeenCalledWith('تم إنشاء مرتجع المشتريات بنجاح لكن تعذر فتح قائمة المرتجعات');
+    expect(toast.error).not.toHaveBeenCalledWith('حدث خطأ أثناء إنشاء مرتجع المشتريات');
+    expect(screen.getByRole('button', { name: 'تم حفظ المرتجع' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'تم حفظ المرتجع' }));
+    expect(createPurchaseReturnAction).toHaveBeenCalledTimes(1);
+  });
+
+  it('blocks repeated purchase-return submission while the first financial write is pending', async () => {
+    let resolveCreate: (value: { success: boolean; error?: string }) => void = () => {};
+    (createPurchaseReturnAction as jest.Mock).mockImplementation(() => new Promise(resolve => {
+      resolveCreate = resolve;
+    }));
+    render(<PurchaseReturnClient />);
+
+    const searchInput = screen.getByPlaceholderText(/امسح الباركود، أو اكتب اسم الدواء/);
+    fireEvent.change(searchInput, { target: { value: '6221000999' } });
+    expect(await screen.findByText('Panadol Extra')).toBeInTheDocument();
+    fireEvent.change(screen.getByDisplayValue('0'), { target: { value: '2' } });
+    const submit = screen.getByRole('button', { name: 'تنفيذ المرتجع' });
+
+    act(() => {
+      submit.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      submit.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(createPurchaseReturnAction).toHaveBeenCalledTimes(1);
+    await act(async () => resolveCreate({ success: false, error: 'تعذر الحفظ مؤقتاً' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'تنفيذ المرتجع' })).toBeEnabled());
+  });
+
+  it('surfaces a thrown invoice search and remains usable for a later search', async () => {
+    (searchPurchaseInvoicesForReturnAction as jest.Mock).mockRejectedValueOnce(new Error('bridge unavailable'));
+    render(<PurchaseReturnClient />);
+
+    const searchInput = screen.getByPlaceholderText(/امسح الباركود، أو اكتب اسم الدواء/);
+    fireEvent.change(searchInput, { target: { value: 'first-fails' } });
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('فشل تحميل فواتير الشراء'));
+
+    fireEvent.change(searchInput, { target: { value: '6221000999' } });
+    expect(await screen.findByText('Panadol Extra')).toBeInTheDocument();
+    expect(searchPurchaseInvoicesForReturnAction).toHaveBeenLastCalledWith('6221000999');
   });
 });

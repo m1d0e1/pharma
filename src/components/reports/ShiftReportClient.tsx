@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Printer, ArrowRight, Calendar, Clock, User,
   TrendingUp, TrendingDown, DollarSign, CreditCard, 
@@ -16,20 +16,55 @@ import ShiftReceiptsModal from '@/components/shifts/ShiftReceiptsModal';
 export default function ShiftReportClient({ shiftId }: { shiftId: string }) {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [showReceiptsModal, setShowReceiptsModal] = useState(false);
+  const loadRequestRef = useRef(0);
 
-  useEffect(() => {
-    async function load() {
-      setLoading(true);
+  const loadReport = React.useCallback(async () => {
+    const requestId = ++loadRequestRef.current;
+    setLoading(true);
+    setLoadError('');
+    try {
       const res = await getShiftReportAction(shiftId);
-      if (res.success) setData(res.data);
-      setLoading(false);
+      if (requestId !== loadRequestRef.current) return;
+      if (res.success) {
+        setData(res.data);
+      } else {
+        setData(null);
+        setLoadError(res.error || 'فشل تحميل بيانات التقرير');
+      }
+    } catch {
+      if (requestId === loadRequestRef.current) {
+        setData(null);
+        setLoadError('فشل تحميل بيانات التقرير');
+      }
+    } finally {
+      if (requestId === loadRequestRef.current) {
+        setLoading(false);
+      }
     }
-    load();
   }, [shiftId]);
 
+  useEffect(() => {
+    void loadReport();
+    return () => {
+      loadRequestRef.current += 1;
+    };
+  }, [loadReport]);
+
   if (loading) return <div className="p-20 text-center font-black animate-pulse">جاري إنشاء التقرير...</div>;
-  if (!data) return <div className="p-20 text-center font-black text-rose-500">فشل تحميل بيانات التقرير</div>;
+  if (!data) return (
+    <div className="p-20 text-center space-y-4">
+      <p className="font-black text-rose-500">{loadError || 'فشل تحميل بيانات التقرير'}</p>
+      <button
+        type="button"
+        onClick={loadReport}
+        className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black"
+      >
+        إعادة المحاولة
+      </button>
+    </div>
+  );
 
   const { shift, sales, returns, movements, summary } = data;
 
@@ -126,11 +161,11 @@ export default function ShiftReportClient({ shiftId }: { shiftId: string }) {
         {/* Cash Flow Reconciliation */}
         <div className="bg-slate-900 text-white rounded-[40px] p-10 shadow-2xl relative overflow-hidden">
            <div className="absolute top-0 right-0 w-64 h-64 bg-blue-500/10 blur-[100px] rounded-full" />
-           <h3 className="text-2xl font-black mb-8 relative z-10">مطابقة الخزينة</h3>
+           <h3 className="text-2xl font-black mb-8 relative z-10">مطابقة نقدية درج الوردية</h3>
            
            <div className="space-y-6 relative z-10">
-              <ReconRow label="الرصيد الافتتاحي" value={shift.starting_cash} />
-              <ReconRow label="مبيعات نقدية (+)" value={summary.cashSales} color="text-emerald-400" />
+              <ReconRow label="نقدية بداية الوردية بالدرج" value={shift.starting_cash} />
+              <ReconRow label="مبيعات الوردية المدفوعة نقدًا (+)" value={summary.cashSales} color="text-emerald-400" />
               <ReconRow label="مرتجعات نقدية (-)" value={summary.cashReturns} color="text-rose-400" />
               <ReconRow label="توريدات يدوية (+)" value={summary.cashReceipts} color="text-emerald-400" />
               {summary.cashHandover > 0 && (
@@ -143,11 +178,11 @@ export default function ShiftReportClient({ shiftId }: { shiftId: string }) {
               <div className="pt-6 border-t border-white/10 mt-6">
                  <div className="flex justify-between items-end">
                     <div>
-                       <p className="text-xs font-bold text-white/40 uppercase tracking-widest mb-1">الرصيد المتوقع</p>
+                       <p className="text-xs font-bold text-white/40 uppercase tracking-widest mb-1">النقدية الدفترية المتوقعة بالدرج</p>
                        <p className="text-3xl font-black text-blue-400">{summary.expectedCash.toLocaleString()} <span className="text-sm">ج.م</span></p>
                     </div>
                     <div className="text-left">
-                       <p className="text-xs font-bold text-white/40 uppercase tracking-widest mb-1">الرصيد الفعلي</p>
+                       <p className="text-xs font-bold text-white/40 uppercase tracking-widest mb-1">النقدية المعدودة فعليًا في درج الوردية</p>
                        <p className="text-3xl font-black">{summary.actualCash != null ? summary.actualCash.toLocaleString() : '---'} <span className="text-sm">ج.م</span></p>
                     </div>
                  </div>

@@ -9,19 +9,32 @@ export default function SalesReportsPage() {
   const router = useRouter();
   const [user, setUser] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [loadAttempt, setLoadAttempt] = useState(0);
 
   useEffect(() => {
+    let active = true;
     async function checkAuth() {
-      const sessionUser = await getClientSession();
-      if (!sessionUser) {
-        router.push('/login');
-      } else {
+      setLoading(true);
+      setLoadError('');
+      try {
+        const sessionUser = await getClientSession();
+        if (!active) return;
+        if (!sessionUser) {
+          router.push('/login');
+          return;
+        }
         setUser(sessionUser);
-        setLoading(false);
+      } catch (err) {
+        console.error('Failed to load sales report session:', err);
+        if (active) setLoadError('تعذر التحقق من جلسة المستخدم');
+      } finally {
+        if (active) setLoading(false);
       }
     }
     checkAuth();
-  }, [router]);
+    return () => { active = false; };
+  }, [router, loadAttempt]);
 
   if (loading) {
     return (
@@ -30,6 +43,19 @@ export default function SalesReportsPage() {
       </div>
     );
   }
+
+  if (loadError) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-4 py-20" dir="rtl">
+        <p className="font-black text-rose-600">{loadError}</p>
+        <button type="button" onClick={() => setLoadAttempt(attempt => attempt + 1)} className="px-6 py-3 rounded-2xl bg-slate-900 text-white font-black">
+          إعادة المحاولة
+        </button>
+      </div>
+    );
+  }
+
+  if (!user) return null;
 
   if (!hasUserPermissionSync(user, 'rep_can_view_sales')) {
     return <AccessDenied />;

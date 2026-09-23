@@ -7,12 +7,19 @@ import { getClientSession } from '@/lib/auth/local';
 export default function DeadStockWidget() {
   const [items, setItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
 
   useEffect(() => {
     async function loadDeadStock() {
+      setLoading(true);
+      setLoadError(false);
       try {
         const user = await getClientSession();
-        if (!user) return;
+        if (!user) {
+          setLoadError(true);
+          return;
+        }
         const pharmacyId = user.pharmacy_id || 'local_default';
         const results = await dbSelect(`
           SELECT 
@@ -53,18 +60,34 @@ export default function DeadStockWidget() {
         setItems(mapped);
       } catch (e) {
         console.error('Failed to load dead stock:', e);
+        setLoadError(true);
       } finally {
         setLoading(false);
       }
     }
 
     loadDeadStock();
-  }, []);
+  }, [loadAttempt]);
 
   if (loading) {
     return (
       <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-xl h-full flex items-center justify-center">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-xl h-full flex flex-col items-center justify-center gap-4 text-center">
+        <p className="font-black text-slate-800 dark:text-slate-100">تعذر تحميل تحليل الرواكد</p>
+        <button
+          type="button"
+          onClick={() => setLoadAttempt(attempt => attempt + 1)}
+          className="px-4 py-2 rounded-xl bg-blue-600 text-white text-xs font-black hover:bg-blue-700"
+        >
+          إعادة المحاولة
+        </button>
       </div>
     );
   }

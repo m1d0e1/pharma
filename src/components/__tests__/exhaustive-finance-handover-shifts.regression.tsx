@@ -432,6 +432,7 @@ describe('Exhaustive Testing: Financials, Handover, Shift, and Receipt Modules',
         }));
       });
     });
+
   });
 
   /* ==========================================================================

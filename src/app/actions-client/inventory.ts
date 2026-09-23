@@ -55,10 +55,30 @@ const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, 
 
 import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { isBusinessDate, localDate } from '@/lib/time';
+import { importInventoryWorkbookRows } from '@/lib/inventory/import';
 
 function normalizePharmacyId(value: unknown): string {
   const pharmacyId = String(value ?? '').trim();
   return pharmacyId || 'local_default';
+}
+
+export async function importInventoryWorkbookAction(inventoryRows: any[], drugRows: any[]) {
+  try {
+    const user = await getLocalSession();
+    if (!user || !hasUserPermissionSync(user, 'can_manage_inventory')) {
+      return { success: false, error: 'غير مصرح' };
+    }
+
+    const data = await importInventoryWorkbookRows(
+      inventoryRows,
+      drugRows,
+      normalizePharmacyId(user.pharmacy_id),
+    );
+    revalidatePath('/inventory');
+    return { success: true, data };
+  } catch (error: any) {
+    return { success: false, error: error?.message || String(error) };
+  }
 }
 
 // Zod schema for adding inventory
@@ -1033,6 +1053,7 @@ export async function getInventoryListAction(search?: string, drugId?: number) {
         i.quantity,
         i.expiry_date,
         i.local_selling_price,
+        i.cost_price,
         i.strips_per_box,
         COALESCE(NULLIF(i.barcode, ''), NULLIF(m.barcode, '')) AS barcode,
         i.barcode AS lot_barcode,
@@ -1098,8 +1119,8 @@ export async function getInventoryListAction(search?: string, drugId?: number) {
       }
     }
 
-    // ponytail: LIMIT 1000 caps initial load; paginated on client anyway
-    queryStr += ` ORDER BY i.expiry_date ASC LIMIT 1000`;
+    // ponytail: client paging needs every matching lot for correct totals; use SQL paging + aggregates if volumes demand it.
+    queryStr += ` ORDER BY i.expiry_date ASC`;
 
     const data = await db.prepare(queryStr).all(...params) as any[];
 

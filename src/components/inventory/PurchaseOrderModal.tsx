@@ -15,8 +15,6 @@ interface Props {
 }
 
 export default function PurchaseOrderModal({ initialItems, onClose, onSuccess }: Props) {
-  useHotkeys('esc', () => { if(typeof onClose === 'function') onClose(); }, { enableOnFormTags: true });
-
   const [supplier, setSupplier] = useState('');
   const [notes, setNotes] = useState('');
   const [items, setItems] = useState(
@@ -43,12 +41,21 @@ export default function PurchaseOrderModal({ initialItems, onClose, onSuccess }:
             ? Number(item.cost_price) 
             : Number(item.official_price) > 0 
               ? Number(item.official_price) 
-              : (item.master_drugs?.base_price || 0),
+              : Number(item.master_drugs?.official_price) > 0
+                ? Number(item.master_drugs.official_price)
+                : (item.master_drugs?.base_price || 0),
         available_quantity: Number(item.current_stock ?? item.quantity ?? 0),
       }))
   );
 
   const [loading, setLoading] = useState(false);
+  const submissionLockRef = React.useRef(false);
+  const addingDrugIdsRef = React.useRef(new Set<string>());
+  const handleClose = () => {
+    if (submissionLockRef.current) return;
+    if (typeof onClose === 'function') onClose();
+  };
+  useHotkeys('esc', handleClose, { enableOnFormTags: true });
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [searching, setSearching] = useState(false);
@@ -65,45 +72,68 @@ export default function PurchaseOrderModal({ initialItems, onClose, onSuccess }:
   const [searchByActive, setSearchByActive] = useState(false);
 
   useEffect(() => {
+    let cancelled = false;
     const delayDebounceFn = setTimeout(async () => {
       if (searchQuery.length >= 2) {
         setSearching(true);
-        const result = await searchMasterDrugsAction({ query: searchQuery, searchByActiveIngredient: searchByActive });
-        if (result.success) {
-          setSearchResults(result.data || []);
+        try {
+          const result = await searchMasterDrugsAction({ query: searchQuery, searchByActiveIngredient: searchByActive });
+          if (cancelled) return;
+          if (result.success) {
+            setSearchResults(result.data || []);
+          } else {
+            toast.error(result.error || 'فشل البحث عن الأصناف');
+          }
+        } catch {
+          if (!cancelled) toast.error('فشل البحث عن الأصناف');
+        } finally {
+          if (!cancelled) setSearching(false);
         }
-        setSearching(false);
       } else {
         setSearchResults([]);
       }
     }, 300);
 
-    return () => clearTimeout(delayDebounceFn);
+    return () => {
+      cancelled = true;
+      clearTimeout(delayDebounceFn);
+    };
   }, [searchQuery, searchByActive]);
 
   const addDrugToOrder = async (drug: any) => {
-    if (items.find(i => i.drug_id === drug.id)) {
+    const drugKey = String(drug.id);
+    if (items.find(i => String(i.drug_id) === drugKey)) {
       toast.error('هذا الصنف موجود بالفعل في الطلب');
       return;
     }
-    const stock = await getDrugInventoryQuantityAction(Number(drug.id));
-    setItems(prev => [...prev, {
-      drug_id: drug.id,
-      trade_name: drug.trade_name_en || drug.trade_name,
-      quantity: 1,
-      expected_price: drug.base_price || 0,
-      available_quantity: stock.success ? stock.data : 0,
-    }]);
-    setSearchQuery('');
-    setSearchResults([]);
+    if (addingDrugIdsRef.current.has(drugKey)) return;
+    addingDrugIdsRef.current.add(drugKey);
+    try {
+      const stock = await getDrugInventoryQuantityAction(Number(drug.id));
+      setItems(prev => prev.some(item => String(item.drug_id) === drugKey) ? prev : [...prev, {
+          drug_id: drug.id,
+          trade_name: drug.trade_name_en || drug.trade_name,
+          quantity: 1,
+          expected_price: drug.base_price || 0,
+          available_quantity: stock.success ? stock.data : 0,
+        }]);
+      setSearchQuery('');
+      setSearchResults([]);
+    } catch {
+      toast.error('فشل تحميل رصيد الصنف');
+    } finally {
+      addingDrugIdsRef.current.delete(drugKey);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submissionLockRef.current) return;
     if (!supplier) return toast.error('يرجى إدخال اسم المورد');
     if (items.length === 0) return toast.error('لا يوجد أصناف في الطلب');
     if (items.some(i => i.quantity <= 0)) return toast.error('لا يمكن طلب أصناف بكمية صفر');
 
+    submissionLockRef.current = true;
     setLoading(true);
     try {
       const result = await createPurchaseOrderAction({
@@ -126,6 +156,7 @@ export default function PurchaseOrderModal({ initialItems, onClose, onSuccess }:
     } catch (error) {
       toast.error('حدث خطأ غير متوقع');
     } finally {
+      submissionLockRef.current = false;
       setLoading(false);
     }
   };
@@ -157,7 +188,7 @@ export default function PurchaseOrderModal({ initialItems, onClose, onSuccess }:
               <p className="text-sm text-slate-500 font-bold">تجهيز طلبية المورد للأصناف الناقصة أو الجديدة</p>
             </div>
           </div>
-          <button onClick={onClose} className="p-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl text-slate-400 hover:text-red-500 transition-colors">
+          <button disabled={loading} onClick={handleClose} className="p-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl text-slate-400 hover:text-red-500 transition-colors disabled:opacity-50">
             <X className="w-6 h-6" />
           </button>
         </div>
@@ -310,7 +341,7 @@ export default function PurchaseOrderModal({ initialItems, onClose, onSuccess }:
               </span>
             </div>
             <div className="flex gap-4">
-              <button type="button" onClick={onClose} className="px-8 py-4 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-600 font-black rounded-2xl">إلغاء</button>
+              <button type="button" disabled={loading} onClick={handleClose} className="px-8 py-4 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-600 font-black rounded-2xl disabled:opacity-50">إلغاء</button>
               <button 
                 type="submit" 
                 disabled={loading}

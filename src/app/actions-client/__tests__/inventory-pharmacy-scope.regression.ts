@@ -148,6 +148,38 @@ describe('inventory read models preserve pharmacy boundaries', () => {
     expect(exactList.data?.map((item: any) => item.quantity)).toEqual([3]);
   });
 
+  it('returns every scoped matching lot and preserves cost and retail valuation inputs beyond 1,000 lots', async () => {
+    mockDb.prepare(`
+      INSERT INTO master_drugs (id, trade_name, trade_name_en)
+      VALUES (9301, 'تقييم مخزون مجمع', 'Bulk valuation medicine')
+    `).run();
+    const insertLot = mockDb.prepare(`
+      INSERT INTO inventory (id, pharmacy_id, drug_id, batch_number, quantity, cost_price, local_selling_price, expiry_date)
+      VALUES (?, ?, 9301, ?, ?, ?, ?, '2099-12-31')
+    `);
+    for (let index = 0; index < 1001; index += 1) {
+      insertLot.run(
+        `bulk-local-${index}`,
+        null,
+        `BULK-${index}`,
+        index === 1000 ? 0.25 : 1,
+        7,
+        12.5,
+      );
+    }
+    insertLot.run('bulk-foreign', 'ph-2', 'BULK-FOREIGN', 99, 100, 200);
+
+    const result = await getInventoryListAction('Bulk valuation medicine');
+
+    expect(result.success).toBe(true);
+    expect(result.data).toHaveLength(1001);
+    expect(result.data?.every((item: any) => item.drug_id === 9301)).toBe(true);
+    expect(result.data?.some((item: any) => item.id === 'bulk-foreign')).toBe(false);
+    expect(result.data?.reduce((total: number, item: any) => total + item.quantity, 0)).toBeCloseTo(1000.25);
+    expect(result.data?.reduce((total: number, item: any) => total + item.quantity * item.cost_price, 0)).toBeCloseTo(7001.75);
+    expect(result.data?.reduce((total: number, item: any) => total + item.quantity * item.local_selling_price, 0)).toBeCloseTo(12503.125);
+  });
+
   it('uses only finalized sales, including delivered invoices, for consumption and low-stock demand', async () => {
     mockDb.exec(`
       INSERT INTO sales_invoices (id, user_id, total_amount, status, pharmacy_id, created_at) VALUES

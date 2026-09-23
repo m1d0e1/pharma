@@ -337,3 +337,71 @@ export async function importInventoryWorkbookRows(
 
   return { inventoryCount: inventory.length, masterDrugCount: sourceDrugs.size + fallbackDrugs.size };
 }
+
+export async function importMasterDrugWorkbookRows(
+  rows: ExcelRow[],
+  database: InventoryImportDatabase = defaultDatabase,
+) {
+  let imported = 0;
+  await database.transaction(async () => {
+    for (const row of rows) {
+      const id = drugId(row.id);
+      const tradeName = text(row.trade_name) || text(row.trade_name_ar);
+      if (!tradeName) {
+        throw new Error('A trade name is required for every imported master drug');
+      }
+      const values = [
+        tradeName,
+        row.trade_name_en || null,
+        row.generic_name || null,
+        row.active_ingredient || null,
+        row.barcode || null,
+        Number(row.official_price) || 0,
+        row.large_unit || null,
+        row.medium_unit || null,
+        row.small_unit || null,
+        row.large_to_medium ? Number(row.large_to_medium) : null,
+        row.medium_to_small ? Number(row.medium_to_small) : null,
+        row.category || null,
+        row.manufacturer || null,
+        row.stop_dealing ? Number(row.stop_dealing) : 0,
+      ];
+
+      if (id) {
+        await database.execute(`
+          INSERT INTO master_drugs (
+            id, trade_name, trade_name_en, generic_name, active_ingredient, barcode,
+            official_price, large_unit, medium_unit, small_unit, large_to_medium,
+            medium_to_small, category, manufacturer, stop_dealing
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            trade_name=excluded.trade_name,
+            trade_name_en=excluded.trade_name_en,
+            generic_name=excluded.generic_name,
+            active_ingredient=excluded.active_ingredient,
+            barcode=excluded.barcode,
+            official_price=excluded.official_price,
+            large_unit=excluded.large_unit,
+            medium_unit=excluded.medium_unit,
+            small_unit=excluded.small_unit,
+            large_to_medium=excluded.large_to_medium,
+            medium_to_small=excluded.medium_to_small,
+            category=excluded.category,
+            manufacturer=excluded.manufacturer,
+            stop_dealing=excluded.stop_dealing
+        `, [id, ...values]);
+      } else {
+        await database.execute(`
+          INSERT INTO master_drugs (
+            trade_name, trade_name_en, generic_name, active_ingredient, barcode,
+            official_price, large_unit, medium_unit, small_unit, large_to_medium,
+            medium_to_small, category, manufacturer, stop_dealing
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `, values);
+      }
+      imported++;
+    }
+  });
+
+  return { masterDrugCount: imported };
+}

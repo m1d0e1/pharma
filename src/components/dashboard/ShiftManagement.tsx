@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { Clock, Loader2, ArrowRightLeft } from 'lucide-react';
 import { getCurrentShiftAction, getCurrentShiftStatsAction } from '@/app/actions-client/shifts';
@@ -8,8 +8,12 @@ import { getCurrentShiftAction, getCurrentShiftStatsAction } from '@/app/actions
 export default function ShiftManagement() {
   const [currentShift, setCurrentShift] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [shiftStats, setShiftStats] = useState<any>(null);
   const [statsLoading, setStatsLoading] = useState(false);
+  const [statsLoadError, setStatsLoadError] = useState(false);
+  const shiftRequestRef = useRef(0);
+  const statsRequestRef = useRef(0);
 
   useEffect(() => {
     fetchShift();
@@ -24,32 +28,71 @@ export default function ShiftManagement() {
   }, []);
 
   const fetchShift = async () => {
+    const requestId = ++shiftRequestRef.current;
+    ++statsRequestRef.current;
     setLoading(true);
-    const result = await getCurrentShiftAction();
-    if (result.success) {
-      setCurrentShift(result.data);
-      if (result.data?.id) {
-        fetchStats();
+    setLoadError(false);
+    try {
+      const result = await getCurrentShiftAction();
+      if (requestId !== shiftRequestRef.current) return;
+      if (result.success) {
+        setCurrentShift(result.data);
+        if (result.data?.id) {
+          void fetchStats();
+        } else {
+          setShiftStats(null);
+          setStatsLoadError(false);
+        }
       } else {
-        setShiftStats(null);
+        setLoadError(true);
       }
+    } catch (error) {
+      if (requestId !== shiftRequestRef.current) return;
+      console.error('Failed to load current shift:', error);
+      setLoadError(true);
+    } finally {
+      if (requestId === shiftRequestRef.current) setLoading(false);
     }
-    setLoading(false);
   };
 
   const fetchStats = async () => {
+    const requestId = ++statsRequestRef.current;
     setStatsLoading(true);
-    const result = await getCurrentShiftStatsAction();
-    if (result.success) {
-      setShiftStats(result.data);
+    setStatsLoadError(false);
+    try {
+      const result = await getCurrentShiftStatsAction();
+      if (requestId !== statsRequestRef.current) return;
+      if (result.success) {
+        setShiftStats(result.data);
+      } else {
+        setShiftStats(null);
+        setStatsLoadError(true);
+      }
+    } catch (error) {
+      if (requestId !== statsRequestRef.current) return;
+      console.error('Failed to load current shift stats:', error);
+      setShiftStats(null);
+      setStatsLoadError(true);
+    } finally {
+      if (requestId === statsRequestRef.current) setStatsLoading(false);
     }
-    setStatsLoading(false);
   };
 
   if (loading) {
     return (
       <div className="card-glass p-8 flex items-center justify-center">
         <Loader2 className="w-6 h-6 animate-spin text-primary-500" />
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="card-glass p-8 flex flex-col items-center justify-center gap-4" dir="rtl">
+        <p className="font-black text-rose-600">تعذر تحميل حالة الوردية</p>
+        <button type="button" onClick={() => void fetchShift()} className="px-5 py-2.5 rounded-xl bg-blue-600 text-white font-black">
+          إعادة المحاولة
+        </button>
       </div>
     );
   }
@@ -81,20 +124,28 @@ export default function ShiftManagement() {
                 <span className="text-sm font-bold">{new Date(currentShift.shift_start).toLocaleTimeString('en-US')}</span>
               </div>
               <div className="flex justify-between items-center mb-2">
-                <span className="text-xs font-black text-emerald-700 dark:text-emerald-400">Opening Balance</span>
+                <span className="text-xs font-black text-emerald-700 dark:text-emerald-400">نقدية بداية الوردية بالدرج</span>
                 <span className="text-sm font-black">EGP {currentShift.starting_cash_amount}</span>
               </div>
               {shiftStats && (
                 <>
                   <div className="flex justify-between items-center mb-2">
-                    <span className="text-xs font-black text-blue-700 dark:text-blue-400">Total Sales</span>
+                    <span className="text-xs font-black text-blue-700 dark:text-blue-400">مبيعات الوردية (كل طرق الدفع)</span>
                     <span className="text-sm font-black text-blue-600">EGP {shiftStats.revenue}</span>
                   </div>
                   <div className="flex justify-between items-center pt-2 border-t border-emerald-200 dark:border-emerald-800">
-                    <span className="text-xs font-black text-slate-700 dark:text-slate-300">Expected Cash</span>
+                    <span className="text-xs font-black text-slate-700 dark:text-slate-300">النقدية المتوقعة بدرج الوردية</span>
                     <span className="text-md font-black text-slate-900 dark:text-white">EGP {shiftStats.expected_cash}</span>
                   </div>
-                </>
+                  </>
+              )}
+              {statsLoadError && !statsLoading && (
+                <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 dark:border-rose-900/40 dark:bg-rose-950/20">
+                  <span className="text-xs font-black text-rose-600">تعذر تحميل ملخص الوردية</span>
+                  <button type="button" onClick={() => void fetchStats()} className="text-xs font-black text-blue-600 hover:underline">
+                    إعادة تحميل الملخص
+                  </button>
+                </div>
               )}
             </div>
             

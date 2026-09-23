@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { RefreshCw, CheckCircle2 } from 'lucide-react';
 import { syncFromCloud } from '@/lib/sync/universal';
 import { toast } from 'react-hot-toast';
@@ -10,8 +10,18 @@ import { secureCache } from '@/lib/cache/secure_cache';
 export default function DrugSyncButton() {
   const router = useRouter();
   const [syncing, setSyncing] = useState(false);
+  const syncingRef = useRef(false);
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+    };
+  }, []);
 
   const handleSync = async () => {
+    if (syncingRef.current) return;
+    syncingRef.current = true;
     console.log('DrugSyncButton: Starting sync process...');
     setSyncing(true);
     try {
@@ -24,7 +34,9 @@ export default function DrugSyncButton() {
         secureCache.reload().catch(e => console.error('Cache reload failed:', e));
         
         // Wait a bit so the user can see the success message
-        setTimeout(() => {
+        if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = setTimeout(() => {
+          refreshTimerRef.current = null;
           router.refresh();
         }, 1500);
       } else {
@@ -34,6 +46,7 @@ export default function DrugSyncButton() {
       console.error('DrugSyncButton: Unexpected error:', err);
       toast.error('خطأ في الاتصال بالسحابة');
     } finally {
+      syncingRef.current = false;
       setSyncing(false);
       console.log('DrugSyncButton: Sync process finished.');
     }

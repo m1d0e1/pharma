@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { 
   FilePlus, 
@@ -53,31 +53,54 @@ export default function PurchasesPage() {
   const [user, setUser] = useState<any>(null);
   const [allowed, setAllowed] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const loadRequestRef = React.useRef(0);
+
+  const loadPage = useCallback(async () => {
+    const requestId = ++loadRequestRef.current;
+    setLoading(true);
+    setLoadError(false);
+    try {
+      const localUser = await getClientSession();
+      if (requestId !== loadRequestRef.current) return;
+      setUser(localUser);
+      if (!localUser) {
+        setAllowed(false);
+        return;
+      }
+      const isAllowed = hasUserPermissionSync(localUser, 'can_view_purchases');
+      setAllowed(isAllowed);
+    } catch (err) {
+      if (requestId !== loadRequestRef.current) return;
+      console.error('Failed to load user session:', err);
+      setLoadError(true);
+    } finally {
+      if (requestId === loadRequestRef.current) setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    async function loadPage() {
-      try {
-        const localUser = await getClientSession();
-        if (localUser) {
-          setUser(localUser);
-          const isAllowed = hasUserPermissionSync(localUser, 'can_view_purchases');
-          if (isAllowed) {
-            setAllowed(true);
-          }
-        }
-      } catch (err) {
-        console.error('Failed to load user session:', err);
-      } finally {
-        setLoading(false);
-      }
-    }
-    loadPage();
-  }, []);
+    void loadPage();
+    return () => {
+      loadRequestRef.current += 1;
+    };
+  }, [loadPage]);
 
   if (loading) {
     return (
       <div className="flex justify-center items-center py-24" dir="rtl">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-4 py-24" dir="rtl">
+        <p className="font-black text-rose-600">تعذر تحميل صفحة المشتريات</p>
+        <button type="button" onClick={() => void loadPage()} className="px-6 py-3 rounded-2xl bg-slate-900 text-white font-black">
+          إعادة المحاولة
+        </button>
       </div>
     );
   }

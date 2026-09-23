@@ -1,12 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import AccountsManagementClient from '@/components/finance/AccountsManagementClient';
 import * as finance from '@/app/actions-client/finance';
 import { getExpensesAction } from '@/app/actions-client/expenses';
 import { getClientSession } from '@/lib/auth/local';
+import { toast } from 'react-hot-toast';
 
 jest.mock('react-hotkeys-hook', () => ({ useHotkeys: jest.fn() }));
+jest.mock('react-hot-toast', () => ({ toast: { success: jest.fn(), error: jest.fn() } }));
 jest.mock('@/lib/auth/local', () => ({
   getClientSession: jest.fn().mockResolvedValue({ role: 'owner' }),
 }));
@@ -53,6 +55,14 @@ jest.mock('@/app/actions-client/finance', () => ({
 
 const emptyResult = { success: true, data: [] };
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
 beforeEach(() => {
   (getClientSession as jest.Mock).mockResolvedValue({ role: 'owner' });
   for (const action of [
@@ -89,6 +99,22 @@ beforeEach(() => {
   });
 });
 
+it.each([
+  { cash: 100, pos: 0, bank: 20 },
+  { cash: 100, pos: 60, bank: 20 },
+  { cash: 40, pos: 0, bank: 80 },
+])('does not count transferred POS cash twice in liquidity: %j', async ({ cash, pos, bank }) => {
+  (finance.getTreasuryDashboardAction as jest.Mock).mockResolvedValue({
+    success: true,
+    data: { treasuryBalance: cash, todayReceipts: 0, todayExpenses: 0, totalShiftHandovers: 0 },
+  });
+  (finance.getPointsOfSaleAction as jest.Mock).mockResolvedValue({ success: true, data: [{ id: 1, name_ar: 'POS', current_balance: pos }] });
+  (finance.getBanksAction as jest.Mock).mockResolvedValue({ success: true, data: [{ id: 2, name_ar: 'Bank', current_balance: bank }] });
+  render(<AccountsManagementClient initialTab="treasury" />);
+  await waitFor(() => expect(screen.getByRole('heading', { name: 'إجمالي السيولة' }).parentElement).toHaveTextContent('120.00'));
+  expect(screen.getByText(/لا تضاف تسليمات نقاط البيع مرة أخرى/)).toBeInTheDocument();
+});
+
 it('keeps treasury read-only for a user who can view finance but cannot process cash', async () => {
   (getClientSession as jest.Mock).mockResolvedValue({
     id: 'viewer-1',
@@ -116,6 +142,33 @@ it('opens the real POS-management tab from its dedicated route', async () => {
   expect(await screen.findByRole('heading', { name: 'إدارة نقاط البيع' })).toBeInTheDocument();
   await waitFor(() => expect(finance.getPointsOfSaleAction).toHaveBeenCalled());
   expect(screen.getByRole('button', { name: /إضافة نقطة بيع/ })).toBeEnabled();
+});
+
+it('keeps the newest finance tab loading while an older tab request finishes first', async () => {
+  const olderBanks = deferred<any>();
+  const newerBanks = deferred<any>();
+  let bankCalls = 0;
+  (finance.getBanksAction as jest.Mock).mockImplementation(() => {
+    bankCalls += 1;
+    return bankCalls === 1 ? olderBanks.promise : newerBanks.promise;
+  });
+  (finance.getCardsAction as jest.Mock).mockResolvedValue({ success: true, data: [] });
+
+  render(<AccountsManagementClient initialTab="banks" />);
+  await waitFor(() => expect(finance.getBanksAction).toHaveBeenCalledTimes(1));
+  fireEvent.click(screen.getByRole('button', { name: /البطاقات الائتمانية/ }));
+  await waitFor(() => expect(finance.getBanksAction).toHaveBeenCalledTimes(2));
+  expect(screen.getByText('جاري تحميل البيانات...')).toBeInTheDocument();
+
+  await act(async () => {
+    olderBanks.resolve({ success: true, data: [] });
+    await olderBanks.promise;
+  });
+  expect(screen.getByText('جاري تحميل البيانات...')).toBeInTheDocument();
+  expect(screen.queryByText(/لا توجد ماكينات مسجلة/)).not.toBeInTheDocument();
+
+  newerBanks.resolve({ success: true, data: [] });
+  expect(await screen.findByText(/لا توجد ماكينات مسجلة/)).toBeInTheDocument();
 });
 
 it('shows the current-month total money recorded by completed shift handovers', async () => {
@@ -165,7 +218,7 @@ it('opens authoritative details from every treasury summary card', async () => {
   render(<AccountsManagementClient initialTab="treasury" />);
 
   for (const [label, metric] of [
-    ['رصيد الخزينة', 'treasury'],
+    ['رصيد النقدية الدفتري', 'treasury'],
     ['توريدات اليوم', 'receipts'],
     ['المصروفات اليومية', 'expenses'],
     ['تسليمات الورديات هذا الشهر', 'handovers'],
@@ -174,6 +227,83 @@ it('opens authoritative details from every treasury summary card', async () => {
     await waitFor(() => expect(finance.getTreasuryDashboardAction).toHaveBeenCalledWith(metric));
     expect(await screen.findByText(`تفصيل ${metric}`)).toBeInTheDocument();
   }
+  expect(screen.getByText(/تسليم النقدية ليس إيرادًا جديدًا/)).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'عرض تفاصيل رصيد الخزينة' })).not.toBeInTheDocument();
+});
+
+it('keeps treasury details owned by the newest summary-card request', async () => {
+  const older = deferred<any>();
+  const newer = deferred<any>();
+  const base = {
+    treasuryBalance: 500,
+    todayReceipts: 100,
+    todayExpenses: 25,
+    totalShiftHandovers: 150,
+    counts: { treasury: 1, receipts: 1, expenses: 1, handovers: 1 },
+  };
+  (finance.getTreasuryDashboardAction as jest.Mock).mockImplementation((metric?: string) => {
+    if (!metric) return Promise.resolve({ success: true, data: { ...base, detailCount: 0, details: [] } });
+    if (metric === 'treasury') return older.promise;
+    if (metric === 'receipts') return newer.promise;
+    return Promise.resolve({ success: true, data: { ...base, detailCount: 0, details: [] } });
+  });
+
+  render(<AccountsManagementClient initialTab="treasury" />);
+  fireEvent.click(await screen.findByRole('button', { name: 'عرض تفاصيل رصيد النقدية الدفتري' }));
+  await waitFor(() => expect(finance.getTreasuryDashboardAction).toHaveBeenCalledWith('treasury'));
+  fireEvent.click(screen.getByRole('button', { name: 'عرض تفاصيل توريدات اليوم' }));
+  await waitFor(() => expect(finance.getTreasuryDashboardAction).toHaveBeenCalledWith('receipts'));
+
+  newer.resolve({
+    success: true,
+    data: { ...base, detailCount: 1, details: [{ id: 'new', date: '2026-09-22', description: 'newest treasury detail', amount: 11, type: 'receipt' }] },
+  });
+  expect(await screen.findByText('newest treasury detail')).toBeInTheDocument();
+
+  await act(async () => {
+    older.resolve({
+      success: true,
+      data: { ...base, detailCount: 1, details: [{ id: 'old', date: '2026-09-22', description: 'stale treasury detail', amount: 9, type: 'receipt' }] },
+    });
+    await older.promise;
+  });
+  expect(screen.queryByText('stale treasury detail')).not.toBeInTheDocument();
+  expect(screen.getByText('newest treasury detail')).toBeInTheDocument();
+});
+
+it('surfaces a thrown treasury-detail request and releases its loading state for retry', async () => {
+  const base = {
+    treasuryBalance: 0,
+    todayReceipts: 0,
+    todayExpenses: 0,
+    totalShiftHandovers: 0,
+    counts: { treasury: 0, receipts: 0, expenses: 0, handovers: 0 },
+  };
+  let treasuryAttempts = 0;
+  (finance.getTreasuryDashboardAction as jest.Mock).mockImplementation((metric?: string) => {
+    if (!metric) return Promise.resolve({ success: true, data: { ...base, detailCount: 0, details: [] } });
+    if (metric === 'treasury') {
+      treasuryAttempts += 1;
+      if (treasuryAttempts === 1) return Promise.reject(new Error('bridge unavailable'));
+      return Promise.resolve({
+        success: true,
+        data: {
+          ...base,
+          detailCount: 1,
+          details: [{ id: 'retry', date: '2026-09-22', description: 'retry detail', amount: 5, type: 'receipt' }],
+        },
+      });
+    }
+    return Promise.resolve({ success: true, data: { ...base, detailCount: 0, details: [] } });
+  });
+
+  render(<AccountsManagementClient initialTab="treasury" />);
+  const treasury = await screen.findByRole('button', { name: 'عرض تفاصيل رصيد النقدية الدفتري' });
+  fireEvent.click(treasury);
+  await waitFor(() => expect(toast.error).toHaveBeenCalledWith('فشل جلب تفاصيل الرقم'));
+
+  fireEvent.click(treasury);
+  expect(await screen.findByText('retry detail')).toBeInTheDocument();
 });
 
 it('dynamically searches movements in Treasury tab and provides navigation links', async () => {
@@ -552,4 +682,23 @@ it('renders operational expenses tab with stats, live search, add expense modal,
 
   // Posted expenses are immutable because their cash and journal entries must remain linked.
   expect(screen.queryByTitle('حذف المصروف')).not.toBeInTheDocument();
+});
+
+it('lets a cash-flow operator record an operational expense without expense-definition permission', async () => {
+  (getClientSession as jest.Mock).mockResolvedValue({
+    id: 'cash-flow-operator',
+    role: 'pharmacist',
+    permissions: ['can_view_expenses', 'acc_can_process_cash_flow'],
+  });
+  (getExpensesAction as jest.Mock).mockResolvedValue({ success: true, data: [] });
+  (finance.getExpenseDefinitionsAction as jest.Mock).mockResolvedValue({
+    success: true,
+    data: [{ id: 1, code: 'rent', name_ar: 'إيجار', name_en: 'Rent' }],
+  });
+
+  render(<AccountsManagementClient initialTab="expenses" />);
+
+  expect(await screen.findByText('المصاريف التشغيلية')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: /إضافة مصروف \(F4\)/i })).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'تعريف المصروفات' })).not.toBeInTheDocument();
 });

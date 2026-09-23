@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { addMasterDrugAction, getUnitsAction } from '@/app/actions-client/master-drugs'
 import { toast } from 'react-hot-toast'
 import { Plus, X, Pill, BadgeDollarSign, Factory, Beaker, Box, ChevronDown } from 'lucide-react'
@@ -15,6 +15,7 @@ interface Props {
 
 export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const submissionRef = useRef(false)
   const [replacement, setReplacement] = useState<any>(null);
   const [unitsList, setUnitsList] = useState<{ name_ar: string }[]>([])
   const [formData, setFormData] = useState({
@@ -32,38 +33,70 @@ export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
 
   useEffect(() => {
     async function fetchUnits() {
-      const res = await getUnitsAction()
-      if (res.success && res.data) setUnitsList(res.data)
+      try {
+        const res = await getUnitsAction()
+        if (res.success && res.data) setUnitsList(res.data)
+      } catch {
+        toast.error('تعذر تحميل الوحدات')
+      }
     }
-    fetchUnits()
+    void fetchUnits()
   }, [])
 
-  useHotkeys('esc', () => { if (!replacement && !isSubmitting) onClose(); }, { enableOnFormTags: true }, [replacement, isSubmitting])
+  const handleClose = () => {
+    if (replacement || submissionRef.current) return
+    onClose()
+  }
+
+  useHotkeys('esc', handleClose, { enableOnFormTags: true }, [replacement])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (submissionRef.current) return
+    submissionRef.current = true
     setIsSubmitting(true)
     const largeToMediumVal = formData.large_to_medium ? parseInt(formData.large_to_medium) : null
     const officialPriceVal = parseFloat(formData.official_price) || 0
-    const res = await addMasterDrugAction({
-      ...formData,
-      large_unit: formData.unit,
-      official_price: officialPriceVal,
-      large_to_medium: largeToMediumVal,
-      is_medicine: 1
-    })
-    setIsSubmitting(false)
-    if (res.success) {
-      toast.success('تمت إضافة الصنف لقاعدة البيانات بنجاح')
-      onSuccess(res.id as number, formData.trade_name_en || formData.trade_name, formData.unit, officialPriceVal, largeToMediumVal, formData.barcode)
-    } else {
-      const conflict = await findDrugBarcodeConflict(formData.barcode).catch(() => null);
-      if (conflict) {
-        setReplacement({ source: conflict, newDrug: { ...formData, large_unit: formData.unit, official_price: officialPriceVal, large_to_medium: largeToMediumVal } });
-        return;
+    let successId: number | null = null
+    let conflict: any = null
+    let errorMessage: string | null = null
+
+    try {
+      const res = await addMasterDrugAction({
+        ...formData,
+        large_unit: formData.unit,
+        official_price: officialPriceVal,
+        large_to_medium: largeToMediumVal,
+        is_medicine: 1
+      })
+
+      if (res.success) {
+        successId = res.id as number
+      } else {
+        conflict = await findDrugBarcodeConflict(formData.barcode).catch(() => null)
+        if (!conflict) {
+          errorMessage = res.error || 'فشل إضافة الصنف'
+        }
       }
-      toast.error(res.error || 'فشل إضافة الصنف')
+    } catch {
+      errorMessage = 'فشل إضافة الصنف'
+    } finally {
+      submissionRef.current = false
+      setIsSubmitting(false)
     }
+
+    if (successId !== null) {
+      toast.success('تمت إضافة الصنف لقاعدة البيانات بنجاح')
+      onSuccess(successId, formData.trade_name_en || formData.trade_name, formData.unit, officialPriceVal, largeToMediumVal, formData.barcode)
+      return
+    }
+
+    if (conflict) {
+      setReplacement({ source: conflict, newDrug: { ...formData, large_unit: formData.unit, official_price: officialPriceVal, large_to_medium: largeToMediumVal } })
+      return
+    }
+
+    if (errorMessage) toast.error(errorMessage)
   }
 
   const inputClass = "w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-4 py-2.5 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all font-semibold text-slate-900 dark:text-white placeholder:text-slate-400 placeholder:font-normal text-sm"
@@ -71,16 +104,16 @@ export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
 
   return (
     <>
-    {replacement && <DrugReplacementDialog {...replacement} onClose={() => setReplacement(null)} onSuccess={async id => {
+    {replacement && <DrugReplacementDialog {...replacement} onClose={() => setReplacement(null)} onSuccess={async (id, _backupPath, savedDrug) => {
       setReplacement(null);
-      const drug = await getReplacementDrug(id);
+      const drug = savedDrug || await getReplacementDrug(id).catch(() => null);
       if (drug) onSuccess(id, drug.trade_name_en || drug.trade_name, drug.large_unit, drug.official_price, drug.large_to_medium, drug.barcode);
       else { toast.success('تم الاستبدال. ابحث عن الصنف الجديد لإضافته للفاتورة'); onClose(); }
     }} />}
     <div
       className="fixed inset-0 z-[110] flex items-center justify-center p-6"
       dir="rtl"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
+      onClick={(e) => { if (e.target === e.currentTarget) handleClose() }}
     >
       {/* Backdrop */}
       <div className="absolute inset-0 bg-slate-900/70 backdrop-blur-md" />
@@ -104,8 +137,9 @@ export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
             </div>
             <button
               type="button"
-              onClick={onClose}
-              className="w-8 h-8 bg-white/15 hover:bg-white/30 rounded-xl flex items-center justify-center transition-all hover:scale-110 active:scale-95 text-white shrink-0"
+              disabled={isSubmitting}
+              onClick={handleClose}
+              className="w-8 h-8 bg-white/15 hover:bg-white/30 rounded-xl flex items-center justify-center transition-all hover:scale-110 active:scale-95 text-white shrink-0 disabled:opacity-50"
             >
               <X className="w-4 h-4" />
             </button>
@@ -283,8 +317,9 @@ export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
             <div className="flex items-center gap-2.5">
               <button
                 type="button"
-                onClick={onClose}
-                className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 font-bold text-sm hover:bg-slate-100 dark:hover:bg-slate-800 transition-all active:scale-95"
+                disabled={isSubmitting}
+                onClick={handleClose}
+                className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 font-bold text-sm hover:bg-slate-100 dark:hover:bg-slate-800 transition-all active:scale-95 disabled:opacity-50"
               >
                 إلغاء
               </button>

@@ -312,8 +312,8 @@ export async function addInteractionAction(data: {
     if (!user || user.role !== 'owner') return { success: false, error: 'غير مصرح' };
 
     await db.prepare(`
-      INSERT INTO drug_interactions (ingredient_a, ingredient_b, severity, description_ar, recommendation)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO drug_interactions (ingredient_a, ingredient_b, severity, description_ar, recommendation, source)
+      VALUES (?, ?, ?, ?, ?, 'MANUAL')
     `).run(data.ingredient_a, data.ingredient_b, data.severity, data.description_ar, data.recommendation);
 
     logActivity(user.id, 'ADD_INTERACTION', `أضاف تفاعل: ${data.ingredient_a} + ${data.ingredient_b}`);

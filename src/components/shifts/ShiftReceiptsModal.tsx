@@ -25,13 +25,17 @@ export default function ShiftReceiptsModal({
   onClose,
   shiftTitle
 }: ShiftReceiptsModalProps) {
-  useHotkeys('esc', () => { if (isOpen) onClose(); }, { enableOnFormTags: true });
-
   const [receipts, setReceipts] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedInvoice, setSelectedInvoice] = useState<any | null>(null);
   const [pharmacyInfo, setPharmacyInfo] = useState({ name: 'صيدلية فارما تيك', phone: '', address: '' });
+
+  useHotkeys('esc', () => {
+    if (isOpen && !selectedInvoice) onClose();
+  }, { enableOnFormTags: true }, [isOpen, selectedInvoice, onClose]);
 
   useEffect(() => {
     async function loadConfig() {
@@ -52,23 +56,29 @@ export default function ShiftReceiptsModal({
   useEffect(() => {
     if (!isOpen || !shiftId) return;
 
+    setSelectedInvoice(null);
+    setSearchTerm('');
+
     let isMounted = true;
     async function loadData() {
       setLoading(true);
+      setLoadError('');
+      setReceipts([]);
       try {
         const res = await getShiftReceiptsAction(shiftId);
         if (isMounted) {
           if (res.success) {
             setReceipts(res.data || []);
           } else {
-            toast.error(res.error || 'فشل جلب فواتير الوردية');
-            setReceipts([]);
+            const message = res.error || 'فشل جلب فواتير الوردية';
+            toast.error(message);
+            setLoadError(message);
           }
         }
       } catch (err) {
         if (isMounted) {
           toast.error('حدث خطأ أثناء تحميل الفواتير');
-          setReceipts([]);
+          setLoadError('حدث خطأ أثناء تحميل الفواتير');
         }
       } finally {
         if (isMounted) setLoading(false);
@@ -77,7 +87,7 @@ export default function ShiftReceiptsModal({
 
     loadData();
     return () => { isMounted = false; };
-  }, [isOpen, shiftId]);
+  }, [isOpen, shiftId, loadAttempt]);
 
   if (!isOpen) return null;
 
@@ -132,6 +142,7 @@ export default function ShiftReceiptsModal({
         </div>
 
         {/* Quick Stats Bar */}
+        {!loadError && (
         <div className="p-4 bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 grid grid-cols-2 sm:grid-cols-4 gap-3 shrink-0 text-xs">
           <div className="bg-white dark:bg-slate-900 p-3 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex items-center gap-2.5">
             <div className="p-2 bg-blue-50 dark:bg-blue-900/30 text-blue-600 rounded-xl">
@@ -173,8 +184,10 @@ export default function ShiftReceiptsModal({
             </div>
           </div>
         </div>
+        )}
 
         {/* Search Bar */}
+        {!loadError && (
         <div className="p-4 bg-white dark:bg-slate-900 border-b border-slate-100 dark:border-slate-800 shrink-0">
           <div className="relative">
             <Search className="absolute right-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
@@ -187,12 +200,24 @@ export default function ShiftReceiptsModal({
             />
           </div>
         </div>
+        )}
 
         {/* Content List / Table */}
         <div className="p-4 overflow-y-auto flex-1 custom-scrollbar">
           {loading ? (
             <div className="py-20 text-center text-slate-400 font-bold animate-pulse text-sm">
               جاري تحميل فواتير الوردية...
+            </div>
+          ) : loadError ? (
+            <div className="py-20 text-center space-y-4">
+              <p className="font-black text-rose-500">تعذر تحميل فواتير الوردية</p>
+              <button
+                type="button"
+                onClick={() => setLoadAttempt(attempt => attempt + 1)}
+                className="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-black transition-colors"
+              >
+                إعادة المحاولة
+              </button>
             </div>
           ) : filteredReceipts.length === 0 ? (
             <div className="py-20 text-center space-y-2">
@@ -283,9 +308,11 @@ export default function ShiftReceiptsModal({
 
         {/* Footer */}
         <div className="p-4 bg-slate-50 dark:bg-slate-800/50 border-t border-slate-200 dark:border-slate-700 flex justify-between items-center shrink-0">
+          {!loadError ? (
           <span className="text-xs font-bold text-slate-500">
             عدد الفواتير المعروضة: {filteredReceipts.length} من أصل {receipts.length}
           </span>
+          ) : <span />}
           <button
             type="button"
             onClick={onClose}

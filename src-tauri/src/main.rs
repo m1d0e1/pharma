@@ -594,6 +594,12 @@ fn main() {
             sql: include_str!("../migrations/022_finance_pharmacy_scope.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 23,
+            description: "shift_immutable_scope",
+            sql: include_str!("../migrations/023_shift_immutable_scope.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()

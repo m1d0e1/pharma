@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState } from 'react'
+import React, { useRef, useState } from 'react'
 import {
   FileText, Search, CheckCircle2, Clock, AlertCircle, Package,
   Printer, RefreshCw, Loader2, Warehouse, Trash2, ShoppingCart,
@@ -34,6 +34,8 @@ export default function ShortagesClient({ initialData }: { initialData: any[] })
   const [selectedIds, setSelectedIds] = useState<number[]>([])
   const [isPoModalOpen, setIsPoModalOpen] = useState(false)
   const [poItems, setPoItems] = useState<any[]>([])
+  const bulkMutationRef = useRef(false)
+  const syncRef = useRef(false)
 
   const { pendingCount, orderedCount, outOfStockCount } = React.useMemo(() => {
     let pending = 0;
@@ -122,7 +124,9 @@ export default function ShortagesClient({ initialData }: { initialData: any[] })
 
   const handleBulkDelete = async () => {
     if (selectedIds.length === 0) return
+    if (bulkMutationRef.current) return
     if (!confirm(`هل أنت متأكد من حذف ${selectedIds.length} صنف من كشكول النواقص؟`)) return
+    bulkMutationRef.current = true
     try {
       const result = await deleteShortagesBulkAction(selectedIds)
       if (!result.success) throw new Error(result.error || 'فشل الحذف الجماعي')
@@ -131,11 +135,15 @@ export default function ShortagesClient({ initialData }: { initialData: any[] })
       toast.success(`تم حذف ${result.count || selectedIds.length} صنف بنجاح`)
     } catch (err: any) {
       toast.error(err.message || 'فشل الحذف الجماعي')
+    } finally {
+      bulkMutationRef.current = false
     }
   }
 
   const handleBulkStatusUpdate = async (newStatus: string) => {
     if (selectedIds.length === 0) return
+    if (bulkMutationRef.current) return
+    bulkMutationRef.current = true
     try {
       const result = await updateShortagesStatusBulkAction(selectedIds, newStatus)
       if (!result.success) throw new Error(result.error || 'فشل تحديث الحالة')
@@ -149,6 +157,8 @@ export default function ShortagesClient({ initialData }: { initialData: any[] })
       setSelectedIds([])
     } catch (err: any) {
       toast.error(err.message || 'فشل تحديث الحالة')
+    } finally {
+      bulkMutationRef.current = false
     }
   }
 
@@ -175,6 +185,8 @@ export default function ShortagesClient({ initialData }: { initialData: any[] })
   }
 
   const handleSync = async () => {
+    if (syncRef.current) return
+    syncRef.current = true
     setIsSyncing(true)
     try {
       const result = await syncLowStockToShortagesAction()
@@ -187,6 +199,7 @@ export default function ShortagesClient({ initialData }: { initialData: any[] })
       console.error(err)
       toast.error(err.message || 'فشل مزامنة المخزون')
     } finally {
+      syncRef.current = false
       setIsSyncing(false)
     }
   }
@@ -236,14 +249,23 @@ export default function ShortagesClient({ initialData }: { initialData: any[] })
       const storageKey = purchaseShortageHandoffStorageKey()
       if (!storageKey) throw new Error('Missing signed-in purchase scope')
       sessionStorage.setItem(storageKey, JSON.stringify(itemsToConvert))
-      toast.success(`جاري تحويل ${itemsToConvert.length} صنف وتحديث حالتها إلى (قيد الطلب)...`)
-      router.push('/purchases/new')
 
       const idsToUpdate = itemsToConvert.filter(i => i.status === 'pending').map(i => i.id);
       if (idsToUpdate.length > 0) {
-        updateShortagesStatusBulkAction(idsToUpdate, 'ordered').catch(console.error);
-        setData(prev => prev.map(item => idsToUpdate.includes(item.id) ? { ...item, status: 'ordered' } : item));
+        try {
+          const statusResult = await updateShortagesStatusBulkAction(idsToUpdate, 'ordered')
+          if (statusResult.success) {
+            setData(prev => prev.map(item => idsToUpdate.includes(item.id) ? { ...item, status: 'ordered' } : item))
+          } else {
+            toast.error(`تم تجهيز فاتورة المشتريات لكن تعذر تحديث حالة ${idsToUpdate.length} صنف`)
+          }
+        } catch (statusError) {
+          console.error(statusError)
+          toast.error(`تم تجهيز فاتورة المشتريات لكن تعذر تحديث حالة ${idsToUpdate.length} صنف`)
+        }
       }
+      toast.success(`جاري تحويل ${itemsToConvert.length} صنف إلى فاتورة مشتريات...`)
+      router.push('/purchases/new')
     } catch (e) {
       console.error(e)
       toast.error('فشل تحويل الأصناف')

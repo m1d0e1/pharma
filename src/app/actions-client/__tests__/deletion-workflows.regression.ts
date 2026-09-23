@@ -37,6 +37,7 @@ jest.mock('@/lib/cache/secure_cache', () => ({
     load: jest.fn(async () => undefined),
     reload: jest.fn(async () => undefined),
     getAllDrugs: jest.fn(() => []),
+    addDrug: jest.fn(),
     updateDrug: jest.fn(),
     enrich: jest.fn((rows: unknown[]) => rows),
   },

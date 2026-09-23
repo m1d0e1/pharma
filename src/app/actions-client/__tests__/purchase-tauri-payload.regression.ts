@@ -25,9 +25,14 @@ jest.mock('@/lib/cache/secure_cache', () => ({
 
 jest.mock('@/lib/env', () => ({ isTauri: true }));
 
-import { updateCompletedPurchaseInvoiceAction } from '@/app/actions-client/purchases';
+import { deletePurchaseInvoiceAction, updateCompletedPurchaseInvoiceAction } from '@/app/actions-client/purchases';
 
 describe('Tauri purchase payload regressions', () => {
+  beforeEach(() => {
+    mockInvoke.mockClear();
+    mockDbGet.mockReset().mockResolvedValue({ id: 'purchase-1' });
+  });
+
   it('preserves item barcode when updating a completed purchase', async () => {
     const result = await updateCompletedPurchaseInvoiceAction({
       id: 'purchase-1',
@@ -59,5 +64,32 @@ describe('Tauri purchase payload regressions', () => {
         })],
       }),
     });
+  });
+
+  it('scopes purchase deletion to the signed-in pharmacy and forwards the authoritative native payload', async () => {
+    const result = await deletePurchaseInvoiceAction('purchase-1', true);
+
+    expect(result).toEqual({ success: true });
+    expect(mockDbGet).toHaveBeenCalledWith(
+      expect.stringContaining('pharmacy_id'),
+      ['purchase-1', 'pharmacy-1', 'pharmacy-1'],
+    );
+    expect(mockInvoke).toHaveBeenCalledWith('delete_purchase_invoice_critical', {
+      payload: {
+        invoice_id: 'purchase-1',
+        remove_inventory: true,
+        user_id: 'admin',
+        pharmacy_id: 'pharmacy-1',
+      },
+    });
+  });
+
+  it('does not invoke native purchase deletion for an invoice outside the signed-in pharmacy', async () => {
+    mockDbGet.mockResolvedValueOnce(null);
+
+    const result = await deletePurchaseInvoiceAction('foreign-purchase', false);
+
+    expect(result).toEqual({ success: false, error: 'Purchase invoice not found in this pharmacy' });
+    expect(mockInvoke).not.toHaveBeenCalled();
   });
 });

@@ -10,19 +10,26 @@ export default function InteractionsPage() {
   const [stats, setStats] = useState({ total: 0, critical: 0, major: 0, moderate: 0 });
   const [initialData, setInitialData] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [loadAttempt, setLoadAttempt] = useState(0);
 
   useEffect(() => {
+    let active = true;
     async function loadInteractions() {
+      setLoading(true);
+      setLoadError('');
       try {
         const localUser = await getClientSession();
-        if (!localUser) return;
+        if (!active) return;
         setUser(localUser);
+        if (!localUser) return;
 
         const totalRow = await dbGet('SELECT COUNT(*) as count FROM drug_interactions');
         const criticalRow = await dbGet("SELECT COUNT(*) as count FROM drug_interactions WHERE severity = 'critical'");
         const majorRow = await dbGet("SELECT COUNT(*) as count FROM drug_interactions WHERE severity = 'major'");
         const moderateRow = await dbGet("SELECT COUNT(*) as count FROM drug_interactions WHERE severity = 'moderate'");
 
+        if (!active) return;
         setStats({
           total: totalRow?.count || 0,
           critical: criticalRow?.count || 0,
@@ -31,21 +38,34 @@ export default function InteractionsPage() {
         });
 
         const initial = await dbSelect('SELECT * FROM drug_interactions ORDER BY severity DESC, ingredient_a ASC LIMIT 50');
-        setInitialData(initial || []);
+        if (active) setInitialData(initial || []);
       } catch (err) {
         console.error('Failed to load interactions:', err);
+        if (active) setLoadError('تعذر تحميل بيانات التفاعلات');
       } finally {
-        setLoading(false);
+        if (active) setLoading(false);
       }
     }
 
     loadInteractions();
-  }, []);
+    return () => { active = false; };
+  }, [loadAttempt]);
 
   if (loading) {
     return (
       <div className="flex justify-center items-center py-24" dir="rtl">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-4 py-20" dir="rtl">
+        <p className="font-black text-rose-600">{loadError}</p>
+        <button type="button" onClick={() => setLoadAttempt(attempt => attempt + 1)} className="px-6 py-3 rounded-2xl bg-slate-900 text-white font-black">
+          إعادة المحاولة
+        </button>
       </div>
     );
   }

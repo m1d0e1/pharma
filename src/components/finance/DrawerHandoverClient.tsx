@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { 
   DollarSign, ArrowLeftRight, UserCheck, 
@@ -25,7 +25,10 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
   const [banks, setBanks] = useState<any[]>([]);
   const [staff, setStaff] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [processing, setProcessing] = useState(false);
+  const processingRef = useRef(false);
 
   // Credit details modal
   const [showCreditModal, setShowCreditModal] = useState(false);
@@ -43,35 +46,57 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
   });
 
   useEffect(() => {
+    let cancelled = false;
+
     async function loadData() {
-      const { getClientSession } = await import('@/lib/auth/local');
-      const sessionUser = await getClientSession();
-      setUserRole(sessionUser?.role || 'pharmacist');
+      setLoading(true);
+      setLoadError(false);
+      setDetails(null);
 
-      const detailsRes = await getHandoverDetailsAction(shiftId);
-      if (detailsRes.success && detailsRes.data) {
-        setDetails(detailsRes.data);
-        setForm(prev => ({
-          ...prev,
-          actualCash: prev.actualCash || 0
-        }));
-      }
+      try {
+        const { getClientSession } = await import('@/lib/auth/local');
+        const sessionUser = await getClientSession();
+        if (cancelled) return;
+        setUserRole(sessionUser?.role || 'pharmacist');
 
-      const banksRes = await getBanksAction();
-      if (banksRes.success) setBanks(banksRes.data || []);
+        const detailsRes = await getHandoverDetailsAction(shiftId);
+        if (cancelled) return;
+        if (detailsRes.success && detailsRes.data) {
+          setDetails(detailsRes.data);
+          setForm(prev => ({
+            ...prev,
+            actualCash: prev.actualCash || 0
+          }));
+        }
 
-      const staffRes = await getStaffAction();
-      if (staffRes.success) {
-        setStaff(staffRes.data || []);
-        if (staffRes.data && staffRes.data.length > 0) {
-          setForm(prev => ({ ...prev, receiverUsername: staffRes.data[0].username }));
+        const banksRes = await getBanksAction();
+        if (cancelled) return;
+        if (banksRes.success) setBanks(banksRes.data || []);
+
+        const staffRes = await getStaffAction();
+        if (cancelled) return;
+        if (staffRes.success) {
+          setStaff(staffRes.data || []);
+          if (staffRes.data && staffRes.data.length > 0) {
+            setForm(prev => ({ ...prev, receiverUsername: staffRes.data[0].username }));
+          }
+        }
+      } catch {
+        if (!cancelled) {
+          setLoadError(true);
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
         }
       }
-
-      setLoading(false);
     }
+
     loadData();
-  }, [shiftId]);
+    return () => {
+      cancelled = true;
+    };
+  }, [shiftId, loadAttempt]);
 
   const handleOpenCreditDetails = async () => {
     setShowCreditModal(true);
@@ -107,29 +132,38 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
       toast.error('يرجى تحديد المستلم');
       return;
     }
+    if (processingRef.current) return;
 
+    processingRef.current = true;
     setProcessing(true);
-    const res = await processHandoverAction({
-      shiftId,
-      ...form,
-      receiverPasswordHash: form.receiverPassword,
-      autoOpenNewShift: true
-    });
+    try {
+      const res = await processHandoverAction({
+        shiftId,
+        ...form,
+        receiverPasswordHash: form.receiverPassword,
+        autoOpenNewShift: true
+      });
 
-    if (res.success) {
-      toast.success(`تم التسليم وإغلاق الوردية وفتح وردية مشتركة جديدة (الرصيد ${Number(res.remainingCash ?? 0).toFixed(2)} ج.م)`);
-      if (onClose) {
-        onClose();
+      if (res.success) {
+        toast.success(`تم التسليم وإغلاق الوردية وفتح وردية مشتركة جديدة (الرصيد ${Number(res.remainingCash ?? 0).toFixed(2)} ج.م)`);
+        if (onClose) {
+          onClose();
+        } else {
+          window.location.href = '/shifts';
+        }
       } else {
-        window.location.href = '/shifts';
+        toast.error(res.error || 'فشل إتمام العملية');
       }
-    } else {
-      toast.error(res.error || 'فشل إتمام العملية');
+    } catch {
+      toast.error('فشل إتمام العملية');
+    } finally {
+      processingRef.current = false;
+      setProcessing(false);
     }
-    setProcessing(false);
   };
 
   if (loading) return <div className="p-20 text-center animate-pulse font-black text-slate-400">جاري تحميل البيانات...</div>;
+  if (loadError) return <div className="p-20 text-center"><p className="font-black">تعذر تحميل بيانات تسليم الوردية</p><button type="button" onClick={() => setLoadAttempt(attempt => attempt + 1)}>إعادة المحاولة</button></div>;
 
   return (
     <div className="max-w-4xl mx-auto space-y-8" dir="rtl">
@@ -170,8 +204,8 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
               <History className="w-4 h-4" /> تفاصيل حركات الوردية
             </h3>
             <div className="bg-slate-50 dark:bg-slate-800/50 rounded-3xl p-4 divide-y divide-slate-100 dark:divide-slate-700">
-              <DetailRow label="الرصيد الإفتتاحي" value={details?.starting_cash} color="text-slate-500" />
-              <DetailRow label="إجمالي مبيعات كاش" value={details?.cash_sales} color="text-emerald-600" isPositive />
+              <DetailRow label="نقدية بداية الوردية بالدرج" value={details?.starting_cash} color="text-slate-500" />
+              <DetailRow label="إجمالي مبيعات الوردية المدفوعة نقدًا" value={details?.cash_sales} color="text-emerald-600" isPositive />
               <DetailRow label="توريدات نقدية" value={details?.receipts} color="text-emerald-600" isPositive />
               
               {/* Credit Sales Row with details button */}
@@ -199,14 +233,14 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
                 <DetailRow label="محول للخزينة سابقاً" value={details?.transferred_so_far} color="text-blue-600" isNegative />
               )}
               <div className="pt-4 mt-4 border-t-2 border-dashed border-slate-200 dark:border-slate-600">
-                <DetailRow label="صافي نقدية الدرج المتوقعة" value={details?.expected_cash} color="text-blue-600 font-black text-xl" />
+                <DetailRow label="النقدية الدفترية المتوقعة في درج الوردية" value={details?.expected_cash} color="text-blue-600 font-black text-xl" />
               </div>
             </div>
 
             <div className="p-6 bg-blue-50 dark:bg-blue-900/10 rounded-3xl border border-blue-100 dark:border-blue-800 flex items-start gap-4">
               <AlertTriangle className="w-6 h-6 text-blue-600 shrink-0" />
               <p className="text-xs font-bold text-blue-800 dark:text-blue-300 leading-relaxed">
-                يتم حساب الرصيد المتوقع بناءً على كافة الحركات المسجلة خلال الوردية الحالية. يرجى التأكد من مطابقة المبلغ الفعلي في الدرج مع هذا الرقم قبل التسليم.
+                تُحسب النقدية الدفترية المتوقعة في درج الوردية من الحركات المسجلة خلال الوردية. طابقها مع النقدية المعدودة فعليًا في الدرج قبل التسليم.
               </p>
             </div>
           </div>
@@ -220,7 +254,7 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
 
               <div className="grid grid-cols-1 gap-6">
                 <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-400 uppercase mr-2">النقدية الفعلية بالدرج (العد الفعلي)</label>
+                  <label className="text-[10px] font-black text-slate-400 uppercase mr-2">النقدية المعدودة فعليًا في درج الوردية</label>
                   <div className="relative">
                     <DollarSign className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
                     <input 

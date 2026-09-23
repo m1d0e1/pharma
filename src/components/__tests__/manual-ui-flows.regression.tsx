@@ -239,7 +239,8 @@ describe('Comprehensive UI Flow Regression Suite for all Added Features', () => 
 
       // Verify financial audit table columns
       expect(screen.getByText('نقدية الدرج الفعلية')).toBeInTheDocument();
-      expect(screen.getByText('المحول للخزينة')).toBeInTheDocument();
+      expect(screen.getByText('المبلغ المسلّم')).toBeInTheDocument();
+      expect(screen.queryByText('المحول للخزينة')).not.toBeInTheDocument();
       expect(screen.getByText('المستلم')).toBeInTheDocument();
       expect(screen.getByText('العجز / الزيادة')).toBeInTheDocument();
 
@@ -500,7 +501,7 @@ describe('Comprehensive UI Flow Regression Suite for all Added Features', () => 
         'pharma_shortages_to_purchase_v2:["local_default","buyer-1"]',
         expect.stringContaining('Panadol Extra')
       );
-      expect(mockPush).toHaveBeenCalledWith('/purchases/new');
+      await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/purchases/new'));
     });
 
     it('filters out of stock and critical items and opens purchase order modal', async () => {

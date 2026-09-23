@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import { getClientSession } from '@/lib/auth/local';
 import AccessDenied from '@/components/AccessDenied';
-import { Activity, Search, Filter } from 'lucide-react';
+import { Activity, Search } from 'lucide-react';
 import { getMovementsAction } from '@/app/actions-client/inventory';
 import { cn } from '@/lib/utils';
 
@@ -34,29 +34,43 @@ export default function ItemMovementsPage() {
   const [movements, setMovements] = useState<any[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const loadRequestRef = React.useRef(0);
+
+  const loadMovements = React.useCallback(async () => {
+    const requestId = ++loadRequestRef.current;
+    setLoading(true);
+    setLoadError('');
+    setUser(null);
+    try {
+      const localUser = await getClientSession();
+      if (requestId !== loadRequestRef.current) return;
+      setUser(localUser);
+      if (!localUser) return;
+
+      const res = await getMovementsAction();
+      if (requestId !== loadRequestRef.current) return;
+      if (res.success) {
+        setMovements(res.data || []);
+      } else {
+        console.error('Failed to load item movements:', (res as any).error);
+        setLoadError('تعذر تحميل حركات الأصناف');
+      }
+    } catch (err) {
+      if (requestId !== loadRequestRef.current) return;
+      console.error('Failed to load item movements:', err);
+      setLoadError('تعذر تحميل حركات الأصناف');
+    } finally {
+      if (requestId === loadRequestRef.current) setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    async function loadMovements() {
-      try {
-        const localUser = await getClientSession();
-        if (localUser) {
-          setUser(localUser);
-          const res = await getMovementsAction();
-          if (res.success) {
-            setMovements(res.data || []);
-          } else {
-            console.error('Failed to load item movements:', (res as any).error);
-          }
-        }
-      } catch (err) {
-        console.error('Failed to load item movements:', err);
-      } finally {
-        setLoading(false);
-      }
-    }
-
-    loadMovements();
-  }, []);
+    void loadMovements();
+    return () => {
+      loadRequestRef.current += 1;
+    };
+  }, [loadMovements]);
 
   if (loading) {
     return (
@@ -67,6 +81,17 @@ export default function ItemMovementsPage() {
   }
 
   if (!user) return <AccessDenied />;
+
+  if (loadError) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-4 py-24" dir="rtl">
+        <p className="font-black text-rose-600">{loadError}</p>
+        <button type="button" onClick={loadMovements} className="px-6 py-3 rounded-2xl bg-slate-900 text-white font-black">
+          إعادة المحاولة
+        </button>
+      </div>
+    );
+  }
 
   const filteredMovements = movements.filter((move: any) => {
     const parsedName = extractDrugName(move.action, move.details);
@@ -100,9 +125,6 @@ export default function ItemMovementsPage() {
               className="w-full pr-14 pl-6 py-4 bg-slate-50 dark:bg-slate-800 rounded-2xl outline-none font-bold text-slate-900 dark:text-white" 
             />
           </div>
-          <button className="p-4 bg-slate-50 dark:bg-slate-800 text-slate-500 rounded-2xl hover:bg-slate-100 transition-all flex items-center gap-2 font-bold">
-            <Filter className="w-5 h-5" /> تصفية
-          </button>
         </div>
         <table className="w-full text-right">
           <thead className="bg-slate-50 dark:bg-slate-800/50">

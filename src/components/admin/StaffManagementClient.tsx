@@ -316,6 +316,7 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
   const [editPermissions, setEditPermissions] = useState<PermissionSet>(defaultPermissions);
   const [activeTab, setActiveTab] = useState<string>('info');
   const [isSaving, setIsSaving] = useState(false);
+  const savingRef = React.useRef(false);
   const [openShiftDeletion, setOpenShiftDeletion] = useState<OpenShiftDeletion | null>(null);
   const [actualCash, setActualCash] = useState('');
   const [authorizerPassword, setAuthorizerPassword] = useState('');
@@ -391,16 +392,27 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
     }));
   };
 
+  const beginSaving = () => {
+    if (savingRef.current) return false;
+    savingRef.current = true;
+    setIsSaving(true);
+    return true;
+  };
+
+  const finishSaving = () => {
+    savingRef.current = false;
+    setIsSaving(false);
+  };
+
   const saveAll = async () => {
     if (!selectedUser) return;
-    setIsSaving(true);
+    if (!beginSaving()) return;
     
     try {
       // Always save user info (role, username, password, etc.)
       const infoRes = await onUpdateUser(selectedUser.id, editUser);
       if (!infoRes.success) {
         toast.error(infoRes.error || 'فشل تحديث بيانات المستخدم');
-        setIsSaving(false);
         return;
       }
 
@@ -408,7 +420,6 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
       const permRes = await onUpdatePermissions(selectedUser.id, editPermissions);
       if (!permRes.success) {
         toast.error(permRes.error || 'فشل تحديث الصلاحيات');
-        setIsSaving(false);
         return;
       }
 
@@ -417,9 +428,9 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
     } catch (err) {
       console.error('Save error:', err);
       toast.error('حدث خطأ أثناء الحفظ');
+    } finally {
+      finishSaving();
     }
-    
-    setIsSaving(false);
   };
 
   const handleAddUser = async () => {
@@ -427,50 +438,63 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
       toast.error('يرجى ملء جميع البيانات الأساسية');
       return;
     }
-    setIsSaving(true);
-    const res = await onAddUser(newUser);
-    if (res.success) {
-      toast.success('تم إضافة الموظف بنجاح');
-      setShowAddModal(false);
-      setNewUser({ 
-        username: '', 
-        full_name: '', 
-        role: 'pharmacist', 
-        password: '',
-        job_id: 0,
-        qualification: '',
-        hire_date: '',
-        shift: '',
-        code: ''
-      });
-    } else {
-      toast.error(res.error || 'فشل إضافة الموظف');
+    if (!beginSaving()) return;
+    try {
+      const res = await onAddUser(newUser);
+      if (res.success) {
+        toast.success('تم إضافة الموظف بنجاح');
+        setShowAddModal(false);
+        setNewUser({
+          username: '',
+          full_name: '',
+          role: 'pharmacist',
+          password: '',
+          job_id: 0,
+          qualification: '',
+          hire_date: '',
+          shift: '',
+          code: ''
+        });
+      } else {
+        toast.error(res.error || 'فشل إضافة الموظف');
+      }
+    } catch (err) {
+      console.error('Add user error:', err);
+      toast.error('حدث خطأ أثناء إضافة الموظف');
+    } finally {
+      finishSaving();
     }
-    setIsSaving(false);
   };
 
   const handleDelete = async (userId: string, name: string) => {
+    if (savingRef.current) return;
     if (!confirm(`هل تريد تعطيل حساب الموظف "${name}"؟ ستظل سجلاته المالية محفوظة.`)) return;
-    setIsSaving(true);
-    const res = await onDeleteUser(userId);
-    if (res.success) {
-      toast.success('تم تعطيل حساب الموظف مع الاحتفاظ بسجلاته');
-    } else if (res.code === 'OPEN_SHIFT' && res.openShift) {
-      const expectedCash = Number(res.openShift.expected_cash || 0);
-      setOpenShiftDeletion({
-        userId,
-        name,
-        shiftId: res.openShift.id,
-        startTime: res.openShift.start_time,
-        expectedCash,
-      });
-      setActualCash(expectedCash.toFixed(2));
-      setAuthorizerPassword('');
-      setClosingNotes('');
-    } else {
-      toast.error(res.error || 'فشل حذف الموظف');
+    if (!beginSaving()) return;
+    try {
+      const res = await onDeleteUser(userId);
+      if (res.success) {
+        toast.success('تم تعطيل حساب الموظف مع الاحتفاظ بسجلاته');
+      } else if (res.code === 'OPEN_SHIFT' && res.openShift) {
+        const expectedCash = Number(res.openShift.expected_cash || 0);
+        setOpenShiftDeletion({
+          userId,
+          name,
+          shiftId: res.openShift.id,
+          startTime: res.openShift.start_time,
+          expectedCash,
+        });
+        setActualCash(expectedCash.toFixed(2));
+        setAuthorizerPassword('');
+        setClosingNotes('');
+      } else {
+        toast.error(res.error || 'فشل حذف الموظف');
+      }
+    } catch (err) {
+      console.error('Deactivate user error:', err);
+      toast.error('حدث خطأ أثناء تعطيل الموظف');
+    } finally {
+      finishSaving();
     }
-    setIsSaving(false);
   };
 
   const handleCloseShiftAndDelete = async () => {
@@ -479,35 +503,47 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
     if (!Number.isFinite(countedCash) || countedCash < 0) return toast.error('أدخل النقدية الفعلية الصحيحة');
     if (!authorizerPassword) return toast.error('كلمة مرور المسؤول مطلوبة');
 
-    setIsSaving(true);
-    const res = await onCloseShiftAndDelete({
-      userId: openShiftDeletion.userId,
-      shiftId: openShiftDeletion.shiftId,
-      actualCash: countedCash,
-      authorizerPassword,
-      notes: closingNotes,
-    });
-    if (res.success) {
-      toast.success('تمت تسوية الوردية وتعطيل حساب الموظف');
-      setOpenShiftDeletion(null);
-    } else {
-      toast.error(res.error || 'فشل إغلاق الوردية وتعطيل الحساب');
+    if (!beginSaving()) return;
+    try {
+      const res = await onCloseShiftAndDelete({
+        userId: openShiftDeletion.userId,
+        shiftId: openShiftDeletion.shiftId,
+        actualCash: countedCash,
+        authorizerPassword,
+        notes: closingNotes,
+      });
+      if (res.success) {
+        toast.success('تمت تسوية الوردية وتعطيل حساب الموظف');
+        setOpenShiftDeletion(null);
+      } else {
+        toast.error(res.error || 'فشل إغلاق الوردية وتعطيل الحساب');
+      }
+    } catch (err) {
+      console.error('Close shift and deactivate error:', err);
+      toast.error('حدث خطأ أثناء إغلاق الوردية وتعطيل الحساب');
+    } finally {
+      finishSaving();
     }
-    setIsSaving(false);
   };
 
   const handleResetPassword = async () => {
     if (!showResetModal || !newTempPassword) return;
-    setIsSaving(true);
-    const res = await onResetPassword(showResetModal.id, newTempPassword);
-    if (res.success) {
-      toast.success('تم إعادة تعيين كلمة المرور بنجاح');
-      setShowResetModal(null);
-      setNewTempPassword('');
-    } else {
-      toast.error(res.error || 'فشل إعادة تعيين كلمة المرور');
+    if (!beginSaving()) return;
+    try {
+      const res = await onResetPassword(showResetModal.id, newTempPassword);
+      if (res.success) {
+        toast.success('تم إعادة تعيين كلمة المرور بنجاح');
+        setShowResetModal(null);
+        setNewTempPassword('');
+      } else {
+        toast.error(res.error || 'فشل إعادة تعيين كلمة المرور');
+      }
+    } catch (err) {
+      console.error('Reset password error:', err);
+      toast.error('حدث خطأ أثناء إعادة تعيين كلمة المرور');
+    } finally {
+      finishSaving();
     }
-    setIsSaving(false);
   };
 
   const renderPermissionItem = (key: keyof PermissionSet, label: string) => isOwnerOnlyStaffPermission(key) ? (

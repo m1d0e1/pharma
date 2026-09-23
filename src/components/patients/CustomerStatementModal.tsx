@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useHotkeys } from 'react-hotkeys-hook';
 import { X, FileText, History, Package, Printer, Search, Loader2, ArrowUpRight, ArrowDownLeft, User } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -21,37 +21,74 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
 
   const [activeTab, setActiveTab] = useState<'movements' | 'items' | 'notices'>('movements');
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [data, setData] = useState<any>(null);
   const [selectedReceipt, setSelectedReceipt] = useState<any>(null);
   const [loadingReceipt, setLoadingReceipt] = useState(false);
+  const receiptRequestRef = useRef(0);
 
   useEffect(() => {
-    async function loadStatement() {
-      setLoading(true);
-      const res = await getPatientStatementAction(patientId);
-      if (res.success) {
-        setData(res.data);
-      } else {
-        toast.error(res.error || 'فشل تحميل كشف الحساب');
-      }
-      setLoading(false);
-    }
-    loadStatement();
+    return () => {
+      receiptRequestRef.current += 1;
+    };
+  }, []);
+
+  useEffect(() => {
+    receiptRequestRef.current += 1;
+    setSelectedReceipt(null);
+    setLoadingReceipt(false);
   }, [patientId]);
 
+  useEffect(() => {
+    let active = true;
+    async function loadStatement() {
+      setLoading(true);
+      setLoadError(false);
+      setData(null);
+      try {
+        const res = await getPatientStatementAction(patientId);
+        if (!active) return;
+        if (res.success) {
+          setData(res.data);
+        } else {
+          setLoadError(true);
+          toast.error(res.error || 'فشل تحميل كشف الحساب');
+        }
+      } catch {
+        if (active) {
+          setLoadError(true);
+          toast.error('فشل تحميل كشف الحساب');
+        }
+      } finally {
+        if (active) setLoading(false);
+      }
+    }
+    loadStatement();
+    return () => {
+      active = false;
+    };
+  }, [patientId, loadAttempt]);
+
   const handleOpenReceipt = async (invoiceId: string) => {
+    const requestId = ++receiptRequestRef.current;
     try {
       setLoadingReceipt(true);
       const res = await getReceiptDetailsAction(invoiceId);
-      setLoadingReceipt(false);
+      if (requestId !== receiptRequestRef.current) return;
       if (res.success && res.data) {
         setSelectedReceipt(res.data);
       } else {
         toast.error(res.error || 'فشل تحميل تفاصيل الفاتورة');
       }
     } catch {
-      setLoadingReceipt(false);
-      toast.error('حدث خطأ أثناء تحميل الفاتورة');
+      if (requestId === receiptRequestRef.current) {
+        toast.error('حدث خطأ أثناء تحميل الفاتورة');
+      }
+    } finally {
+      if (requestId === receiptRequestRef.current) {
+        setLoadingReceipt(false);
+      }
     }
   };
 
@@ -66,14 +103,23 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
     );
   }
 
-  if (!data || !data.patient) {
+  if (loadError || !data || !data.patient) {
     return (
       <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[250] flex items-center justify-center p-4">
         <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl flex flex-col items-center gap-4 shadow-2xl border border-slate-200 dark:border-slate-800">
           <p className="font-black text-rose-500 text-lg">فشل تحميل كشف حساب العميل</p>
-          <button onClick={onClose} className="px-6 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 rounded-xl font-bold transition-all">
-            إغلاق
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setLoadAttempt(attempt => attempt + 1)}
+              className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold transition-all"
+            >
+              إعادة المحاولة
+            </button>
+            <button onClick={onClose} className="px-6 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 rounded-xl font-bold transition-all">
+              إغلاق
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -171,11 +217,14 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
                       <tr 
                         key={i} 
                         onClick={() => {
-                          if (mov.type === 'فاتورة بيع' || mov.doc_no) {
+                          if (mov.type === 'فاتورة بيع' && mov.doc_no) {
                             handleOpenReceipt(mov.doc_no);
                           }
                         }}
-                        className="hover:bg-slate-50 dark:hover:bg-slate-900/30 transition-colors cursor-pointer"
+                        className={cn(
+                          "hover:bg-slate-50 dark:hover:bg-slate-900/30 transition-colors",
+                          mov.type === 'فاتورة بيع' && mov.doc_no ? "cursor-pointer" : "cursor-default"
+                        )}
                       >
                          <td className="px-6 py-4">
                             <span className={cn(
@@ -273,8 +322,11 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
                     {(items || []).map((item: any, i: number) => (
                       <tr 
                         key={i} 
-                        onClick={() => { if (item.invoice_id) handleOpenReceipt(item.invoice_id); }}
-                        className="hover:bg-slate-50 dark:hover:bg-slate-900/30 transition-colors cursor-pointer"
+                        onClick={() => { if (item.action === 'بيع' && item.invoice_id) handleOpenReceipt(item.invoice_id); }}
+                        className={cn(
+                          "hover:bg-slate-50 dark:hover:bg-slate-900/30 transition-colors",
+                          item.action === 'بيع' && item.invoice_id ? "cursor-pointer" : "cursor-default"
+                        )}
                       >
                          <td className="px-6 py-4 font-bold text-slate-900 dark:text-white">{item.trade_name}</td>
                          <td className="px-6 py-4 font-bold">

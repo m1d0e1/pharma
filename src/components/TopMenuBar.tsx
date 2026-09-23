@@ -107,10 +107,10 @@ const MENUS: Menu[] = [
       { type: 'link', label: 'الشركات المنتجة',    href: '/stores/manufacturers',       icon: Building2,     roles: ['owner','admin'], permission: 'can_view_stores' },
       { type: 'link', label: 'المجموعات العلمية',  href: '/stores/scientific-groups',   icon: FlaskConical,  roles: ['owner','admin'], permission: 'can_view_stores' },
       { type: 'separator' },
-      { type: 'link', label: 'التعديلات',           href: '/stores/adjustments',         icon: Wrench,        roles: ['owner','admin'], permission: 'can_view_stores' },
+      { type: 'link', label: 'التعديلات',           href: '/stores/adjustments',         icon: Wrench,        roles: ['owner','admin'], permission: 'can_manage_inventory' },
       { type: 'link', label: 'أسباب التعديل',       href: '/stores/adjustment-reasons',  icon: FileText,      roles: ['owner','admin'], permission: 'can_view_stores' },
       { type: 'link', label: 'نقص المخزون',         href: '/stores/shortages',           icon: AlertTriangle, roles: ['owner','admin'], permission: 'can_view_restock' },
-      { type: 'link', label: 'حذف الأصناف',         href: '/stores/delete-items',        icon: Trash2,        roles: ['owner','admin'], permission: 'can_view_stores' },
+      { type: 'link', label: 'حذف الأصناف',         href: '/stores/delete-items',        icon: Trash2,        roles: ['owner','admin'], permission: 'can_manage_inventory' },
     ],
   },
   {
@@ -245,6 +245,7 @@ export default function TopMenuBar({ userRole, permissions }: Props) {
   const [activeMenu, setActiveMenu] = useState<string | null>(null)
   const [modal, setModal]           = useState<'shortcuts' | 'about' | null>(null)
   const barRef = useRef<HTMLDivElement>(null)
+  const canAccessPos = hasUserPermissionSync({ role: userRole, permissions }, 'can_access_pos')
 
   const canSee = useCallback((item: MenuItem): boolean => {
     if (item.type === 'separator' || item.type === 'action') return true
@@ -263,11 +264,11 @@ export default function TopMenuBar({ userRole, permissions }: Props) {
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if (e.key === 'Escape') close()
-      if (e.altKey && e.key.toLowerCase() === 'p') router.push('/pos')
+      if (e.altKey && e.key.toLowerCase() === 'p' && canAccessPos) router.push('/pos')
     }
     window.addEventListener('keydown', h)
     return () => window.removeEventListener('keydown', h)
-  }, [close, router])
+  }, [canAccessPos, close, router])
 
   useEffect(() => {
     const h = (e: MouseEvent) => {

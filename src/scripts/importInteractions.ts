@@ -42,34 +42,32 @@ export async function importInteractionsFromCSV(db: any) {
     console.log(`Parsed ${records.length} records. Importing...`);
 
     const insert = db.prepare(`
-      INSERT INTO drug_interactions (ingredient_a, ingredient_b, description_en, severity)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO drug_interactions (ingredient_a, ingredient_b, description_en, severity, source)
+      VALUES (?, ?, ?, ?, 'CSV')
     `);
 
-    // We use a transaction for speed
-    const insertMany = db.transaction((rows) => {
-      for (const row of rows) {
+    const replaceCsvInteractions = db.transaction((rows) => {
+      // Replacement must be atomic: if any incoming row fails, keep the previous CSV dataset intact.
+      db.prepare("DELETE FROM drug_interactions WHERE source = 'CSV'").run();
+
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
         // Map CSV columns: 'Drug 1', 'Drug 2', 'Interaction Description'
         // Note: CSV doesn't have severity, so we default to 'major' or 'moderate'
         insert.run(
-          row['Drug 1']?.trim(), 
-          row['Drug 2']?.trim(), 
-          row['Interaction Description']?.trim(), 
+          row['Drug 1']?.trim(),
+          row['Drug 2']?.trim(),
+          row['Interaction Description']?.trim(),
           'major'
         );
+
+        if (i === 0 || (i + 1) % 25000 === 0 || i === rows.length - 1) {
+          console.log(`Imported ${i + 1} / ${rows.length}...`);
+        }
       }
     });
 
-    // Clear existing CSV source interactions to avoid duplicates
-    db.prepare("DELETE FROM drug_interactions WHERE source = 'CSV'").run();
-
-    // Process in chunks of 5000 for efficiency
-    const chunkSize = 5000;
-    for (let i = 0; i < records.length; i += chunkSize) {
-      const chunk = records.slice(i, i + chunkSize);
-      insertMany(chunk);
-      if (i % 25000 === 0) console.log(`Imported ${i + chunk.length} / ${records.length}...`);
-    }
+    replaceCsvInteractions(records);
 
     console.log('CSV Import completed successfully.');
     return true;

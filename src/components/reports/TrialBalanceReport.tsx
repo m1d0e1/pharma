@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { getTrialBalanceAction } from '@/app/actions-client/finance';
 import { Card, CardContent } from '@/components/ui/card';
@@ -38,20 +38,46 @@ function balanceSummary(debit: number, credit: number, type: string) {
 export default function TrialBalanceReport({ userRole, user }: { userRole?: string; user?: any }) {
   const [data, setData] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [mode, setMode] = useState<'cumulative' | 'net' | 'period'>('cumulative');
+  const requestRef = useRef(0);
 
-  const fetchData = useCallback(async (s = startDate, e = endDate) => {
+  const fetchData = useCallback(async (s: string, e: string) => {
+    const requestId = ++requestRef.current;
     setLoading(true);
-    const res = await getTrialBalanceAction(s, e);
-    if (res.success) setData(res.data || []);
-    else toast.error(res.error || 'فشل تحميل ميزان المراجعة');
-    setLoading(false);
-  }, [startDate, endDate]);
+    setLoadError(null);
+    try {
+      const res = await getTrialBalanceAction(s, e);
+      if (requestId !== requestRef.current) return;
+      if (res.success) {
+        setData(res.data || []);
+      } else {
+        const message = res.error || 'فشل تحميل ميزان المراجعة';
+        setLoadError(message);
+        toast.error(message);
+      }
+    } catch {
+      if (requestId === requestRef.current) {
+        const message = 'فشل تحميل ميزان المراجعة';
+        setLoadError(message);
+        toast.error(message);
+      }
+    } finally {
+      if (requestId === requestRef.current) {
+        setLoading(false);
+      }
+    }
+  }, []);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  useEffect(() => {
+    void fetchData('', '');
+    return () => {
+      requestRef.current += 1;
+    };
+  }, [fetchData]);
 
   const applyPreset = (preset: 'today' | 'month' | 'year' | 'all') => {
     const now = new Date();
@@ -64,7 +90,7 @@ export default function TrialBalanceReport({ userRole, user }: { userRole?: stri
       all:   ['', ''],
     };
     const [ns, ne] = map[preset];
-    setStartDate(ns); setEndDate(ne); fetchData(ns, ne);
+    setStartDate(ns); setEndDate(ne); void fetchData(ns, ne);
   };
 
   const allAccounts = useMemo(() => data.filter(r => r.is_group === 0), [data]);
@@ -126,7 +152,7 @@ export default function TrialBalanceReport({ userRole, user }: { userRole?: stri
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <button onClick={() => fetchData()} title="تحديث" className="p-3 bg-slate-100 dark:bg-slate-800 rounded-xl hover:bg-slate-200 transition-all">
+          <button onClick={() => void fetchData(startDate, endDate)} title="تحديث" className="p-3 bg-slate-100 dark:bg-slate-800 rounded-xl hover:bg-slate-200 transition-all">
             <RefreshCw className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`} />
           </button>
           <button onClick={handleExport} className="flex items-center gap-2 px-4 py-3 bg-slate-100 dark:bg-slate-800 rounded-xl font-bold hover:bg-slate-200 transition-all border border-slate-200 dark:border-slate-700 text-sm">
@@ -176,7 +202,7 @@ export default function TrialBalanceReport({ userRole, user }: { userRole?: stri
               <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)}
                 className="bg-transparent text-xs font-bold outline-none text-slate-800 dark:text-white" />
             </div>
-            <button onClick={() => fetchData()} className="px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-bold transition-all">
+            <button onClick={() => void fetchData(startDate, endDate)} className="px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-bold transition-all">
               تطبيق
             </button>
           </div>
@@ -222,13 +248,13 @@ export default function TrialBalanceReport({ userRole, user }: { userRole?: stri
         </div>
       </div>
 
-      {!isBalanced && (
+      {!loading && !loadError && !isBalanced && (
         <div className="flex items-center gap-3 p-4 rounded-2xl border font-bold text-sm bg-rose-50 dark:bg-rose-900/20 border-rose-200 dark:border-rose-800/40 text-rose-700 dark:text-rose-300">
           <AlertCircle className="w-5 h-5 shrink-0 animate-pulse" /> تنبيه مالي: ميزان المراجعة غير متزن — الفارق {fmt(Math.abs(totals.debit - totals.credit))} ج.م (يُرجى مراجعة القيود)
         </div>
       )}
 
-      {isBalanced && (
+      {!loading && !loadError && isBalanced && (
         <div className="flex items-center gap-3 p-4 rounded-2xl border font-bold text-sm bg-emerald-50 dark:bg-emerald-900/20 border-emerald-200 dark:border-emerald-800/40 text-emerald-700 dark:text-emerald-300">
           <CheckCircle2 className="w-5 h-5 shrink-0" /> الميزان متوازن ✓ — مجموع الأرصدة المدينة مساوٍ للأرصدة الدائنة
         </div>
@@ -288,6 +314,23 @@ export default function TrialBalanceReport({ userRole, user }: { userRole?: stri
                 <TableRow>
                   <TableCell colSpan={5} className="text-center py-20 text-slate-400 animate-pulse">
                     جاري تحميل بيانات الحسابات...
+                  </TableCell>
+                </TableRow>
+              ) : loadError && data.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={5} className="text-center py-16">
+                    <div className="flex flex-col items-center gap-3">
+                      <AlertCircle className="w-8 h-8 text-rose-500" />
+                      <p className="font-black text-slate-800 dark:text-slate-100">تعذر تحميل ميزان المراجعة</p>
+                      <p className="text-xs font-bold text-slate-500">{loadError}</p>
+                      <button
+                        type="button"
+                        onClick={() => void fetchData(startDate, endDate)}
+                        className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-black transition-colors"
+                      >
+                        إعادة المحاولة
+                      </button>
+                    </div>
                   </TableCell>
                 </TableRow>
               ) : accounts.length === 0 ? (

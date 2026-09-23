@@ -1,8 +1,9 @@
 'use client'
 
-import React, { useState, useMemo } from 'react'
+import React, { useEffect, useState, useMemo, useRef } from 'react'
 import { Plus, Trash2, ChevronRight, ChevronDown, Folder, FolderOpen, Save, X, Edit3 } from 'lucide-react'
 import { toast, Toaster } from 'react-hot-toast'
+import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local'
 
 interface Category {
   id: number;
@@ -26,6 +27,17 @@ export default function ProductCategoriesManagement({ initialData, onAdd, onUpda
   const [editingItem, setEditingItem] = useState<Category | null>(null);
   const [formData, setFormData] = useState({ name_ar: '', name_en: '', parent_id: null as number | null });
   const [isSaving, setIsSaving] = useState(false);
+  const savingRef = useRef(false);
+  const deletingIdsRef = useRef(new Set<number>());
+  const [canManage, setCanManage] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    getClientSession().then(user => {
+      if (active) setCanManage(hasUserPermissionSync(user, 'can_manage_inventory'));
+    });
+    return () => { active = false; };
+  }, []);
 
   // Build tree structure
   const treeData = useMemo(() => {
@@ -70,45 +82,68 @@ export default function ProductCategoriesManagement({ initialData, onAdd, onUpda
     setIsModalOpen(true);
   };
 
+  const handleCloseModal = () => {
+    if (savingRef.current) return;
+    setIsModalOpen(false);
+  };
+
   const handleSave = async () => {
     if (!formData.name_ar) {
       toast.error('يرجى إدخال الاسم بالعربي');
       return;
     }
+    if (savingRef.current) return;
+    savingRef.current = true;
     setIsSaving(true);
-    
-    if (editingItem) {
-      const res = await onUpdate(editingItem.id, formData);
-      if (res.success) {
-        setItems(items.map(i => i.id === editingItem.id ? { ...i, ...formData } : i));
-        toast.success('تم تحديث المجموعة بنجاح');
-        setIsModalOpen(false);
+
+    try {
+      if (editingItem) {
+        const res = await onUpdate(editingItem.id, formData);
+        if (res.success) {
+          setItems(items.map(i => i.id === editingItem.id ? { ...i, ...formData } : i));
+          toast.success('تم تحديث المجموعة بنجاح');
+          setIsModalOpen(false);
+        } else {
+          toast.error(res.error || 'فشل التحديث');
+        }
       } else {
-        toast.error(res.error || 'فشل التحديث');
+        const res = await onAdd(formData);
+        if (res.success) {
+          setItems([...items, { id: res.id as number, ...formData }]);
+          toast.success('تمت إضافة المجموعة بنجاح');
+          setIsModalOpen(false);
+        } else {
+          toast.error(res.error || 'فشل الإضافة');
+        }
       }
-    } else {
-      const res = await onAdd(formData);
-      if (res.success) {
-        setItems([...items, { id: res.id as number, ...formData }]);
-        toast.success('تمت إضافة المجموعة بنجاح');
-        setIsModalOpen(false);
-      } else {
-        toast.error(res.error || 'فشل الإضافة');
-      }
+    } catch (err) {
+      console.error('Failed to save product category:', err);
+      toast.error(editingItem ? 'فشل التحديث' : 'فشل الإضافة');
+    } finally {
+      savingRef.current = false;
+      setIsSaving(false);
     }
-    setIsSaving(false);
   };
 
   const handleDelete = async (id: number) => {
+    if (deletingIdsRef.current.has(id)) return;
     if (!confirm('هل أنت متأكد من حذف هذه المجموعة؟')) return;
-    
-    const res = await onDelete(id);
-    if (res.success) {
-      setItems(items.filter(i => i.id !== id));
-      setSelectedId(null);
-      toast.success('تم حذف المجموعة');
-    } else {
-      toast.error(res.error || 'فشل الحذف');
+
+    deletingIdsRef.current.add(id);
+    try {
+      const res = await onDelete(id);
+      if (res.success) {
+        setItems(items.filter(i => i.id !== id));
+        setSelectedId(null);
+        toast.success('تم حذف المجموعة');
+      } else {
+        toast.error(res.error || 'فشل الحذف');
+      }
+    } catch (err) {
+      console.error('Failed to delete product category:', err);
+      toast.error('فشل الحذف');
+    } finally {
+      deletingIdsRef.current.delete(id);
     }
   };
 
@@ -165,12 +200,14 @@ export default function ProductCategoriesManagement({ initialData, onAdd, onUpda
               <Folder className="w-6 h-6 text-primary-500" />
               شجرة المجموعات
             </h3>
-            <button 
-              onClick={() => handleOpenAdd(selectedId)}
-              className="p-3 bg-slate-900 dark:bg-slate-700 text-white rounded-2xl hover:bg-slate-800 transition-all shadow-lg shadow-slate-900/20"
-            >
-              <Plus className="w-6 h-6" />
-            </button>
+            {canManage && (
+              <button
+                onClick={() => handleOpenAdd(selectedId)}
+                className="p-3 bg-slate-900 dark:bg-slate-700 text-white rounded-2xl hover:bg-slate-800 transition-all shadow-lg shadow-slate-900/20"
+              >
+                <Plus className="w-6 h-6" />
+              </button>
+            )}
           </div>
           
           <div className="flex-1 overflow-y-auto custom-scrollbar space-y-1">
@@ -196,7 +233,7 @@ export default function ProductCategoriesManagement({ initialData, onAdd, onUpda
                   <h2 className="text-3xl font-black text-slate-900 dark:text-white">{selectedCategory.name_ar}</h2>
                   <p className="text-slate-400 font-bold mt-1 uppercase tracking-widest">{selectedCategory.name_en || '---'}</p>
                 </div>
-                <div className="flex gap-2">
+                {canManage && <div className="flex gap-2">
                    <button 
                      onClick={() => handleOpenEdit(selectedCategory)}
                      className="p-4 bg-slate-50 dark:bg-slate-800 text-slate-400 hover:text-primary-600 rounded-3xl transition-all border border-transparent hover:border-primary-500/30 shadow-sm"
@@ -209,7 +246,7 @@ export default function ProductCategoriesManagement({ initialData, onAdd, onUpda
                    >
                      <Trash2 className="w-6 h-6" />
                    </button>
-                </div>
+                </div>}
               </div>
 
               <div className="grid grid-cols-2 gap-6 pt-8 border-t border-slate-50 dark:border-slate-800">
@@ -227,7 +264,7 @@ export default function ProductCategoriesManagement({ initialData, onAdd, onUpda
                  </div>
               </div>
               
-              <div className="pt-6">
+              {canManage && <div className="pt-6">
                 <button 
                   onClick={() => handleOpenAdd(selectedCategory.id)}
                   className="w-full py-5 bg-primary-600 text-white rounded-[24px] font-black shadow-lg shadow-primary-500/20 hover:bg-primary-700 transition-all flex items-center justify-center gap-3"
@@ -235,7 +272,7 @@ export default function ProductCategoriesManagement({ initialData, onAdd, onUpda
                   <Plus className="w-6 h-6" />
                   إضافة مجموعة فرعية جديدة هنا
                 </button>
-              </div>
+              </div>}
             </div>
           ) : (
             <div className="flex flex-col items-center justify-center h-full text-slate-300 gap-6">
@@ -255,7 +292,7 @@ export default function ProductCategoriesManagement({ initialData, onAdd, onUpda
                 <h3 className="text-2xl font-black text-slate-900 dark:text-white">
                   {editingItem ? 'تعديل مجموعة' : 'إضافة مجموعة'}
                 </h3>
-                <button onClick={() => setIsModalOpen(false)}><X className="w-8 h-8 text-slate-400" /></button>
+                <button disabled={isSaving} onClick={handleCloseModal}><X className="w-8 h-8 text-slate-400" /></button>
              </div>
              <div className="p-8 space-y-6">
                 <div className="p-4 bg-slate-50 dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700">
@@ -285,11 +322,12 @@ export default function ProductCategoriesManagement({ initialData, onAdd, onUpda
                 </div>
              </div>
              <div className="p-8 bg-slate-50 dark:bg-slate-800/50 flex gap-4">
-                <button 
-                   onClick={() => setIsModalOpen(false)}
-                   className="flex-1 py-5 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 rounded-2xl font-black border border-slate-200 dark:border-slate-700 hover:bg-slate-100"
+                  <button
+                    disabled={isSaving}
+                    onClick={handleCloseModal}
+                    className="flex-1 py-5 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 rounded-2xl font-black border border-slate-200 dark:border-slate-700 hover:bg-slate-100"
                 >إلغاء</button>
-                <button 
+                <button
                    disabled={isSaving}
                    onClick={handleSave}
                    className="flex-1 py-5 bg-primary-600 text-white rounded-2xl font-black shadow-lg shadow-primary-500/20 hover:bg-primary-700 transition-all flex items-center justify-center gap-2"

@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Search, Trash2, AlertTriangle } from 'lucide-react'
 import { toast, Toaster } from 'react-hot-toast'
 // Removed server action import
@@ -28,6 +28,7 @@ export default function DeleteUnusedItemsClient({ initialItems, onDelete }: Prop
   const [filterType, setFilterType] = useState<'all' | 'medicine' | 'other'>('all');
   const [isDeleting, setIsDeleting] = useState<number | null>(null);
   const [page, setPage] = useState(1);
+  const deletingIdsRef = useRef<Set<number>>(new Set());
 
   const filteredItems = useMemo(() => items.filter(item => {
     const matchesSearch = item.trade_name.includes(searchTerm) || 
@@ -45,17 +46,24 @@ export default function DeleteUnusedItemsClient({ initialItems, onDelete }: Prop
   );
 
   const handleDelete = async (id: number) => {
+    if (deletingIdsRef.current.has(id)) return;
     if (!confirm('هل أنت متأكد من حذف هذا الصنف نهائياً؟')) return;
-    
-    setIsDeleting(id);
-    const res = await onDelete(id);
-    setIsDeleting(null);
 
-    if (res.success) {
-      setItems(current => current.filter(i => i.id !== id));
-      toast.success('تم حذف الصنف بنجاح');
-    } else {
-      toast.error(res.error || 'فشل الحذف');
+    deletingIdsRef.current.add(id);
+    setIsDeleting(id);
+    try {
+      const res = await onDelete(id);
+      if (res.success) {
+        setItems(current => current.filter(i => i.id !== id));
+        toast.success('تم حذف الصنف بنجاح');
+      } else {
+        toast.error(res.error || 'فشل الحذف');
+      }
+    } catch {
+      toast.error('فشل الحذف');
+    } finally {
+      deletingIdsRef.current.delete(id);
+      setIsDeleting(current => current === id ? null : current);
     }
   };
 

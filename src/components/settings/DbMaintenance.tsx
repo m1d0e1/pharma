@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Database, ShieldAlert, Sparkles, RefreshCw } from 'lucide-react';
 import { runDatabaseMaintenanceClient } from '@/lib/settings/client';
 import { toast } from 'react-hot-toast';
@@ -17,6 +17,7 @@ export default function DbMaintenance() {
   const [backupPassword, setBackupPassword] = useState('');
   const [repairNote, setRepairNote] = useState('');
   const [repairBackupPath, setRepairBackupPath] = useState('');
+  const operationLockRef = useRef(false);
 
   useEffect(() => {
     let mounted = true;
@@ -36,6 +37,8 @@ export default function DbMaintenance() {
   }, []);
 
   const handleBackup = async () => {
+    if (operationLockRef.current) return;
+    operationLockRef.current = true;
     setBackupRunning(true);
     setBackupPath('');
     try {
@@ -47,12 +50,15 @@ export default function DbMaintenance() {
     } catch (error) {
       toast.error(`فشل حفظ النسخة الاحتياطية: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
+      operationLockRef.current = false;
       setBackupRunning(false);
       setBackupPassword('');
     }
   };
 
   const handleMaintenance = async () => {
+    if (operationLockRef.current) return;
+    operationLockRef.current = true;
     setRunning(true);
     const toastId = toast.loading('جاري إجراء صيانة قاعدة البيانات (VACUUM & ANALYZE)...');
     try {
@@ -66,6 +72,7 @@ export default function DbMaintenance() {
       console.error('Maintenance execution error:', err);
       toast.error('حدث خطأ غير متوقع أثناء تنفيذ الصيانة', { id: toastId });
     } finally {
+      operationLockRef.current = false;
       setRunning(false);
     }
   };

@@ -1,7 +1,7 @@
 'use client'
 import { useHotkeys } from 'react-hotkeys-hook';
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { updateInventoryAction } from '@/app/actions-client/inventory'
 import { toast } from 'react-hot-toast'
 
@@ -24,8 +24,6 @@ interface EditInventoryModalProps {
 }
 
 export default function EditInventoryModal({ item, onClose, onSuccess }: EditInventoryModalProps) {
-  useHotkeys('esc', () => { if(typeof onClose === 'function') onClose(); }, { enableOnFormTags: true });
-
   const [quantity, setQuantity] = useState(item.quantity.toString())
   const [localPrice, setLocalPrice] = useState(item.local_selling_price.toString())
   const [expiryDate, setExpiryDate] = useState(item.expiry_date ? item.expiry_date.split('T')[0] : '')
@@ -33,19 +31,62 @@ export default function EditInventoryModal({ item, onClose, onSuccess }: EditInv
   const [largeToMedium, setLargeToMedium] = useState(initialConversion.toString())
   const [reasonId, setReasonId] = useState<string>('')
   const [reasons, setReasons] = useState<any[]>([])
+  const [reasonsLoading, setReasonsLoading] = useState(false)
+  const [reasonsLoadError, setReasonsLoadError] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const reasonsRequestRef = useRef(0)
+  const submissionRef = useRef(false)
 
-  useEffect(() => {
-    async function loadReasons() {
+  const handleClose = () => {
+    if (submissionRef.current) return
+    onClose()
+  }
+  useHotkeys('esc', handleClose, { enableOnFormTags: true });
+  const parsedQuantity = Number(quantity)
+  const quantityChanged = Number.isFinite(parsedQuantity) && parsedQuantity !== Number(item.quantity)
+
+  const loadReasons = useCallback(async () => {
+    const requestId = ++reasonsRequestRef.current
+    setReasonsLoading(true)
+    setReasonsLoadError(false)
+
+    try {
       const { getAdjustmentReasonsAction } = await import('@/app/actions-client/master-drugs')
       const res = await getAdjustmentReasonsAction()
-      if (res.success) setReasons(res.data || [])
+      if (reasonsRequestRef.current !== requestId) return
+
+      if (res.success) {
+        setReasons(res.data || [])
+      } else {
+        setReasonsLoadError(true)
+      }
+    } catch {
+      if (reasonsRequestRef.current === requestId) {
+        setReasonsLoadError(true)
+      }
+    } finally {
+      if (reasonsRequestRef.current === requestId) {
+        setReasonsLoading(false)
+      }
     }
-    loadReasons()
   }, [])
+
+  useEffect(() => {
+    void loadReasons()
+    return () => {
+      reasonsRequestRef.current += 1
+    }
+  }, [loadReasons])
 
   const handleUpdate = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (quantityChanged && !reasonId) {
+      toast.error('يجب اختيار سبب عند تعديل الكمية')
+      return
+    }
+
+    if (submissionRef.current) return
+    submissionRef.current = true
     setIsSubmitting(true)
 
     // Prepare form data for Server Action
@@ -58,10 +99,17 @@ export default function EditInventoryModal({ item, onClose, onSuccess }: EditInv
       reason_id: reasonId ? parseInt(reasonId) : undefined
     }
 
-    // Call Server Action
-    const result = await updateInventoryAction(formData)
+    let result: Awaited<ReturnType<typeof updateInventoryAction>> | undefined
+    try {
+      result = await updateInventoryAction(formData)
+    } catch {
+      toast.error('حدث خطأ أثناء التحديث')
+    } finally {
+      submissionRef.current = false
+      setIsSubmitting(false)
+    }
 
-    setIsSubmitting(false)
+    if (!result) return
 
     if (result.success) {
       toast.success('تم تحديث البيانات بنجاح')
@@ -81,7 +129,7 @@ export default function EditInventoryModal({ item, onClose, onSuccess }: EditInv
             <h2 className="text-xl font-black">تعديل الصنف</h2>
             <p className="text-blue-100 text-xs">{item.master_drugs.trade_name}</p>
           </div>
-          <button onClick={onClose} className="text-2xl">&times;</button>
+          <button onClick={handleClose} disabled={isSubmitting} className="text-2xl disabled:opacity-50 disabled:cursor-not-allowed">&times;</button>
         </div>
 
         <form onSubmit={handleUpdate} className="p-8 space-y-6">
@@ -134,10 +182,14 @@ export default function EditInventoryModal({ item, onClose, onSuccess }: EditInv
           </div>
 
           <div className="space-y-1.5">
-            <label className="text-xs font-black text-slate-500 mr-2">سبب التعديل (اختياري)</label>
+            <label className="text-xs font-black text-slate-500 mr-2">
+              {quantityChanged ? 'سبب التعديل (مطلوب عند تغيير الكمية)' : 'سبب التعديل (اختياري)'}
+            </label>
             <select
               value={reasonId}
               onChange={(e) => setReasonId(e.target.value)}
+              required={quantityChanged}
+              disabled={reasonsLoading}
               className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none font-bold text-slate-700 dark:text-slate-300"
             >
               <option value="">-- اختر سبب التعديل --</option>
@@ -145,13 +197,27 @@ export default function EditInventoryModal({ item, onClose, onSuccess }: EditInv
                 <option key={r.id} value={r.id}>{r.name_ar || r.name_en || r.reason || `#${r.id}`}</option>
               ))}
             </select>
+            {reasonsLoadError && (
+              <div className="flex items-center justify-between gap-3 text-xs font-bold text-red-600">
+                <span>تعذر تحميل أسباب التعديل</span>
+                <button
+                  type="button"
+                  onClick={() => void loadReasons()}
+                  disabled={reasonsLoading}
+                  className="rounded-lg border border-red-200 px-3 py-1.5 hover:bg-red-50 disabled:opacity-50"
+                >
+                  إعادة تحميل الأسباب
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="flex gap-3 pt-2">
             <button
               type="button"
-              onClick={onClose}
-              className="flex-1 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 py-4 rounded-2xl font-bold transition-all"
+              onClick={handleClose}
+              disabled={isSubmitting}
+              className="flex-1 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 py-4 rounded-2xl font-bold transition-all disabled:opacity-50 disabled:cursor-not-allowed"
             >
               إلغاء
             </button>

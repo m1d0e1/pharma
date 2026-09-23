@@ -13,40 +13,63 @@ export default function HandoverPage() {
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState<any>(null);
   const [allowed, setAllowed] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const [loadAttempt, setLoadAttempt] = useState(0);
 
   useEffect(() => {
+    let active = true;
     async function checkShift() {
+      setLoading(true);
+      setLoadError('');
+      setCurrentShift(null);
       try {
         const userObj = await getClientSession();
-        if (userObj) {
-          setUser(userObj);
+        if (!active) return;
+        setUser(userObj);
+        if (!userObj) {
+          setAllowed(false);
+          return;
+        }
 
-          const isAllowed = hasUserPermissionSync(userObj, 'acc_can_view_handover');
+        const isAllowed = hasUserPermissionSync(userObj, 'acc_can_view_handover');
+        setAllowed(isAllowed);
 
-          if (isAllowed) {
-            setAllowed(true);
-            const res = await getOpenShiftHandoverAction();
-            if (res.success) {
-              setCurrentShift(res.data || null);
-            } else {
-              setCurrentShift(null);
-            }
+        if (isAllowed) {
+          const res = await getOpenShiftHandoverAction();
+          if (!active) return;
+          if (res.success) {
+            setCurrentShift(res.data || null);
+          } else {
+            setLoadError('تعذر تحميل حالة التسليم');
           }
         }
       } catch (err) {
         console.error('Failed to check current shift:', err);
+        if (active) setLoadError('تعذر تحميل حالة التسليم');
       } finally {
-        setLoading(false);
+        if (active) setLoading(false);
       }
     }
 
     checkShift();
-  }, []);
+    return () => { active = false; };
+  }, [loadAttempt]);
 
   if (loading) {
     return (
       <div className="flex justify-center items-center py-24" dir="rtl">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-4 py-20" dir="rtl">
+        <p className="font-black text-rose-600">{loadError}</p>
+        <button type="button" onClick={() => setLoadAttempt(attempt => attempt + 1)} className="px-6 py-3 rounded-2xl bg-slate-900 text-white font-black">
+          إعادة المحاولة
+        </button>
       </div>
     );
   }

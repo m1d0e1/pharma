@@ -45,7 +45,11 @@ export default function BarcodePrinter({ items, onClose }: Props) {
               <Printer className="w-5 h-5" />
               طباعة الكل
             </button>
-            <button onClick={onClose} className="p-3 bg-slate-200 dark:bg-slate-800 rounded-2xl hover:rotate-90 transition-transform">
+            <button
+              onClick={onClose}
+              aria-label="إغلاق نافذة طباعة الباركود"
+              className="p-3 bg-slate-200 dark:bg-slate-800 rounded-2xl hover:rotate-90 transition-transform"
+            >
               <X className="w-6 h-6" />
             </button>
           </div>

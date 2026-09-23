@@ -80,6 +80,9 @@ const salesModules = [
 export default function SalesDashboardPage() {
   const [userRole, setUserRole] = React.useState<string>('pharmacist');
   const [sessionUser, setSessionUser] = React.useState<any>(null);
+  const [loadingRole, setLoadingRole] = React.useState(true);
+  const [roleError, setRoleError] = React.useState(false);
+  const roleRequestRef = React.useRef(0);
   const [stats, setStats] = React.useState({
     todaySales: 0,
     salesChangeText: 'تحميل البيانات...',
@@ -89,37 +92,89 @@ export default function SalesDashboardPage() {
     averageInvoiceChangeText: 'تحميل البيانات...'
   });
   const [loadingStats, setLoadingStats] = React.useState(true);
+  const [statsError, setStatsError] = React.useState('');
+  const statsRequestRef = React.useRef(0);
 
-  React.useEffect(() => {
-    async function loadRole() {
+  const loadRole = React.useCallback(async () => {
+    const requestId = ++roleRequestRef.current;
+    setLoadingRole(true);
+    setRoleError(false);
+    try {
       const user = await getClientSession();
+      if (requestId !== roleRequestRef.current) return;
       if (user && user.role) {
         setUserRole(user.role);
         setSessionUser(user);
+      } else {
+        setUserRole('pharmacist');
+        setSessionUser(null);
       }
+    } catch (error) {
+      if (requestId !== roleRequestRef.current) return;
+      console.error('Failed to load sales permissions:', error);
+      setRoleError(true);
+    } finally {
+      if (requestId === roleRequestRef.current) setLoadingRole(false);
     }
-    loadRole();
   }, []);
 
   React.useEffect(() => {
-    async function loadStats() {
-      try {
-        const res = await getSalesDashboardStatsAction();
-        if (res.success && res.data) {
-          setStats(res.data);
-        }
-      } catch (err) {
-        console.error('Failed to load sales stats:', err);
-      } finally {
-        setLoadingStats(false);
+    void loadRole();
+    return () => {
+      roleRequestRef.current += 1;
+    };
+  }, [loadRole]);
+
+  const loadStats = React.useCallback(async () => {
+    const requestId = ++statsRequestRef.current;
+    setLoadingStats(true);
+    setStatsError('');
+    try {
+      const res = await getSalesDashboardStatsAction();
+      if (requestId !== statsRequestRef.current) return;
+      if (res.success && res.data) {
+        setStats(res.data);
+      } else {
+        setStatsError('تعذر تحميل إحصائيات المبيعات');
       }
+    } catch (err) {
+      if (requestId !== statsRequestRef.current) return;
+      console.error('Failed to load sales stats:', err);
+      setStatsError('تعذر تحميل إحصائيات المبيعات');
+    } finally {
+      if (requestId === statsRequestRef.current) setLoadingStats(false);
     }
-    loadStats();
   }, []);
+
+  React.useEffect(() => {
+    void loadStats();
+    return () => {
+      statsRequestRef.current += 1;
+    };
+  }, [loadStats]);
 
   const filteredModules = salesModules.filter(m =>
     m.roles.includes(userRole) && hasUserPermissionSync(sessionUser, m.permission)
   );
+
+  if (loadingRole) {
+    return (
+      <div className="flex justify-center items-center py-24" dir="rtl">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500" />
+      </div>
+    );
+  }
+
+  if (roleError) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-4 py-24" dir="rtl">
+        <p className="font-black text-rose-600">تعذر تحميل صلاحيات المبيعات</p>
+        <button type="button" onClick={() => void loadRole()} className="px-6 py-3 rounded-2xl bg-slate-900 text-white font-black">
+          إعادة المحاولة
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="container mx-auto py-12 space-y-12" dir="rtl">
@@ -158,7 +213,18 @@ export default function SalesDashboardPage() {
 
       {/* Quick Stats Overlay (Dynamic) */}
       <div className="bg-slate-900 rounded-[50px] p-12 text-white overflow-hidden relative shadow-2xl">
-         <div className="relative z-10 grid grid-cols-1 md:grid-cols-3 gap-12">
+         {statsError ? (
+           <div className="relative z-10 flex flex-col items-center justify-center gap-4 py-8 text-center">
+             <p className="font-black text-rose-300">{statsError}</p>
+             <button
+               type="button"
+               onClick={loadStats}
+               className="px-6 py-3 rounded-2xl bg-white text-slate-900 font-black"
+             >
+               إعادة المحاولة
+             </button>
+           </div>
+         ) : <div className="relative z-10 grid grid-cols-1 md:grid-cols-3 gap-12">
             <div className="space-y-4">
                <p className="text-white/40 font-black text-xs uppercase tracking-widest">مبيعات اليوم</p>
                <h4 className="text-5xl font-black text-emerald-400">
@@ -180,7 +246,7 @@ export default function SalesDashboardPage() {
                </h4>
                <p className="text-white/60 font-bold text-sm">{stats.averageInvoiceChangeText}</p>
             </div>
-         </div>
+         </div>}
 
          <div className="absolute top-0 right-0 w-full h-full bg-gradient-to-br from-blue-600/10 to-transparent pointer-events-none" />
       </div>

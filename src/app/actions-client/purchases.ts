@@ -1045,7 +1045,9 @@ export async function getDrugPurchaseHistoryAction(drugId: number) {
 export async function createPurchaseOrderAction(data: { supplier_name: string; notes?: string; items: { drug_id: number; quantity: number; expected_price: number }[]; }) {
   try {
     const user = await getLocalSession();
-    if (!user || !hasUserPermissionSync(user, 'can_view_purchases')) return { success: false, error: 'Unauthorized' };
+    if (!user || (!hasUserPermissionSync(user, 'can_view_purchases') && !hasUserPermissionSync(user, 'can_view_restock'))) {
+      return { success: false, error: 'Unauthorized' };
+    }
     const pharmacyId = user.pharmacy_id || 'local_default';
 
     if (!data.supplier_name?.trim()) return { success: false, error: 'Supplier name is required' };

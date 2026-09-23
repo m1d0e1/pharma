@@ -9,24 +9,51 @@ export default function ExpensesPage() {
   const router = useRouter();
   const [user, setUser] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [sessionError, setSessionError] = useState(false);
+  const [retryAttempt, setRetryAttempt] = useState(0);
 
   useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setSessionError(false);
     async function checkAuth() {
-      const sessionUser = await getClientSession();
-      if (!sessionUser) {
-        router.push('/login');
-      } else {
+      try {
+        const sessionUser = await getClientSession();
+        if (!active) return;
+        if (!sessionUser) {
+          router.push('/login');
+          return;
+        }
         setUser(sessionUser);
+        setLoading(false);
+      } catch (err) {
+        if (!active) return;
+        console.error('Failed to verify expenses session:', err);
+        setSessionError(true);
         setLoading(false);
       }
     }
-    checkAuth();
-  }, [router]);
+    void checkAuth();
+    return () => {
+      active = false;
+    };
+  }, [router, retryAttempt]);
 
   if (loading) {
     return (
       <div className="flex justify-center items-center py-12">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+      </div>
+    );
+  }
+
+  if (sessionError) {
+    return (
+      <div className="flex flex-col items-center justify-center py-12 gap-4" dir="rtl">
+        <p className="font-black text-slate-700 dark:text-slate-200">تعذر التحقق من جلسة المستخدم</p>
+        <button type="button" onClick={() => setRetryAttempt(attempt => attempt + 1)} className="px-5 py-2.5 rounded-xl bg-blue-600 text-white font-black">
+          إعادة المحاولة
+        </button>
       </div>
     );
   }
@@ -48,7 +75,12 @@ export default function ExpensesPage() {
         <p className="text-slate-500 mt-1">تتبع المصروفات وحساب صافي الأرباح الفعلي</p>
       </div>
 
-      <ExpensesClient canManage={hasUserPermissionSync(user, 'acc_can_define_expenses')} />
+      <ExpensesClient
+        canManage={
+          hasUserPermissionSync(user, 'acc_can_define_expenses')
+          || hasUserPermissionSync(user, 'acc_can_process_cash_flow')
+        }
+      />
     </div>
   );
 }

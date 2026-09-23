@@ -1,7 +1,7 @@
 'use client';
 import TableScrollContainer from '@/components/ui/TableScrollContainer';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { 
   Search, Filter, Calendar, User, ShoppingBag, 
@@ -16,6 +16,7 @@ import { format } from 'date-fns';
 import dynamic from 'next/dynamic';
 import { toast } from 'react-hot-toast';
 import { hasUserPermissionSync } from '@/lib/auth/local';
+import { useHotkeys } from 'react-hotkeys-hook';
 
 const ReceiptDetailsModal = dynamic(() => import('@/components/receipts/ReceiptDetailsModal'), { ssr: false });
 
@@ -28,6 +29,8 @@ export default function SalesReportsClient({ userRole, user }: { userRole?: stri
 
   const [staff, setStaff] = useState<any[]>([]);
   const [patients, setPatients] = useState<any[]>([]);
+  const searchRequestRef = useRef(0);
+  const invoiceDetailsRequestRef = useRef(0);
 
   const [filters, setFilters] = useState({
     startDate: format(new Date(), 'yyyy-MM-dd'),
@@ -40,38 +43,86 @@ export default function SalesReportsClient({ userRole, user }: { userRole?: stri
 
   useEffect(() => {
     async function loadData() {
-      const staffRes = await getStaffAction();
-      if (staffRes.success) setStaff(staffRes.data || []);
+      const [staffResult, patientResult] = await Promise.allSettled([
+        getStaffAction(),
+        getPatientsAction(),
+      ]);
+      let metadataFailed = false;
 
-      const patientRes = await getPatientsAction();
-      if (patientRes.success) setPatients(patientRes.data || []);
+      if (staffResult.status === 'fulfilled' && staffResult.value.success) {
+        setStaff(staffResult.value.data || []);
+      } else {
+        metadataFailed = true;
+      }
+      if (patientResult.status === 'fulfilled' && patientResult.value.success) {
+        setPatients(patientResult.value.data || []);
+      } else {
+        metadataFailed = true;
+      }
+      if (metadataFailed) toast.error('تعذر تحميل بعض فلاتر تقرير المبيعات');
 
-      handleSearch();
+      await handleSearch();
     }
-    loadData();
+    void loadData();
     // Initial load uses the default filters; edited filters run only when Search is pressed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleSearch = async () => {
+    const requestId = ++searchRequestRef.current;
     setLoading(true);
-    const res = await getSalesReportsAction({
-      ...filters,
-      userId: filters.userId === 'all' ? undefined : filters.userId,
-      patientId: filters.patientId === 'all' ? undefined : filters.patientId,
-    });
-    if (res.success) setInvoices(res.data || []);
-    else toast.error(res.error || 'فشل تحميل تقرير المبيعات');
-    setLoading(false);
+    try {
+      const res = await getSalesReportsAction({
+        ...filters,
+        userId: filters.userId === 'all' ? undefined : filters.userId,
+        patientId: filters.patientId === 'all' ? undefined : filters.patientId,
+      });
+      if (requestId !== searchRequestRef.current) return;
+      if (res.success) {
+        const nextInvoices = res.data || [];
+        setInvoices(nextInvoices);
+        if (selectedInvoice && !nextInvoices.some((invoice: any) => invoice.id === selectedInvoice)) {
+          invoiceDetailsRequestRef.current += 1;
+          setSelectedInvoice(null);
+          setInvoiceItems([]);
+          setLoadingItems(false);
+        }
+      } else toast.error(res.error || 'فشل تحميل تقرير المبيعات');
+    } catch (err) {
+      if (requestId !== searchRequestRef.current) return;
+      console.error('Sales report search error:', err);
+      toast.error('فشل تحميل تقرير المبيعات');
+    } finally {
+      if (requestId === searchRequestRef.current) setLoading(false);
+    }
   };
 
+  useHotkeys('f', (event) => {
+    event.preventDefault();
+    void handleSearch();
+  }, { enableOnFormTags: false }, [filters, selectedInvoice]);
+
   const handleInvoiceClick = async (invoiceId: string) => {
+    const requestId = ++invoiceDetailsRequestRef.current;
     setSelectedInvoice(invoiceId);
+    setInvoiceItems([]);
     setLoadingItems(true);
-    const res = await getInvoiceDetailsAction(invoiceId);
-    if (res.success) setInvoiceItems(res.data || []);
-    else toast.error(res.error || 'فشل تحميل تفاصيل الفاتورة');
-    setLoadingItems(false);
+    try {
+      const res = await getInvoiceDetailsAction(invoiceId);
+      if (requestId !== invoiceDetailsRequestRef.current) return;
+      if (res.success) setInvoiceItems(res.data || []);
+      else {
+        toast.error(res.error || 'فشل تحميل تفاصيل الفاتورة');
+        setSelectedInvoice(null);
+      }
+    } catch (err) {
+      if (requestId !== invoiceDetailsRequestRef.current) return;
+      console.error('Sales report invoice details error:', err);
+      toast.error('فشل تحميل تفاصيل الفاتورة');
+      setSelectedInvoice(null);
+    } finally {
+      if (requestId === invoiceDetailsRequestRef.current) setLoadingItems(false);
+    }
   };
 
   const totalGrossAmount = invoices.reduce((sum, inv) => sum + Number(inv.total_amount || 0), 0);
@@ -340,7 +391,13 @@ export default function SalesReportsClient({ userRole, user }: { userRole?: stri
                 ) : invoices.map((inv) => (
                   <tr 
                     key={inv.id} 
+                    tabIndex={0}
                     onClick={() => handleInvoiceClick(inv.id)}
+                    onKeyDown={(event) => {
+                      if (event.target === event.currentTarget && event.key === 'Enter') {
+                        void handleInvoiceClick(inv.id);
+                      }
+                    }}
                     className={cn(
                       "hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors cursor-pointer group",
                       selectedInvoice === inv.id ? "bg-blue-50/50 dark:bg-blue-900/10" : ""

@@ -8,9 +8,14 @@ export default function ItemsPage() {
   const [items, setItems] = useState<any[]>([]);
   const [totalCount, setTotalCount] = useState<number>(0);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [loadAttempt, setLoadAttempt] = useState(0);
 
   useEffect(() => {
+    let active = true;
     async function loadItems() {
+      setLoading(true);
+      setLoadError('');
       try {
         const [data, countRes] = await Promise.all([
           dbSelect(`
@@ -20,22 +25,37 @@ export default function ItemsPage() {
           `),
           dbGet('SELECT COUNT(*) as count FROM master_drugs')
         ]);
-        setItems(data || []);
-        setTotalCount(Number(countRes?.count) || (data || []).length);
+        if (active) {
+          setItems(data || []);
+          setTotalCount(Number(countRes?.count) || (data || []).length);
+        }
       } catch (err) {
         console.error('Failed to load master drugs:', err);
+        if (active) setLoadError('تعذر تحميل بيانات الأصناف');
       } finally {
-        setLoading(false);
+        if (active) setLoading(false);
       }
     }
 
     loadItems();
-  }, []);
+    return () => { active = false; };
+  }, [loadAttempt]);
 
   if (loading) {
     return (
       <div className="flex justify-center items-center py-24" dir="rtl">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-4 py-20" dir="rtl">
+        <p className="font-black text-rose-600">{loadError}</p>
+        <button type="button" onClick={() => setLoadAttempt(attempt => attempt + 1)} className="px-6 py-3 rounded-2xl bg-slate-900 text-white font-black">
+          إعادة المحاولة
+        </button>
       </div>
     );
   }

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import ShiftManagementClient from '@/components/shifts/ShiftManagementClient';
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
@@ -16,51 +16,80 @@ export default function ShiftsPage() {
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState<any>(null);
   const [allowed, setAllowed] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+  const loadRequestRef = useRef(0);
+
+  const loadShiftsData = useCallback(async (showLoading = false) => {
+    const requestId = ++loadRequestRef.current;
+    if (showLoading) setLoading(true);
+    setLoadError(false);
+    try {
+      const userObj = await getClientSession();
+      if (requestId !== loadRequestRef.current) return;
+      if (!userObj) return;
+      setUser(userObj);
+      setUserRole(userObj.role);
+
+      const isAllowed = hasUserPermissionSync(userObj, 'can_view_shifts');
+
+      if (isAllowed) {
+        setAllowed(true);
+        const [currentResult, shiftsResult] = await Promise.all([
+          getCurrentShiftAction(),
+          getShiftsAction({ status: 'all' }),
+        ]);
+        if (requestId !== loadRequestRef.current) return;
+        if (!currentResult.success || !shiftsResult.success) {
+          setLoadError(true);
+          return;
+        }
+        const shift = currentResult.data;
+        setCurrentShift(shift || null);
+        setHasOpenShift(!!shift);
+        if (typeof (currentResult as any).suggested_starting_cash === 'number') {
+          setSuggestedStartingCash((currentResult as any).suggested_starting_cash);
+        }
+        setShifts(shiftsResult.data || []);
+      }
+    } catch (err) {
+      if (requestId !== loadRequestRef.current) return;
+      console.error('Failed to load shifts data:', err);
+      setLoadError(true);
+    } finally {
+      if (requestId === loadRequestRef.current) setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    async function loadShiftsData() {
-      try {
-        const userObj = await getClientSession();
-        if (!userObj) return;
-        setUser(userObj);
-        setUserRole(userObj.role);
-
-        const isAllowed = hasUserPermissionSync(userObj, 'can_view_shifts');
-
-        if (isAllowed) {
-          setAllowed(true);
-          const [currentResult, shiftsResult] = await Promise.all([
-            getCurrentShiftAction(),
-            getShiftsAction({ status: 'all' }),
-          ]);
-          const shift = currentResult.success ? currentResult.data : null;
-          setCurrentShift(shift || null);
-          setHasOpenShift(!!shift);
-          if (currentResult.success && typeof (currentResult as any).suggested_starting_cash === 'number') {
-            setSuggestedStartingCash((currentResult as any).suggested_starting_cash);
-          }
-          if (shiftsResult.success) setShifts(shiftsResult.data || []);
-        }
-      } catch (err) {
-        console.error('Failed to load shifts data:', err);
-      } finally {
-        setLoading(false);
-      }
-    }
-
-    loadShiftsData();
+    void loadShiftsData(true);
     const refresh = () => { void loadShiftsData(); };
     const storage = (event: StorageEvent) => { if (event.key === 'pharma:shift-updated') refresh(); };
     window.addEventListener('shift-updated', refresh);
     window.addEventListener('focus', refresh);
     window.addEventListener('storage', storage);
-    return () => { window.removeEventListener('shift-updated', refresh); window.removeEventListener('focus', refresh); window.removeEventListener('storage', storage); };
-  }, []);
+    return () => {
+      loadRequestRef.current += 1;
+      window.removeEventListener('shift-updated', refresh);
+      window.removeEventListener('focus', refresh);
+      window.removeEventListener('storage', storage);
+    };
+  }, [loadShiftsData]);
 
   if (loading) {
     return (
       <div className="flex justify-center items-center py-24" dir="rtl">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="flex flex-col justify-center items-center py-24 gap-4" dir="rtl">
+        <p className="font-black text-slate-700 dark:text-slate-200">تعذر تحميل بيانات الشفتات</p>
+        <button type="button" onClick={() => void loadShiftsData(true)} className="px-5 py-2.5 rounded-xl bg-blue-600 text-white font-black">
+          إعادة المحاولة
+        </button>
       </div>
     );
   }

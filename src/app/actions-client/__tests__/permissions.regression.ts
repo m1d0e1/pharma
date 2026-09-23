@@ -82,12 +82,45 @@ describe('Permissions Logic & Authorization Matrix', () => {
       expect(hasUserPermissionSync(staffUser, 'can_view_audit')).toBe(false);
     });
 
-    it('gracefully handles malformed JSON string or invalid types', () => {
-      const brokenUser1 = { id: '7', role: 'pharmacist', permissions: '{invalid json' };
-      const brokenUser2 = { id: '8', role: 'pharmacist', permissions: 12345 };
+    it('keeps v0.2.91 granular finance permissions explicit when legacy payload keys are missing', () => {
+      const legacyPayload = {
+        id: 'legacy-finance-user',
+        role: 'pharmacist',
+        permissions: JSON.stringify({
+          can_view_patients: true,
+          can_view_shifts: true,
+          acc_can_view_general: true,
+        }),
+      };
 
-      expect(hasUserPermissionSync(brokenUser1, 'can_view_patients')).toBe(false);
-      expect(hasUserPermissionSync(brokenUser2, 'can_view_patients')).toBe(false);
+      expect(hasUserPermissionSync(legacyPayload, 'acc_can_process_cash_flow')).toBe(false);
+      expect(hasUserPermissionSync(legacyPayload, 'acc_can_make_daily_entries')).toBe(false);
+      expect(hasUserPermissionSync(legacyPayload, 'acc_can_view_handover')).toBe(false);
+
+      expect(hasUserPermissionSync({
+        ...legacyPayload,
+        permissions: JSON.stringify({
+          acc_can_process_cash_flow: true,
+          acc_can_view_handover: true,
+        }),
+      }, 'acc_can_process_cash_flow')).toBe(true);
+      expect(hasUserPermissionSync({
+        id: 'legacy-admin',
+        role: 'admin',
+        permissions: JSON.stringify({ acc_can_make_daily_entries: true }),
+      }, 'acc_can_make_daily_entries')).toBe(true);
+    });
+
+    it('fails closed for stored malformed, array, or keyless permission payloads', () => {
+      const cashier = { id: '7', role: 'cashier' };
+
+      // Role defaults apply only to legacy users with no permission column value.
+      expect(hasUserPermissionSync(cashier, 'can_access_pos')).toBe(true);
+      expect(hasUserPermissionSync({ ...cashier, permissions: '{invalid json' }, 'can_access_pos')).toBe(false);
+      expect(hasUserPermissionSync({ ...cashier, permissions: [] }, 'can_access_pos')).toBe(false);
+      expect(hasUserPermissionSync({ ...cashier, permissions: {} }, 'can_access_pos')).toBe(false);
+      expect(hasUserPermissionSync({ ...cashier, permissions: '' }, 'can_access_pos')).toBe(false);
+      expect(hasUserPermissionSync({ ...cashier, permissions: { can_access_pos: false } }, 'can_access_pos')).toBe(false);
     });
   });
 });

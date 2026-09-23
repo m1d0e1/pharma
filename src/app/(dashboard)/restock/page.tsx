@@ -12,28 +12,36 @@ export default function RestockPage() {
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState<any>(null);
   const [allowed, setAllowed] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let active = true;
     async function loadRestockData() {
+      setUser(null);
+      setAllowed(false);
+      setLoadError('');
       try {
         const userObj = await getClientSession();
+        if (!active) return;
         if (!userObj) return;
         setUser(userObj);
 
         const isAllowed = hasUserPermissionSync(userObj, 'can_view_restock');
+        setAllowed(isAllowed);
 
         if (isAllowed) {
-          setAllowed(true);
           const res = await getRestockItemsAction();
           if (res.success) {
             if (active) setAutomatedList(res.data || []);
           } else {
             console.error('Failed to load restock data:', (res as any).error);
+            if (active) setLoadError('تعذر تحميل قائمة إعادة التموين');
           }
         }
       } catch (err) {
         console.error('Failed to load restock data:', err);
+        if (active) setLoadError('تعذر تحميل قائمة إعادة التموين');
       } finally {
         if (active) setLoading(false);
       }
@@ -41,7 +49,7 @@ export default function RestockPage() {
 
     loadRestockData();
     return () => { active = false; };
-  }, []);
+  }, [reloadKey]);
 
   const handleUpdateQuantity = (itemId: string, newQty: number) => {
     setAutomatedList(prev =>
@@ -61,6 +69,24 @@ export default function RestockPage() {
 
   if (!user || !allowed) {
     return <AccessDenied />;
+  }
+
+  if (loadError) {
+    return (
+      <div className="flex flex-col justify-center items-center gap-4 py-20" dir="rtl">
+        <p className="font-black text-rose-600">{loadError}</p>
+        <button
+          type="button"
+          onClick={() => {
+            setLoading(true);
+            setReloadKey(value => value + 1);
+          }}
+          className="px-6 py-3 rounded-2xl bg-slate-900 text-white font-black"
+        >
+          إعادة المحاولة
+        </button>
+      </div>
+    );
   }
 
   return (

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import AddPatientModal from '../AddPatientModal'
 import PatientProfileModal from './PatientProfileModal'
@@ -34,19 +34,25 @@ export default function PatientListClient({ initialPatients, pharmacyId, canDele
   const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null)
   const [patients, setPatients] = useState<Patient[]>(initialPatients)
   const router = useRouter()
+  const patientsRequestRef = useRef(0)
 
   useEffect(() => {
+    patientsRequestRef.current += 1
     setPatients(initialPatients)
   }, [initialPatients])
 
   const fetchPatients = async () => {
+    const requestId = ++patientsRequestRef.current
     try {
       const { getPatientsAction } = await import('@/app/actions-client/patients')
       const result = await getPatientsAction()
       if (!result.success) throw new Error(result.error)
+      if (requestId !== patientsRequestRef.current) return false
       setPatients(((result.data || []) as Patient[]).slice(0, 200))
+      return true
     } catch (err) {
       console.error('Failed to load patients:', err)
+      return false
     }
   }
 
@@ -58,13 +64,15 @@ export default function PatientListClient({ initialPatients, pharmacyId, canDele
 
   const [deletingPatient, setDeletingPatient] = useState<Patient | null>(null)
   const [isDeleting, setIsDeleting] = useState(false)
+  const deletingPatientRef = useRef(false)
 
   const handleDeletePatient = (patient: Patient) => {
     setDeletingPatient(patient);
   }
 
   const confirmDeletePatient = async () => {
-    if (!deletingPatient) return;
+    if (!deletingPatient || deletingPatientRef.current) return;
+    deletingPatientRef.current = true;
     setIsDeleting(true);
     try {
       const { deletePatientAction } = await import('@/app/actions-client/patients');
@@ -72,14 +80,24 @@ export default function PatientListClient({ initialPatients, pharmacyId, canDele
       if (res.success) {
         toast.success('تم حذف المريض بنجاح');
         setDeletingPatient(null);
-        await fetchPatients();
-        router.refresh();
+        const listRefreshed = await fetchPatients();
+        let routeRefreshed = true;
+        try {
+          router.refresh();
+        } catch (refreshError) {
+          console.error('Patient route refresh failed:', refreshError);
+          routeRefreshed = false;
+        }
+        if (!listRefreshed || !routeRefreshed) {
+          toast.error('تم حذف المريض لكن تعذر تحديث القائمة');
+        }
       } else {
         toast.error(res.error || 'فشل حذف المريض');
       }
     } catch {
       toast.error('حدث خطأ أثناء حذف المريض');
     } finally {
+      deletingPatientRef.current = false;
       setIsDeleting(false);
     }
   }

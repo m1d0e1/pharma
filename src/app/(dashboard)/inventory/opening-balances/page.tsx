@@ -13,35 +13,48 @@ export default function OpeningBalancesPage() {
   const [items, setItems] = useState<any[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const loadRequestRef = React.useRef(0);
+
+  const loadOpeningBalances = React.useCallback(async () => {
+    const requestId = ++loadRequestRef.current;
+    setLoading(true);
+    setLoadError('');
+    setUser(null);
+    setAllowed(false);
+    try {
+      const localUser = await getClientSession();
+      if (requestId !== loadRequestRef.current) return;
+      setUser(localUser);
+      if (!localUser) return;
+
+      const isAllowed = hasUserPermissionSync(localUser, 'can_view_opening_balances');
+      setAllowed(isAllowed);
+      if (!isAllowed) return;
+
+      const res = await getOpeningBalancesAction();
+      if (requestId !== loadRequestRef.current) return;
+      if (res.success) {
+        setItems(res.data || []);
+      } else {
+        console.error('Failed to load opening balances:', (res as any).error);
+        setLoadError('تعذر تحميل الأرصدة الإفتتاحية');
+      }
+    } catch (err) {
+      if (requestId !== loadRequestRef.current) return;
+      console.error('Failed to load opening balances:', err);
+      setLoadError('تعذر تحميل الأرصدة الإفتتاحية');
+    } finally {
+      if (requestId === loadRequestRef.current) setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    async function loadOpeningBalances() {
-      try {
-        const localUser = await getClientSession();
-        if (localUser) {
-          setUser(localUser);
-
-          const isAllowed = hasUserPermissionSync(localUser, 'can_view_opening_balances');
-
-          if (isAllowed) {
-            setAllowed(true);
-            const res = await getOpeningBalancesAction();
-            if (res.success) {
-              setItems(res.data || []);
-            } else {
-              console.error('Failed to load opening balances:', (res as any).error);
-            }
-          }
-        }
-      } catch (err) {
-        console.error('Failed to load opening balances:', err);
-      } finally {
-        setLoading(false);
-      }
-    }
-
-    loadOpeningBalances();
-  }, []);
+    void loadOpeningBalances();
+    return () => {
+      loadRequestRef.current += 1;
+    };
+  }, [loadOpeningBalances]);
 
   if (loading) {
     return (
@@ -53,6 +66,17 @@ export default function OpeningBalancesPage() {
 
   if (!user || !allowed) {
     return <AccessDenied />;
+  }
+
+  if (loadError) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-4 py-24" dir="rtl">
+        <p className="font-black text-rose-600">{loadError}</p>
+        <button type="button" onClick={loadOpeningBalances} className="px-6 py-3 rounded-2xl bg-slate-900 text-white font-black">
+          إعادة المحاولة
+        </button>
+      </div>
+    );
   }
 
   const filteredItems = items.filter((item: any) => {

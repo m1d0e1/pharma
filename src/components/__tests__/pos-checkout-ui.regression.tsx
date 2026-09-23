@@ -100,6 +100,18 @@ describe('rendered POS checkout flow', () => {
     })));
   });
 
+  it('blocks checkout when the clinical safety check fails', async () => {
+    (checkDrugInteractions as jest.Mock).mockResolvedValue({ success: false, error: 'checker unavailable' });
+    (processCheckoutAction as jest.Mock).mockResolvedValue({ success: true, data: { sale_id: 'unsafe-sale' } });
+
+    render(<POSPage />);
+    fireEvent.click(await screen.findByRole('button', { name: /إتمام وطباعة/ }));
+
+    await waitFor(() => expect(checkDrugInteractions).toHaveBeenCalled());
+    expect(processCheckoutAction).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: /إتمام وطباعة/ })).toBeEnabled();
+  });
+
   it('does not redirect to the retired manual-shift flow on a stale backend error', async () => {
     (processCheckoutAction as jest.Mock).mockResolvedValue({ success: false, error: 'يجب فتح وردية قبل إتمام البيع' });
 
@@ -120,6 +132,26 @@ describe('rendered POS checkout flow', () => {
     await waitFor(() => expect(processCheckoutAction).toHaveBeenCalledWith(expect.objectContaining({
       items: [expect.objectContaining({ unit_price: 22.5, item_discount_percent: 10 })],
       total_discount: 0,
+    })));
+  });
+
+  it('submits wallet checkout with the selected patient', async () => {
+    usePOSStore.getState().setSelectedPatient({
+      id: 'patient-wallet',
+      full_name: 'Wallet Patient',
+      wallet_balance: 100,
+      credit_limit: 500,
+    });
+    usePOSStore.getState().setPaymentMethod('wallet');
+    (processCheckoutAction as jest.Mock).mockResolvedValue({ success: true, data: { sale_id: 'sale-wallet' } });
+
+    render(<POSPage />);
+    fireEvent.click(await screen.findByRole('button', { name: /إتمام وطباعة/ }));
+
+    await waitFor(() => expect(processCheckoutAction).toHaveBeenCalledWith(expect.objectContaining({
+      patient_id: 'patient-wallet',
+      payment_method: 'wallet',
+      status: 'completed',
     })));
   });
 

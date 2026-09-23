@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 import * as LucideIcons from 'lucide-react'
 import { Plus, Trash2, Search, Save, X, Activity, Edit } from 'lucide-react'
 import { toast, Toaster } from 'react-hot-toast'
@@ -36,6 +36,13 @@ export default function BilingualManagementClient({
   const [editingItem, setEditingItem] = useState<Item | null>(null);
   const [formData, setFormData] = useState({ name_ar: '', name_en: '' });
   const [isSaving, setIsSaving] = useState(false);
+  const savingRef = useRef(false);
+  const handleCloseEditor = useCallback(() => {
+    if (savingRef.current) return;
+    setIsModalOpen(false);
+  }, []);
+  const [deletingIds, setDeletingIds] = useState<Set<number>>(() => new Set());
+  const deletingIdsRef = useRef<Set<number>>(new Set());
   const [canManage, setCanManage] = useState(false);
 
   const ITEMS_PER_PAGE = 50;
@@ -45,6 +52,8 @@ export default function BilingualManagementClient({
     let active = true;
     getClientSession().then(user => {
       if (active) setCanManage(hasUserPermissionSync(user, 'can_manage_inventory'));
+    }).catch(() => {
+      if (active) setCanManage(false);
     });
     return () => { active = false; };
   }, []);
@@ -61,6 +70,9 @@ export default function BilingualManagementClient({
   );
 
   const totalPages = Math.ceil(filteredItems.length / ITEMS_PER_PAGE);
+  useEffect(() => {
+    setCurrentPage(prev => Math.min(prev, Math.max(1, totalPages)));
+  }, [totalPages]);
   const currentItems = filteredItems.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE);
 
   const handleOpenAdd = () => {
@@ -76,44 +88,62 @@ export default function BilingualManagementClient({
   };
 
   const handleSave = useCallback(async () => {
+    if (savingRef.current) return;
     if (!formData.name_ar) {
       toast.error('يرجى إدخال الاسم بالعربي');
       return;
     }
+    savingRef.current = true;
     setIsSaving(true);
-    
-    if (editingItem && onUpdate) {
-      const res = await onUpdate(editingItem.id, formData);
-      if (res.success) {
-        setItems(items.map(i => i.id === editingItem.id ? { ...i, ...formData } : i));
-        toast.success(`تم تحديث ${title} بنجاح`);
-        setIsModalOpen(false);
+
+    try {
+      if (editingItem && onUpdate) {
+        const res = await onUpdate(editingItem.id, formData);
+        if (res.success) {
+          setItems(items.map(i => i.id === editingItem.id ? { ...i, ...formData } : i));
+          toast.success(`تم تحديث ${title} بنجاح`);
+          setIsModalOpen(false);
+        } else {
+          toast.error(res.error || 'فشل التحديث');
+        }
       } else {
-        toast.error(res.error || 'فشل التحديث');
+        const res = await onAdd(formData);
+        if (res.success) {
+          setItems([{ id: res.id as number, ...formData }, ...items]);
+          toast.success(`تمت إضافة ${title} بنجاح`);
+          setIsModalOpen(false);
+        } else {
+          toast.error(res.error || `فشل إضافة ${title}`);
+        }
       }
-    } else {
-      const res = await onAdd(formData);
-      if (res.success) {
-        setItems([{ id: res.id as number, ...formData }, ...items]);
-        toast.success(`تمت إضافة ${title} بنجاح`);
-        setIsModalOpen(false);
-      } else {
-        toast.error(res.error || `فشل إضافة ${title}`);
-      }
+    } catch {
+      toast.error(editingItem ? 'فشل التحديث' : `فشل إضافة ${title}`);
+    } finally {
+      savingRef.current = false;
+      setIsSaving(false);
     }
-    setIsSaving(false);
   }, [editingItem, formData, items, onAdd, onUpdate, title]);
 
   const handleDelete = async (id: number) => {
     if (!onDelete) return;
+    if (deletingIdsRef.current.has(id)) return;
     if (!confirm('هل أنت متأكد من الحذف؟')) return;
 
-    const res = await onDelete(id);
-    if (res.success) {
-      setItems(items.filter(i => i.id !== id));
-      toast.success(`تم حذف ${title} بنجاح`);
-    } else {
-      toast.error(res.error || 'فشل الحذف');
+    deletingIdsRef.current.add(id);
+    setDeletingIds(new Set(deletingIdsRef.current));
+    try {
+      const res = await onDelete(id);
+      if (res.success) {
+        setItems(current => current.filter(i => i.id !== id));
+        toast.success(`تم حذف ${title} بنجاح`);
+      } else {
+        toast.error(res.error || 'فشل الحذف');
+      }
+    } catch {
+      toast.error('فشل الحذف');
+    } finally {
+      deletingIdsRef.current.delete(id);
+      setDeletingIds(new Set(deletingIdsRef.current));
     }
   };
 
@@ -121,7 +151,7 @@ export default function BilingualManagementClient({
     const handleKeyDown = (e: KeyboardEvent) => {
       if (!isModalOpen) return;
       if (e.key === 'Escape') {
-        setIsModalOpen(false);
+        handleCloseEditor();
       } else if (e.key === 'Enter') {
         e.preventDefault();
         handleSave();
@@ -130,7 +160,7 @@ export default function BilingualManagementClient({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isModalOpen, handleSave]);
+  }, [isModalOpen, handleSave, handleCloseEditor]);
 
   return (
     <div className="space-y-6" dir="rtl">
@@ -183,6 +213,8 @@ export default function BilingualManagementClient({
                {onDelete && (
                  <button 
                    onClick={() => handleDelete(item.id)}
+                   disabled={deletingIds.has(item.id)}
+                   aria-label={deletingIds.has(item.id) ? `جاري حذف ${item.name_ar}` : `حذف ${item.name_ar}`}
                    className="p-3 text-slate-400 hover:text-red-500 rounded-xl hover:bg-red-50 dark:hover:bg-red-900/20 transition-all"
                  >
                    <Trash2 className="w-5 h-5" />
@@ -229,7 +261,7 @@ export default function BilingualManagementClient({
                 <h3 className="text-2xl font-black text-slate-900 dark:text-white">
                   {editingItem ? `تعديل ${title}` : `إضافة ${title}`}
                 </h3>
-                <button onClick={() => setIsModalOpen(false)}><X className="w-8 h-8 text-slate-400" /></button>
+                <button onClick={handleCloseEditor} disabled={isSaving} className="disabled:opacity-50 disabled:cursor-not-allowed"><X className="w-8 h-8 text-slate-400" /></button>
              </div>
              <div className="p-8 space-y-6">
                 <div className="space-y-2">
@@ -254,8 +286,9 @@ export default function BilingualManagementClient({
              </div>
              <div className="p-8 bg-slate-50 dark:bg-slate-800/50 flex gap-4">
                 <button 
-                   onClick={() => setIsModalOpen(false)}
-                   className="flex-1 py-5 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 rounded-2xl font-black border border-slate-200 dark:border-slate-700 hover:bg-slate-100"
+                   onClick={handleCloseEditor}
+                   disabled={isSaving}
+                   className="flex-1 py-5 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 rounded-2xl font-black border border-slate-200 dark:border-slate-700 hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed"
                 >إلغاء</button>
                 <button 
                    disabled={isSaving}

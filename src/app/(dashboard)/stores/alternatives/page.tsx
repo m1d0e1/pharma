@@ -8,23 +8,47 @@ import DrugAlternativesClient from '@/components/inventory/DrugAlternativesClien
 export default function AlternativesPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [loadAttempt, setLoadAttempt] = useState(0);
 
   useEffect(() => {
+    let active = true;
     async function checkAuth() {
-      const localUser = await getClientSession();
-      if (!localUser) {
-        router.push('/login');
-        return;
+      setLoading(true);
+      setLoadError('');
+      try {
+        const localUser = await getClientSession();
+        if (!active) return;
+        if (!localUser) {
+          router.push('/login');
+          return;
+        }
+      } catch (err) {
+        console.error('Failed to load alternatives session:', err);
+        if (active) setLoadError('تعذر التحقق من جلسة المستخدم');
+      } finally {
+        if (active) setLoading(false);
       }
-      setLoading(false);
     }
     checkAuth();
-  }, [router]);
+    return () => { active = false; };
+  }, [router, loadAttempt]);
 
   if (loading) {
     return (
       <div className="flex justify-center items-center py-12">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-4 py-20" dir="rtl">
+        <p className="font-black text-rose-600">{loadError}</p>
+        <button type="button" onClick={() => setLoadAttempt(attempt => attempt + 1)} className="px-6 py-3 rounded-2xl bg-slate-900 text-white font-black">
+          إعادة المحاولة
+        </button>
       </div>
     );
   }

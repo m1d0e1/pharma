@@ -198,6 +198,47 @@ describe('purchase reports and drawer handover regressions', () => {
     expect(mockDb.prepare('SELECT user_id,shift_id FROM cash_movements WHERE id=?').get(move.id)).toEqual({user_id:'handover-receiver',shift_id:first.newShiftId});
   });
 
+  it('keeps the recorded treasury balance while a POS handover only updates the POS balance', async () => {
+    const today = (mockDb.prepare("SELECT date('now', 'localtime') AS value").get() as any).value;
+    mockDb.exec(`
+      INSERT INTO users(id,username,password_hash,role) VALUES('liquidity-receiver','liquidity-receiver','hash','admin');
+      INSERT INTO shifts(id,user_id,starting_cash,status) VALUES('liquidity-pos-shift','admin',100,'open');
+      INSERT INTO points_of_sale(id,name_ar,current_balance) VALUES(903,'Liquidity POS',0);
+      INSERT INTO daily_journals(id,date,description,created_by,total_amount) VALUES('recorded-cash','${today}','Recorded cash','admin',100);
+      INSERT INTO journal_entries(journal_id,account_id,type,amount) VALUES('recorded-cash',6,'debit',100);
+    `);
+
+    expect(await processHandoverAction({
+      shiftId:'liquidity-pos-shift', actualCash:100, transferAmount:60,
+      transferTargetType:'pos', transferTargetId:'903', receiverUsername:'liquidity-receiver', receiverPasswordHash:'password',
+    })).toMatchObject({ success:true });
+
+    expect((await getTreasuryDashboardAction()).data?.treasuryBalance).toBe(100);
+    expect(mockDb.prepare('SELECT current_balance FROM points_of_sale WHERE id=903').get()).toEqual({ current_balance:60 });
+  });
+
+  it('moves a bank handover out of recorded treasury while preserving cash plus bank liquidity', async () => {
+    const today = (mockDb.prepare("SELECT date('now', 'localtime') AS value").get() as any).value;
+    mockDb.exec(`
+      INSERT INTO users(id,username,password_hash,role) VALUES('liquidity-receiver','liquidity-receiver','hash','admin');
+      INSERT INTO shifts(id,user_id,starting_cash,status) VALUES('liquidity-bank-shift','admin',100,'open');
+      INSERT INTO banks(id,name_ar,current_balance) VALUES(904,'Liquidity Bank',0);
+      INSERT INTO daily_journals(id,date,description,created_by,total_amount) VALUES('recorded-cash','${today}','Recorded cash','admin',100);
+      INSERT INTO journal_entries(journal_id,account_id,type,amount) VALUES('recorded-cash',6,'debit',100);
+    `);
+
+    expect(await processHandoverAction({
+      shiftId:'liquidity-bank-shift', actualCash:100, transferAmount:60,
+      transferTargetType:'bank', transferTargetId:'904', receiverUsername:'liquidity-receiver', receiverPasswordHash:'password',
+    })).toMatchObject({ success:true });
+
+    const treasuryBalance = (await getTreasuryDashboardAction()).data?.treasuryBalance;
+    const bankBalance = (mockDb.prepare('SELECT current_balance FROM banks WHERE id=904').get() as any).current_balance;
+    expect(treasuryBalance).toBe(40);
+    expect(bankBalance).toBe(60);
+    expect(treasuryBalance! + bankBalance).toBe(100);
+  });
+
   it('keeps the shared shift, handover details, reports, and stale cash movements inside the signed-in pharmacy', async () => {
     mockDb.exec(`
       INSERT INTO users(id,username,password_hash,role,pharmacy_id) VALUES

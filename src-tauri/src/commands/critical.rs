@@ -666,10 +666,10 @@ async fn create_return_tx(
         .try_get::<Option<String>, _>("patient_id")
         .unwrap_or(None);
     let invoice_points_earned: i64 = invoice.try_get("points_earned").unwrap_or(0);
-    if payload.refund_method == "patient_account" || payload.refund_method == "wallet" {
-        if invoice_patient.is_none() {
-            return Err("Patient account refund requires a patient linked to the invoice".into());
-        }
+    if (payload.refund_method == "patient_account" || payload.refund_method == "wallet")
+        && invoice_patient.is_none()
+    {
+        return Err("Patient account refund requires a patient linked to the invoice".into());
     }
     let invoice_pharmacy_raw = invoice
         .try_get::<Option<String>, _>("pharmacy_id")
@@ -2499,6 +2499,9 @@ fn user_has_permission(role: Option<&str>, permissions: Option<&str>, key: &str,
         return true;
     }
     let value = decoded_permissions(permissions);
+    if let Some(Value::Array(keys)) = value.as_ref() {
+        return keys.iter().any(|value| value.as_str() == Some(key));
+    }
     let permission = value.as_ref()
         .and_then(Value::as_object)
         .and_then(|permissions| permissions.get(key));
@@ -2506,7 +2509,7 @@ fn user_has_permission(role: Option<&str>, permissions: Option<&str>, key: &str,
         Some(Value::Bool(value)) => *value,
         Some(Value::Number(value)) => value.as_f64() == Some(1.0),
         Some(Value::String(value)) => matches!(value.trim().to_ascii_lowercase().as_str(), "true" | "1"),
-        _ => legacy_pos && key == "can_access_pos" && matches!(normalized_role.as_str(), "admin" | "pharmacist" | "cashier"),
+        _ => permissions.is_none() && legacy_pos && key == "can_access_pos" && matches!(normalized_role.as_str(), "admin" | "pharmacist" | "cashier"),
     }
 }
 
@@ -3421,6 +3424,7 @@ async fn ensure_return_inventory(
     Ok(id)
 }
 
+#[allow(dead_code)]
 async fn return_restock_qty(
     tx: &mut Transaction<'_, Sqlite>,
     drug_id: Option<i64>,
@@ -3465,6 +3469,7 @@ async fn return_restock_qty(
     ))
 }
 
+#[allow(dead_code)]
 async fn return_quantity_in_sale_unit(
     tx: &mut Transaction<'_, Sqlite>,
     drug_id: Option<i64>,
@@ -3594,6 +3599,7 @@ async fn apply_return_accounting(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn insert_sale_item(
     tx: &mut Transaction<'_, Sqlite>,
     sale_id: &str,
@@ -3806,7 +3812,11 @@ mod tests {
     #[test]
     fn pos_permissions_honor_explicit_denial_and_legacy_accounts() {
         assert!(user_has_permission(Some("owner"), Some("{}"), "can_access_pos", true));
-        assert!(user_has_permission(Some("pharmacist"), Some("{}"), "can_access_pos", true));
+        assert!(user_has_permission(Some("pharmacist"), None, "can_access_pos", true));
+        for stored in ["{}", "[]", "", "{bad", "null", "true", "123", r#"{"can_access_pos":null}"#] {
+            assert!(!user_has_permission(Some("pharmacist"), Some(stored), "can_access_pos", true), "{stored}");
+        }
+        assert!(user_has_permission(Some("cashier"), Some(r#"["can_access_pos"]"#), "can_access_pos", true));
         assert!(!user_has_permission(
             Some("pharmacist"),
             Some(r#"{"can_access_pos":false}"#),

@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import ShortagesClient from '@/app/(dashboard)/stores/shortages/ShortagesClient';
 import {
   deleteShortagesBulkAction,
@@ -7,7 +7,9 @@ import {
   deleteShortageAction,
   updateShortageStatusAction,
   getShortagesAction,
+  syncLowStockToShortagesAction,
 } from '@/app/actions-client/shortages';
+import { toast } from 'react-hot-toast';
 
 const mockPush = jest.fn();
 
@@ -137,6 +139,75 @@ describe('shortages multi-selection and bulk actions ui', () => {
       'pharma_shortages_to_purchase_v2:["local_default","buyer-1"]',
       expect.stringContaining('Panadol Extra')
     );
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/purchases/new'));
+  });
+
+  it('does not falsely mark a shortage ordered when purchase handoff status persistence fails', async () => {
+    (updateShortagesStatusBulkAction as jest.Mock).mockResolvedValueOnce({
+      success: false,
+      error: 'status persistence failed',
+    });
+    render(<ShortagesClient initialData={mockInitialData} />);
+
+    const checkboxes = screen.getAllByTitle('تحديد الصنف');
+    fireEvent.click(checkboxes[0]);
+    fireEvent.click(await screen.findByRole('button', { name: /تحويل للمشتريات \(1\)/ }));
+
+    await waitFor(() => expect(updateShortagesStatusBulkAction).toHaveBeenCalledWith([101], 'ordered'));
     expect(mockPush).toHaveBeenCalledWith('/purchases/new');
+    expect(toast.error).toHaveBeenCalledWith('تم تجهيز فاتورة المشتريات لكن تعذر تحديث حالة 1 صنف');
+    const panadolCard = screen.getAllByText('Panadol Extra')[0].closest('.group') as HTMLElement;
+    expect(within(panadolCard).getByRole('button', { name: 'تم الطلب' })).toBeInTheDocument();
+    expect(within(panadolCard).queryByRole('button', { name: 'إعادة لـ مطلوب' })).not.toBeInTheDocument();
+  });
+
+  it('blocks repeated bulk status writes while the first bulk mutation is pending', async () => {
+    let resolveStatus: (value: any) => void = () => {};
+    (updateShortagesStatusBulkAction as jest.Mock).mockImplementation(() => new Promise(resolve => { resolveStatus = resolve; }));
+    render(<ShortagesClient initialData={mockInitialData} />);
+    fireEvent.click(screen.getByRole('button', { name: /تحديد الكل/ }));
+    const orderedButton = await screen.findByRole('button', { name: /تحويل لـ قيد الطلب/ });
+
+    act(() => {
+      fireEvent.click(orderedButton);
+      fireEvent.click(orderedButton);
+    });
+
+    expect(updateShortagesStatusBulkAction).toHaveBeenCalledTimes(1);
+    await act(async () => resolveStatus({ success: false, error: 'status rejected' }));
+  });
+
+  it('blocks repeated bulk deletes while the first destructive mutation is pending', async () => {
+    let resolveDelete: (value: any) => void = () => {};
+    (deleteShortagesBulkAction as jest.Mock).mockImplementation(() => new Promise(resolve => { resolveDelete = resolve; }));
+    render(<ShortagesClient initialData={mockInitialData} />);
+    const checkboxes = screen.getAllByTitle('تحديد الصنف');
+    fireEvent.click(checkboxes[0]);
+    fireEvent.click(checkboxes[1]);
+    const deleteButton = await screen.findByRole('button', { name: /حذف المحدد \(2\)/ });
+
+    act(() => {
+      fireEvent.click(deleteButton);
+      fireEvent.click(deleteButton);
+    });
+
+    expect(deleteShortagesBulkAction).toHaveBeenCalledTimes(1);
+    await act(async () => resolveDelete({ success: false, error: 'delete rejected' }));
+  });
+
+  it('blocks repeated inventory synchronizations while the first sync is pending', async () => {
+    let resolveSync: (value: any) => void = () => {};
+    (syncLowStockToShortagesAction as jest.Mock).mockImplementation(() => new Promise(resolve => { resolveSync = resolve; }));
+    (getShortagesAction as jest.Mock).mockResolvedValue({ success: true, data: mockInitialData });
+    render(<ShortagesClient initialData={mockInitialData} />);
+    const syncButton = screen.getByRole('button', { name: /مزامنة مع المخزون/ });
+
+    act(() => {
+      fireEvent.click(syncButton);
+      fireEvent.click(syncButton);
+    });
+
+    expect(syncLowStockToShortagesAction).toHaveBeenCalledTimes(1);
+    await act(async () => resolveSync({ success: false, error: 'sync rejected' }));
   });
 });

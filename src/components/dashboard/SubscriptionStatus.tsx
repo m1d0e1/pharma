@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { ShieldCheck, ShieldAlert, Zap, Loader2 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 
@@ -12,35 +12,75 @@ export default function SubscriptionStatus() {
   const [status, setStatus] = useState<'activated' | 'expired' | 'none'>('none');
   const [loading, setLoading] = useState(true);
   const [isActivating, setIsActivating] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+  const activationRef = useRef(false);
+  const statusRequestRef = useRef(0);
 
   useEffect(() => {
-    fetchStatus();
+    void fetchStatus();
+    return () => {
+      statusRequestRef.current += 1;
+    };
   }, []);
 
   const fetchStatus = async () => {
+    const requestId = ++statusRequestRef.current;
     setLoading(true);
-    const result = await getConfigAction('subscription_status');
-    if (result.success && result.value) {
-      setStatus(result.value as any);
+    setLoadError(false);
+    try {
+      const result = await getConfigAction('subscription_status');
+      if (requestId !== statusRequestRef.current) return;
+      if (result.success) {
+        setStatus((result.value || 'none') as any);
+      } else {
+        setLoadError(true);
+      }
+    } catch {
+      if (requestId === statusRequestRef.current) setLoadError(true);
+    } finally {
+      if (requestId === statusRequestRef.current) setLoading(false);
     }
-    setLoading(false);
   };
 
   const handleManualActivate = async () => {
+    if (activationRef.current) return;
+    activationRef.current = true;
     setIsActivating(true);
-    const result = await updateConfigAction('subscription_status', 'activated');
-    if (result.success) {
-      toast.success('تم تفعيل وضع العمل المحلي');
-      setStatus('activated');
-      // Set the cookie too so middleware is happy
-      document.cookie = 'subscriptionActivated=true; path=/; max-age=31536000';
-    } else {
+    try {
+      const result = await updateConfigAction('subscription_status', 'activated');
+      if (result.success) {
+        toast.success('تم تفعيل وضع العمل المحلي');
+        setStatus('activated');
+        // Set the cookie too so middleware is happy
+        document.cookie = 'subscriptionActivated=true; path=/; max-age=31536000';
+      } else {
+        toast.error('فشل تفعيل وضع العمل المحلي');
+      }
+    } catch {
       toast.error('فشل تفعيل وضع العمل المحلي');
+    } finally {
+      activationRef.current = false;
+      setIsActivating(false);
     }
-    setIsActivating(false);
   };
 
   if (loading) return null;
+
+  if (loadError) {
+    return (
+      <div className="card-glass text-center space-y-4">
+        <ShieldAlert className="w-8 h-8 text-amber-500 mx-auto" />
+        <p className="font-black text-slate-700 dark:text-slate-200">تعذر تحميل وضع التشغيل</p>
+        <button
+          type="button"
+          onClick={() => void fetchStatus()}
+          className="px-5 py-2.5 rounded-xl bg-amber-500 text-white font-black hover:bg-amber-600"
+        >
+          إعادة المحاولة
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="card-glass relative overflow-hidden group">

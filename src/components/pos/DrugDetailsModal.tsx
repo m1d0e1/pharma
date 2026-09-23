@@ -7,6 +7,7 @@ import { cn } from '@/lib/utils';
 import { toast } from 'react-hot-toast';
 import { getDrugDetailsFullAction } from '@/app/actions-client/inventory';
 import { updateMasterDrugAction, searchMasterDrugsAction, addDrugAlternativeAction, removeDrugAlternativeAction, addDrugInteractionAction, removeDrugInteractionAction } from '@/app/actions-client/master-drugs';
+import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 
 interface DrugDetailsModalProps {
   drugId: number | string;
@@ -20,13 +21,20 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: Dru
   const [activeTab, setActiveTab] = useState<'info' | 'expiry' | 'stock' | 'alternatives' | 'usage' | 'consumption' | 'units_suppliers' | 'financial' | 'advanced'>('info');
   const [altSubTab, setAltSubTab] = useState<'alternatives' | 'conflicts'>('alternatives');
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [refreshError, setRefreshError] = useState(false);
   const [drugData, setDrugData] = useState<any>(null);
   
   const [currentId, setCurrentId] = useState(drugId);
   const [history, setHistory] = useState<(number | string)[]>([]);
 
   const [isEditing, setIsEditing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const savingRef = React.useRef(false);
+  const detailsMutationRef = React.useRef(false);
+  const detailRequestRef = React.useRef(0);
   const [formData, setFormData] = useState<any>(null);
+  const [canManageInventory, setCanManageInventory] = useState(false);
 
   const [altSearchQuery, setAltSearchQuery] = useState('');
   const [altSearchResults, setAltSearchResults] = useState<any[]>([]);
@@ -42,23 +50,46 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: Dru
     setHistory([]);
   }, [drugId]);
 
-  const loadDrugDetails = async (id: number | string) => {
-    setLoading(true);
+  React.useEffect(() => {
+    let active = true;
+    getClientSession().then(user => {
+      if (active) {
+        setCanManageInventory(!!user && hasUserPermissionSync(user, 'can_manage_inventory'));
+      }
+    });
+    return () => { active = false; };
+  }, []);
+
+  const loadDrugDetails = async (id: number | string, preserveOnFailure = false) => {
+    const requestId = ++detailRequestRef.current;
+    if (!preserveOnFailure) setLoading(true);
+    if (!preserveOnFailure) setLoadError(false);
+    setRefreshError(false);
     try {
       const result = await getDrugDetailsFullAction(id);
+      if (requestId !== detailRequestRef.current) return;
       if (result.success) {
         setDrugData(result.data);
         setFormData(result.data);
+      } else {
+        if (preserveOnFailure) setRefreshError(true);
+        else setLoadError(true);
       }
     } catch (error) {
+      if (requestId !== detailRequestRef.current) return;
       console.error('Failed to load drug details:', error);
+      if (preserveOnFailure) setRefreshError(true);
+      else setLoadError(true);
     } finally {
-      setLoading(false);
+      if (requestId === detailRequestRef.current && !preserveOnFailure) setLoading(false);
     }
   };
 
   React.useEffect(() => {
-    loadDrugDetails(currentId);
+    void loadDrugDetails(currentId);
+    return () => {
+      detailRequestRef.current += 1;
+    };
   }, [currentId]);
 
   const handleSearchAlt = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -77,51 +108,77 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: Dru
   };
 
   const handleAddAlternative = async (altId: number) => {
-     const res = await addDrugAlternativeAction(drugData.id, altId);
-     if (res.success) {
-        toast.success('تمت إضافة البديل بنجاح');
-        setAltSearchQuery('');
-        setAltSearchResults([]);
-        loadDrugDetails(currentId);
-     } else {
-        toast.error(res.error || 'حدث خطأ');
+     if (detailsMutationRef.current) return;
+     detailsMutationRef.current = true;
+     try {
+       const res = await addDrugAlternativeAction(drugData.id, altId);
+       if (res.success) {
+          toast.success('تمت إضافة البديل بنجاح');
+          setAltSearchQuery('');
+          setAltSearchResults([]);
+          void loadDrugDetails(currentId, true);
+       } else {
+          toast.error(res.error || 'حدث خطأ');
+       }
+     } finally {
+       detailsMutationRef.current = false;
      }
   };
 
   const handleRemoveAlternative = async (altId: number, e: React.MouseEvent) => {
      e.stopPropagation();
-     const res = await removeDrugAlternativeAction(drugData.id, altId);
-     if (res.success) {
-        toast.success('تمت إزالة البديل بنجاح');
-        loadDrugDetails(currentId);
-     } else {
-        toast.error(res.error || 'حدث خطأ');
+     if (detailsMutationRef.current) return;
+     detailsMutationRef.current = true;
+     try {
+       const res = await removeDrugAlternativeAction(drugData.id, altId);
+       if (res.success) {
+          toast.success('تمت إزالة البديل بنجاح');
+          void loadDrugDetails(currentId, true);
+       } else {
+          toast.error(res.error || 'حدث خطأ');
+       }
+     } finally {
+       detailsMutationRef.current = false;
      }
   };
 
   const handleAddConflict = async () => {
-    if (!conflictIngredientA || !conflictIngredientB) {
+    const ingredientA = conflictIngredientA.trim() || String(drugData?.active_ingredient || '').trim();
+    const ingredientB = conflictIngredientB.trim();
+    if (!ingredientA || !ingredientB) {
        toast.error('يجب إدخال المواد الفعالة');
        return;
     }
-    const res = await addDrugInteractionAction(conflictIngredientA, conflictIngredientB, conflictSeverity);
-    if (res.success) {
-       toast.success('تمت إضافة التفاعل الدوائي بنجاح');
-       setConflictIngredientB('');
-       loadDrugDetails(currentId);
-    } else {
-       toast.error(res.error || 'حدث خطأ');
+    if (detailsMutationRef.current) return;
+    detailsMutationRef.current = true;
+    try {
+      const res = await addDrugInteractionAction(ingredientA, ingredientB, conflictSeverity);
+      if (res.success) {
+         toast.success('تمت إضافة التفاعل الدوائي بنجاح');
+         setConflictIngredientB('');
+         void loadDrugDetails(currentId, true);
+      } else {
+         toast.error(res.error || 'حدث خطأ');
+      }
+    } finally {
+      detailsMutationRef.current = false;
     }
   };
 
   const handleRemoveConflict = async (id: number) => {
-    const res = await removeDrugInteractionAction(id);
-    if (res.success) {
-       toast.success('تمت إزالة التفاعل الدوائي بنجاح');
-       loadDrugDetails(currentId);
-    } else {
-       toast.error(res.error || 'حدث خطأ');
-    }
+     if (detailsMutationRef.current) return;
+     detailsMutationRef.current = true;
+     try {
+       const res = await removeDrugInteractionAction(id);
+       if (res.success) {
+         toast.success('تمت إزالة التفاعل الدوائي بنجاح');
+         void loadDrugDetails(currentId, true);
+       } else {
+         toast.error(res.error || 'حدث خطأ');
+       }
+     } finally {
+       detailsMutationRef.current = false;
+     }
   };
 
   if (loading) {
@@ -135,19 +192,52 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: Dru
     );
   }
 
+  if (loadError) {
+    return (
+      <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[200] flex items-center justify-center p-4" dir="rtl">
+        <div className="bg-white dark:bg-slate-900 p-10 rounded-3xl shadow-2xl text-center space-y-4 min-w-[320px]">
+          <AlertTriangle className="w-10 h-10 text-rose-500 mx-auto" />
+          <p className="font-black text-slate-800 dark:text-slate-100">تعذر تحميل بيانات الصنف</p>
+          <div className="flex justify-center gap-3">
+            <button
+              type="button"
+              onClick={() => loadDrugDetails(currentId)}
+              className="px-5 py-2 rounded-xl bg-blue-600 text-white font-black hover:bg-blue-700"
+            >
+              إعادة المحاولة
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-5 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 font-black"
+            >
+              إغلاق
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const handleSave = async () => {
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setIsSaving(true);
     try {
       const res = await updateMasterDrugAction(currentId as number, formData);
       if (res.success) {
         toast.success('تم حفظ التعديلات بنجاح');
-        await loadDrugDetails(currentId);
         setIsEditing(false);
         if (onDrugUpdated) onDrugUpdated(formData);
+        await loadDrugDetails(currentId, true);
       } else {
         toast.error(res.error || 'فشل الحفظ');
       }
     } catch(err) {
        toast.error('حدث خطأ أثناء الحفظ');
+    } finally {
+      savingRef.current = false;
+      setIsSaving(false);
     }
   };
 
@@ -182,18 +272,18 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: Dru
           <div className="flex items-center gap-2">
             {isEditing ? (
               <>
-                <button onClick={handleSave} className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl transition-all font-bold flex items-center gap-2">
-                  <Save className="w-4 h-4" /> حفظ
+                <button disabled={isSaving} onClick={handleSave} className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl transition-all font-bold flex items-center gap-2 disabled:opacity-60">
+                  <Save className="w-4 h-4" /> {isSaving ? 'جاري الحفظ...' : 'حفظ'}
                 </button>
                 <button onClick={() => { setIsEditing(false); setFormData(drugData); }} className="px-4 py-2 bg-white/10 hover:bg-white/20 rounded-xl transition-all font-bold">
                   إلغاء
                 </button>
               </>
-            ) : (
+            ) : canManageInventory ? (
               <button onClick={() => setIsEditing(true)} className="px-4 py-2 bg-white/10 hover:bg-white/20 rounded-xl transition-all font-bold flex items-center gap-2">
                 <Edit className="w-4 h-4" /> تعديل
               </button>
-            )}
+            ) : null}
             {history.length > 0 && (
               <button 
                 onClick={() => {
@@ -213,6 +303,19 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: Dru
             </button>
           </div>
         </div>
+
+        {refreshError && (
+          <div className="flex items-center justify-between gap-3 border-b border-amber-200 bg-amber-50 px-6 py-3 text-amber-800">
+            <span className="font-black text-sm">تم الحفظ لكن تعذر تحديث بيانات الصنف</span>
+            <button
+              type="button"
+              onClick={() => void loadDrugDetails(currentId, true)}
+              className="rounded-xl bg-white px-3 py-2 text-xs font-black shadow-sm ring-1 ring-amber-200"
+            >
+              إعادة تحميل بيانات الصنف
+            </button>
+          </div>
+        )}
 
         {/* Tabs Bar */}
         <div className="flex bg-slate-50 dark:bg-slate-800/50 p-2 gap-2 border-b border-slate-100 dark:border-slate-800 shrink-0 overflow-x-auto no-scrollbar">

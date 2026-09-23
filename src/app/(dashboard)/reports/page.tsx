@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import dynamic from 'next/dynamic';
 import { subDays, format, parseISO } from 'date-fns';
@@ -18,83 +18,92 @@ export default function ReportsPage() {
   const [categoryData, setCategoryData] = useState<any[]>([]);
   const [salesHistoryRawCount, setSalesHistoryRawCount] = useState(0);
   const [totalUnitsSold, setTotalUnitsSold] = useState(0);
+  const [loadError, setLoadError] = useState('');
+  const loadRequestRef = useRef(0);
+
+  const loadReportsData = React.useCallback(async () => {
+    const requestId = ++loadRequestRef.current;
+    setLoading(true);
+    setLoadError('');
+    try {
+      const localUser = await getClientSession();
+      if (requestId !== loadRequestRef.current) return;
+      setUser(localUser);
+      if (!localUser) return;
+
+      if (!hasUserPermissionSync(localUser, 'rep_can_view_sales')) return;
+
+      const res = await getReportsDataAction();
+      if (requestId !== loadRequestRef.current) return;
+      if (!res.success || !res.data) {
+        setLoadError('تعذر تحميل بيانات التقارير');
+        return;
+      }
+
+      const { salesHistoryRaw = [], topDrugsRaw = [], categoryRaw = [] } = res.data as any;
+
+      setSalesHistoryRawCount((salesHistoryRaw || []).length);
+
+      // Process sales history into daily buckets
+      const dailySalesMap = new Map();
+      for (let i = 29; i >= 0; i--) {
+        const d = format(subDays(new Date(), i), 'yyyy-MM-dd');
+        dailySalesMap.set(d, 0);
+      }
+
+      salesHistoryRaw.forEach((inv: any) => {
+        const d = inv.created_at.includes('T') ? inv.created_at.split('T')[0] : inv.created_at.split(' ')[0];
+        if (dailySalesMap.has(d)) {
+          dailySalesMap.set(d, dailySalesMap.get(d) + Number(inv.total_amount));
+        }
+      });
+
+      const salesHist = Array.from(dailySalesMap.entries()).map(([date, revenue]) => ({
+        date,
+        revenue
+      }));
+      setSalesHistory(salesHist);
+
+      setTotalUnitsSold(topDrugsRaw.reduce((sum: number, d: any) => sum + d.quantity_sold, 0));
+
+      const drugSalesMap = new Map();
+      topDrugsRaw.forEach((item: any) => {
+        const name = item.trade_name || 'غير معروف';
+        drugSalesMap.set(name, (drugSalesMap.get(name) || 0) + item.quantity_sold);
+      });
+
+      const drugs = Array.from(drugSalesMap.entries())
+        .map(([name, sales]) => ({ name, sales, color: '#3b82f6' }))
+        .sort((a, b) => b.sales - a.sales)
+        .slice(0, 5);
+      setTopDrugs(drugs);
+
+      const categoryMap = new Map();
+      categoryRaw.forEach((item: any) => {
+        const name = item.category || 'أخرى';
+        categoryMap.set(name, (categoryMap.get(name) || 0) + item.quantity_sold);
+      });
+
+      const cats = Array.from(categoryMap.entries())
+        .map(([name, value]) => ({ name, value, color: '#10b981' }))
+        .sort((a, b) => b.value - a.value)
+        .slice(0, 6);
+      setCategoryData(cats);
+    } catch (err) {
+      if (requestId !== loadRequestRef.current) return;
+      console.error('Failed to load reports data:', err);
+      setLoadError('تعذر تحميل بيانات التقارير');
+    } finally {
+      if (requestId === loadRequestRef.current) setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    async function loadReportsData() {
-      try {
-        const localUser = await getClientSession();
-        if (!localUser) return;
-        setUser(localUser);
-
-        if (!hasUserPermissionSync(localUser, 'rep_can_view_sales')) {
-          setLoading(false);
-          return;
-        }
-
-        const res = await getReportsDataAction();
-        if (!res.success || !res.data) {
-          setLoading(false);
-          return;
-        }
-
-        const { salesHistoryRaw = [], topDrugsRaw = [], categoryRaw = [] } = res.data as any;
-
-        setSalesHistoryRawCount((salesHistoryRaw || []).length);
-
-        // Process sales history into daily buckets
-        const dailySalesMap = new Map();
-        for (let i = 29; i >= 0; i--) {
-          const d = format(subDays(new Date(), i), 'yyyy-MM-dd');
-          dailySalesMap.set(d, 0);
-        }
-
-        salesHistoryRaw.forEach((inv: any) => {
-          const d = inv.created_at.includes('T') ? inv.created_at.split('T')[0] : inv.created_at.split(' ')[0];
-          if (dailySalesMap.has(d)) {
-            dailySalesMap.set(d, dailySalesMap.get(d) + Number(inv.total_amount));
-          }
-        });
-
-        const salesHist = Array.from(dailySalesMap.entries()).map(([date, revenue]) => ({
-          date,
-          revenue
-        }));
-        setSalesHistory(salesHist);
-
-        setTotalUnitsSold(topDrugsRaw.reduce((sum: number, d: any) => sum + d.quantity_sold, 0));
-
-        const drugSalesMap = new Map();
-        topDrugsRaw.forEach((item: any) => {
-          const name = item.trade_name || 'غير معروف';
-          drugSalesMap.set(name, (drugSalesMap.get(name) || 0) + item.quantity_sold);
-        });
-
-        const drugs = Array.from(drugSalesMap.entries())
-          .map(([name, sales]) => ({ name, sales, color: '#3b82f6' }))
-          .sort((a, b) => b.sales - a.sales)
-          .slice(0, 5);
-        setTopDrugs(drugs);
-
-        const categoryMap = new Map();
-        categoryRaw.forEach((item: any) => {
-          const name = item.category || 'أخرى';
-          categoryMap.set(name, (categoryMap.get(name) || 0) + item.quantity_sold);
-        });
-
-        const cats = Array.from(categoryMap.entries())
-          .map(([name, value]) => ({ name, value, color: '#10b981' }))
-          .sort((a, b) => b.value - a.value)
-          .slice(0, 6);
-        setCategoryData(cats);
-      } catch (err) {
-        console.error('Failed to load reports data:', err);
-      } finally {
-        setLoading(false);
-      }
-    }
-
-    loadReportsData();
-  }, []);
+    void loadReportsData();
+    return () => {
+      loadRequestRef.current += 1;
+    };
+  }, [loadReportsData]);
 
   if (loading) {
     return (
@@ -111,6 +120,17 @@ export default function ReportsPage() {
         <h2 className="text-2xl font-bold text-slate-800 dark:text-white">غير مصرح لك بالوصول</h2>
         <p className="text-slate-500 max-w-md">عذراً، هذه الصفحة مخصصة لمديري النظام فقط. يرجى مراجعة المسؤول إذا كنت تعتقد أن هذا خطأ.</p>
         <Link href="/" className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-all font-bold">العودة للرئيسية</Link>
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-4 py-24" dir="rtl">
+        <p className="font-black text-rose-600">{loadError}</p>
+        <button type="button" onClick={loadReportsData} className="px-6 py-3 rounded-2xl bg-slate-900 text-white font-black">
+          إعادة المحاولة
+        </button>
       </div>
     );
   }

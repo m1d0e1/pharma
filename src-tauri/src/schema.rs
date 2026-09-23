@@ -102,6 +102,25 @@ const CHECKSUM_REPAIRS: &[ChecksumRepair] = &[
     },
 ];
 
+const DAILY_SNAPSHOT_SCOPE_MIGRATION: &str =
+    include_str!("../migrations/020_daily_snapshot_pharmacy_scope.sql");
+const DAILY_SNAPSHOT_SCOPE_CHECKSUM_LF: &str =
+    "5B2E7C9A9D65C5BEB6CCB2B3CDBC57B7CDB008DD69997EFCA77C5274FBAEB8290C9CB826508EF4928D31526501805835";
+const DAILY_SNAPSHOT_SCOPE_CHECKSUM_CRLF: &str =
+    "97539E2CDB23A20DF1CC305EAFD07879294816C3D83A3FF2A658D58684186266DB463E129042C56E080794FABE78C5D3";
+
+fn daily_snapshot_scope_migration_checksum() -> &'static str {
+    if DAILY_SNAPSHOT_SCOPE_MIGRATION
+        .as_bytes()
+        .windows(2)
+        .any(|bytes| bytes == b"\r\n")
+    {
+        DAILY_SNAPSHOT_SCOPE_CHECKSUM_CRLF
+    } else {
+        DAILY_SNAPSHOT_SCOPE_CHECKSUM_LF
+    }
+}
+
 fn options(path: &Path) -> Result<SqliteConnectOptions, String> {
     SqliteConnectOptions::from_str(&format!("sqlite:{}", path.display()))
         .map(|options| options.create_if_missing(true).foreign_keys(true))
@@ -390,45 +409,11 @@ async fn snapshot_branch_local_pharmacy_scope(
         }
 
         if users_ready && has_user_id && has_column(transaction, "shifts", "status").await? {
+            sqlx::raw_sql(include_str!("../migrations/023_shift_immutable_scope.sql"))
+                .execute(&mut **transaction)
+                .await?;
             sqlx::raw_sql(
                 r#"
-                DROP TRIGGER IF EXISTS shifts_one_open_per_pharmacy_insert;
-                CREATE TRIGGER shifts_one_open_per_pharmacy_insert
-                BEFORE INSERT ON shifts
-                WHEN LOWER(COALESCE(NEW.status, '')) = 'open'
-                 AND EXISTS (
-                   SELECT 1 FROM shifts existing_shift
-                   WHERE LOWER(COALESCE(existing_shift.status, '')) = 'open'
-                     AND COALESCE(NULLIF(TRIM(existing_shift.pharmacy_id), ''), 'local_default') =
-                         COALESCE(
-                           NULLIF(TRIM(NEW.pharmacy_id), ''),
-                           (SELECT NULLIF(TRIM(new_owner.pharmacy_id), '') FROM users new_owner
-                            WHERE CAST(new_owner.id AS TEXT) = CAST(NEW.user_id AS TEXT)
-                               OR LOWER(new_owner.username) = LOWER(CAST(NEW.user_id AS TEXT)) LIMIT 1),
-                           'local_default'
-                         )
-                 )
-                BEGIN SELECT RAISE(ABORT, 'open shift already exists for pharmacy'); END;
-
-                DROP TRIGGER IF EXISTS shifts_one_open_per_pharmacy_update;
-                CREATE TRIGGER shifts_one_open_per_pharmacy_update
-                BEFORE UPDATE OF status, user_id, pharmacy_id ON shifts
-                WHEN LOWER(COALESCE(NEW.status, '')) = 'open'
-                 AND EXISTS (
-                   SELECT 1 FROM shifts existing_shift
-                   WHERE existing_shift.id <> OLD.id
-                     AND LOWER(COALESCE(existing_shift.status, '')) = 'open'
-                     AND COALESCE(NULLIF(TRIM(existing_shift.pharmacy_id), ''), 'local_default') =
-                         COALESCE(
-                           NULLIF(TRIM(NEW.pharmacy_id), ''),
-                           (SELECT NULLIF(TRIM(new_owner.pharmacy_id), '') FROM users new_owner
-                            WHERE CAST(new_owner.id AS TEXT) = CAST(NEW.user_id AS TEXT)
-                               OR LOWER(new_owner.username) = LOWER(CAST(NEW.user_id AS TEXT)) LIMIT 1),
-                           'local_default'
-                         )
-                 )
-                BEGIN SELECT RAISE(ABORT, 'open shift already exists for pharmacy'); END;
-
                 DROP TRIGGER IF EXISTS shifts_snapshot_pharmacy_insert;
                 CREATE TRIGGER shifts_snapshot_pharmacy_insert
                 AFTER INSERT ON shifts
@@ -1112,6 +1097,22 @@ pub(crate) async fn ensure_compatibility(
         add_column(transaction, table, column, definition).await?;
     }
 
+    sqlx::query(
+        r#"
+        INSERT INTO adjustment_reasons (name_ar, name_en, reason)
+        SELECT seed.name_ar, seed.name_en, seed.reason
+        FROM (
+          SELECT 'جرد وتصحيح رصيد' AS name_ar, 'Stock count correction' AS name_en, 'جرد وتصحيح رصيد' AS reason
+          UNION ALL SELECT 'تلف أو كسر', 'Damage or breakage', 'تلف أو كسر'
+          UNION ALL SELECT 'منتهي الصلاحية', 'Expired stock', 'منتهي الصلاحية'
+          UNION ALL SELECT 'خطأ إدخال', 'Entry correction', 'خطأ إدخال'
+        ) AS seed
+        WHERE NOT EXISTS (SELECT 1 FROM adjustment_reasons)
+        "#,
+    )
+    .execute(&mut **transaction)
+    .await?;
+
     if has_column(transaction, "purchase_order_items", "order_id").await?
         && has_column(transaction, "purchase_order_items", "po_id").await?
     {
@@ -1695,6 +1696,55 @@ async fn prepare_connection(connection: &mut SqliteConnection) -> Result<(), Str
     .fetch_all(&mut *connection)
     .await
     .map_err(|e| e.to_string())?;
+    let migration_20_applied = applied.iter().any(|row| row.get::<i64, _>("version") == 20);
+    let (scoped_snapshot_without_migration_20, scoped_snapshot_needs_rebuild) =
+        if migration_20_applied
+            || !table_exists(connection, "daily_financial_snapshots")
+                .await
+                .map_err(|e| e.to_string())?
+        {
+            (false, false)
+        } else {
+            let columns = sqlx::query("PRAGMA table_info(daily_financial_snapshots)")
+                .fetch_all(&mut *connection)
+                .await
+                .map_err(|e| e.to_string())?;
+            let has_column = |name: &str| {
+                columns
+                    .iter()
+                    .any(|row| row.get::<String, _>("name") == name)
+            };
+            let column = |name: &str| {
+                columns
+                    .iter()
+                    .find(|row| row.get::<String, _>("name") == name)
+            };
+            let has_scoped_columns = [
+                "date",
+                "pharmacy_id",
+                "total_sales",
+                "total_returns",
+                "total_cash_movements",
+                "net_profit",
+                "created_at",
+            ]
+            .iter()
+            .all(|name| has_column(name));
+            let exact_scoped_schema = has_scoped_columns
+                && column("date").is_some_and(|row| {
+                    row.get::<i64, _>("pk") == 1 && row.get::<i64, _>("notnull") == 1
+                })
+                && column("pharmacy_id").is_some_and(|row| {
+                    row.get::<i64, _>("pk") == 2
+                        && row.get::<i64, _>("notnull") == 1
+                        && row.get::<Option<String>, _>("dflt_value").as_deref()
+                            == Some("'local_default'")
+                });
+            (
+                has_scoped_columns,
+                has_scoped_columns && !exact_scoped_schema,
+            )
+        };
     let mut repairs = Vec::new();
     for row in applied {
         let version = row.get::<i64, _>("version");
@@ -1714,6 +1764,53 @@ async fn prepare_connection(connection: &mut SqliteConnection) -> Result<(), Str
     ensure_compatibility(&mut transaction)
         .await
         .map_err(|e| e.to_string())?;
+    if scoped_snapshot_needs_rebuild {
+        sqlx::raw_sql(
+            r#"
+            DROP INDEX IF EXISTS idx_daily_snapshots_date;
+            DROP INDEX IF EXISTS idx_daily_snapshots_pharmacy_date;
+            ALTER TABLE daily_financial_snapshots RENAME TO daily_financial_snapshots_scope_compat;
+            CREATE TABLE daily_financial_snapshots (
+              date TEXT NOT NULL,
+              pharmacy_id TEXT NOT NULL DEFAULT 'local_default',
+              total_sales REAL DEFAULT 0,
+              total_returns REAL DEFAULT 0,
+              total_cash_movements REAL DEFAULT 0,
+              net_profit REAL DEFAULT 0,
+              created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+              PRIMARY KEY (date, pharmacy_id)
+            );
+            INSERT INTO daily_financial_snapshots (
+              date, pharmacy_id, total_sales, total_returns, total_cash_movements, net_profit, created_at
+            )
+            SELECT
+              date,
+              COALESCE(NULLIF(TRIM(pharmacy_id), ''), 'local_default'),
+              total_sales,
+              total_returns,
+              total_cash_movements,
+              net_profit,
+              created_at
+            FROM daily_financial_snapshots_scope_compat;
+            DROP TABLE daily_financial_snapshots_scope_compat;
+            "#,
+        )
+        .execute(&mut *transaction)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+    if scoped_snapshot_without_migration_20 {
+        sqlx::raw_sql(
+            r#"
+            DROP INDEX IF EXISTS idx_daily_snapshots_date;
+            CREATE INDEX IF NOT EXISTS idx_daily_snapshots_pharmacy_date
+            ON daily_financial_snapshots(pharmacy_id, date);
+            "#,
+        )
+        .execute(&mut *transaction)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
     for (repair, checksum) in repairs {
         sqlx::query(&format!(
             "UPDATE _sqlx_migrations SET checksum = X'{}' WHERE version = ? AND hex(checksum) = ?",
@@ -1721,6 +1818,15 @@ async fn prepare_connection(connection: &mut SqliteConnection) -> Result<(), Str
         ))
         .bind(repair.version)
         .bind(checksum)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+    if scoped_snapshot_without_migration_20 {
+        sqlx::query(&format!(
+            "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (20, 'daily_snapshot_pharmacy_scope', 1, X'{}', 0)",
+            daily_snapshot_scope_migration_checksum()
+        ))
         .execute(&mut *transaction)
         .await
         .map_err(|e| e.to_string())?;
@@ -2622,11 +2728,11 @@ mod tests {
             CREATE TABLE cash_movements (id TEXT PRIMARY KEY, user_id TEXT, shift_id TEXT, date TEXT);
             INSERT INTO cash_movements VALUES ('cash-known', 'known', 'shift-known', '2026-01-01'), ('cash-legacy', 'legacy', 'shift-legacy', '2026-01-01');
 
-            CREATE TABLE daily_journals (id TEXT PRIMARY KEY, created_by TEXT, date TEXT);
-            INSERT INTO daily_journals VALUES ('journal-known', 'known', '2026-01-01'), ('journal-legacy', 'legacy', '2026-01-01');
+            CREATE TABLE daily_journals (id TEXT PRIMARY KEY, created_by TEXT, date TEXT, total_amount REAL);
+            INSERT INTO daily_journals VALUES ('journal-known', 'known', '2026-01-01', 10), ('journal-legacy', 'legacy', '2026-01-01', 20);
 
-            CREATE TABLE expenses (id TEXT PRIMARY KEY, user_id TEXT, date TEXT);
-            INSERT INTO expenses VALUES ('expense-known', 'known', '2026-01-01'), ('expense-legacy', 'legacy', '2026-01-01');
+            CREATE TABLE expenses (id TEXT PRIMARY KEY, user_id TEXT, date TEXT, amount REAL);
+            INSERT INTO expenses VALUES ('expense-known', 'known', '2026-01-01', 30), ('expense-legacy', 'legacy', '2026-01-01', 40);
 
             CREATE TABLE financial_notices (id TEXT PRIMARY KEY, user_id TEXT, created_at TEXT);
             INSERT INTO financial_notices VALUES ('notice-known', 'known', '2026-01-01'), ('notice-legacy', 'legacy', '2026-01-01');
@@ -2678,6 +2784,15 @@ mod tests {
         .unwrap();
         assert_eq!(activity_rows, vec!["ph-1".to_string(), "local_default".to_string()]);
 
+        sqlx::query("INSERT INTO daily_journals (id, created_by, date, total_amount) VALUES ('journal-after-snapshot', 'known', '2026-01-02', 77.5)")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO expenses (id, user_id, date, amount) VALUES ('expense-after-snapshot', 'known', '2026-01-02', 12.25)")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+
         sqlx::query("UPDATE users SET pharmacy_id = 'ph-2' WHERE id = 'known'")
             .execute(&mut connection)
             .await
@@ -2694,6 +2809,20 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(historical, "ph-1");
+        let new_journal: (String, f64) = sqlx::query_as(
+            "SELECT pharmacy_id, total_amount FROM daily_journals WHERE id = 'journal-after-snapshot'",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(new_journal, ("ph-1".to_string(), 77.5));
+        let new_expense: (String, f64) = sqlx::query_as(
+            "SELECT pharmacy_id, amount FROM expenses WHERE id = 'expense-after-snapshot'",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(new_expense, ("ph-1".to_string(), 12.25));
         let historical_activity: String = sqlx::query_scalar(
             "SELECT pharmacy_id FROM activity_log WHERE id = 1",
         )
@@ -3368,6 +3497,7 @@ mod tests {
             CREATE TABLE shifts (id TEXT PRIMARY KEY, user_id TEXT, status TEXT);
             CREATE TABLE units (id INTEGER PRIMARY KEY, name_ar TEXT, name_en TEXT);
             CREATE TABLE item_natures (id INTEGER PRIMARY KEY, name_ar TEXT, name_en TEXT);
+            CREATE TABLE adjustment_reasons (id INTEGER PRIMARY KEY AUTOINCREMENT, reason TEXT);
             CREATE TABLE accounts (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               code TEXT NOT NULL UNIQUE,
@@ -3414,6 +3544,30 @@ mod tests {
 
         prepare_connection(&mut connection).await.unwrap();
 
+        let default_reasons: Vec<String> = sqlx::query_scalar(
+            "SELECT COALESCE(NULLIF(name_ar, ''), reason) FROM adjustment_reasons ORDER BY id",
+        )
+        .fetch_all(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(
+            default_reasons,
+            vec![
+                "جرد وتصحيح رصيد".to_string(),
+                "تلف أو كسر".to_string(),
+                "منتهي الصلاحية".to_string(),
+                "خطأ إدخال".to_string(),
+            ]
+        );
+        sqlx::query("DELETE FROM adjustment_reasons")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO adjustment_reasons (reason) VALUES ('سبب مخصص')")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+
         let shortage_scopes: Vec<String> =
             sqlx::query_scalar("SELECT pharmacy_id FROM shortages ORDER BY id")
                 .fetch_all(&mut connection)
@@ -3437,6 +3591,13 @@ mod tests {
         let mut transaction = connection.begin().await.unwrap();
         ensure_compatibility(&mut transaction).await.unwrap();
         transaction.commit().await.unwrap();
+        let preserved_reasons: Vec<String> = sqlx::query_scalar(
+            "SELECT COALESCE(NULLIF(name_ar, ''), reason) FROM adjustment_reasons ORDER BY id",
+        )
+        .fetch_all(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(preserved_reasons, vec!["سبب مخصص".to_string()]);
 
         for (table, column) in [
             ("master_drugs", "base_price"),
@@ -4111,6 +4272,263 @@ mod tests {
         let mut blank = SqliteConnection::connect("sqlite::memory:").await.unwrap();
         prepare_connection(&mut blank).await.unwrap();
         assert!(!table_exists(&mut blank, "purchase_invoices").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn v091_upgrade_keeps_shift_scope_after_pending_migrations_and_restart() {
+        let sources = [
+            include_str!("../migrations/001_initial.sql"),
+            include_str!("../migrations/002_performance.sql"),
+            include_str!("../migrations/003_sync_metadata.sql"),
+            include_str!("../migrations/004_return_items_patch.sql"),
+            include_str!("../migrations/005_purchase_return_details.sql"),
+            include_str!("../migrations/006_accounting_upgrade_seed.sql"),
+            include_str!("../migrations/007_purchase_inventory_links.sql"),
+            include_str!("../migrations/008_patient_accounting.sql"),
+            include_str!("../migrations/009_rebuild_master_drugs_fts.sql"),
+            include_str!("../migrations/010_shift_handover_indexes.sql"),
+            include_str!("../migrations/011_shift_cash_difference_account.sql"),
+            include_str!("../migrations/012_shortages_pharmacy_scope.sql"),
+            include_str!("../migrations/013_shift_handover_details.sql"),
+            include_str!("../migrations/014_inventory_performance.sql"),
+            include_str!("../migrations/015_shared_open_shift.sql"),
+            include_str!("../migrations/016_financial_expense_wiring.sql"),
+            include_str!("../migrations/017_cloud_drug_identity.sql"),
+            include_str!("../migrations/018_unit_conversion_snapshots.sql"),
+            include_str!("../migrations/019_shift_pharmacy_scope.sql"),
+            include_str!("../migrations/020_daily_snapshot_pharmacy_scope.sql"),
+            include_str!("../migrations/021_returns_pharmacy_scope.sql"),
+            include_str!("../migrations/022_finance_pharmacy_scope.sql"),
+            include_str!("../migrations/023_shift_immutable_scope.sql"),
+        ];
+        let migrator = |count: usize| sqlx::migrate::Migrator {
+            migrations: std::borrow::Cow::Owned(sources.iter().take(count).enumerate().map(|(index, sql)| {
+                sqlx::migrate::Migration::new(
+                    (index + 1) as i64, format!("migration_{}", index + 1).into(),
+                    sqlx::migrate::MigrationType::ReversibleUp, (*sql).into(), false,
+                )
+            }).collect()),
+            ignore_missing: false,
+            locking: true,
+            no_tx: false,
+        };
+        // Migrations 1..17 are unchanged from v0.2.91; use the real SQLx ledger.
+        let mut connection = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        migrator(17).run(&mut connection).await.unwrap();
+        sqlx::raw_sql(r#"
+            INSERT INTO users(id, username, role, pharmacy_id, permissions) VALUES
+              ('moved', 'moved', 'cashier', 'A', '{"can_access_pos":true}'),
+              ('a', 'a', 'cashier', 'A', '{}'),
+              ('b', 'b', 'cashier', 'B', NULL),
+              ('local', 'local', 'cashier', NULL, '[]');
+            INSERT INTO shifts(id, user_id, starting_cash, status) VALUES('old', 'moved', 123.45, 'open');
+            INSERT INTO master_drugs(id, trade_name) VALUES(999001, 'Upgrade sentinel');
+            INSERT INTO inventory(id, drug_id, pharmacy_id, quantity) VALUES('sentinel', 999001, 'A', 2.5);
+            INSERT INTO sales_invoices(id,user_id,pharmacy_id,shift_id,total_amount,status)
+              VALUES('old-sale','moved','A','old',25,'completed');
+        "#).execute(&mut connection).await.unwrap();
+        prepare_connection(&mut connection).await.unwrap();
+        // Once snapshotted, a staff move cannot move the original open drawer.
+        sqlx::query("UPDATE users SET pharmacy_id = 'B' WHERE id = 'moved'")
+            .execute(&mut connection).await.unwrap();
+        migrator(23).run(&mut connection).await.unwrap();
+
+        for restart in [false, true] {
+            if restart {
+                prepare_connection(&mut connection).await.unwrap();
+                migrator(23).run(&mut connection).await.unwrap();
+            }
+            // The second pharmacy can open a drawer; the first cannot open another.
+            sqlx::query("INSERT INTO shifts(id,user_id,pharmacy_id,status) VALUES('new-b','b','B','open')")
+                .execute(&mut connection).await.unwrap();
+            assert!(sqlx::query("INSERT INTO shifts(id,user_id,pharmacy_id,status) VALUES('duplicate-a','a','A','open')")
+                .execute(&mut connection).await.is_err());
+            assert!(sqlx::query("UPDATE shifts SET pharmacy_id='A' WHERE id='new-b'")
+                .execute(&mut connection).await.is_err());
+            // An omitted scope is inferred from the new creator, not the old creator.
+            assert!(sqlx::query("INSERT INTO shifts(id,user_id,status) VALUES('duplicate-b','b','open')")
+                .execute(&mut connection).await.is_err());
+            sqlx::query("INSERT INTO shifts(id,user_id,status) VALUES('local-shift','local','open')")
+                .execute(&mut connection).await.unwrap();
+            assert!(sqlx::query("INSERT INTO shifts(id,user_id,pharmacy_id,status) VALUES('duplicate-local','local','local_default','open')")
+                .execute(&mut connection).await.is_err());
+            sqlx::query("DELETE FROM shifts WHERE id IN ('new-b','local-shift')")
+                .execute(&mut connection).await.unwrap();
+        }
+        let old: (String, String, f64, String) = sqlx::query_as(
+            "SELECT user_id,pharmacy_id,starting_cash,status FROM shifts WHERE id='old'")
+            .fetch_one(&mut connection).await.unwrap();
+        assert_eq!(old, ("moved".into(), "A".into(), 123.45, "open".into()));
+        let quantity: f64 = sqlx::query_scalar("SELECT CAST(quantity AS REAL) FROM inventory WHERE id='sentinel'")
+            .fetch_one(&mut connection).await.unwrap();
+        assert_eq!(quantity, 2.5);
+        let sale: (String, String, String, f64) = sqlx::query_as(
+            "SELECT user_id,pharmacy_id,shift_id,total_amount FROM sales_invoices WHERE id='old-sale'")
+            .fetch_one(&mut connection).await.unwrap();
+        assert_eq!(sale, ("moved".into(), "A".into(), "old".into(), 25.0));
+        let permissions: Option<String> = sqlx::query_scalar("SELECT permissions FROM users WHERE id='b'")
+            .fetch_one(&mut connection).await.unwrap();
+        assert_eq!(permissions, None);
+        let stored_permissions: String = sqlx::query_scalar("SELECT permissions FROM users WHERE id='moved'")
+            .fetch_one(&mut connection).await.unwrap();
+        assert_eq!(stored_permissions, r#"{"can_access_pos":true}"#);
+        assert!(sqlx::query("PRAGMA foreign_key_check").fetch_all(&mut connection).await.unwrap().is_empty());
+        let integrity: String = sqlx::query_scalar("PRAGMA integrity_check")
+            .fetch_one(&mut connection).await.unwrap();
+        assert_eq!(integrity, "ok");
+    }
+
+    #[tokio::test]
+    async fn skips_destructive_snapshot_migration_when_scoped_schema_already_exists() {
+        let mut connection = representative_purchase_database(false).await;
+        sqlx::raw_sql(
+            r#"
+            CREATE TABLE daily_financial_snapshots (
+              date TEXT NOT NULL,
+              pharmacy_id TEXT NOT NULL DEFAULT 'local_default',
+              total_sales REAL DEFAULT 0,
+              total_returns REAL DEFAULT 0,
+              total_cash_movements REAL DEFAULT 0,
+              net_profit REAL DEFAULT 0,
+              created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+              PRIMARY KEY (date, pharmacy_id)
+            );
+            INSERT INTO daily_financial_snapshots (date, pharmacy_id, total_sales) VALUES
+              ('2026-09-20', 'ph-1', 10),
+              ('2026-09-20', 'ph-2', 20);
+            "#,
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+
+        prepare_connection(&mut connection).await.unwrap();
+
+        let rows: Vec<(String, String, f64)> = sqlx::query_as(
+            "SELECT date, pharmacy_id, total_sales FROM daily_financial_snapshots ORDER BY pharmacy_id",
+        )
+        .fetch_all(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("2026-09-20".to_string(), "ph-1".to_string(), 10.0),
+                ("2026-09-20".to_string(), "ph-2".to_string(), 20.0),
+            ]
+        );
+        let migration_20_checksum: String =
+            sqlx::query_scalar("SELECT hex(checksum) FROM _sqlx_migrations WHERE version = 20")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
+        let sqlx_migration = sqlx::migrate::Migration::new(
+            20,
+            "daily_snapshot_pharmacy_scope".into(),
+            sqlx::migrate::MigrationType::ReversibleUp,
+            DAILY_SNAPSHOT_SCOPE_MIGRATION.into(),
+            false,
+        );
+        let sqlx_checksum: String = sqlx_migration
+            .checksum
+            .iter()
+            .map(|byte| format!("{byte:02X}"))
+            .collect();
+        assert_eq!(
+            migration_20_checksum,
+            daily_snapshot_scope_migration_checksum()
+        );
+        assert_eq!(migration_20_checksum, sqlx_checksum);
+
+        let migration_1 = sqlx::migrate::Migration::new(
+            1,
+            "initial_schema".into(),
+            sqlx::migrate::MigrationType::ReversibleUp,
+            include_str!("../migrations/001_initial.sql").into(),
+            false,
+        );
+        let migrator = sqlx::migrate::Migrator {
+            migrations: std::borrow::Cow::Owned(vec![migration_1, sqlx_migration]),
+            ignore_missing: false,
+            locking: true,
+            no_tx: false,
+        };
+        migrator.run(&mut connection).await.unwrap();
+
+        let rows_after_migrator: Vec<(String, String, f64)> = sqlx::query_as(
+            "SELECT date, pharmacy_id, total_sales FROM daily_financial_snapshots ORDER BY pharmacy_id",
+        )
+        .fetch_all(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(rows_after_migrator, rows);
+    }
+
+    #[tokio::test]
+    async fn repairs_weak_partial_snapshot_schema_before_marking_migration_20() {
+        let mut connection = representative_purchase_database(false).await;
+        sqlx::raw_sql(
+            r#"
+            CREATE TABLE daily_financial_snapshots (
+              date TEXT,
+              pharmacy_id TEXT,
+              total_sales REAL DEFAULT 0,
+              total_returns REAL DEFAULT 0,
+              total_cash_movements REAL DEFAULT 0,
+              net_profit REAL DEFAULT 0,
+              created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+              PRIMARY KEY (date, pharmacy_id)
+            );
+            INSERT INTO daily_financial_snapshots (date, pharmacy_id, total_sales) VALUES
+              ('2026-09-20', 'ph-1', 10),
+              ('2026-09-20', 'ph-2', 20);
+            "#,
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+
+        prepare_connection(&mut connection).await.unwrap();
+
+        let rows: Vec<(String, String, f64)> = sqlx::query_as(
+            "SELECT date, pharmacy_id, total_sales FROM daily_financial_snapshots ORDER BY pharmacy_id",
+        )
+        .fetch_all(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("2026-09-20".to_string(), "ph-1".to_string(), 10.0),
+                ("2026-09-20".to_string(), "ph-2".to_string(), 20.0),
+            ]
+        );
+        let columns = sqlx::query("PRAGMA table_info(daily_financial_snapshots)")
+            .fetch_all(&mut connection)
+            .await
+            .unwrap();
+        let date = columns
+            .iter()
+            .find(|row| row.get::<String, _>("name") == "date")
+            .unwrap();
+        let pharmacy = columns
+            .iter()
+            .find(|row| row.get::<String, _>("name") == "pharmacy_id")
+            .unwrap();
+        assert_eq!(date.get::<i64, _>("notnull"), 1);
+        assert_eq!(date.get::<i64, _>("pk"), 1);
+        assert_eq!(pharmacy.get::<i64, _>("notnull"), 1);
+        assert_eq!(pharmacy.get::<i64, _>("pk"), 2);
+        assert_eq!(
+            pharmacy.get::<Option<String>, _>("dflt_value").as_deref(),
+            Some("'local_default'")
+        );
+        let migration_20_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations WHERE version = 20")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
+        assert_eq!(migration_20_count, 1);
     }
 
     #[tokio::test]

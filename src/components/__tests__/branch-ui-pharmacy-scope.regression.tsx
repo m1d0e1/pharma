@@ -30,8 +30,10 @@ jest.mock('react-to-print', () => ({ useReactToPrint: () => jest.fn() }));
 jest.mock('@/components/EditInventoryModal', () => ({ __esModule: true, default: () => null }));
 jest.mock('@/components/pos/DrugDetailsModal', () => ({ __esModule: true, default: () => null }));
 jest.mock('@/components/AddInventoryModal', () => ({ __esModule: true, default: () => null }));
-jest.mock('@/app/actions-client/inventory', () => ({ deleteInventoryAction: jest.fn() }));
-jest.mock('@/lib/inventory/import', () => ({ importInventoryWorkbookRows: jest.fn() }));
+jest.mock('@/app/actions-client/inventory', () => ({
+  deleteInventoryAction: jest.fn(),
+  importInventoryWorkbookAction: jest.fn(),
+}));
 
 jest.mock('react-hot-toast', () => ({
   toast: {
@@ -89,6 +91,36 @@ describe('active branch UI pharmacy scope', () => {
     expect(String(sql)).toContain('i.pharmacy_id = ?');
     expect(params).toHaveLength(3);
     expect(params.slice(1)).toEqual(['ph-1', 'ph-1']);
+  });
+
+  it('distinguishes dead-stock load failure from a healthy moving inventory and retries', async () => {
+    (dbSelect as jest.Mock)
+      .mockRejectedValueOnce(new Error('dead stock bridge unavailable'))
+      .mockResolvedValueOnce([]);
+
+    render(<DeadStockWidget />);
+
+    expect(await screen.findByText('تعذر تحميل تحليل الرواكد')).toBeInTheDocument();
+    expect(screen.queryByText('جميع الأصناف تتحرك بشكل جيد! 🚀')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'إعادة المحاولة' }));
+
+    expect(await screen.findByText('جميع الأصناف تتحرك بشكل جيد! 🚀')).toBeInTheDocument();
+    expect(dbSelect).toHaveBeenCalledTimes(2);
+  });
+
+  it('distinguishes expiry load failure from a genuinely clear expiry window and retries', async () => {
+    (dbSelect as jest.Mock)
+      .mockRejectedValueOnce(new Error('expiry bridge unavailable'))
+      .mockResolvedValueOnce([]);
+
+    render(<ExpiryWidget />);
+
+    expect(await screen.findByText('تعذر تحميل تنبيهات انتهاء الصلاحية')).toBeInTheDocument();
+    expect(screen.queryByText('لا توجد أصناف قاربت على الانتهاء 👍')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'إعادة المحاولة' }));
+
+    expect(await screen.findByText('لا توجد أصناف قاربت على الانتهاء 👍')).toBeInTheDocument();
+    expect(dbSelect).toHaveBeenCalledTimes(2);
   });
 
   it('scopes full inventory export and exported master-drug set to the pharmacy prop', async () => {

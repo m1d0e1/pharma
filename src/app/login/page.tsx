@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'react-hot-toast';
 import { Shield, Lock, User, Loader2, Globe } from 'lucide-react';
@@ -11,6 +11,8 @@ export default function LoginPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const loginSubmissionRef = useRef(false);
+  const initialSyncRef = useRef(false);
   const [formData, setFormData] = useState({
     username: '',
     password: '',
@@ -18,6 +20,8 @@ export default function LoginPage() {
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (loginSubmissionRef.current) return;
+    loginSubmissionRef.current = true;
     setLoading(true);
 
     try {
@@ -50,11 +54,14 @@ export default function LoginPage() {
       console.error('Login error:', error);
       toast.error('حدث خطأ غير متوقع');
     } finally {
+      loginSubmissionRef.current = false;
       setLoading(false);
     }
   };
 
   const handleInitialSync = async () => {
+    if (initialSyncRef.current) return;
+    initialSyncRef.current = true;
     setIsSyncing(true);
     const toastId = toast.loading('جاري تحديث قائمة الأدوية والتفاعلات العامة...');
     
@@ -68,6 +75,7 @@ export default function LoginPage() {
     } catch (error) {
       toast.error('تأكد من وجود اتصال بالإنترنت للمزامنة الأولى', { id: toastId });
     } finally {
+      initialSyncRef.current = false;
       setIsSyncing(false);
     }
   };

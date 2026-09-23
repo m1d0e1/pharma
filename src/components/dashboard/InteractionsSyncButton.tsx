@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { Zap } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { getSupabaseBrowserClient } from '@/lib/supabase';
@@ -8,8 +8,11 @@ import { dbExecute, dbTransaction, dbGet } from '@/lib/db/tauri';
 
 export default function InteractionsSyncButton() {
   const [syncing, setSyncing] = useState(false);
+  const syncingRef = useRef(false);
 
   const handleSync = async () => {
+    if (syncingRef.current) return;
+    syncingRef.current = true;
     setSyncing(true);
     try {
       const supabase = getSupabaseBrowserClient();
@@ -92,6 +95,7 @@ export default function InteractionsSyncButton() {
       console.error('InteractionsSyncButton error:', err);
       toast.error('خطأ في مزامنة التفاعلات');
     } finally {
+      syncingRef.current = false;
       setSyncing(false);
     }
   };

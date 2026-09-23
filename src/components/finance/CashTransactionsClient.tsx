@@ -1,7 +1,7 @@
 'use client';
 import { useHotkeys } from 'react-hotkeys-hook';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import { 
   Plus, Search, ArrowRightLeft, X, Save, Activity, DollarSign,
@@ -33,10 +33,12 @@ export default function CashTransactionsClient({
   const [movements, setMovements] = useState<any[]>([]);
   const [currentShift, setCurrentShift] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState<{ show: boolean, type: 'disbursement' | 'receipt' }>(initialShowForm || { show: false, type: 'disbursement' });
   const [filterType, setFilterType] = useState<'all' | 'disbursement' | 'receipt'>('all');
   const [searchTerm, setSearchTerm] = useState('');
   const [isMounted, setIsMounted] = useState(false);
+  const loadRequestRef = useRef(0);
 
   useEffect(() => {
     setIsMounted(true);
@@ -46,18 +48,36 @@ export default function CashTransactionsClient({
   }, [initialShowForm]);
 
   useEffect(() => {
-    loadData();
+    void loadData();
+    return () => {
+      loadRequestRef.current += 1;
+    };
   }, []);
 
   async function loadData() {
+    const requestId = ++loadRequestRef.current;
     setLoading(true);
-    const [movRes, shiftRes] = await Promise.all([
-      getCashMovementsAction(),
-      getCurrentShiftAction()
-    ]);
-    if (movRes.success) setMovements(movRes.data as any[]);
-    if (shiftRes.success && shiftRes.data) setCurrentShift(shiftRes.data);
-    setLoading(false);
+    setLoadError(null);
+    try {
+      const [movRes, shiftRes] = await Promise.all([
+        getCashMovementsAction(),
+        getCurrentShiftAction()
+      ]);
+      if (requestId !== loadRequestRef.current) return;
+      if (movRes.success) {
+        setMovements((movRes.data || []) as any[]);
+      } else {
+        setMovements([]);
+        setLoadError(movRes.error || 'فشل تحميل حركة النقدية');
+      }
+      if (shiftRes.success) setCurrentShift(shiftRes.data || null);
+    } catch {
+      if (requestId !== loadRequestRef.current) return;
+      setMovements([]);
+      setLoadError('فشل تحميل حركة النقدية');
+    } finally {
+      if (requestId === loadRequestRef.current) setLoading(false);
+    }
   }
 
   const stats = useMemo(() => {
@@ -300,6 +320,21 @@ export default function CashTransactionsClient({
           <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
             {loading ? (
               <tr><td colSpan={5} className="py-20 text-center text-slate-400 italic font-bold">جاري تحميل السجل...</td></tr>
+            ) : loadError ? (
+              <tr>
+                <td colSpan={5} className="py-16 text-center">
+                  <div className="space-y-4">
+                    <p className="font-black text-rose-600">{loadError}</p>
+                    <button
+                      type="button"
+                      onClick={() => void loadData()}
+                      className="px-5 py-2.5 rounded-xl bg-blue-600 text-white font-black hover:bg-blue-700"
+                    >
+                      إعادة المحاولة
+                    </button>
+                  </div>
+                </td>
+              </tr>
             ) : filteredMovements.length === 0 ? (
               <tr>
                 <td colSpan={5} className="py-20 text-center text-slate-400 font-bold">
@@ -361,6 +396,7 @@ export default function CashTransactionsClient({
 
 function CashMovementForm({ type, currentShift, onClose }: { type: 'disbursement' | 'receipt', currentShift?: any, onClose: () => void }) {
   const [loading, setLoading] = useState(false);
+  const submissionRef = useRef(false);
   const [formData, setFormData] = useState({
      amount: 0,
      date: format(new Date(), 'yyyy-MM-dd'),
@@ -392,33 +428,46 @@ function CashMovementForm({ type, currentShift, onClose }: { type: 'disbursement
 
   useHotkeys('enter', (e) => { e.preventDefault(); handleSubmit(); }, { enableOnFormTags: ['input', 'select'] });
 
-  useHotkeys('esc', () => { if(typeof onClose === 'function') onClose(); }, { enableOnFormTags: true });
+  const handleCancel = () => {
+     if (submissionRef.current) return;
+     if (typeof onClose === 'function') onClose();
+  };
+
+  useHotkeys('esc', handleCancel, { enableOnFormTags: true });
 
   const handleSubmit = async () => {
      if (formData.amount <= 0) {
         toast.error('يرجى إدخال قيمة صحيحة');
         return;
      }
+     if (submissionRef.current) return;
+     submissionRef.current = true;
      setLoading(true);
-     const isExpense = type === 'disbursement' && ['operating_expenses', 'salaries', 'rent', 'electricity'].includes(formData.category);
-     const res = isExpense
-       ? await addExpenseAction({
-           category: formData.category === 'operating_expenses'
-             ? formData.sub_category || 'operating_expenses'
-             : formData.category,
-           amount: formData.amount,
-           description: formData.notes,
-           date: formData.date,
-         })
-       : await createCashMovementAction({ ...formData, type });
-     
-     if (res.success) {
-        toast.success('تم تسجيل الحركة بنجاح');
-        onClose();
-     } else {
-        toast.error(res.error || 'فشل التسجيل');
+     try {
+       const isExpense = type === 'disbursement' && ['operating_expenses', 'salaries', 'rent', 'electricity'].includes(formData.category);
+       const res = isExpense
+         ? await addExpenseAction({
+             category: formData.category === 'operating_expenses'
+               ? formData.sub_category || 'operating_expenses'
+               : formData.category,
+             amount: formData.amount,
+             description: formData.notes,
+             date: formData.date,
+           })
+         : await createCashMovementAction({ ...formData, type });
+
+       if (res.success) {
+          toast.success('تم تسجيل الحركة بنجاح');
+          onClose();
+       } else {
+          toast.error(res.error || 'فشل التسجيل');
+       }
+     } catch {
+       toast.error('فشل التسجيل');
+     } finally {
+       submissionRef.current = false;
+       setLoading(false);
      }
-     setLoading(false);
   };
 
   return (
@@ -436,7 +485,7 @@ function CashMovementForm({ type, currentShift, onClose }: { type: 'disbursement
                  <p className="text-white/60 font-bold">أدخل تفاصيل العملية المالية بدقة</p>
               </div>
            </div>
-           <button onClick={onClose} className="p-3 hover:bg-white/10 rounded-2xl transition-all"><X className="w-6 h-6" /></button>
+           <button onClick={handleCancel} disabled={loading} className="p-3 hover:bg-white/10 rounded-2xl transition-all disabled:opacity-50"><X className="w-6 h-6" /></button>
         </div>
 
         <div className="p-10 space-y-8">
@@ -549,7 +598,7 @@ function CashMovementForm({ type, currentShift, onClose }: { type: 'disbursement
               {loading ? <Activity className="w-6 h-6 animate-spin" /> : <Save className="w-6 h-6" />}
               حفظ العملية (S)
            </button>
-           <button onClick={onClose} className="px-10 py-5 bg-white dark:bg-slate-900 text-slate-500 rounded-[2rem] font-black text-xl border border-slate-100 dark:border-slate-700 hover:bg-slate-50 transition-all">
+           <button onClick={handleCancel} disabled={loading} className="px-10 py-5 bg-white dark:bg-slate-900 text-slate-500 rounded-[2rem] font-black text-xl border border-slate-100 dark:border-slate-700 hover:bg-slate-50 transition-all disabled:opacity-50">
               إلغاء (C)
            </button>
         </div>

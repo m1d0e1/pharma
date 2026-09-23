@@ -15,35 +15,50 @@ export default function AuditPage() {
   const [userActivity, setUserActivity] = useState<any[]>([]);
   const [actionTypes, setActionTypes] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const loadRequestRef = React.useRef(0);
 
-  const loadAuditLogs = async () => {
+  const loadAuditLogs = async (reportError = true) => {
+    const requestId = ++loadRequestRef.current;
+    if (reportError) setLoadError('');
     try {
       const localUser = await getClientSession();
-      if (!localUser) return;
+      if (requestId !== loadRequestRef.current) return;
       setUser(localUser);
+      if (!localUser) {
+        setAllowed(false);
+        return;
+      }
 
       const isAllowed = hasUserPermissionSync(localUser, 'can_view_audit');
+      setAllowed(isAllowed);
+      if (!isAllowed) return;
 
-      if (isAllowed) {
-        setAllowed(true);
-
-        const res = await getAuditLogsAction();
-        if (res.success && res.data) {
-          setLogs(res.data.logs || []);
-          setTodayCount(res.data.todayCount || 0);
-          setUserActivity(res.data.userActivity || []);
-          setActionTypes(res.data.actionTypes || []);
-        }
-      }
+      const res = await getAuditLogsAction();
+      if (requestId !== loadRequestRef.current) return;
+      if (!res.success || !res.data) throw new Error(res.error || 'Failed to load audit logs');
+      setLogs(res.data.logs || []);
+      setTodayCount(res.data.todayCount || 0);
+      setUserActivity(res.data.userActivity || []);
+      setActionTypes(res.data.actionTypes || []);
     } catch (err) {
+      if (requestId !== loadRequestRef.current) return;
       console.error('Failed to load audit logs:', err);
+      if (reportError) {
+        setLoadError('تعذر تحميل سجل التدقيق');
+      } else {
+        throw err;
+      }
     } finally {
-      setLoading(false);
+      if (reportError && requestId === loadRequestRef.current) setLoading(false);
     }
   };
 
   useEffect(() => {
-    loadAuditLogs();
+    void loadAuditLogs();
+    return () => {
+      loadRequestRef.current += 1;
+    };
   }, []);
 
   if (loading) {
@@ -56,6 +71,24 @@ export default function AuditPage() {
 
   if (!user || !allowed) {
     return <AccessDenied />;
+  }
+
+  if (loadError) {
+    return (
+      <div className="flex flex-col justify-center items-center gap-4 py-20" dir="rtl">
+        <p className="font-black text-rose-600">{loadError}</p>
+        <button
+          type="button"
+          onClick={() => {
+            setLoading(true);
+            void loadAuditLogs();
+          }}
+          className="px-6 py-3 rounded-2xl bg-slate-900 text-white font-black"
+        >
+          إعادة المحاولة
+        </button>
+      </div>
+    );
   }
 
   return (
@@ -97,7 +130,7 @@ export default function AuditPage() {
         </div>
       </div>
 
-      <AuditLogClient initialLogs={logs} onRefresh={loadAuditLogs} />
+      <AuditLogClient initialLogs={logs} onRefresh={() => loadAuditLogs(false)} canClearLogs={user.role === 'owner'} />
     </div>
   );
 }

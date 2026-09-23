@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState } from 'react'
+import React, { useRef, useState } from 'react'
 import { Activity, Search, RefreshCcw, AlertTriangle, Package, CheckCircle2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { dbSelect } from '@/lib/db/tauri'
@@ -15,8 +15,11 @@ export default function AdjustmentsClient({ reasons }: { reasons: any[] }) {
   const [newQty, setNewQty] = useState<number>(0)
   const [selectedReason, setSelectedReason] = useState<number>(0)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const searchRequestRef = useRef(0)
+  const submissionRef = useRef(false)
 
   const handleSearch = async (q: string) => {
+    const requestId = ++searchRequestRef.current
     setQuery(q)
     if (q.length > 2) {
       try {
@@ -32,9 +35,13 @@ export default function AdjustmentsClient({ reasons }: { reasons: any[] }) {
             AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
           LIMIT 20
         `, params);
-        setResults(data);
+        if (requestId === searchRequestRef.current) setResults(data);
       } catch (err) {
         console.error('Failed to search inventory:', err);
+        if (requestId === searchRequestRef.current) {
+          setResults([]);
+          toast.error('فشل البحث في المخزون');
+        }
       }
     } else {
       setResults([])
@@ -53,7 +60,9 @@ export default function AdjustmentsClient({ reasons }: { reasons: any[] }) {
       toast.error('يرجى اختيار الصنف وسبب التسوية')
       return
     }
+    if (submissionRef.current) return
 
+    submissionRef.current = true
     setIsSubmitting(true)
     try {
       const result = await createStockAdjustmentAction(String(selectedItem.id), {
@@ -70,6 +79,7 @@ export default function AdjustmentsClient({ reasons }: { reasons: any[] }) {
       console.error('Adjustment failed:', err);
       toast.error(err.message || 'فشل إجراء التسوية')
     } finally {
+      submissionRef.current = false
       setIsSubmitting(false)
     }
   }

@@ -12,9 +12,13 @@ export default function StaffPage() {
   const [user, setUser] = useState<any>(null);
   const [staffMetrics, setStaffMetrics] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
 
   useEffect(() => {
     async function loadStaffData() {
+      setLoading(true);
+      setLoadError(false);
       try {
         const localUser = await getClientSession();
         if (!localUser) return;
@@ -29,21 +33,39 @@ export default function StaffPage() {
         const res = await getStaffPerformanceAction();
         if (res.success && res.data) {
           setStaffMetrics(res.data);
+        } else {
+          setLoadError(true);
         }
       } catch (err) {
         console.error('Failed to load staff performance data:', err);
+        setLoadError(true);
       } finally {
         setLoading(false);
       }
     }
 
     loadStaffData();
-  }, []);
+  }, [loadAttempt]);
 
   if (loading) {
     return (
       <div className="flex justify-center items-center py-24" dir="rtl">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="py-24 text-center space-y-4" dir="rtl">
+        <p className="font-black text-slate-800 dark:text-slate-100">تعذر تحميل بيانات أداء الموظفين</p>
+        <button
+          type="button"
+          onClick={() => setLoadAttempt(attempt => attempt + 1)}
+          className="px-5 py-2 rounded-xl bg-blue-600 text-white font-black hover:bg-blue-700"
+        >
+          إعادة المحاولة
+        </button>
       </div>
     );
   }

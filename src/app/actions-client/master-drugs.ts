@@ -102,6 +102,22 @@ async function canManageInventory() {
 }
 import { secureCache } from '@/lib/cache/secure_cache';
 import { getSearchVariants, matchesDrug, calculateDrugRelevance } from '@/lib/search/normalization';
+import { importMasterDrugWorkbookRows } from '@/lib/inventory/import';
+
+export async function importMasterDrugWorkbookAction(rows: any[]) {
+  try {
+    const user = await getLocalSession();
+    if (!user || !hasUserPermissionSync(user, 'can_manage_inventory')) {
+      return { success: false, error: 'غير مصرح' };
+    }
+
+    const data = await importMasterDrugWorkbookRows(rows);
+    revalidatePath('/stores/items');
+    return { success: true, data };
+  } catch (error: any) {
+    return { success: false, error: error?.message || String(error) };
+  }
+}
 
 export async function getMasterDrugAction(id: number) {
   try {
@@ -184,6 +200,30 @@ export async function addMasterDrugAction(data: any) {
       );
     });
     const result = await insert();
+
+    secureCache.addDrug({
+      id: Number(result.lastInsertRowid),
+      trade_name: tradeName,
+      trade_name_en: tradeNameEn || tradeName,
+      generic_name: data.generic_name || '',
+      strength: '',
+      unit: '',
+      category: data.category || '',
+      manufacturer: data.manufacturer || '',
+      base_price: 0,
+      active_ingredient: data.active_ingredient || '',
+      official_price: officialPrice,
+      barcode: barcode || '',
+      large_unit: data.large_unit || undefined,
+      medium_unit: data.medium_unit || undefined,
+      small_unit: data.small_unit || undefined,
+      large_to_medium: data.large_to_medium ? Number(data.large_to_medium) : undefined,
+      medium_to_small: data.medium_to_small ? Number(data.medium_to_small) : undefined,
+      reorder_point: data.reorder_point ? Number(data.reorder_point) : undefined,
+      stop_dealing: data.stop_dealing ?? 0,
+      is_medicine: data.is_medicine ?? 1,
+      is_service: data.is_service ?? 0,
+    });
 
     logActivity(localUser.id, 'ADD_MASTER_DRUG', `أضاف الصنف: ${tradeName}`);
     revalidatePath('/stores/items');
@@ -380,11 +420,16 @@ export async function searchMasterDrugsAction(queryOrOptions: string | {
   status?: 'stopped' | 'active' | 'all',
   minPrice?: number,
   maxPrice?: number,
-  searchByActiveIngredient?: boolean
-}): Promise<{ success: boolean; data?: any[]; error?: string }> {
+  searchByActiveIngredient?: boolean,
+  page?: number,
+  pageSize?: number
+}): Promise<{ success: boolean; data?: any[]; error?: string; total?: number; page?: number; pageSize?: number; pages?: number }> {
   try {
     const options = typeof queryOrOptions === 'string' ? { query: queryOrOptions } : queryOrOptions;
     const { query = '', type = 'all', status = 'all', minPrice, maxPrice, searchByActiveIngredient = false } = options;
+    const pagedRequest = typeof queryOrOptions !== 'string' && (options.page !== undefined || options.pageSize !== undefined);
+    const requestedPage = Math.max(1, Math.floor(Number(options.page) || 1));
+    const requestedPageSize = Math.min(100, Math.max(1, Math.floor(Number(options.pageSize) || 100)));
     const searchLower = (query || '').toLowerCase().trim();
     const hasFilters = type !== 'all' || status !== 'all' || minPrice !== undefined || maxPrice !== undefined;
     
@@ -427,7 +472,11 @@ export async function searchMasterDrugsAction(queryOrOptions: string | {
 
     // 2. Search in local SQLite database (for custom added drugs or when cache unavailable)
     let dbMatched: any[] = [];
-    if (allDrugs.length === 0 || cacheMatched.length < 20) {
+    // Paged responses need the database candidates as well: a nonempty cache can be
+    // stale after another window adds a matching custom drug, which otherwise makes
+    // both the requested page and its total inaccurate. Non-paged autocomplete keeps
+    // the existing small-cache fallback to avoid routinely querying SQLite.
+    if (pagedRequest || allDrugs.length === 0 || cacheMatched.length < 20) {
       const whereClauses: string[] = [
         "(trade_name IS NULL OR trade_name != 'SECURE')",
         "(trade_name_en IS NULL OR trade_name_en != 'SECURE')"
@@ -483,7 +532,7 @@ export async function searchMasterDrugsAction(queryOrOptions: string | {
         SELECT * FROM master_drugs 
         WHERE ${whereClauses.join(' AND ')}
         ORDER BY trade_name ASC 
-        LIMIT 100
+        ${pagedRequest ? '' : 'LIMIT 100'}
       `;
 
       dbMatched = await db.prepare(dbQuery).all(...dbParams) as any[];
@@ -519,14 +568,21 @@ export async function searchMasterDrugsAction(queryOrOptions: string | {
       }
     }
 
-    const merged = Array.from(combinedMap.values())
+    const sortedMerged = Array.from(combinedMap.values())
       .map(drug => ({ drug, score: searchLower ? getRelevanceScore(drug, searchLower) : 0 }))
       .sort((a, b) => searchLower
-        ? (b.score - a.score)
+        ? ((b.score - a.score) || ((a.drug.trade_name || a.drug.trade_name_en || '').localeCompare(b.drug.trade_name || b.drug.trade_name_en || '', 'ar')))
         : ((a.drug.trade_name || a.drug.trade_name_en || '').localeCompare(b.drug.trade_name || b.drug.trade_name_en || '', 'ar'))
       )
-      .map(item => item.drug)
-      .slice(0, 100);
+      .map(item => item.drug);
+
+    const total = sortedMerged.length;
+    const pages = Math.max(1, Math.ceil(total / requestedPageSize));
+    const page = Math.min(requestedPage, pages);
+    const offset = (page - 1) * requestedPageSize;
+    const merged = pagedRequest
+      ? sortedMerged.slice(offset, offset + requestedPageSize)
+      : sortedMerged.slice(0, 100);
 
     const ids = merged.map(drug => drug.id);
     const costs = ids.length ? await db.prepare(`
@@ -550,7 +606,8 @@ export async function searchMasterDrugsAction(queryOrOptions: string | {
           purchase_price: purchasePrice,
           base_price: purchasePrice ?? drug.base_price ?? 0,
         };
-      })
+      }),
+      ...(pagedRequest ? { total, page, pageSize: requestedPageSize, pages } : {})
     };
   } catch (error: any) {
     console.error('Search master drugs error:', error);
@@ -860,7 +917,7 @@ export async function deleteUsageMethodAction(id: number) {
 // Adjustment Reasons
 export async function getAdjustmentReasonsAction() {
   try {
-    const items = await db.prepare('SELECT * FROM adjustment_reasons ORDER BY name_ar ASC').all();
+    const items = await db.prepare('SELECT * FROM adjustment_reasons ORDER BY id ASC').all();
     return { success: true, data: items };
   } catch (error: any) {
     return { success: false, error: error.message };
@@ -1285,7 +1342,12 @@ export async function removeDrugAlternativeAction(drugId: number, alternativeId:
   }
 }
 
-export async function addDrugInteractionAction(ingredientA: string, ingredientB: string, severity: string = 'minor') {
+export async function addDrugInteractionAction(
+  ingredientA: string,
+  ingredientB: string,
+  severity: string = 'minor',
+  source: string = 'MANUAL'
+) {
   try {
     const localUser = await getLocalSession();
     if (!localUser || !hasUserPermissionSync(localUser, 'can_manage_inventory')) return { success: false, error: 'غير مصرح' };
@@ -1295,7 +1357,12 @@ export async function addDrugInteractionAction(ingredientA: string, ingredientB:
     const existing = await db.prepare('SELECT id FROM drug_interactions WHERE (ingredient_a = ? AND ingredient_b = ?) OR (ingredient_a = ? AND ingredient_b = ?)').get(ingredientA, ingredientB, ingredientB, ingredientA);
     if (existing) return { success: true };
 
-    await db.prepare('INSERT INTO drug_interactions (ingredient_a, ingredient_b, severity) VALUES (?, ?, ?)').run(ingredientA, ingredientB, severity);
+    await db.prepare('INSERT INTO drug_interactions (ingredient_a, ingredient_b, severity, source) VALUES (?, ?, ?, ?)').run(
+      ingredientA,
+      ingredientB,
+      severity,
+      source
+    );
     
     await logActivity(localUser.id, 'ADD_INTERACTION', `إضافة تعارض بين ${ingredientA} و ${ingredientB}`);
     return { success: true };

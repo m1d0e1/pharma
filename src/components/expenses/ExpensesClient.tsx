@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { addExpenseAction, getExpensesAction, getExpenseSummaryAction } from '@/app/actions-client/expenses';
 import { getExpenseDefinitionsAction } from '@/app/actions-client/finance';
 import { toast } from 'react-hot-toast';
@@ -30,6 +30,18 @@ export default function ExpensesClient({ canManage = false }: { canManage?: bool
   });
   const [showForm, setShowForm] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const submissionRef = useRef(false);
+  const loadRequestRef = useRef(0);
+  const toggleForm = () => {
+    if (submissionRef.current) return;
+    setShowForm(open => !open);
+  };
+  const closeForm = () => {
+    if (submissionRef.current) return;
+    setShowForm(false);
+  };
   const [form, setForm] = useState({
     category: 'OTHER',
     amount: '',
@@ -55,21 +67,33 @@ export default function ExpensesClient({ canManage = false }: { canManage?: bool
   };
 
   const loadExpenses = async () => {
+    const requestId = ++loadRequestRef.current;
     setLoading(true);
+    setLoadError('');
     try {
       const result = await getExpensesAction({ 
         category: filterCategory !== 'all' ? filterCategory : undefined 
       });
-      if (result.success) setExpenses(result.data as any[]);
+      if (!result.success) throw new Error(result.error || 'Failed to load expenses');
 
       const summaryRes = await getExpenseSummaryAction();
-      if (summaryRes.success && summaryRes.data) {
+      if (!summaryRes.success || !summaryRes.data) {
+        throw new Error(summaryRes.error || 'Failed to load expense summary');
+      }
+
+      if (requestId === loadRequestRef.current) {
+        setExpenses((result.data || []) as any[]);
         setSummary(summaryRes.data);
       }
     } catch (err) {
       console.error('Error loading expenses/summary', err);
+      if (requestId === loadRequestRef.current) {
+        setLoadError('تعذر تحميل بيانات المصروفات');
+      }
     } finally {
-      setLoading(false);
+      if (requestId === loadRequestRef.current) {
+        setLoading(false);
+      }
     }
   };
 
@@ -95,34 +119,45 @@ export default function ExpensesClient({ canManage = false }: { canManage?: bool
       toast.error('يرجى إدخال مبلغ صحيح');
       return;
     }
+    if (submissionRef.current) return;
 
-    const result = await addExpenseAction({
-      category: form.category,
-      amount: parseFloat(form.amount),
-      description: form.description,
-      date: form.date,
-    });
-
-    if (result.success) {
-      toast.success('تم إضافة المصروف بنجاح');
-      const defaultCat = categories[0]?.code || 'OTHER';
-      setForm({ 
-        category: defaultCat, 
-        amount: '', 
-        description: '', 
-        date: new Date().toLocaleDateString('en-CA') 
+    submissionRef.current = true;
+    setIsSubmitting(true);
+    try {
+      const result = await addExpenseAction({
+        category: form.category,
+        amount: parseFloat(form.amount),
+        description: form.description,
+        date: form.date,
       });
-      setShowForm(false);
-      loadExpenses();
-    } else {
-      toast.error(result.error || 'فشل إضافة المصروف');
+
+      if (result.success) {
+        toast.success('تم إضافة المصروف بنجاح');
+        const defaultCat = categories[0]?.code || 'OTHER';
+        setForm({
+          category: defaultCat,
+          amount: '',
+          description: '',
+          date: new Date().toLocaleDateString('en-CA')
+        });
+        setShowForm(false);
+        await loadExpenses();
+      } else {
+        toast.error(result.error || 'فشل إضافة المصروف');
+      }
+    } catch (err) {
+      console.error('Failed to add expense:', err);
+      toast.error('فشل إضافة المصروف');
+    } finally {
+      submissionRef.current = false;
+      setIsSubmitting(false);
     }
   };
 
   return (
     <div className="space-y-8">
       {/* P&L Summary Cards */}
-      {summary && (
+      {!loadError && summary && (
         <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
           <div className="bg-gradient-to-br from-emerald-500 to-green-600 p-6 rounded-3xl text-white shadow-xl hover:scale-[1.02] transition-transform duration-300">
             <p className="text-emerald-100 text-xs font-bold uppercase tracking-wider mb-2">إجمالي الإيرادات</p>
@@ -193,8 +228,9 @@ export default function ExpensesClient({ canManage = false }: { canManage?: bool
         </div>
         {canManage && (
           <button
-            onClick={() => setShowForm(!showForm)}
-            className="bg-blue-600 text-white px-6 py-2.5 rounded-xl font-bold text-sm hover:bg-blue-700 transition-all flex items-center gap-2 shadow-lg shadow-blue-500/20"
+            disabled={isSubmitting}
+            onClick={toggleForm}
+            className="bg-blue-600 text-white px-6 py-2.5 rounded-xl font-bold text-sm hover:bg-blue-700 transition-all flex items-center gap-2 shadow-lg shadow-blue-500/20 disabled:opacity-50"
           >
             <Plus className="w-4 h-4" /> إضافة مصروف
           </button>
@@ -253,10 +289,14 @@ export default function ExpensesClient({ canManage = false }: { canManage?: bool
             </div>
           </div>
           <div className="flex gap-3">
-            <button type="submit" className="bg-emerald-600 text-white px-8 py-3 rounded-xl font-bold hover:bg-emerald-700 transition-all">
-              حفظ
+            <button
+              type="submit"
+              disabled={isSubmitting}
+              className="bg-emerald-600 text-white px-8 py-3 rounded-xl font-bold hover:bg-emerald-700 transition-all disabled:opacity-50"
+            >
+              {isSubmitting ? 'جاري الحفظ...' : 'حفظ'}
             </button>
-            <button type="button" onClick={() => setShowForm(false)} className="bg-slate-200 dark:bg-slate-800 px-8 py-3 rounded-xl font-bold hover:bg-slate-300 transition-all">
+            <button type="button" disabled={isSubmitting} onClick={closeForm} className="bg-slate-200 dark:bg-slate-800 px-8 py-3 rounded-xl font-bold hover:bg-slate-300 transition-all disabled:opacity-50">
               إلغاء
             </button>
           </div>
@@ -265,6 +305,18 @@ export default function ExpensesClient({ canManage = false }: { canManage?: bool
 
       {/* Expenses Table */}
       <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-xl overflow-hidden">
+        {loadError && !loading && (
+          <div className="m-6 p-6 rounded-2xl bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/40 text-center space-y-4">
+            <p className="font-black text-rose-600 dark:text-rose-400">{loadError}</p>
+            <button
+              type="button"
+              onClick={() => void loadExpenses()}
+              className="px-5 py-2.5 rounded-xl bg-rose-600 text-white font-bold"
+            >
+              إعادة المحاولة
+            </button>
+          </div>
+        )}
         <table className="w-full text-right">
           <thead>
             <tr className="bg-slate-50 dark:bg-slate-800/50 border-b border-slate-100 dark:border-slate-800">
@@ -278,7 +330,7 @@ export default function ExpensesClient({ canManage = false }: { canManage?: bool
           <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
             {loading ? (
               <tr><td colSpan={5} className="text-center py-12 text-slate-400">جاري التحميل...</td></tr>
-            ) : expenses.length === 0 ? (
+            ) : loadError ? null : expenses.length === 0 ? (
               <tr><td colSpan={5} className="text-center py-12 text-slate-400">لا توجد مصروفات مسجلة</td></tr>
             ) : expenses.map((exp: any) => (
               <tr key={exp.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">

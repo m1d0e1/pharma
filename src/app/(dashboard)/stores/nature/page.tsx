@@ -12,29 +12,33 @@ export default function NaturePage() {
   const router = useRouter();
   const [data, setData] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-
-  async function loadData() {
-    try {
-      const result = await dbSelect('SELECT * FROM item_natures ORDER BY name_ar ASC');
-      setData(result);
-    } catch (err) {
-      console.error('Failed to load natures:', err);
-    } finally {
-      setLoading(false);
-    }
-  }
+  const [loadError, setLoadError] = useState('');
+  const [loadAttempt, setLoadAttempt] = useState(0);
 
   useEffect(() => {
+    let active = true;
     async function checkAuthAndLoad() {
-      const localUser = await getClientSession();
-      if (!localUser) {
-        router.push('/login');
-        return;
+      setLoading(true);
+      setLoadError('');
+      try {
+        const localUser = await getClientSession();
+        if (!active) return;
+        if (!localUser) {
+          router.push('/login');
+          return;
+        }
+        const result = await dbSelect('SELECT * FROM item_natures ORDER BY name_ar ASC');
+        if (active) setData(result);
+      } catch (err) {
+        console.error('Failed to load natures:', err);
+        if (active) setLoadError('تعذر تحميل بيانات القائمة');
+      } finally {
+        if (active) setLoading(false);
       }
-      await loadData();
     }
     checkAuthAndLoad();
-  }, [router]);
+    return () => { active = false; };
+  }, [router, loadAttempt]);
 
   const handleAdd = addItemNatureAction;
   const handleUpdate = updateItemNatureAction;
@@ -44,6 +48,17 @@ export default function NaturePage() {
     return (
       <div className="flex justify-center items-center py-12">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-4 py-20" dir="rtl">
+        <p className="font-black text-rose-600">{loadError}</p>
+        <button type="button" onClick={() => setLoadAttempt(attempt => attempt + 1)} className="px-6 py-3 rounded-2xl bg-slate-900 text-white font-black">
+          إعادة المحاولة
+        </button>
       </div>
     );
   }

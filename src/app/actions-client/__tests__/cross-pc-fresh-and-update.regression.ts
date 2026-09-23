@@ -61,7 +61,7 @@ import {
 import { getLowStockAction } from '@/app/actions-client/inventory';
 import { processCheckoutAction } from '@/app/actions-client/sales';
 import { openShiftAction, getCurrentShiftAction } from '@/app/actions-client/shifts';
-import { processHandoverAction } from '@/app/actions-client/handover';
+import { getHandoverDetailsAction, processHandoverAction } from '@/app/actions-client/handover';
 import { createReturnAction } from '@/app/actions-client/returns';
 import {
   addBankAction,
@@ -76,7 +76,10 @@ import {
   getPapersAction,
   updatePaperStatusAction,
   createManualJournalAction,
+  getCashMovementsAction,
+  getFinancialNoticesAction,
   getJournalsAction,
+  getTreasuryDashboardAction,
   saveTrialBalanceSettingAction,
 } from '@/app/actions-client/finance';
 
@@ -841,6 +844,94 @@ describe('Cross-computer consistency across fresh install and update', () => {
     expect(journalRes.success).toBe(true);
     const journals = (await getJournalsAction()).data || [];
     expect(journals.some((j: any) => j.description === 'تسوية رصيد بنكي في التحديث')).toBe(true);
+  });
+
+  it('keeps v0.2.91 historical handover and finance rows on their startup-backfilled pharmacy', async () => {
+    mockDb = new Database(':memory:');
+    applyV0292OrV0293Migrations(mockDb); // v0.2.91 and v0.2.92/93 share migrations 001-017.
+    mockDb.exec(`
+      INSERT INTO users (id, username, password_hash, role, full_name, pharmacy_id, is_active)
+      VALUES
+        ('legacy-finance-actor', 'legacy-finance-actor', 'hash', 'admin', 'Legacy Actor', 'ph-1', 1),
+        ('ph1-viewer', 'ph1-viewer', 'hash', 'owner', 'PH1 Viewer', 'ph-1', 1),
+        ('legacy-default-actor', 'legacy-default-actor', 'hash', 'admin', 'Legacy Default Actor', 'local_default', 1),
+        ('default-viewer', 'default-viewer', 'hash', 'owner', 'Default Viewer', 'local_default', 1);
+      INSERT INTO shifts (id, user_id, starting_cash, status)
+      VALUES
+        ('legacy-finance-shift', 'legacy-finance-actor', 100, 'closed'),
+        ('legacy-default-shift', 'legacy-default-actor', 50, 'closed');
+      INSERT INTO cash_movements (id, user_id, shift_id, type, category, amount, notes, date)
+      VALUES
+        ('legacy-finance-cash', 'legacy-finance-actor', 'legacy-finance-shift', 'receipt', 'pharmacy', 11, 'legacy receipt', date('now','localtime')),
+        ('legacy-default-cash', 'legacy-default-actor', 'legacy-default-shift', 'receipt', 'pharmacy', 7, 'default receipt', date('now','localtime'));
+      INSERT INTO daily_journals (id, date, description, created_by, total_amount)
+      VALUES
+        ('legacy-finance-journal', date('now','localtime'), 'legacy journal', 'legacy-finance-actor', 11),
+        ('legacy-default-journal', date('now','localtime'), 'default journal', 'legacy-default-actor', 7);
+      INSERT INTO expenses (id, user_id, category, amount, description, date)
+      VALUES
+        ('legacy-finance-expense', 'legacy-finance-actor', 'rent', 4, 'legacy expense', date('now','localtime')),
+        ('legacy-default-expense', 'legacy-default-actor', 'rent', 2, 'default expense', date('now','localtime'));
+      INSERT INTO financial_notices (id, user_id, target_type, type, amount, reason, date)
+      VALUES
+        ('legacy-finance-notice', 'legacy-finance-actor', 'pharmacy', 'debit', 3, 'legacy notice', date('now','localtime')),
+        ('legacy-default-notice', 'legacy-default-actor', 'pharmacy', 'debit', 1, 'default notice', date('now','localtime'));
+    `);
+
+    applyLocalSchemaRepairs(mockDb);
+    expect(mockDb.prepare(`
+      SELECT
+        (SELECT pharmacy_id FROM shifts WHERE id='legacy-finance-shift') AS shift_scope,
+        (SELECT pharmacy_id FROM cash_movements WHERE id='legacy-finance-cash') AS cash_scope,
+        (SELECT pharmacy_id FROM daily_journals WHERE id='legacy-finance-journal') AS journal_scope,
+        (SELECT pharmacy_id FROM expenses WHERE id='legacy-finance-expense') AS expense_scope,
+        (SELECT pharmacy_id FROM financial_notices WHERE id='legacy-finance-notice') AS notice_scope
+    `).get()).toEqual({
+      shift_scope: 'ph-1',
+      cash_scope: 'ph-1',
+      journal_scope: 'ph-1',
+      expense_scope: 'ph-1',
+      notice_scope: 'ph-1',
+    });
+    expect(mockDb.prepare(`
+      SELECT
+        (SELECT pharmacy_id FROM shifts WHERE id='legacy-default-shift') AS shift_scope,
+        (SELECT pharmacy_id FROM cash_movements WHERE id='legacy-default-cash') AS cash_scope,
+        (SELECT pharmacy_id FROM daily_journals WHERE id='legacy-default-journal') AS journal_scope,
+        (SELECT pharmacy_id FROM expenses WHERE id='legacy-default-expense') AS expense_scope,
+        (SELECT pharmacy_id FROM financial_notices WHERE id='legacy-default-notice') AS notice_scope
+    `).get()).toEqual({
+      shift_scope: 'local_default',
+      cash_scope: 'local_default',
+      journal_scope: 'local_default',
+      expense_scope: 'local_default',
+      notice_scope: 'local_default',
+    });
+
+    mockDb.prepare("UPDATE users SET pharmacy_id='ph-2' WHERE id='legacy-finance-actor'").run();
+    mockSession = { id: 'ph1-viewer', role: 'owner', pharmacy_id: 'ph-1' };
+    expect(await getHandoverDetailsAction('legacy-finance-shift')).toMatchObject({ success: true });
+    expect((await getCashMovementsAction()).data?.map((row: any) => row.id)).toContain('legacy-finance-cash');
+    expect((await getCashMovementsAction()).data?.map((row: any) => row.id)).not.toContain('legacy-default-cash');
+    expect((await getJournalsAction()).data?.map((row: any) => row.id)).toContain('legacy-finance-journal');
+    expect((await getFinancialNoticesAction()).data?.map((row: any) => row.id)).toContain('legacy-finance-notice');
+    expect(await getTreasuryDashboardAction()).toMatchObject({
+      success: true,
+      data: { todayReceipts: 11, todayExpenses: 4 },
+    });
+
+    mockSession = { id: 'default-viewer', role: 'owner', pharmacy_id: 'local_default' };
+    expect(await getHandoverDetailsAction('legacy-default-shift')).toMatchObject({ success: true });
+    expect((await getCashMovementsAction()).data?.map((row: any) => row.id)).toContain('legacy-default-cash');
+    expect((await getCashMovementsAction()).data?.map((row: any) => row.id)).not.toContain('legacy-finance-cash');
+    expect((await getJournalsAction()).data?.map((row: any) => row.id)).toContain('legacy-default-journal');
+    expect((await getFinancialNoticesAction()).data?.map((row: any) => row.id)).toContain('legacy-default-notice');
+
+    mockSession = { id: 'legacy-finance-actor', role: 'owner', pharmacy_id: 'ph-2' };
+    expect(await getHandoverDetailsAction('legacy-finance-shift')).toMatchObject({ success: false });
+    expect((await getCashMovementsAction()).data?.map((row: any) => row.id)).not.toContain('legacy-finance-cash');
+    expect((await getJournalsAction()).data?.map((row: any) => row.id)).not.toContain('legacy-finance-journal');
+    expect((await getFinancialNoticesAction()).data?.map((row: any) => row.id)).not.toContain('legacy-finance-notice');
   });
 
   it('tests advanced feature options: purchase draft completion, edit, returns, and next-shift handover', async () => {

@@ -1,7 +1,7 @@
 'use client'
 
 import nextDynamic from 'next/dynamic'
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
 import {
    Search,
@@ -34,13 +34,14 @@ import {
 import { cn } from '@/lib/utils'
 import { toast, Toaster } from 'react-hot-toast'
 import { useSearchParams } from 'next/navigation'
-import { dbSelect, dbExecute } from '@/lib/db/tauri'
-import { getClientSession } from '@/lib/auth/local'
+import { dbSelect } from '@/lib/db/tauri'
+import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local'
 import { findDrugBarcodeConflict } from '@/app/actions-client/drug-replacement';
 import DrugReplacementDialog from '@/components/master-drugs/DrugReplacementDialog';
 import {
    addMasterDrugAction,
    deleteMasterDrugAction,
+   importMasterDrugWorkbookAction,
    searchMasterDrugsAction,
    updateMasterDrugAction
 } from '@/app/actions-client/master-drugs'
@@ -108,6 +109,10 @@ function ContextMenuItem({ icon: Icon, label, onClick, color = "text-slate-700 d
 export default function ItemsManagementClient({ initialItems, totalCount }: Props) {
    const searchParams = useSearchParams();
    const [items, setItems] = useState<MasterDrug[]>(initialItems || []);
+   const [currentPage, setCurrentPage] = useState(1);
+   const pageSize = 100;
+   const [filteredTotal, setFilteredTotal] = useState<number | null>(null);
+   const [canManageInventory, setCanManageInventory] = useState(false);
    const [replacement, setReplacement] = useState<any>(null);
    const [searchTerm, setSearchTerm] = useState('');
    const [searchByActive, setSearchByActive] = useState(false);
@@ -115,6 +120,11 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
    const [filterStatus, setFilterStatus] = useState<FilterStatus>('all');
    const [minPrice, setMinPrice] = useState<string>('');
    const [maxPrice, setMaxPrice] = useState<string>('');
+   const hasActiveListFilters = Boolean(searchTerm.trim()) || filterType !== 'all' || filterStatus !== 'all' || Boolean(minPrice) || Boolean(maxPrice);
+   const effectiveTotal = hasActiveListFilters
+      ? (filteredTotal ?? items.length)
+      : (totalCount || initialItems.length || 0);
+   const totalPages = Math.max(1, Math.ceil(effectiveTotal / pageSize));
 
    const [contextMenu, setContextMenu] = useState<{ x: number, y: number, drugId: number | string } | null>(null);
 
@@ -123,9 +133,21 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
    const [editingItem, setEditingItem] = useState<Partial<MasterDrug>>({});
    const [activeTab, setActiveTab] = useState<'basic' | 'units' | 'financial' | 'advanced'>('basic');
    const [isSaving, setIsSaving] = useState(false);
+   const saveSubmissionRef = useRef(false);
+   const catalogRequestRef = useRef(0);
+   const editRequestRef = useRef(0);
    const [purchaseHistory, setPurchaseHistory] = useState<any[]>([]);
 
    useEffect(() => {
+      let active = true;
+      getClientSession().then(user => {
+         if (active) setCanManageInventory(hasUserPermissionSync(user, 'can_manage_inventory'));
+      });
+      return () => { active = false; };
+   }, []);
+
+   useEffect(() => {
+      if (!canManageInventory) return;
       const editId = searchParams?.get('edit');
       if (editId) {
          const id = parseInt(editId);
@@ -136,7 +158,7 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
             }
          });
       }
-   }, [searchParams]);
+   }, [searchParams, canManageInventory]);
 
    useEffect(() => {
      const handleClickOutside = () => setContextMenu(null);
@@ -145,13 +167,15 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
    }, []);
 
    useHotkeys('insert', (e) => {
+      if (!canManageInventory) return;
       e.preventDefault();
       setEditingItem({});
       setIsModalOpen(true);
-   }, { enableOnFormTags: true });
+   }, { enableOnFormTags: true }, [canManageInventory]);
 
    
    const handleDelete = async (id: number) => {
+      if (!canManageInventory) return;
       try {
          const res = await deleteMasterDrugAction(id);
          if (res.success) {
@@ -182,9 +206,10 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
      setContextMenu({ x, y, drugId });
    };
 
-   const loadPurchaseHistory = async (drugId: number) => {
+   const loadPurchaseHistory = async (drugId: number, requestId: number) => {
       try {
          const user = await getClientSession();
+         if (requestId !== editRequestRef.current) return;
          if (!user) return;
          const pharmacyId = user.pharmacy_id || 'local_default';
          const data = await dbSelect(`
@@ -197,8 +222,10 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
            ORDER BY pi.invoice_date DESC
            LIMIT 5
          `, [drugId, pharmacyId, pharmacyId]);
+         if (requestId !== editRequestRef.current) return;
          setPurchaseHistory(data);
       } catch (err) {
+         if (requestId !== editRequestRef.current) return;
          console.error('Failed to load purchase history:', err);
       }
    };
@@ -241,8 +268,13 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
     };
 
    const handleImportAll = async (e: React.ChangeEvent<HTMLInputElement>) => {
+      if (!canManageInventory) {
+         toast.error('ليس لديك صلاحية تعديل بيانات الأصناف');
+         return;
+      }
       const file = e.target.files?.[0];
       if (!file) return;
+      const listVersionAtImport = catalogRequestRef.current;
       
       const toastId = toast.loading('جاري قراءة الملف...');
       try {
@@ -263,61 +295,38 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
 
                toast.loading(`جاري استيراد ${data.length} صنف...`, { id: toastId });
 
-               let inserted = 0;
-               for (const row of data) {
-                  const id = row.id ? Number(row.id) : null;
-                  const trade_name = row.trade_name || row.trade_name_ar || null;
-                  const trade_name_en = row.trade_name_en || null;
-                  const generic_name = row.generic_name || null;
-                  const active_ingredient = row.active_ingredient || null;
-                  const barcode = row.barcode || null;
-                  const official_price = Number(row.official_price) || 0;
-                  const large_unit = row.large_unit || null;
-                  const medium_unit = row.medium_unit || null;
-                  const small_unit = row.small_unit || null;
-                  const large_to_medium = row.large_to_medium ? Number(row.large_to_medium) : null;
-                  const medium_to_small = row.medium_to_small ? Number(row.medium_to_small) : null;
-                  const category = row.category || null;
-                  const manufacturer = row.manufacturer || null;
-                  const stop_dealing = row.stop_dealing ? Number(row.stop_dealing) : 0;
-
-                  if (id) {
-                     await dbExecute(`
-                        INSERT INTO master_drugs (id, trade_name, trade_name_en, generic_name, active_ingredient, barcode, official_price, large_unit, medium_unit, small_unit, large_to_medium, medium_to_small, category, manufacturer, stop_dealing)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(id) DO UPDATE SET
-                          trade_name=excluded.trade_name,
-                          trade_name_en=excluded.trade_name_en,
-                          generic_name=excluded.generic_name,
-                          active_ingredient=excluded.active_ingredient,
-                          barcode=excluded.barcode,
-                          official_price=excluded.official_price,
-                          large_unit=excluded.large_unit,
-                          medium_unit=excluded.medium_unit,
-                          small_unit=excluded.small_unit,
-                          large_to_medium=excluded.large_to_medium,
-                          medium_to_small=excluded.medium_to_small,
-                          category=excluded.category,
-                          manufacturer=excluded.manufacturer,
-                          stop_dealing=excluded.stop_dealing
-                     `, [id, trade_name, trade_name_en, generic_name, active_ingredient, barcode, official_price, large_unit, medium_unit, small_unit, large_to_medium, medium_to_small, category, manufacturer, stop_dealing]);
-                  } else {
-                     await dbExecute(`
-                        INSERT INTO master_drugs (trade_name, trade_name_en, generic_name, active_ingredient, barcode, official_price, large_unit, medium_unit, small_unit, large_to_medium, medium_to_small, category, manufacturer, stop_dealing)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                     `, [trade_name, trade_name_en, generic_name, active_ingredient, barcode, official_price, large_unit, medium_unit, small_unit, large_to_medium, medium_to_small, category, manufacturer, stop_dealing]);
-                  }
-                  inserted++;
+               const importResult = await importMasterDrugWorkbookAction(data);
+               if (!importResult.success || !importResult.data) {
+                  throw new Error(importResult.error || 'فشل استيراد بيانات الأصناف');
                }
+               const imported = importResult.data;
 
                const { secureCache } = await import('@/lib/cache/secure_cache');
                await secureCache.reload();
 
-               toast.success(`تم استيراد ${inserted} صنف بنجاح!`, { id: toastId });
-               
-               const searchRes = await searchMasterDrugsAction({ query: searchTerm, searchByActiveIngredient: searchByActive });
+               toast.success(`تم استيراد ${imported.masterDrugCount} صنف بنجاح!`, { id: toastId });
+               if (listVersionAtImport !== catalogRequestRef.current) return;
+
+               const refreshRequestId = ++catalogRequestRef.current;
+               const searchRes = await searchMasterDrugsAction({
+                  query: searchTerm,
+                  searchByActiveIngredient: searchByActive,
+                  ...(hasActiveListFilters ? {
+                     type: filterType,
+                     status: filterStatus,
+                     minPrice: minPrice ? parseFloat(minPrice) : undefined,
+                     maxPrice: maxPrice ? parseFloat(maxPrice) : undefined,
+                     page: 1,
+                     pageSize
+                  } : {})
+               });
+               if (refreshRequestId !== catalogRequestRef.current) return;
                if (searchRes.success && searchRes.data) {
                   setItems(searchRes.data);
+                  if (hasActiveListFilters) {
+                     setFilteredTotal(searchRes.total ?? searchRes.data.length);
+                     setCurrentPage(searchRes.page ?? 1);
+                  }
                }
             } catch (err: any) {
                console.error(err);
@@ -333,11 +342,14 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
 
    // Advanced search effect
    useEffect(() => {
+      const requestId = ++catalogRequestRef.current;
       const hasSearch = Boolean(searchTerm.trim());
       const hasFilters = filterType !== 'all' || filterStatus !== 'all' || Boolean(minPrice) || Boolean(maxPrice);
+      setCurrentPage(1);
 
       // On initial load without active search or filters, keep initialItems to prevent flicker/wipe
       if (!hasSearch && !hasFilters && initialItems && initialItems.length > 0) {
+         setFilteredTotal(null);
          setItems(initialItems);
          return;
       }
@@ -349,19 +361,70 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
             status: filterStatus,
             minPrice: minPrice ? parseFloat(minPrice) : undefined,
             maxPrice: maxPrice ? parseFloat(maxPrice) : undefined,
-            searchByActiveIngredient: searchByActive
+            searchByActiveIngredient: searchByActive,
+            page: 1,
+            pageSize
          };
 
-         const res = await searchMasterDrugsAction(options);
-         if (res.success && res.data) {
-            setItems(res.data);
+         try {
+            const res = await searchMasterDrugsAction(options);
+            if (requestId !== catalogRequestRef.current) return;
+            if (res.success && res.data) {
+               setItems(res.data);
+               setFilteredTotal(res.total ?? res.data.length);
+               setCurrentPage(res.page ?? 1);
+            }
+         } catch (err) {
+            if (requestId !== catalogRequestRef.current) return;
+            console.error('Failed to search master drugs:', err);
+            toast.error('فشل البحث في كتالوج الأدوية');
          }
       }, 400);
 
       return () => clearTimeout(delayDebounceFn);
    }, [searchTerm, filterType, filterStatus, minPrice, maxPrice, searchByActive, initialItems]);
 
+   const loadCatalogPage = async (page: number) => {
+      if (page < 1 || page > totalPages || page === currentPage) return;
+      const requestId = ++catalogRequestRef.current;
+      try {
+         if (hasActiveListFilters) {
+            const res = await searchMasterDrugsAction({
+               query: searchTerm.trim(),
+               type: filterType,
+               status: filterStatus,
+               minPrice: minPrice ? parseFloat(minPrice) : undefined,
+               maxPrice: maxPrice ? parseFloat(maxPrice) : undefined,
+               searchByActiveIngredient: searchByActive,
+               page,
+               pageSize
+            });
+            if (requestId !== catalogRequestRef.current) return;
+            if (res.success && res.data) {
+               setItems(res.data);
+               setFilteredTotal(res.total ?? res.data.length);
+               setCurrentPage(res.page ?? page);
+            }
+            return;
+         }
+         const offset = (page - 1) * pageSize;
+         const pageItems = await dbSelect(`
+            SELECT * FROM master_drugs
+            ORDER BY trade_name ASC
+            LIMIT ? OFFSET ?
+         `, [pageSize, offset]) as MasterDrug[];
+         if (requestId !== catalogRequestRef.current) return;
+         setItems(pageItems || []);
+         setCurrentPage(page);
+      } catch (err) {
+         if (requestId !== catalogRequestRef.current) return;
+         console.error('Failed to load master-drug catalog page:', err);
+         toast.error('فشل تحميل صفحة الأصناف');
+      }
+   };
+
    const openAddModal = () => {
+      if (!canManageInventory) return;
       setEditingItem({
          trade_name: '',
          trade_name_en: '',
@@ -381,15 +444,19 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
    };
 
     const openEditModal = async (item: MasterDrug) => {
+       if (!canManageInventory) return;
+       const requestId = ++editRequestRef.current;
        const fresh = await dbSelect('SELECT * FROM master_drugs WHERE id = ?', [item.id]);
+       if (requestId !== editRequestRef.current) return;
        setEditingItem((fresh && fresh[0]) || item);
        setPurchaseHistory([]); // Reset previous
-       if (item.id) loadPurchaseHistory(item.id);
+       if (item.id) loadPurchaseHistory(item.id, requestId);
        setActiveTab('basic');
        setIsModalOpen(true);
     };
 
    const handleCopy = (item: MasterDrug) => {
+      if (!canManageInventory) return;
       const { id, ...rest } = item;
       setEditingItem({ ...rest, trade_name: `${rest.trade_name} (نسخة)` });
       setActiveTab('basic');
@@ -397,6 +464,7 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
    };
 
    const handleSave = async () => {
+      if (!canManageInventory) return;
       const primaryName = (editingItem.trade_name_en || editingItem.trade_name || '').trim();
       const secondaryName = (editingItem.trade_name || editingItem.trade_name_en || '').trim();
       if (!primaryName) {
@@ -408,40 +476,62 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
          trade_name_en: primaryName,
          trade_name: secondaryName
       };
+      if (saveSubmissionRef.current) return;
+      saveSubmissionRef.current = true;
       setIsSaving(true);
 
-      let res;
-      if (itemToSave.id) {
-         res = await updateMasterDrugAction(itemToSave.id, itemToSave);
-      } else {
-         res = await addMasterDrugAction(itemToSave);
-      }
-
-      setIsSaving(false);
-      if (res.success) {
-         toast.success(itemToSave.id ? 'تم تحديث الصنف بنجاح' : 'تم إضافة الصنف بنجاح');
-         setIsModalOpen(false);
-
-         // Refresh list
-         const searchOptions = {
-            query: searchTerm,
-            type: filterType,
-            status: filterStatus,
-            minPrice: minPrice ? parseFloat(minPrice) : undefined,
-            maxPrice: maxPrice ? parseFloat(maxPrice) : undefined,
-            searchByActiveIngredient: searchByActive
-         };
-         const refreshRes = await searchMasterDrugsAction(searchOptions);
-         if (refreshRes.success && refreshRes.data) {
-            setItems(refreshRes.data);
+      try {
+         let res;
+         if (itemToSave.id) {
+            res = await updateMasterDrugAction(itemToSave.id, itemToSave);
+         } else {
+            res = await addMasterDrugAction(itemToSave);
          }
-      } else {
-         const conflict = await findDrugBarcodeConflict(String(itemToSave.barcode || ''), itemToSave.id);
-         if (conflict) {
-            setReplacement({ source: conflict, ...(itemToSave.id ? { target: itemToSave, pendingEdit: itemToSave } : { newDrug: { ...itemToSave, official_price: Number(itemToSave.official_price) } }) });
-            return;
+
+         if (res.success) {
+            toast.success(itemToSave.id ? 'تم تحديث الصنف بنجاح' : 'تم إضافة الصنف بنجاح');
+            setIsModalOpen(false);
+
+            // Refresh list after persistence succeeds. A refresh failure must not repeat the write.
+            const searchOptions = {
+               query: searchTerm,
+               type: filterType,
+               status: filterStatus,
+               minPrice: minPrice ? parseFloat(minPrice) : undefined,
+               maxPrice: maxPrice ? parseFloat(maxPrice) : undefined,
+               searchByActiveIngredient: searchByActive,
+               ...(hasActiveListFilters ? { page: currentPage, pageSize } : {})
+            };
+            const refreshRequestId = ++catalogRequestRef.current;
+            try {
+               const refreshRes = await searchMasterDrugsAction(searchOptions);
+               if (refreshRequestId !== catalogRequestRef.current) return;
+               if (refreshRes.success && refreshRes.data) {
+                  setItems(refreshRes.data);
+                  if (hasActiveListFilters) {
+                     setFilteredTotal(refreshRes.total ?? refreshRes.data.length);
+                     setCurrentPage(refreshRes.page ?? currentPage);
+                  }
+               }
+            } catch (err) {
+               if (refreshRequestId !== catalogRequestRef.current) return;
+               console.error('Failed to refresh master drugs after save:', err);
+               toast.error('تم حفظ الصنف لكن تعذر تحديث القائمة');
+            }
+         } else {
+            const conflict = await findDrugBarcodeConflict(String(itemToSave.barcode || ''), itemToSave.id);
+            if (conflict) {
+               setReplacement({ source: conflict, ...(itemToSave.id ? { target: itemToSave, pendingEdit: itemToSave } : { newDrug: { ...itemToSave, official_price: Number(itemToSave.official_price) } }) });
+               return;
+            }
+            toast.error(res.error || 'فشل الحفظ');
          }
-         toast.error(res.error || 'فشل الحفظ');
+      } catch (err) {
+         console.error('Failed to save master drug:', err);
+         toast.error('فشل الحفظ');
+      } finally {
+         saveSubmissionRef.current = false;
+         setIsSaving(false);
       }
    };
 
@@ -459,8 +549,30 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
             setReplacement(null);
             setIsModalOpen(false);
             toast.success('تم نقل الروابط وحذف الصنف القديم مع حفظ نسخة احتياطية');
-            const refreshed = await searchMasterDrugsAction({ query: searchTerm, type: filterType, status: filterStatus });
-            if (refreshed.success) setItems(refreshed.data || []);
+            const refreshRequestId = ++catalogRequestRef.current;
+            try {
+               const refreshed = await searchMasterDrugsAction({
+                  query: searchTerm,
+                  type: filterType,
+                  status: filterStatus,
+                  minPrice: minPrice ? parseFloat(minPrice) : undefined,
+                  maxPrice: maxPrice ? parseFloat(maxPrice) : undefined,
+                  searchByActiveIngredient: searchByActive,
+                  ...(hasActiveListFilters ? { page: currentPage, pageSize } : {})
+               });
+               if (refreshRequestId !== catalogRequestRef.current) return;
+               if (refreshed.success) {
+                  setItems(refreshed.data || []);
+                  if (hasActiveListFilters) {
+                     setFilteredTotal(refreshed.total ?? refreshed.data?.length ?? 0);
+                     setCurrentPage(refreshed.page ?? currentPage);
+                  }
+               }
+            } catch (err) {
+               if (refreshRequestId !== catalogRequestRef.current) return;
+               console.error('Failed to refresh master drugs after replacement:', err);
+               toast.error('تم الاستبدال لكن تعذر تحديث القائمة');
+            }
          }} />}
          <Toaster position="top-center" />
 
@@ -491,26 +603,30 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                       تصدير الكل
                    </button>
                    
-                   <label
-                      className="px-6 py-5 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-[24px] font-black hover:bg-slate-200 transition-all flex items-center gap-2 cursor-pointer"
-                   >
-                      <Upload className="w-5 h-5" />
-                      استيراد الكل
-                      <input 
-                         type="file" 
-                         accept=".xlsx, .xls" 
-                         onChange={handleImportAll} 
-                         className="hidden" 
-                      />
-                   </label>
+                   {canManageInventory && (
+                      <>
+                         <label
+                            className="px-6 py-5 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-[24px] font-black hover:bg-slate-200 transition-all flex items-center gap-2 cursor-pointer"
+                         >
+                            <Upload className="w-5 h-5" />
+                            استيراد الكل
+                            <input
+                               type="file"
+                               accept=".xlsx, .xls"
+                               onChange={handleImportAll}
+                               className="hidden"
+                            />
+                         </label>
 
-                   <button
-                      onClick={openAddModal}
-                      className="px-12 py-5 bg-primary-600 text-white rounded-[24px] font-black shadow-2xl shadow-primary-500/30 hover:bg-primary-700 hover:-translate-y-1 active:scale-95 transition-all flex items-center gap-3 group"
-                   >
-                      <Plus className="w-6 h-6 group-hover:rotate-90 transition-transform" />
-                      إضافة صنف جديد
-                   </button>
+                         <button
+                            onClick={openAddModal}
+                            className="px-12 py-5 bg-primary-600 text-white rounded-[24px] font-black shadow-2xl shadow-primary-500/30 hover:bg-primary-700 hover:-translate-y-1 active:scale-95 transition-all flex items-center gap-3 group"
+                         >
+                            <Plus className="w-6 h-6 group-hover:rotate-90 transition-transform" />
+                            إضافة صنف جديد
+                         </button>
+                      </>
+                   )}
                 </div>
             </div>
 
@@ -662,19 +778,24 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                                  >
                                     <Eye className="w-5 h-5" />
                                  </button>
-                                 <button
-                                    onClick={() => openEditModal(item)}
-                                    className="p-3 bg-white dark:bg-slate-800 text-primary-600 rounded-2xl shadow-soft hover:bg-primary-600 hover:text-white transition-all active:scale-90"
-                                 >
-                                    <Edit className="w-5 h-5" />
-                                 </button>
-                                 <button
-                                    onClick={() => handleCopy(item)}
-                                    className="p-3 bg-white dark:bg-slate-800 text-slate-400 rounded-2xl shadow-soft hover:bg-slate-900 dark:hover:bg-slate-700 hover:text-white transition-all active:scale-90"
-                                    title="نسخ بيانات الصنف"
-                                 >
-                                    <Copy className="w-5 h-5" />
-                                 </button>
+                                 {canManageInventory && (
+                                    <>
+                                       <button
+                                          onClick={() => openEditModal(item)}
+                                          className="p-3 bg-white dark:bg-slate-800 text-primary-600 rounded-2xl shadow-soft hover:bg-primary-600 hover:text-white transition-all active:scale-90"
+                                          title="تعديل بيانات الصنف"
+                                       >
+                                          <Edit className="w-5 h-5" />
+                                       </button>
+                                       <button
+                                          onClick={() => handleCopy(item)}
+                                          className="p-3 bg-white dark:bg-slate-800 text-slate-400 rounded-2xl shadow-soft hover:bg-slate-900 dark:hover:bg-slate-700 hover:text-white transition-all active:scale-90"
+                                          title="نسخ بيانات الصنف"
+                                       >
+                                          <Copy className="w-5 h-5" />
+                                       </button>
+                                    </>
+                                 )}
                               </div>
                            </td>
                         </tr>
@@ -688,17 +809,32 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                    <div className="w-3 h-3 rounded-full bg-primary-500" />
                    <p className="text-sm font-black text-slate-500">
                       إجمالي الأصناف: <span className="text-slate-900 dark:text-white ml-1">
-                         {(!searchTerm.trim() && filterType === 'all' && filterStatus === 'all' && !minPrice && !maxPrice && totalCount) ? totalCount : items.length}
+                         {effectiveTotal}
                       </span>
-                      {Boolean(totalCount && totalCount > items.length && !searchTerm.trim() && filterType === 'all' && filterStatus === 'all' && !minPrice && !maxPrice) && (
+                      {Boolean(effectiveTotal > items.length) && (
                          <span className="text-xs text-slate-400 font-bold mr-2">(المعروض: {items.length})</span>
                       )}
                    </p>
                 </div>
-               <div className="flex gap-2">
-                  <button className="px-6 py-3 bg-white dark:bg-slate-800 rounded-2xl text-xs font-black text-slate-400 disabled:opacity-50 border border-slate-100 dark:border-slate-700">السابق</button>
-                  <button className="px-6 py-3 bg-white dark:bg-slate-800 rounded-2xl text-xs font-black text-slate-400 disabled:opacity-50 border border-slate-100 dark:border-slate-700">التالي</button>
-               </div>
+               {totalPages > 1 && (
+                  <div className="flex items-center gap-3">
+                     <span className="text-xs font-black text-slate-400">صفحة {currentPage} من {totalPages}</span>
+                     <div className="flex gap-2">
+                        <button
+                           type="button"
+                           disabled={currentPage === 1}
+                           onClick={() => loadCatalogPage(currentPage - 1)}
+                           className="px-6 py-3 bg-white dark:bg-slate-800 rounded-2xl text-xs font-black text-slate-400 disabled:opacity-50 border border-slate-100 dark:border-slate-700"
+                        >السابق</button>
+                        <button
+                           type="button"
+                           disabled={currentPage === totalPages}
+                           onClick={() => loadCatalogPage(currentPage + 1)}
+                           className="px-6 py-3 bg-white dark:bg-slate-800 rounded-2xl text-xs font-black text-slate-400 disabled:opacity-50 border border-slate-100 dark:border-slate-700"
+                        >التالي</button>
+                     </div>
+                  </div>
+               )}
             </div>
          </div>
 
@@ -1017,22 +1153,26 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                 setContextMenu(null);
               }} 
             />
-            <ContextMenuItem 
-              icon={Edit} 
-              label="تعديل بيانات الصنف" 
-              onClick={() => {
-                const drug = items.find(i => String(i.id) === String(contextMenu.drugId)); if (drug) void openEditModal(drug); setContextMenu(null);
-              }} 
-            />
-            <div className="h-px bg-slate-100 dark:bg-slate-800 my-1 mx-2" />
-            <ContextMenuItem 
-              icon={Trash2} 
-              label="حذف الصنف نهائياً" 
-              color="text-red-500"
-              onClick={() => {
-                if(confirm('هل أنت متأكد من حذف الصنف؟')) { handleDelete(contextMenu.drugId as number); setContextMenu(null); }
-              }} 
-            />
+            {canManageInventory && (
+              <>
+                <ContextMenuItem
+                  icon={Edit}
+                  label="تعديل بيانات الصنف"
+                  onClick={() => {
+                    const drug = items.find(i => String(i.id) === String(contextMenu.drugId)); if (drug) void openEditModal(drug); setContextMenu(null);
+                  }}
+                />
+                <div className="h-px bg-slate-100 dark:bg-slate-800 my-1 mx-2" />
+                <ContextMenuItem
+                  icon={Trash2}
+                  label="حذف الصنف نهائياً"
+                  color="text-red-500"
+                  onClick={() => {
+                    if(confirm('هل أنت متأكد من حذف الصنف؟')) { handleDelete(contextMenu.drugId as number); setContextMenu(null); }
+                  }}
+                />
+              </>
+            )}
           </div>
         </div>
       )}

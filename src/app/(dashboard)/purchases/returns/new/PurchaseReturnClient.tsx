@@ -53,51 +53,64 @@ export default function PurchaseReturnClient() {
   const [refundMethod, setRefundMethod] = useState<'cash' | 'credit'>('credit');
   const [items, setItems] = useState<any[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isCommitted, setIsCommitted] = useState(false);
+  const submissionRef = React.useRef(false);
   const [itemSearch, setItemSearch] = useState('');
 
   const [selectedIndex, setSelectedIndex] = useState<number>(-1);
 
   useEffect(() => {
-    getSuppliersAction().then(res => {
-      if (res.success) setSuppliers(res.data);
-    });
+    getSuppliersAction()
+      .then(res => {
+        if (res.success) setSuppliers(res.data);
+        else toast.error(res.error || 'فشل تحميل الموردين');
+      })
+      .catch(() => toast.error('فشل تحميل الموردين'));
   }, []);
 
   // Fetch invoices by barcode/term or when supplier changes
   useEffect(() => {
     let cancelled = false;
     async function fetchInvoices() {
-      if (searchTerm.trim()) {
-        setIsLoadingInvoices(true);
-        const res = await searchPurchaseInvoicesForReturnAction(searchTerm);
-        if (cancelled) return;
-        setIsLoadingInvoices(false);
-        if (res.success && res.data) {
-          const list = res.data;
-          const preservedIndex = list.findIndex((item: any) => item.id === selectedInvoiceIdRef.current);
-          const nextIndex = preservedIndex >= 0 ? preservedIndex : (list.length > 0 ? 0 : -1);
-          selectedInvoiceIdRef.current = nextIndex >= 0 ? list[nextIndex].id : '';
-          setInvoices(list);
-          setSelectedIndex(nextIndex);
+      try {
+        if (searchTerm.trim()) {
+          setIsLoadingInvoices(true);
+          const res = await searchPurchaseInvoicesForReturnAction(searchTerm);
+          if (cancelled) return;
+          if (res.success && res.data) {
+            const list = res.data;
+            const preservedIndex = list.findIndex((item: any) => item.id === selectedInvoiceIdRef.current);
+            const nextIndex = preservedIndex >= 0 ? preservedIndex : (list.length > 0 ? 0 : -1);
+            selectedInvoiceIdRef.current = nextIndex >= 0 ? list[nextIndex].id : '';
+            setInvoices(list);
+            setSelectedIndex(nextIndex);
+          } else {
+            toast.error(res.error || 'فشل تحميل فواتير الشراء');
+          }
+        } else if (selectedSupplierId) {
+          setIsLoadingInvoices(true);
+          const res = await getPurchasesReportsAction({ supplierId: selectedSupplierId, status: 'completed' });
+          if (cancelled) return;
+          if (res.success && res.data) {
+            const list = res.data.filter((invoice: any) => invoice.status === 'completed');
+            const preservedIndex = list.findIndex((item: any) => item.id === selectedInvoiceIdRef.current);
+            const nextIndex = preservedIndex >= 0 ? preservedIndex : (list.length > 0 ? 0 : -1);
+            selectedInvoiceIdRef.current = nextIndex >= 0 ? list[nextIndex].id : '';
+            setInvoices(list);
+            setSelectedIndex(nextIndex);
+          } else {
+            toast.error(res.error || 'فشل تحميل فواتير الشراء');
+          }
+        } else {
+          selectedInvoiceIdRef.current = '';
+          setInvoices([]);
+          setSelectedIndex(-1);
+          setItems([]);
         }
-      } else if (selectedSupplierId) {
-        setIsLoadingInvoices(true);
-        const res = await getPurchasesReportsAction({ supplierId: selectedSupplierId, status: 'completed' });
-        if (cancelled) return;
-        setIsLoadingInvoices(false);
-        if (res.success && res.data) {
-          const list = res.data.filter((invoice: any) => invoice.status === 'completed');
-          const preservedIndex = list.findIndex((item: any) => item.id === selectedInvoiceIdRef.current);
-          const nextIndex = preservedIndex >= 0 ? preservedIndex : (list.length > 0 ? 0 : -1);
-          selectedInvoiceIdRef.current = nextIndex >= 0 ? list[nextIndex].id : '';
-          setInvoices(list);
-          setSelectedIndex(nextIndex);
-        }
-      } else {
-        selectedInvoiceIdRef.current = '';
-        setInvoices([]);
-        setSelectedIndex(-1);
-        setItems([]);
+      } catch {
+        if (!cancelled) toast.error('فشل تحميل فواتير الشراء');
+      } finally {
+        if (!cancelled) setIsLoadingInvoices(false);
       }
     }
     const timer = setTimeout(fetchInvoices, 250);
@@ -182,37 +195,44 @@ export default function PurchaseReturnClient() {
     setItemSearch('');
     
     setIsLoadingInvoices(true);
-    const res = await getPurchaseInvoiceDetailsAction(invId);
-    if (requestId !== detailRequestRef.current) return;
-    setIsLoadingInvoices(false);
-    
-    if (res.success && res.data) {
-      // Map to return items format with 0 quantity returned by default
-      setItems(res.data.map((item: any) => ({
-        purchase_invoice_item_id: item.id,
-        inventory_id: item.inventory_id,
-        drug_id: item.drug_id,
-        drug_name: item.trade_name || item.trade_name_en,
-        drug_name_en: item.trade_name_en,
-        barcode: item.barcode || '',
-        quantity: 0, // This is the return quantity
-        original_quantity: Number(item.quantity || 0),
-        returned_large_quantity: Number(item.returned_large_quantity || 0),
-        remaining_large_quantity: Number(item.remaining_large_quantity || 0),
-        max_quantity: Number(item.remaining_large_quantity || 0),
-        refundable_large_unit_price: Number(item.refundable_large_unit_price || 0),
-        unit_price: Number(item.refundable_large_unit_price || 0),
-        original_unit: 'large',
-        unit: 'large',
-        base_price: Number(item.refundable_large_unit_price || 0),
-        large_to_medium: item.strips_per_box || item.large_to_medium || 1,
-        medium_to_small: item.medium_to_small || 1,
-        expiry_date: item.inventory_expiry_date || item.expiry_date,
-        batch_number: item.batch_number,
-      })));
-    } else {
-      toast.error('لم يتم العثور على تفاصيل الفاتورة');
-      setItems([]);
+    try {
+      const res = await getPurchaseInvoiceDetailsAction(invId);
+      if (requestId !== detailRequestRef.current) return;
+      if (res.success && res.data) {
+        // Map to return items format with 0 quantity returned by default
+        setItems(res.data.map((item: any) => ({
+          purchase_invoice_item_id: item.id,
+          inventory_id: item.inventory_id,
+          drug_id: item.drug_id,
+          drug_name: item.trade_name || item.trade_name_en,
+          drug_name_en: item.trade_name_en,
+          barcode: item.barcode || '',
+          quantity: 0, // This is the return quantity
+          original_quantity: Number(item.quantity || 0),
+          returned_large_quantity: Number(item.returned_large_quantity || 0),
+          remaining_large_quantity: Number(item.remaining_large_quantity || 0),
+          max_quantity: Number(item.remaining_large_quantity || 0),
+          refundable_large_unit_price: Number(item.refundable_large_unit_price || 0),
+          unit_price: Number(item.refundable_large_unit_price || 0),
+          original_unit: 'large',
+          unit: 'large',
+          base_price: Number(item.refundable_large_unit_price || 0),
+          large_to_medium: item.strips_per_box || item.large_to_medium || 1,
+          medium_to_small: item.medium_to_small || 1,
+          expiry_date: item.inventory_expiry_date || item.expiry_date,
+          batch_number: item.batch_number,
+        })));
+      } else {
+        toast.error('لم يتم العثور على تفاصيل الفاتورة');
+        setItems([]);
+      }
+    } catch {
+      if (requestId === detailRequestRef.current) {
+        toast.error('فشل تحميل تفاصيل الفاتورة');
+        setItems([]);
+      }
+    } finally {
+      if (requestId === detailRequestRef.current) setIsLoadingInvoices(false);
     }
   };
 
@@ -276,20 +296,35 @@ export default function PurchaseReturnClient() {
       return;
     }
 
+    if (submissionRef.current) return;
+    submissionRef.current = true;
     setIsSubmitting(true);
-    const res = await createPurchaseReturnAction({
-      purchase_invoice_id: selectedInvoiceId,
-      supplier_id: Number(selectedSupplierId),
-      reason,
-      refund_method: refundMethod,
-      items: activeItems
-    });
+    let committed = false;
+    try {
+      const res = await createPurchaseReturnAction({
+        purchase_invoice_id: selectedInvoiceId,
+        supplier_id: Number(selectedSupplierId),
+        reason,
+        refund_method: refundMethod,
+        items: activeItems
+      });
 
-    if (res.success) {
-      toast.success('تم إنشاء مرتجع المشتريات بنجاح');
-      router.push('/purchases/returns');
-    } else {
-      toast.error('حدث خطأ: ' + res.error);
+      if (res.success) {
+        committed = true;
+        setIsCommitted(true);
+        toast.success('تم إنشاء مرتجع المشتريات بنجاح');
+        try {
+          router.push('/purchases/returns');
+        } catch {
+          toast.error('تم إنشاء مرتجع المشتريات بنجاح لكن تعذر فتح قائمة المرتجعات');
+        }
+      } else {
+        toast.error('حدث خطأ: ' + res.error);
+      }
+    } catch {
+      toast.error('حدث خطأ أثناء إنشاء مرتجع المشتريات');
+    } finally {
+      if (!committed) submissionRef.current = false;
       setIsSubmitting(false);
     }
   };
@@ -525,11 +560,11 @@ export default function PurchaseReturnClient() {
                   
                   <button
                     onClick={handleSubmit}
-                    disabled={isSubmitting || activeItems.length === 0}
+                    disabled={isSubmitting || isCommitted || activeItems.length === 0}
                     className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white p-3.5 rounded-xl font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed mt-6 shadow-md shadow-blue-500/10"
                   >
                     <Save className="w-5 h-5" />
-                    {isSubmitting ? 'جاري الحفظ...' : 'تنفيذ المرتجع'}
+                    {isCommitted ? 'تم حفظ المرتجع' : isSubmitting ? 'جاري الحفظ...' : 'تنفيذ المرتجع'}
                   </button>
                 </div>
 

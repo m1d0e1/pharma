@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { 
   PackageSearch, AlertTriangle, ShoppingCart, ArrowRight, Loader2, 
   RefreshCw, ClipboardList, Warehouse, CheckSquare, Square, CheckCheck, 
@@ -30,15 +30,26 @@ export default function ReorderAlerts() {
   const router = useRouter()
   const [items, setItems] = useState<ReorderItem[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const [loadError, setLoadError] = useState(false)
+  const [refreshError, setRefreshError] = useState(false)
   const [savingDrugId, setSavingDrugId] = useState<number | null>(null)
   const [selectedIds, setSelectedIds] = useState<number[]>([])
   const [isBulkAdding, setIsBulkAdding] = useState(false)
+  const singleAddRef = useRef(false)
+  const bulkAddRef = useRef(false)
+  const hasLoadedRef = useRef(false)
+  const loadRequestRef = useRef(0)
   const [hiddenCount, setHiddenCount] = useState(0)
 
   const loadReorderItems = async () => {
-    setIsLoading(true)
+    const requestId = ++loadRequestRef.current
+    const preserveExisting = hasLoadedRef.current
+    if (!preserveExisting) setIsLoading(true)
+    if (preserveExisting) setRefreshError(false)
+    else setLoadError(false)
     try {
       const result = await getLowStockAction(10)
+      if (requestId !== loadRequestRef.current) return
       if (!result.success) throw new Error(result.error || 'فشل تحميل تنبيهات إعادة الطلب')
 
       const mapped = (result.data || []).map((item: any) => {
@@ -65,11 +76,17 @@ export default function ReorderAlerts() {
       setItems(mapped)
       setSelectedIds([])
       setHiddenCount(0)
+      hasLoadedRef.current = true
+      setLoadError(false)
+      setRefreshError(false)
     } catch (e) {
+      if (requestId !== loadRequestRef.current) return
       console.error('Failed to load reorder alerts', e)
+      if (preserveExisting) setRefreshError(true)
+      else setLoadError(true)
       toast.error('فشل تحديث تنبيهات إعادة الطلب')
     } finally {
-      setIsLoading(false)
+      if (requestId === loadRequestRef.current && !preserveExisting) setIsLoading(false)
     }
   }
 
@@ -97,6 +114,8 @@ export default function ReorderAlerts() {
   const handleRefresh = () => window.dispatchEvent(new Event('inventory-alerts-refresh'))
 
   const addToNotebook = async (item: ReorderItem) => {
+    if (singleAddRef.current) return
+    singleAddRef.current = true
     setSavingDrugId(item.drug_id)
     try {
       const result = await addToShortagesAction({ drug_id: item.drug_id, qty: item.suggested_qty })
@@ -105,6 +124,7 @@ export default function ReorderAlerts() {
     } catch (error: any) {
       toast.error(error.message || 'فشل الإضافة إلى كشكول النواقص')
     } finally {
+      singleAddRef.current = false
       setSavingDrugId(null)
     }
   }
@@ -115,19 +135,29 @@ export default function ReorderAlerts() {
       : items
 
     if (targetItems.length === 0) return
+    if (bulkAddRef.current) return
 
+    bulkAddRef.current = true
     setIsBulkAdding(true)
     try {
       let count = 0
+      const failedDrugIds: number[] = []
       for (const item of targetItems) {
         const res = await addToShortagesAction({ drug_id: item.drug_id, qty: item.suggested_qty })
         if (res.success) count++
+        else failedDrugIds.push(item.drug_id)
       }
-      toast.success(`تمت إضافة ${count} صنف إلى كشكول النواقص بنجاح`)
-      setSelectedIds([])
+      if (count > 0) {
+        toast.success(`تمت إضافة ${count} صنف إلى كشكول النواقص بنجاح`)
+      }
+      if (failedDrugIds.length > 0) {
+        toast.error(`تعذر إضافة ${failedDrugIds.length} صنف إلى كشكول النواقص`)
+      }
+      setSelectedIds(prev => prev.filter(id => failedDrugIds.includes(id)))
     } catch (e) {
       toast.error('حدث خطأ أثناء الإضافة الجماعية')
     } finally {
+      bulkAddRef.current = false
       setIsBulkAdding(false)
     }
   }
@@ -192,6 +222,7 @@ export default function ReorderAlerts() {
     window.addEventListener('inventory-alerts-refresh', handleInventoryRefresh)
 
     return () => {
+      loadRequestRef.current += 1
       window.removeEventListener('inventory-alerts-refresh', handleInventoryRefresh)
     }
   }, [])
@@ -202,6 +233,24 @@ export default function ReorderAlerts() {
         <div className="flex items-center justify-center gap-3 text-slate-400">
           <Loader2 className="w-5 h-5 animate-spin" />
           <span className="font-bold text-sm">جاري تحميل تنبيهات النواقص...</span>
+        </div>
+      </div>
+    )
+  }
+
+  if (loadError) {
+    return (
+      <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-100 dark:border-slate-800 p-8 shadow-xl">
+        <div className="flex flex-col items-center justify-center gap-4 text-center">
+          <AlertTriangle className="w-8 h-8 text-rose-500" />
+          <p className="font-black text-slate-800 dark:text-slate-100">تعذر تحميل تنبيهات إعادة الطلب</p>
+          <button
+            type="button"
+            onClick={() => void loadReorderItems()}
+            className="px-4 py-2 rounded-xl bg-primary-600 text-white text-xs font-black hover:bg-primary-700"
+          >
+            إعادة المحاولة
+          </button>
         </div>
       </div>
     )
@@ -239,6 +288,18 @@ export default function ReorderAlerts() {
 
   return (
     <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-xl overflow-hidden">
+      {refreshError && (
+        <div className="px-6 py-4 bg-amber-50 dark:bg-amber-950/20 border-b border-amber-200 dark:border-amber-900/40 flex flex-wrap items-center justify-between gap-3">
+          <span className="text-xs font-black text-amber-800 dark:text-amber-300">تعذر تحديث تنبيهات إعادة الطلب</span>
+          <button
+            type="button"
+            onClick={() => void loadReorderItems()}
+            className="px-3 py-2 rounded-xl bg-amber-700 text-white text-xs font-black"
+          >
+            إعادة تحميل تنبيهات إعادة الطلب
+          </button>
+        </div>
+      )}
       <div className="p-6 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center gap-4 flex-wrap">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 bg-amber-100 dark:bg-amber-900/30 rounded-2xl flex items-center justify-center shrink-0">

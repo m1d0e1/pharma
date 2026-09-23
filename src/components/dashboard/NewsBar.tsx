@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { X, Megaphone, Pill, Zap, Globe } from 'lucide-react';
 
 // ─── How to add news ─────────────────────────────────────────────────────────
@@ -28,11 +28,18 @@ interface NewsItem {
   type?: 'drugs' | 'interactions' | 'general';
 }
 
+const FALLBACK_NEWS: NewsItem = {
+  id: 'default-welcome',
+  text: 'أهلاً بك في نظام فارما! شريط الأخبار متصل ويعمل بنجاح. يمكنك تحديث قائمة الأدوية والتفاعلات من الأزرار أدناه.',
+  type: 'general',
+};
+
 export default function NewsBar() {
   const [item, setItem] = useState<NewsItem | null>(null);
   const [visible, setVisible] = useState(false);
+  const itemRef = useRef<NewsItem | null>(null);
 
-  const checkVisibility = (latestItem: NewsItem) => {
+  const checkVisibility = useCallback((latestItem: NewsItem) => {
     const dismissed = localStorage.getItem(DISMISS_KEY);
     const enabled = localStorage.getItem('news_bar_enabled') !== 'false';
     
@@ -41,41 +48,44 @@ export default function NewsBar() {
     } else {
       setVisible(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
-    const fallback = { id: 'default-welcome', text: 'أهلاً بك في نظام فارما! شريط الأخبار متصل ويعمل بنجاح. يمكنك تحديث قائمة الأدوية والتفاعلات من الأزرار أدناه.', type: 'general' as const };
 
     fetch(NEWS_URL, { cache: 'no-store' })
       .then(r => r.ok ? r.json() : null)
       .then((items: NewsItem[] | null) => {
         if (cancelled) return;
         if (!items?.length) {
-          setItem(fallback);
-          checkVisibility(fallback);
+          itemRef.current = FALLBACK_NEWS;
+          setItem(FALLBACK_NEWS);
+          checkVisibility(FALLBACK_NEWS);
           return;
         }
         const latest = items[0];
+        itemRef.current = latest;
         setItem(latest);
         checkVisibility(latest);
       })
       .catch(() => {
         if (cancelled) return;
-        setItem(fallback);
-        checkVisibility(fallback);
+        itemRef.current = FALLBACK_NEWS;
+        setItem(FALLBACK_NEWS);
+        checkVisibility(FALLBACK_NEWS);
       });
-
-    const handleToggle = () => {
-      checkVisibility(item || fallback);
-    };
-
-    window.addEventListener('news-bar-toggle', handleToggle);
     return () => {
       cancelled = true;
-      window.removeEventListener('news-bar-toggle', handleToggle);
     };
-  }, [item]);
+  }, [checkVisibility]);
+
+  useEffect(() => {
+    const handleToggle = () => {
+      checkVisibility(itemRef.current || FALLBACK_NEWS);
+    };
+    window.addEventListener('news-bar-toggle', handleToggle);
+    return () => window.removeEventListener('news-bar-toggle', handleToggle);
+  }, [checkVisibility]);
 
   const dismiss = () => {
     if (item) {

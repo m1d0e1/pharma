@@ -1,7 +1,7 @@
 'use client';
 import TableScrollContainer from '@/components/ui/TableScrollContainer';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { getPurchaseInvoicesAction, getPurchaseInvoiceDetailsAction, deletePurchaseInvoiceAction } from '@/app/actions-client/purchases';
 import { format } from 'date-fns';
 import { ar } from 'date-fns/locale';
@@ -81,19 +81,41 @@ export default function PurchaseReportsClient() {
   const [selectedItems, setSelectedItems] = useState<any[]>([]);
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+  const loadRequestRef = useRef(0);
+  const detailsRequestRef = useRef(0);
+  const barcodeRequestRef = useRef(0);
+  const deletingRef = useRef(false);
 
-  useEffect(() => {
-    async function load() {
+  const loadInvoices = React.useCallback(async () => {
+    const requestId = ++loadRequestRef.current;
+    setLoading(true);
+    setLoadError(false);
+    try {
       const res = await getPurchaseInvoicesAction();
+      if (requestId !== loadRequestRef.current) return;
       if (res.success && res.data) {
         setInvoices(res.data);
       } else {
         toast.error('فشل تحميل تقارير المشتريات');
+        setLoadError(true);
       }
-      setLoading(false);
+    } catch (err) {
+      if (requestId !== loadRequestRef.current) return;
+      console.error('Purchase reports load error:', err);
+      toast.error('فشل تحميل تقارير المشتريات');
+      setLoadError(true);
+    } finally {
+      if (requestId === loadRequestRef.current) setLoading(false);
     }
-    load();
   }, []);
+
+  useEffect(() => {
+    void loadInvoices();
+    return () => {
+      loadRequestRef.current += 1;
+    };
+  }, [loadInvoices]);
 
   const filteredInvoices = invoices.filter(inv => {
     const matchesSearch = !searchTerm || 
@@ -135,48 +157,85 @@ export default function PurchaseReportsClient() {
     );
   }
 
+  if (loadError) {
+    return (
+      <div className="flex min-h-[50vh] flex-col items-center justify-center gap-4" dir="rtl">
+        <p className="font-black text-rose-600">تعذر تحميل تقارير المشتريات</p>
+        <button type="button" onClick={() => void loadInvoices()} className="rounded-xl bg-primary-600 px-5 py-2.5 font-black text-white">
+          إعادة المحاولة
+        </button>
+      </div>
+    );
+  }
+
   const handlePrintBarcode = async (invoiceId: string) => {
+    const requestId = ++barcodeRequestRef.current;
     toast.loading('جاري تحميل بيانات الفاتورة...', { id: 'load-invoice' });
-    const res = await getPurchaseInvoiceDetailsAction(invoiceId);
-    toast.dismiss('load-invoice');
-    
-    if (res.success && res.data) {
-      // Mapping the data to match BarcodeItem interface
-      const items = res.data.map((item: any) => ({
-        id: item.drug_id,
-        trade_name: item.trade_name,
-        trade_name_en: item.trade_name,
-        barcode: item.barcode || '000000',
-        selling_price: item.selling_price || item.cost_price, // fallback if selling_price is not set
-        expiry_date: item.expiry_date
-      }));
-      setSelectedInvoiceForBarcode(items);
-    } else {
+    try {
+      const res = await getPurchaseInvoiceDetailsAction(invoiceId);
+      if (requestId !== barcodeRequestRef.current) return;
+      if (res.success && res.data) {
+        // Mapping the data to match BarcodeItem interface
+        const items = res.data.map((item: any) => ({
+          id: item.drug_id,
+          trade_name: item.trade_name,
+          trade_name_en: item.trade_name,
+          barcode: item.barcode || '000000',
+          selling_price: item.selling_price || item.cost_price, // fallback if selling_price is not set
+          expiry_date: item.expiry_date
+        }));
+        setSelectedInvoiceForBarcode(items);
+      } else {
+        toast.error('فشل في تحميل تفاصيل الفاتورة للطباعة');
+      }
+    } catch (err) {
+      if (requestId !== barcodeRequestRef.current) return;
+      console.error('Purchase barcode details error:', err);
       toast.error('فشل في تحميل تفاصيل الفاتورة للطباعة');
+    } finally {
+      if (requestId === barcodeRequestRef.current) toast.dismiss('load-invoice');
     }
   };
 
   const showInvoice = async (invoice: any) => {
+    const requestId = ++detailsRequestRef.current;
     setSelectedInvoice(invoice);
     setSelectedItems([]);
     setDetailsLoading(true);
-    const res = await getPurchaseInvoiceDetailsAction(invoice.id);
-    setDetailsLoading(false);
-    if (res.success && res.data) setSelectedItems(res.data);
-    else toast.error('فشل تحميل تفاصيل فاتورة الشراء');
+    try {
+      const res = await getPurchaseInvoiceDetailsAction(invoice.id);
+      if (requestId !== detailsRequestRef.current) return;
+      if (res.success && res.data) setSelectedItems(res.data);
+      else toast.error('فشل تحميل تفاصيل فاتورة الشراء');
+    } catch (err) {
+      if (requestId !== detailsRequestRef.current) return;
+      console.error('Purchase invoice details error:', err);
+      toast.error('فشل تحميل تفاصيل فاتورة الشراء');
+    } finally {
+      if (requestId === detailsRequestRef.current) setDetailsLoading(false);
+    }
   };
 
   const deleteInvoice = async (removeInventory: boolean) => {
+    if (deletingRef.current) return;
     if (!selectedInvoice || !confirm(removeInventory
       ? 'حذف الفاتورة وعكس كمياتها من المخزون وقيودها المحاسبية ورصيد المورد؟'
       : 'حذف سجل الفاتورة فقط؟ ستبقى الكميات في المخزون والقيود المحاسبية ورصيد المورد دون تغيير.')) return;
+    deletingRef.current = true;
     setDeleting(true);
-    const result = await deletePurchaseInvoiceAction(selectedInvoice.id, removeInventory);
-    setDeleting(false);
-    if (!result.success) return toast.error(result.error || 'فشل حذف فاتورة الشراء');
-    setInvoices(current => current.filter(invoice => invoice.id !== selectedInvoice.id));
-    setSelectedInvoice(null);
-    toast.success('تم حذف فاتورة الشراء');
+    try {
+      const result = await deletePurchaseInvoiceAction(selectedInvoice.id, removeInventory);
+      if (!result.success) return toast.error(result.error || 'فشل حذف فاتورة الشراء');
+      setInvoices(current => current.filter(invoice => invoice.id !== selectedInvoice.id));
+      setSelectedInvoice(null);
+      toast.success('تم حذف فاتورة الشراء');
+    } catch (err) {
+      console.error('Delete purchase invoice error:', err);
+      toast.error('فشل حذف فاتورة الشراء');
+    } finally {
+      deletingRef.current = false;
+      setDeleting(false);
+    }
   };
 
   return (

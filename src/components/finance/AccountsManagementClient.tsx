@@ -2,7 +2,7 @@
 import { useHotkeys } from 'react-hotkeys-hook';
 
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import {
   DollarSign, Landmark, Receipt, FileStack, AlertCircle, 
@@ -125,6 +125,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
   const [treasuryDetails, setTreasuryDetails] = useState<any[]>([]);
   const [treasuryDetailCount, setTreasuryDetailCount] = useState(0);
   const [loadingTreasuryDetails, setLoadingTreasuryDetails] = useState(false);
+  const treasuryMetricRequestRef = useRef(0);
   const [movements, setMovements] = useState<any[]>([]);
   const [pointsOfSale, setPointsOfSale] = useState<any[]>([]);
   const [expenseDefinitions, setExpenseDefinitions] = useState<any[]>([]);
@@ -134,18 +135,33 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
   const [accounts, setAccounts] = useState<any[]>([]);
   const [journals, setJournals] = useState<any[]>([]);
   const [loadingData, setLoadingData] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const loadTabRequestRef = useRef(0);
+  const mutationLocksRef = useRef<Set<string>>(new Set());
+  const beginMutation = (key: string) => {
+    if (mutationLocksRef.current.has(key)) return false;
+    mutationLocksRef.current.add(key);
+    return true;
+  };
+  const endMutation = (key: string) => mutationLocksRef.current.delete(key);
   const [coaViewMode, setCoaViewMode] = useState<'table' | 'tree'>('tree');
   const [showAddAccount, setShowAddAccount] = useState<{ show: boolean, parentId: number | null }>({ show: false, parentId: null });
   const [editingAccount, setEditingAccount] = useState<any | null>(null);
 
   const handleDeleteAccount = async (acc: any) => {
-    if (!window.confirm(`هل أنت متأكد من حذف الحساب "${acc.name_ar}" (كود: ${acc.code})؟`)) return;
-    const res = await deleteAccountAction(acc.id);
-    if (res.success) {
-      toast.success('تم حذف الحساب بنجاح');
-      loadTabData();
-    } else {
-      toast.error(res.error || 'فشل حذف الحساب');
+    const mutationKey = `delete-account:${acc.id}`;
+    if (!beginMutation(mutationKey)) return;
+    try {
+      if (!window.confirm(`هل أنت متأكد من حذف الحساب "${acc.name_ar}" (كود: ${acc.code})؟`)) return;
+      const res = await deleteAccountAction(acc.id);
+      if (res.success) {
+        toast.success('تم حذف الحساب بنجاح');
+        loadTabData();
+      } else {
+        toast.error(res.error || 'فشل حذف الحساب');
+      }
+    } finally {
+      endMutation(mutationKey);
     }
   };
   const [selectedJournalId, setSelectedJournalId] = useState<string | null>(null);
@@ -155,13 +171,19 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
   const [expenseDefSearch, setExpenseDefSearch] = useState('');
 
   const handleDeleteExpenseDef = async (exp: any) => {
-    if (!window.confirm(`هل أنت متأكد من حذف تعريف المصروف "${exp.name_ar}" (كود: ${exp.code})؟`)) return;
-    const res = await deleteExpenseDefinitionAction(exp.id);
-    if (res.success) {
-      toast.success('تم حذف تعريف المصروف بنجاح');
-      loadTabData();
-    } else {
-      toast.error(res.error || 'فشل حذف تعريف المصروف');
+    const mutationKey = `delete-expense-definition:${exp.id}`;
+    if (!beginMutation(mutationKey)) return;
+    try {
+      if (!window.confirm(`هل أنت متأكد من حذف تعريف المصروف "${exp.name_ar}" (كود: ${exp.code})؟`)) return;
+      const res = await deleteExpenseDefinitionAction(exp.id);
+      if (res.success) {
+        toast.success('تم حذف تعريف المصروف بنجاح');
+        loadTabData();
+      } else {
+        toast.error(res.error || 'فشل حذف تعريف المصروف');
+      }
+    } finally {
+      endMutation(mutationKey);
     }
   };
 
@@ -177,13 +199,22 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
   const [showAddBankModal, setShowAddBankModal] = useState(false);
   const [editingBank, setEditingBank] = useState<any | null>(null);
   const handleDeleteBank = async (bank: any) => {
-    if (!window.confirm(`هل أنت متأكد من حذف الحساب البنكي "${bank.name_ar}"؟`)) return;
-    const res = await deleteBankAction(bank.id);
-    if (res.success) {
-      toast.success('تم حذف الحساب البنكي بنجاح');
-      loadTabData();
-    } else {
-      toast.error(res.error || 'فشل حذف الحساب البنكي');
+    const mutationKey = `delete-bank:${bank.id}`;
+    if (!beginMutation(mutationKey)) return;
+    try {
+      if (!window.confirm(`هل أنت متأكد من حذف الحساب البنكي "${bank.name_ar}"؟`)) return;
+      const res = await deleteBankAction(bank.id);
+      if (res.success) {
+        toast.success('تم حذف الحساب البنكي بنجاح');
+        loadTabData();
+      } else {
+        toast.error(res.error || 'فشل حذف الحساب البنكي');
+      }
+    } catch (err) {
+      console.error('Delete bank error:', err);
+      toast.error('فشل حذف الحساب البنكي');
+    } finally {
+      endMutation(mutationKey);
     }
   };
 
@@ -191,13 +222,22 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
   const [showAddCardModal, setShowAddCardModal] = useState(false);
   const [editingCard, setEditingCard] = useState<any | null>(null);
   const handleDeleteCard = async (card: any) => {
-    if (!window.confirm(`هل أنت متأكد من حذف ماكينة الدفع "${card.name_ar}"؟`)) return;
-    const res = await deleteCardAction(card.id);
-    if (res.success) {
-      toast.success('تم حذف ماكينة الدفع بنجاح');
-      loadTabData();
-    } else {
-      toast.error(res.error || 'فشل حذف ماكينة الدفع');
+    const mutationKey = `delete-card:${card.id}`;
+    if (!beginMutation(mutationKey)) return;
+    try {
+      if (!window.confirm(`هل أنت متأكد من حذف ماكينة الدفع "${card.name_ar}"؟`)) return;
+      const res = await deleteCardAction(card.id);
+      if (res.success) {
+        toast.success('تم حذف ماكينة الدفع بنجاح');
+        loadTabData();
+      } else {
+        toast.error(res.error || 'فشل حذف ماكينة الدفع');
+      }
+    } catch (err) {
+      console.error('Delete card error:', err);
+      toast.error('فشل حذف ماكينة الدفع');
+    } finally {
+      endMutation(mutationKey);
     }
   };
 
@@ -205,13 +245,22 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
   const [showAddPosModal, setShowAddPosModal] = useState(false);
   const [editingPos, setEditingPos] = useState<any | null>(null);
   const handleDeletePos = async (pos: any) => {
-    if (!window.confirm(`هل أنت متأكد من حذف نقطة البيع "${pos.name_ar}"؟`)) return;
-    const res = await deletePointOfSaleAction(pos.id);
-    if (res.success) {
-      toast.success('تم حذف نقطة البيع بنجاح');
-      loadTabData();
-    } else {
-      toast.error(res.error || 'فشل حذف نقطة البيع');
+    const mutationKey = `delete-pos:${pos.id}`;
+    if (!beginMutation(mutationKey)) return;
+    try {
+      if (!window.confirm(`هل أنت متأكد من حذف نقطة البيع "${pos.name_ar}"؟`)) return;
+      const res = await deletePointOfSaleAction(pos.id);
+      if (res.success) {
+        toast.success('تم حذف نقطة البيع بنجاح');
+        loadTabData();
+      } else {
+        toast.error(res.error || 'فشل حذف نقطة البيع');
+      }
+    } catch (err) {
+      console.error('Delete POS error:', err);
+      toast.error('فشل حذف نقطة البيع');
+    } finally {
+      endMutation(mutationKey);
     }
   };
 
@@ -219,13 +268,22 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
   const [showAddPaperModal, setShowAddPaperModal] = useState<{ show: boolean; type: 'check' | 'promissory_note'; direction: 'in' | 'out' }>({ show: false, type: 'check', direction: 'out' });
   const [paperSearch, setPaperSearch] = useState('');
   const handleDeletePaper = async (paper: any) => {
-    if (!window.confirm(`هل أنت متأكد من حذف الورقة المالية رقم "${paper.paper_number}"؟`)) return;
-    const res = await deletePaperAction(paper.id);
-    if (res.success) {
-      toast.success('تم حذف الورقة المالية بنجاح');
-      loadTabData();
-    } else {
-      toast.error(res.error || 'فشل حذف الورقة المالية');
+    const mutationKey = `delete-paper:${paper.id}`;
+    if (!beginMutation(mutationKey)) return;
+    try {
+      if (!window.confirm(`هل أنت متأكد من حذف الورقة المالية رقم "${paper.paper_number}"؟`)) return;
+      const res = await deletePaperAction(paper.id);
+      if (res.success) {
+        toast.success('تم حذف الورقة المالية بنجاح');
+        loadTabData();
+      } else {
+        toast.error(res.error || 'فشل حذف الورقة المالية');
+      }
+    } catch (err) {
+      console.error('Delete paper error:', err);
+      toast.error('فشل حذف الورقة المالية');
+    } finally {
+      endMutation(mutationKey);
     }
   };
   const handleUpdatePaperStatus = async (paper: any, newStatus: 'pending' | 'cashed' | 'bounced' | 'cancelled') => {
@@ -235,13 +293,22 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
       cancelled: 'إلغاء الشيك',
       pending: 'إرجاع لحالة الانتظار'
     };
-    if (!window.confirm(`تأكيد عملية: ${statusNames[newStatus]}؟`)) return;
-    const res = await updatePaperStatusAction(paper.id, newStatus);
-    if (res.success) {
-      toast.success('تم تحديث حالة الورقة المالية بنجاح');
-      loadTabData();
-    } else {
-      toast.error(res.error || 'فشل تحديث حالة الورقة المالية');
+    const mutationKey = `paper-status:${paper.id}`;
+    if (!beginMutation(mutationKey)) return;
+    try {
+      if (!window.confirm(`تأكيد عملية: ${statusNames[newStatus]}؟`)) return;
+      const res = await updatePaperStatusAction(paper.id, newStatus);
+      if (res.success) {
+        toast.success('تم تحديث حالة الورقة المالية بنجاح');
+        loadTabData();
+      } else {
+        toast.error(res.error || 'فشل تحديث حالة الورقة المالية');
+      }
+    } catch (err) {
+      console.error('Update paper status error:', err);
+      toast.error('فشل تحديث حالة الورقة المالية');
+    } finally {
+      endMutation(mutationKey);
     }
   };
 
@@ -250,7 +317,13 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
 
   useHotkeys('f4', (e) => {
     e.preventDefault();
-    if (activeTab === 'expenses' && hasConfiguredPermission(sessionUser, 'acc_can_define_expenses')) {
+    if (
+      activeTab === 'expenses'
+      && (
+        hasConfiguredPermission(sessionUser, 'acc_can_define_expenses')
+        || hasConfiguredPermission(sessionUser, 'acc_can_process_cash_flow')
+      )
+    ) {
       setShowRecordExpenseModal(true);
     }
   }, { enableOnFormTags: true });
@@ -288,64 +361,94 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
   }, []);
 
   const loadTabData = async () => {
+     const requestId = ++loadTabRequestRef.current;
+     const tab = activeTab;
      setLoadingData(true);
+     setLoadError(null);
      try {
-        if (activeTab === 'treasury') {
+        if (tab === 'treasury') {
            const [summaryRes, movementsRes, posRes, banksRes] = await Promise.all([
              getTreasuryDashboardAction(),
              getCashMovementsAction(),
              getPointsOfSaleAction(),
              getBanksAction(),
            ]);
+           if (requestId !== loadTabRequestRef.current) return;
            if (summaryRes.success && summaryRes.data) setTreasurySummary(summaryRes.data as typeof treasurySummary);
            if (movementsRes.success) setMovements(movementsRes.data as any[]);
            if (posRes.success) setPointsOfSale(posRes.data as any[]);
            if (banksRes.success) setBanks(banksRes.data as any[]);
-        } else if (activeTab === 'cash_movement') {
+        } else if (tab === 'cash_movement') {
            const res = await getCashMovementsAction();
+           if (requestId !== loadTabRequestRef.current) return;
            if (res.success) setMovements(res.data as any[]);
-        } else if (activeTab === 'pos_management') {
+        } else if (tab === 'pos_management') {
            const res = await getPointsOfSaleAction();
+           if (requestId !== loadTabRequestRef.current) return;
            if (res.success) setPointsOfSale(res.data as any[]);
-        } else if (activeTab === 'expense_definitions') {
+           else setLoadError('تعذر تحميل بيانات نقاط البيع');
+        } else if (tab === 'expense_definitions') {
            const res = await getExpenseDefinitionsAction();
+           if (requestId !== loadTabRequestRef.current) return;
            if (res.success) setExpenseDefinitions(res.data as any[]);
-        } else if (activeTab === 'banks') {
+        } else if (tab === 'banks') {
            const res = await getBanksAction();
+           if (requestId !== loadTabRequestRef.current) return;
            if (res.success) setBanks(res.data as any[]);
-        } else if (activeTab === 'papers') {
+           else setLoadError('تعذر تحميل بيانات الحسابات البنكية');
+        } else if (tab === 'papers') {
            const [papersRes, banksRes] = await Promise.all([getPapersAction(), getBanksAction()]);
+           if (requestId !== loadTabRequestRef.current) return;
            if (papersRes.success) setPapers(papersRes.data as any[]);
+           else setLoadError('تعذر تحميل بيانات الأوراق المالية');
            if (banksRes.success) setBanks(banksRes.data as any[]);
-        } else if (activeTab === 'cards') {
+        } else if (tab === 'cards') {
            const [cardsRes, banksRes] = await Promise.all([getCardsAction(), getBanksAction()]);
+           if (requestId !== loadTabRequestRef.current) return;
            if (cardsRes.success) setCards(cardsRes.data as any[]);
+           else setLoadError('تعذر تحميل بيانات ماكينات وبطاقات الائتمان');
            if (banksRes.success) setBanks(banksRes.data as any[]);
-        } else if (activeTab === 'chart_of_accounts') {
+        } else if (tab === 'chart_of_accounts') {
            const res = await getAccountsAction();
+           if (requestId !== loadTabRequestRef.current) return;
            if (res.success) setAccounts(res.data as any[]);
-        } else if (activeTab === 'daily_journals') {
+        } else if (tab === 'daily_journals') {
            const [journalsRes, accountsRes] = await Promise.all([getJournalsAction(), getAccountsAction()]);
+           if (requestId !== loadTabRequestRef.current) return;
            if (journalsRes.success) setJournals(journalsRes.data as any[]);
            if (accountsRes.success) setAccounts(accountsRes.data as any[]);
-        } else if (activeTab === 'expenses') {
+        } else if (tab === 'expenses') {
             const [res, defsRes] = await Promise.all([
                getExpensesAction(),
                getExpenseDefinitionsAction()
             ]);
+            if (requestId !== loadTabRequestRef.current) return;
             if (res.success) setExpensesList(res.data as any[]);
             if (defsRes.success) setExpenseDefinitions(defsRes.data as any[]);
-        } else if (activeTab === 'notices') {
+        } else if (tab === 'notices') {
            const res = await getFinancialNoticesAction();
+           if (requestId !== loadTabRequestRef.current) return;
            if (res.success) setNoticesList(res.data as any[]);
-        } else if (activeTab === 'audit_logs') {
+        } else if (tab === 'audit_logs') {
            const res = await getActivityLogsAction();
+           if (requestId !== loadTabRequestRef.current) return;
            if (res.success) setActivityLogs(res.data as any[]);
         }
      } catch (error) {
+        if (requestId !== loadTabRequestRef.current) return;
         console.error('Load data error:', error);
+        const messages: Record<string, string> = {
+          pos_management: 'تعذر تحميل بيانات نقاط البيع',
+          banks: 'تعذر تحميل بيانات الحسابات البنكية',
+          papers: 'تعذر تحميل بيانات الأوراق المالية',
+          cards: 'تعذر تحميل بيانات ماكينات وبطاقات الائتمان',
+        };
+        if (messages[tab]) setLoadError(messages[tab]);
+     } finally {
+        if (requestId === loadTabRequestRef.current) {
+          setLoadingData(false);
+        }
      }
-     setLoadingData(false);
   };
 
   const {
@@ -356,22 +459,33 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
   } = treasurySummary;
 
   const openTreasuryMetric = async (metric: TreasuryMetricKey) => {
+    const requestId = ++treasuryMetricRequestRef.current;
     setSelectedTreasuryMetric(metric);
     setTreasuryDetails([]);
     setLoadingTreasuryDetails(true);
-    const result = await getTreasuryDashboardAction(metric);
-    if (result.success && result.data) {
-      setTreasurySummary(result.data as typeof treasurySummary);
-      setTreasuryDetails(result.data.details || []);
-      setTreasuryDetailCount(Number(result.data.detailCount || 0));
-    } else {
-      toast.error(result.error || 'فشل جلب تفاصيل الرقم');
+    try {
+      const result = await getTreasuryDashboardAction(metric);
+      if (requestId !== treasuryMetricRequestRef.current) return;
+      if (result.success && result.data) {
+        setTreasurySummary(result.data as typeof treasurySummary);
+        setTreasuryDetails(result.data.details || []);
+        setTreasuryDetailCount(Number(result.data.detailCount || 0));
+      } else {
+        toast.error(result.error || 'فشل جلب تفاصيل الرقم');
+      }
+    } catch {
+      if (requestId === treasuryMetricRequestRef.current) {
+        toast.error('فشل جلب تفاصيل الرقم');
+      }
+    } finally {
+      if (requestId === treasuryMetricRequestRef.current) {
+        setLoadingTreasuryDetails(false);
+      }
     }
-    setLoadingTreasuryDetails(false);
   };
 
-  const totalLiquidity = treasuryBalance + 
-     pointsOfSale.reduce((sum, pos) => sum + (Number(pos.current_balance) || 0), 0) + 
+  // POS handovers move cash within the cash account, so their balances are not extra liquidity.
+  const totalLiquidity = treasuryBalance +
      banks.reduce((sum, b) => sum + (Number(b.current_balance ?? b.balance) || 0), 0);
 
   const filteredTreasuryMovements = movements.filter(m => {
@@ -436,13 +550,24 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
 
   const largestCategoryLabel = largestCategory === 'لا يوجد' ? 'لا يوجد' : getCategoryDisplayName(largestCategory);
   const canProcessCash = hasConfiguredPermission(sessionUser, 'acc_can_process_cash_flow');
-  const canManageExpenses = hasConfiguredPermission(sessionUser, 'acc_can_define_expenses');
+  const canRecordExpenses = hasConfiguredPermission(sessionUser, 'acc_can_define_expenses')
+    || hasConfiguredPermission(sessionUser, 'acc_can_process_cash_flow');
   const canManageAccounts = hasConfiguredPermission(sessionUser, 'acc_can_make_daily_entries');
   const filteredActivityLogs = activityLogs.filter(log => {
     if (!auditSearch.trim()) return true;
     const q = auditSearch.trim().toLowerCase();
     return [log.action, log.details, log.user_name, log.created_at]
       .some(value => String(value || '').toLowerCase().includes(q));
+  });
+  const filteredPapers = papers.filter(p => {
+    if (!paperSearch.trim()) return true;
+    const q = paperSearch.toLowerCase();
+    return (
+      (p.paper_number || '').toLowerCase().includes(q) ||
+      (p.target_name || '').toLowerCase().includes(q) ||
+      (p.notes || '').toLowerCase().includes(q) ||
+      String(p.amount || '').includes(q)
+    );
   });
 
   if (!isMounted) return null;
@@ -491,7 +616,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                 {totalLiquidity.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} 
                 <span className="text-sm opacity-70"> ج.م</span>
              </p>
-             <p className="text-sm font-bold opacity-60">محدث الآن من الخزينة ونقاط البيع والبنوك</p>
+             <p className="text-sm font-bold opacity-60">رصيد النقدية الدفتري + أرصدة البنوك المسجلة؛ لا تضاف تسليمات نقاط البيع مرة أخرى</p>
           </div>
        </div>
 
@@ -543,12 +668,15 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                 </div>
 
                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
-                    <StatCard label="رصيد الخزينة" value={treasuryBalance.toLocaleString('en-US')} color="emerald" icon={Wallet} onClick={() => openTreasuryMetric('treasury')} active={selectedTreasuryMetric === 'treasury'} />
+                    <StatCard label="رصيد النقدية الدفتري" value={treasuryBalance.toLocaleString('en-US')} color="emerald" icon={Wallet} onClick={() => openTreasuryMetric('treasury')} active={selectedTreasuryMetric === 'treasury'} />
                     <StatCard label="توريدات اليوم" value={todayReceipts.toLocaleString('en-US')} color="blue" icon={ArrowRightLeft} onClick={() => openTreasuryMetric('receipts')} active={selectedTreasuryMetric === 'receipts'} />
                     <StatCard label="المصروفات اليومية" value={todayExpenses.toLocaleString('en-US')} color="rose" icon={Receipt} onClick={() => openTreasuryMetric('expenses')} active={selectedTreasuryMetric === 'expenses'} />
                     <StatCard label="تسليمات الورديات هذا الشهر" value={totalShiftHandovers.toLocaleString('en-US')} color="blue" icon={ShieldCheck} onClick={() => openTreasuryMetric('handovers')} active={selectedTreasuryMetric === 'handovers'} />
                  </div>
 
+                 <p className="text-sm text-slate-500 leading-relaxed">
+                   رصيد النقدية الدفتري هو صافي قيود حساب النقدية المربوط بالخزينة والدرج، وليس جردًا فعليًا للخزينة الرئيسية أو إيرادات الوردية. إيرادات الوردية هي مبيعاتها؛ أما النقدية المتوقعة بالدرج فتشمل رصيد البداية والتوريدات وتخصم المرتجعات النقدية والصرف والتسليمات. تسليم النقدية ليس إيرادًا جديدًا.
+                 </p>
                  {selectedTreasuryMetric && (
                     <TreasuryMetricDetails
                       metric={selectedTreasuryMetric}
@@ -683,7 +811,14 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                          </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                         {loadingData ? (
+                         {loadError ? (
+                            <tr><td colSpan={6} className="py-20 text-center">
+                              <div className="space-y-3">
+                                <p className="font-black text-rose-600">{loadError}</p>
+                                <button onClick={loadTabData} className="px-5 py-2.5 bg-slate-900 text-white rounded-xl font-black text-xs">إعادة المحاولة</button>
+                              </div>
+                            </td></tr>
+                         ) : loadingData ? (
                             <tr><td colSpan={6} className="py-20 text-center text-slate-400 italic font-bold">جاري تحميل البيانات...</td></tr>
                          ) : pointsOfSale.length === 0 ? (
                             <tr><td colSpan={6} className="py-20 text-center text-slate-400 italic font-bold">لا توجد نقاط بيع مسجلة. اضغط &quot;إضافة نقطة بيع&quot; للبدء.</td></tr>
@@ -981,7 +1116,12 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                   {loadingData ? (
+                   {loadError ? (
+                      <div className="col-span-2 py-20 text-center space-y-3">
+                         <p className="font-black text-rose-600">{loadError}</p>
+                         <button onClick={loadTabData} className="px-5 py-2.5 bg-slate-900 text-white rounded-xl font-black text-xs">إعادة المحاولة</button>
+                      </div>
+                   ) : loadingData ? (
                       <div className="col-span-2 py-20 text-center text-slate-400 italic font-bold">جاري تحميل البيانات البنكية...</div>
                    ) : banks.length === 0 ? (
                       <div className="col-span-2 py-20 text-center text-slate-400 italic font-bold">لا توجد حسابات بنكية مسجلة. اضغط &quot;إضافة حساب بنكي&quot; للبدء.</div>
@@ -1023,19 +1163,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
              </div>
           )}
 
-          {activeTab === 'papers' && (() => {
-             const filteredPapers = papers.filter(p => {
-                if (!paperSearch.trim()) return true;
-                const q = paperSearch.toLowerCase();
-                return (
-                   (p.paper_number || '').toLowerCase().includes(q) ||
-                   (p.target_name || '').toLowerCase().includes(q) ||
-                   (p.notes || '').toLowerCase().includes(q) ||
-                   String(p.amount || '').includes(q)
-                );
-             });
-
-             return (
+          {activeTab === 'papers' && (
               <div className="space-y-8 animate-in fade-in slide-in-from-left-4">
                  <div className="flex flex-wrap justify-between items-center gap-4 bg-white dark:bg-slate-900 p-8 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-sm">
                     <div>
@@ -1090,7 +1218,14 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                           </tr>
                        </thead>
                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                          {loadingData ? (
+                          {loadError ? (
+                             <tr><td colSpan={7} className="py-20 text-center">
+                               <div className="space-y-3">
+                                 <p className="font-black text-rose-600">{loadError}</p>
+                                 <button onClick={loadTabData} className="px-5 py-2.5 bg-slate-900 text-white rounded-xl font-black text-xs">إعادة المحاولة</button>
+                               </div>
+                             </td></tr>
+                          ) : loadingData ? (
                              <tr><td colSpan={7} className="py-20 text-center text-slate-400 italic font-bold">جاري تحميل الأوراق المالية...</td></tr>
                           ) : filteredPapers.length === 0 ? (
                              <tr><td colSpan={7} className="py-20 text-center text-slate-400 italic font-bold">{paperSearch ? 'لا توجد نتائج مطابقة لبحثك' : 'لا توجد أوراق مالية مسجلة'}</td></tr>
@@ -1153,8 +1288,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                     </table>
                  </div>
               </div>
-             );
-          })()}
+          )}
 
           {activeTab === 'cards' && (
              <div className="space-y-8 animate-in fade-in slide-in-from-left-4">
@@ -1177,7 +1311,12 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                   {loadingData ? (
+                   {loadError ? (
+                      <div className="col-span-3 py-20 text-center space-y-3">
+                         <p className="font-black text-rose-600">{loadError}</p>
+                         <button onClick={loadTabData} className="px-5 py-2.5 bg-slate-900 text-white rounded-xl font-black text-xs">إعادة المحاولة</button>
+                      </div>
+                   ) : loadingData ? (
                       <div className="col-span-3 py-20 text-center text-slate-400 italic font-bold">جاري تحميل البيانات...</div>
                    ) : cards.length === 0 ? (
                       <div className="col-span-3 py-20 text-center text-slate-400 italic font-bold">لا توجد ماكينات مسجلة. اضغط &quot;إضافة ماكينة / كارت&quot; للبدء.</div>
@@ -1249,7 +1388,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                           <FileText className="w-5 h-5 text-rose-600" />
                           <span>شاشة المصروفات الكاملة</span>
                        </Link>
-                       {canManageExpenses && <button
+                       {canRecordExpenses && <button
                          onClick={() => setShowRecordExpenseModal(true)}
                          className="px-8 py-4 bg-rose-600 hover:bg-rose-700 text-white rounded-[20px] font-black text-sm shadow-xl shadow-rose-500/20 flex items-center gap-2 active:scale-95 transition-all"
                        >
@@ -1632,6 +1771,42 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
           onClose={() => setShowAddJournalModal(false)}
           onSuccess={loadTabData}
        />
+       <BankModal
+          show={showAddBankModal || !!editingBank}
+          initialData={editingBank}
+          onClose={() => {
+             setShowAddBankModal(false);
+             setEditingBank(null);
+          }}
+          onSuccess={loadTabData}
+       />
+       <CardModal
+          show={showAddCardModal || !!editingCard}
+          initialData={editingCard}
+          banks={banks}
+          onClose={() => {
+             setShowAddCardModal(false);
+             setEditingCard(null);
+          }}
+          onSuccess={loadTabData}
+       />
+       <PosModal
+          show={showAddPosModal || !!editingPos}
+          initialData={editingPos}
+          onClose={() => {
+             setShowAddPosModal(false);
+             setEditingPos(null);
+          }}
+          onSuccess={loadTabData}
+       />
+       <PaperModal
+          show={showAddPaperModal.show}
+          type={showAddPaperModal.type}
+          direction={showAddPaperModal.direction}
+          banks={banks}
+          onClose={() => setShowAddPaperModal(current => ({ ...current, show: false }))}
+          onSuccess={loadTabData}
+       />
     </div>
   );
 }
@@ -1686,7 +1861,7 @@ function TreasuryMetricDetails({
   onClose: () => void;
 }) {
   const labels: Record<TreasuryMetricKey, string> = {
-    treasury: 'تفاصيل رصيد الخزينة',
+    treasury: 'تفاصيل رصيد النقدية الدفتري',
     receipts: 'تفاصيل توريدات اليوم',
     expenses: 'تفاصيل المصروفات اليومية',
     handovers: 'تفاصيل تسليمات الورديات - الشهر الحالي',
@@ -1898,6 +2073,11 @@ function AccountTreeNode({ node, onAddSub, onEdit, onDelete, canManage, level = 
 
 function EditAccountModal({ show, account, onClose, onSuccess }: any) {
    const [loading, setLoading] = useState(false);
+   const submittingRef = useRef(false);
+   const handleClose = () => {
+      if (submittingRef.current) return;
+      onClose();
+   };
    const [formData, setFormData] = useState({
       name_ar: '',
       name_en: '',
@@ -1919,22 +2099,31 @@ function EditAccountModal({ show, account, onClose, onSuccess }: any) {
    }, [account]);
 
    useHotkeys('enter', (e) => { e.preventDefault(); handleSubmit(); }, { enableOnFormTags: ['input', 'select'] });
-   useHotkeys('esc', () => { if(typeof onClose === 'function') onClose(); }, { enableOnFormTags: true });
+   useHotkeys('esc', handleClose, { enableOnFormTags: true });
 
    if (!show || !account) return null;
 
    const handleSubmit = async () => {
       if (!formData.name_ar || !formData.code) return toast.error('يرجى إكمال البيانات الأساسية');
+      if (submittingRef.current) return;
+      submittingRef.current = true;
       setLoading(true);
-      const res = await updateAccountAction(account.id, formData as any);
-      if (res.success) {
-         toast.success('تم تحديث الحساب بنجاح');
-         onSuccess();
-         onClose();
-      } else {
-         toast.error(res.error || 'فشل تحديث الحساب');
+      try {
+         const res = await updateAccountAction(account.id, formData as any);
+         if (res.success) {
+            toast.success('تم تحديث الحساب بنجاح');
+            onSuccess();
+            onClose();
+         } else {
+            toast.error(res.error || 'فشل تحديث الحساب');
+         }
+      } catch (err) {
+         console.error('Update account error:', err);
+         toast.error('فشل تحديث الحساب');
+      } finally {
+         submittingRef.current = false;
+         setLoading(false);
       }
-      setLoading(false);
    };
 
    return (
@@ -1945,7 +2134,7 @@ function EditAccountModal({ show, account, onClose, onSuccess }: any) {
                   <h3 className="text-2xl font-black text-slate-800 dark:text-white">تعديل بيانات الحساب</h3>
                   <p className="text-slate-500 font-bold">الحساب: <span className="text-blue-600 font-mono">#{account.code} - {account.name_ar}</span></p>
                </div>
-               <button onClick={onClose} className="p-4 bg-white dark:bg-slate-800 text-slate-400 rounded-2xl hover:text-rose-500 transition-all shadow-sm"><X className="w-6 h-6" /></button>
+               <button onClick={handleClose} disabled={loading} className="p-4 bg-white dark:bg-slate-800 text-slate-400 rounded-2xl hover:text-rose-500 transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"><X className="w-6 h-6" /></button>
             </div>
             
             <div className="p-10 space-y-8 overflow-y-auto custom-scrollbar">
@@ -2017,7 +2206,7 @@ function EditAccountModal({ show, account, onClose, onSuccess }: any) {
                >
                   {loading ? 'جاري الحفظ...' : 'حفظ التعديلات'}
                </button>
-               <button onClick={onClose} className="px-10 py-5 bg-white dark:bg-slate-900 text-slate-500 rounded-3xl font-black text-xl border border-slate-100 dark:border-slate-700 hover:bg-slate-50 transition-all">إلغاء</button>
+               <button onClick={handleClose} disabled={loading} className="px-10 py-5 bg-white dark:bg-slate-900 text-slate-500 rounded-3xl font-black text-xl border border-slate-100 dark:border-slate-700 hover:bg-slate-50 transition-all disabled:opacity-50 disabled:cursor-not-allowed">إلغاء</button>
             </div>
          </div>
       </div>
@@ -2026,6 +2215,11 @@ function EditAccountModal({ show, account, onClose, onSuccess }: any) {
 
 function AddAccountModal({ show, parentId, onClose, onSuccess, accounts }: any) {
    const [loading, setLoading] = useState(false);
+   const submittingRef = useRef(false);
+   const handleClose = () => {
+      if (submittingRef.current) return;
+      onClose();
+   };
    const parent = accounts.find((a: any) => a.id === parentId);
    const [formData, setFormData] = useState({
       name_ar: '',
@@ -2038,24 +2232,33 @@ function AddAccountModal({ show, parentId, onClose, onSuccess, accounts }: any) 
    
   useHotkeys('enter', (e) => { e.preventDefault(); handleSubmit(); }, { enableOnFormTags: ['input', 'select'] });
 
-  useHotkeys('esc', () => { if(typeof onClose === 'function') onClose(); }, { enableOnFormTags: true });
+  useHotkeys('esc', handleClose, { enableOnFormTags: true });
 if (!show) return null;
 
    const handleSubmit = async () => {
       if (!formData.name_ar || !formData.code) return toast.error('يرجى إكمال البيانات الأساسية');
+      if (submittingRef.current) return;
+      submittingRef.current = true;
       setLoading(true);
-      const res = await addAccountAction({
-         ...formData,
-         parent_id: parentId
-      });
-      if (res.success) {
-         toast.success('تم إضافة الحساب بنجاح');
-         onSuccess();
-         onClose();
-      } else {
-         toast.error(res.error || 'فشل إضافة الحساب');
+      try {
+         const res = await addAccountAction({
+            ...formData,
+            parent_id: parentId
+         });
+         if (res.success) {
+            toast.success('تم إضافة الحساب بنجاح');
+            onSuccess();
+            onClose();
+         } else {
+            toast.error(res.error || 'فشل إضافة الحساب');
+         }
+      } catch (err) {
+         console.error('Add account error:', err);
+         toast.error('فشل إضافة الحساب');
+      } finally {
+         submittingRef.current = false;
+         setLoading(false);
       }
-      setLoading(false);
    };
 
    return (
@@ -2066,7 +2269,7 @@ if (!show) return null;
                   <h3 className="text-2xl font-black text-slate-800 dark:text-white">إضافة حساب فرعي جديد</h3>
                   <p className="text-slate-500 font-bold">للحساب الرئيسي: <span className="text-blue-600">{parent?.name_ar || 'دليل الحسابات'}</span></p>
                </div>
-               <button onClick={onClose} className="p-4 bg-white dark:bg-slate-800 text-slate-400 rounded-2xl hover:text-rose-500 transition-all shadow-sm"><X className="w-6 h-6" /></button>
+               <button onClick={handleClose} disabled={loading} className="p-4 bg-white dark:bg-slate-800 text-slate-400 rounded-2xl hover:text-rose-500 transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"><X className="w-6 h-6" /></button>
             </div>
             
             <div className="p-10 space-y-8 overflow-y-auto custom-scrollbar">
@@ -2139,7 +2342,7 @@ if (!show) return null;
                >
                   {loading ? 'جاري الحفظ...' : 'إضافة الحساب'}
                </button>
-               <button onClick={onClose} className="px-10 py-5 bg-white dark:bg-slate-900 text-slate-500 rounded-3xl font-black text-xl border border-slate-100 dark:border-slate-700 hover:bg-slate-50 transition-all">إلغاء</button>
+               <button onClick={handleClose} disabled={loading} className="px-10 py-5 bg-white dark:bg-slate-900 text-slate-500 rounded-3xl font-black text-xl border border-slate-100 dark:border-slate-700 hover:bg-slate-50 transition-all disabled:opacity-50 disabled:cursor-not-allowed">إلغاء</button>
             </div>
          </div>
       </div>
@@ -2149,18 +2352,41 @@ if (!show) return null;
 function JournalDetailsModal({ journalId, onClose }: { journalId: string | null, onClose: () => void }) {
    const [entries, setEntries] = useState<any[]>([]);
    const [loading, setLoading] = useState(false);
+   const [loadError, setLoadError] = useState('');
+   const [loadAttempt, setLoadAttempt] = useState(0);
+   const requestRef = useRef(0);
 
    useHotkeys('esc', () => { if(typeof onClose === 'function') onClose(); }, { enableOnFormTags: true });
 
    useEffect(() => {
-      if (journalId) {
-         setLoading(true);
-         getJournalDetailsAction(journalId).then(res => {
-            if (res.success) setEntries(res.data);
-            setLoading(false);
-         });
-      }
-   }, [journalId]);
+      if (!journalId) return;
+      const requestId = ++requestRef.current;
+      setLoading(true);
+      setLoadError('');
+      setEntries([]);
+
+      void (async () => {
+         try {
+            const res = await getJournalDetailsAction(journalId);
+            if (requestId !== requestRef.current) return;
+            if (res.success) {
+               setEntries(res.data || []);
+            } else {
+               setLoadError(res.error || 'تعذر تحميل تفاصيل القيد');
+            }
+         } catch (err) {
+            if (requestId !== requestRef.current) return;
+            console.error('Load journal details error:', err);
+            setLoadError('تعذر تحميل تفاصيل القيد');
+         } finally {
+            if (requestId === requestRef.current) setLoading(false);
+         }
+      })();
+
+      return () => {
+         requestRef.current += 1;
+      };
+   }, [journalId, loadAttempt]);
 
    if (!journalId) return null;
 
@@ -2188,6 +2414,17 @@ function JournalDetailsModal({ journalId, onClose }: { journalId: string | null,
                   <div className="py-20 text-center">
                      <Activity className="w-12 h-12 animate-spin text-blue-500 mx-auto mb-4" />
                      <p className="text-slate-400 font-bold italic">جاري تحميل تفاصيل القيد...</p>
+                  </div>
+               ) : loadError ? (
+                  <div className="py-20 text-center space-y-4">
+                     <p className="font-black text-rose-600">تعذر تحميل تفاصيل القيد</p>
+                     <button
+                        type="button"
+                        onClick={() => setLoadAttempt(attempt => attempt + 1)}
+                        className="px-5 py-2.5 rounded-xl bg-blue-600 text-white font-black text-xs"
+                     >
+                        إعادة المحاولة
+                     </button>
                   </div>
                ) : (
                   <div className="space-y-8">
@@ -2284,6 +2521,11 @@ function ExpenseDefinitionModal({
     name_en: '',
   });
   const [loading, setLoading] = useState(false);
+  const submittingRef = useRef(false);
+  const handleClose = () => {
+    if (submittingRef.current) return;
+    onClose();
+  };
 
   useEffect(() => {
     if (initialData) {
@@ -2301,7 +2543,7 @@ function ExpenseDefinitionModal({
     }
   }, [initialData, show]);
 
-  useHotkeys('esc', () => onClose(), { enabled: show, enableOnFormTags: true });
+  useHotkeys('esc', handleClose, { enabled: show, enableOnFormTags: true });
 
   if (!show) return null;
 
@@ -2316,22 +2558,28 @@ function ExpenseDefinitionModal({
       return;
     }
 
+    if (submittingRef.current) return;
+    submittingRef.current = true;
     setLoading(true);
-    let res: any;
-    if (isEditing) {
-      res = await updateExpenseDefinitionAction(initialData.id, formData);
-    } else {
-      res = await addExpenseDefinitionAction(formData);
-    }
+    try {
+      const res = isEditing
+        ? await updateExpenseDefinitionAction(initialData.id, formData)
+        : await addExpenseDefinitionAction(formData);
 
-    if (res.success) {
-      toast.success(isEditing ? 'تم تعديل تعريف المصروف بنجاح' : 'تم إضافة نوع المصروف بنجاح');
-      onSuccess();
-      onClose();
-    } else {
-      toast.error(res.error || 'فشل حفظ البيانات');
+      if (res.success) {
+        toast.success(isEditing ? 'تم تعديل تعريف المصروف بنجاح' : 'تم إضافة نوع المصروف بنجاح');
+        onSuccess();
+        onClose();
+      } else {
+        toast.error(res.error || 'فشل حفظ البيانات');
+      }
+    } catch (err) {
+      console.error('Save expense definition error:', err);
+      toast.error('فشل حفظ البيانات');
+    } finally {
+      submittingRef.current = false;
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   return (
@@ -2346,7 +2594,7 @@ function ExpenseDefinitionModal({
               {isEditing ? `المصروف: #${initialData.code} - ${initialData.name_ar}` : 'تكويد وتصنيف المصروفات التشغيلية'}
             </p>
           </div>
-          <button onClick={onClose} className="p-3 bg-white dark:bg-slate-800 text-slate-400 rounded-2xl hover:text-rose-500 transition-all shadow-sm">
+          <button onClick={handleClose} disabled={loading} className="p-3 bg-white dark:bg-slate-800 text-slate-400 rounded-2xl hover:text-rose-500 transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -2397,8 +2645,9 @@ function ExpenseDefinitionModal({
             </button>
             <button
               type="button"
-              onClick={onClose}
-              className="px-6 py-4 bg-slate-100 dark:bg-slate-800 text-slate-500 rounded-2xl font-black hover:bg-slate-200 transition-all"
+              onClick={handleClose}
+              disabled={loading}
+              className="px-6 py-4 bg-slate-100 dark:bg-slate-800 text-slate-500 rounded-2xl font-black hover:bg-slate-200 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
             >
               إلغاء
             </button>
@@ -2427,6 +2676,11 @@ function RecordExpenseModal({
     date: localDate(),
   });
   const [loading, setLoading] = useState(false);
+  const submittingRef = useRef(false);
+  const handleClose = () => {
+    if (submittingRef.current) return;
+    onClose();
+  };
 
   useEffect(() => {
     if (show) {
@@ -2439,7 +2693,7 @@ function RecordExpenseModal({
     }
   }, [show, categories]);
 
-  useHotkeys('esc', () => onClose(), { enabled: show, enableOnFormTags: true });
+  useHotkeys('esc', handleClose, { enabled: show, enableOnFormTags: true });
 
   if (!show) return null;
 
@@ -2455,22 +2709,31 @@ function RecordExpenseModal({
       return;
     }
 
+    if (submittingRef.current) return;
+    submittingRef.current = true;
     setLoading(true);
-    const res = await addExpenseAction({
-      category: formData.category,
-      amount: amt,
-      description: formData.description.trim(),
-      date: formData.date || localDate(),
-    });
+    try {
+      const res = await addExpenseAction({
+        category: formData.category,
+        amount: amt,
+        description: formData.description.trim(),
+        date: formData.date || localDate(),
+      });
 
-    if (res.success) {
-      toast.success('تم تسجيل المصروف وحركته النقدية بنجاح');
-      onSuccess();
-      onClose();
-    } else {
-      toast.error(res.error || 'فشل تسجيل المصروف');
+      if (res.success) {
+        toast.success('تم تسجيل المصروف وحركته النقدية بنجاح');
+        onSuccess();
+        onClose();
+      } else {
+        toast.error(res.error || 'فشل تسجيل المصروف');
+      }
+    } catch (err) {
+      console.error('Record expense error:', err);
+      toast.error('فشل تسجيل المصروف');
+    } finally {
+      submittingRef.current = false;
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   return (
@@ -2481,7 +2744,7 @@ function RecordExpenseModal({
             <h3 className="text-2xl font-black text-slate-800 dark:text-white">إضافة مصروف تشغيلي جديد</h3>
             <p className="text-xs font-bold text-slate-400 mt-1">تسجيل مصروف فعلي مع خصم تلقائي من الخزينة وربط القيود المحاسبية</p>
           </div>
-          <button onClick={onClose} className="p-3 bg-slate-100 dark:bg-slate-800 rounded-full hover:bg-slate-200 transition-colors">
+          <button onClick={handleClose} disabled={loading} className="p-3 bg-slate-100 dark:bg-slate-800 rounded-full hover:bg-slate-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
             <X className="w-5 h-5 text-slate-500" />
           </button>
         </div>
@@ -2551,8 +2814,9 @@ function RecordExpenseModal({
           <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100 dark:border-slate-800">
             <button
               type="button"
-              onClick={onClose}
-              className="px-6 py-3.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-600 dark:text-slate-300 rounded-2xl font-bold text-sm transition-all"
+              onClick={handleClose}
+              disabled={loading}
+              className="px-6 py-3.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-600 dark:text-slate-300 rounded-2xl font-bold text-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed"
             >
               إلغاء
             </button>
@@ -2590,6 +2854,11 @@ function BankModal({ show, initialData, onClose, onSuccess }: BankModalProps) {
     current_balance: ''
   });
   const [loading, setLoading] = useState(false);
+  const submittingRef = useRef(false);
+  const handleClose = () => {
+    if (submittingRef.current) return;
+    onClose();
+  };
 
   useEffect(() => {
     if (initialData) {
@@ -2614,33 +2883,39 @@ function BankModal({ show, initialData, onClose, onSuccess }: BankModalProps) {
       return;
     }
 
+    if (submittingRef.current) return;
+    submittingRef.current = true;
     setLoading(true);
-    let res;
-    if (initialData?.id) {
-      res = await updateBankAction(initialData.id, {
-        name_ar: formData.name_ar.trim(),
-        name_en: formData.name_en.trim() || undefined,
-        account_number: formData.account_number.trim() || undefined,
-        branch: formData.branch.trim() || undefined
-      });
-    } else {
-      res = await addBankAction({
-        name_ar: formData.name_ar.trim(),
-        name_en: formData.name_en.trim() || undefined,
-        account_number: formData.account_number.trim() || undefined,
-        branch: formData.branch.trim() || undefined,
-        current_balance: formData.current_balance ? parseFloat(formData.current_balance) : 0
-      });
-    }
+    try {
+      const res = initialData?.id
+        ? await updateBankAction(initialData.id, {
+            name_ar: formData.name_ar.trim(),
+            name_en: formData.name_en.trim() || undefined,
+            account_number: formData.account_number.trim() || undefined,
+            branch: formData.branch.trim() || undefined
+          })
+        : await addBankAction({
+            name_ar: formData.name_ar.trim(),
+            name_en: formData.name_en.trim() || undefined,
+            account_number: formData.account_number.trim() || undefined,
+            branch: formData.branch.trim() || undefined,
+            current_balance: formData.current_balance ? parseFloat(formData.current_balance) : 0
+          });
 
-    if (res.success) {
-      toast.success(initialData ? 'تم تعديل الحساب البنكي بنجاح' : 'تمت إضافة الحساب البنكي بنجاح');
-      onSuccess();
-      onClose();
-    } else {
-      toast.error(res.error || 'فشل حفظ الحساب البنكي');
+      if (res.success) {
+        toast.success(initialData ? 'تم تعديل الحساب البنكي بنجاح' : 'تمت إضافة الحساب البنكي بنجاح');
+        onSuccess();
+        onClose();
+      } else {
+        toast.error(res.error || 'فشل حفظ الحساب البنكي');
+      }
+    } catch (err) {
+      console.error('Save bank error:', err);
+      toast.error('حدث خطأ أثناء حفظ الحساب البنكي');
+    } finally {
+      submittingRef.current = false;
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   return (
@@ -2651,7 +2926,7 @@ function BankModal({ show, initialData, onClose, onSuccess }: BankModalProps) {
             <h3 className="text-2xl font-black text-slate-800 dark:text-white">{initialData ? 'تعديل الحساب البنكي' : 'إضافة حساب بنكي جديد'}</h3>
             <p className="text-xs font-bold text-slate-400 mt-1">تسجيل وتحديث بيانات الحسابات المصرفية وأرصدتها</p>
           </div>
-          <button onClick={onClose} className="p-3 bg-slate-100 dark:bg-slate-800 rounded-full hover:bg-slate-200 transition-colors">
+          <button onClick={handleClose} disabled={loading} className="p-3 bg-slate-100 dark:bg-slate-800 rounded-full hover:bg-slate-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
             <X className="w-5 h-5 text-slate-500" />
           </button>
         </div>
@@ -2718,7 +2993,7 @@ function BankModal({ show, initialData, onClose, onSuccess }: BankModalProps) {
           </div>
 
           <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100 dark:border-slate-800">
-            <button type="button" onClick={onClose} className="px-6 py-3.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-600 dark:text-slate-300 rounded-2xl font-bold text-sm transition-all">إلغاء</button>
+            <button type="button" onClick={handleClose} disabled={loading} className="px-6 py-3.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-600 dark:text-slate-300 rounded-2xl font-bold text-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed">إلغاء</button>
             <button type="submit" disabled={loading} className="px-8 py-3.5 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-black text-sm transition-all shadow-lg shadow-blue-600/20 active:scale-95 disabled:opacity-50 flex items-center gap-2">
               <Plus className="w-4 h-4" />
               <span>{loading ? 'جاري الحفظ...' : initialData ? 'حفظ التعديلات' : 'إضافة الحساب'}</span>
@@ -2750,6 +3025,11 @@ function CardModal({ show, initialData, banks, onClose, onSuccess }: CardModalPr
     current_balance: '0'
   });
   const [loading, setLoading] = useState(false);
+  const submittingRef = useRef(false);
+  const handleClose = () => {
+    if (submittingRef.current) return;
+    onClose();
+  };
 
   useEffect(() => {
     if (initialData) {
@@ -2774,33 +3054,39 @@ function CardModal({ show, initialData, banks, onClose, onSuccess }: CardModalPr
       return;
     }
 
+    if (submittingRef.current) return;
+    submittingRef.current = true;
     setLoading(true);
-    let res;
-    if (initialData?.id) {
-      res = await updateCardAction(initialData.id, {
-        name_ar: formData.name_ar.trim(),
-        name_en: formData.name_en.trim() || undefined,
-        bank_id: formData.bank_id ? parseInt(formData.bank_id) : null,
-        commission_pct: parseFloat(formData.commission_pct) || 0
-      });
-    } else {
-      res = await addCardAction({
-        name_ar: formData.name_ar.trim(),
-        name_en: formData.name_en.trim() || undefined,
-        bank_id: formData.bank_id ? parseInt(formData.bank_id) : null,
-        commission_pct: parseFloat(formData.commission_pct) || 0,
-        current_balance: parseFloat(formData.current_balance) || 0
-      });
-    }
+    try {
+      const res = initialData?.id
+        ? await updateCardAction(initialData.id, {
+            name_ar: formData.name_ar.trim(),
+            name_en: formData.name_en.trim() || undefined,
+            bank_id: formData.bank_id ? parseInt(formData.bank_id) : null,
+            commission_pct: parseFloat(formData.commission_pct) || 0
+          })
+        : await addCardAction({
+            name_ar: formData.name_ar.trim(),
+            name_en: formData.name_en.trim() || undefined,
+            bank_id: formData.bank_id ? parseInt(formData.bank_id) : null,
+            commission_pct: parseFloat(formData.commission_pct) || 0,
+            current_balance: parseFloat(formData.current_balance) || 0
+          });
 
-    if (res.success) {
-      toast.success(initialData ? 'تم تعديل ماكينة الدفع بنجاح' : 'تمت إضافة ماكينة الدفع بنجاح');
-      onSuccess();
-      onClose();
-    } else {
-      toast.error(res.error || 'فشل حفظ ماكينة الدفع');
+      if (res.success) {
+        toast.success(initialData ? 'تم تعديل ماكينة الدفع بنجاح' : 'تمت إضافة ماكينة الدفع بنجاح');
+        onSuccess();
+        onClose();
+      } else {
+        toast.error(res.error || 'فشل حفظ ماكينة الدفع');
+      }
+    } catch (err) {
+      console.error('Save card error:', err);
+      toast.error('حدث خطأ أثناء حفظ ماكينة الدفع');
+    } finally {
+      submittingRef.current = false;
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   return (
@@ -2811,7 +3097,7 @@ function CardModal({ show, initialData, banks, onClose, onSuccess }: CardModalPr
             <h3 className="text-2xl font-black text-slate-800 dark:text-white">{initialData ? 'تعديل ماكينة التحصيل / البطاقة' : 'إضافة ماكينة تحصيل / كارت'}</h3>
             <p className="text-xs font-bold text-slate-400 mt-1">ربط ماكينات الدفع الإلكتروني (POS Terminals) ونسب العمولة البنكية</p>
           </div>
-          <button onClick={onClose} className="p-3 bg-slate-100 dark:bg-slate-800 rounded-full hover:bg-slate-200 transition-colors">
+          <button onClick={handleClose} disabled={loading} className="p-3 bg-slate-100 dark:bg-slate-800 rounded-full hover:bg-slate-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
             <X className="w-5 h-5 text-slate-500" />
           </button>
         </div>
@@ -2882,7 +3168,7 @@ function CardModal({ show, initialData, banks, onClose, onSuccess }: CardModalPr
           </div>
 
           <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100 dark:border-slate-800">
-            <button type="button" onClick={onClose} className="px-6 py-3.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-600 dark:text-slate-300 rounded-2xl font-bold text-sm transition-all">إلغاء</button>
+            <button type="button" onClick={handleClose} disabled={loading} className="px-6 py-3.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-600 dark:text-slate-300 rounded-2xl font-bold text-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed">إلغاء</button>
             <button type="submit" disabled={loading} className="px-8 py-3.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl font-black text-sm transition-all shadow-lg shadow-indigo-600/20 active:scale-95 disabled:opacity-50 flex items-center gap-2">
               <Plus className="w-4 h-4" />
               <span>{loading ? 'جاري الحفظ...' : initialData ? 'حفظ التعديلات' : 'إضافة الماكينة'}</span>
@@ -2912,6 +3198,11 @@ function PosModal({ show, initialData, onClose, onSuccess }: PosModalProps) {
     computer_name: ''
   });
   const [loading, setLoading] = useState(false);
+  const submittingRef = useRef(false);
+  const handleClose = () => {
+    if (submittingRef.current) return;
+    onClose();
+  };
 
   useEffect(() => {
     if (initialData) {
@@ -2935,32 +3226,38 @@ function PosModal({ show, initialData, onClose, onSuccess }: PosModalProps) {
       return;
     }
 
+    if (submittingRef.current) return;
+    submittingRef.current = true;
     setLoading(true);
-    let res;
-    if (initialData?.id) {
-      res = await updatePointOfSaleAction(initialData.id, {
-        name_ar: formData.name_ar.trim(),
-        name_en: formData.name_en.trim() || undefined,
-        location: formData.location.trim() || undefined,
-        computer_name: formData.computer_name.trim() || undefined
-      });
-    } else {
-      res = await addPointOfSaleAction({
-        name_ar: formData.name_ar.trim(),
-        name_en: formData.name_en.trim() || undefined,
-        location: formData.location.trim() || undefined,
-        computer_name: formData.computer_name.trim() || undefined
-      });
-    }
+    try {
+      const res = initialData?.id
+        ? await updatePointOfSaleAction(initialData.id, {
+            name_ar: formData.name_ar.trim(),
+            name_en: formData.name_en.trim() || undefined,
+            location: formData.location.trim() || undefined,
+            computer_name: formData.computer_name.trim() || undefined
+          })
+        : await addPointOfSaleAction({
+            name_ar: formData.name_ar.trim(),
+            name_en: formData.name_en.trim() || undefined,
+            location: formData.location.trim() || undefined,
+            computer_name: formData.computer_name.trim() || undefined
+          });
 
-    if (res.success) {
-      toast.success(initialData ? 'تم تعديل نقطة البيع بنجاح' : 'تمت إضافة نقطة البيع بنجاح');
-      onSuccess();
-      onClose();
-    } else {
-      toast.error(res.error || 'فشل حفظ نقطة البيع');
+      if (res.success) {
+        toast.success(initialData ? 'تم تعديل نقطة البيع بنجاح' : 'تمت إضافة نقطة البيع بنجاح');
+        onSuccess();
+        onClose();
+      } else {
+        toast.error(res.error || 'فشل حفظ نقطة البيع');
+      }
+    } catch (err) {
+      console.error('Save POS error:', err);
+      toast.error('حدث خطأ أثناء حفظ نقطة البيع');
+    } finally {
+      submittingRef.current = false;
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   return (
@@ -2971,7 +3268,7 @@ function PosModal({ show, initialData, onClose, onSuccess }: PosModalProps) {
             <h3 className="text-2xl font-black text-slate-800 dark:text-white">{initialData ? 'تعديل نقطة البيع (POS)' : 'إضافة نقطة بيع جديدة'}</h3>
             <p className="text-xs font-bold text-slate-400 mt-1">تعريف محطات وأجهزة الكاشير ونقاط البيع المختلفة</p>
           </div>
-          <button onClick={onClose} className="p-3 bg-slate-100 dark:bg-slate-800 rounded-full hover:bg-slate-200 transition-colors">
+          <button onClick={handleClose} disabled={loading} className="p-3 bg-slate-100 dark:bg-slate-800 rounded-full hover:bg-slate-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
             <X className="w-5 h-5 text-slate-500" />
           </button>
         </div>
@@ -3025,7 +3322,7 @@ function PosModal({ show, initialData, onClose, onSuccess }: PosModalProps) {
           </div>
 
           <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100 dark:border-slate-800">
-            <button type="button" onClick={onClose} className="px-6 py-3.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-600 dark:text-slate-300 rounded-2xl font-bold text-sm transition-all">إلغاء</button>
+            <button type="button" onClick={handleClose} disabled={loading} className="px-6 py-3.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-600 dark:text-slate-300 rounded-2xl font-bold text-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed">إلغاء</button>
             <button type="submit" disabled={loading} className="px-8 py-3.5 bg-purple-600 hover:bg-purple-700 text-white rounded-2xl font-black text-sm transition-all shadow-lg shadow-purple-600/20 active:scale-95 disabled:opacity-50 flex items-center gap-2">
               <Plus className="w-4 h-4" />
               <span>{loading ? 'جاري الحفظ...' : initialData ? 'حفظ التعديلات' : 'إضافة النقطة'}</span>
@@ -3059,6 +3356,11 @@ function PaperModal({ show, type, direction, banks, onClose, onSuccess }: PaperM
     notes: ''
   });
   const [loading, setLoading] = useState(false);
+  const submittingRef = useRef(false);
+  const handleClose = () => {
+    if (submittingRef.current) return;
+    onClose();
+  };
 
   useEffect(() => {
     if (show) {
@@ -3082,26 +3384,35 @@ function PaperModal({ show, type, direction, banks, onClose, onSuccess }: PaperM
     if (isNaN(amt) || amt <= 0) { toast.error('يرجى إدخال مبلغ صحيح أكبر من صفر'); return; }
     if (!formData.target_name.trim()) { toast.error('يرجى إدخال اسم الجهة / الساحب'); return; }
 
+    if (submittingRef.current) return;
+    submittingRef.current = true;
     setLoading(true);
-    const res = await addPaperAction({
-      type: type || 'check',
-      direction: direction || 'in',
-      paper_number: formData.paper_number.trim(),
-      bank_id: formData.bank_id ? parseInt(formData.bank_id) : null,
-      amount: amt,
-      due_date: formData.due_date,
-      target_name: formData.target_name.trim(),
-      notes: formData.notes.trim() || undefined
-    });
+    try {
+      const res = await addPaperAction({
+        type: type || 'check',
+        direction: direction || 'in',
+        paper_number: formData.paper_number.trim(),
+        bank_id: formData.bank_id ? parseInt(formData.bank_id) : null,
+        amount: amt,
+        due_date: formData.due_date,
+        target_name: formData.target_name.trim(),
+        notes: formData.notes.trim() || undefined
+      });
 
-    if (res.success) {
-      toast.success('تم تسجيل الورقة المالية بنجاح');
-      onSuccess();
-      onClose();
-    } else {
-      toast.error(res.error || 'فشل تسجيل الورقة المالية');
+      if (res.success) {
+        toast.success('تم تسجيل الورقة المالية بنجاح');
+        onSuccess();
+        onClose();
+      } else {
+        toast.error(res.error || 'فشل تسجيل الورقة المالية');
+      }
+    } catch (err) {
+      console.error('Save paper error:', err);
+      toast.error('حدث خطأ أثناء تسجيل الورقة المالية');
+    } finally {
+      submittingRef.current = false;
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   const isCheck = type === 'check';
@@ -3115,7 +3426,7 @@ function PaperModal({ show, type, direction, banks, onClose, onSuccess }: PaperM
             <h3 className="text-2xl font-black text-slate-800 dark:text-white">تسجيل {isCheck ? 'شيك' : 'كمبيالة'} {isIncoming ? 'وارد (مقبوض)' : 'صادر (مدفوع)'}</h3>
             <p className="text-xs font-bold text-slate-400 mt-1">متابعة استحقاق الورقة المالية ومواعيد تحصيلها وصرفها</p>
           </div>
-          <button onClick={onClose} className="p-3 bg-slate-100 dark:bg-slate-800 rounded-full hover:bg-slate-200 transition-colors">
+          <button onClick={handleClose} disabled={loading} className="p-3 bg-slate-100 dark:bg-slate-800 rounded-full hover:bg-slate-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
             <X className="w-5 h-5 text-slate-500" />
           </button>
         </div>
@@ -3197,7 +3508,7 @@ function PaperModal({ show, type, direction, banks, onClose, onSuccess }: PaperM
           </div>
 
           <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100 dark:border-slate-800">
-            <button type="button" onClick={onClose} className="px-6 py-3.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-600 dark:text-slate-300 rounded-2xl font-bold text-sm transition-all">إلغاء</button>
+            <button type="button" onClick={handleClose} disabled={loading} className="px-6 py-3.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-600 dark:text-slate-300 rounded-2xl font-bold text-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed">إلغاء</button>
             <button type="submit" disabled={loading} className={cn("px-8 py-3.5 text-white rounded-2xl font-black text-sm transition-all shadow-lg active:scale-95 disabled:opacity-50 flex items-center gap-2", isIncoming ? "bg-indigo-600 hover:bg-indigo-700 shadow-indigo-600/20" : "bg-purple-600 hover:bg-purple-700 shadow-purple-600/20")}>
               <Plus className="w-4 h-4" />
               <span>{loading ? 'جاري الحفظ...' : 'تسجيل الورقة المالية'}</span>

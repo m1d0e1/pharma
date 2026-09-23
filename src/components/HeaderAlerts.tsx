@@ -10,16 +10,36 @@ export default function HeaderAlerts() {
   const [isOpen, setIsOpen] = useState(false)
   const [data, setData] = useState<any>(null)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(false)
+  const dataRef = useRef<any>(null)
+  const requestRef = useRef(0)
   const dropdownRef = useRef<HTMLDivElement>(null)
 
   const [dismissedAlerts, setDismissedAlerts] = useState<string[]>([])
 
   const fetchAlerts = async () => {
-    const res = await getInventoryAlertsAction()
-    if (res.success) {
-      setData(res.data)
+    const requestId = ++requestRef.current
+    if (!dataRef.current) {
+      setLoading(true)
     }
-    setLoading(false)
+    setLoadError(false)
+    try {
+      const res = await getInventoryAlertsAction()
+      if (requestId !== requestRef.current) return
+      if (res.success) {
+        dataRef.current = res.data
+        setData(res.data)
+      } else if (!dataRef.current) {
+        setLoadError(true)
+      }
+    } catch {
+      if (requestId !== requestRef.current) return
+      if (!dataRef.current) {
+        setLoadError(true)
+      }
+    } finally {
+      if (requestId === requestRef.current) setLoading(false)
+    }
   }
 
   useEffect(() => {
@@ -34,6 +54,7 @@ export default function HeaderAlerts() {
     window.addEventListener('inventory-alerts-refresh', handleRefresh);
     const interval = setInterval(fetchAlerts, 60000 * 5) // Every 5 mins
     return () => {
+      requestRef.current += 1
       window.removeEventListener('inventory-alerts-refresh', handleRefresh);
       clearInterval(interval);
     }
@@ -106,6 +127,20 @@ export default function HeaderAlerts() {
               <div className="p-12 text-center">
                 <div className="w-8 h-8 border-4 border-primary-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
                 <p className="text-slate-400 text-xs font-bold">جاري تحميل التنبيهات...</p>
+              </div>
+            ) : loadError && !data ? (
+              <div className="p-12 text-center">
+                <div className="w-16 h-16 bg-rose-50 dark:bg-rose-900/20 rounded-3xl flex items-center justify-center mx-auto mb-4">
+                  <AlertTriangle className="w-8 h-8 text-rose-500" />
+                </div>
+                <p className="text-slate-900 dark:text-white font-black">تعذر تحميل التنبيهات</p>
+                <button
+                  type="button"
+                  onClick={fetchAlerts}
+                  className="mt-4 px-4 py-2 rounded-xl bg-primary-600 text-white text-xs font-black hover:bg-primary-700 transition-colors"
+                >
+                  إعادة المحاولة
+                </button>
               </div>
             ) : totalCount === 0 ? (
               <div className="p-12 text-center">

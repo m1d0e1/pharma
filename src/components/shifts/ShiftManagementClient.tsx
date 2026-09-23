@@ -1,7 +1,7 @@
 'use client';
 import TableScrollContainer from '@/components/ui/TableScrollContainer';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { openShiftAction, getShiftsAction, forceCloseAllShiftsAction } from '@/app/actions-client/shifts';
 import { Button } from '@/components/ui/button';
@@ -57,6 +57,10 @@ export default function ShiftManagementClient({
   const [statusFilter, setStatusFilter] = useState('all');
   const [isForceClosing, setIsForceClosing] = useState(false);
   const [viewingReceiptsShift, setViewingReceiptsShift] = useState<{ id: string; title: string } | null>(null);
+  const filterRequestRef = useRef(0);
+  const openingShiftRef = useRef(false);
+  const forceClosingRef = useRef(false);
+  const reloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isOwnerOrAdmin = userRole === 'owner' || userRole === 'admin';
 
@@ -66,24 +70,46 @@ export default function ShiftManagementClient({
     }
   }, [suggestedStartingCash, hasOpenShift, startingCash]);
 
+  useEffect(() => {
+    return () => {
+      if (reloadTimerRef.current) {
+        clearTimeout(reloadTimerRef.current);
+        reloadTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  const scheduleReload = () => {
+    if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current);
+    reloadTimerRef.current = setTimeout(() => {
+      reloadTimerRef.current = null;
+      window.location.reload();
+    }, 2000);
+  };
+
   const handleFilterChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
     const status = e.target.value;
+    const requestId = ++filterRequestRef.current;
     setStatusFilter(status);
     setError('');
     try {
       const result = await getShiftsAction({ status });
+      if (requestId !== filterRequestRef.current) return;
       if (result.success) {
         setShifts(result.data);
       } else {
         setError(result.error || 'فشل جلب الشفتات المفلترة');
       }
     } catch (err) {
+      if (requestId !== filterRequestRef.current) return;
       setError('حدث خطأ أثناء تصفية الشفتات');
     }
   };
 
   const handleForceCloseAll = async () => {
+    if (forceClosingRef.current) return;
     if (!window.confirm('هل أنت متأكد من رغبتك في إغلاق جميع الشفتات المفتوحة اضطرارياً؟')) return;
+    forceClosingRef.current = true;
     setIsForceClosing(true);
     setError('');
     setSuccess('');
@@ -91,13 +117,18 @@ export default function ShiftManagementClient({
       const result = await forceCloseAllShiftsAction();
       if (result.success) {
         setSuccess('تم إغلاق جميع الشفتات المفتوحة بنجاح!');
-        const shiftsResult = await getShiftsAction({ status: statusFilter });
-        if (shiftsResult.success) {
-          setShifts(shiftsResult.data);
+        try {
+          const shiftsResult = await getShiftsAction({ status: statusFilter });
+          if (shiftsResult.success) {
+            setShifts(shiftsResult.data);
+          } else {
+            setError('تم الإغلاق لكن تعذر تحديث قائمة الورديات');
+          }
+        } catch (refreshError) {
+          console.error('Failed to refresh shifts after force close:', refreshError);
+          setError('تم الإغلاق لكن تعذر تحديث قائمة الورديات');
         }
-        setTimeout(() => {
-          window.location.reload();
-        }, 2000);
+        scheduleReload();
       } else {
         setError(result.error || 'فشل إغلاق الشفتات');
       }
@@ -105,16 +136,19 @@ export default function ShiftManagementClient({
       setError('حدث خطأ غير متوقع');
       console.error(err);
     } finally {
+      forceClosingRef.current = false;
       setIsForceClosing(false);
     }
   };
 
   const handleOpenShift = async () => {
+    if (openingShiftRef.current) return;
     if (startingCash === '' || !Number.isFinite(parseFloat(startingCash)) || parseFloat(startingCash) < 0) {
       setError('يرجى إدخال مبلغ نقدي افتتاحي صحيح');
       return;
     }
 
+    openingShiftRef.current = true;
     setIsOpeningShift(true);
     setError('');
     setSuccess('');
@@ -131,15 +165,20 @@ export default function ShiftManagementClient({
         setOpeningNotes('');
         
         // Refresh shifts list
-        const shiftsResult = await getShiftsAction({ status: 'all' });
-        if (shiftsResult.success) {
-          setShifts(shiftsResult.data);
+        try {
+          const shiftsResult = await getShiftsAction({ status: 'all' });
+          if (shiftsResult.success) {
+            setShifts(shiftsResult.data);
+          } else {
+            setError('تم فتح الشفت لكن تعذر تحديث قائمة الورديات');
+          }
+        } catch (refreshError) {
+          console.error('Failed to refresh shifts after opening:', refreshError);
+          setError('تم فتح الشفت لكن تعذر تحديث قائمة الورديات');
         }
         
         // Reload page after 2 seconds to show updated current shift
-        setTimeout(() => {
-          window.location.reload();
-        }, 2000);
+        scheduleReload();
       } else {
         setError(result.error || 'فشل فتح الشفت');
       }
@@ -147,6 +186,7 @@ export default function ShiftManagementClient({
       setError('حدث خطأ غير متوقع. يرجى المحاولة مرة أخرى');
       console.error(err);
     } finally {
+      openingShiftRef.current = false;
       setIsOpeningShift(false);
     }
   };
@@ -312,7 +352,7 @@ export default function ShiftManagementClient({
               )}
             </h3>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              متابعة الورديات والمبالغ المحولة للخزينة والرصيد المرحل
+              متابعة الورديات والمبالغ المسلّمة والرصيد المرحل للدرج
             </p>
           </div>
           <div className="flex items-center gap-3">
@@ -356,7 +396,7 @@ export default function ShiftManagementClient({
                   {isOwnerOrAdmin && (
                     <>
                       <th className="py-3 px-4 text-slate-600 dark:text-slate-400">نقدية الدرج الفعلية</th>
-                      <th className="py-3 px-4 text-slate-600 dark:text-slate-400">المحول للخزينة</th>
+                      <th className="py-3 px-4 text-slate-600 dark:text-slate-400">المبلغ المسلّم</th>
                       <th className="py-3 px-4 text-slate-600 dark:text-slate-400">المستلم</th>
                       <th className="py-3 px-4 text-slate-600 dark:text-slate-400">العجز / الزيادة</th>
                     </>

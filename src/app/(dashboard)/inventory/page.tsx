@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState, Suspense } from 'react';
+import React, { useEffect, useRef, useState, Suspense } from 'react';
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { getInventoryListAction } from '@/app/actions-client/inventory';
 import InventoryTable from '@/components/inventory/InventoryTable';
@@ -18,13 +18,19 @@ function InventoryPageContent() {
   const [pharmacyId, setPharmacyId] = useState<string>('local_default');
   const [canManageInventory, setCanManageInventory] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [refreshError, setRefreshError] = useState('');
   const [refreshTrigger, setRefreshTrigger] = useState(0);
+  const hasLoadedRef = useRef(false);
 
   const refreshInventory = () => setRefreshTrigger(prev => prev + 1);
 
   useEffect(() => {
     let active = true;
     async function loadInventory() {
+      setLoading(true);
+      setLoadError('');
+      setRefreshError('');
       try {
         const localUser = await getClientSession();
         if (localUser && active) {
@@ -35,11 +41,18 @@ function InventoryPageContent() {
         const res = await getInventoryListAction(searchTerm, selectedDrugId);
         if (res.success && active) {
           setItems(res.data);
+          hasLoadedRef.current = true;
         } else if (!res.success && active) {
           console.error('Failed to load inventory:', (res as any).error);
+          if (hasLoadedRef.current) setRefreshError('تعذر تحديث بيانات المخزون');
+          else setLoadError('تعذر تحميل بيانات المخزون');
         }
       } catch (err) {
         console.error('Failed to load inventory:', err);
+        if (active) {
+          if (hasLoadedRef.current) setRefreshError('تعذر تحديث بيانات المخزون');
+          else setLoadError('تعذر تحميل بيانات المخزون');
+        }
       } finally {
         if (active) setLoading(false);
       }
@@ -68,8 +81,27 @@ function InventoryPageContent() {
     );
   }
 
+  if (loadError) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-4 py-20" dir="rtl">
+        <p className="font-black text-rose-600">{loadError}</p>
+        <button type="button" onClick={refreshInventory} className="px-6 py-3 rounded-2xl bg-slate-900 text-white font-black">
+          إعادة المحاولة
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-12 animate-in slide-in-up" dir="rtl">
+      {refreshError && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-amber-800">
+          <span className="font-black">{refreshError}</span>
+          <button type="button" onClick={refreshInventory} className="px-4 py-2 rounded-xl bg-amber-700 text-white text-xs font-black">
+            إعادة تحميل المخزون
+          </button>
+        </div>
+      )}
       <div className="page-header flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
           <h1 className="text-3xl font-bold text-slate-900 dark:text-white">المخزون الحالي</h1>

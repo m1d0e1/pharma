@@ -1,10 +1,11 @@
 import React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { invoke } from '@tauri-apps/api/core';
 import { getClientSession } from '@/lib/auth/local';
 import { toast } from 'react-hot-toast';
 import DbMaintenance from '@/components/settings/DbMaintenance';
 import { dbGet } from '@/lib/db/tauri';
+import { runDatabaseMaintenanceClient } from '@/lib/settings/client';
 
 jest.mock('@tauri-apps/api/core', () => ({ invoke: jest.fn() }));
 jest.mock('@/lib/db/tauri', () => ({ dbGet: jest.fn() }));
@@ -14,7 +15,13 @@ jest.mock('@/lib/auth/local', () => ({
   isOwnerOrAdmin: (user: { role?: string } | null) => ['owner', 'admin'].includes(user?.role || ''),
 }));
 jest.mock('@/lib/settings/client', () => ({ runDatabaseMaintenanceClient: jest.fn() }));
-jest.mock('react-hot-toast', () => ({ toast: { success: jest.fn(), error: jest.fn() } }));
+jest.mock('react-hot-toast', () => ({
+  toast: {
+    success: jest.fn(),
+    error: jest.fn(),
+    loading: jest.fn(() => 'maintenance-toast'),
+  },
+}));
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -60,4 +67,66 @@ it('rechecks the user when exporting, even if the session changed after renderin
   fireEvent.click(button);
   await waitFor(() => expect(toast.error).toHaveBeenCalled());
   expect(invoke).not.toHaveBeenCalled();
+});
+
+it('prevents duplicate maintenance runs while the first write-sensitive operation is pending', async () => {
+  let resolveMaintenance!: (value: { success: boolean; message?: string }) => void;
+  (runDatabaseMaintenanceClient as jest.Mock).mockImplementationOnce(() => new Promise(resolve => {
+    resolveMaintenance = resolve;
+  }));
+  render(<DbMaintenance />);
+
+  const button = screen.getByRole('button', { name: 'تحسين وضغط قاعدة البيانات الآن' });
+  act(() => {
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+  expect(runDatabaseMaintenanceClient).toHaveBeenCalledTimes(1);
+
+  expect(screen.getByRole('button', { name: 'جاري تحسين قاعدة البيانات...' })).toBeDisabled();
+
+  resolveMaintenance({ success: true, message: 'اكتملت الصيانة' });
+  await waitFor(() => expect(toast.success).toHaveBeenCalledWith('اكتملت الصيانة', { id: 'maintenance-toast' }));
+  expect(screen.getByRole('button', { name: 'تحسين وضغط قاعدة البيانات الآن' })).toBeEnabled();
+});
+
+it('restores the maintenance control after returned and thrown failures', async () => {
+  (runDatabaseMaintenanceClient as jest.Mock)
+    .mockResolvedValueOnce({ success: false, error: 'تعذر تنفيذ VACUUM' })
+    .mockRejectedValueOnce(new Error('maintenance bridge unavailable'));
+  render(<DbMaintenance />);
+
+  const button = screen.getByRole('button', { name: 'تحسين وضغط قاعدة البيانات الآن' });
+  fireEvent.click(button);
+  await waitFor(() => expect(toast.error).toHaveBeenCalledWith('تعذر تنفيذ VACUUM', { id: 'maintenance-toast' }));
+  expect(button).toBeEnabled();
+
+  fireEvent.click(button);
+  await waitFor(() => expect(toast.error).toHaveBeenCalledWith('حدث خطأ غير متوقع أثناء تنفيذ الصيانة', { id: 'maintenance-toast' }));
+  expect(button).toBeEnabled();
+});
+
+it('prevents duplicate backup exports while the first snapshot is pending', async () => {
+  let resolveBackup: (value: string) => void = () => {};
+  const pendingBackup = new Promise<string>(resolve => {
+    resolveBackup = resolve;
+  });
+  (invoke as jest.Mock).mockReturnValue(pendingBackup);
+  render(<DbMaintenance />);
+
+  const button = await screen.findByRole('button', { name: 'حفظ نسخة احتياطية كاملة' });
+  fireEvent.change(screen.getByLabelText('كلمة مرور حسابك لتأكيد النسخ الاحتياطي'), { target: { value: 'test-password' } });
+
+  act(() => {
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+
+  await waitFor(() => expect(invoke).toHaveBeenCalled());
+  expect(invoke).toHaveBeenCalledTimes(1);
+
+  await act(async () => {
+    resolveBackup('C:/data/backups/snapshot/pharma_local.db');
+  });
+  expect(await screen.findByRole('status')).toHaveTextContent('C:/data/backups/snapshot/pharma_local.db');
 });

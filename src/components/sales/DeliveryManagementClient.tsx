@@ -1,10 +1,10 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Bike, CheckCircle, Clock, MapPin, 
   Phone, User, DollarSign, ArrowRight,
-  Search, Filter, Receipt
+  Search, Filter, Receipt, AlertTriangle
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { getPendingDeliveriesAction, closeDeliveryInvoiceAction } from '@/app/actions-client/delivery';
@@ -14,14 +14,33 @@ import { format } from 'date-fns';
 export default function DeliveryManagementClient() {
   const [invoices, setInvoices] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [closingId, setClosingId] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [closingIds, setClosingIds] = useState<Set<string>>(new Set());
   const [deliveryFees, setDeliveryFees] = useState<Record<string, number>>({});
+  const loadRequestRef = useRef(0);
+  const pendingCloseIdsRef = useRef(new Set<string>());
 
   const loadDeliveries = async () => {
+    const requestId = ++loadRequestRef.current;
     setLoading(true);
-    const res = await getPendingDeliveriesAction();
-    if (res.success) setInvoices(res.data || []);
-    setLoading(false);
+    setLoadError(null);
+    try {
+      const res = await getPendingDeliveriesAction();
+      if (requestId !== loadRequestRef.current) return;
+      if (res.success) {
+        setInvoices(res.data || []);
+      } else {
+        setLoadError(res.error || 'فشل جلب فواتير التوصيل');
+      }
+    } catch {
+      if (requestId === loadRequestRef.current) {
+        setLoadError('فشل جلب فواتير التوصيل');
+      }
+    } finally {
+      if (requestId === loadRequestRef.current) {
+        setLoading(false);
+      }
+    }
   };
 
   useEffect(() => {
@@ -29,16 +48,28 @@ export default function DeliveryManagementClient() {
   }, []);
 
   const handleClose = async (invoiceId: string) => {
+    if (pendingCloseIdsRef.current.has(invoiceId)) return;
     const fee = deliveryFees[invoiceId] || 0;
-    setClosingId(invoiceId);
-    const res = await closeDeliveryInvoiceAction(invoiceId, fee);
-    if (res.success) {
-      toast.success('تم إغلاق الفاتورة وتأكيد التوصيل');
-      loadDeliveries();
-    } else {
-      toast.error(res.error || 'فشل إغلاق الفاتورة');
+    pendingCloseIdsRef.current.add(invoiceId);
+    setClosingIds(current => new Set(current).add(invoiceId));
+    try {
+      const res = await closeDeliveryInvoiceAction(invoiceId, fee);
+      if (res.success) {
+        toast.success('تم إغلاق الفاتورة وتأكيد التوصيل');
+        void loadDeliveries();
+      } else {
+        toast.error(res.error || 'فشل إغلاق الفاتورة');
+      }
+    } catch {
+      toast.error('فشل إغلاق الفاتورة');
+    } finally {
+      pendingCloseIdsRef.current.delete(invoiceId);
+      setClosingIds(current => {
+        const next = new Set(current);
+        next.delete(invoiceId);
+        return next;
+      });
     }
-    setClosingId(null);
   };
 
   return (
@@ -66,7 +97,20 @@ export default function DeliveryManagementClient() {
         </div>
       </div>
 
-      {invoices.length === 0 && !loading ? (
+      {loadError && !loading ? (
+        <div className="bg-white dark:bg-slate-900 p-20 rounded-[40px] border border-rose-100 dark:border-rose-900/40 text-center space-y-4">
+          <AlertTriangle className="w-12 h-12 text-rose-500 mx-auto" />
+          <h3 className="text-xl font-black text-slate-800 dark:text-white">{loadError}</h3>
+          <p className="text-slate-400 font-bold">تعذر التحقق من قائمة التوصيل الحالية. حاول تحميلها مرة أخرى.</p>
+          <button
+            type="button"
+            onClick={loadDeliveries}
+            className="px-6 py-3 rounded-2xl bg-rose-600 text-white font-black hover:bg-rose-700 transition-all"
+          >
+            إعادة المحاولة
+          </button>
+        </div>
+      ) : invoices.length === 0 && !loading ? (
         <div className="bg-white dark:bg-slate-900 p-20 rounded-[40px] border border-slate-100 dark:border-slate-800 text-center space-y-4">
           <div className="w-20 h-20 bg-emerald-50 dark:bg-emerald-900/20 rounded-full flex items-center justify-center mx-auto">
             <CheckCircle className="w-10 h-10 text-emerald-500" />
@@ -127,10 +171,10 @@ export default function DeliveryManagementClient() {
 
                 <button 
                   onClick={() => handleClose(inv.id)}
-                  disabled={closingId === inv.id}
+                  disabled={closingIds.has(inv.id)}
                   className={cn(
                     "w-full py-5 bg-slate-900 text-white rounded-[24px] font-black flex items-center justify-center gap-3 hover:bg-slate-800 transition-all shadow-xl shadow-slate-500/20",
-                    closingId === inv.id && "opacity-50"
+                    closingIds.has(inv.id) && "opacity-50"
                   )}
                 >
                   <CheckCircle className="w-6 h-6" /> إغلاق وتأكيد

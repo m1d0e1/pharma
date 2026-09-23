@@ -1,7 +1,7 @@
 'use client';
 import { useHotkeys } from 'react-hotkeys-hook';
 
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { addPatientAction } from '@/app/actions-client/patients'
 import { toast } from 'react-hot-toast'
 import { User, Phone, MapPin, Calendar, CreditCard, HeartPulse, Save, X, Activity } from 'lucide-react'
@@ -14,8 +14,6 @@ interface AddPatientModalProps {
 }
 
 export default function AddPatientModal({ pharmacyId, onClose, onSuccess }: AddPatientModalProps) {
-  
-  useHotkeys('esc', () => { if(typeof onClose === 'function') onClose(); }, { enableOnFormTags: true });
   const [fullName, setFullName] = useState('')
   const [nameEn, setNameEn] = useState('')
   const [phone, setPhone] = useState('')
@@ -33,10 +31,18 @@ export default function AddPatientModal({ pharmacyId, onClose, onSuccess }: AddP
   const [paymentMethod, setPaymentMethod] = useState('cash')
   const [notes, setNotes] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const submittingRef = useRef(false)
   const [errors, setErrors] = useState<{ fullName?: boolean }>({})
+
+  const handleClose = () => {
+    if (submittingRef.current) return
+    onClose()
+  }
+  useHotkeys('esc', handleClose, { enableOnFormTags: true });
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (submittingRef.current) return
     
     const newErrors: { fullName?: boolean } = {}
     if (!fullName.trim()) {
@@ -49,6 +55,7 @@ export default function AddPatientModal({ pharmacyId, onClose, onSuccess }: AddP
       return
     }
 
+    submittingRef.current = true
     setIsSubmitting(true)
 
     const formData = {
@@ -71,16 +78,21 @@ export default function AddPatientModal({ pharmacyId, onClose, onSuccess }: AddP
       notes
     }
 
-    const result = await addPatientAction(formData as any)
+    try {
+      const result = await addPatientAction(formData as any)
 
-    setIsSubmitting(false)
-
-    if (result.success) {
-      toast.success('تمت إضافة العميل بنجاح')
-      onSuccess()
-      onClose()
-    } else {
-      toast.error(result.error || 'حدث خطأ أثناء إضافة العميل')
+      if (result.success) {
+        toast.success('تمت إضافة العميل بنجاح')
+        onSuccess()
+        onClose()
+      } else {
+        toast.error(result.error || 'حدث خطأ أثناء إضافة العميل')
+      }
+    } catch {
+      toast.error('حدث خطأ أثناء إضافة العميل')
+    } finally {
+      submittingRef.current = false
+      setIsSubmitting(false)
     }
   }
 
@@ -99,7 +111,7 @@ export default function AddPatientModal({ pharmacyId, onClose, onSuccess }: AddP
             </h2>
             <p className="text-blue-100 text-sm mt-1 font-bold opacity-80 uppercase tracking-widest">إنشاء سجل مالي وطبي متكامل للعميل</p>
           </div>
-          <button onClick={onClose} className="p-3 bg-white/10 hover:bg-white/20 rounded-2xl transition-all relative z-10">
+          <button onClick={handleClose} disabled={isSubmitting} className="p-3 bg-white/10 hover:bg-white/20 rounded-2xl transition-all relative z-10 disabled:opacity-50 disabled:cursor-not-allowed">
             <X className="w-6 h-6" />
           </button>
         </div>
@@ -200,7 +212,7 @@ export default function AddPatientModal({ pharmacyId, onClose, onSuccess }: AddP
             <button type="submit" disabled={isSubmitting} className="flex-[2] bg-gradient-to-r from-blue-600 to-indigo-600 text-white py-5 rounded-3xl font-black text-lg hover:shadow-2xl hover:shadow-blue-500/30 transition-all transform active:scale-[0.98] disabled:opacity-50 flex items-center justify-center gap-3">
               {isSubmitting ? <Activity className="animate-spin w-6 h-6" /> : <><Save className="w-6 h-6" /> حفظ العميل (S)</>}
             </button>
-            <button type="button" onClick={onClose} className="flex-1 bg-white dark:bg-slate-800 text-slate-500 py-5 rounded-3xl font-black text-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 transition-all">إغلاق (C)</button>
+            <button type="button" onClick={handleClose} disabled={isSubmitting} className="flex-1 bg-white dark:bg-slate-800 text-slate-500 py-5 rounded-3xl font-black text-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 transition-all disabled:opacity-50 disabled:cursor-not-allowed">إغلاق (C)</button>
           </div>
         </form>
       </div>

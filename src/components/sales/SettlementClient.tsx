@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { AlertTriangle, CheckCircle2, Package, Search, Calendar, CreditCard, ChevronDown } from 'lucide-react'
 import { toast } from 'react-hot-toast'
 import { settleSaleItemAction, getDrugBatchesAction, getUnsettledSalesAction } from '@/app/actions-client/settlement'
@@ -50,6 +50,9 @@ export default function SettlementClient({ initialItems }: { initialItems: Unset
   const [isProcessing, setIsProcessing] = useState(false)
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [canManageInventory, setCanManageInventory] = useState(false)
+  const batchRequestRef = useRef(0)
+  const settlementSubmissionRef = useRef(false)
+  const loadRequestRef = useRef(0)
 
   useEffect(() => {
     let active = true
@@ -69,9 +72,11 @@ export default function SettlementClient({ initialItems }: { initialItems: Unset
   }, [initialItems])
 
   const loadLatest = async (showToast = false) => {
+    const requestId = ++loadRequestRef.current
     setIsRefreshing(true)
     try {
       const result = await getUnsettledSalesAction()
+      if (requestId !== loadRequestRef.current) return
       if (result.success) {
         setItems(result.data as UnsettledItem[])
         if (showToast) toast.success('تم تحديث البيانات')
@@ -80,9 +85,9 @@ export default function SettlementClient({ initialItems }: { initialItems: Unset
       }
     } catch (err) {
       console.error('Failed to sync data:', err)
-      if (showToast) toast.error('حدث خطأ أثناء الاتصال بقاعدة البيانات')
+      if (requestId === loadRequestRef.current && showToast) toast.error('حدث خطأ أثناء الاتصال بقاعدة البيانات')
     } finally {
-      setIsRefreshing(false)
+      if (requestId === loadRequestRef.current) setIsRefreshing(false)
     }
   }
 
@@ -94,8 +99,15 @@ export default function SettlementClient({ initialItems }: { initialItems: Unset
     window.addEventListener('focus', handleFocus)
     return () => {
       window.removeEventListener('focus', handleFocus)
+      loadRequestRef.current += 1
+      batchRequestRef.current += 1
     }
   }, [])
+
+  const handleCloseSettlement = () => {
+    if (settlementSubmissionRef.current) return
+    setIsModalOpen(false)
+  }
 
   const filteredItems = items.filter(i => 
     (i.trade_name_en || i.trade_name).toLowerCase().includes(searchTerm.toLowerCase()) || 
@@ -103,31 +115,48 @@ export default function SettlementClient({ initialItems }: { initialItems: Unset
   )
 
   const handleOpenSettlement = async (item: UnsettledItem) => {
+    const requestId = ++batchRequestRef.current
     setSelectedItem(item)
-    const result = await getDrugBatchesAction(item.drug_id)
-    if (result.success) {
-      setBatches(result.data as Batch[])
-      setIsModalOpen(true)
-    } else {
-      toast.error('فشل جلب دفعات المخزون')
+    setBatches([])
+    try {
+      const result = await getDrugBatchesAction(item.drug_id)
+      if (requestId !== batchRequestRef.current) return
+      if (result.success) {
+        setBatches(result.data as Batch[])
+        setIsModalOpen(true)
+      } else {
+        toast.error('فشل جلب دفعات المخزون')
+      }
+    } catch (err) {
+      console.error('Failed to load settlement batches:', err)
+      if (requestId === batchRequestRef.current) toast.error('فشل جلب دفعات المخزون')
     }
   }
 
   const handleSettle = async (batchId: string) => {
     if (!selectedItem) return
+    if (settlementSubmissionRef.current) return
+    const itemToSettle = selectedItem
+    settlementSubmissionRef.current = true
     setIsProcessing(true)
-    
-    const result = await settleSaleItemAction(selectedItem.item_id, batchId)
-    
-    setIsProcessing(false)
-    if (result.success) {
-      toast.success('تمت التسوية بنجاح')
-      setItems(prev => prev.filter(i => i.item_id !== selectedItem.item_id))
-      setIsModalOpen(false)
-      // Trigger a reload to refresh stock numbers after settlement
-      loadLatest(false)
-    } else {
-      toast.error(result.error || 'حدث خطأ أثناء التسوية')
+
+    try {
+      const result = await settleSaleItemAction(itemToSettle.item_id, batchId)
+      if (result.success) {
+        toast.success('تمت التسوية بنجاح')
+        setItems(prev => prev.filter(i => i.item_id !== itemToSettle.item_id))
+        setIsModalOpen(false)
+        // Trigger a reload to refresh stock numbers after settlement
+        loadLatest(false)
+      } else {
+        toast.error(result.error || 'حدث خطأ أثناء التسوية')
+      }
+    } catch (err) {
+      console.error('Settlement failed:', err)
+      toast.error('حدث خطأ أثناء التسوية')
+    } finally {
+      settlementSubmissionRef.current = false
+      setIsProcessing(false)
     }
   }
 
@@ -246,7 +275,7 @@ export default function SettlementClient({ initialItems }: { initialItems: Unset
                 <h2 className="text-2xl font-black">اختيار دفعة التسوية</h2>
                 <p className="text-purple-100 text-sm mt-1 font-bold">للصنف: {selectedItem.trade_name_en || selectedItem.trade_name}</p>
               </div>
-              <button onClick={() => setIsModalOpen(false)} className="p-2 hover:bg-white/10 rounded-full transition-colors">
+              <button disabled={isProcessing} onClick={handleCloseSettlement} className="p-2 hover:bg-white/10 rounded-full transition-colors disabled:opacity-50">
                 <ChevronDown className="w-8 h-8 rotate-180" />
               </button>
             </div>
@@ -295,9 +324,10 @@ export default function SettlementClient({ initialItems }: { initialItems: Unset
             </div>
 
             <div className="p-8 border-t border-slate-100 dark:border-slate-800 flex gap-4">
-               <button
-                 onClick={() => setIsModalOpen(false)}
-                 className="flex-1 py-4 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-2xl font-black hover:bg-slate-200 dark:hover:bg-slate-700 transition-all"
+                 <button
+                  disabled={isProcessing}
+                  onClick={handleCloseSettlement}
+                  className="flex-1 py-4 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-2xl font-black hover:bg-slate-200 dark:hover:bg-slate-700 transition-all disabled:opacity-50"
                >
                  إلغاء
                </button>

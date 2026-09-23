@@ -1,6 +1,6 @@
-﻿'use client';
+'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   History, ArrowUpRight, ArrowDownLeft, Printer, Search, 
   Calendar, CreditCard, User, Box, AlertCircle, Save, X 
@@ -20,22 +20,54 @@ const safeFormat = (dateStr: string | null | undefined, fmt: string) => {
 
 export function CustomerStatementContent({ patientId }: { patientId: string }) {
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [data, setData] = useState<any>(null);
   const [dateFilter, setDateFilter] = useState({ from: '', to: '' });
   const [appliedFilter, setAppliedFilter] = useState({ from: '', to: '' });
 
   useEffect(() => {
+    let active = true;
     async function load() {
       setLoading(true);
-      const res = await getPatientStatementAction(patientId);
-      if (res.success) setData(res.data);
-      setLoading(false);
+      setLoadError(false);
+      setData(null);
+      try {
+        const res = await getPatientStatementAction(patientId);
+        if (!active) return;
+        if (res.success && res.data) {
+          setData(res.data);
+        } else {
+          setLoadError(true);
+        }
+      } catch (error) {
+        if (active) {
+          console.error('Customer statement load failed:', error);
+          setLoadError(true);
+        }
+      } finally {
+        if (active) setLoading(false);
+      }
     }
-    load();
-  }, [patientId]);
+    void load();
+    return () => { active = false; };
+  }, [patientId, loadAttempt]);
 
   if (loading) return <div className="p-20 text-center font-black animate-pulse">جاري تحميل كشف الحساب...</div>;
-  if (!data || !data.patient) return <div className="p-20 text-center font-black text-rose-500">فشل تحميل البيانات</div>;
+  if (loadError || !data || !data.patient) {
+    return (
+      <div className="p-20 text-center space-y-4">
+        <p className="font-black text-rose-500">فشل تحميل البيانات</p>
+        <button
+          type="button"
+          onClick={() => setLoadAttempt(attempt => attempt + 1)}
+          className="px-5 py-2.5 rounded-xl bg-blue-600 text-white font-black"
+        >
+          إعادة المحاولة
+        </button>
+      </div>
+    );
+  }
 
   const patient = data.patient || {};
   const movements = data.movements || [];
@@ -186,21 +218,27 @@ export function FinancialNoticeForm({
     date: format(new Date(), 'yyyy-MM-dd')
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const submissionRef = useRef(false);
   const [patients, setPatients] = useState<any[]>([]);
   const [suppliers, setSuppliers] = useState<any[]>([]);
+  const [selectorLoadError, setSelectorLoadError] = useState(false);
+  const [selectorLoadAttempt, setSelectorLoadAttempt] = useState(0);
 
   useEffect(() => {
     if (targetId) {
+      setSelectorLoadError(false);
       setFormData(prev => ({ ...prev, target_id: targetId, target_type: targetType }));
       return;
     }
     
     let isMounted = true;
+    setSelectorLoadError(false);
     Promise.all([
       getPatientsAction().catch(() => ({ success: false, data: [] })),
       getSuppliersAction().catch(() => ({ success: false, data: [] }))
     ]).then(([patRes, supRes]) => {
       if (!isMounted) return;
+      if (!patRes.success || !supRes.success) setSelectorLoadError(true);
       if (patRes.success && patRes.data) {
         setPatients(patRes.data);
         setFormData(prev => prev.target_type === 'customer' && !prev.target_id && patRes.data.length > 0
@@ -213,7 +251,7 @@ export function FinancialNoticeForm({
     });
 
     return () => { isMounted = false; };
-  }, [targetId, targetType]);
+  }, [targetId, targetType, selectorLoadAttempt]);
 
   const handleTargetTypeChange = (newType: 'customer' | 'supplier' | 'pharmacy') => {
     let initialTargetId = '';
@@ -245,20 +283,29 @@ export function FinancialNoticeForm({
       return;
     }
 
+    if (submissionRef.current) return;
+    submissionRef.current = true;
     setIsSubmitting(true);
-    const res = await addFinancialNoticeAction(formData as any);
-    setIsSubmitting(false);
-    if (res.success) {
-       toast.success('تم حفظ الإشعار المالي بنجاح');
-       setFormData(prev => ({
-         ...prev, 
-         amount: 0, 
-         notes: '',
-         target_id: targetId || prev.target_id
-       }));
-       onSuccess?.();
-    } else {
-       toast.error(res.error || 'فشل حفظ الإشعار');
+    try {
+      const res = await addFinancialNoticeAction(formData as any);
+      if (res.success) {
+         toast.success('تم حفظ الإشعار المالي بنجاح');
+         setFormData(prev => ({
+           ...prev,
+           amount: 0,
+           notes: '',
+           target_id: targetId || prev.target_id
+         }));
+         onSuccess?.();
+      } else {
+         toast.error(res.error || 'فشل حفظ الإشعار');
+      }
+    } catch (error) {
+      console.error('Financial notice submission failed:', error);
+      toast.error('فشل حفظ الإشعار');
+    } finally {
+      submissionRef.current = false;
+      setIsSubmitting(false);
     }
   };
 
@@ -310,6 +357,19 @@ export function FinancialNoticeForm({
             </div>
           )}
        </div>
+
+       {!targetId && selectorLoadError && (
+         <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-rose-700 dark:border-rose-900/40 dark:bg-rose-950/20 dark:text-rose-300">
+           <span className="font-black text-sm">تعذر تحميل قوائم العملاء أو الموردين</span>
+           <button
+             type="button"
+             onClick={() => setSelectorLoadAttempt(attempt => attempt + 1)}
+             className="px-4 py-2 rounded-xl bg-rose-600 text-white text-xs font-black"
+           >
+             إعادة تحميل القوائم
+           </button>
+         </div>
+       )}
 
        <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-8">
           <div className="space-y-4">

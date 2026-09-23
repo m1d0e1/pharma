@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { Search, Filter, Download, Trash2, Loader2, AlertCircle } from 'lucide-react';
 import { clearAuditLogsAction } from '@/app/actions-client/audit';
 import { toast } from 'react-hot-toast';
@@ -20,6 +20,7 @@ interface AuditLog {
 interface Props {
   initialLogs: AuditLog[];
   onRefresh?: () => Promise<void> | void;
+  canClearLogs?: boolean;
 }
 
 const ACTION_COLORS: Record<string, string> = {
@@ -35,14 +36,20 @@ const ACTION_COLORS: Record<string, string> = {
   'ADD_INTERACTION': 'bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-300',
 };
 
-export default function AuditLogClient({ initialLogs, onRefresh }: Props) {
+export default function AuditLogClient({ initialLogs, onRefresh, canClearLogs = false }: Props) {
   const [search, setSearch] = useState('');
   const [actionFilter, setActionFilter] = useState('all');
   const [isClearing, setIsClearing] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
+  const clearSubmissionRef = useRef(false);
   const router = useRouter();
 
   const uniqueActions = [...new Set(initialLogs.map(l => l.action))];
+
+  const handleCloseConfirm = () => {
+    if (clearSubmissionRef.current) return;
+    setShowConfirm(false);
+  };
 
   const filteredLogs = initialLogs.filter(log => {
     const matchesSearch = search === '' || 
@@ -69,17 +76,32 @@ export default function AuditLogClient({ initialLogs, onRefresh }: Props) {
   };
 
   const handleClearLogs = async () => {
+    if (clearSubmissionRef.current) return;
+    clearSubmissionRef.current = true;
     setIsClearing(true);
-    const result = await clearAuditLogsAction();
-    if (result.success) {
+    try {
+      const result = await clearAuditLogsAction();
+      if (!result.success) {
+        toast.error(result.error || 'فشل مسح السجلات');
+        return;
+      }
+
       toast.success('تم مسح السجلات بنجاح');
       setShowConfirm(false);
-      if (onRefresh) await onRefresh();
-      else router.refresh();
-    } else {
-      toast.error(result.error || 'فشل مسح السجلات');
+      try {
+        if (onRefresh) await onRefresh();
+        else router.refresh();
+      } catch (err) {
+        console.error('Failed to refresh audit logs after clear:', err);
+        toast.error('تم مسح السجلات لكن تعذر تحديث العرض');
+      }
+    } catch (err) {
+      console.error('Failed to clear audit logs:', err);
+      toast.error('فشل مسح السجلات');
+    } finally {
+      clearSubmissionRef.current = false;
+      setIsClearing(false);
     }
-    setIsClearing(false);
   };
 
   return (
@@ -111,16 +133,18 @@ export default function AuditLogClient({ initialLogs, onRefresh }: Props) {
           <Download className="w-4 h-4" /> تصدير CSV
         </button>
         
-        <button
-          onClick={() => setShowConfirm(true)}
-          className="bg-red-50 text-red-600 dark:bg-red-900/20 dark:text-red-400 px-5 py-2.5 rounded-xl font-bold text-sm hover:bg-red-100 transition-all flex items-center gap-2"
-        >
-          <Trash2 className="w-4 h-4" /> مسح السجلات
-        </button>
+        {canClearLogs && (
+          <button
+            onClick={() => setShowConfirm(true)}
+            className="bg-red-50 text-red-600 dark:bg-red-900/20 dark:text-red-400 px-5 py-2.5 rounded-xl font-bold text-sm hover:bg-red-100 transition-all flex items-center gap-2"
+          >
+            <Trash2 className="w-4 h-4" /> مسح السجلات
+          </button>
+        )}
       </div>
 
       {/* Confirmation Modal */}
-      {showConfirm && (
+      {canClearLogs && showConfirm && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-[200] p-4">
           <div className="bg-white dark:bg-slate-900 rounded-[2.5rem] shadow-2xl max-w-md w-full overflow-hidden border border-slate-200 dark:border-slate-800 animate-in zoom-in duration-300">
             <div className="p-8 text-center space-y-6">
@@ -137,7 +161,8 @@ export default function AuditLogClient({ initialLogs, onRefresh }: Props) {
 
               <div className="flex gap-3 pt-2">
                 <button
-                  onClick={() => setShowConfirm(false)}
+                  disabled={isClearing}
+                  onClick={handleCloseConfirm}
                   className="flex-1 px-6 py-4 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-2xl font-black hover:bg-slate-200 transition-all"
                 >
                   إلغاء

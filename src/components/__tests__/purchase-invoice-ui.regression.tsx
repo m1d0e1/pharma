@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import PurchaseInvoiceClient from '@/app/(dashboard)/purchases/new/PurchaseInvoiceClient';
 import { searchMasterDrugsAction } from '@/app/actions-client/master-drugs';
 import { findDrugBarcodeConflict, getReplacementDrug, replaceDrugAction } from '@/app/actions-client/drug-replacement';
@@ -8,6 +8,7 @@ import {
   getSuppliersAction,
 } from '@/app/actions-client/purchases';
 import { dbGet } from '@/lib/db/tauri';
+import { toast } from 'react-hot-toast';
 
 const mockPush = jest.fn();
 const draftKey = 'pharma_purchase_draft_v2:["local_default","buyer-1"]';
@@ -151,6 +152,30 @@ describe('rendered purchase-invoice flow', () => {
     expect(screen.queryByText('Purchase Drug')).not.toBeInTheDocument();
   });
 
+  it('keeps a committed purchase invoice visible and locked when post-save navigation throws', async () => {
+    mockPush.mockImplementationOnce(() => { throw new Error('navigation unavailable'); });
+    render(<PurchaseInvoiceClient />);
+
+    fireEvent.change(screen.getByPlaceholderText('اسم الصنف أو الباركود...'), { target: { value: '123456' } });
+    fireEvent.click(await screen.findByRole('button', { name: /Purchase Drug/ }));
+    fireEvent.change(await screen.findByRole('combobox'), { target: { value: '7' } });
+    fireEvent.change(screen.getByPlaceholderText('مثلاً: INV-2024-001'), { target: { value: 'NAV-FAIL-1' } });
+    const dateInputs = document.querySelectorAll<HTMLInputElement>('input[type="date"]');
+    fireEvent.change(dateInputs[1], { target: { value: '2028-12-31' } });
+    fireEvent.click(screen.getByRole('button', { name: /حفظ نهائي/ }));
+
+    await waitFor(() => expect(createPurchaseInvoiceAction).toHaveBeenCalledTimes(1));
+    expect(toast.success).toHaveBeenCalledWith('تم تسجيل فاتورة الشراء بنجاح');
+    expect(toast.error).toHaveBeenCalledWith('تم تسجيل فاتورة الشراء بنجاح لكن تعذر فتح قائمة المشتريات');
+    expect(toast.error).not.toHaveBeenCalledWith('navigation unavailable');
+    expect(screen.getByPlaceholderText('مثلاً: INV-2024-001')).toHaveValue('NAV-FAIL-1');
+    expect(screen.getByText('Purchase Drug')).toBeInTheDocument();
+    const committedSave = screen.getByRole('button', { name: 'تم حفظ الفاتورة' });
+    expect(committedSave).toBeDisabled();
+    fireEvent.click(committedSave);
+    expect(createPurchaseInvoiceAction).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps the full order across navigation and appends shortage items without replacing it', async () => {
     const first = render(<PurchaseInvoiceClient />);
     fireEvent.change(screen.getByPlaceholderText('اسم الصنف أو الباركود...'), { target: { value: '123456' } });
@@ -259,6 +284,51 @@ describe('rendered purchase-invoice flow', () => {
     });
   });
 
+  it('keeps the newest purchase drug search when an older request resolves afterwards', async () => {
+    let resolveOlder!: (value: any) => void;
+    let resolveNewer!: (value: any) => void;
+    const older = new Promise(resolve => { resolveOlder = resolve; });
+    const newer = new Promise(resolve => { resolveNewer = resolve; });
+    (searchMasterDrugsAction as jest.Mock)
+      .mockImplementationOnce(() => older)
+      .mockImplementationOnce(() => newer);
+
+    render(<PurchaseInvoiceClient />);
+    const search = screen.getByPlaceholderText('اسم الصنف أو الباركود...');
+    fireEvent.change(search, { target: { value: 'Older' } });
+    fireEvent.change(search, { target: { value: 'Newer' } });
+    await waitFor(() => expect(searchMasterDrugsAction).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      resolveNewer({ success: true, data: [{ id: 202, trade_name_en: 'Newest Purchase Drug', official_price: 25 }] });
+      await newer;
+    });
+    expect(await screen.findByRole('button', { name: /Newest Purchase Drug/ })).toBeInTheDocument();
+
+    await act(async () => {
+      resolveOlder({ success: true, data: [{ id: 201, trade_name_en: 'Stale Purchase Drug', official_price: 20 }] });
+      await older;
+    });
+    expect(screen.getByRole('button', { name: /Newest Purchase Drug/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Stale Purchase Drug/ })).not.toBeInTheDocument();
+  });
+
+  it('clears stale purchase drug suggestions and reports a thrown catalog search', async () => {
+    (searchMasterDrugsAction as jest.Mock)
+      .mockResolvedValueOnce({ success: true, data: [{ id: 301, trade_name_en: 'Visible Purchase Drug', official_price: 20 }] })
+      .mockRejectedValueOnce(new Error('catalog bridge unavailable'));
+
+    render(<PurchaseInvoiceClient />);
+    const search = screen.getByPlaceholderText('اسم الصنف أو الباركود...');
+    fireEvent.change(search, { target: { value: 'Visible' } });
+    expect(await screen.findByRole('button', { name: /Visible Purchase Drug/ })).toBeInTheDocument();
+
+    fireEvent.change(search, { target: { value: 'Broken' } });
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Visible Purchase Drug/ })).not.toBeInTheDocument());
+    expect(toast.error).toHaveBeenCalledWith('فشل البحث في كتالوج الأدوية');
+  });
+
   it('keeps a failed submission, but clears a saved draft even when leaving to another module', async () => {
     (createPurchaseInvoiceAction as jest.Mock).mockResolvedValueOnce({ success: false, error: 'Temporary failure' });
     const first = render(<PurchaseInvoiceClient />);
@@ -275,5 +345,32 @@ describe('rendered purchase-invoice flow', () => {
     fireEvent.click(screen.getByRole('button', { name: /حفظ كمسودة/ }));
     await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/purchases'));
     expect(sessionStorage.getItem(draftKey)).toBeNull();
+  });
+
+  it('distinguishes a returned supplier-load failure from an empty supplier list and retries without clearing invoice fields', async () => {
+    (getSuppliersAction as jest.Mock).mockResolvedValue({ success: false, error: 'supplier list unavailable' });
+
+    render(<PurchaseInvoiceClient />);
+    fireEvent.change(screen.getByPlaceholderText('مثلاً: INV-2024-001'), { target: { value: 'KEEP-ME' } });
+
+    expect(await screen.findByText('تعذر تحميل قائمة الموردين')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('مثلاً: INV-2024-001')).toHaveValue('KEEP-ME');
+    (getSuppliersAction as jest.Mock).mockResolvedValue({ success: true, data: [{ id: 9, name_ar: 'مورد مستعاد', balance: 0 }] });
+    fireEvent.click(screen.getByRole('button', { name: 'إعادة تحميل الموردين' }));
+
+    expect(await screen.findByRole('option', { name: 'مورد مستعاد' })).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('مثلاً: INV-2024-001')).toHaveValue('KEEP-ME');
+    expect(getSuppliersAction).toHaveBeenCalledTimes(2);
+  });
+
+  it('recovers from a thrown supplier loader instead of silently showing an empty selector', async () => {
+    (getSuppliersAction as jest.Mock).mockRejectedValue(new Error('supplier bridge unavailable'));
+
+    render(<PurchaseInvoiceClient />);
+
+    expect(await screen.findByText('تعذر تحميل قائمة الموردين')).toBeInTheDocument();
+    (getSuppliersAction as jest.Mock).mockResolvedValue({ success: true, data: [{ id: 10, name_ar: 'مورد بعد استثناء', balance: 0 }] });
+    fireEvent.click(screen.getByRole('button', { name: 'إعادة تحميل الموردين' }));
+    expect(await screen.findByRole('option', { name: 'مورد بعد استثناء' })).toBeInTheDocument();
   });
 });

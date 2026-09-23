@@ -31,6 +31,8 @@ export default function DrugReplacementDialog({ source, target, newDrug, pending
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [loadError, setLoadError] = useState('');
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [sourceInfo, setSourceInfo] = useState<any>(null);
   const [targetInfo, setTargetInfo] = useState<any>(null);
   const [edits, setEdits] = useState<Record<string, any>>({});
@@ -38,18 +40,28 @@ export default function DrugReplacementDialog({ source, target, newDrug, pending
   const selectedId = selected?.id;
   React.useEffect(() => {
     let cancelled = false;
-    setLoading(true); setError(''); setConfirmed(false); setEdits({});
+    setLoading(true); setLoadError(''); setError(''); setConfirmed(false); setEdits({});
+    setSourceInfo(null); setTargetInfo(null);
     Promise.all([getReplacementDrug(Number(source.id)), selectedId ? getReplacementDrug(Number(selectedId)) : Promise.resolve(null)]).then(([old, next]) => {
       if (cancelled) return;
-      if (!old || (selectedId && !next)) { setError('تعذر تحميل بيانات الصنفين. أغلق النافذة وأعد المحاولة؛ لم يتم تغيير البيانات.'); return; }
+      if (!old || (selectedId && !next)) {
+        setLoadError('تعذر تحميل بيانات الصنفين. لم يتم تغيير البيانات.');
+        setLoading(false);
+        return;
+      }
       setSourceInfo(old);
       setTargetInfo(newDrug ? { ...old, ...newDrug } : next);
       if (pendingEdit) setEdits(Object.fromEntries(fields.filter(([key]) => key in pendingEdit && pendingEdit[key] !== next?.[key]).map(([key]) => [key, pendingEdit[key]])));
       else if (newDrug) setEdits(Object.fromEntries(fields.filter(([key]) => key in newDrug && newDrug[key] !== old[key] && !((key.endsWith('_unit') || key === 'large_to_medium' || key === 'medium_to_small') && !newDrug[key])).map(([key]) => [key, newDrug[key]])));
       setLoading(false);
-    }).catch(() => { if (!cancelled) setError('تعذر تحميل بيانات الصنفين؛ أعد المحاولة'); });
+    }).catch(() => {
+      if (!cancelled) {
+        setLoadError('تعذر تحميل بيانات الصنفين؛ أعد المحاولة');
+        setLoading(false);
+      }
+    });
     return () => { cancelled = true; };
-  }, [source.id, selectedId, newDrug, pendingEdit]);
+  }, [source.id, selectedId, newDrug, pendingEdit, loadAttempt]);
   const edit = (key: string, value: any) => { setEdits(previous => ({ ...previous, [key]: value })); setConfirmed(false); };
   const barcodes = (drug: any): string[] => [drug?.barcode, ...(drug?.inventory_barcodes || '').split(',')].filter(Boolean).map(code => String(code).trim().toLowerCase());
   const sharedBarcodes = [...new Set(barcodes(sourceInfo).filter(code => barcodes(targetInfo).includes(code)))];
@@ -83,25 +95,46 @@ export default function DrugReplacementDialog({ source, target, newDrug, pending
         <button type="button" disabled={busy || loading || !archiveConfirmed} className="bg-amber-700 text-white rounded p-3 disabled:opacity-40" onClick={async () => {
           if (submitLock.current) return;
           submitLock.current=true; setBusy(true); setError('');
-          const result = await archiveMasterDrugAction(Number(source.id), true);
-          if (result.success) onArchived();
-          else { setError(result.error || 'فشل الحذف الآمن'); setBusy(false); submitLock.current=false; }
+          try {
+            const result = await archiveMasterDrugAction(Number(source.id), true);
+            if (result.success) onArchived();
+            else { setError(result.error || 'فشل الحذف الآمن'); setBusy(false); submitLock.current=false; }
+          } catch (err) {
+            console.error('Archive master drug error:', err);
+            setError('فشل الحذف الآمن'); setBusy(false); submitLock.current=false;
+          }
         }}>تأكيد الحذف الآمن (أرشفة)</button>
       </div>}
       <p>حذف الباركود من بطاقة الصنف لا يزيله من دفعات المخزون القديمة. الاستبدال ينقل هذه الدفعات إلى الصنف الصحيح ويزيل التعارض. إذا كان دواءً مختلفاً، ألغِ العملية واستخدم باركوداً مختلفاً.</p>
       {newDrug ? <p>البديل الجديد: {newDrug.trade_name_en || newDrug.trade_name}</p> : target ? <p>البديل: {target.trade_name_en || target.trade_name} (#{target.id})</p> : <>
         <label className="block">ابحث عن الصنف البديل
           <input value={query} disabled={busy} className="w-full border rounded p-2" onChange={async e => {
-            const text = e.target.value; setQuery(text); setSelected(null); setConfirmed(false); const sequence = ++searchSequence.current;
+            const text = e.target.value; setQuery(text); setSelected(null); setConfirmed(false); setError(''); const sequence = ++searchSequence.current;
             if (text.trim().length < 2) { setResults([]); return; }
-            const response = await searchMasterDrugsAction({ query: text });
-            if (sequence === searchSequence.current) setResults((response.data || []).filter((d: any) => Number(d.id) !== Number(source.id)));
+            try {
+              const response = await searchMasterDrugsAction({ query: text });
+              if (sequence !== searchSequence.current) return;
+              if (!response.success) {
+                setResults([]);
+                setError(response.error || 'تعذر البحث عن الصنف البديل');
+                return;
+              }
+              setResults((response.data || []).filter((d: any) => Number(d.id) !== Number(source.id)));
+            } catch {
+              if (sequence !== searchSequence.current) return;
+              setResults([]);
+              setError('تعذر البحث عن الصنف البديل');
+            }
           }} />
         </label>
         <div className="max-h-36 overflow-auto">{results.map(drug => <button key={drug.id} type="button" disabled={busy} className="block border rounded p-2 w-full text-right" onClick={() => { setSelected(drug); setResults([]); setConfirmed(false); }}>{drug.trade_name_en || drug.trade_name} (#{drug.id}) — {drug.barcode || 'بدون باركود'}</button>)}</div>
         {selected && <p>البديل المختار: {selected.trade_name_en || selected.trade_name} (#{selected.id})</p>}
       </>}
       {loading && <p role="status">جاري تحميل البيانات الكاملة...</p>}
+      {loadError && <div className="space-y-2">
+        <p role="alert" className="text-red-600">{loadError}</p>
+        <button type="button" disabled={busy || loading} className="border rounded p-2" onClick={() => setLoadAttempt(attempt => attempt + 1)}>إعادة تحميل بيانات الصنفين</button>
+      </div>}
       {!loading && sourceInfo && targetInfo && <>
         {sharedBarcodes.length > 0 && <p className="bg-emerald-50 text-emerald-800 p-2">باركود مشترك بين البطاقة أو دفعات المخزون: {sharedBarcodes.join('، ')}</p>}
         <p>الأخضر = معلومات متطابقة. عدّل عمود «البيانات النهائية» أو اختر قيمة من أحد الصنفين. الكميات والتكاليف والسجل السابق للعرض فقط؛ لا تُعدّل من هنا. تصحيح سعر البيع يحدّث سعر البيع بالمخزون ونقطة البيع، وليس تكلفة الشراء أو الفواتير القديمة.</p>
@@ -132,9 +165,21 @@ export default function DrugReplacementDialog({ source, target, newDrug, pending
         <button type="button" disabled={busy || loading || !confirmed || !password || (!newDrug && !selected)} className="bg-red-600 text-white rounded p-3 disabled:opacity-40" onClick={async () => {
           if (submitLock.current) return;
           submitLock.current = true; setBusy(true); setError('');
-          const result = await replaceDrugAction(Number(source.id), newDrug ? null : Number(selected.id), newDrug || null, password, edits);
+          let result: any;
+          try {
+            result = await replaceDrugAction(Number(source.id), newDrug ? null : Number(selected.id), newDrug || null, password, edits);
+          } catch (err) {
+            console.error('Replace master drug error:', err);
+            setError('فشل الاستبدال'); setBusy(false); submitLock.current = false;
+            return;
+          }
           if (result.success) {
-            const saved = await getReplacementDrug(result.id!);
+            let saved: any = null;
+            try {
+              saved = await getReplacementDrug(result.id!);
+            } catch (err) {
+              console.error('Replacement completed but saved record could not be reloaded:', err);
+            }
             onSuccess(result.id!, result.backupPath, saved || { ...targetInfo, ...edits, id: result.id }, edits);
           }
           else { setError(result.error || 'فشل الاستبدال'); setBusy(false); submitLock.current = false; }

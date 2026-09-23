@@ -48,12 +48,12 @@ describe('sales dashboard pharmacy scope', () => {
       );
 
       INSERT INTO sales_invoices VALUES
-        ('ph1-today', 'ph-1', 100, 'cash', 'completed', datetime('now', 'localtime')),
-        ('ph1-delivery', 'ph-1', 40, 'delivery', 'completed', datetime('now', 'localtime')),
-        ('ph2-today', 'ph-2', 900, 'cash', 'completed', datetime('now', 'localtime')),
-        ('ph2-delivery', 'ph-2', 600, 'delivery', 'completed', datetime('now', 'localtime')),
-        ('ph1-yesterday', 'ph-1', 70, 'cash', 'completed', datetime('now', '-1 day', 'localtime')),
-        ('ph2-yesterday', 'ph-2', 700, 'cash', 'completed', datetime('now', '-1 day', 'localtime'));
+        ('ph1-today', 'ph-1', 100, 'cash', 'completed', datetime('now')),
+        ('ph1-delivery', 'ph-1', 40, 'delivery', 'completed', datetime('now')),
+        ('ph2-today', 'ph-2', 900, 'cash', 'completed', datetime('now')),
+        ('ph2-delivery', 'ph-2', 600, 'delivery', 'completed', datetime('now')),
+        ('ph1-yesterday', 'ph-1', 70, 'cash', 'completed', datetime('now', '-1 day')),
+        ('ph2-yesterday', 'ph-2', 700, 'cash', 'completed', datetime('now', '-1 day'));
     `);
   });
 

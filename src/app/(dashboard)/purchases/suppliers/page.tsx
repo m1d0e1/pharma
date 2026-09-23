@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import SuppliersManagementClient from '@/components/purchases/SuppliersManagementClient';
 import {
   addSupplierAction,
@@ -8,22 +8,44 @@ import {
   getSuppliersAction,
   updateSupplierAction,
 } from '@/app/actions-client/purchases';
+import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 
 export default function SuppliersPage() {
   const [suppliers, setSuppliers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
+  const [refreshError, setRefreshError] = useState('');
+  const [canMutate, setCanMutate] = useState(false);
+  const [canPay, setCanPay] = useState(false);
+  const hasLoadedRef = useRef(false);
 
   const loadSuppliers = useCallback(async () => {
+    const isInitialLoad = !hasLoadedRef.current;
+    if (isInitialLoad) setLoading(true);
     try {
-      const result = await getSuppliersAction();
+      const [result, session] = await Promise.all([getSuppliersAction(), getClientSession()]);
       if (!result.success) throw new Error(result.error || 'فشل تحميل الموردين');
       setSuppliers(result.data || []);
+      setLoadError('');
+      setRefreshError('');
+      const canViewSuppliers = !!session && (
+        hasUserPermissionSync(session, 'can_view_suppliers')
+        || hasUserPermissionSync(session, 'can_view_purchases')
+      );
+      setCanMutate(canViewSuppliers && !!session && (session.role === 'owner' || session.role === 'admin'));
+      setCanPay(!!session
+        && hasUserPermissionSync(session, 'can_view_suppliers')
+        && hasUserPermissionSync(session, 'acc_can_process_cash_flow'));
+      hasLoadedRef.current = true;
     } catch (err) {
       console.error('Failed to load suppliers:', err);
-      setLoadError(err instanceof Error ? err.message : 'فشل تحميل الموردين');
+      if (isInitialLoad) {
+        setLoadError(err instanceof Error ? err.message : 'فشل تحميل الموردين');
+      } else {
+        setRefreshError('تعذر تحديث قائمة الموردين');
+      }
     } finally {
-      setLoading(false);
+      if (isInitialLoad) setLoading(false);
     }
   }, []);
 
@@ -61,6 +83,18 @@ export default function SuppliersPage() {
 
   return (
     <div className="space-y-6">
+      {refreshError && (
+        <div className="flex items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-amber-800" dir="rtl">
+          <span className="font-bold">{refreshError}</span>
+          <button
+            type="button"
+            onClick={() => void loadSuppliers()}
+            className="rounded-xl bg-white px-4 py-2 text-xs font-black shadow-sm ring-1 ring-amber-200"
+          >
+            إعادة تحميل الموردين
+          </button>
+        </div>
+      )}
       <div className="flex justify-between items-center" dir="rtl">
         <div>
           <h1 className="text-3xl font-black text-slate-900 dark:text-white">دليل الموردين والحسابات</h1>
@@ -74,6 +108,8 @@ export default function SuppliersPage() {
         onUpdate={handleUpdate}
         onDelete={handleDelete}
         onRefresh={loadSuppliers}
+        canMutate={canMutate}
+        canPay={canPay}
       />
     </div>
   );

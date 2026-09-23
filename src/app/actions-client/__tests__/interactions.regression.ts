@@ -18,7 +18,7 @@ jest.mock('@/lib/auth/local', () => ({
 
 jest.unmock('@/app/actions-client/interactions');
 
-import { checkDrugInteractions } from '@/app/actions-client/interactions';
+import { addInteractionAction, checkDrugInteractions } from '@/app/actions-client/interactions';
 
 describe('POS interaction safety', () => {
   beforeEach(() => {
@@ -31,7 +31,8 @@ describe('POS interaction safety', () => {
         severity TEXT,
         description_en TEXT,
         description_ar TEXT,
-        recommendation TEXT
+        recommendation TEXT,
+        source TEXT DEFAULT 'WHO'
       );
       CREATE TABLE patient_allergies (
         id INTEGER PRIMARY KEY,
@@ -44,7 +45,7 @@ describe('POS interaction safety', () => {
       CREATE TABLE sales_invoices (id TEXT PRIMARY KEY, patient_id TEXT, created_at TEXT);
       CREATE TABLE sales_items (id INTEGER PRIMARY KEY, invoice_id TEXT, inventory_id TEXT, drug_id INTEGER);
 
-      INSERT INTO drug_interactions VALUES
+      INSERT INTO drug_interactions (id, ingredient_a, ingredient_b, severity, description_en, description_ar, recommendation) VALUES
         (1, 'Deferasirox', 'Ambroxol', 'moderate', 'interaction', NULL, NULL);
       INSERT INTO master_drugs VALUES (1, 'Ambroxol');
       INSERT INTO inventory VALUES ('old-lot', 1);
@@ -78,7 +79,7 @@ describe('POS interaction safety', () => {
 
   it('does NOT trigger false-positive interactions between internal salts of a single cart drug (e.g. Centravita Magnesium + Ramipril)', async () => {
     sqlite.exec(`
-      INSERT INTO drug_interactions VALUES
+      INSERT INTO drug_interactions (id, ingredient_a, ingredient_b, severity, description_en, description_ar, recommendation) VALUES
         (2, 'Choline magnesium trisalicylate', 'Magnesium salicylate', 'major', 'desc', NULL, NULL),
         (3, 'Magnesium hydroxide', 'Magnesium sulfate', 'major', 'desc', NULL, NULL),
         (4, 'Magnesium oxide', 'Magnesium sulfate', 'major', 'desc', NULL, NULL),
@@ -95,7 +96,7 @@ describe('POS interaction safety', () => {
 
   it('correctly checks cross-drug interaction for combination products without self-interacting', async () => {
     sqlite.exec(`
-      INSERT INTO drug_interactions VALUES
+      INSERT INTO drug_interactions (id, ingredient_a, ingredient_b, severity, description_en, description_ar, recommendation) VALUES
         (6, 'Sulpiride', 'Digoxin', 'major', 'desc', NULL, NULL),
         (7, 'Mebeverine', 'Sulpiride', 'moderate', 'internal formulation', NULL, NULL);
     `);
@@ -112,5 +113,19 @@ describe('POS interaction safety', () => {
       ingredient_b: 'Digoxin',
       severity: 'major',
     });
+  });
+
+  it('marks owner-created interactions as MANUAL instead of inheriting the WHO schema default', async () => {
+    expect(await addInteractionAction({
+      ingredient_a: 'ING-A',
+      ingredient_b: 'ING-B',
+      severity: 'minor',
+      description_ar: 'manual entry',
+      recommendation: '',
+    })).toEqual({ success: true });
+
+    expect(sqlite.prepare(`
+      SELECT source FROM drug_interactions WHERE ingredient_a = 'ING-A' AND ingredient_b = 'ING-B'
+    `).get()).toEqual({ source: 'MANUAL' });
   });
 });

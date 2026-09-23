@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import ReceiptListClient from '@/components/receipts/ReceiptListClient';
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
@@ -14,11 +14,18 @@ export default function ReceiptsPage() {
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState<any>(null);
   const [allowed, setAllowed] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+  const [reloadVersion, setReloadVersion] = useState(0);
+  const loadRequestRef = useRef(0);
 
   useEffect(() => {
+    const requestId = ++loadRequestRef.current;
     async function loadReceipts() {
+      setLoading(true);
+      setLoadError(false);
       try {
         const userObj = await getClientSession();
+        if (requestId !== loadRequestRef.current) return;
         if (userObj) {
           setUser(userObj);
 
@@ -75,6 +82,7 @@ export default function ReceiptsPage() {
               sql,
               shiftId ? [shiftId, pharmacyId, pharmacyId] : [pharmacyId, pharmacyId]
             );
+            if (requestId !== loadRequestRef.current) return;
 
         if (invoicesData.length === 0) {
           setInvoices([]);
@@ -112,6 +120,7 @@ export default function ReceiptsPage() {
           LEFT JOIN master_drugs md ON si.drug_id = md.id
           WHERE si.invoice_id IN (${invoiceIds})
         `);
+        if (requestId !== loadRequestRef.current) return;
 
         // Map items to invoices
         const fullInvoices = invoicesData.map(invoice => {
@@ -147,19 +156,37 @@ export default function ReceiptsPage() {
         }
         }
       } catch (err) {
+        if (requestId !== loadRequestRef.current) return;
         console.error('Failed to load receipts:', err);
+        setLoadError(true);
       } finally {
-        setLoading(false);
+        if (requestId === loadRequestRef.current) setLoading(false);
       }
     }
 
     loadReceipts();
-  }, [shiftId]);
+    return () => { loadRequestRef.current += 1; };
+  }, [shiftId, reloadVersion]);
 
   if (loading) {
     return (
       <div className="flex justify-center items-center py-24" dir="rtl">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="flex flex-col justify-center items-center py-24 gap-4" dir="rtl">
+        <p className="font-black text-slate-700 dark:text-slate-200">تعذر تحميل سجل الفواتير</p>
+        <button
+          type="button"
+          onClick={() => setReloadVersion(version => version + 1)}
+          className="px-5 py-2.5 rounded-xl bg-blue-600 text-white font-black"
+        >
+          إعادة المحاولة
+        </button>
       </div>
     );
   }

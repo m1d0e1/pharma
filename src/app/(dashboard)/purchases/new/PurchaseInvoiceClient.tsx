@@ -140,6 +140,7 @@ export default function PurchaseInvoiceClient() {
 
   const resetPurchase = () => {
     submittedDraftRef.current = false;
+    setIsCommitted(false);
     setCart([]);
     setSelectedSupplier(null);
     setInvoiceHeaderState(initialHeader);
@@ -202,11 +203,15 @@ export default function PurchaseInvoiceClient() {
   }, [draftStorageKey]);
 
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
+  const [suppliersLoading, setSuppliersLoading] = useState(false)
+  const [suppliersLoadError, setSuppliersLoadError] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
   const [searchByActive, setSearchByActive] = useState(false)
   const [searchResults, setSearchResults] = useState<any[]>([])
+  const drugSearchRequestRef = React.useRef(0)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isDrafting, setIsDrafting] = useState(false)
+  const [isCommitted, setIsCommitted] = useState(false)
   const [showBarcodePrinter, setShowBarcodePrinter] = useState(false)
   const [errors, setErrors] = useState<Record<string, boolean>>({})
   const [itemErrors, setItemErrors] = useState<Record<string, Record<string, boolean>>>({})
@@ -216,6 +221,7 @@ export default function PurchaseInvoiceClient() {
   const [isQuickAddOpen, setIsQuickAddOpen] = useState(false)
   const searchInputRef = React.useRef<HTMLInputElement>(null)
   const submissionLockRef = React.useRef(false)
+  const supplierRequestRef = React.useRef(0)
 
   useEffect(() => {
     if (!draftReady || !draftStorageKey || isEditingCompleted || searchParams.get('edit_invoice_id')) return;
@@ -331,12 +337,34 @@ export default function PurchaseInvoiceClient() {
 
   const handledDrugIdRef = React.useRef<string | null>(null);
 
+  const loadSuppliers = React.useCallback(async () => {
+    const requestId = ++supplierRequestRef.current
+    setSuppliersLoading(true)
+    setSuppliersLoadError('')
+    try {
+      const res = await getSuppliersAction()
+      if (requestId !== supplierRequestRef.current) return
+      if (res.success) {
+        setSuppliers(res.data || [])
+      } else {
+        setSuppliersLoadError('تعذر تحميل قائمة الموردين')
+      }
+    } catch (error) {
+      if (requestId !== supplierRequestRef.current) return
+      console.error('Failed to load suppliers:', error)
+      setSuppliersLoadError('تعذر تحميل قائمة الموردين')
+    } finally {
+      if (requestId === supplierRequestRef.current) setSuppliersLoading(false)
+    }
+  }, [])
+
   // Load suppliers
   useEffect(() => {
-    getSuppliersAction().then(res => {
-      if (res.success) setSuppliers(res.data);
-    });
-  }, []);
+    void loadSuppliers()
+    return () => {
+      supplierRequestRef.current += 1
+    }
+  }, [loadSuppliers])
 
   // Handle drugId, supplier_id, edit_invoice_id from URL
   useEffect(() => {
@@ -432,10 +460,23 @@ export default function PurchaseInvoiceClient() {
   }, [searchParams, suppliers])
 
   const handleDrugSearch = async (query: string, byActive = searchByActive) => {
+    const requestId = ++drugSearchRequestRef.current
     setSearchQuery(query)
     if (query.length > 2) {
-      const res = await searchMasterDrugsAction({ query, searchByActiveIngredient: byActive, status: 'active' })
-      if (res.success) setSearchResults(res.data)
+      try {
+        const res = await searchMasterDrugsAction({ query, searchByActiveIngredient: byActive, status: 'active' })
+        if (requestId !== drugSearchRequestRef.current) return
+        if (res.success) {
+          setSearchResults(res.data || [])
+        } else {
+          setSearchResults([])
+          toast.error(res.error || 'فشل البحث في كتالوج الأدوية')
+        }
+      } catch {
+        if (requestId !== drugSearchRequestRef.current) return
+        setSearchResults([])
+        toast.error('فشل البحث في كتالوج الأدوية')
+      }
     } else {
       setSearchResults([])
     }
@@ -790,6 +831,7 @@ export default function PurchaseInvoiceClient() {
 
     submissionLockRef.current = true;
     if (isDraft) setIsDrafting(true); else setIsSubmitting(true);
+    let committed = false;
     
     try {
       let res;
@@ -838,6 +880,8 @@ export default function PurchaseInvoiceClient() {
       }
 
       // Do not restore an already-posted invoice, including while printing its barcodes.
+      committed = true;
+      setIsCommitted(true);
       submittedDraftRef.current = true;
       if (draftStorageKey && !isEditingCompleted) {
         try { sessionStorage.removeItem(draftStorageKey); } catch {}
@@ -849,8 +893,12 @@ export default function PurchaseInvoiceClient() {
         if (confirm('تم تعديل الفاتورة بنجاح. هل تريد طباعة الباركود؟')) {
            setShowBarcodePrinter(true)
         } else {
-           resetPurchase();
-           router.push('/purchases')
+           try {
+             router.push('/purchases')
+             resetPurchase();
+           } catch {
+             toast.error('تم حفظ فاتورة الشراء بنجاح لكن تعذر فتح قائمة المشتريات')
+           }
         }
       } else if (!isDraft) {
         window.dispatchEvent(new Event('inventory-alerts-refresh'));
@@ -858,18 +906,26 @@ export default function PurchaseInvoiceClient() {
         if (confirm('تم الحفظ بنجاح. هل تريد طباعة الباركود؟')) {
            setShowBarcodePrinter(true)
         } else {
-           resetPurchase();
-           router.push('/purchases')
+           try {
+             router.push('/purchases')
+             resetPurchase();
+           } catch {
+             toast.error('تم تسجيل فاتورة الشراء بنجاح لكن تعذر فتح قائمة المشتريات')
+           }
         }
       } else {
         toast.success('تم حفظ الفاتورة كمسودة')
-        resetPurchase();
-        router.push('/purchases')
+        try {
+          router.push('/purchases')
+          resetPurchase();
+        } catch {
+          toast.error('تم حفظ الفاتورة كمسودة لكن تعذر فتح قائمة المشتريات')
+        }
       }
     } catch (error: any) {
       toast.error(error.message || 'فشل في تسجيل الفاتورة')
     } finally {
-      submissionLockRef.current = false
+      if (!committed) submissionLockRef.current = false
       setIsDrafting(false)
       setIsSubmitting(false)
     }
@@ -936,13 +992,27 @@ export default function PurchaseInvoiceClient() {
               }`}
               value={selectedSupplier?.id || ''}
               onChange={(e) => handleSupplierChange(parseInt(e.target.value))}
+              disabled={suppliersLoading}
             >
-              <option value="">اختر المورد...</option>
+              <option value="">{suppliersLoading ? 'جاري تحميل الموردين...' : 'اختر المورد...'}</option>
 
               {suppliers.map(s => (
                 <option key={s.id} value={s.id}>{s.name_ar}</option>
               ))}
             </select>
+            {suppliersLoadError && (
+              <div className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-rose-50 dark:bg-rose-950/20 text-rose-700 dark:text-rose-300 text-[10px] font-black">
+                <span>تعذر تحميل قائمة الموردين</span>
+                <button
+                  type="button"
+                  onClick={() => void loadSuppliers()}
+                  disabled={suppliersLoading}
+                  className="px-2.5 py-1 rounded-lg bg-white dark:bg-slate-900 border border-rose-200 dark:border-rose-800 disabled:opacity-50"
+                >
+                  إعادة تحميل الموردين
+                </button>
+              </div>
+            )}
             {selectedSupplier && (
               <div className="px-4 py-2 bg-primary-50 dark:bg-primary-900/20 rounded-xl border border-primary-100 dark:border-primary-800 text-[10px] font-black text-primary-700 dark:text-primary-400 animate-in fade-in">
                 الرصيد الحالي: {selectedSupplier.balance.toFixed(2)} ج.م
@@ -1223,10 +1293,12 @@ export default function PurchaseInvoiceClient() {
               <div className="flex flex-col gap-2">
                 <button 
                   onClick={() => handleSubmit(false)}
-                  disabled={isSubmitting || isDrafting || cart.length === 0}
+                  disabled={isSubmitting || isDrafting || isCommitted || cart.length === 0}
                   className="w-full py-4 bg-primary-600 hover:bg-primary-700 text-white rounded-2xl font-bold transition-all disabled:opacity-50 flex items-center justify-center gap-2"
                 >
-                  {isSubmitting ? (
+                  {isCommitted ? (
+                    <>تم حفظ الفاتورة</>
+                  ) : isSubmitting ? (
                     <div className="w-5 h-5 border-3 border-white/30 border-t-white rounded-full animate-spin" />
                   ) : (
                     <>
@@ -1240,7 +1312,7 @@ export default function PurchaseInvoiceClient() {
                   {!isEditingCompleted ? (
                     <button 
                       onClick={() => handleSubmit(true)}
-                      disabled={isSubmitting || isDrafting || cart.length === 0}
+                      disabled={isSubmitting || isDrafting || isCommitted || cart.length === 0}
                       className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-xl font-bold transition-all disabled:opacity-50 flex items-center justify-center gap-2 text-sm"
                     >
                       {isDrafting ? (
@@ -1469,8 +1541,12 @@ export default function PurchaseInvoiceClient() {
           }))}
           onClose={() => {
             setShowBarcodePrinter(false)
-            resetPurchase()
-            router.push('/purchases')
+            try {
+              router.push('/purchases')
+              resetPurchase()
+            } catch {
+              toast.error('تم حفظ فاتورة الشراء بنجاح لكن تعذر فتح قائمة المشتريات')
+            }
           }}
         />
       )}

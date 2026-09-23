@@ -1,10 +1,16 @@
 'use client'
 
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { Search, Plus, Trash2, X, Activity, FlaskConical, Save } from 'lucide-react'
 import { toast, Toaster } from 'react-hot-toast'
-import { dbSelect, dbExecute } from '@/lib/db/tauri'
-import { getClientSession } from '@/lib/auth/local'
+import { dbSelect } from '@/lib/db/tauri'
+import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local'
+import {
+  addDrugAlternativeAction,
+  addDrugInteractionAction,
+  removeDrugAlternativeAction,
+  removeDrugInteractionAction,
+} from '@/app/actions-client/master-drugs'
 import { cn } from '@/lib/utils'
 
 interface MasterDrug {
@@ -28,6 +34,12 @@ export default function DrugAlternativesClient() {
   const [conflicts, setConflicts] = useState<any[]>([]);
   const [foodInteractions, setFoodInteractions] = useState<any[]>([]);
   const [newFoodInteraction, setNewFoodInteraction] = useState('');
+  const [canManage, setCanManage] = useState(false);
+  const mainSearchRequestRef = useRef(0);
+  const altSearchRequestRef = useRef(0);
+  const selectionRequestRef = useRef(0);
+  const selectedDrugRef = useRef<MasterDrug | null>(null);
+  const mutationKeysRef = useRef<Set<string>>(new Set());
 
   // Helper for searching master drugs locally
   const localSearchMasterDrugs = async (query: string) => {
@@ -46,9 +58,14 @@ export default function DrugAlternativesClient() {
 
   // Search for main drug
   useEffect(() => {
+    const requestId = ++mainSearchRequestRef.current;
+    if (searchTerm.length < 2) {
+      setSearchResults([]);
+      return;
+    }
     const delayDebounceFn = setTimeout(async () => {
-      if (searchTerm.length >= 2) {
-        const data = await localSearchMasterDrugs(searchTerm);
+      const data = await localSearchMasterDrugs(searchTerm);
+      if (requestId === mainSearchRequestRef.current) {
         setSearchResults(data);
       }
     }, 300);
@@ -57,9 +74,14 @@ export default function DrugAlternativesClient() {
 
   // Search for alternatives
   useEffect(() => {
+    const requestId = ++altSearchRequestRef.current;
+    if (altSearchTerm.length < 2) {
+      setAltSearchResults([]);
+      return;
+    }
     const delayDebounceFn = setTimeout(async () => {
-      if (altSearchTerm.length >= 2) {
-        const data = await localSearchMasterDrugs(altSearchTerm);
+      const data = await localSearchMasterDrugs(altSearchTerm);
+      if (requestId === altSearchRequestRef.current) {
         setAltSearchResults(data);
       }
     }, 300);
@@ -67,9 +89,13 @@ export default function DrugAlternativesClient() {
   }, [altSearchTerm]);
 
   const selectDrug = async (drug: MasterDrug) => {
+    const requestId = ++selectionRequestRef.current;
     const user = await getClientSession();
+    if (requestId !== selectionRequestRef.current) return;
     if (!user) return;
+    setCanManage(hasUserPermissionSync(user, 'can_manage_inventory'));
     const pharmacyId = user.pharmacy_id || 'local_default';
+    selectedDrugRef.current = drug;
     setSelectedDrug(drug);
     setSearchTerm('');
     setSearchResults([]);
@@ -92,6 +118,7 @@ export default function DrugAlternativesClient() {
                SELECT drug_id FROM drug_alternatives WHERE alternative_id = ?
            )
       `, [drug.active_ingredient, pharmacyId, pharmacyId, drug.active_ingredient, drug.id, drug.id, drug.id]);
+      if (requestId !== selectionRequestRef.current) return;
       setAlternatives((data as any[]).sort((a: any, b: any) => (b.total_stock || 0) - (a.total_stock || 0)));
 
       // Fetch Interactions (Conflicts + Food)
@@ -112,6 +139,7 @@ export default function DrugAlternativesClient() {
             FROM drug_interactions
             WHERE UPPER(ingredient_a) = UPPER(?) OR UPPER(ingredient_b) = UPPER(?)
           `, [ingredient, ingredient]) as any[];
+          if (requestId !== selectionRequestRef.current) return;
 
           // Separate food vs drug conflicts
           const foodItems = interactions.filter((i: any) => i.severity === 'food');
@@ -140,6 +168,7 @@ export default function DrugAlternativesClient() {
               WHERE UPPER(active_ingredient) LIKE UPPER(?) AND id != ?
               LIMIT 30
             `, [`%${otherIngredient}%`, drug.id]) as any[];
+            if (requestId !== selectionRequestRef.current) return;
 
             for (const d of drugsWithOtherIngredient) {
               if (conflictingMap.size >= 250) break;
@@ -157,11 +186,15 @@ export default function DrugAlternativesClient() {
           }
         }
 
-        setFoodInteractions(allFoodItems);
-        setConflicts(Array.from(conflictingMap.values()));
+        if (requestId === selectionRequestRef.current) {
+          setFoodInteractions(allFoodItems);
+          setConflicts(Array.from(conflictingMap.values()));
+        }
       } else {
-        setConflicts([]);
-        setFoodInteractions([]);
+        if (requestId === selectionRequestRef.current) {
+          setConflicts([]);
+          setFoodInteractions([]);
+        }
       }
     } catch (err) {
       console.error('Failed to load alternatives or interactions:', err);
@@ -174,11 +207,16 @@ export default function DrugAlternativesClient() {
       toast.error('لا يمكن إضافة الصنف كبديل لنفسه');
       return;
     }
+    const baseDrug = selectedDrug;
+    const mutationKey = `alternative:add:${baseDrug.id}:${alt.id}`;
+    if (mutationKeysRef.current.has(mutationKey)) return;
+    mutationKeysRef.current.add(mutationKey);
     try {
       const user = await getClientSession();
       if (!user) return;
       const pharmacyId = user.pharmacy_id || 'local_default';
-      await dbExecute('INSERT OR IGNORE INTO drug_alternatives (drug_id, alternative_id) VALUES (?, ?)', [selectedDrug.id, alt.id]);
+      const result = await addDrugAlternativeAction(baseDrug.id, alt.id);
+      if (!result.success) throw new Error(result.error || 'فشل الإضافة');
       
       // Re-fetch to maintain proper list order and flags
       const data = await dbSelect(`
@@ -197,13 +235,17 @@ export default function DrugAlternativesClient() {
                UNION
                SELECT drug_id FROM drug_alternatives WHERE alternative_id = ?
            )
-      `, [selectedDrug.active_ingredient, pharmacyId, pharmacyId, selectedDrug.active_ingredient, selectedDrug.id, selectedDrug.id, selectedDrug.id]);
-      setAlternatives((data as any[]).sort((a: any, b: any) => (b.total_stock || 0) - (a.total_stock || 0)));
+      `, [baseDrug.active_ingredient, pharmacyId, pharmacyId, baseDrug.active_ingredient, baseDrug.id, baseDrug.id, baseDrug.id]);
+      if (selectedDrugRef.current?.id === baseDrug.id) {
+        setAlternatives((data as any[]).sort((a: any, b: any) => (b.total_stock || 0) - (a.total_stock || 0)));
+      }
       
       toast.success('تمت إضافة البديل');
     } catch (err: any) {
       console.error(err);
       toast.error(err.message || 'فشل الإضافة');
+    } finally {
+      mutationKeysRef.current.delete(mutationKey);
     }
   };
 
@@ -213,11 +255,16 @@ export default function DrugAlternativesClient() {
        toast.error('هذا البديل مرتبط تلقائياً بناءً على المادة الفعالة ولا يمكن حذفه.');
        return;
     }
+    const baseDrug = selectedDrug;
+    const mutationKey = `alternative:remove:${baseDrug.id}:${altId}`;
+    if (mutationKeysRef.current.has(mutationKey)) return;
+    mutationKeysRef.current.add(mutationKey);
     try {
       const user = await getClientSession();
       if (!user) return;
       const pharmacyId = user.pharmacy_id || 'local_default';
-      await dbExecute('DELETE FROM drug_alternatives WHERE (drug_id = ? AND alternative_id = ?) OR (drug_id = ? AND alternative_id = ?)', [selectedDrug.id, altId, altId, selectedDrug.id]);
+      const result = await removeDrugAlternativeAction(baseDrug.id, altId);
+      if (!result.success) throw new Error(result.error || 'فشل الحذف');
       
       // Re-fetch
       const data = await dbSelect(`
@@ -236,12 +283,16 @@ export default function DrugAlternativesClient() {
                UNION
                SELECT drug_id FROM drug_alternatives WHERE alternative_id = ?
            )
-      `, [selectedDrug.active_ingredient, pharmacyId, pharmacyId, selectedDrug.active_ingredient, selectedDrug.id, selectedDrug.id, selectedDrug.id]);
-      setAlternatives((data as any[]).sort((a: any, b: any) => (b.total_stock || 0) - (a.total_stock || 0)));
+      `, [baseDrug.active_ingredient, pharmacyId, pharmacyId, baseDrug.active_ingredient, baseDrug.id, baseDrug.id, baseDrug.id]);
+      if (selectedDrugRef.current?.id === baseDrug.id) {
+        setAlternatives((data as any[]).sort((a: any, b: any) => (b.total_stock || 0) - (a.total_stock || 0)));
+      }
       toast.success('تمت إزالة البديل');
     } catch (err: any) {
       console.error(err);
       toast.error(err.message || 'فشل الحذف');
+    } finally {
+      mutationKeysRef.current.delete(mutationKey);
     }
   };
 
@@ -254,28 +305,44 @@ export default function DrugAlternativesClient() {
        toast.error('الرجاء إدخال اسم الغذاء');
        return;
     }
+    const baseDrug = selectedDrug;
+    const foodName = newFoodInteraction.trim();
+    const mutationKey = `interaction:add-food:${baseDrug.id}:${foodName}`;
+    if (mutationKeysRef.current.has(mutationKey)) return;
+    mutationKeysRef.current.add(mutationKey);
     try {
-      await dbExecute(
-        'INSERT INTO drug_interactions (ingredient_a, ingredient_b, severity, source) VALUES (?, ?, ?, ?)',
-        [selectedDrug.active_ingredient, newFoodInteraction.trim(), 'food', 'MANUAL']
-      );
-      setNewFoodInteraction('');
-      selectDrug(selectedDrug);
+      const result = await addDrugInteractionAction(baseDrug.active_ingredient!, foodName, 'food');
+      if (!result.success) throw new Error(result.error || 'فشل الإضافة');
+      if (selectedDrugRef.current?.id === baseDrug.id) {
+        setNewFoodInteraction('');
+        void selectDrug(baseDrug);
+      }
       toast.success('تم إضافة التفاعل الغذائي');
     } catch(err: any) {
       console.error(err);
       toast.error(err.message || 'فشل الإضافة');
+    } finally {
+      mutationKeysRef.current.delete(mutationKey);
     }
   };
 
   const handleRemoveInteraction = async (interactionId: number) => {
+    const baseDrug = selectedDrug;
+    const mutationKey = `interaction:remove:${baseDrug?.id || 'none'}:${interactionId}`;
+    if (mutationKeysRef.current.has(mutationKey)) return;
+    mutationKeysRef.current.add(mutationKey);
     try {
-      await dbExecute('DELETE FROM drug_interactions WHERE id = ?', [interactionId]);
-      if (selectedDrug) selectDrug(selectedDrug);
+      const result = await removeDrugInteractionAction(interactionId);
+      if (!result.success) throw new Error(result.error || 'فشل الحذف');
+      if (baseDrug && selectedDrugRef.current?.id === baseDrug.id) {
+        void selectDrug(baseDrug);
+      }
       toast.success('تم الحذف بنجاح');
     } catch(err: any) {
       console.error(err);
       toast.error(err.message || 'فشل الحذف');
+    } finally {
+      mutationKeysRef.current.delete(mutationKey);
     }
   };
 
@@ -373,13 +440,13 @@ export default function DrugAlternativesClient() {
                       <FlaskConical className="w-6 h-6 text-primary-500" />
                       قائمة البدائل الدوائية
                     </h3>
-                    <button 
+                    {canManage && <button
                       onClick={() => setIsSearchingAlt(true)}
                       className="px-6 py-3 bg-slate-900 dark:bg-slate-700 text-white rounded-2xl font-black hover:bg-slate-800 transition-all flex items-center gap-2"
                     >
                       <Plus className="w-5 h-5" />
                       إضافة بديل
-                    </button>
+                    </button>}
                   </div>
 
                   <div className="bg-slate-50 dark:bg-slate-800/50 rounded-3xl overflow-hidden">
@@ -404,7 +471,7 @@ export default function DrugAlternativesClient() {
                             <td className="px-6 py-4 text-blue-600 font-black" dir="ltr">{(alt as any).official_price || 0} EGP</td>
                             <td className="px-6 py-4 text-slate-500">{alt.active_ingredient || '---'}</td>
                             <td className="px-6 py-4 text-slate-500 text-sm">{alt.manufacturer || '---'}</td>
-                            <td className="px-6 py-4">
+                            {canManage && <td className="px-6 py-4">
                               <div className="flex justify-center">
                                 <button 
                                   onClick={() => handleRemoveAlternative(alt.id, (alt as any).is_auto === 1)}
@@ -419,7 +486,7 @@ export default function DrugAlternativesClient() {
                                   <Trash2 className="w-5 h-5" />
                                 </button>
                               </div>
-                            </td>
+                            </td>}
                           </tr>
                         ))}
                         {alternatives.length === 0 && (
@@ -486,7 +553,7 @@ export default function DrugAlternativesClient() {
 
               {activeTab === 'food' && (
                 <div className="space-y-6">
-                  <div className="flex flex-col md:flex-row gap-4 items-end bg-amber-50 dark:bg-amber-900/10 p-6 rounded-3xl border border-amber-100 dark:border-amber-900/20">
+                  {canManage && <div className="flex flex-col md:flex-row gap-4 items-end bg-amber-50 dark:bg-amber-900/10 p-6 rounded-3xl border border-amber-100 dark:border-amber-900/20">
                     <div className="flex-1 w-full space-y-2">
                       <label className="text-sm font-bold text-amber-700 dark:text-amber-500">إسم الغذاء المتعارض</label>
                       <input 
@@ -503,7 +570,7 @@ export default function DrugAlternativesClient() {
                     >
                       إضافة التعارض الغذائي
                     </button>
-                  </div>
+                  </div>}
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     {foodInteractions.map(food => (
@@ -519,12 +586,12 @@ export default function DrugAlternativesClient() {
                              <p className="text-sm font-bold text-slate-500">تعارض غذائي</p>
                            </div>
                         </div>
-                        <button 
+                        {canManage && <button
                           onClick={() => handleRemoveInteraction(food.id)}
                           className="w-10 h-10 flex items-center justify-center rounded-xl text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-all"
                         >
                           <Trash2 className="w-5 h-5" />
-                        </button>
+                        </button>}
                       </div>
                     ))}
                     {foodInteractions.length === 0 && (
@@ -541,7 +608,7 @@ export default function DrugAlternativesClient() {
       )}
 
       {/* Alternative Search Modal */}
-      {isSearchingAlt && (
+      {canManage && isSearchingAlt && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
           <div className="bg-white dark:bg-slate-900 w-full max-w-2xl rounded-[40px] shadow-hard border border-slate-100 dark:border-slate-800 overflow-hidden animate-in zoom-in-95">
              <div className="p-8 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center">

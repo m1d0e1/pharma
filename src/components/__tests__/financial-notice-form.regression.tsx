@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { FinancialNoticeForm } from '@/components/finance/FinancialComponents';
 import * as finance from '@/app/actions-client/finance';
 import * as patients from '@/app/actions-client/patients';
@@ -100,5 +100,60 @@ describe('FinancialNoticeForm Component', () => {
         })
       );
     });
+  });
+
+  it('blocks repeated financial-notice writes while the first submission is pending', async () => {
+    let resolveNotice: (value: { success: boolean; error?: string }) => void = () => {};
+    (finance.addFinancialNoticeAction as jest.Mock).mockImplementation(() => new Promise(resolve => {
+      resolveNotice = resolve;
+    }));
+
+    render(<FinancialNoticeForm targetId="p-101" />);
+    fireEvent.change(screen.getByPlaceholderText('0.00'), { target: { value: '75' } });
+    const form = screen.getByRole('button', { name: /حفظ الإشعار/i }).closest('form') as HTMLFormElement;
+
+    act(() => {
+      fireEvent.submit(form);
+      fireEvent.submit(form);
+    });
+
+    expect(finance.addFinancialNoticeAction).toHaveBeenCalledTimes(1);
+    await act(async () => resolveNotice({ success: false, error: 'تعذر الحفظ مؤقتاً' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /حفظ الإشعار/i })).toBeEnabled());
+  });
+
+  it('preserves entered notice data and restores submission controls when the write throws', async () => {
+    (finance.addFinancialNoticeAction as jest.Mock).mockRejectedValueOnce(new Error('bridge unavailable'));
+    render(<FinancialNoticeForm targetId="p-101" />);
+
+    fireEvent.change(screen.getByPlaceholderText('0.00'), { target: { value: '125' } });
+    fireEvent.change(screen.getByPlaceholderText('سجل تفاصيل العملية ومبررات الإشعار هنا...'), {
+      target: { value: 'احتفظ بهذه الملاحظة بعد الخطأ' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /حفظ الإشعار/i }));
+
+    await waitFor(() => expect(finance.addFinancialNoticeAction).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByRole('button', { name: /حفظ الإشعار/i })).toBeEnabled());
+    expect(screen.getByDisplayValue('125')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('احتفظ بهذه الملاحظة بعد الخطأ')).toBeInTheDocument();
+  });
+
+  it('shows a retryable selector-load error instead of presenting failed customer data as an empty list', async () => {
+    (patients.getPatientsAction as jest.Mock)
+      .mockRejectedValueOnce(new Error('patients unavailable'))
+      .mockResolvedValueOnce({
+        success: true,
+        data: [{ id: 'p-recovered', name: 'عميل مستعاد', phone: '01033333333', current_balance: 0 }],
+      });
+    render(<FinancialNoticeForm />);
+
+    fireEvent.change(screen.getByPlaceholderText('0.00'), { target: { value: '90' } });
+    expect(await screen.findByText('تعذر تحميل قوائم العملاء أو الموردين')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('90')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'إعادة تحميل القوائم' }));
+
+    expect(await screen.findByText(/عميل مستعاد/)).toBeInTheDocument();
+    expect(screen.getByDisplayValue('90')).toBeInTheDocument();
   });
 });

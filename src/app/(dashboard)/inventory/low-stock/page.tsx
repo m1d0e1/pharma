@@ -13,38 +13,62 @@ export default function LowStockPage() {
   const [allowed, setAllowed] = useState(false);
   const [items, setItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [loadAttempt, setLoadAttempt] = useState(0);
 
   useEffect(() => {
+    let active = true;
     async function loadLowStock() {
+      setLoading(true);
+      setLoadError('');
+      setUser(null);
+      setAllowed(false);
       try {
         const localUser = await getClientSession();
+        if (!active) return;
         if (localUser) {
           setUser(localUser);
 
           const isAllowed = hasUserPermissionSync(localUser, 'can_view_low_stock');
+          setAllowed(isAllowed);
 
           if (isAllowed) {
-            setAllowed(true);
             const res = await getLowStockAction(10); // Default threshold
+            if (!active) return;
             if (res.success) {
               setItems(res.data || []);
+            } else {
+              setLoadError('تعذر تحميل بيانات النواقص');
             }
           }
         }
       } catch (err) {
         console.error('Failed to load low stock data:', err);
+        if (active) setLoadError('تعذر تحميل بيانات النواقص');
       } finally {
-        setLoading(false);
+        if (active) setLoading(false);
       }
     }
 
     loadLowStock();
-  }, []);
+    return () => { active = false; };
+  }, [loadAttempt]);
 
   if (loading) {
     return (
       <div className="flex justify-center items-center py-24" dir="rtl">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-4 py-20" dir="rtl">
+        <p className="font-black text-rose-600">{loadError}</p>
+        <button type="button" onClick={() => setLoadAttempt(attempt => attempt + 1)} className="px-6 py-3 rounded-2xl bg-slate-900 text-white font-black">
+          إعادة المحاولة
+        </button>
       </div>
     );
   }

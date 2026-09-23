@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 import PharmacySettingsForm from '@/components/settings/PharmacySettingsForm';
 import SyncSettings from '@/components/settings/SyncSettings';
@@ -16,36 +16,66 @@ export default function SettingsPage() {
   const [allowed, setAllowed] = useState(false);
   const [localPharmacy, setLocalPharmacy] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const loadRequestRef = useRef(0);
+
+  const loadSettingsData = useCallback(async () => {
+    const requestId = ++loadRequestRef.current;
+    setLoading(true);
+    setLoadError(false);
+    setAllowed(false);
+    try {
+      const sessionUser = await getClientSession();
+      if (requestId !== loadRequestRef.current) return;
+      if (!sessionUser) {
+        setUser(null);
+        setLocalPharmacy(null);
+        router.push('/login');
+        return;
+      }
+      setUser(sessionUser);
+
+      const isAllowed = hasUserPermissionSync(sessionUser, 'can_view_settings');
+      setAllowed(isAllowed);
+
+      if (isAllowed) {
+        const pharmacy = await getLocalPharmacySettingsClient();
+        if (requestId !== loadRequestRef.current) return;
+        setLocalPharmacy(pharmacy);
+      } else {
+        setLocalPharmacy(null);
+      }
+    } catch (err) {
+      if (requestId !== loadRequestRef.current) return;
+      console.error('Failed to load settings data:', err);
+      setLoadError(true);
+    } finally {
+      if (requestId === loadRequestRef.current) setLoading(false);
+    }
+  }, [router]);
 
   useEffect(() => {
-    async function loadSettingsData() {
-      try {
-        const sessionUser = await getClientSession();
-        if (!sessionUser) {
-          router.push('/login');
-          return;
-        }
-        setUser(sessionUser);
-
-        const isAllowed = hasUserPermissionSync(sessionUser, 'can_view_settings');
-
-        if (isAllowed) {
-          setAllowed(true);
-          setLocalPharmacy(await getLocalPharmacySettingsClient());
-        }
-      } catch (err) {
-        console.error('Failed to load settings data:', err);
-      } finally {
-        setLoading(false);
-      }
-    }
-    loadSettingsData();
-  }, [router]);
+    void loadSettingsData();
+    return () => {
+      loadRequestRef.current += 1;
+    };
+  }, [loadSettingsData]);
 
   if (loading) {
     return (
       <div className="flex justify-center items-center py-12">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="flex flex-col justify-center items-center py-12 gap-4" dir="rtl">
+        <p className="font-black text-slate-700 dark:text-slate-200">تعذر تحميل إعدادات النظام</p>
+        <button type="button" onClick={() => void loadSettingsData()} className="px-5 py-2.5 rounded-xl bg-blue-600 text-white font-black">
+          إعادة المحاولة
+        </button>
       </div>
     );
   }

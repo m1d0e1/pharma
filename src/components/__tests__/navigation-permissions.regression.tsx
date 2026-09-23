@@ -38,11 +38,14 @@ describe('permission-aware navigation', () => {
     expect(screen.getAllByRole('link', { name: 'المخزون' }).length).toBeGreaterThan(0);
   });
 
-  it('uses the sales permission while keeping legacy missing-key access', () => {
+  it('uses the sales permission and denies a stored payload missing its key', () => {
     const { rerender } = render(<SidebarNav userRole="pharmacist" userPermissions={{ can_view_sales: false }} />);
     expect(screen.queryByRole('link', { name: 'المبيعات والتحصيل' })).not.toBeInTheDocument();
 
     rerender(<SidebarNav userRole="pharmacist" userPermissions={{}} />);
+    expect(screen.queryByRole('link', { name: 'المبيعات والتحصيل' })).not.toBeInTheDocument();
+
+    rerender(<SidebarNav userRole="pharmacist" userPermissions={{ can_view_sales: true }} />);
     expect(screen.getAllByRole('link', { name: 'المبيعات والتحصيل' }).length).toBeGreaterThan(0);
   });
 

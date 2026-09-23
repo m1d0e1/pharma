@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState } from 'react'
+import React, { useRef, useState } from 'react'
 import { Plus, Trash2, Briefcase, DollarSign, Languages } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { 
@@ -28,6 +28,10 @@ interface Props {
 export default function JobsManagementClient({ initialJobs, onAddJob, onDeleteJob }: Props) {
   const [jobs, setJobs] = useState<Job[]>(initialJobs)
   const [isAdding, setIsAdding] = useState(false)
+  const [isSaving, setIsSaving] = useState(false)
+  const savingRef = useRef(false)
+  const [deletingJobId, setDeletingJobId] = useState<number | null>(null)
+  const deletingJobRef = useRef<number | null>(null)
   const [newJob, setNewJob] = useState({
     name_ar: '',
     name_en: '',
@@ -41,27 +45,47 @@ export default function JobsManagementClient({ initialJobs, onAddJob, onDeleteJo
 
   const handleAdd = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (savingRef.current) return
     if (!newJob.name_ar) return toast.error('يرجى إدخال المسمى الوظيفي بالعربي')
     if (newJob.min_salary < 0 || newJob.max_salary < 0) return toast.error('لا يمكن أن يكون الراتب سالباً')
     if (newJob.max_salary < newJob.min_salary) return toast.error('الحد الأقصى للراتب يجب ألا يقل عن الحد الأدنى')
 
-    const res = await onAddJob(newJob)
-    if (res.success) {
-      toast.success('تم إضافة الوظيفة بنجاح')
-      setNewJob({ name_ar: '', name_en: '', min_salary: 0, max_salary: 0 })
-    } else {
-      toast.error(res.error || 'فشل إضافة الوظيفة')
+    savingRef.current = true
+    setIsSaving(true)
+    try {
+      const res = await onAddJob(newJob)
+      if (res.success) {
+        toast.success('تم إضافة الوظيفة بنجاح')
+        setNewJob({ name_ar: '', name_en: '', min_salary: 0, max_salary: 0 })
+      } else {
+        toast.error(res.error || 'فشل إضافة الوظيفة')
+      }
+    } catch {
+      toast.error('فشل إضافة الوظيفة')
+    } finally {
+      savingRef.current = false
+      setIsSaving(false)
     }
   }
 
   const handleDelete = async (id: number) => {
+    if (deletingJobRef.current !== null) return
     if (!confirm('هل أنت متأكد من حذف هذه الوظيفة؟')) return
-    const res = await onDeleteJob(id)
-    if (res.success) {
-      toast.success('تم حذف الوظيفة')
-      // Note: jobs will be updated automatically by useEffect when initialJobs updates
-    } else {
-      toast.error(res.error || 'فشل حذف الوظيفة')
+    deletingJobRef.current = id
+    setDeletingJobId(id)
+    try {
+      const res = await onDeleteJob(id)
+      if (res.success) {
+        toast.success('تم حذف الوظيفة')
+        // Note: jobs will be updated automatically by useEffect when initialJobs updates
+      } else {
+        toast.error(res.error || 'فشل حذف الوظيفة')
+      }
+    } catch {
+      toast.error('فشل حذف الوظيفة')
+    } finally {
+      deletingJobRef.current = null
+      setDeletingJobId(null)
     }
   }
 
@@ -79,7 +103,8 @@ export default function JobsManagementClient({ initialJobs, onAddJob, onDeleteJo
                   </div>
                   <button 
                     onClick={() => handleDelete(job.id)}
-                    aria-label={`حذف وظيفة ${job.name_ar}`}
+                    disabled={deletingJobId !== null}
+                    aria-label={deletingJobId === job.id ? `جاري حذف وظيفة ${job.name_ar}` : `حذف وظيفة ${job.name_ar}`}
                     className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-xl transition-all opacity-0 group-hover:opacity-100"
                   >
                     <Trash2 className="w-5 h-5" />
@@ -186,10 +211,11 @@ export default function JobsManagementClient({ initialJobs, onAddJob, onDeleteJo
 
               <button 
                 type="submit"
+                disabled={isSaving}
                 className="w-full py-4 bg-gradient-primary text-white rounded-2xl font-black shadow-lg shadow-primary-500/30 hover:shadow-primary-500/50 hover:scale-[1.02] active:scale-[0.98] transition-all flex items-center justify-center gap-2"
               >
                 <Plus className="w-6 h-6" />
-                حفظ الوظيفة
+                {isSaving ? 'جاري الحفظ...' : 'حفظ الوظيفة'}
               </button>
             </form>
           </CardContent>
