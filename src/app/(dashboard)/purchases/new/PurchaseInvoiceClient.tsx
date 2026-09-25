@@ -888,7 +888,6 @@ export default function PurchaseInvoiceClient() {
       }
 
       if (isEditingCompleted) {
-        window.dispatchEvent(new Event('inventory-alerts-refresh'));
         toast.success('تم تعديل فاتورة الشراء المكتملة بنجاح')
         if (confirm('تم تعديل الفاتورة بنجاح. هل تريد طباعة الباركود؟')) {
            setShowBarcodePrinter(true)
@@ -901,7 +900,6 @@ export default function PurchaseInvoiceClient() {
            }
         }
       } else if (!isDraft) {
-        window.dispatchEvent(new Event('inventory-alerts-refresh'));
         toast.success('تم تسجيل فاتورة الشراء بنجاح')
         if (confirm('تم الحفظ بنجاح. هل تريد طباعة الباركود؟')) {
            setShowBarcodePrinter(true)

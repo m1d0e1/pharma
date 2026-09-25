@@ -29,6 +29,7 @@ import { checkDrugInteractions } from '@/app/actions-client/interactions';
 import AccessDenied from '@/components/AccessDenied';
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { usePOSStore } from '@/store/usePOSStore';
+import { subscribeInventoryChanges } from '@/lib/inventory/refresh';
 
 
 
@@ -128,6 +129,8 @@ const POSSearchSidebar = memo(forwardRef<POSSearchSidebarRef, POSSearchSidebarPr
     const [searchRetry, setSearchRetry] = useState(0);
     const inputRef = useRef<HTMLInputElement>(null);
     const searchRequestRef = useRef(0);
+
+    useEffect(() => subscribeInventoryChanges(() => setSearchRetry(attempt => attempt + 1)), []);
 
     useImperativeHandle(ref, () => ({
       clear: () => {

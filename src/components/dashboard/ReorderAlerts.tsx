@@ -13,6 +13,7 @@ import { cn } from '@/lib/utils'
 import { getLowStockAction } from '@/app/actions-client/inventory'
 import { addToShortagesAction } from '@/app/actions-client/shortages'
 import { purchaseShortageHandoffStorageKey } from '@/lib/purchases/storage'
+import { subscribeInventoryChanges } from '@/lib/inventory/refresh'
 
 interface ReorderItem {
   drug_id: number
@@ -218,12 +219,11 @@ export default function ReorderAlerts() {
   useEffect(() => {
     loadReorderItems()
 
-    const handleInventoryRefresh = () => void loadReorderItems()
-    window.addEventListener('inventory-alerts-refresh', handleInventoryRefresh)
+    const unsubscribe = subscribeInventoryChanges(() => void loadReorderItems())
 
     return () => {
       loadRequestRef.current += 1
-      window.removeEventListener('inventory-alerts-refresh', handleInventoryRefresh)
+      unsubscribe()
     }
   }, [])
 

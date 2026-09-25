@@ -10,6 +10,7 @@ import { getClientSession } from '@/lib/auth/local';
 import { getCurrentUserAction } from '@/app/actions-client/auth';
 import { fetchDraftsAction } from '@/app/actions-client/sales';
 import { toast } from 'react-hot-toast';
+import { notifyInventoryChanged } from '@/lib/inventory/refresh';
 
 const mockPush = jest.fn();
 const mockRouter = { push: mockPush };
@@ -262,6 +263,31 @@ describe('coverage-gap: POS keyboard shortcuts', () => {
     }));
     expect(screen.queryByText('Stale POS Drug')).not.toBeInTheDocument();
     expect(screen.getByText('Newest POS Drug')).toBeInTheDocument();
+  });
+
+  it('refreshes an open drug search after stock changes without clearing the cart', async () => {
+    usePOSStore.getState().setCart([cartItem]);
+    (searchDrugsAction as jest.Mock)
+      .mockResolvedValueOnce({
+        success: true,
+        data: [{ id: 'searched-drug', trade_name: 'Searched Drug', total_stock: 1, min_price: 10 }],
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        data: [{ id: 'searched-drug', trade_name: 'Searched Drug', total_stock: 8, min_price: 10 }],
+      });
+
+    render(<POSPage />);
+    const search = await screen.findByPlaceholderText('بحث (اسم أو كود)...');
+    fireEvent.change(search, { target: { value: 'Searched Drug' } });
+    await waitFor(() => expect(searchDrugsAction).toHaveBeenCalledTimes(1));
+    await screen.findByText('Searched Drug');
+
+    act(() => notifyInventoryChanged());
+
+    await waitFor(() => expect(searchDrugsAction).toHaveBeenCalledTimes(2));
+    expect(usePOSStore.getState().cart).toEqual([cartItem]);
+    expect(search).toHaveValue('Searched Drug');
   });
 
   it('keeps POS patient search results owned by the newest query when an older request resolves later', async () => {

@@ -1,6 +1,7 @@
 import { dbSelect } from '@/lib/db/tauri';
 import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { isTauri } from '@/lib/env';
+import { notifyInventoryChanged } from '@/lib/inventory/refresh';
 
 const SETTLEMENT_PERMISSION = 'can_view_settlement';
 const SETTLEMENT_MUTATION_PERMISSION = 'can_manage_inventory';
@@ -213,6 +214,7 @@ export async function settleSaleItemAction(itemId: number, inventoryId: string) 
       },
     });
 
+    notifyInventoryChanged();
     return { success: true, data };
   } catch (error) {
     return { success: false, error: errorMessage(error, 'Failed to settle sale item') };

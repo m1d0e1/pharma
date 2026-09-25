@@ -3,12 +3,15 @@
 import React, { useEffect, useState } from 'react';
 import { getShortagesAction } from '@/app/actions-client/shortages';
 import ShortagesClient from "./ShortagesClient";
+import { subscribeInventoryChanges } from '@/lib/inventory/refresh';
 
 export default function ShortagesPage() {
   const [shortages, setShortages] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [loadAttempt, setLoadAttempt] = useState(0);
+
+  useEffect(() => subscribeInventoryChanges(() => setLoadAttempt(attempt => attempt + 1)), []);
 
   useEffect(() => {
     let active = true;

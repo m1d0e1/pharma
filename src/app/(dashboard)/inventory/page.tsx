@@ -6,6 +6,7 @@ import { getInventoryListAction } from '@/app/actions-client/inventory';
 import InventoryTable from '@/components/inventory/InventoryTable';
 import InventoryClientWrapper from '@/components/InventoryClientWrapper';
 import { useSearchParams } from 'next/navigation';
+import { subscribeInventoryChanges } from '@/lib/inventory/refresh';
 
 function InventoryPageContent() {
   const searchParams = useSearchParams();
@@ -24,6 +25,8 @@ function InventoryPageContent() {
   const hasLoadedRef = useRef(false);
 
   const refreshInventory = () => setRefreshTrigger(prev => prev + 1);
+
+  useEffect(() => subscribeInventoryChanges(() => setRefreshTrigger(prev => prev + 1)), []);
 
   useEffect(() => {
     let active = true;

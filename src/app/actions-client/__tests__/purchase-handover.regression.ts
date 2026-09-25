@@ -1,3 +1,5 @@
+/** @jest-environment node */
+
 import Database from 'better-sqlite3';
 import { readFileSync } from 'fs';
 
@@ -1280,10 +1282,11 @@ describe('purchase reports and drawer handover regressions', () => {
       WHERE drug_id = 9001
       ORDER BY batch_number
     `).all() as any[];
-    expect(lots).toMatchObject([
-      { batch_number: 'LOT-A', quantity: 2 },
-      { batch_number: 'LOT-B', quantity: 3 },
-    ]);
+    expect(lots).toHaveLength(2);
+    expect(lots).toEqual(expect.arrayContaining([
+      expect.objectContaining({ batch_number: `PURCHASE-${first.id}`, quantity: 2 }),
+      expect.objectContaining({ batch_number: `PURCHASE-${second.id}`, quantity: 3 }),
+    ]));
 
     const linkedLines = mockDb.prepare(`
       SELECT pii.inventory_id, i.batch_number
@@ -1292,10 +1295,11 @@ describe('purchase reports and drawer handover regressions', () => {
       WHERE pii.invoice_id IN (?, ?)
       ORDER BY i.batch_number
     `).all(first.id, second.id) as any[];
-    expect(linkedLines).toEqual([
-      expect.objectContaining({ batch_number: 'LOT-A', inventory_id: expect.any(String) }),
-      expect.objectContaining({ batch_number: 'LOT-B', inventory_id: expect.any(String) }),
-    ]);
+    expect(linkedLines).toHaveLength(2);
+    expect(linkedLines).toEqual(expect.arrayContaining([
+      expect.objectContaining({ batch_number: `PURCHASE-${first.id}`, inventory_id: expect.any(String) }),
+      expect.objectContaining({ batch_number: `PURCHASE-${second.id}`, inventory_id: expect.any(String) }),
+    ]));
   });
 
   it('lets multiple users sell, inspect receipts, and hand over the same open shift', async () => {
@@ -1477,10 +1481,10 @@ describe('purchase reports and drawer handover regressions', () => {
     expect(purchase.success).toBe(true);
     expect(mockDb.prepare('SELECT barcode FROM master_drugs WHERE id = 9001').get()).toEqual({ barcode: '6220000000001' });
     expect(mockDb.prepare(`
-      SELECT barcode, quantity FROM inventory WHERE drug_id = 9001 ORDER BY batch_number
+      SELECT barcode, quantity FROM inventory WHERE drug_id = 9001 ORDER BY barcode
     `).all()).toEqual([
-      { barcode: '6220000000002', quantity: 3 },
       { barcode: '6220000000001', quantity: 2 },
+      { barcode: '6220000000002', quantity: 3 },
     ]);
 
     for (const barcode of ['6220000000001', '6220000000002']) {

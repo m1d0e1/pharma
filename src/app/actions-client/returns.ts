@@ -3,6 +3,7 @@ import { dbSelect, dbExecute, dbGet, dbTransaction, generateId } from '@/lib/db/
 import { isTauri } from '@/lib/env';
 import { requireOpenShiftId } from './finance';
 import { localDate } from '@/lib/time';
+import { notifyInventoryChanged } from '@/lib/inventory/refresh';
 const logActivity = async (userId, action, details) => {
   try {
     await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [userId, action, details]);
@@ -156,6 +157,12 @@ export async function createReturnAction(data: {
   try {
     const user = await getLocalSession();
     if (!user || !hasUserPermissionSync(user, 'can_view_returns')) return { success: false, error: 'غير مصرح' };
+    if (!isTauri && typeof window !== 'undefined') {
+      return {
+        success: false,
+        error: 'إنشاء مرتجع من المتصفح غير مدعوم لأنه يتطلب معاملة ذرية؛ استخدم تطبيق سطح المكتب',
+      };
+    }
     const shiftId = await requireOpenShiftId(String(user.id), data.shift_id);
     const pharmacyId = user.pharmacy_id || 'local_default';
 
@@ -182,6 +189,7 @@ export async function createReturnAction(data: {
       }) as any;
       revalidatePath('/returns');
       revalidatePath('/inventory');
+      notifyInventoryChanged();
       return { success: true, returnId: result.return_id, totalRefund: result.total_refund };
     }
 
@@ -190,6 +198,7 @@ export async function createReturnAction(data: {
       await db.exec('ALTER TABLE sales_invoices ADD COLUMN points_earned INTEGER DEFAULT 0');
     } catch(e) {}
 
+    const result = await dbTransaction(async () => {
     const dbHeader = await db.prepare(`
       SELECT *
       FROM sales_invoices
@@ -197,6 +206,12 @@ export async function createReturnAction(data: {
         AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
     `).get(data.invoice_id, pharmacyId, pharmacyId) as any;
     if (!dbHeader) return { success: false, error: 'الفاتورة غير موجودة' };
+    if (
+      String(dbHeader.payment_method || '').toLowerCase() === 'delivery' &&
+      String(dbHeader.status || '').toLowerCase() !== 'delivered'
+    ) {
+      return { success: false, error: 'يجب تسوية تحصيل فاتورة التوصيل قبل إجراء المرتجع' };
+    }
     if (data.refund_method === 'patient_account' && !dbHeader.patient_id) {
       return { success: false, error: 'لا يمكن ترحيل المرتجع لحساب مريض لأن الفاتورة غير مرتبطة بمريض' };
     }
@@ -322,7 +337,6 @@ export async function createReturnAction(data: {
       Math.max(0, refundableInvoiceTotal - Number(priorRefund?.total || 0))
     );
 
-    try {
       // 3. Create return header
       await db.prepare(`
         INSERT INTO returns (id, invoice_id, user_id, pharmacy_id, shift_id, reason, total_refund, refund_method, status)
@@ -463,12 +477,12 @@ export async function createReturnAction(data: {
         );
       }
 
-      const invoiceTotal = Number(dbHeader?.total_amount || 0);
+      const invoiceTotalForPoints = Number(dbHeader?.total_amount || 0);
       const pointsEarned = Math.max(0, Number(dbHeader?.points_earned || 0));
-      if (patientId && invoiceTotal > 0 && pointsEarned > 0) {
-        const targetReversed = (refunded: number) => refunded + 0.005 >= invoiceTotal
+      if (patientId && invoiceTotalForPoints > 0 && pointsEarned > 0) {
+        const targetReversed = (refunded: number) => refunded + 0.005 >= invoiceTotalForPoints
           ? pointsEarned
-          : Math.floor(pointsEarned * (Math.max(0, refunded) / invoiceTotal));
+          : Math.floor(pointsEarned * (Math.max(0, refunded) / invoiceTotalForPoints));
         const refundedBefore = Number(priorRefund?.total || 0);
         const pointsToReverse = Math.max(
           0,
@@ -480,13 +494,16 @@ export async function createReturnAction(data: {
         }
       }
 
-      logActivity(user.id, 'CREATE_RETURN', `مرتجع بقيمة ${totalRefund} ج.م للفاتورة ${data.invoice_id.slice(0,8)}`);
+      return { success: true, returnId, totalRefund };
+    });
+
+    if (result.success) {
+      logActivity(user.id, 'CREATE_RETURN', `مرتجع بقيمة ${result.totalRefund} ج.م للفاتورة ${data.invoice_id.slice(0,8)}`);
       revalidatePath('/returns');
       revalidatePath('/inventory');
-      return { success: true, returnId, totalRefund };
-    } catch (error) {
-      throw error;
+      notifyInventoryChanged();
     }
+    return result;
   } catch (error: any) {
     console.error('Create return error:', error);
     return { success: false, error: error.message || 'فشل إنشاء المرتجع' };

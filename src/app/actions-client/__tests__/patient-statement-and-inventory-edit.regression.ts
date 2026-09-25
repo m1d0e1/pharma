@@ -1,3 +1,5 @@
+/** @jest-environment node */
+
 import Database from 'better-sqlite3';
 import { readFileSync, readdirSync } from 'fs';
 import { join } from 'path';

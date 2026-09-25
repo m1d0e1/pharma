@@ -346,7 +346,7 @@ pub(crate) async fn create_purchase_return_on_connection(
                 .unwrap_or(0.0)
                 .max(0.0);
         }
-        if previously_returned + returned_paid_quantity > purchased_quantity + 0.005 {
+        if previously_returned + returned_paid_quantity > purchased_quantity + 0.000_001 {
             let remaining = (purchased_quantity - previously_returned).max(0.0);
             return Err(format!(
                 "Return quantity exceeds the invoice remainder ({remaining:.2} large units available)"
@@ -358,6 +358,12 @@ pub(crate) async fn create_purchase_return_on_connection(
             );
         }
 
+        super::critical::ensure_exclusive_purchase_inventory(
+            connection,
+            &inventory_id,
+            payload.purchase_invoice_id.trim(),
+        )
+        .await?;
         let inventory = sqlx::query(
             r#"
             SELECT CAST(quantity AS REAL) AS quantity
@@ -377,7 +383,7 @@ pub(crate) async fn create_purchase_return_on_connection(
             "The purchase invoice inventory batch no longer exists in this pharmacy".to_string()
         })?;
         let available: f64 = inventory.try_get("quantity").unwrap_or(0.0);
-        if available + 0.005 < stock_quantity {
+        if available + 0.000_001 < stock_quantity {
             return Err(format!(
                 "Insufficient inventory for {}",
                 line.try_get::<String, _>("drug_name")
@@ -432,11 +438,11 @@ pub(crate) async fn create_purchase_return_on_connection(
         let stock = sqlx::query(
             r#"
             UPDATE inventory
-            SET quantity = CASE WHEN quantity - ? < 0.0001 THEN 0 ELSE quantity - ? END,
+            SET quantity = CASE WHEN quantity - ? < 0 THEN 0 ELSE quantity - ? END,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ? AND drug_id = ?
               AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
-              AND quantity + 0.005 >= ?
+              AND quantity + 0.000001 >= ?
             "#,
         )
         .bind(line.stock_quantity)
@@ -699,9 +705,46 @@ fn normalize_pharmacy(value: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::critical::{
+        delete_purchase_invoice_tx, save_purchase_invoice_tx, PurchaseItem, PurchasePayload,
+    };
     use serde_json::json;
     use std::path::Path;
     use tokio::time::{sleep, Duration};
+
+    async fn current_schema() -> SqliteConnection {
+        let mut connection = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        for migration in [
+            include_str!("../../migrations/001_initial.sql"),
+            include_str!("../../migrations/002_performance.sql"),
+            include_str!("../../migrations/003_sync_metadata.sql"),
+            include_str!("../../migrations/004_return_items_patch.sql"),
+            include_str!("../../migrations/005_purchase_return_details.sql"),
+            include_str!("../../migrations/006_accounting_upgrade_seed.sql"),
+            include_str!("../../migrations/007_purchase_inventory_links.sql"),
+            include_str!("../../migrations/008_patient_accounting.sql"),
+            include_str!("../../migrations/009_rebuild_master_drugs_fts.sql"),
+            include_str!("../../migrations/010_shift_handover_indexes.sql"),
+            include_str!("../../migrations/011_shift_cash_difference_account.sql"),
+            include_str!("../../migrations/012_shortages_pharmacy_scope.sql"),
+            include_str!("../../migrations/013_shift_handover_details.sql"),
+            include_str!("../../migrations/014_inventory_performance.sql"),
+            include_str!("../../migrations/015_shared_open_shift.sql"),
+            include_str!("../../migrations/016_financial_expense_wiring.sql"),
+            include_str!("../../migrations/017_cloud_drug_identity.sql"),
+            include_str!("../../migrations/018_unit_conversion_snapshots.sql"),
+            include_str!("../../migrations/019_shift_pharmacy_scope.sql"),
+            include_str!("../../migrations/020_daily_snapshot_pharmacy_scope.sql"),
+        ] {
+            sqlx::raw_sql(migration).execute(&mut connection).await.unwrap();
+        }
+        let mut transaction = connection.begin().await.unwrap();
+        crate::schema::ensure_compatibility(&mut transaction)
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+        connection
+    }
 
     async fn connect_test(path: &Path) -> SqliteConnection {
         let options = SqliteConnectOptions::new()
@@ -741,10 +784,10 @@ mod tests {
             r#"
             CREATE TABLE users (id TEXT PRIMARY KEY, pharmacy_id TEXT, role TEXT, permissions TEXT, is_active INTEGER);
             CREATE TABLE suppliers (id INTEGER PRIMARY KEY, balance REAL);
-            CREATE TABLE purchase_invoices (id TEXT PRIMARY KEY, supplier_id INTEGER, pharmacy_id TEXT, status TEXT, tax_percent REAL, expenses REAL, discount_value REAL, discount_percent REAL);
+            CREATE TABLE purchase_invoices (id TEXT PRIMARY KEY, supplier_id INTEGER, pharmacy_id TEXT, status TEXT, invoice_number TEXT, tax_percent REAL, expenses REAL, discount_value REAL, discount_percent REAL);
             CREATE TABLE master_drugs (id INTEGER PRIMARY KEY, trade_name TEXT, large_to_medium INTEGER, medium_to_small INTEGER);
-            CREATE TABLE inventory (id TEXT PRIMARY KEY, drug_id INTEGER, pharmacy_id TEXT, quantity REAL, cost_price REAL, updated_at TEXT);
-            CREATE TABLE purchase_invoice_items (id INTEGER PRIMARY KEY, invoice_id TEXT, drug_id INTEGER, quantity REAL, cost_price REAL, bonus_quantity REAL, tax_percent REAL, discount_percent REAL, strips_per_box INTEGER, medium_to_small INTEGER, inventory_id TEXT);
+            CREATE TABLE inventory (id TEXT PRIMARY KEY, drug_id INTEGER, pharmacy_id TEXT, quantity REAL, cost_price REAL, expiry_date TEXT, batch_number TEXT, updated_at TEXT);
+            CREATE TABLE purchase_invoice_items (id INTEGER PRIMARY KEY, invoice_id TEXT, drug_id INTEGER, quantity REAL, cost_price REAL, bonus_quantity REAL, tax_percent REAL, discount_percent REAL, strips_per_box INTEGER, medium_to_small INTEGER, expiry_date TEXT, inventory_id TEXT);
             CREATE TABLE purchase_returns (id TEXT PRIMARY KEY, purchase_invoice_id TEXT, supplier_id INTEGER, user_id TEXT, reason TEXT, total_amount REAL, refund_method TEXT, status TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
             CREATE TABLE purchase_return_items (id INTEGER PRIMARY KEY AUTOINCREMENT, purchase_return_id TEXT, purchase_invoice_item_id INTEGER, inventory_id TEXT, drug_id INTEGER, drug_name TEXT, quantity_returned REAL, unit_price REAL, total_price REAL, unit TEXT, reason TEXT);
             CREATE TABLE supplier_transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, supplier_id INTEGER, type TEXT, amount REAL, reference_id TEXT, notes TEXT);
@@ -759,10 +802,10 @@ mod tests {
             INSERT INTO suppliers VALUES (7, 500);
             INSERT INTO accounts VALUES (60, '1.1.1'), (70, '2.1'), (100, '1.1.3');
             INSERT INTO trial_balance_settings VALUES ('cash_drawer', 60), ('accounts_payable', 70), ('inventory_asset', 100);
-            INSERT INTO purchase_invoices VALUES ('purchase-1', 7, NULL, 'completed', 5, 0, 0, 10);
+            INSERT INTO purchase_invoices VALUES ('purchase-1', 7, NULL, 'completed', 'OLD-NUMBER', 5, 0, 0, 10);
             INSERT INTO master_drugs VALUES (42, 'Stored Drug', 99, 10);
-            INSERT INTO inventory VALUES ('exact-lot', 42, NULL, 3, 83.16, NULL);
-            INSERT INTO purchase_invoice_items VALUES (11, 'purchase-1', 42, 2, 120, 1, 10, 0, 12, 2, 'exact-lot');
+            INSERT INTO inventory VALUES ('exact-lot', 42, NULL, 3, 83.16, '2030-01-01', 'PURCHASE-purchase-1', NULL);
+            INSERT INTO purchase_invoice_items VALUES (11, 'purchase-1', 42, 2, 120, 1, 10, 0, 12, 2, '2030-01-01', 'exact-lot');
             "#,
         )
         .execute(&mut first)
@@ -903,5 +946,364 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(format!("{}-wal", path.display()));
         let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    #[tokio::test]
+    async fn fractional_purchase_return_overage_is_rejected() {
+        let mut connection = current_schema().await;
+        sqlx::query("INSERT INTO users (id, username, role, pharmacy_id, is_active) VALUES ('buyer', 'buyer', 'admin', 'ph-1', 1)")
+            .execute(&mut connection).await.unwrap();
+        sqlx::query("INSERT INTO suppliers (id, name_ar, balance) VALUES (1, 'Supplier', 0)")
+            .execute(&mut connection).await.unwrap();
+        sqlx::query("INSERT INTO master_drugs (id, trade_name, large_to_medium, medium_to_small) VALUES (42, 'Drug', 1, 1)")
+            .execute(&mut connection).await.unwrap();
+        let purchase = PurchasePayload {
+            id: Some("precision-purchase".into()), supplier_id: 1,
+            pharmacy_id: Some("ph-1".into()), user_id: "buyer".into(),
+            invoice_number: Some("PRECISION".into()), invoice_date: Some("2026-09-01".into()),
+            payment_method: Some("credit".into()), notes: None, check_number: None,
+            expenses: 0.0, discount_value: 0.0, discount_percent: 0.0, tax_percent: 0.0,
+            status: Some("completed".into()), cart: vec![PurchaseItem {
+                purchase_invoice_item_id: None, id: 42, quantity: 1.0, unit_id: Some(1),
+                expiry_date: Some("2030-01-01".into()), cost_price: 100.0,
+                selling_price: Some(150.0), bonus_quantity: 0.0, tax_percent: 0.0,
+                discount_percent: 0.0, strips_per_box: 1, barcode: None,
+            }],
+        };
+        let mut transaction = connection.begin().await.unwrap();
+        save_purchase_invoice_tx(&mut transaction, purchase).await.unwrap();
+        transaction.commit().await.unwrap();
+        let item_id: i64 = sqlx::query_scalar(
+            "SELECT id FROM purchase_invoice_items WHERE invoice_id = 'precision-purchase'",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        let error = run_purchase_return_transaction(
+            &mut connection,
+            PurchaseReturnPayload {
+                purchase_invoice_id: "precision-purchase".into(), supplier_id: 1,
+                user_id: "buyer".into(), pharmacy_id: Some("ph-1".into()), reason: None,
+                refund_method: "credit".into(), items: vec![PurchaseReturnItem {
+                    purchase_invoice_item_id: item_id, quantity: 1.004, unit: Some("large".into()),
+                }],
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("invoice remainder"));
+    }
+
+    #[tokio::test]
+    async fn return_inventory_credit_matches_the_linked_purchase_lot_not_a_merged_same_number_lot() {
+        let mut connection = current_schema().await;
+        sqlx::query("INSERT INTO users (id, username, role, pharmacy_id, is_active) VALUES ('buyer', 'buyer', 'admin', 'ph-1', 1)")
+            .execute(&mut connection).await.unwrap();
+        sqlx::query("INSERT INTO suppliers (id, name_ar, balance) VALUES (1, 'Supplier', 0)")
+            .execute(&mut connection).await.unwrap();
+        sqlx::query("INSERT INTO master_drugs (id, trade_name, large_to_medium, medium_to_small) VALUES (42, 'Drug', 12, 10)")
+            .execute(&mut connection).await.unwrap();
+
+        let purchase = |id: &str, cost_price: f64, strips_per_box: i64| PurchasePayload {
+            id: Some(id.into()),
+            supplier_id: 1,
+            pharmacy_id: Some("ph-1".into()),
+            user_id: "buyer".into(),
+            invoice_number: Some("SHARED-SUPPLIER-NUMBER".into()),
+            invoice_date: Some("2026-09-01".into()),
+            payment_method: Some("credit".into()),
+            notes: None,
+            check_number: None,
+            expenses: 0.0,
+            discount_value: 0.0,
+            discount_percent: 0.0,
+            tax_percent: 0.0,
+            status: Some("completed".into()),
+            cart: vec![PurchaseItem {
+                purchase_invoice_item_id: None,
+                id: 42,
+                quantity: 2.0,
+                unit_id: Some(1),
+                expiry_date: Some("2030-01-01".into()),
+                cost_price,
+                selling_price: Some(250.0),
+                bonus_quantity: 0.0,
+                tax_percent: 0.0,
+                discount_percent: 0.0,
+                strips_per_box,
+                barcode: None,
+            }],
+        };
+
+        let mut transaction = connection.begin().await.unwrap();
+        save_purchase_invoice_tx(&mut transaction, purchase("purchase-a", 100.0, 12))
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+        let first_item_id: i64 = sqlx::query_scalar(
+            "SELECT id FROM purchase_invoice_items WHERE invoice_id = 'purchase-a'",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        let first_inventory_id: String = sqlx::query_scalar(
+            "SELECT inventory_id FROM purchase_invoice_items WHERE id = ?",
+        )
+        .bind(first_item_id)
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+
+        let mut transaction = connection.begin().await.unwrap();
+        save_purchase_invoice_tx(&mut transaction, purchase("purchase-b", 200.0, 8))
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+
+        let inventory_value_before: f64 = sqlx::query_scalar(
+            "SELECT CAST(COALESCE(SUM(quantity * cost_price), 0) AS REAL) FROM inventory WHERE drug_id = 42 AND pharmacy_id = 'ph-1'",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        let second_inventory_id: String = sqlx::query_scalar(
+            "SELECT inventory_id FROM purchase_invoice_items WHERE invoice_id = 'purchase-b'",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        let snapshots = sqlx::query(
+            "SELECT invoice_id, strips_per_box, medium_to_small FROM purchase_invoice_items WHERE invoice_id IN ('purchase-a', 'purchase-b') ORDER BY invoice_id",
+        )
+        .fetch_all(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(snapshots[0].try_get::<i64, _>("strips_per_box").unwrap(), 12);
+        assert_eq!(snapshots[0].try_get::<i64, _>("medium_to_small").unwrap(), 10);
+        assert_eq!(snapshots[1].try_get::<i64, _>("strips_per_box").unwrap(), 8);
+        assert_eq!(snapshots[1].try_get::<i64, _>("medium_to_small").unwrap(), 10);
+
+        let returned = run_purchase_return_transaction(
+            &mut connection,
+            PurchaseReturnPayload {
+                purchase_invoice_id: "purchase-a".into(),
+                supplier_id: 1,
+                user_id: "buyer".into(),
+                pharmacy_id: Some("ph-1".into()),
+                reason: None,
+                refund_method: "credit".into(),
+                items: vec![PurchaseReturnItem {
+                    purchase_invoice_item_id: first_item_id,
+                    quantity: 12.0,
+                    unit: Some("medium".into()),
+                }],
+            },
+        )
+        .await
+        .unwrap();
+        assert!((returned.total_amount - 100.0).abs() < 0.000_001);
+
+        let inventory_value_after: f64 = sqlx::query_scalar(
+            "SELECT CAST(COALESCE(SUM(quantity * cost_price), 0) AS REAL) FROM inventory WHERE drug_id = 42 AND pharmacy_id = 'ph-1'",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        let inventory_credit: f64 = sqlx::query_scalar(
+            "SELECT je.amount FROM journal_entries je JOIN daily_journals dj ON dj.id = je.journal_id JOIN accounts a ON a.id = je.account_id WHERE dj.description = ? AND a.code = '1.1.3' AND je.type = 'credit'",
+        )
+        .bind(format!("Purchase return {}", returned.return_id))
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+
+        assert!(
+            (inventory_value_before - inventory_value_after - inventory_credit).abs() < 0.000_001,
+            "before {inventory_value_before}, after {inventory_value_after}, inventory credit {inventory_credit}"
+        );
+        assert_ne!(first_inventory_id, second_inventory_id);
+    }
+
+    #[tokio::test]
+    async fn edit_and_delete_one_same_number_purchase_preserve_the_other_lot_and_accounting() {
+        let mut connection = current_schema().await;
+        sqlx::query("INSERT INTO users (id, username, role, pharmacy_id, is_active) VALUES ('buyer', 'buyer', 'admin', 'ph-1', 1)")
+            .execute(&mut connection).await.unwrap();
+        sqlx::query("INSERT INTO suppliers (id, name_ar, balance) VALUES (1, 'Supplier', 0)")
+            .execute(&mut connection).await.unwrap();
+        sqlx::query("INSERT INTO master_drugs (id, trade_name, large_to_medium, medium_to_small) VALUES (42, 'Drug', 12, 10)")
+            .execute(&mut connection).await.unwrap();
+        let purchase = |id: &str, cost_price: f64| PurchasePayload {
+            id: Some(id.into()), supplier_id: 1, pharmacy_id: Some("ph-1".into()),
+            user_id: "buyer".into(), invoice_number: Some("SHARED-SUPPLIER-NUMBER".into()),
+            invoice_date: Some("2026-09-01".into()), payment_method: Some("credit".into()),
+            notes: None, check_number: None, expenses: 0.0, discount_value: 0.0,
+            discount_percent: 0.0, tax_percent: 0.0, status: Some("completed".into()),
+            cart: vec![PurchaseItem {
+                purchase_invoice_item_id: None, id: 42, quantity: 2.0, unit_id: Some(1),
+                expiry_date: Some("2030-01-01".into()), cost_price, selling_price: Some(250.0),
+                bonus_quantity: 0.0, tax_percent: 0.0, discount_percent: 0.0,
+                strips_per_box: 12, barcode: None,
+            }],
+        };
+        for (id, cost) in [("purchase-a", 100.0), ("purchase-b", 200.0)] {
+            let mut transaction = connection.begin().await.unwrap();
+            save_purchase_invoice_tx(&mut transaction, purchase(id, cost)).await.unwrap();
+            transaction.commit().await.unwrap();
+        }
+
+        let mut transaction = connection.begin().await.unwrap();
+        save_purchase_invoice_tx(&mut transaction, purchase("purchase-a", 120.0))
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+        let mut transaction = connection.begin().await.unwrap();
+        delete_purchase_invoice_tx(&mut transaction, "purchase-a", true, "buyer", Some("ph-1"))
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+
+        let other_lot = sqlx::query(
+            "SELECT CAST(i.quantity AS REAL) AS quantity, CAST(i.cost_price AS REAL) AS cost_price FROM inventory i JOIN purchase_invoice_items pii ON pii.inventory_id = i.id WHERE pii.invoice_id = 'purchase-b'",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        assert!((other_lot.try_get::<f64, _>("quantity").unwrap() - 2.0).abs() < 0.000_001);
+        assert!((other_lot.try_get::<f64, _>("cost_price").unwrap() - 200.0).abs() < 0.000_001);
+        assert!((sqlx::query_scalar::<_, f64>("SELECT balance FROM suppliers WHERE id = 1")
+            .fetch_one(&mut connection).await.unwrap() - 400.0).abs() < 0.000_001);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM daily_journals WHERE description = 'Purchase invoice [id=purchase-b]'",
+            )
+            .fetch_one(&mut connection)
+            .await
+            .unwrap(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_shared_purchase_stock_rejects_return_edit_and_delete_without_changes() {
+        let mut connection = current_schema().await;
+        sqlx::query("INSERT INTO users (id, username, role, pharmacy_id, is_active) VALUES ('buyer', 'buyer', 'admin', 'ph-1', 1)")
+            .execute(&mut connection).await.unwrap();
+        sqlx::query("INSERT INTO suppliers (id, name_ar, balance) VALUES (1, 'Supplier', 0)")
+            .execute(&mut connection).await.unwrap();
+        sqlx::query("INSERT INTO master_drugs (id, trade_name, large_to_medium, medium_to_small) VALUES (42, 'Drug', 1, 1)")
+            .execute(&mut connection).await.unwrap();
+        let purchase = |id: &str| PurchasePayload {
+            id: Some(id.into()), supplier_id: 1, pharmacy_id: Some("ph-1".into()),
+            user_id: "buyer".into(), invoice_number: Some("SHARED-NUMBER".into()),
+            invoice_date: Some("2026-09-01".into()), payment_method: Some("credit".into()),
+            notes: None, check_number: None, expenses: 0.0, discount_value: 0.0,
+            discount_percent: 0.0, tax_percent: 0.0, status: Some("completed".into()),
+            cart: vec![PurchaseItem {
+                purchase_invoice_item_id: None, id: 42, quantity: 2.0, unit_id: Some(1),
+                expiry_date: Some("2030-01-01".into()), cost_price: 100.0,
+                selling_price: Some(150.0), bonus_quantity: 0.0, tax_percent: 0.0,
+                discount_percent: 0.0, strips_per_box: 1, barcode: None,
+            }],
+        };
+        for id in ["purchase-a", "purchase-b"] {
+            let mut tx = connection.begin().await.unwrap();
+            save_purchase_invoice_tx(&mut tx, purchase(id)).await.unwrap();
+            tx.commit().await.unwrap();
+        }
+        let first_item: i64 = sqlx::query_scalar("SELECT id FROM purchase_invoice_items WHERE invoice_id = 'purchase-a'")
+            .fetch_one(&mut connection).await.unwrap();
+        let second_item: i64 = sqlx::query_scalar("SELECT id FROM purchase_invoice_items WHERE invoice_id = 'purchase-b'")
+            .fetch_one(&mut connection).await.unwrap();
+        let first_lot: String = sqlx::query_scalar("SELECT inventory_id FROM purchase_invoice_items WHERE id = ?")
+            .bind(first_item).fetch_one(&mut connection).await.unwrap();
+        let second_lot: String = sqlx::query_scalar("SELECT inventory_id FROM purchase_invoice_items WHERE id = ?")
+            .bind(second_item).fetch_one(&mut connection).await.unwrap();
+        sqlx::query("UPDATE inventory SET quantity = 4 WHERE id = ?")
+            .bind(&first_lot).execute(&mut connection).await.unwrap();
+        sqlx::query("UPDATE inventory SET quantity = 0 WHERE id = ?")
+            .bind(&second_lot).execute(&mut connection).await.unwrap();
+        sqlx::query("UPDATE purchase_invoice_items SET inventory_id = ? WHERE id = ?")
+            .bind(&first_lot).bind(second_item).execute(&mut connection).await.unwrap();
+
+        let original_journals: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM daily_journals")
+            .fetch_one(&mut connection).await.unwrap();
+        let original_entries: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM journal_entries")
+            .fetch_one(&mut connection).await.unwrap();
+        let original_supplier_balance: f64 = sqlx::query_scalar("SELECT balance FROM suppliers WHERE id = 1")
+            .fetch_one(&mut connection).await.unwrap();
+        let error = run_purchase_return_transaction(&mut connection, PurchaseReturnPayload {
+            purchase_invoice_id: "purchase-a".into(), supplier_id: 1, user_id: "buyer".into(),
+            pharmacy_id: Some("ph-1".into()), reason: None, refund_method: "credit".into(),
+            items: vec![PurchaseReturnItem { purchase_invoice_item_id: first_item, quantity: 1.0, unit: Some("large".into()) }],
+        }).await.unwrap_err();
+        assert!(error.contains("historical inventory batch is shared"), "{error}");
+
+        for operation in ["edit", "delete"] {
+            let mut tx = connection.begin().await.unwrap();
+            let result = if operation == "edit" {
+                save_purchase_invoice_tx(&mut tx, purchase("purchase-a")).await.map(|_| ())
+            } else {
+                delete_purchase_invoice_tx(&mut tx, "purchase-a", true, "buyer", Some("ph-1")).await
+            };
+            assert!(result.unwrap_err().contains("historical inventory batch is shared"));
+            tx.rollback().await.unwrap();
+        }
+        assert_eq!(sqlx::query_scalar::<_, f64>("SELECT CAST(quantity AS REAL) FROM inventory WHERE id = ?").bind(&first_lot).fetch_one(&mut connection).await.unwrap(), 4.0);
+        assert_eq!(sqlx::query_scalar::<_, f64>("SELECT CAST(quantity AS REAL) FROM inventory WHERE id = ?").bind(&second_lot).fetch_one(&mut connection).await.unwrap(), 0.0);
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM purchase_returns").fetch_one(&mut connection).await.unwrap(), 0);
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM daily_journals").fetch_one(&mut connection).await.unwrap(), original_journals);
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM journal_entries").fetch_one(&mut connection).await.unwrap(), original_entries);
+        assert_eq!(sqlx::query_scalar::<_, f64>("SELECT balance FROM suppliers WHERE id = 1").fetch_one(&mut connection).await.unwrap(), original_supplier_balance);
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM purchase_invoices WHERE id IN ('purchase-a', 'purchase-b')").fetch_one(&mut connection).await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn exclusive_legacy_purchase_lot_can_be_edited_and_deleted() {
+        let mut connection = current_schema().await;
+        sqlx::query("INSERT INTO users (id, username, role, pharmacy_id, is_active) VALUES ('buyer', 'buyer', 'admin', 'ph-1', 1)")
+            .execute(&mut connection).await.unwrap();
+        sqlx::query("INSERT INTO suppliers (id, name_ar, balance) VALUES (1, 'Supplier', 0)")
+            .execute(&mut connection).await.unwrap();
+        sqlx::query("INSERT INTO master_drugs (id, trade_name, large_to_medium, medium_to_small) VALUES (42, 'Drug', 1, 1)")
+            .execute(&mut connection).await.unwrap();
+        let purchase = |id: &str, quantity: f64| PurchasePayload {
+            id: Some(id.into()), supplier_id: 1, pharmacy_id: Some("ph-1".into()),
+            user_id: "buyer".into(), invoice_number: Some("LEGACY-NUMBER".into()),
+            invoice_date: Some("2026-09-01".into()), payment_method: Some("credit".into()),
+            notes: None, check_number: None, expenses: 0.0, discount_value: 0.0,
+            discount_percent: 0.0, tax_percent: 0.0, status: Some("completed".into()),
+            cart: vec![PurchaseItem {
+                purchase_invoice_item_id: None, id: 42, quantity, unit_id: Some(1),
+                expiry_date: Some("2030-01-01".into()), cost_price: 100.0,
+                selling_price: Some(150.0), bonus_quantity: 0.0, tax_percent: 0.0,
+                discount_percent: 0.0, strips_per_box: 1, barcode: None,
+            }],
+        };
+        let mut tx = connection.begin().await.unwrap();
+        save_purchase_invoice_tx(&mut tx, purchase("legacy-exclusive", 2.0)).await.unwrap();
+        tx.commit().await.unwrap();
+        let lot: String = sqlx::query_scalar("SELECT inventory_id FROM purchase_invoice_items WHERE invoice_id = 'legacy-exclusive'")
+            .fetch_one(&mut connection).await.unwrap();
+        sqlx::query("UPDATE inventory SET batch_number = 'LEGACY-NUMBER' WHERE id = ?")
+            .bind(&lot).execute(&mut connection).await.unwrap();
+        sqlx::query("UPDATE purchase_invoice_items SET inventory_id = NULL WHERE invoice_id = 'legacy-exclusive'")
+            .execute(&mut connection).await.unwrap();
+
+        let mut tx = connection.begin().await.unwrap();
+        save_purchase_invoice_tx(&mut tx, purchase("legacy-exclusive", 3.0)).await.unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(sqlx::query_scalar::<_, f64>("SELECT CAST(quantity AS REAL) FROM inventory WHERE id = ?").bind(&lot).fetch_one(&mut connection).await.unwrap(), 3.0);
+        assert_eq!(sqlx::query_scalar::<_, String>("SELECT batch_number FROM inventory WHERE id = ?").bind(&lot).fetch_one(&mut connection).await.unwrap(), "PURCHASE-legacy-exclusive");
+        let linked_lot: String = sqlx::query_scalar("SELECT inventory_id FROM purchase_invoice_items WHERE invoice_id = 'legacy-exclusive'")
+            .fetch_one(&mut connection).await.unwrap();
+        assert_eq!(linked_lot, lot);
+
+        let mut tx = connection.begin().await.unwrap();
+        delete_purchase_invoice_tx(&mut tx, "legacy-exclusive", true, "buyer", Some("ph-1")).await.unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(sqlx::query_scalar::<_, f64>("SELECT CAST(quantity AS REAL) FROM inventory WHERE id = ?").bind(&lot).fetch_one(&mut connection).await.unwrap(), 0.0);
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM purchase_invoices WHERE id = 'legacy-exclusive'").fetch_one(&mut connection).await.unwrap(), 0);
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM daily_journals WHERE description = 'Purchase invoice [id=legacy-exclusive]'").fetch_one(&mut connection).await.unwrap(), 0);
     }
 }

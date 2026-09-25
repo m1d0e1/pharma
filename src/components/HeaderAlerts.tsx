@@ -5,6 +5,7 @@ import { Bell, AlertTriangle, Clock, Ban, ChevronLeft, Package, Check } from 'lu
 import { getInventoryAlertsAction } from '@/app/actions-client/inventory'
 import { cn } from '@/lib/utils'
 import Link from 'next/link'
+import { subscribeInventoryChanges } from '@/lib/inventory/refresh'
 
 export default function HeaderAlerts() {
   const [isOpen, setIsOpen] = useState(false)
@@ -50,12 +51,11 @@ export default function HeaderAlerts() {
       } catch (e) {}
     }
     fetchAlerts()
-    const handleRefresh = () => fetchAlerts();
-    window.addEventListener('inventory-alerts-refresh', handleRefresh);
+    const unsubscribe = subscribeInventoryChanges(() => fetchAlerts());
     const interval = setInterval(fetchAlerts, 60000 * 5) // Every 5 mins
     return () => {
       requestRef.current += 1
-      window.removeEventListener('inventory-alerts-refresh', handleRefresh);
+      unsubscribe();
       clearInterval(interval);
     }
   }, [])

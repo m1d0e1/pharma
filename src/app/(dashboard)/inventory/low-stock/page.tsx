@@ -7,6 +7,7 @@ import AccessDenied from '@/components/AccessDenied';
 import { AlertTriangle, ShoppingCart, ArrowRight } from 'lucide-react';
 import Link from 'next/link';
 import LowStockClient from './LowStockClient';
+import { subscribeInventoryChanges } from '@/lib/inventory/refresh';
 
 export default function LowStockPage() {
   const [user, setUser] = useState<any>(null);
@@ -15,6 +16,8 @@ export default function LowStockPage() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [loadAttempt, setLoadAttempt] = useState(0);
+
+  useEffect(() => subscribeInventoryChanges(() => setLoadAttempt(attempt => attempt + 1)), []);
 
   useEffect(() => {
     let active = true;
