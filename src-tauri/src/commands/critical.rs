@@ -92,6 +92,10 @@ pub struct PurchaseItem {
     #[serde(default, deserialize_with = "de_opt_i64")]
     pub unit_id: Option<i64>,
     pub expiry_date: Option<String>,
+    /// Net (post-discount) cost price per large unit (box).
+    /// The UI pre-applies `discount_percent` before sending, so this
+    /// field already reflects the discounted price. `discount_percent`
+    /// is stored for display purposes only and is NOT re-applied in math.
     #[serde(default, deserialize_with = "de_f64")]
     pub cost_price: f64,
     #[serde(default, deserialize_with = "de_opt_f64")]
@@ -662,6 +666,12 @@ async fn create_return_tx(
     {
         return Err("Only completed sales invoices can be returned".into());
     }
+    if invoice.try_get::<Option<String>, _>("payment_method").unwrap_or(None)
+        .as_deref().is_some_and(|method| method.eq_ignore_ascii_case("delivery"))
+        && invoice_status != "delivered"
+    {
+        return Err("يجب تسوية تحصيل فاتورة التوصيل قبل إجراء المرتجع".into());
+    }
     let invoice_patient = invoice
         .try_get::<Option<String>, _>("patient_id")
         .unwrap_or(None);
@@ -838,7 +848,7 @@ async fn create_return_tx(
         );
         let requested = requested_by_sale_item.entry(sale_item_id).or_default();
         *requested += returned_in_sold_unit;
-        if *requested > sold_qty - returned + 0.005 {
+        if *requested > sold_qty - returned + 0.000_001 {
             return Err(format!(
                 "Return quantity exceeds remaining quantity for {}",
                 item.drug_name
@@ -1035,7 +1045,8 @@ pub(crate) async fn save_purchase_invoice_tx(
         "completed"
     };
     let payment_method = payload.payment_method.as_deref().unwrap_or("credit");
-    let batch_number = purchase_batch_number(payload.invoice_number.as_deref(), &invoice_id);
+    // Supplier invoice numbers are not unique lot identifiers.
+    let batch_number = format!("PURCHASE-{invoice_id}");
     let invoice_date = payload
         .invoice_date
         .clone()
@@ -1243,6 +1254,10 @@ pub(crate) async fn save_purchase_invoice_tx(
         let item_total = purchase_item_total(item, payload.tax_percent);
 
         if final_status == "completed" && !editing_completed {
+            // INVARIANT: item.quantity must be in large units (boxes).
+            // The purchase UI enforces box-quantity entry. No unit
+            // conversion is applied here. Bonus stock is treated as
+            // received inventory alongside paid stock.
             let total_received = item.quantity + item.bonus_quantity;
             let net_unit_cost = if total_received > 0.0 {
                 item_total * inventory_paid_factor / total_received
@@ -1739,6 +1754,10 @@ async fn process_checkout_tx(
 ) -> Result<CheckoutResult, String> {
     if !total_amount.is_finite()
         || total_amount < 0.0
+        || !payload.additional_fees.is_finite()
+        || payload.additional_fees < 0.0
+        || !payload.total_discount.is_finite()
+        || payload.total_discount < 0.0
         || payload.items.iter().any(|item| {
             !item.quantity_sold.is_finite()
                 || item.quantity_sold <= 0.0
@@ -2534,6 +2553,15 @@ pub(crate) fn user_can_view_purchases(role: Option<&str>, permissions: Option<&s
         || user_has_permission(role, permissions, "can_view_purchases", false)
 }
 
+/// Computes the gross line total for a purchase item.
+///
+/// CONVENTION: `item.cost_price` must be the net (post-discount) price.
+/// `item.discount_percent` is stored for display and is NOT applied here.
+///
+/// Tax compounds intentionally: item tax is applied first, invoice-level
+/// tax on top (e.g. excise then VAT). This matches Egyptian tax convention
+/// where VAT is levied on the already-taxed base. Both percentages combine
+/// multiplicatively, not additively.
 fn purchase_item_total(item: &PurchaseItem, invoice_tax_percent: f64) -> f64 {
     item.quantity
         * item.cost_price
@@ -2828,6 +2856,26 @@ async fn consolidate_inventory_rows(
     Ok(())
 }
 
+pub(crate) async fn ensure_exclusive_purchase_inventory(
+    connection: &mut sqlx::SqliteConnection,
+    inventory_id: &str,
+    invoice_id: &str,
+) -> Result<(), String> {
+    // Do not guess how historic merged stock belongs to individual invoices.
+    let shared = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM purchase_invoice_items pii JOIN purchase_invoices pi ON pi.id = pii.invoice_id JOIN inventory i ON i.id = ? WHERE pi.id <> ? AND pi.status = 'completed' AND (pii.inventory_id = i.id OR (pii.inventory_id IS NULL AND pii.drug_id = i.drug_id AND date(pii.expiry_date) IS date(i.expiry_date) AND COALESCE(pi.pharmacy_id, 'local_default') = COALESCE(i.pharmacy_id, 'local_default') AND i.batch_number = COALESCE(NULLIF(TRIM(pi.invoice_number), ''), 'BATCH-' || SUBSTR(pi.id, 1, 8))))",
+    )
+    .bind(inventory_id)
+    .bind(invoice_id)
+    .fetch_one(connection)
+    .await
+    .map_err(|e| e.to_string())?;
+    if shared > 0 {
+        return Err("This historical inventory batch is shared by multiple purchases; reconcile its quantities and costs before editing, deleting, or returning it".into());
+    }
+    Ok(())
+}
+
 async fn reverse_completed_purchase(
     tx: &mut Transaction<'_, Sqlite>,
     invoice_id: &str,
@@ -2865,7 +2913,7 @@ async fn reverse_completed_purchase(
     let old_invoice_number: Option<String> = old_invoice.try_get("invoice_number").unwrap_or(None);
     let old_batch_number = purchase_batch_number(old_invoice_number.as_deref(), invoice_id);
     let new_pharmacy_id = payload.pharmacy_id.as_deref();
-    let new_batch_number = purchase_batch_number(payload.invoice_number.as_deref(), invoice_id);
+    let new_batch_number = format!("PURCHASE-{invoice_id}");
     let old_pharmacy_scope = normalize_pharmacy_id(old_pharmacy_id.as_deref());
     let new_pharmacy_scope = normalize_pharmacy_id(new_pharmacy_id);
 
@@ -2888,15 +2936,7 @@ async fn reverse_completed_purchase(
                 )
             })?,
         };
-        consolidate_inventory_rows(
-            tx,
-            old_item.drug_id,
-            old_pharmacy_id.as_deref(),
-            old_item.expiry.as_deref(),
-            &old_batch_number,
-            &inventory_id,
-        )
-        .await?;
+        ensure_exclusive_purchase_inventory(tx, &inventory_id, invoice_id).await?;
         let entry = original_by_inventory
             .entry(inventory_id.clone())
             .or_insert((old_item.drug_id, 0.0));
@@ -2992,15 +3032,6 @@ async fn reverse_completed_purchase(
             .await?
             .ok_or_else(|| format!("Inventory batch missing for drug {}", drug_id))?,
         };
-        consolidate_inventory_rows(
-            tx,
-            drug_id,
-            old_pharmacy_id.as_deref(),
-            old_expiry,
-            &old_batch_number,
-            &inv_id,
-        )
-        .await?;
         let inv = sqlx::query(
             "SELECT CAST(quantity AS REAL) as quantity FROM inventory WHERE id = ? AND drug_id = ?",
         )
@@ -3014,8 +3045,7 @@ async fn reverse_completed_purchase(
         let new_expiry = new_item.and_then(|item| normalize_date_ymd(item.expiry_date.as_deref()));
         let same_batch = new_item.is_some()
             && new_expiry.as_deref() == old_expiry
-            && new_pharmacy_scope == old_pharmacy_scope
-            && new_batch_number == old_batch_number;
+            && new_pharmacy_scope == old_pharmacy_scope;
         let amount_to_remove = if same_batch {
             (old_qty - new_qty).max(0.0)
         } else {
@@ -3128,10 +3158,26 @@ async fn reverse_purchase_accounting(
         .map_err(|e| e.to_string())?;
 
     let invoice_number: Option<String> = old_invoice.try_get("invoice_number").ok();
-    let invoice_prefix = &invoice_id[..invoice_id.len().min(8)];
-    let mut markers = vec![invoice_prefix.to_string(), invoice_id.to_string()];
-    if let Some(number) = invoice_number.filter(|v| !v.trim().is_empty()) {
-        markers.push(number);
+    let exact_marker = format!("[id={invoice_id}]");
+    let has_exact = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM daily_journals WHERE description = ?")
+        .bind(format!("Purchase invoice {exact_marker}"))
+        .fetch_one(&mut **tx).await.map_err(|e| e.to_string())? > 0;
+    let mut markers = vec![exact_marker];
+    if !has_exact {
+        // Legacy descriptions used non-unique numbers. Refuse ambiguous reversal.
+        let invoice_prefix: String = invoice_id.chars().take(8).collect();
+        let collisions = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM purchase_invoices WHERE id <> ? AND status = 'completed' AND (invoice_number = ? OR SUBSTR(id, 1, 8) = ?)",
+        )
+        .bind(invoice_id).bind(&invoice_number).bind(&invoice_prefix)
+        .fetch_one(&mut **tx).await.map_err(|e| e.to_string())?;
+        if collisions > 0 {
+            return Err("Historical purchase accounting has a shared invoice reference; reconcile it before editing or deleting this invoice".into());
+        }
+        markers.extend([invoice_prefix, invoice_id.to_string()]);
+        if let Some(number) = invoice_number.filter(|v| !v.trim().is_empty()) {
+            markers.push(number);
+        }
     }
 
     for marker in markers {
@@ -3253,6 +3299,7 @@ pub(crate) async fn delete_purchase_invoice_tx(
                 .await?
                 .ok_or_else(|| format!("Inventory batch missing for drug {}", drug_id))?,
             };
+            ensure_exclusive_purchase_inventory(tx, &inventory_id, invoice_id).await?;
             let available: f64 = sqlx::query(
                 "SELECT CAST(quantity AS REAL) AS quantity FROM inventory WHERE id = ? AND drug_id = ?",
             )
@@ -3308,7 +3355,7 @@ async fn apply_purchase_accounting(
     sqlx::query("INSERT INTO daily_journals (id, date, description, created_by, total_amount) VALUES (?, COALESCE(?, DATE('now', 'localtime')), ?, ?, ?)")
         .bind(&journal_id)
         .bind(&payload.invoice_date)
-        .bind(format!("Purchase invoice {}", payload.invoice_number.as_deref().unwrap_or(&invoice_id[..8])))
+        .bind(format!("Purchase invoice [id={invoice_id}]"))
         .bind(user_id)
         .bind(total_amount)
         .execute(&mut **tx)
@@ -3357,7 +3404,7 @@ async fn apply_purchase_accounting(
                 .bind(user_id)
                 .bind(shift_id)
                 .bind(total_amount)
-                .bind(format!("Purchase invoice {}", payload.invoice_number.as_deref().unwrap_or(invoice_id)))
+                .bind(format!("Purchase invoice [id={invoice_id}]"))
                 .execute(&mut **tx)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -3692,6 +3739,7 @@ fn loyalty_points(total_amount: f64, loyalty_level: Option<&str>) -> i64 {
 mod tests {
     use super::{
         add_purchase_inventory, checkout_total, create_return_tx, delete_purchase_invoice_tx,
+        ensure_exclusive_purchase_inventory,
         loyalty_points, patient_outstanding_debt, process_checkout_tx, resolve_open_shift,
         purchase_inventory_paid_factor, return_quantity_in_sale_unit, return_restock_qty,
         large_quantity_in_unit, sale_stock_qty, save_purchase_invoice_tx,
@@ -4217,6 +4265,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn exclusive_purchase_inventory_rejects_historical_shared_links() {
+        let mut conn = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        for sql in [
+            "CREATE TABLE inventory (id TEXT PRIMARY KEY, drug_id INTEGER, pharmacy_id TEXT, batch_number TEXT, expiry_date TEXT)",
+            "CREATE TABLE purchase_invoices (id TEXT PRIMARY KEY, status TEXT, pharmacy_id TEXT, invoice_number TEXT)",
+            "CREATE TABLE purchase_invoice_items (invoice_id TEXT, inventory_id TEXT, drug_id INTEGER, expiry_date TEXT)",
+            "INSERT INTO inventory VALUES ('shared', 1, 'ph-1', 'INV-OLD', '2030-01-01')",
+            "INSERT INTO purchase_invoices VALUES ('purchase-a', 'completed', 'ph-1', 'INV-OLD'), ('purchase-b', 'completed', 'ph-1', 'INV-OLD')",
+            "INSERT INTO purchase_invoice_items VALUES ('purchase-a', 'shared', 1, '2030-01-01'), ('purchase-b', 'shared', 1, '2030-01-01')",
+        ] {
+            sqlx::query(sql).execute(&mut conn).await.unwrap();
+        }
+        assert!(ensure_exclusive_purchase_inventory(&mut conn, "shared", "purchase-a")
+            .await
+            .unwrap_err()
+            .contains("shared by multiple purchases"));
+    }
+
+    #[tokio::test]
     async fn completed_purchase_reduction_and_taxes_update_inventory() {
         let mut conn = SqliteConnection::connect("sqlite::memory:").await.unwrap();
         for sql in [
@@ -4387,7 +4454,7 @@ mod tests {
             .unwrap()
             .try_get("quantity")
             .unwrap();
-        let unchanged_inventory_quantity: f64 = sqlx::query("SELECT CAST(quantity AS REAL) AS quantity FROM inventory WHERE drug_id = 4463 AND batch_number = 'INV-1'")
+        let unchanged_inventory_quantity: f64 = sqlx::query("SELECT CAST(quantity AS REAL) AS quantity FROM inventory WHERE drug_id = 4463 AND batch_number = 'PURCHASE-purchase-1'")
             .fetch_one(&mut conn)
             .await
             .unwrap()
@@ -4401,7 +4468,7 @@ mod tests {
             .unwrap();
 
         sqlx::query(
-            "UPDATE inventory SET quantity = 5 WHERE drug_id = 4463 AND batch_number = 'INV-1'",
+            "UPDATE inventory SET quantity = 5 WHERE drug_id = 4463 AND batch_number = 'PURCHASE-purchase-1'",
         )
         .execute(&mut conn)
         .await
@@ -4418,7 +4485,7 @@ mod tests {
             .unwrap()
             .try_get("quantity")
             .unwrap();
-        let consumed_inventory_quantity: f64 = sqlx::query("SELECT CAST(quantity AS REAL) AS quantity FROM inventory WHERE drug_id = 4463 AND batch_number = 'INV-1'")
+        let consumed_inventory_quantity: f64 = sqlx::query("SELECT CAST(quantity AS REAL) AS quantity FROM inventory WHERE drug_id = 4463 AND batch_number = 'PURCHASE-purchase-1'")
             .fetch_one(&mut conn)
             .await
             .unwrap()
@@ -4427,7 +4494,7 @@ mod tests {
         assert_eq!(unchanged_invoice_quantity, 6.0);
         assert_eq!(consumed_inventory_quantity, 5.0);
         sqlx::query(
-            "UPDATE inventory SET quantity = 6 WHERE drug_id = 4463 AND batch_number = 'INV-1'",
+            "UPDATE inventory SET quantity = 6 WHERE drug_id = 4463 AND batch_number = 'PURCHASE-purchase-1'",
         )
         .execute(&mut conn)
         .await
@@ -4489,7 +4556,7 @@ mod tests {
         .unwrap();
         assert_eq!(remaining, 0.0);
         let reversed_journal_count: i64 = sqlx::query(
-            "SELECT COUNT(*) AS total FROM daily_journals WHERE description = 'Purchase invoice INV-1'",
+            "SELECT COUNT(*) AS total FROM daily_journals WHERE description = 'Purchase invoice [id=purchase-1]'",
         )
         .fetch_one(&mut conn)
         .await
@@ -4557,7 +4624,7 @@ mod tests {
                 < 0.001
         );
         let kept_journal_count: i64 = sqlx::query(
-            "SELECT COUNT(*) AS total FROM daily_journals WHERE description = 'Purchase invoice INV-1'",
+            "SELECT COUNT(*) AS total FROM daily_journals WHERE description = 'Purchase invoice [id=purchase-1]'",
         )
         .fetch_one(&mut conn)
         .await
@@ -4640,7 +4707,7 @@ mod tests {
             ("2027-04-01", 0.0),
         ] {
             let quantity: f64 = sqlx::query(
-                "SELECT CAST(quantity AS REAL) AS quantity FROM inventory WHERE drug_id = 4463 AND batch_number = 'INV-DUP' AND expiry_date = ?",
+                "SELECT CAST(quantity AS REAL) AS quantity FROM inventory WHERE drug_id = 4463 AND batch_number = 'PURCHASE-purchase-duplicates' AND expiry_date = ?",
             )
             .bind(expiry)
             .fetch_one(&mut conn)
@@ -4651,7 +4718,7 @@ mod tests {
             assert_eq!(quantity, expected, "wrong quantity for expiry {expiry}");
         }
         let accounting = sqlx::query(
-            "SELECT st.supplier_id, dj.created_by FROM supplier_transactions st JOIN daily_journals dj ON dj.description = 'Purchase invoice INV-DUP' WHERE st.reference_id = 'purchase-duplicates'",
+            "SELECT st.supplier_id, dj.created_by FROM supplier_transactions st JOIN daily_journals dj ON dj.description = 'Purchase invoice [id=purchase-duplicates]' WHERE st.reference_id = 'purchase-duplicates'",
         )
         .fetch_one(&mut conn)
         .await
@@ -4693,7 +4760,7 @@ mod tests {
             .await
             .unwrap();
         tx.commit().await.unwrap();
-        let legacy = sqlx::query("SELECT COUNT(*) AS rows, CAST(SUM(quantity) AS REAL) AS quantity FROM inventory WHERE drug_id = 4463 AND batch_number = 'INV-LEGACY' AND expiry_date = '2028-01-01'")
+        let legacy = sqlx::query("SELECT COUNT(*) AS rows, CAST(SUM(quantity) AS REAL) AS quantity FROM inventory WHERE drug_id = 4463 AND batch_number = 'PURCHASE-purchase-legacy' AND expiry_date = '2028-01-01'")
             .fetch_one(&mut conn)
             .await
             .unwrap();
@@ -5155,7 +5222,7 @@ mod tests {
             SELECT a.code FROM daily_journals dj
             JOIN journal_entries je ON je.journal_id = dj.id
             JOIN accounts a ON a.id = je.account_id
-            WHERE dj.description = 'Purchase invoice FRESH-CASH' AND je.type = 'credit'
+            WHERE dj.description = 'Purchase invoice [id=fresh-cash]' AND je.type = 'credit'
             "#,
         )
         .fetch_one(&mut conn)
@@ -5223,7 +5290,7 @@ mod tests {
         let edited_quantities = sqlx::query(
             r#"
             SELECT expiry_date, CAST(quantity AS REAL) AS quantity
-            FROM inventory WHERE batch_number = 'FRESH-CASH' ORDER BY expiry_date
+            FROM inventory WHERE batch_number = 'PURCHASE-fresh-cash' ORDER BY expiry_date
             "#,
         )
         .fetch_all(&mut conn)
@@ -5234,7 +5301,7 @@ mod tests {
         assert_eq!(edited_quantities[1].get::<f64, _>("quantity"), 2.0);
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM cash_movements WHERE category = 'purchases' AND notes = 'Purchase invoice FRESH-CASH'",
+                "SELECT COUNT(*) FROM cash_movements WHERE category = 'purchases' AND notes = 'Purchase invoice [id=fresh-cash]'",
             )
             .fetch_one(&mut conn)
             .await
@@ -5431,7 +5498,7 @@ mod tests {
         );
         assert_eq!(
             sqlx::query_scalar::<_, f64>(
-                "SELECT CAST(quantity AS REAL) FROM inventory WHERE batch_number = 'FRESH-CHECK'",
+                "SELECT CAST(quantity AS REAL) FROM inventory WHERE batch_number = 'PURCHASE-fresh-check'",
             )
             .fetch_one(&mut conn)
             .await
@@ -5462,7 +5529,7 @@ mod tests {
         tx.commit().await.unwrap();
         assert_eq!(
             sqlx::query_scalar::<_, f64>(
-                "SELECT CAST(quantity AS REAL) FROM inventory WHERE batch_number = 'FRESH-KEEP'",
+                "SELECT CAST(quantity AS REAL) FROM inventory WHERE batch_number = 'PURCHASE-fresh-keep'",
             )
             .fetch_one(&mut conn)
             .await
@@ -5651,6 +5718,13 @@ mod tests {
         tx.rollback().await.unwrap();
         assert!(refund_method_error.contains("Refund method"));
 
+        let mut precision_overage = invalid_return("admin", "ph-1");
+        precision_overage.items[0].quantity = 1.004;
+        let mut tx = conn.begin().await.unwrap();
+        let precision_error = create_return_tx(&mut tx, precision_overage).await.unwrap_err();
+        tx.rollback().await.unwrap();
+        assert!(precision_error.contains("exceeds remaining quantity"));
+
         let payload = ReturnPayload {
             invoice_id: "invoice-1".into(),
             user_id: "admin".into(),
@@ -5771,6 +5845,16 @@ mod tests {
             .execute(&mut conn)
             .await
             .unwrap();
+        let mut tx = conn.begin().await.unwrap();
+        sqlx::query("UPDATE sales_invoices SET status = 'completed' WHERE id = 'delivery-return'")
+            .execute(&mut *tx).await.unwrap();
+        let mut pending_delivery = invalid_return("admin", "ph-1");
+        pending_delivery.invoice_id = "delivery-return".into();
+        pending_delivery.items[0].sale_item_id = Some(4);
+        assert!(create_return_tx(&mut tx, pending_delivery).await.unwrap_err().contains("تسوية تحصيل"));
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM returns WHERE invoice_id = 'delivery-return'")
+            .fetch_one(&mut *tx).await.unwrap(), 0);
+        tx.rollback().await.unwrap();
         let mut tx = conn.begin().await.unwrap();
         let delivery_result = create_return_tx(
             &mut tx,
@@ -6385,6 +6469,17 @@ mod tests {
             total_discount: 0.0,
             additional_fees: 0.0,
         };
+
+        for (fees, discount) in [(-69.0, 0.0), (f64::NAN, 0.0), (0.0, -1.0), (0.0, f64::INFINITY)] {
+            let mut invalid = cash_payload(Some("full"));
+            invalid.additional_fees = fees;
+            invalid.total_discount = discount;
+            let mut tx = conn.begin().await.unwrap();
+            assert_eq!(process_checkout_tx(&mut tx, invalid, 0.0).await.unwrap_err(), "Invalid checkout amounts");
+            tx.rollback().await.unwrap();
+        }
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM sales_invoices").fetch_one(&mut conn).await.unwrap(), 0);
+        assert_eq!(sqlx::query_scalar::<_, f64>("SELECT quantity FROM inventory WHERE id = 'full'").fetch_one(&mut conn).await.unwrap(), 7.0);
 
         let mut foreign_user_payload = cash_payload(Some("full"));
         foreign_user_payload.user_id = "foreign-admin".into();

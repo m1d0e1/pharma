@@ -1,6 +1,7 @@
 
 import { dbSelect, dbExecute, dbGet, dbTransaction, generateId } from '@/lib/db/tauri';
 import { ensurePermanentShiftForUser, getShiftForPharmacy } from './shifts';
+import { notifyInventoryChanged } from '@/lib/inventory/refresh';
 const logActivity = async (userId: string, action: string, details: string) => {
   try {
     await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [userId, action, details]);
@@ -643,6 +644,8 @@ export async function processCheckoutAction(data: any) {
         }
       }) as any;
 
+      if (validatedData.status === 'completed') notifyInventoryChanged();
+
       return {
         success: true,
         data: {
@@ -780,14 +783,14 @@ export async function processCheckoutAction(data: any) {
             return total + (Number(batch.quantity) || 0) / stockPerSelectedUnit;
           }, 0);
 
-          if (selectedUnitCapacity + 0.0001 < item.quantity_sold) {
+          if (selectedUnitCapacity + 0.000001 < item.quantity_sold) {
             throw new Error(`الكمية غير كافية للصنف "${drugName}" (المتاح: ${selectedUnitCapacity.toFixed(2)} ${item.selected_unit})`);
           }
 
           let remainingSelectedUnits = item.quantity_sold;
 
           for (const batch of batches) {
-            if (remainingSelectedUnits <= 0.0001) break;
+            if (remainingSelectedUnits <= 0.000001) break;
 
             const batchLargeToMedium = Number(batch.strips_per_box) > 0
               ? Number(batch.strips_per_box)
@@ -809,11 +812,11 @@ export async function processCheckoutAction(data: any) {
 
             const stockUpdate = await db.prepare(`
               UPDATE inventory
-              SET quantity = CASE WHEN quantity - ? < 0.0001 THEN 0 ELSE quantity - ? END,
+              SET quantity = CASE WHEN quantity - ? < 0.000001 THEN 0 ELSE quantity - ? END,
                   updated_at = CURRENT_TIMESTAMP
               WHERE id = ? AND drug_id = ?
                 AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
-                AND quantity + 0.005 >= ?
+                AND quantity + 0.000001 >= ?
             `).run(
               deductFromThisBatch,
               deductFromThisBatch,
@@ -836,7 +839,7 @@ export async function processCheckoutAction(data: any) {
             remainingSelectedUnits -= quantityInSelectedUnit;
           }
 
-          if (remainingSelectedUnits > 0.0001) {
+          if (remainingSelectedUnits > 0.000001) {
             throw new Error(`تغير المخزون أثناء معالجة "${drugName}"؛ يرجى إعادة المحاولة`);
           }
 
@@ -936,6 +939,8 @@ export async function processCheckoutAction(data: any) {
         await db.prepare('UPDATE sales_invoices SET points_earned = ? WHERE id = ?').run(pointsEarned, saleId);
       }
     });
+
+    if (validatedData.status === 'completed') notifyInventoryChanged();
 
     const savedInvoice = await db.prepare('SELECT created_at FROM sales_invoices WHERE id = ?').get(saleId) as any;
     return {

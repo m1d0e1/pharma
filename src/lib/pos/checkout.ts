@@ -1,3 +1,14 @@
+/**
+ * @deprecated These helpers are NOT used in the active production code path.
+ * Active POS checkout runs through:
+ *   - Desktop: src-tauri/src/commands/critical.rs (process_checkout_tx)
+ *   - Web fallback: src/app/actions-client/sales.ts (processCheckoutAction)
+ *
+ * These functions lack unit conversion (large/medium/small), pharmacy-scope
+ * isolation, and negative-stock concurrency guards. They exist only to
+ * satisfy legacy tests. Do not add new callers.
+ */
+
 import { z } from 'zod';
 import { uuidv4 } from '../utils';
 import { getDatabase, execute, get, query, transaction } from '../db/client';
@@ -33,6 +44,7 @@ export type CheckoutResponse = z.infer<typeof CheckoutResponseSchema>;
 
 /**
  * Process checkout
+ * @deprecated See file-level deprecation notice.
  * @param request - Checkout request
  * @returns Checkout response
  */
@@ -132,6 +144,7 @@ export async function processCheckout(
 
 /**
  * Get invoice by ID
+ * @deprecated See file-level deprecation notice.
  * @param invoiceId - Invoice ID
  * @returns Invoice data or null
  */
@@ -148,6 +161,7 @@ export function getInvoice(invoiceId: string): any {
 
 /**
  * Get invoice items
+ * @deprecated See file-level deprecation notice.
  * @param invoiceId - Invoice ID
  * @returns List of invoice items
  */
@@ -164,6 +178,7 @@ export function getInvoiceItems(invoiceId: string): any[] {
 
 /**
  * Get invoices for pharmacy
+ * @deprecated See file-level deprecation notice.
  * @param pharmacyId - Pharmacy ID
  * @param options - Query options
  * @returns List of invoices
@@ -218,6 +233,7 @@ export function getPharmacyInvoices(
 
 /**
  * Void an invoice
+ * @deprecated See file-level deprecation notice.
  * @param invoiceId - Invoice ID
  * @param userId - User ID who is voiding
  * @param reason - Void reason
@@ -287,6 +303,7 @@ export async function voidInvoice(
 
 /**
  * Get sales statistics
+ * @deprecated See file-level deprecation notice.
  * @param pharmacyId - Pharmacy ID
  * @param options - Query options
  * @returns Sales statistics
@@ -339,6 +356,7 @@ export function getSalesStatistics(
 
 /**
  * Get top selling drugs
+ * @deprecated See file-level deprecation notice.
  * @param pharmacyId - Pharmacy ID
  * @param options - Query options
  * @returns List of top selling drugs
