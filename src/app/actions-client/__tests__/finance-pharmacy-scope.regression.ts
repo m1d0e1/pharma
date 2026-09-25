@@ -189,6 +189,17 @@ describe('finance pharmacy scope', () => {
         ('return-2', 'sale-2', 'u2', 'ph-2', 9, 'approved', datetime('now')),
         ('general-return-1', NULL, 'u1', 'ph-1', 6, 'approved', datetime('now')),
         ('general-return-2', NULL, 'u2', 'ph-2', 11, 'approved', datetime('now'));
+      ALTER TABLE shifts ADD COLUMN user_id TEXT;
+      ALTER TABLE shifts ADD COLUMN start_time TEXT;
+      ALTER TABLE shifts ADD COLUMN end_time TEXT;
+      ALTER TABLE shifts ADD COLUMN starting_cash REAL DEFAULT 0;
+      ALTER TABLE shifts ADD COLUMN transfer_amount REAL DEFAULT 0;
+      ALTER TABLE sales_invoices ADD COLUMN shift_id TEXT;
+      ALTER TABLE sales_invoices ADD COLUMN payment_method TEXT;
+      ALTER TABLE sales_invoices ADD COLUMN paid_amount REAL DEFAULT 0;
+      ALTER TABLE sales_invoices ADD COLUMN remaining_amount REAL DEFAULT 0;
+      ALTER TABLE returns ADD COLUMN shift_id TEXT;
+      ALTER TABLE returns ADD COLUMN refund_method TEXT;
     `);
   });
 
@@ -200,7 +211,8 @@ describe('finance pharmacy scope', () => {
     expect(await getTreasuryDashboardAction()).toMatchObject({
       success: true,
       data: {
-        treasuryBalance: 100,
+        treasuryBalance: 0,
+        ledgerCashBalance: 100,
         todayReceipts: 10,
         todayExpenses: 3,
       },

@@ -116,6 +116,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
   const [treasuryView, setTreasuryView] = useState<'all' | 'handovers' | 'disbursements' | 'receipts'>('all');
   const [treasurySummary, setTreasurySummary] = useState({
     treasuryBalance: 0,
+    ledgerCashBalance: 0,
     todayReceipts: 0,
     todayExpenses: 0,
     totalShiftHandovers: 0,
@@ -360,6 +361,27 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
      });
   }, []);
 
+  useEffect(() => {
+     const refreshTreasury = () => {
+       if (!sessionUser || activeTab !== 'treasury') return;
+       void loadTabData();
+       if (selectedTreasuryMetric) void openTreasuryMetric(selectedTreasuryMetric);
+     };
+     const onStorage = (event: StorageEvent) => {
+       if (event.key === 'pharma:shift-updated') refreshTreasury();
+     };
+     window.addEventListener('shift-updated', refreshTreasury);
+     window.addEventListener('storage', onStorage);
+     window.addEventListener('focus', refreshTreasury);
+     return () => {
+       window.removeEventListener('shift-updated', refreshTreasury);
+       window.removeEventListener('storage', onStorage);
+       window.removeEventListener('focus', refreshTreasury);
+     };
+     // Loaders depend on the active tab and selected metric; do not resubscribe on every render.
+     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, selectedTreasuryMetric, sessionUser]);
+
   const loadTabData = async () => {
      const requestId = ++loadTabRequestRef.current;
      const tab = activeTab;
@@ -375,6 +397,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
            ]);
            if (requestId !== loadTabRequestRef.current) return;
            if (summaryRes.success && summaryRes.data) setTreasurySummary(summaryRes.data as typeof treasurySummary);
+           else setLoadError(summaryRes.error || 'تعذر تحميل رصيد الدرج؛ لا تعتمد على الرصيد السابق');
            if (movementsRes.success) setMovements(movementsRes.data as any[]);
            if (posRes.success) setPointsOfSale(posRes.data as any[]);
            if (banksRes.success) setBanks(banksRes.data as any[]);
@@ -438,6 +461,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
         if (requestId !== loadTabRequestRef.current) return;
         console.error('Load data error:', error);
         const messages: Record<string, string> = {
+          treasury: 'تعذر تحميل رصيد الدرج؛ لا تعتمد على الرصيد السابق',
           pos_management: 'تعذر تحميل بيانات نقاط البيع',
           banks: 'تعذر تحميل بيانات الحسابات البنكية',
           papers: 'تعذر تحميل بيانات الأوراق المالية',
@@ -453,6 +477,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
 
   const {
     treasuryBalance,
+    ledgerCashBalance,
     todayReceipts,
     todayExpenses,
     totalShiftHandovers,
@@ -471,10 +496,12 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
         setTreasuryDetails(result.data.details || []);
         setTreasuryDetailCount(Number(result.data.detailCount || 0));
       } else {
+        setSelectedTreasuryMetric(null);
         toast.error(result.error || 'فشل جلب تفاصيل الرقم');
       }
     } catch {
       if (requestId === treasuryMetricRequestRef.current) {
+        setSelectedTreasuryMetric(null);
         toast.error('فشل جلب تفاصيل الرقم');
       }
     } finally {
@@ -485,7 +512,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
   };
 
   // POS handovers move cash within the cash account, so their balances are not extra liquidity.
-  const totalLiquidity = treasuryBalance +
+  const totalLiquidity = ledgerCashBalance +
      banks.reduce((sum, b) => sum + (Number(b.current_balance ?? b.balance) || 0), 0);
 
   const filteredTreasuryMovements = movements.filter(m => {
@@ -613,10 +640,10 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
              <TrendingUp className="w-12 h-12 mb-6 opacity-50" />
              <h4 className="text-xl font-black mb-2">إجمالي السيولة</h4>
              <p className="text-4xl font-black mb-1">
-                {totalLiquidity.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} 
+                {activeTab === 'treasury' && loadError ? '—' : totalLiquidity.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 <span className="text-sm opacity-70"> ج.م</span>
              </p>
-             <p className="text-sm font-bold opacity-60">رصيد النقدية الدفتري + أرصدة البنوك المسجلة؛ لا تضاف تسليمات نقاط البيع مرة أخرى</p>
+             <p className="text-sm font-bold opacity-60">رصيد النقدية الدفتري + أرصدة البنوك المسجلة؛ يختلف عن نقدية الدرج الفعلية</p>
           </div>
        </div>
 
@@ -667,17 +694,20 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                    </div>
                 </div>
 
-                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
-                    <StatCard label="رصيد النقدية الدفتري" value={treasuryBalance.toLocaleString('en-US')} color="emerald" icon={Wallet} onClick={() => openTreasuryMetric('treasury')} active={selectedTreasuryMetric === 'treasury'} />
+                 {loadError ? <div role="alert" className="p-6 rounded-2xl bg-rose-50 text-rose-700">
+                   {loadError}
+                   <button type="button" className="mr-4 underline" onClick={() => void loadTabData()}>إعادة المحاولة</button>
+                 </div> : <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
+                    <StatCard label="رصيد الخزنة (الدرج)" value={treasuryBalance.toLocaleString('en-US')} color="emerald" icon={Wallet} onClick={() => openTreasuryMetric('treasury')} active={selectedTreasuryMetric === 'treasury'} />
                     <StatCard label="توريدات اليوم" value={todayReceipts.toLocaleString('en-US')} color="blue" icon={ArrowRightLeft} onClick={() => openTreasuryMetric('receipts')} active={selectedTreasuryMetric === 'receipts'} />
                     <StatCard label="المصروفات اليومية" value={todayExpenses.toLocaleString('en-US')} color="rose" icon={Receipt} onClick={() => openTreasuryMetric('expenses')} active={selectedTreasuryMetric === 'expenses'} />
                     <StatCard label="تسليمات الورديات هذا الشهر" value={totalShiftHandovers.toLocaleString('en-US')} color="blue" icon={ShieldCheck} onClick={() => openTreasuryMetric('handovers')} active={selectedTreasuryMetric === 'handovers'} />
-                 </div>
+                 </div>}
 
                  <p className="text-sm text-slate-500 leading-relaxed">
-                   رصيد النقدية الدفتري هو صافي قيود حساب النقدية المربوط بالخزينة والدرج، وليس جردًا فعليًا للخزينة الرئيسية أو إيرادات الوردية. إيرادات الوردية هي مبيعاتها؛ أما النقدية المتوقعة بالدرج فتشمل رصيد البداية والتوريدات وتخصم المرتجعات النقدية والصرف والتسليمات. تسليم النقدية ليس إيرادًا جديدًا.
+                   رصيد الخزنة (الدرج) هو النقدية الفعلية المتوقعة حاليًا في الوردية المفتوحة: رصيد البداية ومبيعات النقد والتوريدات، بعد خصم المرتجعات والمصروفات والتسليمات. يُسجّل الجرد الفعلي عند التسليم؛ والتحويل لوردية تالية لا ينشئ إيرادًا جديدًا، أما التسليم للخزينة أو البنك فيخصم من الدرج.
                  </p>
-                 {selectedTreasuryMetric && (
+                 {selectedTreasuryMetric && !loadError && (
                     <TreasuryMetricDetails
                       metric={selectedTreasuryMetric}
                       total={{ treasury: treasuryBalance, receipts: todayReceipts, expenses: todayExpenses, handovers: totalShiftHandovers }[selectedTreasuryMetric]}
@@ -1861,7 +1891,7 @@ function TreasuryMetricDetails({
   onClose: () => void;
 }) {
   const labels: Record<TreasuryMetricKey, string> = {
-    treasury: 'تفاصيل رصيد النقدية الدفتري',
+    treasury: 'تفاصيل رصيد الخزنة (الدرج)',
     receipts: 'تفاصيل توريدات اليوم',
     expenses: 'تفاصيل المصروفات اليومية',
     handovers: 'تفاصيل تسليمات الورديات - الشهر الحالي',
@@ -1874,7 +1904,7 @@ function TreasuryMetricDetails({
           <h3 className="text-xl font-black text-slate-800 dark:text-white">{labels[metric]}</h3>
           <p className="text-sm font-black text-blue-600 mt-1">
             {Number(total || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ج.م
-            <span className="text-xs text-slate-400 mr-2">({detailCount} حركة)</span>
+            <span className="text-xs text-slate-400 mr-2">({detailCount} {metric === 'treasury' ? 'بند احتساب' : 'حركة'})</span>
           </p>
         </div>
         <button type="button" onClick={onClose} aria-label="إغلاق التفاصيل" className="p-3 rounded-2xl bg-slate-100 dark:bg-slate-800 text-slate-500 hover:text-rose-600 transition-colors">
@@ -1885,7 +1915,7 @@ function TreasuryMetricDetails({
         <table className="w-full text-right">
           <thead className="bg-slate-50 dark:bg-slate-800/50 sticky top-0">
             <tr>
-              <th className="px-6 py-4 text-xs font-black text-slate-400">التاريخ</th>
+              <th className="px-6 py-4 text-xs font-black text-slate-400">{metric === 'treasury' ? 'بداية الوردية' : 'التاريخ'}</th>
               <th className="px-6 py-4 text-xs font-black text-slate-400">البيان</th>
               <th className="px-6 py-4 text-xs font-black text-slate-400">المستخدم</th>
               <th className="px-6 py-4 text-xs font-black text-slate-400">المبلغ</th>

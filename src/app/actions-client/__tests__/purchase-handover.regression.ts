@@ -200,7 +200,7 @@ describe('purchase reports and drawer handover regressions', () => {
     expect(mockDb.prepare('SELECT user_id,shift_id FROM cash_movements WHERE id=?').get(move.id)).toEqual({user_id:'handover-receiver',shift_id:first.newShiftId});
   });
 
-  it('keeps the recorded treasury balance while a POS handover only updates the POS balance', async () => {
+  it('separates remaining drawer cash from ledger cash after a POS handover', async () => {
     const today = (mockDb.prepare("SELECT date('now', 'localtime') AS value").get() as any).value;
     mockDb.exec(`
       INSERT INTO users(id,username,password_hash,role) VALUES('liquidity-receiver','liquidity-receiver','hash','admin');
@@ -215,7 +215,7 @@ describe('purchase reports and drawer handover regressions', () => {
       transferTargetType:'pos', transferTargetId:'903', receiverUsername:'liquidity-receiver', receiverPasswordHash:'password',
     })).toMatchObject({ success:true });
 
-    expect((await getTreasuryDashboardAction()).data?.treasuryBalance).toBe(100);
+    expect((await getTreasuryDashboardAction()).data).toMatchObject({ treasuryBalance:40, ledgerCashBalance:100 });
     expect(mockDb.prepare('SELECT current_balance FROM points_of_sale WHERE id=903').get()).toEqual({ current_balance:60 });
   });
 
@@ -1183,11 +1183,12 @@ describe('purchase reports and drawer handover regressions', () => {
     expect(await getTreasuryDashboardAction()).toMatchObject({
       success: true,
       data: {
-        treasuryBalance: 500,
+        treasuryBalance: -1742,
+        ledgerCashBalance: 500,
         todayReceipts: 100,
         todayExpenses: 25,
         totalShiftHandovers: 150,
-        counts: { treasury: 1, receipts: 1, expenses: 1, handovers: 1 },
+        counts: { treasury: 2, receipts: 1, expenses: 1, handovers: 1 },
       },
     });
     expect(await getTreasuryDashboardAction('expenses')).toMatchObject({

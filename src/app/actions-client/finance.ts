@@ -58,6 +58,7 @@ import { z } from 'zod';
 import { patientOutstandingBalanceQuery } from '@/lib/patients/balance';
 import { ensurePermanentShiftForUser, getShiftForPharmacy } from './shifts';
 import { isBusinessDate, localDate } from '@/lib/time';
+import { getOpenDrawerSnapshot } from '@/lib/finance/drawer';
 
 const hasAnyFinancePermission = (user: any, ...permissions: string[]) =>
   !!user && permissions.some(permission => hasUserPermissionSync(user, permission));
@@ -426,7 +427,8 @@ export async function getTreasuryDashboardAction(detail?: TreasuryMetricKey) {
     }
     const pharmacyId = user.pharmacy_id || 'local_default';
 
-    // ponytail: one configured cash account and one summary keep every finance card on the same source of truth.
+    // Keep accounting liquidity separate from cash remaining in the shared drawer.
+    const drawer = await getOpenDrawerSnapshot(pharmacyId);
     let cashAccount = await db.prepare(`
       SELECT a.id, a.code, a.name_ar
       FROM trial_balance_settings t
@@ -490,22 +492,8 @@ export async function getTreasuryDashboardAction(detail?: TreasuryMetricKey) {
     ]) as any[];
 
     let details: any[] = [];
-    if (detail === 'treasury' && cashAccount) {
-      details = await db.prepare(`
-        SELECT je.id, dj.date, dj.created_at,
-               COALESCE(dj.description, je.notes, 'قيد خزينة') AS description,
-               CAST(je.amount AS REAL) AS amount,
-               CASE WHEN je.type = 'debit' THEN 'receipt' ELSE 'disbursement' END AS type,
-               COALESCE(u.full_name, u.username, dj.created_by) AS user_name,
-               NULL AS shift_id
-        FROM journal_entries je
-        JOIN daily_journals dj ON dj.id = je.journal_id
-        LEFT JOIN users u ON u.id = dj.created_by
-        WHERE je.account_id = ?
-          AND (dj.pharmacy_id = ? OR (dj.pharmacy_id IS NULL AND ? = 'local_default'))
-        ORDER BY COALESCE(dj.created_at, dj.date) DESC, je.id DESC
-        LIMIT 500
-      `).all(cashAccount.id, pharmacyId, pharmacyId) as any[];
+    if (detail === 'treasury') {
+      details = drawer.details;
     } else if (detail === 'receipts') {
       details = await db.prepare(`
         SELECT cm.id, cm.date, cm.created_at,
@@ -560,7 +548,7 @@ export async function getTreasuryDashboardAction(detail?: TreasuryMetricKey) {
     }
 
     const counts = {
-      treasury: Number(treasury?.count || 0),
+      treasury: drawer.details.length,
       receipts: Number(receipts?.count || 0),
       expenses: Number(expenses?.count || 0),
       handovers: Number(handovers?.count || 0),
@@ -568,7 +556,9 @@ export async function getTreasuryDashboardAction(detail?: TreasuryMetricKey) {
     return {
       success: true,
       data: {
-        treasuryBalance: Number(treasury?.total || 0),
+        treasuryBalance: drawer.balance,
+        ledgerCashBalance: Number(treasury?.total || 0),
+        drawerShiftId: drawer.shiftId,
         todayReceipts: Number(receipts?.total || 0),
         todayExpenses: Number(expenses?.total || 0),
         totalShiftHandovers: Number(handovers?.total || 0),
@@ -579,7 +569,7 @@ export async function getTreasuryDashboardAction(detail?: TreasuryMetricKey) {
     };
   } catch (error) {
     console.error('Get treasury dashboard error:', error);
-    return { success: false, error: 'فشل جلب ملخص الخزينة' };
+    return { success: false, error: error instanceof Error ? error.message : 'فشل جلب ملخص الخزينة' };
   }
 }
 
