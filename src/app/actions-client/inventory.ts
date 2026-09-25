@@ -56,6 +56,7 @@ const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, 
 import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { isBusinessDate, localDate } from '@/lib/time';
 import { importInventoryWorkbookRows } from '@/lib/inventory/import';
+import { notifyInventoryChanged } from '@/lib/inventory/refresh';
 
 function normalizePharmacyId(value: unknown): string {
   const pharmacyId = String(value ?? '').trim();
@@ -75,6 +76,7 @@ export async function importInventoryWorkbookAction(inventoryRows: any[], drugRo
       normalizePharmacyId(user.pharmacy_id),
     );
     revalidatePath('/inventory');
+    notifyInventoryChanged();
     return { success: true, data };
   } catch (error: any) {
     return { success: false, error: error?.message || String(error) };
@@ -194,6 +196,7 @@ export async function addInventoryAction(formData: AddInventoryInput) {
     revalidatePath('/inventory');
     revalidatePath('/');
 
+    notifyInventoryChanged();
     return { success: true };
   } catch (error: any) {
     console.error('[addInventoryAction] CAUGHT ERROR:', error?.message || error, '\nStack:', error?.stack);
@@ -259,8 +262,8 @@ export async function updateInventoryAction(formData: UpdateInventoryInput) {
       invParams.push(expiry_date);
     }
 
-    updateInvQuery += ` WHERE id = ?`;
-    invParams.push(id);
+    updateInvQuery += ` WHERE id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))`;
+    invParams.push(id, pharmacyId, pharmacyId);
 
     await db.prepare(updateInvQuery).run(...invParams);
 
@@ -330,6 +333,7 @@ export async function updateInventoryAction(formData: UpdateInventoryInput) {
 
     revalidatePath('/inventory');
     revalidatePath('/');
+    notifyInventoryChanged();
     return { success: true };
   } catch (error: any) {
     console.error('Local Update Error:', error);
@@ -426,6 +430,7 @@ export async function deleteInventoryAction(formData: DeleteInventoryInput) {
     revalidatePath('/inventory');
     revalidatePath('/');
 
+    notifyInventoryChanged();
     return { success: true };
   } catch (error: any) {
     if (!error?.message?.includes('not found') && !error?.message?.includes('history')) {
@@ -710,74 +715,6 @@ export async function getLowStockAction(threshold?: number) {
   }
 }
 
-/**
- * Reconcile negative sales with new inventory
- */
-export async function settleNegativeStockAction(drugId: number | string, newInventoryId: string) {
-  try {
-    const user = await getLocalSession();
-    if (!user) return { success: false, error: 'غير مصرح' };
-
-    const transaction = db.transaction(async () => {
-      // 1. Get negative sales for this drug
-      const negativeSales = await db.prepare(`
-        SELECT si.id, si.invoice_id, si.quantity_sold
-        FROM sales_items si
-        WHERE si.drug_id = ? AND si.is_negative = 1
-        ORDER BY si.created_at ASC
-      `).all(drugId) as any[];
-
-      // 2. Get available quantity in the new inventory
-      let inventory = await db.prepare('SELECT id, quantity FROM inventory WHERE id = ?').get(newInventoryId) as any;
-      if (!inventory) throw new Error('Inventory not found');
-
-      let available = inventory.quantity;
-
-      for (const sale of negativeSales) {
-        if (available <= 0) break;
-
-        const settleQty = Math.min(sale.quantity_sold, available);
-
-        if (settleQty === sale.quantity_sold) {
-          // Fully settled this negative sale
-          await db.prepare(`
-            UPDATE sales_items 
-            SET inventory_id = ?, is_negative = 0 
-            WHERE id = ?
-          `).run(newInventoryId, sale.id);
-        } else {
-          // Partially settled
-          // 1. Update the original row to just the settled quantity, link to inventory, not negative
-          await db.prepare(`
-            UPDATE sales_items 
-            SET inventory_id = ?, is_negative = 0, quantity_sold = ? 
-            WHERE id = ?
-          `).run(newInventoryId, settleQty, sale.id);
-
-          // 2. Insert a new row for the remaining negative quantity
-          const remainingQty = sale.quantity_sold - settleQty;
-          await db.prepare(`
-            INSERT INTO sales_items (invoice_id, inventory_id, drug_id, quantity_sold, unit_price, unit, is_negative, created_at)
-            SELECT invoice_id, NULL, drug_id, ?, unit_price, unit, 1, created_at
-            FROM sales_items WHERE id = ?
-          `).run(remainingQty, sale.id);
-        }
-
-        available -= settleQty;
-      }
-
-      // Update inventory final quantity
-      await db.prepare('UPDATE inventory SET quantity = ? WHERE id = ?').run(available, newInventoryId);
-    });
-
-    await transaction();
-    revalidatePath('/inventory');
-    return { success: true };
-  } catch (error: any) {
-    console.error('Settle Stock Error:', error);
-    return { success: false, error: error.message };
-  }
-}
 // Pre-compiled prepared statements for alerts (cached at module level)
 const _lowStockStmt = db.prepare(`
   SELECT m.id as id, m.id as drug_id, SUM(i.quantity) as quantity, 'low_stock' as alert_type,
@@ -1255,6 +1192,7 @@ export async function addOpeningBalanceAction(data: {
 
     revalidatePath('/inventory');
     revalidatePath('/inventory/opening-balances');
+    notifyInventoryChanged();
     return { success: true };
   } catch (err: any) {
     console.error('addOpeningBalance error:', err);
