@@ -1,6 +1,8 @@
 import { dbExecute, dbGet, dbSelect, dbTransaction } from '@/lib/db/tauri';
 import { requireOpenShiftId } from '@/app/actions-client/finance';
 import { createReturnAction } from '@/app/actions-client/returns';
+import { processCheckoutAction } from '@/app/actions-client/sales';
+import { ensurePermanentShiftForUser } from '@/app/actions-client/shifts';
 import {
   createPurchaseInvoiceAction,
   completePurchaseInvoiceAction,
@@ -22,6 +24,10 @@ jest.mock('@/lib/auth/local', () => ({
 jest.mock('@/app/actions-client/finance', () => ({
   requireOpenShiftId: jest.fn(async () => 'shift-1'),
 }));
+jest.mock('@/app/actions-client/shifts', () => ({
+  ensurePermanentShiftForUser: jest.fn(async () => ({ id: 'shift-1' })),
+  getShiftForPharmacy: jest.fn(async () => null),
+}));
 jest.mock('@/lib/env', () => ({ isTauri: false }));
 
 beforeEach(() => jest.clearAllMocks());
@@ -39,6 +45,24 @@ it('denies browser sales-return writes before shift lookup or database mutation'
     error: 'إنشاء مرتجع من المتصفح غير مدعوم لأنه يتطلب معاملة ذرية؛ استخدم تطبيق سطح المكتب',
   });
   expect(requireOpenShiftId).not.toHaveBeenCalled();
+  expect(dbTransaction).not.toHaveBeenCalled();
+  expect(dbExecute).not.toHaveBeenCalled();
+  expect(dbGet).not.toHaveBeenCalled();
+  expect(dbSelect).not.toHaveBeenCalled();
+});
+
+it('denies browser checkout before shift lookup or database mutation', async () => {
+  const result = await processCheckoutAction({
+    items: [{ drug_id: 1, quantity_sold: 1, unit_price: 10, selected_unit: 'large' }],
+    payment_method: 'cash',
+    status: 'completed',
+  });
+
+  expect(result).toEqual({
+    success: false,
+    error: 'إتمام البيع من المتصفح غير مدعوم لأنه يتطلب معاملة ذرية؛ استخدم تطبيق سطح المكتب',
+  });
+  expect(ensurePermanentShiftForUser).not.toHaveBeenCalled();
   expect(dbTransaction).not.toHaveBeenCalled();
   expect(dbExecute).not.toHaveBeenCalled();
   expect(dbGet).not.toHaveBeenCalled();

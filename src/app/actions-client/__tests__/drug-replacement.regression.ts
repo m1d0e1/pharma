@@ -11,7 +11,7 @@ jest.mock('@/lib/cache/secure_cache', () => ({ secureCache: { reload: jest.fn(as
 jest.mock('@tauri-apps/api/core', () => ({ invoke: jest.fn() }));
 import { findDrugBarcodeConflict, getReplacementDrug, replaceDrugAction } from '../drug-replacement';
 import { invoke } from '@tauri-apps/api/core';
-import { getLocalSession } from '@/lib/auth/local';
+import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -61,6 +61,19 @@ it('sends corrections in the same native replacement command, not separate catal
 
 it('does not send a destructive command for an unauthorized user', async () => {
   (getLocalSession as jest.Mock).mockResolvedValueOnce({ id:'cashier',role:'cashier' });
+  expect(await replaceDrugAction(10,20,null,'password',{})).toMatchObject({ success:false });
+  expect(invoke).not.toHaveBeenCalled();
+});
+
+it('does not let an admin bypass an explicit inventory-management denial', async () => {
+  (getLocalSession as jest.Mock).mockResolvedValueOnce({
+    id: 'admin',
+    role: 'admin',
+    permissions: { can_view_purchases: true, can_manage_inventory: false },
+  });
+  (hasUserPermissionSync as jest.Mock).mockImplementation((_user: any, key: string) => key !== 'can_manage_inventory');
+  (invoke as jest.Mock).mockResolvedValue({ id: 20, backup_path: 'backup.db' });
+
   expect(await replaceDrugAction(10,20,null,'password',{})).toMatchObject({ success:false });
   expect(invoke).not.toHaveBeenCalled();
 });

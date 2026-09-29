@@ -128,11 +128,15 @@ describe('cash-transaction error and keyboard behavior', () => {
     expect(escCall).toBeDefined();
 
     const preventDefault = jest.fn();
-    enterCall?.[1]({ preventDefault });
+    await act(async () => {
+      enterCall?.[1]({ preventDefault });
+    });
     await waitFor(() => expect(createCashMovementAction).toHaveBeenCalledWith(expect.objectContaining({ amount: 35 })));
     expect(preventDefault).toHaveBeenCalledTimes(1);
 
-    escCall?.[1]();
+    await act(async () => {
+      escCall?.[1]();
+    });
     await waitFor(() => expect(onFormClose).toHaveBeenCalledTimes(1));
     expect(screen.queryByText('توريد نقدية جديدة')).not.toBeInTheDocument();
   });

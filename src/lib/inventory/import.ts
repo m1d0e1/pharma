@@ -1,18 +1,26 @@
-import { dbExecute, dbSelect, dbTransaction, generateId } from '@/lib/db/tauri';
+import { dbExecute, dbSelect, dbTransaction, generateId, type TransactionDb } from '@/lib/db/tauri';
+import { resolveRecoveredShortages } from '@/lib/inventory/reorder-state';
 
 type ExcelRow = Record<string, unknown>;
+
+export type InventoryImportTransaction = Pick<TransactionDb, 'select' | 'execute' | 'prepare'>;
+export type InventoryImportValidator = (
+  inventoryRows: ExcelRow[],
+  masterDrugRows: ExcelRow[],
+  database: InventoryImportTransaction,
+) => Promise<void>;
 
 export interface InventoryImportDatabase {
   select<T = any>(sql: string, params?: unknown[]): Promise<T[]>;
   execute(sql: string, params?: unknown[]): Promise<unknown>;
-  transaction<T>(callback: () => Promise<T>): Promise<T>;
+  transaction<T>(callback: (database: InventoryImportTransaction) => Promise<T>): Promise<T>;
   generateId(): string;
 }
 
 const defaultDatabase: InventoryImportDatabase = {
   select: dbSelect,
   execute: dbExecute,
-  transaction: dbTransaction,
+  transaction: callback => dbTransaction(callback),
   generateId,
 };
 
@@ -70,12 +78,12 @@ const drugName = (row: ExcelRow, id: number) => {
   return null;
 };
 
-async function columns(database: InventoryImportDatabase, table: 'master_drugs' | 'inventory') {
+async function columns(database: Pick<InventoryImportDatabase, 'select'>, table: 'master_drugs' | 'inventory' | 'shortages') {
   return new Set((await database.select<{ name: string }>(`PRAGMA table_info(${table})`)).map(column => column.name));
 }
 
 async function upsertRows(
-  database: InventoryImportDatabase,
+  database: Pick<InventoryImportDatabase, 'execute'>,
   table: 'master_drugs' | 'inventory',
   rows: ExcelRow[],
   allowed: Set<string>,
@@ -96,6 +104,7 @@ export async function importInventoryWorkbookRows(
   masterDrugRows: ExcelRow[],
   destinationPharmacyId: string,
   database: InventoryImportDatabase = defaultDatabase,
+  validateInventoryRows?: InventoryImportValidator,
 ) {
   const pharmacyId = text(destinationPharmacyId);
   if (!pharmacyId) throw new Error('A destination pharmacy is required');
@@ -128,13 +137,25 @@ export async function importInventoryWorkbookRows(
   for (const row of inventoryRows) {
     const id = drugId(row.drug_id);
     if (!id) continue;
+    const packFactor = conversion(row.strips_per_box) || conversion(sourceDrugs.get(id)?.large_to_medium);
     const normalized: ExcelRow = {
       ...row,
       id: text(row.id) || database.generateId(),
       drug_id: id,
       pharmacy_id: pharmacyId,
-      strips_per_box: conversion(row.strips_per_box) || conversion(sourceDrugs.get(id)?.large_to_medium) || 1,
     };
+    const quantityText = text(row.quantity);
+    if (quantityText !== null) {
+      const quantity = Number(row.quantity);
+      if (!Number.isFinite(quantity) || quantity < 0) {
+        throw new Error(`Invalid inventory quantity for drug ${id}`);
+      }
+      normalized.quantity = quantity;
+    } else {
+      delete normalized.quantity;
+    }
+    if (packFactor) normalized.strips_per_box = packFactor;
+    else delete normalized.strips_per_box;
     const displacedBarcode = shiftedBarcode(row.strips_per_box);
     const swappedConversion = conversion(row.barcode);
     const barcode = displacedBarcode && (!text(row.barcode) || swappedConversion)
@@ -158,9 +179,12 @@ export async function importInventoryWorkbookRows(
     }
   }
 
+  // Tauri's transaction read guard accepts SELECT statements only; schema
+  // introspection is read-only and must stay on the standalone connection.
   const masterColumns = await columns(database, 'master_drugs');
   const inventoryColumns = await columns(database, 'inventory');
-  await database.transaction(async () => {
+  const shortageColumns = await columns(database, 'shortages');
+  await database.transaction(async transaction => {
     const importedDrugs = new Map<number, ExcelRow>([
       ...sourceDrugs.entries(),
       ...fallbackDrugs.entries(),
@@ -172,7 +196,7 @@ export async function importInventoryWorkbookRows(
     const existingById = new Map<number, ExcelRow>();
     for (let offset = 0; offset < relevantIds.length; offset += 500) {
       const ids = relevantIds.slice(offset, offset + 500);
-      const rows = await database.select<ExcelRow>(`
+      const rows = await transaction.select<ExcelRow>(`
         SELECT id, trade_name, trade_name_en, active_ingredient, category, manufacturer
         FROM master_drugs
         WHERE id IN (${ids.map(() => '?').join(',')})
@@ -208,7 +232,7 @@ export async function importInventoryWorkbookRows(
           if (incomingName && !isPlaceholderDrugName(incomingName, sourceId)) {
             const barcode = text(row.barcode);
             if (barcode) {
-              const byBarcode = await database.select<ExcelRow>(
+              const byBarcode = await transaction.select<ExcelRow>(
                 'SELECT id, trade_name, trade_name_en, active_ingredient FROM master_drugs WHERE barcode = ? LIMIT 1',
                 [barcode],
               );
@@ -218,7 +242,7 @@ export async function importInventoryWorkbookRows(
             }
 
             if (!targetMatch) {
-              const byName = await database.select<ExcelRow>(
+              const byName = await transaction.select<ExcelRow>(
                 'SELECT id, trade_name, trade_name_en, active_ingredient FROM master_drugs WHERE LOWER(TRIM(trade_name)) = LOWER(TRIM(?)) OR LOWER(TRIM(trade_name_en)) = LOWER(TRIM(?)) LIMIT 1',
                 [incomingName, incomingName],
               );
@@ -265,7 +289,7 @@ export async function importInventoryWorkbookRows(
       for (const [candidateId, candidate] of importedDrugs) {
         if (text(candidate.barcode) === barcodes[0]) matches.set(candidateId, candidate);
       }
-      for (const candidate of await database.select<ExcelRow>(
+      for (const candidate of await transaction.select<ExcelRow>(
         'SELECT id, trade_name, trade_name_en, active_ingredient FROM master_drugs WHERE barcode = ?',
         [barcodes[0]],
       )) {
@@ -309,7 +333,8 @@ export async function importInventoryWorkbookRows(
           };
         }),
     ];
-    await upsertRows(database, 'master_drugs', masterRowsToUpsert, masterColumns);
+    await validateInventoryRows?.([], masterRowsToUpsert, transaction);
+    await upsertRows(transaction, 'master_drugs', masterRowsToUpsert, masterColumns);
 
     const plannedMasterIds = new Set(masterRowsToUpsert.map(row => Number(row.id)));
     const missingIds = [...new Set(inventory.map(row => Number(row.drug_id)))].filter(id => {
@@ -324,15 +349,60 @@ export async function importInventoryWorkbookRows(
       );
     }
 
+    const finalDrugIds = [...new Set(inventory.map(row => Number(row.drug_id)))].filter(
+      id => Number.isSafeInteger(id) && id > 0,
+    );
+    const conversionByDrug = new Map<number, number>();
+    for (let offset = 0; offset < finalDrugIds.length; offset += 500) {
+      const ids = finalDrugIds.slice(offset, offset + 500);
+      const rows = await transaction.select<ExcelRow>(`
+        SELECT id, large_to_medium
+        FROM master_drugs
+        WHERE id IN (${ids.map(() => '?').join(',')})
+      `, ids);
+      for (const row of rows) {
+        const id = drugId(row.id);
+        const factor = conversion(row.large_to_medium);
+        if (id && factor) conversionByDrug.set(id, factor);
+      }
+    }
+    for (const row of inventory) {
+      if (!conversion(row.strips_per_box)) {
+        row.strips_per_box = conversionByDrug.get(Number(row.drug_id)) || 1;
+      }
+    }
+
+    const incomingInventoryIds = [...new Set(inventory.map(row => text(row.id)).filter((id): id is string => Boolean(id)))];
+    for (let offset = 0; offset < incomingInventoryIds.length; offset += 500) {
+      const ids = incomingInventoryIds.slice(offset, offset + 500);
+      const rows = await transaction.select<ExcelRow>(`
+        SELECT id, pharmacy_id
+        FROM inventory
+        WHERE id IN (${ids.map(() => '?').join(',')})
+      `, ids);
+      for (const row of rows) {
+        const owner = text(row.pharmacy_id) || 'local_default';
+        if (owner !== pharmacyId) {
+          throw new Error(`Imported inventory id ${text(row.id) || ''} belongs to another pharmacy`);
+        }
+      }
+    }
+
     for (const row of inventory) {
       if (row.barcode) {
-        await database.execute(
+        await transaction.execute(
           `UPDATE master_drugs SET barcode = COALESCE(NULLIF(barcode, ''), ?) WHERE id = ?`,
           [row.barcode, row.drug_id],
         );
       }
     }
-    await upsertRows(database, 'inventory', inventory, inventoryColumns);
+    await validateInventoryRows?.(inventory, [], transaction);
+    await upsertRows(transaction, 'inventory', inventory, inventoryColumns);
+    if (shortageColumns.has('drug_id') && shortageColumns.has('status')) {
+      for (const id of finalDrugIds) {
+        await resolveRecoveredShortages(transaction, id, pharmacyId);
+      }
+    }
   });
 
   return { inventoryCount: inventory.length, masterDrugCount: sourceDrugs.size + fallbackDrugs.size };
@@ -343,7 +413,7 @@ export async function importMasterDrugWorkbookRows(
   database: InventoryImportDatabase = defaultDatabase,
 ) {
   let imported = 0;
-  await database.transaction(async () => {
+  await database.transaction(async transaction => {
     for (const row of rows) {
       const id = drugId(row.id);
       const tradeName = text(row.trade_name) || text(row.trade_name_ar);
@@ -368,7 +438,7 @@ export async function importMasterDrugWorkbookRows(
       ];
 
       if (id) {
-        await database.execute(`
+        await transaction.execute(`
           INSERT INTO master_drugs (
             id, trade_name, trade_name_en, generic_name, active_ingredient, barcode,
             official_price, large_unit, medium_unit, small_unit, large_to_medium,
@@ -391,7 +461,7 @@ export async function importMasterDrugWorkbookRows(
             stop_dealing=excluded.stop_dealing
         `, [id, ...values]);
       } else {
-        await database.execute(`
+        await transaction.execute(`
           INSERT INTO master_drugs (
             trade_name, trade_name_en, generic_name, active_ingredient, barcode,
             official_price, large_unit, medium_unit, small_unit, large_to_medium,

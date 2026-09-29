@@ -95,6 +95,39 @@ describe('coverage-gap: top menu and report actions', () => {
     expect(mockPush).not.toHaveBeenCalledWith('/pos');
   });
 
+  it('shows purchase orders to a restock-only user without exposing full purchases', () => {
+    (hasUserPermissionSync as jest.Mock).mockImplementation((_user: any, key: string) => key === 'can_view_restock');
+    render(<TopMenuBar userRole="pharmacist" permissions={{ can_view_restock: true, can_view_purchases: false }} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'المشتريات' }));
+    expect(screen.getByRole('link', { name: 'أوامر الشراء' })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'المشتريات' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'فاتورة مشتريات جديدة' })).not.toBeInTheDocument();
+  });
+
+  it('does not expose denied sale, purchase, or inventory links through alternate menus', () => {
+    (hasUserPermissionSync as jest.Mock).mockImplementation((_user: any, key: string) =>
+      !['can_access_pos', 'can_view_sales', 'can_view_purchases', 'can_view_stores'].includes(key)
+    );
+    render(<TopMenuBar userRole="pharmacist" permissions={{
+      can_access_pos: false,
+      can_view_sales: false,
+      can_view_purchases: false,
+      can_view_stores: false,
+    }} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'ملف' }));
+    expect(screen.queryByRole('link', { name: 'فاتورة مبيعات جديدة' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'فاتورة مشتريات جديدة' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'المبيعات' }));
+    expect(screen.queryByRole('link', { name: 'فاتورة مبيعات جديدة' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'المبيعات والتحصيل' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'العمليات المخزنية' }));
+    expect(screen.queryByRole('link', { name: 'المخزون' })).not.toBeInTheDocument();
+  });
+
   it('exports the rendered sales summary through a CSV object URL and downloadable anchor', async () => {
     const clickSpy = jest.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
     render(<ReportsPage />);

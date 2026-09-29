@@ -6,7 +6,7 @@ import AccessDenied from '@/components/AccessDenied';
 
 interface PermissionGuardProps {
   children: React.ReactNode;
-  permissionKey?: string;
+  permissionKey?: string | string[];
   fallback?: React.ReactNode;
 }
 
@@ -30,7 +30,9 @@ export default function PermissionGuard({ children, permissionKey, fallback = <A
         }
 
         if (permissionKey) {
-          const hasPerm = hasUserPermissionSync(user, permissionKey);
+          const hasPerm = Array.isArray(permissionKey)
+            ? permissionKey.some(key => hasUserPermissionSync(user, key))
+            : hasUserPermissionSync(user, permissionKey);
           setAuthorized(hasPerm);
         } else {
           setAuthorized(true);

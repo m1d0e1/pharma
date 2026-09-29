@@ -34,9 +34,10 @@ import {
   getPointsOfSaleAction,
   getTrialBalanceAction,
   getTrialBalanceSettingsAction,
+  saveTrialBalanceSettingAction,
   updatePaperStatusAction,
 } from '@/app/actions-client/finance';
-import { getShiftsAction } from '@/app/actions-client/shifts';
+import { closeShiftAction, getShiftsAction, openShiftAction } from '@/app/actions-client/shifts';
 import { processHandoverAction } from '@/app/actions-client/handover';
 
 const deniedFinanceCases: Array<[string, () => Promise<any>]> = [
@@ -63,10 +64,14 @@ const deniedFinanceCases: Array<[string, () => Promise<any>]> = [
   ['can_select_pos_financial', () => getPointsOfSaleAction()],
   ['can_view_expenses', () => getExpenseDefinitionsAction()],
   ['can_view_shifts', () => getShiftsAction({ status: 'all' })],
+  ['can_view_shifts (open shift)', () => openShiftAction({ starting_cash_amount: 0 })],
   ['acc_can_view_handover', () => processHandoverAction({
     shiftId: 'shift-1', actualCash: 0, transferAmount: 0,
     transferTargetId: '', transferTargetType: 'treasury',
     receiverUsername: '', receiverPasswordHash: '',
+  })],
+  ['acc_can_view_handover (legacy close)', () => closeShiftAction({
+    shift_id: 'auto', ending_cash_amount: 0,
   })],
 ];
 
@@ -97,6 +102,15 @@ describe('wave 2 granular finance permission enforcement', () => {
     expect(await createCashMovementAction({
       type: 'receipt', category: 'collection', amount: 10, date: '2026-09-21',
     })).toEqual({ success: false, error: 'غير مصرح' });
+  });
+
+  it('does not let a general-finance viewer rewrite trial-balance mappings', async () => {
+    mockSession.permissions.acc_can_view_general = true;
+
+    expect(await saveTrialBalanceSettingAction({ category: 'bank', target_id: '1', account_id: 6 }))
+      .toEqual({ success: false, error: 'غير مصرح' });
+    expect(dbGet).not.toHaveBeenCalled();
+    expect(dbExecute).not.toHaveBeenCalled();
   });
 
   it('requires cash-flow permission before a securities viewer can cash a paper', async () => {

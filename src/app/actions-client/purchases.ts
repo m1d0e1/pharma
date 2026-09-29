@@ -1,11 +1,22 @@
 import { secureCache } from '@/lib/cache/secure_cache';
-import { dbSelect, dbExecute, dbGet, dbTransaction, generateId } from '@/lib/db/tauri';
+import { dbSelect, dbExecute, dbGet, dbTransaction, generateId, type TransactionDb } from '@/lib/db/tauri';
 import { isTauri } from '@/lib/env';
 import { purchaseReturnRemainingLargeQuantity } from '@/lib/purchases/return-units';
+import { buildPurchaseAccountingPlan } from '@/lib/purchases/accounting-policy';
+import {
+  assertCompletedPurchaseExpiryPolicy,
+  assertNoDuplicatePurchaseLots,
+  assertPurchaseItemsPolicy,
+  assertPurchaseLifecyclePolicy,
+  calculatePurchaseAllocation,
+  normalizePurchaseDateToYMD as normalizeDateToYMD,
+  purchaseLotIdentity,
+} from '@/lib/purchases/policy';
 import { format } from 'date-fns';
 import { requireOpenShiftId } from './finance';
 import { isBusinessDate, localDate } from '@/lib/time';
 import { notifyInventoryChanged } from '@/lib/inventory/refresh';
+import { hasRecoveredStock } from '@/lib/inventory/reorder-state';
 const logActivity = async (userId, action, details) => {
   try {
     await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [userId, action, details]);
@@ -60,15 +71,15 @@ const db = {
     }
   }),
   transaction: (cb) => {
-    return (...args) => dbTransaction(async () => await cb(...args));
+    return (...args) => dbTransaction(async (transactionDb) => await cb(transactionDb, ...args));
   },
   exec: (sql) => {
     return dbExecute(sql);
   }
 };
 
-async function getOwnedPurchaseInvoice(invoiceId: string, pharmacyId: string) {
-  return db.prepare(`
+async function getOwnedPurchaseInvoice(invoiceId: string, pharmacyId: string, scopedDb: PurchaseDb = db) {
+  return scopedDb.prepare(`
     SELECT *
     FROM purchase_invoices
     WHERE id = ?
@@ -76,26 +87,163 @@ async function getOwnedPurchaseInvoice(invoiceId: string, pharmacyId: string) {
   `).get(invoiceId, pharmacyId, pharmacyId) as Promise<any>;
 }
 
-function normalizeDateToYMD(dateStr: string | null | undefined): string | null {
-  if (!dateStr) return null;
-  dateStr = dateStr.trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return isBusinessDate(dateStr) ? dateStr : null;
-  let match = dateStr.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
-  if (match) {
-    const normalized = `${match[3]}-${match[2].padStart(2, '0')}-${match[1].padStart(2, '0')}`;
-    return isBusinessDate(normalized) ? normalized : null;
+type PurchaseDb = Pick<TransactionDb, 'prepare'>;
+
+async function assertPurchaseConversionPermission(
+  user: any,
+  items: any[],
+  scopedDb: PurchaseDb = db,
+) {
+  if (hasUserPermissionSync(user, 'can_modify_unit_conversion')) return;
+
+  const requested = items
+    .map(item => ({
+      drugId: Number(item?.id ?? item?.drug_id),
+      // Match the effective factor used by both the JS fallback and the
+      // native payload. An omitted/zero factor is normalized to 1 downstream,
+      // so it must be permission-checked as 1 here instead of being skipped.
+      conversion: Number(item?.strips_per_box || item?.large_to_medium || 1),
+    }))
+    .filter(item => Number.isSafeInteger(item.drugId) && item.drugId > 0);
+  if (requested.length === 0) return;
+
+  const ids = [...new Set(requested.map(item => item.drugId))];
+  const currentRows = await scopedDb.prepare(`
+    SELECT id, COALESCE(NULLIF(large_to_medium, 0), 1) AS large_to_medium
+    FROM master_drugs
+    WHERE id IN (${ids.map(() => '?').join(',')})
+  `).all(...ids) as any[];
+  const currentById = new Map(currentRows.map(row => [Number(row.id), Number(row.large_to_medium || 1)]));
+
+  for (const item of requested) {
+    const current = currentById.get(item.drugId);
+    if (current !== undefined && Number(item.conversion) !== current) {
+      throw new Error('غير مصرح بتعديل معاملات التحويل');
+    }
   }
-  match = dateStr.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/);
-  if (match) {
-    const normalized = `${match[1]}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')}`;
-    return isBusinessDate(normalized) ? normalized : null;
+}
+
+async function resolveShortageIfStockRecovered(
+  scopedDb: PurchaseDb,
+  drugId: number,
+  pharmacyId: string | null | undefined,
+) {
+  const pharmacyScope = pharmacyId || 'local_default';
+  if (!await hasRecoveredStock(scopedDb, drugId, pharmacyScope)) return;
+  await scopedDb.prepare(`
+    UPDATE shortages
+    SET status = 'received'
+    WHERE drug_id = ?
+      AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+      AND (status IN ('pending', 'ordered') OR status IS NULL OR status = '')
+  `).run(drugId, pharmacyScope, pharmacyScope);
+}
+
+async function markPendingShortageQuantityOrdered(
+  scopedDb: PurchaseDb,
+  drugId: number,
+  pharmacyId: string,
+  orderedQuantity: number,
+) {
+  let remaining = Math.max(0, Number(orderedQuantity) || 0);
+  if (remaining <= 0) return;
+
+  const pendingRows = await scopedDb.prepare(`
+    SELECT id, requested_quantity, priority, notes
+    FROM shortages
+    WHERE drug_id = ?
+      AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+      AND status = 'pending'
+    ORDER BY created_at ASC, id ASC
+  `).all(drugId, pharmacyId, pharmacyId) as any[];
+
+  for (const row of pendingRows) {
+    if (remaining <= 0) break;
+    const requested = Math.max(0, Number(row.requested_quantity) || 0);
+    if (requested <= 0) continue;
+
+    if (remaining >= requested) {
+      await scopedDb.prepare(`
+        UPDATE shortages SET status = 'ordered'
+        WHERE id = ?
+          AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+          AND status = 'pending'
+      `).run(row.id, pharmacyId, pharmacyId);
+      remaining -= requested;
+      continue;
+    }
+
+    const orderedPart = remaining;
+    const pendingRemainder = requested - orderedPart;
+    await scopedDb.prepare(`
+      UPDATE shortages
+      SET requested_quantity = ?, status = 'ordered'
+      WHERE id = ?
+        AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+        AND status = 'pending'
+    `).run(orderedPart, row.id, pharmacyId, pharmacyId);
+    await scopedDb.prepare(`
+      INSERT INTO shortages (drug_id, pharmacy_id, requested_quantity, status, priority, notes)
+      VALUES (?, ?, ?, 'pending', ?, ?)
+    `).run(drugId, pharmacyId, pendingRemainder, row.priority || 'normal', row.notes || null);
+    remaining = 0;
   }
-  match = dateStr.match(/^(\d{1,2})[\/\-](\d{4})$/);
-  if (match) {
-    const normalized = `${match[2]}-${match[1].padStart(2, '0')}-01`;
-    return isBusinessDate(normalized) ? normalized : null;
-  }
-  return null;
+}
+
+async function coalescePendingShortageDemand(
+  scopedDb: PurchaseDb,
+  drugId: number,
+  pharmacyId: string,
+) {
+  const pendingRows = await scopedDb.prepare(`
+    SELECT id, requested_quantity
+    FROM shortages
+    WHERE drug_id = ?
+      AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+      AND status = 'pending'
+    ORDER BY created_at ASC, id ASC
+  `).all(drugId, pharmacyId, pharmacyId) as Array<{ id: number | string; requested_quantity: number }>;
+  if (pendingRows.length <= 1) return;
+
+  const totalRequested = pendingRows.reduce(
+    (sum, row) => sum + Math.max(0, Number(row.requested_quantity) || 0),
+    0,
+  );
+  const keepId = pendingRows[0].id;
+  await scopedDb.prepare(`
+    UPDATE shortages
+    SET requested_quantity = ?
+    WHERE id = ?
+      AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+      AND status = 'pending'
+  `).run(totalRequested, keepId, pharmacyId, pharmacyId);
+  await scopedDb.prepare(`
+    DELETE FROM shortages
+    WHERE drug_id = ?
+      AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+      AND status = 'pending'
+      AND id != ?
+  `).run(drugId, pharmacyId, pharmacyId, keepId);
+}
+
+async function resolvePurchaseAccountId(
+  category: string,
+  canonicalCode: string,
+  scopedDb: PurchaseDb = db,
+) {
+  const configured = await scopedDb.prepare(`
+    SELECT a.id
+    FROM trial_balance_settings t
+    JOIN accounts a ON a.id = t.account_id
+    WHERE t.category = ? AND a.code = ?
+    ORDER BY t.id
+    LIMIT 1
+  `).get(category, canonicalCode) as any;
+  if (configured?.id) return Number(configured.id);
+
+  const fallback = await scopedDb.prepare('SELECT id FROM accounts WHERE code = ? LIMIT 1').get(canonicalCode) as any;
+  if (!fallback?.id) throw new Error(`Missing accounting mapping: ${category}`);
+  return Number(fallback.id);
 }
 
 async function addToInventory(data: {
@@ -108,13 +256,13 @@ async function addToInventory(data: {
   batchNumber: string;
   stripsPerBox: number;
   barcode?: string | null;
-}) {
+}, scopedDb: PurchaseDb = db) {
   const pharmacyId = data.pharmacyId || 'local_default';
-  const conversion = await db.prepare(
+  const conversion = await scopedDb.prepare(
     'SELECT COALESCE(NULLIF(medium_to_small, 0), 1) AS medium_to_small FROM master_drugs WHERE id = ?'
   ).get(data.drugId) as any;
   const mediumToSmall = Math.max(1, Number(conversion?.medium_to_small) || 1);
-  const existing = await db.prepare(`
+  const existing = await scopedDb.prepare(`
     SELECT id
     FROM inventory
     WHERE drug_id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
@@ -132,7 +280,7 @@ async function addToInventory(data: {
   ) as any;
 
   if (existing) {
-    await db.prepare(`
+    await scopedDb.prepare(`
       UPDATE inventory
       SET quantity = quantity + ?,
           local_selling_price = ?,
@@ -163,7 +311,7 @@ async function addToInventory(data: {
   }
 
   const inventoryId = generateId();
-  await db.prepare(`
+  await scopedDb.prepare(`
     INSERT INTO inventory (id, drug_id, pharmacy_id, quantity, local_selling_price, cost_price, expiry_date, batch_number, strips_per_box, medium_to_small, barcode)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
@@ -182,8 +330,8 @@ async function addToInventory(data: {
   return inventoryId;
 }
 
-async function purchaseMediumToSmall(drugId: number | string) {
-  const row = await db.prepare(
+async function purchaseMediumToSmall(drugId: number | string, scopedDb: PurchaseDb = db) {
+  const row = await scopedDb.prepare(
     'SELECT COALESCE(NULLIF(medium_to_small, 0), 1) AS medium_to_small FROM master_drugs WHERE id = ?'
   ).get(drugId) as any;
   return Math.max(1, Number(row?.medium_to_small) || 1);
@@ -197,49 +345,15 @@ function purchaseJournalDescription(invoiceId: string) {
   return `Purchase invoice [id=${invoiceId}]`;
 }
 
-function calculatePurchaseAllocation(items: any[], header: any) {
-  if (!items.length || items.some(item => !Number.isFinite(Number(item.quantity)) || Number(item.quantity) <= 0
-    || !Number.isFinite(Number(item.cost_price)) || Number(item.cost_price) <= 0
-    || !Number.isFinite(Number(item.bonus_quantity || 0)) || Number(item.bonus_quantity || 0) < 0
-    || !Number.isFinite(Number(item.tax_percent || 0)) || Number(item.tax_percent || 0) < 0
-    || Number(item.tax_percent || 0) > 100)) {
-    throw new Error('Invalid purchase quantity or cost');
-  }
-  if (['tax_percent', 'expenses', 'discount_value', 'discount_percent'].some(key =>
-    !Number.isFinite(Number(header[key] || 0)) || Number(header[key] || 0) < 0)) {
-    throw new Error('Invalid purchase tax or discount');
-  }
-  if (Number(header.tax_percent || 0) > 100 || Number(header.discount_percent || 0) > 100) {
-    throw new Error('Purchase tax and discount percentages must not exceed 100');
-  }
-  const bases = items.map(item => Number(item.quantity || 0) * Number(item.cost_price || 0)
-    * (1 + Number(item.tax_percent || 0) / 100)
-    * (1 + Number(header.tax_percent || 0) / 100));
-  const baseTotal = bases.reduce((sum, value) => sum + value, 0);
-  const beforePercentDiscount = baseTotal + Number(header.expenses || 0) - Number(header.discount_value || 0);
-  if (beforePercentDiscount < 0) throw new Error('Purchase discount exceeds the item total and expenses');
-  const finalTotal = beforePercentDiscount * (1 - Number(header.discount_percent || 0) / 100);
-  if (!Number.isFinite(baseTotal) || baseTotal <= 0 || !Number.isFinite(finalTotal) || finalTotal < 0) {
-    throw new Error('Purchase total must be finite and nonnegative with a positive item base');
-  }
-  const paidFactor = finalTotal / baseTotal;
-  return {
-    finalTotal,
-    netUnitCosts: items.map((item, index) => {
-      const received = Number(item.quantity || 0) + Number(item.bonus_quantity || 0);
-      return received > 0 ? (bases[index] * paidFactor) / received : Number(item.cost_price || 0);
-    }),
-  };
-}
-
 function browserPurchaseMutationUnsupported() {
   return !isTauri && typeof window !== 'undefined';
 }
 
-async function assertPurchaseBarcodesAvailable(cart: any[] = []) {
+async function assertPurchaseBarcodesAvailable(cart: any[] = [], scopedDb: PurchaseDb = db) {
   const owners = new Map<string, string>();
   for (const item of cart) {
-    const state = await db.prepare('SELECT stop_dealing FROM master_drugs WHERE id=?').get(item.id || item.drug_id) as any;
+    const state = await scopedDb.prepare('SELECT stop_dealing FROM master_drugs WHERE id=?').get(item.id || item.drug_id) as any;
+    if (!state) throw new Error('الصنف غير موجود؛ أزله من الفاتورة وأضفه من جديد');
     if (Number(state?.stop_dealing) === 1) throw new Error('هذا الصنف مؤرشف أو متوقف؛ أزله من الفاتورة أو أعد تفعيله من إدارة الأصناف');
     const barcode = String(item.barcode || '').trim();
     if (!barcode) continue;
@@ -248,7 +362,7 @@ async function assertPurchaseBarcodesAvailable(cart: any[] = []) {
     if (cartOwner && cartOwner !== drugId) throw new Error('الباركود مستخدم لصنف آخر');
     owners.set(barcode.toLowerCase(), drugId);
 
-    const conflict = await db.prepare(`
+    const conflict = await scopedDb.prepare(`
       SELECT id AS drug_id FROM master_drugs
       WHERE id != ? AND barcode IS NOT NULL AND TRIM(barcode) = ? COLLATE NOCASE
       UNION ALL
@@ -285,7 +399,9 @@ function canViewSuppliers(session: any): boolean {
 }
 
 function canMutateSuppliers(session: any): boolean {
-  return canViewSuppliers(session) && (session.role === 'owner' || session.role === 'admin');
+  return !!session
+    && (session.role === 'owner' || session.role === 'admin')
+    && hasUserPermissionSync(session, 'can_view_suppliers');
 }
 
 function normalizeSupplierInput(data: SupplierInput) {
@@ -376,14 +492,7 @@ export async function addSupplierPaymentAction(rawData: {
     let remainingBalance = 0;
     const refId = `sup-pay-${Date.now()}`;
 
-    await dbTransaction(async () => {
-      for (const column of [
-        'user_id TEXT',
-        "payment_method TEXT DEFAULT 'cash'",
-        'date TEXT',
-      ]) {
-        await dbExecute(`ALTER TABLE supplier_transactions ADD COLUMN ${column}`).catch(() => {});
-      }
+    await dbTransaction(async (db) => {
       const supplier = await db.prepare('SELECT id, name_ar, balance FROM suppliers WHERE id = ?').get(supplierId) as any;
       if (!supplier) throw new Error('المورد غير موجود');
 
@@ -404,7 +513,7 @@ export async function addSupplierPaymentAction(rawData: {
 
       // 3. Record in cash_movements if cash
       if (paymentMethod === 'cash') {
-        const shiftId = await requireOpenShiftId(session.id);
+        const shiftId = await requireOpenShiftId(session.id, undefined, db);
         const movementId = generateId();
         await db.prepare(`
           INSERT INTO cash_movements (
@@ -423,16 +532,10 @@ export async function addSupplierPaymentAction(rawData: {
 
       // 4. Accounting entries
       try {
-        const getAccount = async (category: string, fallback: number) => {
-          const setting = await db.prepare(
-            'SELECT account_id FROM trial_balance_settings WHERE category = ? ORDER BY id LIMIT 1'
-          ).get(category) as any;
-          return Number(setting?.account_id || fallback);
-        };
-        const payableAccountId = await getAccount('accounts_payable', 8);
+        const payableAccountId = await resolvePurchaseAccountId('accounts_payable', '2.1', db);
         const creditAccountId = paymentMethod === 'cash'
-          ? await getAccount('cash_drawer', 6)
-          : await getAccount('bank_clearing', 6);
+          ? await resolvePurchaseAccountId('cash_drawer', '1.1.1', db)
+          : await resolvePurchaseAccountId('bank_clearing', '1.1.4', db);
 
         const journalId = generateId();
         await db.prepare(`
@@ -448,7 +551,11 @@ export async function addSupplierPaymentAction(rawData: {
         throw new Error('تعذر تسجيل القيد المحاسبي لدفعة المورد؛ تم إلغاء العملية');
       }
 
-      await logActivity(session.id, 'SUPPLIER_PAYMENT', `Paid ${amount} to supplier #${supplierId} (${supplier.name_ar}) via ${paymentMethod}`);
+      await db.prepare('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)').run(
+        session.id,
+        'SUPPLIER_PAYMENT',
+        `Paid ${amount} to supplier #${supplierId} (${supplier.name_ar}) via ${paymentMethod}`
+      );
       remainingBalance = currentBalance - amount;
     });
 
@@ -456,7 +563,7 @@ export async function addSupplierPaymentAction(rawData: {
     revalidatePath('/purchases');
     return { success: true, remainingBalance };
   } catch (error: any) {
-    console.error('Supplier payment error:', error);
+    console.error('Supplier payment error:', error?.message || error);
     return { success: false, error: error.message || 'فشل تسجيل الدفعة للمورد' };
   }
 }
@@ -645,10 +752,17 @@ export async function createPurchaseInvoiceAction(data: {
     const session = await getLocalSession();
     if (!session || !hasUserPermissionSync(session, 'can_view_purchases')) return { success: false, error: 'Unauthorized' };
     if (browserPurchaseMutationUnsupported()) return { success: false, error: 'تعديل المشتريات من المتصفح غير مدعوم لأنه يتطلب معاملة ذرية؛ استخدم تطبيق سطح المكتب' };
+    assertPurchaseLifecyclePolicy(data);
+    assertPurchaseItemsPolicy(data.cart || [], data.status || 'completed');
     if (data.invoice_date && !isBusinessDate(data.invoice_date)) return { success: false, error: 'تاريخ فاتورة الشراء غير صالح' };
     if ((data.cart || []).some(item => item.expiry_date && !normalizeDateToYMD(item.expiry_date))) {
       return { success: false, error: 'يوجد تاريخ صلاحية غير صالح في أصناف الفاتورة' };
     }
+    assertNoDuplicatePurchaseLots(data.cart || []);
+    if ((data.status || 'completed') !== 'draft') {
+      assertCompletedPurchaseExpiryPolicy(data.cart || []);
+    }
+    await assertPurchaseConversionPermission(session, data.cart || []);
 
     await ensureBarcodeColumn();
     if (!isTauri) await assertPurchaseBarcodesAvailable(data.cart || []);
@@ -696,7 +810,10 @@ export async function createPurchaseInvoiceAction(data: {
       return { success: true, id: result?.id };
     }
 
-    const transaction = db.transaction(async () => {
+    const cacheUpdates: Array<{ drugId: number; patch: Record<string, unknown> }> = [];
+    const transaction = db.transaction(async (db) => {
+      await assertPurchaseConversionPermission(session, data.cart || [], db);
+      await assertPurchaseBarcodesAvailable(data.cart || [], db);
       const id = data.id || generateId();
       if (data.id) {
         await db.prepare('DELETE FROM purchase_invoice_items WHERE invoice_id = ?').run(id);
@@ -739,7 +856,7 @@ export async function createPurchaseInvoiceAction(data: {
         `);
         for (const [index, item] of data.cart.entries()) {
           const normExpiry = normalizeDateToYMD(item.expiry_date);
-          const mediumToSmall = await purchaseMediumToSmall(item.id);
+          const mediumToSmall = await purchaseMediumToSmall(item.id, db);
           const purchaseItemResult = await itemStmt.run(
             id,
             item.id,
@@ -758,12 +875,14 @@ export async function createPurchaseInvoiceAction(data: {
 
           if (item.strips_per_box) {
             await db.prepare('UPDATE master_drugs SET large_to_medium = ? WHERE id = ?').run(item.strips_per_box, item.id);
-            secureCache.updateDrug(Number(item.id), { large_to_medium: item.strips_per_box });
+            cacheUpdates.push({ drugId: Number(item.id), patch: { large_to_medium: item.strips_per_box } });
           }
 
           if (item.barcode) {
             const masterUpdate = await db.prepare("UPDATE master_drugs SET barcode = ? WHERE id = ? AND (barcode IS NULL OR barcode = '')").run(item.barcode.trim(), item.id);
-            if (masterUpdate.changes > 0) secureCache.updateDrug(Number(item.id), { barcode: item.barcode.trim() });
+            if (masterUpdate.changes > 0) {
+              cacheUpdates.push({ drugId: Number(item.id), patch: { barcode: item.barcode.trim() } });
+            }
           }
 
           if (finalStatus === 'completed') {
@@ -780,28 +899,22 @@ export async function createPurchaseInvoiceAction(data: {
               batchNumber: purchaseBatchKey(id),
               stripsPerBox: item.strips_per_box || 1,
               barcode: item.barcode,
-            });
+            }, db);
             await db.prepare('UPDATE purchase_invoice_items SET inventory_id = ? WHERE id = ?').run(
               inventoryId,
               purchaseItemResult.lastInsertRowid
             );
 
-            // Automatically resolve shortages for received drugs
-            const pharmacyScope = session.pharmacy_id || 'local_default';
             const drugId = Number(item.id || item.drug_id);
-            await db.prepare(`
-              UPDATE shortages 
-              SET status = 'received' 
-              WHERE drug_id = ? 
-                AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
-                AND (status IN ('pending', 'ordered') OR status IS NULL OR status = '')
-            `).run(drugId, pharmacyScope, pharmacyScope);
+            await resolveShortageIfStockRecovered(db, drugId, session.pharmacy_id);
           }
         }
       }
 
       if (finalStatus === 'completed') {
         const finalTotal = allocation!.finalTotal;
+        const paymentMethod = data.payment_method || 'credit';
+        const accountingPlan = buildPurchaseAccountingPlan(paymentMethod, finalTotal);
 
         await db.prepare('UPDATE purchase_invoices SET total_amount = ? WHERE id = ?').run(finalTotal, id);
 
@@ -813,41 +926,52 @@ export async function createPurchaseInvoiceAction(data: {
           VALUES (?, ?, ?, ?, ?)
         `).run(journalId, purchaseDate, purchaseJournalDescription(id), session.id, finalTotal);
 
-        const getAccountId = async (cat: string) => {
-          const s = await db.prepare('SELECT account_id FROM trial_balance_settings WHERE category = ?').get(cat) as any;
-          return s?.account_id;
-        };
-
         const accounts = {
-          cash: await getAccountId('cash_drawer') || 6,
-          payable: await getAccountId('accounts_payable') || 7,
-          inventory: await getAccountId('inventory_asset') || 10
+          cash: await resolvePurchaseAccountId('cash_drawer', '1.1.1', db),
+          payable: await resolvePurchaseAccountId('accounts_payable', '2.1', db),
+          inventory: await resolvePurchaseAccountId('inventory_asset', '1.1.3', db),
         };
 
         await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, accounts.inventory, 'debit', finalTotal);
 
-        if (data.payment_method === 'credit' || data.payment_method === 'check') {
-          await db.prepare('UPDATE suppliers SET balance = balance + ? WHERE id = ?').run(finalTotal, data.supplier_id);
-          
-          const typeLabel = data.payment_method === 'credit' ? 'آجل' : 'شيك';
-          await db.prepare('INSERT INTO supplier_transactions (supplier_id, type, amount, reference_id, notes) VALUES (?, ?, ?, ?, ?)').run(data.supplier_id, 'invoice', finalTotal, id, `فاتورة شراء (${typeLabel}) رقم ${data.invoice_number || id}`);
+        if (accountingPlan.supplierBalanceDelta !== 0) {
+          await db.prepare('UPDATE suppliers SET balance = balance + ? WHERE id = ?').run(accountingPlan.supplierBalanceDelta, data.supplier_id);
+        }
+        const typeLabel = paymentMethod === 'check' ? 'شيك' : paymentMethod === 'credit' ? 'آجل' : 'نقدي';
+        const supplierNote = `فاتورة شراء (${typeLabel}) رقم ${data.invoice_number || id}`;
+        for (const supplierTransaction of accountingPlan.supplierTransactions) {
+          await db.prepare('INSERT INTO supplier_transactions (supplier_id, type, amount, reference_id, notes) VALUES (?, ?, ?, ?, ?)').run(
+            data.supplier_id,
+            supplierTransaction.type,
+            supplierTransaction.amount,
+            id,
+            supplierTransaction.type === 'payment' ? `سداد نقدي لـ ${supplierNote}` : supplierNote,
+          );
+        }
+        const settlementAccountId = accountingPlan.settlementAccount === 'payable' ? accounts.payable : accounts.cash;
+        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, settlementAccountId, 'credit', finalTotal);
 
-          await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, accounts.payable, 'credit', finalTotal);
-        } else {
-          await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, accounts.cash, 'credit', finalTotal);
-          const shiftId = await requireOpenShiftId(String(session.id));
+        if (accountingPlan.cashMovement) {
+          const shiftId = await requireOpenShiftId(String(session.id), undefined, db);
           await db.prepare("INSERT INTO cash_movements (id, user_id, shift_id, type, amount, category, notes, date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(
-            generateId(), session.id, shiftId, 'disbursement', finalTotal, 'purchases', purchaseJournalDescription(id), localDate()
+            generateId(), session.id, shiftId, accountingPlan.cashMovement.type, accountingPlan.cashMovement.amount, 'purchases', purchaseJournalDescription(id), localDate()
           );
         }
 
-        logActivity(session.id, 'COMPLETE_PURCHASE', `أكمل فاتورة شراء بقيمة: ${finalTotal.toFixed(2)}`);
+        await db.prepare('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)').run(
+          session.id,
+          'COMPLETE_PURCHASE',
+          `أكمل فاتورة شراء بقيمة: ${finalTotal.toFixed(2)}`
+        );
       }
 
       return id;
     });
 
     const invoiceId = await transaction();
+    for (const update of cacheUpdates) {
+      secureCache.updateDrug(update.drugId, update.patch);
+    }
 
     if (data.status !== 'draft') notifyInventoryChanged();
     revalidatePath('/purchases');
@@ -880,35 +1004,40 @@ export async function addPurchaseInvoiceItemAction(invoiceId: string, item: {
     const session = await getLocalSession();
     if (!session || !hasUserPermissionSync(session, 'can_view_purchases')) return { success: false, error: 'Unauthorized' };
     const pharmacyId = session.pharmacy_id || 'local_default';
-    if (!await getOwnedPurchaseInvoice(invoiceId, pharmacyId)) {
-      return { success: false, error: 'Purchase invoice not found in this pharmacy' };
-    }
+    let conversionToCache: number | null = null;
+    await dbTransaction(async (scopedDb) => {
+      const ownedInvoice = await getOwnedPurchaseInvoice(invoiceId, pharmacyId, scopedDb);
+      if (!ownedInvoice) throw new Error('Purchase invoice not found in this pharmacy');
+      if (ownedInvoice.status !== 'draft') throw new Error('Only draft purchase invoices can accept new items');
+      await assertPurchaseConversionPermission(session, [{ ...item, id: item.drug_id }], scopedDb);
 
-    const stmt = await db.prepare(`
-      INSERT INTO purchase_invoice_items (invoice_id, drug_id, quantity, unit_id, expiry_date, cost_price, selling_price, bonus_quantity, tax_percent, discount_percent, strips_per_box, medium_to_small)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    
-    const normExpiry = normalizeDateToYMD(item.expiry_date);
-    const mediumToSmall = await purchaseMediumToSmall(item.drug_id);
-    await stmt.run(
-      invoiceId,
-      item.drug_id,
-      item.quantity,
-      item.unit_id || null,
-      normExpiry,
-      item.cost_price,
-      item.selling_price || null,
-      item.bonus_quantity || 0,
-      item.tax_percent || 0,
-      item.discount_percent || 0,
-      item.strips_per_box || 1,
-      mediumToSmall
-    );
+      const normExpiry = normalizeDateToYMD(item.expiry_date);
+      const mediumToSmall = await purchaseMediumToSmall(item.drug_id, scopedDb);
+      await scopedDb.prepare(`
+        INSERT INTO purchase_invoice_items (invoice_id, drug_id, quantity, unit_id, expiry_date, cost_price, selling_price, bonus_quantity, tax_percent, discount_percent, strips_per_box, medium_to_small)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        invoiceId,
+        item.drug_id,
+        item.quantity,
+        item.unit_id || null,
+        normExpiry,
+        item.cost_price,
+        item.selling_price || null,
+        item.bonus_quantity || 0,
+        item.tax_percent || 0,
+        item.discount_percent || 0,
+        item.strips_per_box || 1,
+        mediumToSmall
+      );
 
-    if (item.strips_per_box) {
-      await db.prepare('UPDATE master_drugs SET large_to_medium = ? WHERE id = ?').run(item.strips_per_box, item.drug_id);
-      secureCache.updateDrug(Number(item.drug_id), { large_to_medium: item.strips_per_box });
+      if (item.strips_per_box) {
+        await scopedDb.prepare('UPDATE master_drugs SET large_to_medium = ? WHERE id = ?').run(item.strips_per_box, item.drug_id);
+        conversionToCache = item.strips_per_box;
+      }
+    });
+    if (conversionToCache !== null) {
+      secureCache.updateDrug(Number(item.drug_id), { large_to_medium: conversionToCache });
     }
 
     return { success: true };
@@ -926,12 +1055,39 @@ export async function completePurchaseInvoiceAction(invoiceId: string) {
     const ownedInvoice = await getOwnedPurchaseInvoice(invoiceId, pharmacyId);
     if (!ownedInvoice) return { success: false, error: 'Purchase invoice not found in this pharmacy' };
     if (ownedInvoice.status !== 'draft') return { success: false, error: 'Only draft purchase invoices can be completed' };
+    if (ownedInvoice.payment_method === 'check' && !String(ownedInvoice.check_number || '').trim()) {
+      return { success: false, error: 'رقم الشيك مطلوب قبل إكمال فاتورة الشراء' };
+    }
 
-    const transaction = db.transaction(async () => {
-      // 1. Get invoice and items
-      const invoice = ownedInvoice;
+    const cacheUpdates: Array<{ drugId: number; largeToMedium: number }> = [];
+    const transaction = db.transaction(async (db) => {
+      const claimed = await db.prepare(`
+        UPDATE purchase_invoices
+        SET status = 'processing'
+        WHERE id = ? AND status = 'draft'
+          AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+          AND (payment_method <> 'check' OR NULLIF(TRIM(check_number), '') IS NOT NULL)
+      `).run(invoiceId, pharmacyId, pharmacyId);
+      if (claimed.changes !== 1) {
+        throw new Error('Only an unclaimed draft with complete payment details can be completed');
+      }
+
+      // Re-read after the atomic claim so stock and accounting use the exact
+      // header version that was claimed, not a stale pre-transaction snapshot.
+      const invoice = await db.prepare('SELECT * FROM purchase_invoices WHERE id = ? AND status = ?').get(invoiceId, 'processing') as any;
+      if (!invoice) throw new Error('Claimed purchase invoice could not be reloaded');
+      if (!['cash', 'credit', 'check'].includes(String(invoice.payment_method || ''))) {
+        throw new Error('Invalid purchase payment method');
+      }
+      if (invoice.payment_method === 'check' && !String(invoice.check_number || '').trim()) {
+        throw new Error('رقم الشيك مطلوب قبل إكمال فاتورة الشراء');
+      }
       const items = await db.prepare('SELECT * FROM purchase_invoice_items WHERE invoice_id = ?').all(invoiceId) as any[];
-      await assertPurchaseBarcodesAvailable(items.map(item => ({ ...item, id: item.drug_id })));
+      assertPurchaseItemsPolicy(items, 'completed');
+      assertNoDuplicatePurchaseLots(items.map(item => ({ ...item, id: item.drug_id })));
+      assertCompletedPurchaseExpiryPolicy(items);
+      await assertPurchaseConversionPermission(session, items.map(item => ({ ...item, id: item.drug_id })), db);
+      await assertPurchaseBarcodesAvailable(items.map(item => ({ ...item, id: item.drug_id })), db);
 
       const allocation = calculatePurchaseAllocation(items, invoice);
       for (const [index, item] of items.entries()) {
@@ -949,77 +1105,83 @@ export async function completePurchaseInvoiceAction(invoiceId: string) {
           batchNumber: purchaseBatchKey(invoiceId),
           stripsPerBox: item.strips_per_box || 1,
           barcode: item.barcode,
-        });
+        }, db);
         await db.prepare('UPDATE purchase_invoice_items SET inventory_id = ? WHERE id = ?').run(inventoryId, item.id);
 
         if (item.strips_per_box) {
           await db.prepare('UPDATE master_drugs SET large_to_medium = ? WHERE id = ?').run(item.strips_per_box, item.drug_id);
-          secureCache.updateDrug(Number(item.drug_id), { large_to_medium: item.strips_per_box });
+          cacheUpdates.push({ drugId: Number(item.drug_id), largeToMedium: Number(item.strips_per_box) });
         }
 
-        // Automatically resolve shortages for received drugs
-        const pharmacyScope = session.pharmacy_id || 'local_default';
         const drugId = Number(item.drug_id || item.id);
-        await db.prepare(`
-          UPDATE shortages 
-          SET status = 'received' 
-          WHERE drug_id = ? 
-            AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
-            AND (status IN ('pending', 'ordered') OR status IS NULL OR status = '')
-        `).run(drugId, pharmacyScope, pharmacyScope);
+        await resolveShortageIfStockRecovered(db, drugId, session.pharmacy_id);
       }
 
       const finalTotal = allocation.finalTotal;
+      const accountingPlan = buildPurchaseAccountingPlan(invoice.payment_method || 'credit', finalTotal);
 
       // 4. Update invoice total and status
-      await db.prepare('UPDATE purchase_invoices SET total_amount = ?, status = ? WHERE id = ?').run(finalTotal, 'completed', invoiceId);
+      const completed = await db.prepare(`
+        UPDATE purchase_invoices SET total_amount = ?, status = 'completed'
+        WHERE id = ? AND status = 'processing'
+      `).run(finalTotal, invoiceId);
+      if (completed.changes !== 1) throw new Error('Purchase invoice completion state changed unexpectedly');
 
       // 5. Update supplier balance or record cash payment
       const journalId = generateId();
-      const purchaseDate = localDate();
+      const purchaseDate = invoice.invoice_date || localDate();
       
       await db.prepare(`
         INSERT INTO daily_journals (id, date, description, created_by, total_amount)
         VALUES (?, ?, ?, ?, ?)
       `).run(journalId, purchaseDate, purchaseJournalDescription(invoiceId), session.id, finalTotal);
 
-      const getAccountId = async (cat: string) => {
-        const s = await db.prepare('SELECT account_id FROM trial_balance_settings WHERE category = ?').get(cat) as any;
-        return s?.account_id;
-      };
-
       const accounts = {
-        cash: await getAccountId('cash_drawer') || 6,
-        payable: await getAccountId('accounts_payable') || 7, // Need to ensure 7 exists or is generic liability
-        inventory: await getAccountId('inventory_asset') || 10
+        cash: await resolvePurchaseAccountId('cash_drawer', '1.1.1', db),
+        payable: await resolvePurchaseAccountId('accounts_payable', '2.1', db),
+        inventory: await resolvePurchaseAccountId('inventory_asset', '1.1.3', db),
       };
 
       // Inventory Entry: Debit Inventory Asset, Credit Cash/Payable
       await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, accounts.inventory, 'debit', finalTotal);
 
-      if (invoice.payment_method === 'credit' || invoice.payment_method === 'check') {
-        await db.prepare('UPDATE suppliers SET balance = balance + ? WHERE id = ?').run(finalTotal, invoice.supplier_id);
-        
-        const typeLabel = invoice.payment_method === 'credit' ? 'آجل' : 'شيك';
-        await db.prepare('INSERT INTO supplier_transactions (supplier_id, type, amount, reference_id, notes) VALUES (?, ?, ?, ?, ?)').run(invoice.supplier_id, 'invoice', finalTotal, invoiceId, `فاتورة شراء (${typeLabel}) رقم ${invoice.invoice_number || invoiceId}`);
+      if (accountingPlan.supplierBalanceDelta !== 0) {
+        const supplierUpdate = await db.prepare('UPDATE suppliers SET balance = balance + ? WHERE id = ?').run(accountingPlan.supplierBalanceDelta, invoice.supplier_id);
+        if (supplierUpdate.changes !== 1) throw new Error('Purchase invoice supplier no longer exists');
+      }
+      const typeLabel = invoice.payment_method === 'check' ? 'شيك' : invoice.payment_method === 'credit' ? 'آجل' : 'نقدي';
+      const supplierNote = `فاتورة شراء (${typeLabel}) رقم ${invoice.invoice_number || invoiceId}`;
+      for (const supplierTransaction of accountingPlan.supplierTransactions) {
+        await db.prepare('INSERT INTO supplier_transactions (supplier_id, type, amount, reference_id, notes) VALUES (?, ?, ?, ?, ?)').run(
+          invoice.supplier_id,
+          supplierTransaction.type,
+          supplierTransaction.amount,
+          invoiceId,
+          supplierTransaction.type === 'payment' ? `سداد نقدي لـ ${supplierNote}` : supplierNote,
+        );
+      }
+      const settlementAccountId = accountingPlan.settlementAccount === 'payable' ? accounts.payable : accounts.cash;
+      await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, settlementAccountId, 'credit', finalTotal);
 
-        // Credit Accounts Payable
-        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, accounts.payable, 'credit', finalTotal);
-      } else {
-        // Credit Cash
-        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, accounts.cash, 'credit', finalTotal);
-        const shiftId = await requireOpenShiftId(String(session.id));
+      if (accountingPlan.cashMovement) {
+        const shiftId = await requireOpenShiftId(String(session.id), undefined, db);
         await db.prepare("INSERT INTO cash_movements (id, user_id, shift_id, type, amount, category, notes, date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(
-          generateId(), session.id, shiftId, 'disbursement', finalTotal, 'purchases', purchaseJournalDescription(invoiceId), localDate()
+          generateId(), session.id, shiftId, accountingPlan.cashMovement.type, accountingPlan.cashMovement.amount, 'purchases', purchaseJournalDescription(invoiceId), localDate()
         );
       }
 
-      logActivity(session.id, 'COMPLETE_PURCHASE', `أكمل فاتورة شراء بقيمة: ${finalTotal.toFixed(2)}`);
-      return { finalTotal, paymentMethod: invoice.payment_method, supplierId: invoice.supplier_id, invoiceNum: invoice.invoice_number };
+      await db.prepare('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)').run(
+        session.id,
+        'COMPLETE_PURCHASE',
+        `أكمل فاتورة شراء بقيمة: ${finalTotal.toFixed(2)}`
+      );
+      return { finalTotal };
     });
 
-    const { finalTotal, paymentMethod, supplierId, invoiceNum } = await transaction();
-
+    const { finalTotal } = await transaction();
+    for (const update of cacheUpdates) {
+      secureCache.updateDrug(update.drugId, { large_to_medium: update.largeToMedium });
+    }
     notifyInventoryChanged();
     revalidatePath('/purchases');
     revalidatePath('/inventory');
@@ -1080,8 +1242,8 @@ export async function createPurchaseOrderAction(data: { supplier_name: string; n
     const po_id = 'PO-' + generateId().substring(0, 8).toUpperCase();
     const total_amount = data.items.reduce((sum, item) => sum + (item.quantity * item.expected_price), 0);
 
-    await dbTransaction(async () => {
-      await dbExecute('INSERT INTO purchase_orders (id, user_id, pharmacy_id, supplier_name, total_amount, notes) VALUES (?, ?, ?, ?, ?, ?)', [
+    await dbTransaction(async (db) => {
+      await db.execute('INSERT INTO purchase_orders (id, user_id, pharmacy_id, supplier_name, total_amount, notes) VALUES (?, ?, ?, ?, ?, ?)', [
         po_id,
         user.id,
         pharmacyId,
@@ -1091,7 +1253,7 @@ export async function createPurchaseOrderAction(data: { supplier_name: string; n
       ]);
 
       for (const item of data.items) {
-        await dbExecute('INSERT INTO purchase_order_items (po_id, drug_id, quantity, expected_price) VALUES (?, ?, ?, ?)', [
+        await db.execute('INSERT INTO purchase_order_items (po_id, drug_id, quantity, expected_price) VALUES (?, ?, ?, ?)', [
           po_id,
           item.drug_id,
           item.quantity,
@@ -1099,18 +1261,13 @@ export async function createPurchaseOrderAction(data: { supplier_name: string; n
         ]);
       }
 
-      // Mark items as ordered in shortages
+      // Mark only the quantity actually placed on the PO as ordered. A smaller
+      // operator-adjusted PO must leave the uncovered shortage remainder pending.
       for (const item of data.items) {
-        await dbExecute(`
-          UPDATE shortages 
-          SET status = 'ordered' 
-          WHERE drug_id = ? 
-            AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
-            AND status = 'pending'
-        `, [item.drug_id, pharmacyId, pharmacyId]);
+        await markPendingShortageQuantityOrdered(db, Number(item.drug_id), pharmacyId, Number(item.quantity));
       }
 
-      await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [
+      await db.execute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [
         user.id,
         'Create PO',
         'PO created ' + po_id
@@ -1129,7 +1286,9 @@ export async function createPurchaseOrderAction(data: { supplier_name: string; n
 export async function getPurchaseOrdersAction() {
   try {
     const user = await getLocalSession();
-    if (!user || !hasUserPermissionSync(user, 'can_view_purchases')) return { success: false, error: 'Unauthorized' };
+    if (!user || (!hasUserPermissionSync(user, 'can_view_purchases') && !hasUserPermissionSync(user, 'can_view_restock'))) {
+      return { success: false, error: 'Unauthorized' };
+    }
     const pharmacyId = user.pharmacy_id || 'local_default';
     const orders = await db.prepare(`
       SELECT po.*, u.full_name as creator_name, COUNT(pii.id) as item_count 
@@ -1150,16 +1309,62 @@ export async function getPurchaseOrdersAction() {
 export async function updatePurchaseOrderStatusAction(poId: string, status: string) {
   try {
     const user = await getLocalSession();
-    if (!user || !hasUserPermissionSync(user, 'can_view_purchases')) return { success: false, error: 'Unauthorized' };
+    if (!user || (!hasUserPermissionSync(user, 'can_view_purchases') && !hasUserPermissionSync(user, 'can_view_restock'))) {
+      return { success: false, error: 'Unauthorized' };
+    }
     if (!['completed', 'cancelled'].includes(status)) return { success: false, error: 'Invalid purchase order status' };
     const pharmacyId = user.pharmacy_id || 'local_default';
-    const result = await db.prepare(`
-      UPDATE purchase_orders
-      SET status = ?, updated_at = CURRENT_TIMESTAMP
-      WHERE id = ? AND status = 'pending'
-        AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
-    `).run(status, poId, pharmacyId, pharmacyId);
-    if (result.changes !== 1) return { success: false, error: 'Purchase order is missing or no longer pending' };
+    const updated = await dbTransaction(async (scopedDb) => {
+      const result = await scopedDb.prepare(`
+        UPDATE purchase_orders
+        SET status = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND status = 'pending'
+          AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+      `).run(status, poId, pharmacyId, pharmacyId);
+      if (result.changes !== 1) return false;
+
+      if (status === 'cancelled') {
+        const cancelledItems = await scopedDb.prepare(
+          'SELECT DISTINCT drug_id FROM purchase_order_items WHERE po_id = ?'
+        ).all(poId) as Array<{ drug_id: number }>;
+        await scopedDb.prepare(`
+          UPDATE shortages
+          SET status = 'pending'
+          WHERE status = 'ordered'
+            AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+            AND drug_id IN (
+              SELECT drug_id FROM purchase_order_items WHERE po_id = ?
+            )
+            AND NOT EXISTS (
+              SELECT 1
+              FROM purchase_order_items other_item
+              JOIN purchase_orders other_order ON other_order.id = other_item.po_id
+              WHERE other_item.drug_id = shortages.drug_id
+                AND other_order.id <> ?
+                AND other_order.status = 'pending'
+                AND (other_order.pharmacy_id = ? OR (other_order.pharmacy_id IS NULL AND ? = 'local_default'))
+            )
+        `).run(pharmacyId, pharmacyId, poId, poId, pharmacyId, pharmacyId);
+        for (const item of cancelledItems) {
+          const otherPendingOrder = await scopedDb.prepare(`
+            SELECT 1
+            FROM purchase_order_items other_item
+            JOIN purchase_orders other_order ON other_order.id = other_item.po_id
+            WHERE other_item.drug_id = ?
+              AND other_order.id <> ?
+              AND other_order.status = 'pending'
+              AND (other_order.pharmacy_id = ? OR (other_order.pharmacy_id IS NULL AND ? = 'local_default'))
+            LIMIT 1
+          `).get(Number(item.drug_id), poId, pharmacyId, pharmacyId);
+          if (!otherPendingOrder) {
+            await coalescePendingShortageDemand(scopedDb, Number(item.drug_id), pharmacyId);
+          }
+          await resolveShortageIfStockRecovered(scopedDb, Number(item.drug_id), pharmacyId);
+        }
+      }
+      return true;
+    });
+    if (!updated) return { success: false, error: 'Purchase order is missing or no longer pending' };
 
     return { success: true };
   } catch (error) {
@@ -1467,12 +1672,12 @@ function normalizePurchaseReturnUnit(unit: string | undefined): 'large' | 'mediu
 
 async function validatePurchaseReturnRequest(
   data: PurchaseReturnRequest,
-  session: { pharmacy_id?: string | null }
+  session: { pharmacy_id?: string | null },
+  scopedDb?: Pick<TransactionDb, 'get' | 'select'>,
 ) {
-  const invoice = await dbGet<any>(
-    'SELECT * FROM purchase_invoices WHERE id = ?',
-    [data.purchase_invoice_id]
-  );
+  const invoice = scopedDb
+    ? await scopedDb.get<any>('SELECT * FROM purchase_invoices WHERE id = ?', [data.purchase_invoice_id])
+    : await dbGet<any>('SELECT * FROM purchase_invoices WHERE id = ?', [data.purchase_invoice_id]);
   if (!invoice || invoice.status !== 'completed') {
     throw new Error('Completed purchase invoice not found');
   }
@@ -1485,7 +1690,9 @@ async function validatePurchaseReturnRequest(
   if (invoicePharmacy !== sessionPharmacy) {
     throw new Error('Purchase invoice belongs to another pharmacy');
   }
-  const allInvoiceLines = await dbSelect<any>('SELECT * FROM purchase_invoice_items WHERE invoice_id = ? ORDER BY id', [data.purchase_invoice_id]);
+  const allInvoiceLines = scopedDb
+    ? await scopedDb.select<any>('SELECT * FROM purchase_invoice_items WHERE invoice_id = ? ORDER BY id', [data.purchase_invoice_id])
+    : await dbSelect<any>('SELECT * FROM purchase_invoice_items WHERE invoice_id = ? ORDER BY id', [data.purchase_invoice_id]);
   const allocation = calculatePurchaseAllocation(allInvoiceLines, invoice);
   const allocationByLine = new Map(allInvoiceLines.map((line, index) => [Number(line.id), allocation.netUnitCosts[index]]));
 
@@ -1498,7 +1705,14 @@ async function validatePurchaseReturnRequest(
   }
 
   const placeholders = itemIds.map(() => '?').join(',');
-  const invoiceLines = await dbSelect<any>(`
+  const invoiceLines = scopedDb ? await scopedDb.select<any>(`
+    SELECT pii.id, pii.drug_id, pii.quantity, pii.bonus_quantity, pii.inventory_id, md.trade_name AS drug_name,
+           COALESCE(NULLIF(pii.strips_per_box, 0), NULLIF(md.large_to_medium, 0), 1) AS large_to_medium,
+           COALESCE(NULLIF(pii.medium_to_small, 0), NULLIF(md.medium_to_small, 0), 1) AS medium_to_small
+    FROM purchase_invoice_items pii
+    JOIN master_drugs md ON md.id = pii.drug_id
+    WHERE pii.invoice_id = ? AND pii.id IN (${placeholders})
+  `, [data.purchase_invoice_id, ...itemIds]) : await dbSelect<any>(`
     SELECT pii.id, pii.drug_id, pii.quantity, pii.bonus_quantity, pii.inventory_id, md.trade_name AS drug_name,
            COALESCE(NULLIF(pii.strips_per_box, 0), NULLIF(md.large_to_medium, 0), 1) AS large_to_medium,
            COALESCE(NULLIF(pii.medium_to_small, 0), NULLIF(md.medium_to_small, 0), 1) AS medium_to_small
@@ -1527,7 +1741,14 @@ async function validatePurchaseReturnRequest(
     }
   ]));
 
-  const previousReturns = await dbSelect<any>(`
+  const previousReturns = scopedDb ? await scopedDb.select<any>(`
+    SELECT pri.purchase_invoice_item_id, pri.quantity_returned, COALESCE(pri.unit, 'large') AS unit
+    FROM purchase_return_items pri
+    JOIN purchase_returns pr ON pr.id = pri.purchase_return_id
+    WHERE pr.purchase_invoice_id = ?
+      AND pr.status = 'completed'
+      AND pri.purchase_invoice_item_id IN (${placeholders})
+  `, [data.purchase_invoice_id, ...itemIds]) : await dbSelect<any>(`
     SELECT pri.purchase_invoice_item_id, pri.quantity_returned, COALESCE(pri.unit, 'large') AS unit
     FROM purchase_return_items pri
     JOIN purchase_returns pr ON pr.id = pri.purchase_return_id
@@ -1567,10 +1788,9 @@ async function validatePurchaseReturnRequest(
       line.medium_to_small
     );
     if (!line.inventory_id) throw new Error('Historical purchase line has no linked batch; use the desktop app');
-    const sharedBatch = await dbGet<{ count: number }>(
-      'SELECT COUNT(*) AS count FROM purchase_invoice_items WHERE inventory_id = ? AND id <> ?',
-      [line.inventory_id, lineId]
-    );
+    const sharedBatch = scopedDb
+      ? await scopedDb.get<{ count: number }>('SELECT COUNT(*) AS count FROM purchase_invoice_items WHERE inventory_id = ? AND id <> ?', [line.inventory_id, lineId])
+      : await dbGet<{ count: number }>('SELECT COUNT(*) AS count FROM purchase_invoice_items WHERE inventory_id = ? AND id <> ?', [line.inventory_id, lineId]);
     if (Number(sharedBatch?.count || 0) > 0) throw new Error('Purchase batch is shared by multiple invoice lines; use the desktop app');
     const prior = previouslyReturned.get(lineId) || 0;
     if (prior + requested > line.quantity + 0.000001) {
@@ -1633,10 +1853,10 @@ export async function createPurchaseReturnAction(data: PurchaseReturnRequest) {
     await dbExecute('ALTER TABLE purchase_return_items ADD COLUMN purchase_invoice_item_id INTEGER').catch(() => {});
     await dbExecute("ALTER TABLE purchase_return_items ADD COLUMN unit TEXT DEFAULT 'large'").catch(() => {});
 
-    const transaction = db.transaction(async () => {
+    const transaction = db.transaction(async (db) => {
       const returnId = generateId();
       let totalAmount = 0;
-      const validatedLines = await validatePurchaseReturnRequest(data, session);
+      const validatedLines = await validatePurchaseReturnRequest(data, session, db);
 
       for (const item of data.items) {
         const line = validatedLines.get(Number(item.purchase_invoice_item_id))!;
@@ -1711,10 +1931,10 @@ export async function createPurchaseReturnAction(data: PurchaseReturnRequest) {
         // Decrease supplier balance
         await db.prepare('UPDATE suppliers SET balance = balance - ? WHERE id = ?').run(totalAmount, data.supplier_id);
       } else if (data.refund_method === 'cash') {
-        const shiftId = await requireOpenShiftId(String(session.id));
+        const shiftId = await requireOpenShiftId(String(session.id), undefined, db);
         await db.prepare(`
           INSERT INTO cash_movements (id, user_id, shift_id, type, category, amount, notes, date)
-          VALUES (?, ?, ?, 'in', 'purchase_return', ?, ?, ?)
+          VALUES (?, ?, ?, 'receipt', 'purchase_return', ?, ?, ?)
         `).run(generateId(), session.id, shiftId, totalAmount, `مرتجع مشتريات نقدي للمورد رقم ${data.supplier_id}`, new Date().toLocaleDateString('en-CA'));
         
         await db.prepare(`
@@ -1728,24 +1948,26 @@ export async function createPurchaseReturnAction(data: PurchaseReturnRequest) {
         `).run(data.supplier_id, -totalAmount, returnId, 'استرداد نقدي للمرتجع');
       }
 
-      const getAccountId = async (category: string, fallback: number) => {
-        const setting = await db.prepare('SELECT account_id FROM trial_balance_settings WHERE category = ?').get(category) as any;
-        return setting?.account_id || fallback;
-      };
       const journalId = generateId();
       await db.prepare('INSERT INTO daily_journals (id, date, description, created_by, total_amount) VALUES (?, ?, ?, ?, ?)').run(
         journalId, localDate(), `Purchase return [id=${returnId}] [invoice=${data.purchase_invoice_id}]`, session.id, totalAmount
       );
       await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(
         journalId,
-        data.refund_method === 'cash' ? await getAccountId('cash_drawer', 6) : await getAccountId('accounts_payable', 7),
+        data.refund_method === 'cash'
+          ? await resolvePurchaseAccountId('cash_drawer', '1.1.1', db)
+          : await resolvePurchaseAccountId('accounts_payable', '2.1', db),
         'debit', totalAmount
       );
       await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(
-        journalId, await getAccountId('inventory_asset', 10), 'credit', totalAmount
+        journalId, await resolvePurchaseAccountId('inventory_asset', '1.1.3', db), 'credit', totalAmount
       );
 
-      await logActivity(session.id, 'create_purchase_return', `إضافة مرتجع مشتريات للمورد ${data.supplier_id} بقيمة ${totalAmount}`);
+      await db.prepare('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)').run(
+        session.id,
+        'PURCHASE_RETURN',
+        `إضافة مرتجع مشتريات للمورد ${data.supplier_id} بقيمة ${totalAmount}`
+      );
       return returnId;
     });
 
@@ -1758,25 +1980,56 @@ export async function createPurchaseReturnAction(data: PurchaseReturnRequest) {
   }
 }
 
-export async function getPurchaseReturnsAction() {
+export async function getPurchaseReturnsAction(options: { limit?: number; offset?: number; search?: string } = {}) {
   try {
     const session = await getLocalSession();
     if (!session || !hasUserPermissionSync(session, 'can_view_purchases')) return { success: false, error: 'Unauthorized' };
     const pharmacyId = session.pharmacy_id || 'local_default';
+    const limit = Math.min(100, Math.max(1, Math.trunc(Number(options.limit) || 50)));
+    const offset = Math.max(0, Math.trunc(Number(options.offset) || 0));
+    const search = String(options.search || '').trim();
+    const like = `%${search}%`;
 
-    const rows = await db.prepare(`
+    const params: any[] = [pharmacyId, pharmacyId];
+    let sql = `
       SELECT pr.*, s.name_ar as supplier_name, u.full_name as user_name,
-        pi.invoice_number, pi.invoice_date,
-        (SELECT COUNT(*) FROM purchase_return_items pri WHERE pri.purchase_return_id = pr.id) as items_count
+        pi.invoice_number, pi.invoice_date
       FROM purchase_returns pr
       LEFT JOIN suppliers s ON s.id = pr.supplier_id
       LEFT JOIN users u ON u.id = pr.user_id
       JOIN purchase_invoices pi ON pi.id = pr.purchase_invoice_id
-      WHERE pi.pharmacy_id = ? OR (pi.pharmacy_id IS NULL AND ? = 'local_default')
-      ORDER BY pr.created_at DESC
-      LIMIT 100
-    `).all(pharmacyId, pharmacyId) as any[];
-    return { success: true, data: rows };
+      WHERE (pi.pharmacy_id = ? OR (pi.pharmacy_id IS NULL AND ? = 'local_default'))
+    `;
+    if (search) {
+      sql += `
+        AND (
+          pr.id LIKE ? OR pr.purchase_invoice_id LIKE ? OR
+          COALESCE(pi.invoice_number, '') LIKE ? OR COALESCE(s.name_ar, '') LIKE ? OR
+          COALESCE(u.full_name, '') LIKE ?
+        )
+      `;
+      params.push(like, like, like, like, like);
+    }
+    sql += ' ORDER BY pr.created_at DESC LIMIT ? OFFSET ?';
+    params.push(limit + 1, offset);
+    const fetched = await db.prepare(sql).all(...params) as any[];
+    const hasMore = fetched.length > limit;
+    const rows = fetched.slice(0, limit);
+    const returnIds = rows.map(row => String(row.id));
+    const counts = returnIds.length
+      ? await db.prepare(`
+          SELECT purchase_return_id, COUNT(*) AS items_count
+          FROM purchase_return_items
+          WHERE purchase_return_id IN (${returnIds.map(() => '?').join(',')})
+          GROUP BY purchase_return_id
+        `).all(...returnIds) as Array<{ purchase_return_id: string; items_count: number }>
+      : [];
+    const countByReturn = new Map(counts.map(row => [String(row.purchase_return_id), Number(row.items_count || 0)]));
+    return {
+      success: true,
+      data: rows.map(row => ({ ...row, items_count: countByReturn.get(String(row.id)) || 0 })),
+      hasMore,
+    };
   } catch (err: any) {
     return { success: false, error: err.message };
   }
@@ -1812,13 +2065,16 @@ export async function deletePurchaseInvoiceAction(invoiceId: string, removeInven
 
 export async function getDrugInventoryQuantityAction(drugId: number) {
   const user = await getLocalSession();
-  if (!user || !hasUserPermissionSync(user, 'can_view_purchases')) return { success: false, error: 'Unauthorized' };
+  if (!user || (!hasUserPermissionSync(user, 'can_view_purchases') && !hasUserPermissionSync(user, 'can_view_restock'))) {
+    return { success: false, error: 'Unauthorized' };
+  }
   const pharmacyId = user.pharmacy_id || 'local_default';
   const row = await db.prepare(`
     SELECT COALESCE(SUM(quantity), 0) as quantity
     FROM inventory
     WHERE drug_id = ?
       AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+      AND (expiry_date IS NULL OR expiry_date >= date('now', 'localtime'))
   `).get(drugId, pharmacyId, pharmacyId) as any;
   return { success: true, data: Number(row?.quantity || 0) };
 }
@@ -1919,6 +2175,9 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
     if (data.cart.some(item => item.expiry_date && !normalizeDateToYMD(item.expiry_date))) {
       return { success: false, error: 'يوجد تاريخ صلاحية غير صالح في أصناف الفاتورة' };
     }
+    assertPurchaseItemsPolicy(data.cart, 'completed');
+    assertNoDuplicatePurchaseLots(data.cart);
+    assertCompletedPurchaseExpiryPolicy(data.cart);
 
     await ensureBarcodeColumn();
     const pharmacyId = session.pharmacy_id || 'local_default';
@@ -1961,7 +2220,9 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
       return { success: true };
     }
 
-    const transaction = db.transaction(async () => {
+    const cacheUpdates: Array<{ drugId: number; patch: Record<string, unknown> }> = [];
+    const transaction = db.transaction(async (db) => {
+      await assertPurchaseBarcodesAvailable(data.cart || [], db);
       // 1. Get existing completed invoice and items
       const invoice = await db.prepare('SELECT * FROM purchase_invoices WHERE id = ?').get(data.id) as any;
       if (!invoice) throw new Error('فاتورة الشراء غير موجودة');
@@ -1969,13 +2230,18 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
       if ((data.payment_method || 'credit') !== invoice.payment_method) {
         throw new Error('Changing purchase payment method requires the desktop app');
       }
-      const existingReturn = await db.prepare('SELECT id FROM purchase_returns WHERE purchase_invoice_id = ? LIMIT 1').get(data.id);
+      const existingReturn = await db.prepare(`
+        SELECT id
+        FROM purchase_returns
+        WHERE purchase_invoice_id = ?
+          AND LOWER(COALESCE(status, '')) IN ('completed', 'approved')
+        LIMIT 1
+      `).get(data.id);
       if (existingReturn) throw new Error('Cannot edit a completed purchase after a return');
 
       const oldItems = await db.prepare('SELECT * FROM purchase_invoice_items WHERE invoice_id = ?').all(data.id) as any[];
-      const duplicateDrug = (items: any[], key: string) => new Set(items.map(item => String(item[key] ?? item.id))).size !== items.length;
-      if (duplicateDrug(oldItems, 'drug_id') || duplicateDrug(data.cart, 'id')) {
-        throw new Error('لا يمكن تعديل فاتورة مكتملة تحتوي على أسطر مكررة للصنف حتى يتم ربط كل سطر بالدفعة');
+      if (new Set(oldItems.map(purchaseLotIdentity)).size !== oldItems.length) {
+        throw new Error('لا يمكن تعديل فاتورة مكتملة تحتوي على أسطر مكررة لنفس الصنف والصلاحية حتى يتم ربط كل سطر بالدفعة');
       }
       for (const oldItem of oldItems) {
         if (!oldItem.inventory_id) throw new Error('Historical purchase line has no linked batch; use the desktop app');
@@ -1983,7 +2249,7 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
         if (Number(shared?.count || 0) > 0) throw new Error('Purchase batch is shared by multiple invoice lines; use the desktop app');
       }
       const allocation = calculatePurchaseAllocation(data.cart, data);
-      const allocatedCostByDrug = new Map(data.cart.map((item, index) => [String(item.id), allocation.netUnitCosts[index]]));
+      const allocatedCostByLot = new Map(data.cart.map((item, index) => [purchaseLotIdentity(item), allocation.netUnitCosts[index]]));
 
       // 2. Fetch current inventory rows for the old invoice drugs
       const oldDrugIds = [...new Set(oldItems.map((item: any) => item.drug_id))];
@@ -2000,6 +2266,182 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
           && String(inventory.drug_id) === String(oldItem.drug_id);
       });
 
+      // A consumed lot is historical: its original purchase posting, supplier rows and
+      // (especially) cash movement must never be reversed into a later shift.  This
+      // narrowly-scoped path keeps the lot and purchase-line identities stable and
+      // records only the incremental carrying value as a new adjustment.
+      const lotIds = oldItems.map((item: any) => String(item.inventory_id));
+      const salesForLots = lotIds.length
+        ? await db.prepare(`SELECT COUNT(*) AS count FROM sales_items WHERE inventory_id IN (${lotIds.map(() => '?').join(',')})`).get(...lotIds) as any
+        : { count: 0 };
+      const priorAdjustment = await db.prepare(
+        'SELECT id FROM daily_journals WHERE description = ? LIMIT 1'
+      ).get(`Purchase edit [id=${data.id}]`) as any;
+      const consumedLot = oldItems.some((oldItem: any) => {
+        const inv = findOldInventory(oldItem);
+        const received = Number(oldItem.quantity) + Number(oldItem.bonus_quantity || 0);
+        return !inv || Number(inv.quantity) + 0.000001 < received;
+      });
+      const protectedInvoice = consumedLot || Number(salesForLots?.count || 0) > 0 || !!priorAdjustment;
+
+      if (protectedInvoice) {
+        const nearlyEqual = (left: unknown, right: unknown) =>
+          Math.abs(Number(left || 0) - Number(right || 0)) <= 0.000001;
+        const text = (value: unknown) => value == null ? '' : String(value).trim();
+        const incomingByLine = new Map<number, any>();
+        for (const item of data.cart) {
+          const lineId = Number(item.purchase_invoice_item_id);
+          if (!Number.isInteger(lineId) || lineId <= 0 || incomingByLine.has(lineId)) {
+            throw new Error('Protected purchase edits require each original purchase line exactly once');
+          }
+          incomingByLine.set(lineId, item);
+        }
+        if (incomingByLine.size !== oldItems.length) {
+          throw new Error('Cannot add or remove lines from a purchase with consumed inventory');
+        }
+        for (const oldItem of oldItems) {
+          if (!incomingByLine.has(Number(oldItem.id))) {
+            throw new Error('Unknown or missing purchase invoice line in protected edit');
+          }
+        }
+
+        const oldDate = normalizeDateToYMD(invoice.invoice_date) || text(invoice.invoice_date);
+        const requestedDate = data.invoice_date == null
+          ? oldDate
+          : (normalizeDateToYMD(data.invoice_date) || text(data.invoice_date));
+        if (Number(data.supplier_id) !== Number(invoice.supplier_id)
+          || text(data.payment_method || invoice.payment_method) !== text(invoice.payment_method)
+          || requestedDate !== oldDate
+          || text(data.check_number == null ? invoice.check_number : data.check_number) !== text(invoice.check_number)
+          || !nearlyEqual(data.expenses == null ? invoice.expenses : data.expenses, invoice.expenses)
+          || !nearlyEqual(data.discount_value == null ? invoice.discount_value : data.discount_value, invoice.discount_value)
+          || !nearlyEqual(data.discount_percent == null ? invoice.discount_percent : data.discount_percent, invoice.discount_percent)
+          || !nearlyEqual(data.tax_percent == null ? invoice.tax_percent : data.tax_percent, invoice.tax_percent)) {
+          throw new Error('Supplier, payment, date, check and purchase valuation fields are immutable after lot consumption');
+        }
+
+        const oldAllocation = calculatePurchaseAllocation(oldItems, invoice);
+        if (!nearlyEqual(oldAllocation.finalTotal, invoice.total_amount)) {
+          throw new Error('Stored purchase total no longer matches its original allocation; reconcile it before editing');
+        }
+        const protectedAllocation = calculatePurchaseAllocation(oldItems.map((item: any) => incomingByLine.get(Number(item.id))), {
+          ...invoice,
+          expenses: data.expenses == null ? invoice.expenses : data.expenses,
+          discount_value: data.discount_value == null ? invoice.discount_value : data.discount_value,
+          discount_percent: data.discount_percent == null ? invoice.discount_percent : data.discount_percent,
+          tax_percent: data.tax_percent == null ? invoice.tax_percent : data.tax_percent,
+        });
+        let inventoryDeltaValue = 0;
+        const auditChanges: any[] = [];
+        for (const [index, oldItem] of oldItems.entries()) {
+          const item = incomingByLine.get(Number(oldItem.id));
+          const inv = findOldInventory(oldItem);
+          if (item.selling_price != null && (!Number.isFinite(Number(item.selling_price)) || Number(item.selling_price) < 0)) {
+            throw new Error('Invalid protected purchase selling price');
+          }
+          if (!inv
+            || !Number.isFinite(Number(inv.quantity)) || Number(inv.quantity) < 0
+            || Number(item.id || item.drug_id) !== Number(oldItem.drug_id)
+            || normalizeDateToYMD(item.expiry_date) !== normalizeDateToYMD(oldItem.expiry_date)
+            || normalizeDateToYMD(inv.expiry_date) !== normalizeDateToYMD(oldItem.expiry_date)
+            || !nearlyEqual(item.unit_id, oldItem.unit_id)
+            || !nearlyEqual(item.strips_per_box || 1, oldItem.strips_per_box || 1)
+            || !nearlyEqual(inv.strips_per_box || 1, oldItem.strips_per_box || 1)
+            || !nearlyEqual(inv.medium_to_small || 1, oldItem.medium_to_small || 1)
+            || !nearlyEqual(item.bonus_quantity || 0, oldItem.bonus_quantity || 0)
+            || !nearlyEqual(item.cost_price, oldItem.cost_price)
+            || !nearlyEqual(item.tax_percent || 0, oldItem.tax_percent || 0)
+            || !nearlyEqual(item.discount_percent || 0, oldItem.discount_percent || 0)
+            || text(item.barcode) !== text(oldItem.barcode || inv.barcode)
+            || !nearlyEqual(inv.cost_price, oldAllocation.netUnitCosts[index])
+            || !nearlyEqual(protectedAllocation.netUnitCosts[index], oldAllocation.netUnitCosts[index])) {
+            throw new Error('Drug, lot, conversion, bonus, cost, tax, discount and barcode are immutable after lot consumption');
+          }
+          const oldQty = Number(oldItem.quantity);
+          const newQty = Number(item.quantity);
+          if (!Number.isFinite(newQty) || newQty <= 0) throw new Error('Invalid protected purchase quantity');
+          const quantityDelta = newQty - oldQty;
+          if (Number(inv.quantity) + quantityDelta < -0.000001) {
+            throw new Error('The available quantity is insufficient for this protected purchase reduction');
+          }
+          const netUnitCost = oldAllocation.netUnitCosts[index];
+          inventoryDeltaValue += quantityDelta * netUnitCost;
+          auditChanges.push({ line_id: oldItem.id, quantity_before: oldQty, quantity_after: newQty,
+            selling_price_before: oldItem.selling_price, selling_price_after: item.selling_price ?? oldItem.selling_price ?? inv.local_selling_price });
+        }
+
+        const newTotal = Number(invoice.total_amount || 0) + inventoryDeltaValue;
+        if (newTotal < -0.000001) throw new Error('Protected purchase total cannot be negative');
+        if (!nearlyEqual(protectedAllocation.finalTotal, newTotal)) {
+          throw new Error('Protected purchase quantity change would alter its allocated unit cost');
+        }
+        for (const oldItem of oldItems) {
+          const item = incomingByLine.get(Number(oldItem.id));
+          const inv = findOldInventory(oldItem);
+          const quantityDelta = Number(item.quantity) - Number(oldItem.quantity);
+          const sellingPrice = item.selling_price ?? oldItem.selling_price ?? inv.local_selling_price;
+          if (Math.abs(quantityDelta) > 0.000001 || !nearlyEqual(sellingPrice, oldItem.selling_price)) {
+            const updated = await db.prepare(`
+              UPDATE inventory
+              SET quantity = CASE WHEN quantity + ? < 0 THEN 0 ELSE quantity + ? END,
+                  local_selling_price = ?, updated_at = CURRENT_TIMESTAMP
+              WHERE id = ? AND quantity + ? >= -0.000001
+            `).run(quantityDelta, quantityDelta, sellingPrice, inv.id, quantityDelta);
+            if (updated.changes !== 1) throw new Error('Inventory changed while applying protected purchase edit');
+            await db.prepare(`
+              UPDATE purchase_invoice_items SET quantity = ?, selling_price = ? WHERE id = ? AND invoice_id = ?
+            `).run(Number(item.quantity), sellingPrice, oldItem.id, data.id);
+            if (quantityDelta > 0 && Number(inv.quantity) + quantityDelta > 0) {
+              await resolveShortageIfStockRecovered(db, Number(oldItem.drug_id), session.pharmacy_id);
+            }
+          }
+        }
+        await db.prepare(`UPDATE purchase_invoices SET invoice_number = ?, notes = ?, total_amount = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+          .run(data.invoice_number == null ? invoice.invoice_number : data.invoice_number || null,
+            data.notes == null ? invoice.notes : data.notes || null, newTotal, data.id);
+
+        if (Math.abs(inventoryDeltaValue) > 0.000001) {
+          const journalId = generateId();
+          const positive = inventoryDeltaValue > 0;
+          const amount = Math.abs(inventoryDeltaValue);
+          const accounts = {
+            cash: await resolvePurchaseAccountId('cash_drawer', '1.1.1', db),
+            payable: await resolvePurchaseAccountId('accounts_payable', '2.1', db),
+            inventory: await resolvePurchaseAccountId('inventory_asset', '1.1.3', db),
+          };
+          await db.prepare('INSERT INTO daily_journals (id, date, description, created_by, total_amount) VALUES (?, ?, ?, ?, ?)')
+            .run(journalId, localDate(), `Purchase edit [id=${data.id}]`, session.id, amount);
+          await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
+            .run(journalId, accounts.inventory, positive ? 'debit' : 'credit', amount);
+          if (invoice.payment_method === 'credit' || invoice.payment_method === 'check') {
+            await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
+              .run(journalId, accounts.payable, positive ? 'credit' : 'debit', amount);
+            await db.prepare('UPDATE suppliers SET balance = balance + ? WHERE id = ?').run(inventoryDeltaValue, invoice.supplier_id);
+            await db.prepare("INSERT INTO supplier_transactions (supplier_id, type, amount, reference_id, notes) VALUES (?, 'invoice', ?, ?, ?)")
+              .run(invoice.supplier_id, inventoryDeltaValue, data.id, `Purchase edit delta [id=${data.id}]`);
+          } else {
+            const shiftId = await requireOpenShiftId(String(session.id), undefined, db);
+            await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
+              .run(journalId, accounts.cash, positive ? 'credit' : 'debit', amount);
+            await db.prepare("INSERT INTO supplier_transactions (supplier_id, type, amount, reference_id, notes) VALUES (?, 'invoice', ?, ?, ?)")
+              .run(invoice.supplier_id, inventoryDeltaValue, data.id, `Purchase edit delta [id=${data.id}]`);
+            await db.prepare("INSERT INTO supplier_transactions (supplier_id, type, amount, reference_id, notes) VALUES (?, 'payment', ?, ?, ?)")
+              .run(invoice.supplier_id, -inventoryDeltaValue, data.id, `Purchase edit cash delta [id=${data.id}]`);
+            await db.prepare("INSERT INTO cash_movements (id, user_id, shift_id, type, amount, category, notes, date) VALUES (?, ?, ?, ?, ?, 'purchases', ?, ?)")
+              .run(generateId(), session.id, shiftId, positive ? 'disbursement' : 'receipt', amount, `Purchase edit [id=${data.id}]`, localDate());
+          }
+        }
+        await db.prepare('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)')
+          .run(session.id, 'EDIT_CONSUMED_PURCHASE', JSON.stringify({ invoice_id: data.id, before_total: invoice.total_amount,
+            after_total: newTotal, delta: inventoryDeltaValue, changes: auditChanges,
+            before_number: invoice.invoice_number, after_number: data.invoice_number ?? invoice.invoice_number,
+            before_notes: invoice.notes, after_notes: data.notes ?? invoice.notes }));
+        return data.id;
+      }
+
+      // Protected edits above retain the historical factor and never change the master.
+      await assertPurchaseConversionPermission(session, data.cart || [], db);
+
       // 3. Validation: check if any reduction in quantity is safe (not sold yet)
       for (const oldItem of oldItems) {
         const inv = findOldInventory(oldItem);
@@ -2008,7 +2450,7 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
           throw new Error('لا يمكن تعديل فاتورة مكتملة بعد استهلاك أو فقدان دفعتها المرتبطة');
         }
 
-        const newItem = data.cart.find((c: any) => String(c.id) === String(oldItem.drug_id));
+        const newItem = data.cart.find((c: any) => purchaseLotIdentity(c) === purchaseLotIdentity(oldItem));
         
         if (!newItem) {
           // Item was removed from the cart
@@ -2033,14 +2475,14 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
 
       // 4. Verification passed! Let's update inventory and invoice items.
       const newBatchNumber = purchaseBatchKey(data.id);
-      const inventoryIdsByDrug = new Map<string, string>();
+      const inventoryIdsByLot = new Map<string, string>();
       
       // We will first handle updates/deletions of old items
       for (const oldItem of oldItems) {
         const inv = findOldInventory(oldItem);
         const oldQty = Number(oldItem.quantity) + (Number(oldItem.bonus_quantity) || 0);
         
-        const newItem = data.cart.find((c: any) => String(c.id) === String(oldItem.drug_id));
+        const newItem = data.cart.find((c: any) => purchaseLotIdentity(c) === purchaseLotIdentity(oldItem));
 
         if (!newItem) {
           // Item removed
@@ -2052,7 +2494,8 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
           const newQty = Number(newItem.quantity) + (Number(newItem.bonus_quantity) || 0);
           
           // Calculate item subtotal, tax, discount for unit cost
-          const netUnitCost = allocatedCostByDrug.get(String(newItem.id)) ?? newItem.cost_price;
+          const lotKey = purchaseLotIdentity(newItem);
+          const netUnitCost = allocatedCostByLot.get(lotKey) ?? newItem.cost_price;
 
           if (inv) {
             const newInvQty = inv.quantity - (oldQty - newQty);
@@ -2078,7 +2521,7 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
               String(newItem.barcode || '').trim(),
               inv.id
             );
-            inventoryIdsByDrug.set(String(newItem.id), String(inv.id));
+            inventoryIdsByLot.set(lotKey, String(inv.id));
           } else {
             const inventoryId = await addToInventory({
               drugId: newItem.id,
@@ -2090,18 +2533,19 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
               batchNumber: newBatchNumber,
               stripsPerBox: newItem.strips_per_box || 1,
               barcode: newItem.barcode,
-            });
-            inventoryIdsByDrug.set(String(newItem.id), inventoryId);
+            }, db);
+            inventoryIdsByLot.set(lotKey, inventoryId);
           }
         }
       }
 
       // Add entirely new items (that weren't in old items)
       for (const newItem of data.cart) {
-        const isNew = !oldItems.some((o: any) => String(o.drug_id) === String(newItem.id));
+        const lotKey = purchaseLotIdentity(newItem);
+        const isNew = !oldItems.some((o: any) => purchaseLotIdentity(o) === lotKey);
         if (isNew) {
           const newQty = Number(newItem.quantity) + (Number(newItem.bonus_quantity) || 0);
-          const netUnitCost = allocatedCostByDrug.get(String(newItem.id)) ?? newItem.cost_price;
+          const netUnitCost = allocatedCostByLot.get(lotKey) ?? newItem.cost_price;
 
           const inventoryId = await addToInventory({
             drugId: newItem.id,
@@ -2113,8 +2557,8 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
             batchNumber: newBatchNumber,
             stripsPerBox: newItem.strips_per_box || 1,
             barcode: newItem.barcode,
-          });
-          inventoryIdsByDrug.set(String(newItem.id), inventoryId);
+          }, db);
+          inventoryIdsByLot.set(lotKey, inventoryId);
         }
       }
 
@@ -2129,7 +2573,7 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
       
       for (const item of data.cart) {
         const normExpiry = normalizeDateToYMD(item.expiry_date);
-        const mediumToSmall = await purchaseMediumToSmall(item.id);
+        const mediumToSmall = await purchaseMediumToSmall(item.id, db);
         const purchaseItemResult = await itemStmt.run(
           data.id,
           item.id,
@@ -2145,7 +2589,7 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
           mediumToSmall,
           item.barcode || null
         );
-        const inventoryId = inventoryIdsByDrug.get(String(item.id));
+        const inventoryId = inventoryIdsByLot.get(purchaseLotIdentity(item));
         if (inventoryId) {
           await db.prepare('UPDATE purchase_invoice_items SET inventory_id = ? WHERE id = ?').run(
             inventoryId,
@@ -2155,26 +2599,21 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
 
         if (item.strips_per_box) {
           await db.prepare('UPDATE master_drugs SET large_to_medium = ? WHERE id = ?').run(item.strips_per_box, item.id);
-          secureCache.updateDrug(Number(item.id), { large_to_medium: item.strips_per_box });
+          cacheUpdates.push({ drugId: Number(item.id), patch: { large_to_medium: item.strips_per_box } });
         }
 
         if (item.barcode) {
           const masterUpdate = await db.prepare("UPDATE master_drugs SET barcode = ? WHERE id = ? AND (barcode IS NULL OR barcode = '')").run(item.barcode.trim(), item.id);
-          if (masterUpdate.changes > 0) secureCache.updateDrug(Number(item.id), { barcode: item.barcode.trim() });
+          if (masterUpdate.changes > 0) {
+            cacheUpdates.push({ drugId: Number(item.id), patch: { barcode: item.barcode.trim() } });
+          }
         }
 
         totalAmount += Number(item.quantity || 0) * Number(item.cost_price || 0);
 
-        // Automatically resolve shortages for received drugs
-        const pharmacyScope = session.pharmacy_id || 'local_default';
+        // Resolve only after stock actually recovers above the configured threshold.
         const drugId = Number(item.id || item.drug_id);
-        await db.prepare(`
-          UPDATE shortages 
-          SET status = 'received' 
-          WHERE drug_id = ? 
-            AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
-            AND (status IN ('pending', 'ordered') OR status IS NULL OR status = '')
-        `).run(drugId, pharmacyScope, pharmacyScope);
+        await resolveShortageIfStockRecovered(db, drugId, session.pharmacy_id);
       }
 
       // Calculate new invoice total
@@ -2252,7 +2691,7 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
 
       // Cash Drawer / Movements Adjustment
       if (data.payment_method === 'cash') {
-        const shiftId = await requireOpenShiftId(String(session.id));
+        const shiftId = await requireOpenShiftId(String(session.id), undefined, db);
         if (diff !== 0) {
           const type = diff > 0 ? 'disbursement' : 'receipt';
           await db.prepare("INSERT INTO cash_movements (id, user_id, shift_id, type, amount, category, notes, date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(
@@ -2283,15 +2722,10 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
         VALUES (?, ?, ?, ?, ?)
       `).run(journalId, purchaseDate, purchaseJournalDescription(data.id), session.id, newTotal);
 
-      const getAccountId = async (cat: string) => {
-        const s = await db.prepare('SELECT account_id FROM trial_balance_settings WHERE category = ?').get(cat) as any;
-        return s?.account_id;
-      };
-
       const accounts = {
-        cash: await getAccountId('cash_drawer') || 6,
-        payable: await getAccountId('accounts_payable') || 7,
-        inventory: await getAccountId('inventory_asset') || 10
+        cash: await resolvePurchaseAccountId('cash_drawer', '1.1.1', db),
+        payable: await resolvePurchaseAccountId('accounts_payable', '2.1', db),
+        inventory: await resolvePurchaseAccountId('inventory_asset', '1.1.3', db),
       };
 
       await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, accounts.inventory, 'debit', newTotal);
@@ -2302,11 +2736,18 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
         await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, accounts.cash, 'credit', newTotal);
       }
 
-      logActivity(session.id, 'EDIT_COMPLETED_PURCHASE', `تعديل فاتورة شراء مكتملة بقيمة جديدة: ${newTotal.toFixed(2)}`);
+      await db.prepare('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)').run(
+        session.id,
+        'EDIT_COMPLETED_PURCHASE',
+        `تعديل فاتورة شراء مكتملة بقيمة جديدة: ${newTotal.toFixed(2)}`
+      );
       return data.id;
     });
 
     await transaction();
+    for (const update of cacheUpdates) {
+      secureCache.updateDrug(update.drugId, update.patch);
+    }
 
     notifyInventoryChanged();
     revalidatePath('/purchases');

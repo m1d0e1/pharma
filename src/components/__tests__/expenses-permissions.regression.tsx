@@ -84,6 +84,19 @@ describe('standalone expenses permission wiring', () => {
     expect(screen.queryByRole('button', { name: /إضافة مصروف/i })).not.toBeInTheDocument();
   });
 
+  it('does not grant full expense/P&L visibility to a cash-flow-only operator', async () => {
+    (getClientSession as jest.Mock).mockResolvedValue({
+      id: 'cash-flow-only',
+      role: 'pharmacist',
+      permissions: { can_view_expenses: false, acc_can_process_cash_flow: true },
+    });
+
+    render(<ExpensesPage />);
+
+    expect(await screen.findByText('غير مصرح لك بالوصول')).toBeInTheDocument();
+    expect(screen.queryByText('المصروفات والأرباح')).not.toBeInTheDocument();
+  });
+
   it('shows a retryable load error instead of presenting a failed expense request as a healthy empty list', async () => {
     (getClientSession as jest.Mock).mockResolvedValue({
       id: 'expense-viewer',

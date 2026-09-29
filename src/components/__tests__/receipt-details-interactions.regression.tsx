@@ -8,6 +8,16 @@ import toast from 'react-hot-toast';
 jest.mock('react-hotkeys-hook', () => ({ useHotkeys: jest.fn() }));
 jest.mock('@/app/actions-client/config', () => ({ getConfigAction: jest.fn() }));
 jest.mock('@/lib/utils/printing', () => ({
+  calculateReceiptTotals: (invoice: any) => {
+    const subtotal = invoice.sales_items?.reduce((sum: number, item: any) => sum + item.quantity_sold * item.unit_price, 0) || 0;
+    const discount = Number.isFinite(Number(invoice.discount_amount))
+      ? Math.max(0, Number(invoice.discount_amount))
+      : Math.max(0, subtotal - invoice.total_amount);
+    const additionalFees = Number.isFinite(Number(invoice.additional_fees))
+      ? Math.max(0, Number(invoice.additional_fees))
+      : Math.max(0, invoice.total_amount - subtotal + discount);
+    return { subtotal, discount, additionalFees };
+  },
   generateReceiptHtml: jest.fn(() => '<html>receipt</html>'),
   generateWhatsAppMessage: jest.fn(() => 'receipt message'),
   printHtmlContent: jest.fn(),
@@ -63,5 +73,29 @@ describe('ReceiptDetailsModal interactions', () => {
     });
 
     expect(printHtmlContent).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['wallet', 'محفظة (Wallet)'],
+    ['check', 'شيك (Check)'],
+    ['delivery', 'توصيل (Delivery)'],
+  ])('shows an explicit %s payment-method label', async (paymentMethod, expectedLabel) => {
+    render(<ReceiptDetailsModal invoice={{ ...invoice, payment_method: paymentMethod } as any} onClose={jest.fn()} />);
+    await waitFor(() => expect(getConfigAction).toHaveBeenCalledTimes(3));
+    expect(screen.getByText(expectedLabel)).toBeInTheDocument();
+  });
+
+  it('shows invoice discount and additional fees as separate receipt adjustments', async () => {
+    render(<ReceiptDetailsModal invoice={{
+      ...invoice,
+      total_amount: 95,
+      discount_amount: 10,
+      additional_fees: 5,
+      sales_items: [{ quantity_sold: 2, unit_price: 50 }],
+    } as any} onClose={jest.fn()} />);
+    await waitFor(() => expect(getConfigAction).toHaveBeenCalledTimes(3));
+
+    expect(screen.getByText('-10.00 ج.م')).toBeInTheDocument();
+    expect(screen.getByText('+5.00 ج.م')).toBeInTheDocument();
   });
 });

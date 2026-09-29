@@ -89,6 +89,25 @@ describe('Sales & Purchases Reports Totals Display', () => {
     expect(screen.queryByText('ميزان المراجعة')).not.toBeInTheDocument();
   });
 
+  it('labels rolling report KPIs without implying a calendar month or unmeasured activity level', async () => {
+    (getReportsDataAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: {
+        salesHistoryRaw: [],
+        topDrugsRaw: [],
+        categoryRaw: [],
+        totalUnitsSold: 0,
+      },
+    });
+
+    render(<ReportsPage />);
+
+    expect(await screen.findByText('إجمالي الإيرادات')).toBeInTheDocument();
+    expect(screen.queryByText('إجمالي إيرادات الشهر')).not.toBeInTheDocument();
+    expect(screen.queryByText('● نشاط مخزني مرتفع')).not.toBeInTheDocument();
+    expect(screen.getAllByText('آخر 30 يوماً').length).toBeGreaterThanOrEqual(2);
+  });
+
   it('gates each report client cross-tab by the target permission', async () => {
     (getSalesReportsAction as jest.Mock).mockResolvedValue({ success: true, data: [] });
     const salesUser = {

@@ -2,6 +2,7 @@
 
 import Database from 'better-sqlite3';
 import { readFileSync } from 'fs';
+import { createSqliteTransactionDb as mockCreateSqliteTransactionDb } from '@/tests/helpers/sqlite-transaction-db';
 
 let mockDb: Database.Database;
 let mockSession: { id: string; role: string; pharmacy_id: string | null };
@@ -13,7 +14,17 @@ jest.mock('@/lib/db/tauri', () => ({
     const result = mockDb.prepare(sql).run(...params);
     return { rowsAffected: result.changes, lastInsertId: Number(result.lastInsertRowid) };
   }),
-  dbTransaction: jest.fn(async (callback: () => unknown) => callback()),
+  dbTransaction: jest.fn(async (callback: any) => {
+    mockDb.exec('BEGIN IMMEDIATE');
+    try {
+      const result = await callback(mockCreateSqliteTransactionDb(mockDb));
+      mockDb.exec('COMMIT');
+      return result;
+    } catch (error) {
+      mockDb.exec('ROLLBACK');
+      throw error;
+    }
+  }),
   generateId: jest.fn(() => 'test-id-' + Math.random().toString(36).slice(2)),
 }));
 
@@ -25,6 +36,7 @@ jest.mock('@/lib/auth/local', () => ({
 jest.mock('@/lib/cache/secure_cache', () => ({
   secureCache: {
     load: jest.fn(async () => undefined),
+    reload: jest.fn(async () => undefined),
     getAllDrugs: jest.fn(() => []),
     updateDrug: jest.fn(),
     enrich: jest.fn((rows: unknown[]) => rows),
@@ -34,8 +46,10 @@ jest.mock('@/lib/cache/secure_cache', () => ({
 jest.unmock('@/app/actions-client/inventory');
 jest.unmock('@/app/actions-client/shortages');
 jest.unmock('@/app/actions-client/purchases');
+jest.unmock('@/app/actions-client/master-drugs');
 
-import { getLowStockAction } from '@/app/actions-client/inventory';
+import { addInventoryAction, addOpeningBalanceAction, getLowStockAction, updateInventoryAction } from '@/app/actions-client/inventory';
+import { createStockAdjustmentAction } from '@/app/actions-client/master-drugs';
 import {
   addToShortagesAction,
   deleteShortageAction,
@@ -51,6 +65,7 @@ import {
   completePurchaseInvoiceAction,
   updateCompletedPurchaseInvoiceAction,
   createPurchaseOrderAction,
+  getDrugInventoryQuantityAction,
   getPurchaseOrdersAction,
   updatePurchaseOrderStatusAction,
 } from '@/app/actions-client/purchases';
@@ -78,7 +93,10 @@ describe('inventory-linked reorder and shortage notebook regression', () => {
       ) VALUES
         (9101, 'صنف ناقص', 'Low Drug', 5, 8, 10, 10, 'شريط', 'قرص'),
         (9102, 'صنف صفري', 'Zero Drug', 0, 1, 1, 1, 'شريط', 'قرص'),
-        (9103, 'صنف متوفر', 'Healthy Drug', 5, 1, 1, 1, 'شريط', 'قرص');
+        (9103, 'صنف متوفر', 'Healthy Drug', 5, 1, 1, 1, 'شريط', 'قرص'),
+        (9104, 'صنف مؤرشف', 'Archived Drug', 5, 4, 1, 1, 'شريط', 'قرص');
+
+      UPDATE master_drugs SET stop_dealing = 1 WHERE id = 9104;
 
       INSERT INTO inventory (id, pharmacy_id, drug_id, quantity, strips_per_box, expiry_date) VALUES
         ('low-stock', NULL, 9101, 2, 10, '2099-12-31'),
@@ -103,6 +121,10 @@ describe('inventory-linked reorder and shortage notebook regression', () => {
         ('draft-sale', 9101, 1000, 'علبة', 0, 10, 10),
         ('foreign-sale', 9101, 1000, 'علبة', 0, 10, 10);
     `);
+  });
+
+  it('shows only unexpired local stock as available when building a purchase order', async () => {
+    expect(await getDrugInventoryQuantityAction(9101)).toEqual({ success: true, data: 2 });
   });
 
   afterEach(() => mockDb.close());
@@ -219,6 +241,58 @@ describe('inventory-linked reorder and shortage notebook regression', () => {
     expect((await getShortagesAction()).data?.some((item: any) => item.drug_id === 9101)).toBe(false);
   });
 
+  it('keeps the UI low-stock query bounded while synchronizing every low-stock item to shortages', async () => {
+    const insert = mockDb.prepare(`
+      INSERT INTO master_drugs (id, trade_name, trade_name_en, reorder_point, default_purchase_qty)
+      VALUES (?, ?, ?, 5, 1)
+    `);
+    for (let index = 0; index < 251; index += 1) {
+      insert.run(9200 + index, `Bulk Low ${index}`, `Bulk Low ${index}`);
+    }
+
+    const display = await getLowStockAction(10);
+    expect(display.success).toBe(true);
+    expect(display.data).toHaveLength(250);
+    expect(display.totalCount).toBe(252);
+
+    const sync = await syncLowStockToShortagesAction();
+    expect(sync).toMatchObject({ success: true, data: { total: 252 } });
+    expect((mockDb.prepare(`
+      SELECT COUNT(*) AS count FROM shortages WHERE pharmacy_id = 'local_default'
+    `).get() as any).count).toBe(252);
+    expect((mockDb.prepare(`
+      SELECT COUNT(*) AS count FROM shortages WHERE drug_id = 9450 AND pharmacy_id = 'local_default'
+    `).get() as any).count).toBe(1);
+  });
+
+  it('does not manually mark a shortage received while usable stock is still below the reorder threshold', async () => {
+    await addToShortagesAction({ drug_id: 9101, qty: 8 });
+    const shortage = (await getShortagesAction()).data?.find((item: any) => item.drug_id === 9101);
+    expect(shortage).toMatchObject({ current_stock: 2, reorder_point: 5 });
+
+    const result = await updateShortageStatusAction(shortage.id, 'received');
+
+    expect(result).toMatchObject({
+      success: false,
+      error: expect.stringContaining('إعادة الطلب'),
+    });
+    expect((mockDb.prepare('SELECT status FROM shortages WHERE id = ?').get(shortage.id) as any).status).toBe('pending');
+  });
+
+  it('rejects explicit invalid shortage quantities instead of silently changing them to one', async () => {
+    expect(await addToShortagesAction({ drug_id: 9102, qty: 0 })).toMatchObject({ success: false });
+    expect(await addToShortagesAction({ drug_id: 9102, qty: -4 })).toMatchObject({ success: false });
+    expect((mockDb.prepare('SELECT COUNT(*) AS count FROM shortages WHERE drug_id = 9102').get() as any).count).toBe(0);
+
+    const added = await addToShortagesAction({ drug_id: 9102, qty: 6 });
+    expect(added.success).toBe(true);
+    const row = mockDb.prepare('SELECT id, requested_quantity FROM shortages WHERE drug_id = 9102').get() as any;
+    expect(row.requested_quantity).toBe(6);
+
+    expect(await updateShortageQuantityAction(row.id, 0)).toMatchObject({ success: false });
+    expect((mockDb.prepare('SELECT requested_quantity FROM shortages WHERE id = ?').get(row.id) as any).requested_quantity).toBe(6);
+  });
+
   it('keeps reorder usage on the conversion captured when the sale happened', async () => {
     mockDb.prepare('UPDATE master_drugs SET large_to_medium = 20, medium_to_small = 5 WHERE id = 9101').run();
 
@@ -315,6 +389,214 @@ describe('inventory-linked reorder and shortage notebook regression', () => {
     expect(row9101.status).toBe('ordered');
   });
 
+  it('reopens a shortage when its pending purchase order is cancelled', async () => {
+    await addToShortagesAction({ drug_id: 9102, qty: 10 });
+    const po = await createPurchaseOrderAction({
+      supplier_name: 'Cancelled Supplier',
+      items: [{ drug_id: 9102, quantity: 10, expected_price: 15 }],
+    });
+    expect(po.success).toBe(true);
+    expect((await getShortagesAction()).data?.find((item: any) => item.drug_id === 9102)?.status).toBe('ordered');
+
+    expect(await updatePurchaseOrderStatusAction(po.po_id!, 'cancelled')).toEqual({ success: true });
+    expect((await getShortagesAction()).data?.find((item: any) => item.drug_id === 9102)?.status).toBe('pending');
+  });
+
+  it('reopens a cancelled shortage even when an older completed purchase order exists for the same drug', async () => {
+    mockDb.exec(`
+      INSERT OR IGNORE INTO users (id, username, role, pharmacy_id)
+      VALUES ('admin', 'admin', 'owner', NULL);
+      INSERT INTO purchase_orders (id, user_id, pharmacy_id, supplier_name, status, total_amount)
+      VALUES ('PO-HISTORICAL', 'admin', 'local_default', 'Old Supplier', 'completed', 15);
+      INSERT INTO purchase_order_items (po_id, drug_id, quantity, expected_price)
+      VALUES ('PO-HISTORICAL', 9102, 1, 15);
+    `);
+
+    await addToShortagesAction({ drug_id: 9102, qty: 10 });
+    const currentPo = await createPurchaseOrderAction({
+      supplier_name: 'Current Supplier',
+      items: [{ drug_id: 9102, quantity: 10, expected_price: 15 }],
+    });
+    expect(currentPo.success).toBe(true);
+    expect((await getShortagesAction()).data?.find((item: any) => item.drug_id === 9102)?.status).toBe('ordered');
+
+    expect(await updatePurchaseOrderStatusAction(currentPo.po_id!, 'cancelled')).toEqual({ success: true });
+    expect((await getShortagesAction()).data?.find((item: any) => item.drug_id === 9102)?.status).toBe('pending');
+  });
+
+  it('keeps a shortage ordered when another pending purchase order still covers the same drug', async () => {
+    await addToShortagesAction({ drug_id: 9102, qty: 10 });
+    const firstPo = await createPurchaseOrderAction({
+      supplier_name: 'First Supplier',
+      items: [{ drug_id: 9102, quantity: 10, expected_price: 15 }],
+    });
+    expect(firstPo.success).toBe(true);
+    mockDb.exec(`
+      INSERT INTO purchase_orders (id, user_id, pharmacy_id, supplier_name, status, total_amount)
+      VALUES ('PO-SECOND', 'admin', 'local_default', 'Second Supplier', 'pending', 150);
+      INSERT INTO purchase_order_items (po_id, drug_id, quantity, expected_price)
+      VALUES ('PO-SECOND', 9102, 10, 15);
+    `);
+
+    expect(await updatePurchaseOrderStatusAction(firstPo.po_id!, 'cancelled')).toEqual({ success: true });
+    expect((await getShortagesAction()).data?.find((item: any) => item.drug_id === 9102)?.status).toBe('ordered');
+  });
+
+  it('does not reopen a cancelled-order shortage when usable stock has already recovered', async () => {
+    await addToShortagesAction({ drug_id: 9101, qty: 5 });
+    const po = await createPurchaseOrderAction({
+      supplier_name: 'Recovered Supplier',
+      items: [{ drug_id: 9101, quantity: 5, expected_price: 25 }],
+    });
+    expect(po.success).toBe(true);
+    expect((await getShortagesAction()).data?.find((item: any) => item.drug_id === 9101)?.status).toBe('ordered');
+
+    mockDb.prepare("UPDATE inventory SET quantity = 6 WHERE id = 'low-stock'").run();
+    expect(await updatePurchaseOrderStatusAction(po.po_id!, 'cancelled')).toEqual({ success: true });
+
+    expect((mockDb.prepare(
+      "SELECT status FROM shortages WHERE drug_id = 9101 ORDER BY id LIMIT 1"
+    ).get() as any).status).toBe('received');
+  });
+
+  it('keeps shortages active until stock clears the dynamic 30-day demand threshold', async () => {
+    mockDb.exec(`
+      INSERT OR IGNORE INTO users (id, username, role, pharmacy_id) VALUES ('admin', 'admin', 'owner', NULL);
+      INSERT OR IGNORE INTO suppliers (id, name_ar, balance) VALUES (1, 'مورد الطلب الديناميكي', 0);
+      INSERT INTO sales_invoices (id, pharmacy_id, user_id, total_amount, status, created_at)
+      VALUES ('dynamic-demand-sale', NULL, 'admin', 180, 'completed', CURRENT_TIMESTAMP);
+      INSERT INTO sales_items (
+        invoice_id, drug_id, quantity_sold, unit, is_negative,
+        large_to_medium, medium_to_small
+      ) VALUES ('dynamic-demand-sale', 9101, 18, 'علبة', 0, 10, 10);
+      UPDATE inventory SET quantity = 6 WHERE id = 'low-stock';
+    `);
+
+    await addToShortagesAction({ drug_id: 9101, qty: 20 });
+    const shortage = (await getShortagesAction()).data?.find((item: any) => item.drug_id === 9101);
+    expect(shortage).toMatchObject({
+      current_stock: 6,
+      reorder_point: 20,
+      deficit: 14,
+      inventory_status: 'critical',
+    });
+    const lowStock = await getLowStockAction(10);
+    expect(lowStock.data?.find((item: any) => item.drug_id === 9101)).toMatchObject({
+      current_stock: 6,
+      reorder_point: 20,
+      deficit: 14,
+      avg_monthly_usage: 20,
+    });
+
+    expect(await updateShortageStatusAction(shortage.id, 'received')).toMatchObject({
+      success: false,
+      error: expect.stringContaining('حد إعادة الطلب'),
+    });
+
+    const receipt = await createPurchaseInvoiceAction({
+      supplier_id: 1,
+      invoice_number: 'INV-DYNAMIC-PARTIAL',
+      invoice_date: '2026-09-28',
+      payment_method: 'credit',
+      status: 'completed',
+      cart: [{
+        id: 9101,
+        quantity: 1,
+        cost_price: 20,
+        selling_price: 25,
+        expiry_date: '2029-12-31',
+        strips_per_box: 10,
+      }],
+    });
+    expect(receipt.success).toBe(true);
+    expect((mockDb.prepare('SELECT status FROM shortages WHERE id = ?').get(shortage.id) as any).status).not.toBe('received');
+  });
+
+  it('keeps the unplaced remainder pending when a purchase order covers only part of a shortage', async () => {
+    mockDb.exec(`INSERT OR IGNORE INTO users (id, username, role, pharmacy_id) VALUES ('admin', 'admin', 'owner', NULL)`);
+    await addToShortagesAction({ drug_id: 9101, qty: 8 });
+
+    const po = await createPurchaseOrderAction({
+      supplier_name: 'Partial PO Supplier',
+      items: [{ drug_id: 9101, quantity: 5, expected_price: 25 }],
+    });
+    expect(po.success).toBe(true);
+
+    expect(await syncLowStockToShortagesAction()).toMatchObject({ success: true });
+    expect(mockDb.prepare(`
+      SELECT requested_quantity, status
+      FROM shortages
+      WHERE drug_id = 9101
+      ORDER BY status, id
+    `).all()).toEqual([
+      expect.objectContaining({ requested_quantity: 5, status: 'ordered' }),
+      expect.objectContaining({ requested_quantity: 3, status: 'pending' }),
+    ]);
+  });
+
+  it('recombines partial PO coverage into one pending shortage when that order is cancelled', async () => {
+    mockDb.exec(`INSERT OR IGNORE INTO users (id, username, role, pharmacy_id) VALUES ('admin', 'admin', 'owner', NULL)`);
+    await addToShortagesAction({ drug_id: 9101, qty: 8 });
+    const po = await createPurchaseOrderAction({
+      supplier_name: 'Partial Cancel Supplier',
+      items: [{ drug_id: 9101, quantity: 5, expected_price: 25 }],
+    });
+    expect(po.success).toBe(true);
+
+    expect(mockDb.prepare(`
+      SELECT requested_quantity, status
+      FROM shortages
+      WHERE drug_id = 9101
+      ORDER BY status, id
+    `).all()).toEqual([
+      expect.objectContaining({ requested_quantity: 5, status: 'ordered' }),
+      expect.objectContaining({ requested_quantity: 3, status: 'pending' }),
+    ]);
+
+    expect(await updatePurchaseOrderStatusAction(po.po_id!, 'cancelled')).toEqual({ success: true });
+    expect(mockDb.prepare(`
+      SELECT requested_quantity, status
+      FROM shortages
+      WHERE drug_id = 9101
+      ORDER BY id
+    `).all()).toEqual([
+      expect.objectContaining({ requested_quantity: 8, status: 'pending' }),
+    ]);
+  });
+
+  it('does not inflate an ordered shortage beyond the quantity actually placed on its purchase order', async () => {
+    mockDb.exec(`INSERT OR IGNORE INTO users (id, username, role, pharmacy_id) VALUES ('admin', 'admin', 'owner', NULL)`);
+    await addToShortagesAction({ drug_id: 9101, qty: 5 });
+
+    const po = await createPurchaseOrderAction({
+      supplier_name: 'المورد الرئيسي',
+      items: [{ drug_id: 9101, quantity: 5, expected_price: 25 }],
+    });
+    expect(po.success).toBe(true);
+
+    const beforeSync = mockDb.prepare(`
+      SELECT requested_quantity, status FROM shortages WHERE drug_id = 9101 ORDER BY id
+    `).all() as any[];
+    expect(beforeSync).toEqual([expect.objectContaining({ requested_quantity: 5, status: 'ordered' })]);
+
+    // Current reorder suggestion is 8 (default_purchase_qty), while only 5 was actually ordered.
+    const sync = await syncLowStockToShortagesAction();
+    expect(sync.success).toBe(true);
+
+    const poItem = mockDb.prepare(`
+      SELECT quantity FROM purchase_order_items WHERE po_id = ? AND drug_id = 9101
+    `).get(po.po_id) as any;
+    expect(poItem.quantity).toBe(5);
+
+    const afterSync = mockDb.prepare(`
+      SELECT requested_quantity, status FROM shortages WHERE drug_id = 9101 ORDER BY status, id
+    `).all() as any[];
+    expect(afterSync).toEqual([
+      expect.objectContaining({ requested_quantity: 5, status: 'ordered' }),
+      expect.objectContaining({ requested_quantity: 3, status: 'pending' }),
+    ]);
+  });
+
   it('updates shortages to received and resolves stock alerts across purchase invoice lifecycle (create, complete, edit)', async () => {
     mockDb.exec(`
       INSERT OR IGNORE INTO users (id, username, role, pharmacy_id) VALUES ('admin', 'admin', 'owner', NULL);
@@ -359,7 +641,8 @@ describe('inventory-linked reorder and shortage notebook regression', () => {
     const lowStockAfter = await getLowStockAction(5);
     expect(lowStockAfter.data?.some((d: any) => d.id === 9101)).toBe(false);
 
-    // 3. Test draft invoice -> complete invoice resolves shortages
+    // 3. Test draft invoice -> complete invoice resolves shortages once the
+    // receipt clears the default effective reorder threshold (10).
     await addToShortagesAction({ drug_id: 9102, qty: 5 });
     const draftRes = await createPurchaseInvoiceAction({
       supplier_id: 1,
@@ -370,7 +653,7 @@ describe('inventory-linked reorder and shortage notebook regression', () => {
       cart: [
         {
           id: 9102,
-          quantity: 5,
+          quantity: 11,
           cost_price: 10,
           selling_price: 15,
           expiry_date: '2029-12-31',
@@ -422,5 +705,128 @@ describe('inventory-linked reorder and shortage notebook regression', () => {
     // Shortage for 9103 is now received
     const shortage9103 = mockDb.prepare('SELECT status FROM shortages WHERE drug_id = 9103').get() as any;
     expect(shortage9103.status).toBe('received');
+  });
+
+  it('keeps a shortage active when a partial receipt leaves stock below the reorder threshold', async () => {
+    mockDb.exec(`
+      INSERT OR IGNORE INTO users (id, username, role, pharmacy_id) VALUES ('admin', 'admin', 'owner', NULL);
+      INSERT OR IGNORE INTO suppliers (id, name_ar, balance) VALUES (1, 'مورد جزئي', 0);
+    `);
+    await addToShortagesAction({ drug_id: 9101, qty: 10 });
+
+    const result = await createPurchaseInvoiceAction({
+      supplier_id: 1,
+      invoice_number: 'INV-PARTIAL-SHORTAGE',
+      invoice_date: '2026-09-27',
+      payment_method: 'credit',
+      status: 'completed',
+      cart: [{
+        id: 9101,
+        quantity: 1,
+        cost_price: 20,
+        selling_price: 25,
+        expiry_date: '2029-12-31',
+        strips_per_box: 10,
+      }],
+    });
+    expect(result.success).toBe(true);
+
+    expect((mockDb.prepare(`
+      SELECT SUM(quantity) AS quantity FROM inventory
+      WHERE drug_id = 9101
+        AND (pharmacy_id IS NULL OR pharmacy_id = 'local_default')
+        AND (expiry_date IS NULL OR expiry_date >= date('now', 'localtime'))
+    `).get() as any).quantity).toBe(3);
+    const shortage = mockDb.prepare('SELECT status FROM shortages WHERE drug_id = 9101').get() as any;
+    expect(shortage.status).not.toBe('received');
+    const lowStock = await getLowStockAction(5);
+    expect(lowStock.data?.some((row: any) => row.drug_id === 9101)).toBe(true);
+  });
+
+  it('resolves recovered shortages when stock is replenished outside the purchase workflow', async () => {
+    await addToShortagesAction({ drug_id: 9102, qty: 10 });
+    const manualAdd = await addInventoryAction({
+      drug_id: 9102,
+      quantity: 11,
+      local_selling_price: 15,
+      expiry_date: '2099-12-31',
+    });
+    expect(manualAdd.success).toBe(true);
+
+    mockDb.prepare(`
+      INSERT INTO master_drugs (id, trade_name, trade_name_en, reorder_point, default_purchase_qty)
+      VALUES (9105, 'رصيد افتتاحي', 'Opening Balance Drug', 5, 6)
+    `).run();
+    await addToShortagesAction({ drug_id: 9105, qty: 6 });
+    const openingBalance = await addOpeningBalanceAction({
+      drug_id: 9105,
+      quantity: 6,
+      cost_price: 0,
+      unit_price: 10,
+      expiry_date: '2099-12-31',
+    });
+    expect(openingBalance.success).toBe(true);
+
+    expect((mockDb.prepare('SELECT status FROM shortages WHERE drug_id = 9102').get() as any).status).toBe('received');
+    expect((mockDb.prepare('SELECT status FROM shortages WHERE drug_id = 9105').get() as any).status).toBe('received');
+  });
+
+  it('resolves recovered shortages after inventory edits and positive stock adjustments', async () => {
+    mockDb.prepare("INSERT OR IGNORE INTO users (id, username, role) VALUES ('admin', 'admin', 'owner')").run();
+    mockDb.prepare("INSERT OR IGNORE INTO adjustment_reasons (id, name_ar) VALUES (1, 'تصحيح رصيد')").run();
+
+    await addToShortagesAction({ drug_id: 9102, qty: 11 });
+    expect((await updateInventoryAction({
+      id: 'zero-stock',
+      quantity: 11,
+      local_selling_price: 15,
+      reason_id: 1,
+    })).success).toBe(true);
+    expect((mockDb.prepare('SELECT status FROM shortages WHERE drug_id = 9102').get() as any).status).toBe('received');
+
+    await addToShortagesAction({ drug_id: 9101, qty: 6 });
+    expect((await createStockAdjustmentAction('low-stock', {
+      reason_id: 1,
+      old_quantity: 2,
+      new_quantity: 6,
+    })).success).toBe(true);
+    expect((mockDb.prepare('SELECT status FROM shortages WHERE drug_id = 9101').get() as any).status).toBe('received');
+  });
+
+  it('resolves a shortage when correcting an expired lot makes existing stock usable again', async () => {
+    await addToShortagesAction({ drug_id: 9101, qty: 6 });
+
+    expect((await updateInventoryAction({
+      id: 'expired-stock',
+      quantity: 50,
+      local_selling_price: 15,
+      expiry_date: '2099-12-31',
+    })).success).toBe(true);
+
+    expect((mockDb.prepare('SELECT status FROM shortages WHERE drug_id = 9101').get() as any).status).toBe('received');
+  });
+
+  it('rolls back replenished stock when shortage reconciliation fails inside the transaction', async () => {
+    await addToShortagesAction({ drug_id: 9102, qty: 11 });
+    mockDb.exec(`
+      CREATE TRIGGER reject_received_shortage
+      BEFORE UPDATE OF status ON shortages
+      WHEN NEW.status = 'received'
+      BEGIN
+        SELECT RAISE(ABORT, 'shortage reconciliation failed');
+      END;
+    `);
+
+    const before = (mockDb.prepare('SELECT COUNT(*) AS count FROM inventory WHERE drug_id = 9102').get() as any).count;
+    const result = await addInventoryAction({
+      drug_id: 9102,
+      quantity: 11,
+      local_selling_price: 15,
+      expiry_date: '2099-12-31',
+    });
+
+    expect(result.success).toBe(false);
+    expect((mockDb.prepare('SELECT COUNT(*) AS count FROM inventory WHERE drug_id = 9102').get() as any).count).toBe(before);
+    expect((mockDb.prepare('SELECT status FROM shortages WHERE drug_id = 9102').get() as any).status).toBe('pending');
   });
 });

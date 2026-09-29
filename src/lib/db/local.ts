@@ -78,6 +78,9 @@ export function initLocalDb() {
   if (!columns.some(c => c.name === 'is_active')) {
     db.exec('ALTER TABLE users ADD COLUMN is_active INTEGER DEFAULT 1');
   }
+  if (!columns.some(c => c.name === 'pharmacy_id')) {
+    db.exec('ALTER TABLE users ADD COLUMN pharmacy_id TEXT');
+  }
   
   // Migration: Add new HR columns to users
   const userHrCols = [
@@ -340,6 +343,7 @@ export function initLocalDb() {
       cost_price REAL DEFAULT 0,
       large_to_medium INTEGER DEFAULT 1,
       medium_to_small INTEGER DEFAULT 1,
+      item_discount_percent REAL DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -765,6 +769,7 @@ export function initLocalDb() {
       status TEXT DEFAULT 'pending', -- pending, cashed, bounced, cancelled
       target_name TEXT,
       notes TEXT,
+      pharmacy_id TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (bank_id) REFERENCES banks (id)
     );
@@ -899,7 +904,13 @@ export function initLocalDb() {
     }
   }
   
+  const tableExists = (table: string) => {
+    const row = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1").get(table) as any;
+    return !!row;
+  };
+
   const addColumnSafely = (table: string, col: string, type: string) => {
+    if (!tableExists(table)) return;
     if (!/^[a-z_]+$/.test(col)) throw new Error(`Invalid column name: ${col}`);
     if (!/^[a-z_ ()\d']+$/i.test(type)) throw new Error(`Invalid column type: ${type}`);
     try {
@@ -1105,6 +1116,9 @@ export function initLocalDb() {
       ), 1)
     `);
   }
+  if (!itemColumns.some(c => c.name === 'item_discount_percent')) {
+    addColumnSafely('sales_items', 'item_discount_percent', "REAL DEFAULT 0");
+  }
   if (!itemColumns.some(c => c.name === 'drug_id')) {
     addColumnSafely('sales_items', 'drug_id', "INTEGER");
     db.exec(`
@@ -1138,8 +1152,31 @@ export function initLocalDb() {
   addColumnSafely('financial_notices', 'pharmacy_id', 'TEXT');
   addColumnSafely('activity_log', 'pharmacy_id', 'TEXT');
   addColumnSafely('purchase_orders', 'pharmacy_id', 'TEXT');
+  if (tableExists('commercial_papers')) {
+    addColumnSafely('commercial_papers', 'pharmacy_id', 'TEXT');
+    db.exec("UPDATE commercial_papers SET pharmacy_id = 'local_default' WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = ''");
+    const commercialPaperColumns = db.prepare("PRAGMA table_info(commercial_papers)").all() as any[];
+    if (commercialPaperColumns.some(column => column.name === 'due_date')) {
+      db.exec('CREATE INDEX IF NOT EXISTS idx_commercial_papers_pharmacy_due ON commercial_papers(pharmacy_id, due_date)');
+    }
+  }
 
   db.exec(`
+    UPDATE shifts AS legacy_shift
+    SET pharmacy_id = (
+      SELECT MIN(NULLIF(TRIM(invoice.pharmacy_id), ''))
+      FROM sales_invoices invoice
+      WHERE invoice.shift_id = legacy_shift.id
+        AND NULLIF(TRIM(invoice.pharmacy_id), '') IS NOT NULL
+      HAVING COUNT(DISTINCT NULLIF(TRIM(invoice.pharmacy_id), '')) = 1
+    )
+    WHERE (legacy_shift.pharmacy_id IS NULL OR TRIM(legacy_shift.pharmacy_id) = '')
+      AND (
+        SELECT COUNT(DISTINCT NULLIF(TRIM(invoice.pharmacy_id), ''))
+        FROM sales_invoices invoice
+        WHERE invoice.shift_id = legacy_shift.id
+      ) = 1;
+
     UPDATE shifts
     SET pharmacy_id = COALESCE(
       (SELECT NULLIF(TRIM(u.pharmacy_id), '')
@@ -1176,6 +1213,10 @@ export function initLocalDb() {
 
     UPDATE expenses
     SET pharmacy_id = COALESCE(
+      (SELECT NULLIF(TRIM(cm.pharmacy_id), '')
+       FROM cash_movements cm
+       WHERE expenses.id = 'cash-movement-' || CAST(cm.id AS TEXT)
+       LIMIT 1),
       (SELECT NULLIF(TRIM(u.pharmacy_id), '')
        FROM users u
        WHERE CAST(u.id AS TEXT) = CAST(expenses.user_id AS TEXT)
@@ -1325,6 +1366,8 @@ export function initLocalDb() {
     BEGIN
       UPDATE expenses
       SET pharmacy_id = COALESCE(
+        (SELECT NULLIF(TRIM(cm.pharmacy_id), '') FROM cash_movements cm
+         WHERE NEW.id = 'cash-movement-' || CAST(cm.id AS TEXT) LIMIT 1),
         (SELECT NULLIF(TRIM(u.pharmacy_id), '') FROM users u
          WHERE CAST(u.id AS TEXT) = CAST(NEW.user_id AS TEXT)
             OR LOWER(u.username) = LOWER(CAST(NEW.user_id AS TEXT)) LIMIT 1),
@@ -1481,6 +1524,10 @@ export function initLocalDb() {
         [14, '4.2',   'تسويات حسابات العملاء',           'Customer Adjustments',      'expense',   0],
         [15, '3.9',   'حقوق ملكية الأرصدة الافتتاحية',  'Opening Balance Equity',    'equity',    0],
         [16, '4.3',   'عجز وزيادة الخزينة',              'Cash Shortage/Overage',     'expense',   0],
+        [17, '3.2',   'إيرادات نقدية أخرى',              'Other Cash Income',         'revenue',   0],
+        [18, '3.3',   'تسويات نقدية للموردين',           'Supplier Cash Adjustments', 'revenue',   0],
+        [19, '3.8',   'مسحوبات المالك',                   'Owner Drawings',            'equity',    0],
+        [20, '4.4',   'مصروفات تشغيلية عامة',             'General Operating Expenses','expense',   0],
       ];
       const seedAccounts = db.transaction((list: typeof defaultAccounts) => {
         for (const a of list) insertAccount.run(a[0], a[1], a[2], a[3], a[4], a[5]);
@@ -1506,7 +1553,11 @@ export function initLocalDb() {
         ('patient_wallet_liability','2.2'),
         ('customer_adjustments',    '4.2'),
         ('opening_balance_equity',  '3.9'),
-        ('cash_difference',         '4.3')
+        ('cash_difference',         '4.3'),
+        ('other_cash_income',       '3.2'),
+        ('supplier_cash_adjustments','3.3'),
+        ('owner_drawings',          '3.8'),
+        ('general_operating_expenses','4.4')
       )
       INSERT OR IGNORE INTO trial_balance_settings (category, target_type, account_id)
       SELECT r.category, 'account', a.id
@@ -1529,7 +1580,11 @@ export function initLocalDb() {
         ('2.2', 'أرصدة محافظ العملاء', 'Patient Wallet Liability', 'liability', 0),
         ('4.2', 'تسويات حسابات العملاء', 'Customer Adjustments', 'expense', 0),
         ('3.9', 'حقوق ملكية الأرصدة الافتتاحية', 'Opening Balance Equity', 'equity', 0),
-        ('4.3', 'عجز وزيادة الخزينة', 'Cash Shortage/Overage', 'expense', 0);
+        ('4.3', 'عجز وزيادة الخزينة', 'Cash Shortage/Overage', 'expense', 0),
+        ('3.2', 'إيرادات نقدية أخرى', 'Other Cash Income', 'revenue', 0),
+        ('3.3', 'تسويات نقدية للموردين', 'Supplier Cash Adjustments', 'revenue', 0),
+        ('3.8', 'مسحوبات المالك', 'Owner Drawings', 'equity', 0),
+        ('4.4', 'مصروفات تشغيلية عامة', 'General Operating Expenses', 'expense', 0);
 
       INSERT OR IGNORE INTO trial_balance_settings (category, target_type, account_id)
       SELECT 'bank_clearing', 'account', id FROM accounts WHERE code = '1.1.4';
@@ -1545,6 +1600,15 @@ export function initLocalDb() {
 
       INSERT OR IGNORE INTO trial_balance_settings (category, target_type, account_id)
       SELECT 'cash_difference', 'account', id FROM accounts WHERE code = '4.3';
+
+      INSERT OR IGNORE INTO trial_balance_settings (category, target_type, account_id)
+      SELECT 'other_cash_income', 'account', id FROM accounts WHERE code = '3.2';
+      INSERT OR IGNORE INTO trial_balance_settings (category, target_type, account_id)
+      SELECT 'supplier_cash_adjustments', 'account', id FROM accounts WHERE code = '3.3';
+      INSERT OR IGNORE INTO trial_balance_settings (category, target_type, account_id)
+      SELECT 'owner_drawings', 'account', id FROM accounts WHERE code = '3.8';
+      INSERT OR IGNORE INTO trial_balance_settings (category, target_type, account_id)
+      SELECT 'general_operating_expenses', 'account', id FROM accounts WHERE code = '4.4';
     `);
   } catch (e) {
     console.warn('Failed to ensure patient accounting mappings:', e);

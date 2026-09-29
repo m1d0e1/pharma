@@ -51,7 +51,7 @@ export default function SalesReturnClient() {
   const [invoice, setInvoice] = useState<any>(null);
   const [itemsToReturn, setItemsToReturn] = useState<any[]>([]);
   const [reason, setReason] = useState<string>('');
-  const [refundMethod, setRefundMethod] = useState<'cash' | 'patient_account'>('cash');
+  const [refundMethod, setRefundMethod] = useState<'cash' | 'patient_account' | 'wallet' | 'bank'>('cash');
   const [isSearching, setIsSearching] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isCommitted, setIsCommitted] = useState(false);
@@ -188,7 +188,16 @@ export default function SalesReturnClient() {
       if (requestId !== detailRequestRef.current) return;
       if (res.success && res.data) {
         setInvoice(res.data);
-        if (!res.data.patient_id) setRefundMethod('cash');
+        const paymentMethod = String(res.data.payment_method || '').toLowerCase();
+        setRefundMethod(
+          paymentMethod === 'wallet' && res.data.patient_id
+            ? 'wallet'
+            : paymentMethod === 'visa' || paymentMethod === 'check'
+              ? 'bank'
+              : paymentMethod === 'credit' && res.data.patient_id
+                ? 'patient_account'
+                : 'cash'
+        );
         // Initialize return items with 0 quantity
         setItemsToReturn(res.data.items.map((item: any) => ({
           ...item,
@@ -548,13 +557,15 @@ export default function SalesReturnClient() {
                       onChange={(e) => setRefundMethod(e.target.value as any)}
                     >
                       <option value="cash">استرداد نقدي (كاش)</option>
+                      <option value="bank">استرداد بنكي / بطاقة</option>
                       <option value="patient_account" disabled={!invoice?.patient_id}>خصم من مديونية مريض الفاتورة (حساب آجل)</option>
+                      <option value="wallet" disabled={!invoice?.patient_id}>إرجاع الرصيد إلى محفظة المريض</option>
                     </select>
                   </div>
 
                   {!invoice?.patient_id && (
                     <div className="animate-in fade-in slide-in-from-top-1 duration-200 rounded-lg bg-amber-50 p-3 text-xs font-bold text-amber-700 dark:bg-amber-950/20 dark:text-amber-300">
-                      الفاتورة غير مرتبطة بمريض؛ يجب استخدام الاسترداد النقدي حتى لا يُرحّل الرصيد إلى حساب غير صحيح.
+                      الفاتورة غير مرتبطة بمريض؛ لا يمكن استخدام حساب المريض أو محفظته لهذا المرتجع.
                     </div>
                   )}
 

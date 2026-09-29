@@ -40,7 +40,7 @@ const db = {
     }
   }),
   transaction: (cb) => {
-    return (...args) => dbTransaction(async () => await cb(...args));
+    return (...args) => dbTransaction(async (transactionDb) => await cb(transactionDb, ...args));
   },
   exec: (sql) => {
     return dbExecute(sql);
@@ -50,8 +50,15 @@ const db = {
 
 
 
-import { getLocalSession } from '@/lib/auth/local';
+import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
+
+function canUseLoyalty(user: any): boolean {
+  return !!user && (
+    hasUserPermissionSync(user, 'can_view_patients') ||
+    hasUserPermissionSync(user, 'can_access_pos')
+  );
+}
 
 // Points configuration
 const POINTS_PER_EGP = 1;          // 1 point per 1 EGP spent
@@ -64,12 +71,13 @@ const MIN_REDEEM_POINTS = 100;     // Minimum points to redeem
 export async function awardLoyaltyPointsAction(patientId: string, invoiceTotal: number, invoiceId: string) {
   try {
     const user = await getLocalSession();
-    if (!user) return { success: false, error: 'غير مصرح' };
+    if (!canUseLoyalty(user)) return { success: false, error: 'غير مصرح' };
 
     const pointsEarned = Math.floor(invoiceTotal * POINTS_PER_EGP);
     if (pointsEarned <= 0) return { success: true, pointsEarned: 0 };
 
-    await db.prepare('UPDATE patients SET points_balance = points_balance + ? WHERE id = ?').run(pointsEarned, patientId);
+    const updated = await db.prepare('UPDATE patients SET points_balance = points_balance + ? WHERE id = ?').run(pointsEarned, patientId);
+    if (!updated.changes) return { success: false, error: 'العميل غير موجود' };
 
     logActivity(user.id, 'AWARD_POINTS', `منح ${pointsEarned} نقطة للعميل ${patientId} - فاتورة #${invoiceId.substring(0, 8)}`);
 
@@ -86,7 +94,7 @@ export async function awardLoyaltyPointsAction(patientId: string, invoiceTotal: 
 export async function redeemLoyaltyPointsAction(patientId: string, pointsToRedeem: number) {
   try {
     const user = await getLocalSession();
-    if (!user) return { success: false, error: 'غير مصرح' };
+    if (!canUseLoyalty(user)) return { success: false, error: 'غير مصرح' };
 
     if (pointsToRedeem < MIN_REDEEM_POINTS) {
       return { success: false, error: `الحد الأدنى للاسترداد ${MIN_REDEEM_POINTS} نقطة` };
@@ -100,7 +108,16 @@ export async function redeemLoyaltyPointsAction(patientId: string, pointsToRedee
 
     const discountAmount = pointsToRedeem * EGP_PER_POINT_REDEEM;
 
-    await db.prepare('UPDATE patients SET points_balance = points_balance - ? WHERE id = ?').run(pointsToRedeem, patientId);
+    const updated = await db.prepare(`
+      UPDATE patients
+      SET points_balance = points_balance - ?
+      WHERE id = ? AND COALESCE(points_balance, 0) >= ?
+    `).run(pointsToRedeem, patientId, pointsToRedeem);
+    if (!updated.changes) {
+      const current = await db.prepare('SELECT points_balance FROM patients WHERE id = ?').get(patientId) as any;
+      if (!current) return { success: false, error: 'العميل غير موجود' };
+      return { success: false, error: `رصيد النقاط غير كافٍ (${current.points_balance || 0} نقطة متاحة)` };
+    }
 
     logActivity(user.id, 'REDEEM_POINTS', `استرداد ${pointsToRedeem} نقطة = ${discountAmount} ج.م خصم`);
 
@@ -117,6 +134,8 @@ export async function redeemLoyaltyPointsAction(patientId: string, pointsToRedee
  */
 export async function getPatientLoyaltyAction(patientId: string) {
   try {
+    const user = await getLocalSession();
+    if (!canUseLoyalty(user)) return { success: false, error: 'غير مصرح' };
     const patient = await db.prepare('SELECT id, full_name, points_balance FROM patients WHERE id = ?').get(patientId) as any;
     if (!patient) return { success: false, error: 'العميل غير موجود' };
 

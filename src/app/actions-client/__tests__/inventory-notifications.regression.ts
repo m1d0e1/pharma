@@ -89,7 +89,7 @@ it('notifies after completed purchase writes but not draft or failed writes', as
   const completed = await countInventoryChanges(() => createPurchaseInvoiceAction({
     supplier_id: 1,
     status: 'completed',
-    cart: [{ id: 1, quantity: 1, cost_price: 5 }],
+    cart: [{ id: 1, quantity: 1, cost_price: 5, expiry_date: '2099-12-31' }],
   }));
   expect(completed.result).toMatchObject({ success: true });
   expect(completed.listener).toHaveBeenCalledTimes(1);
@@ -106,7 +106,7 @@ it('notifies after completed purchase writes but not draft or failed writes', as
   const failed = await countInventoryChanges(() => createPurchaseInvoiceAction({
     supplier_id: 1,
     status: 'completed',
-    cart: [{ id: 1, quantity: 1, cost_price: 5 }],
+    cart: [{ id: 1, quantity: 1, cost_price: 5, expiry_date: '2099-12-31' }],
   }));
   expect(failed.result).toMatchObject({ success: false });
   expect(failed.listener).not.toHaveBeenCalled();
@@ -130,7 +130,9 @@ it('notifies only after successful purchase return, edit, and inventory removal 
   expect(failedReturn.listener).not.toHaveBeenCalled();
 
   const edited = await countInventoryChanges(() => updateCompletedPurchaseInvoiceAction({
-    id: 'purchase-1', supplier_id: 1, cart: [],
+    id: 'purchase-1',
+    supplier_id: 1,
+    cart: [{ id: 1, quantity: 1, cost_price: 5, expiry_date: '2099-12-31', strips_per_box: 1 }],
   }));
   expect(edited.result).toMatchObject({ success: true });
   expect(edited.listener).toHaveBeenCalledTimes(1);

@@ -40,7 +40,7 @@ const db = {
     }
   }),
   transaction: (cb) => {
-    return (...args) => dbTransaction(async () => await cb(...args));
+    return (...args) => dbTransaction(async (transactionDb) => await cb(transactionDb, ...args));
   },
   exec: (sql) => {
     return dbExecute(sql);
@@ -153,9 +153,9 @@ const getSalesTodayStmt = db.prepare(`
   SELECT COALESCE(SUM(inv.total_amount), 0) as total,
          (SELECT COALESCE(SUM(
             CASE 
-              WHEN si.unit IN ('medium', 'strip', 'شريط') AND COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(md.large_to_medium, 0), 1) > 0
+              WHEN (si.unit IN ('medium', 'strip', 'شريط') OR si.unit = md.medium_unit) AND COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(md.large_to_medium, 0), 1) > 0
                 THEN (si.quantity_sold / COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(md.large_to_medium, 0), 1)) * si.cost_price
-              WHEN si.unit = 'small' AND (COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(md.large_to_medium, 0), 1) * COALESCE(NULLIF(si.medium_to_small, 0), NULLIF(md.medium_to_small, 0), 1)) > 0
+              WHEN (si.unit = 'small' OR si.unit = md.small_unit) AND (COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(md.large_to_medium, 0), 1) * COALESCE(NULLIF(si.medium_to_small, 0), NULLIF(md.medium_to_small, 0), 1)) > 0
                 THEN (si.quantity_sold / (COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(md.large_to_medium, 0), 1) * COALESCE(NULLIF(si.medium_to_small, 0), NULLIF(md.medium_to_small, 0), 1))) * si.cost_price
               ELSE si.quantity_sold * si.cost_price
             END
@@ -202,10 +202,15 @@ const getShrinkageStmt = db.prepare(`
 
 const getStockAlertsStmt = db.prepare(`
   SELECT COUNT(*) as count
-  FROM inventory i
-  LEFT JOIN master_drugs m ON i.drug_id = m.id
-  WHERE i.quantity <= COALESCE(m.reorder_point, 5)
-    AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
+  FROM (
+    SELECT i.drug_id
+    FROM inventory i
+    LEFT JOIN master_drugs m ON i.drug_id = m.id
+    WHERE (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
+      AND (i.expiry_date IS NULL OR i.expiry_date >= date('now', 'localtime'))
+    GROUP BY i.drug_id
+    HAVING SUM(COALESCE(i.quantity, 0)) <= COALESCE(MAX(m.reorder_point), 5)
+  ) low_stock_drugs
 `);
 
 const getSalesTrendStmt = db.prepare(`
@@ -325,48 +330,83 @@ export async function getReportsDataAction() {
     if (!user || !hasUserPermissionSync(user, 'rep_can_view_sales')) return { success: false, error: 'غير مصرح' };
 
     const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    // Inclusive window: today plus the previous 29 calendar days = 30 days.
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 29);
     const dateStr = localDate(thirtyDaysAgo);
     const pharmacyId = user.pharmacy_id || 'local_default';
     const pharmacyClause = ` AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))`;
     const pharmacyParams = [pharmacyId, pharmacyId];
 
     const salesHistoryRaw = await dbSelect(`
-      SELECT created_at, total_amount 
+      SELECT created_at, date(created_at, 'localtime') as local_date, total_amount
       FROM sales_invoices 
       WHERE date(created_at, 'localtime') >= ? AND (status IS NULL OR status = '' OR status IN ('completed', 'approved', 'delivered'))${pharmacyClause}
     `, [dateStr, ...pharmacyParams]) as any[];
 
     const topDrugsRaw = await dbSelect(`
-      SELECT md.trade_name, SUM(si.quantity_sold) as quantity_sold 
+      SELECT md.trade_name, SUM(
+        CASE
+          WHEN si.unit IN ('medium', 'strip', 'شريط') OR si.unit = md.medium_unit
+            THEN si.quantity_sold / COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(md.large_to_medium, 0), 1)
+          WHEN si.unit = 'small' OR si.unit = md.small_unit
+            THEN si.quantity_sold / (
+              COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(md.large_to_medium, 0), 1)
+              * COALESCE(NULLIF(si.medium_to_small, 0), NULLIF(md.medium_to_small, 0), 1)
+            )
+          ELSE si.quantity_sold
+        END
+      ) as quantity_sold
       FROM sales_items si
       JOIN sales_invoices inv ON inv.id = si.invoice_id
       JOIN master_drugs md ON si.drug_id = md.id
-      WHERE (inv.pharmacy_id = ? OR (inv.pharmacy_id IS NULL AND ? = 'local_default'))
+      WHERE date(inv.created_at, 'localtime') >= ?
+        AND (inv.pharmacy_id = ? OR (inv.pharmacy_id IS NULL AND ? = 'local_default'))
         AND (inv.status IS NULL OR inv.status = '' OR inv.status IN ('completed', 'approved', 'delivered'))
       GROUP BY md.trade_name 
       ORDER BY quantity_sold DESC 
       LIMIT 5
-    `, pharmacyParams) as any[];
+    `, [dateStr, ...pharmacyParams]) as any[];
 
     const categoryRaw = await dbSelect(`
-      SELECT md.category, SUM(si.quantity_sold) as quantity_sold 
+      SELECT md.category, SUM(
+        CASE
+          WHEN si.unit IN ('medium', 'strip', 'شريط') OR si.unit = md.medium_unit
+            THEN si.quantity_sold / COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(md.large_to_medium, 0), 1)
+          WHEN si.unit = 'small' OR si.unit = md.small_unit
+            THEN si.quantity_sold / (
+              COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(md.large_to_medium, 0), 1)
+              * COALESCE(NULLIF(si.medium_to_small, 0), NULLIF(md.medium_to_small, 0), 1)
+            )
+          ELSE si.quantity_sold
+        END
+      ) as quantity_sold
       FROM sales_items si
       JOIN sales_invoices inv ON inv.id = si.invoice_id
       JOIN master_drugs md ON si.drug_id = md.id
-      WHERE (inv.pharmacy_id = ? OR (inv.pharmacy_id IS NULL AND ? = 'local_default'))
+      WHERE date(inv.created_at, 'localtime') >= ?
+        AND (inv.pharmacy_id = ? OR (inv.pharmacy_id IS NULL AND ? = 'local_default'))
         AND (inv.status IS NULL OR inv.status = '' OR inv.status IN ('completed', 'approved', 'delivered'))
       GROUP BY md.category 
       ORDER BY quantity_sold DESC 
       LIMIT 6
-    `, pharmacyParams) as any[];
+    `, [dateStr, ...pharmacyParams]) as any[];
+
+    const totalUnitsRow = await dbGet(`
+      SELECT COALESCE(SUM(si.quantity_sold), 0) as total
+      FROM sales_items si
+      JOIN sales_invoices inv ON inv.id = si.invoice_id
+      WHERE date(inv.created_at, 'localtime') >= ?
+        AND (inv.pharmacy_id = ? OR (inv.pharmacy_id IS NULL AND ? = 'local_default'))
+        AND (inv.status IS NULL OR inv.status = '' OR inv.status IN ('completed', 'approved', 'delivered'))
+    `, [dateStr, ...pharmacyParams]) as any;
 
     return { 
       success: true, 
       data: {
         salesHistoryRaw,
         topDrugsRaw,
-        categoryRaw
+        categoryRaw,
+        totalUnitsSold: Number(totalUnitsRow?.total || 0),
       } 
     };
   } catch (error) {

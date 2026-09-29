@@ -177,3 +177,23 @@ it('does not misreport a completed patient delete as failed when the post-delete
   expect(screen.queryByRole('heading', { name: 'تأكيد حذف المريض' })).not.toBeInTheDocument();
   expect(screen.queryByText('أحمد علي')).not.toBeInTheDocument();
 });
+
+it('keeps patients beyond the first 200 after a child-success refresh so local search remains complete', async () => {
+  const refreshedPatients = Array.from({ length: 201 }, (_, index) => ({
+    ...patients[0],
+    id: `patient-${index + 1}`,
+    full_name: index === 200 ? 'مريض بعد المائتين' : `مريض ${index + 1}`,
+    phone: `010${String(index + 1).padStart(8, '0')}`,
+  }));
+  (getPatientsAction as jest.Mock).mockResolvedValue({ success: true, data: refreshedPatients });
+  const user = userEvent.setup();
+  render(<PatientListClient initialPatients={patients} pharmacyId="local_default" canDeletePatients={false} />);
+
+  await user.click(screen.getByRole('button', { name: /إضافة مريض/ }));
+  await user.click(screen.getByRole('button', { name: 'success-add' }));
+  await waitFor(() => expect(getPatientsAction).toHaveBeenCalledTimes(1));
+  await screen.findByText('مريض بعد المائتين');
+  await user.type(screen.getByPlaceholderText('ابحث عن مريض بالاسم أو رقم الهاتف...'), 'مريض بعد المائتين');
+
+  expect(screen.getByText('مريض بعد المائتين')).toBeInTheDocument();
+});

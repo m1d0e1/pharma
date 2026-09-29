@@ -30,6 +30,7 @@ interface Props {
 
 export default function PatientProfileModal({ patientId, onClose, onSuccess }: Props) {
   const [canProcessPatientPayments, setCanProcessPatientPayments] = useState(false)
+  const [canManageFinancialNotices, setCanManageFinancialNotices] = useState(false)
   useHotkeys('esc', () => { if(typeof onClose === 'function') onClose(); }, { enableOnFormTags: true });
   useHotkeys('f1', (e) => {
     if (!canProcessPatientPayments) return;
@@ -131,7 +132,10 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
   useEffect(() => {
     let active = true
     getClientSession().then(user => {
-      if (active) setCanProcessPatientPayments(hasUserPermissionSync(user, 'acc_can_process_cash_flow'))
+      if (active) {
+        setCanProcessPatientPayments(hasUserPermissionSync(user, 'acc_can_process_cash_flow'))
+        setCanManageFinancialNotices(hasUserPermissionSync(user, 'acc_can_view_notifications'))
+      }
     })
     return () => { active = false }
   }, [])
@@ -418,7 +422,7 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
              { id: 'finance', label: 'المالية والتأمين', icon: CreditCard },
              { id: 'statement', label: 'كشف الحساب', icon: FileText },
              { id: 'payments', label: 'توريدات نقدية', icon: History },
-             { id: 'notices', label: 'إشعارات', icon: AlertCircle },
+             ...(canManageFinancialNotices ? [{ id: 'notices', label: 'إشعارات', icon: AlertCircle }] : []),
              { id: 'medical', label: 'الملف الطبي', icon: HeartPulse },
              { id: 'history', label: 'سجل المشتريات', icon: Activity }
            ].map(tab => (
@@ -543,29 +547,31 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                   />
                </div>
 
-               <div className="bg-white dark:bg-slate-900 p-10 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-sm space-y-8">
-                  <h3 className="text-xl font-black text-slate-800 dark:text-white flex items-center gap-3">
-                     <PlusCircle className="w-8 h-8 text-purple-500" /> شحن محفظة العميل
-                  </h3>
-                  <div className="flex gap-6 items-end">
-                     <div className="flex-1 space-y-2">
-                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider">المبلغ المراد شحنه</label>
-                        <input 
-                           id="topup-amount"
-                           type="number" 
-                           placeholder="0.00"
-                           className="w-full bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-purple-500 p-4 rounded-2xl outline-none font-black text-2xl"
-                        />
-                     </div>
-                     <button 
-                        onClick={() => void handleWalletTopUp()}
-                        disabled={isToppingUpWallet}
-                        className="px-12 py-5 bg-purple-600 text-white rounded-2xl font-black hover:bg-purple-700 transition-all shadow-xl shadow-purple-500/20 disabled:opacity-50"
-                     >
-                        {isToppingUpWallet ? 'جاري الشحن...' : 'تأكيد الشحن'}
-                     </button>
-                  </div>
-               </div>
+               {canProcessPatientPayments && (
+                 <div className="bg-white dark:bg-slate-900 p-10 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-sm space-y-8">
+                    <h3 className="text-xl font-black text-slate-800 dark:text-white flex items-center gap-3">
+                       <PlusCircle className="w-8 h-8 text-purple-500" /> شحن محفظة العميل
+                    </h3>
+                    <div className="flex gap-6 items-end">
+                       <div className="flex-1 space-y-2">
+                          <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider">المبلغ المراد شحنه</label>
+                          <input
+                             id="topup-amount"
+                             type="number"
+                             placeholder="0.00"
+                             className="w-full bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-purple-500 p-4 rounded-2xl outline-none font-black text-2xl"
+                          />
+                       </div>
+                       <button
+                          onClick={() => void handleWalletTopUp()}
+                          disabled={isToppingUpWallet}
+                          className="px-12 py-5 bg-purple-600 text-white rounded-2xl font-black hover:bg-purple-700 transition-all shadow-xl shadow-purple-500/20 disabled:opacity-50"
+                       >
+                          {isToppingUpWallet ? 'جاري الشحن...' : 'تأكيد الشحن'}
+                       </button>
+                    </div>
+                 </div>
+               )}
 
                <form onSubmit={handleUpdate} className="bg-white dark:bg-slate-900 p-10 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-sm space-y-8">
                   <h3 className="text-xl font-black text-slate-800 dark:text-white flex items-center gap-3">
@@ -909,7 +915,7 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
              </div>
           )}
 
-          {activeTab === 'notices' && (
+          {activeTab === 'notices' && canManageFinancialNotices && (
              <div className="h-full animate-in fade-in slide-in-from-bottom-4">
                 <FinancialNoticeForm targetId={patientId} targetType="customer" />
              </div>

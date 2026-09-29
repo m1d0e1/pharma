@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { createSqliteTransactionDb as mockCreateSqliteTransactionDb } from '@/tests/helpers/sqlite-transaction-db';
 
 let mockDb: Database.Database;
 let mockSession: any;
@@ -11,10 +12,10 @@ jest.mock('@/lib/db/tauri', () => ({
     const result = mockDb.prepare(sql).run(...params);
     return { rowsAffected: result.changes, lastInsertId: Number(result.lastInsertRowid) };
   }),
-  dbTransaction: jest.fn(async (callback: () => Promise<unknown>) => {
+  dbTransaction: jest.fn(async (callback: any) => {
     mockDb.exec('BEGIN IMMEDIATE');
     try {
-      const result = await callback();
+      const result = await callback(mockCreateSqliteTransactionDb(mockDb));
       mockDb.exec('COMMIT');
       return result;
     } catch (error) {
@@ -72,6 +73,7 @@ describe('patient payment action', () => {
         notes TEXT, date TEXT
       );
       CREATE TABLE trial_balance_settings (category TEXT PRIMARY KEY, account_id INTEGER);
+      CREATE TABLE accounts (id INTEGER PRIMARY KEY, code TEXT UNIQUE);
       CREATE TABLE daily_journals (
         id TEXT PRIMARY KEY, date TEXT, description TEXT,
         created_by TEXT, total_amount REAL
@@ -89,6 +91,7 @@ describe('patient payment action', () => {
       INSERT INTO patients VALUES ('patient-1', 'Patient One', 100);
       INSERT INTO sales_invoices VALUES ('credit-sale', 'patient-1', 50, 'credit', 'completed');
       INSERT INTO trial_balance_settings VALUES ('cash_drawer', 6), ('accounts_receivable', 8);
+      INSERT INTO accounts VALUES (6, '1.1.1'), (8, '1.1.2'), (120, '1.1.4');
     `);
   });
 
@@ -115,6 +118,22 @@ describe('patient payment action', () => {
       { account_id: 6, type: 'debit', amount: 40 },
       { account_id: 8, type: 'credit', amount: 40 },
     ]);
+  });
+
+  it('falls back to the canonical bank-clearing account instead of the cash drawer', async () => {
+    const result = await addPatientPaymentAction({
+      patient_id: 'patient-1',
+      amount: 25,
+      payment_method: 'bank',
+      date: '2026-09-21',
+    });
+
+    expect(result).toMatchObject({ success: true });
+    expect(mockDb.prepare('SELECT account_id, type, amount FROM journal_entries ORDER BY id').all()).toEqual([
+      { account_id: 120, type: 'debit', amount: 25 },
+      { account_id: 8, type: 'credit', amount: 25 },
+    ]);
+    expect(mockDb.prepare('SELECT COUNT(*) AS count FROM cash_movements').get()).toEqual({ count: 0 });
   });
 
   it('rejects overpayment and denied cash-flow permission without writing financial history', async () => {

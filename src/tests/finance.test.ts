@@ -1,3 +1,4 @@
+import { createFunctionTransactionDb as mockCreateFunctionTransactionDb } from '@/tests/helpers/sqlite-transaction-db';
 import {
   addFinancialNoticeAction,
   addPatientPaymentAction,
@@ -12,14 +13,19 @@ import { getLocalSession } from '@/lib/auth/local';
 import { revalidatePath } from 'next/cache';
 
 // Mock dependencies
-jest.mock('@/lib/db/tauri', () => ({
-  __esModule: true,
-  dbSelect: jest.fn(),
-  dbExecute: jest.fn(),
-  dbGet: jest.fn(),
-  dbTransaction: jest.fn((cb) => cb()),
-  generateId: jest.fn(() => 'test-uuid-123'),
-}));
+jest.mock('@/lib/db/tauri', () => {
+  const dbSelect = jest.fn();
+  const dbExecute = jest.fn();
+  const dbGet = jest.fn();
+  return {
+    __esModule: true,
+    dbSelect,
+    dbExecute,
+    dbGet,
+    dbTransaction: jest.fn((cb: any) => cb(mockCreateFunctionTransactionDb({ select: dbSelect, get: dbGet, execute: dbExecute }))),
+    generateId: jest.fn(() => 'test-uuid-123'),
+  };
+});
 
 jest.mock('@/lib/auth/local', () => ({
   getLocalSession: jest.fn(),
@@ -41,7 +47,6 @@ describe('Finance Module Server Actions', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     (getLocalSession as jest.Mock).mockResolvedValue(mockUser);
-    (dbTransaction as jest.Mock).mockImplementation((cb: any) => cb());
   });
 
   describe('addAccountAction (Unit Test - Chart of Accounts Hierarchy)', () => {
@@ -85,6 +90,10 @@ describe('Finance Module Server Actions', () => {
   describe('updateAccountAction (Unit Test - Zod mapped fields)', () => {
     it('should securely map keys using Zod schemas', async () => {
       (dbExecute as jest.Mock).mockResolvedValue({ rowsAffected: 1 });
+      (dbGet as jest.Mock)
+        .mockResolvedValueOnce({ id: 1, code: '111', type: 'asset', is_group: 0 })
+        .mockResolvedValueOnce({ count: 0 })
+        .mockResolvedValueOnce({ count: 0 });
 
       const input = {
         name_ar: 'خزينة رئيسية',
@@ -106,7 +115,7 @@ describe('Finance Module Server Actions', () => {
       (dbExecute as jest.Mock).mockResolvedValue({ rowsAffected: 1 });
       (dbGet as jest.Mock)
         .mockResolvedValueOnce({ pharmacy_id: 'test-pharmacy-id' })
-        .mockResolvedValueOnce({ account_id: 6 }) // Main Cash Account
+        .mockResolvedValueOnce({ id: 6 }) // Canonical Main Cash Account
         .mockResolvedValueOnce({ account_id: 11 }); // Category Account (Expense)
 
       const input = {
@@ -163,8 +172,8 @@ describe('Finance Module Server Actions', () => {
         .mockResolvedValueOnce({ id: 'patient-1', full_name: 'Test Patient' })
         .mockResolvedValueOnce({ outstanding_balance: 300 })
         .mockResolvedValueOnce({ pharmacy_id: 'test-pharmacy-id' })
-        .mockResolvedValueOnce({ account_id: 6 })
-        .mockResolvedValueOnce({ account_id: 8 });
+        .mockResolvedValueOnce({ id: 6 })
+        .mockResolvedValueOnce({ id: 8 });
 
       const result = await addPatientPaymentAction({
         patient_id: 'patient-1',
@@ -199,8 +208,8 @@ describe('Finance Module Server Actions', () => {
       (dbGet as jest.Mock)
         .mockResolvedValueOnce({ id: 'patient-1', full_name: 'Test Patient' })
         .mockResolvedValueOnce({ outstanding_balance: 100 })
-        .mockResolvedValueOnce({ account_id: 12 })
-        .mockResolvedValueOnce({ account_id: 8 });
+        .mockResolvedValueOnce({ id: 12 })
+        .mockResolvedValueOnce({ id: 8 });
 
       const result = await addPatientPaymentAction({
         patient_id: 'patient-1',
@@ -241,8 +250,8 @@ describe('Finance Module Server Actions', () => {
       (dbExecute as jest.Mock).mockResolvedValue({ rowsAffected: 1 });
       (dbGet as jest.Mock)
         .mockResolvedValueOnce({ id: 'patient-1' })
-        .mockResolvedValueOnce({ account_id: 8 })
-        .mockResolvedValueOnce({ account_id: 13 });
+        .mockResolvedValueOnce({ id: 8 })
+        .mockResolvedValueOnce({ id: 13 });
 
       const debit = await addFinancialNoticeAction({
         target_type: 'customer',
@@ -260,12 +269,11 @@ describe('Finance Module Server Actions', () => {
 
       jest.clearAllMocks();
       (getLocalSession as jest.Mock).mockResolvedValue(mockUser);
-      (dbTransaction as jest.Mock).mockImplementation((cb: any) => cb());
       (dbExecute as jest.Mock).mockResolvedValue({ rowsAffected: 1 });
       (dbGet as jest.Mock)
         .mockResolvedValueOnce({ id: 'patient-1' })
-        .mockResolvedValueOnce({ account_id: 8 })
-        .mockResolvedValueOnce({ account_id: 13 });
+        .mockResolvedValueOnce({ id: 8 })
+        .mockResolvedValueOnce({ id: 13 });
 
       const credit = await addFinancialNoticeAction({
         target_type: 'customer',

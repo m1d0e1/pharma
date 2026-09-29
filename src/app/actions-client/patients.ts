@@ -40,7 +40,7 @@ const db = {
     }
   }),
   transaction: (cb) => {
-    return (...args) => dbTransaction(async () => await cb(...args));
+    return (...args) => dbTransaction(async (transactionDb) => await cb(transactionDb, ...args));
   },
   exec: (sql) => {
     return dbExecute(sql);
@@ -128,7 +128,7 @@ export async function addPatientAction(formData: AddPatientInput) {
     const id = generateId();
 
     // 3. Insert the patient and opening receivable as one atomic operation.
-    await dbTransaction(async () => {
+    await dbTransaction(async (db) => {
       await db.prepare(`
         INSERT INTO patients (
           id, full_name, name_en, phone, mobile, address, area, birth_date,
@@ -381,14 +381,14 @@ export async function updatePatientAction(id: string, formData: AddPatientInput)
 
     const {
       full_name, name_en, phone, mobile, address, area, birth_date,
-      gender, insurance_number, car_number, credit_limit, points_balance,
+      gender, insurance_number, car_number, credit_limit,
       point_value, customer_type, payment_method, notes, opening_balance
     } = validationResult.data;
 
     // Opening balance is an accounted opening entry, not editable patient
     // metadata.  Changing it silently would desynchronise A/R from its journal;
     // later balance changes must use a debit/credit notice instead.
-    await dbTransaction(async () => {
+    await dbTransaction(async (db) => {
       const existing = await db.prepare(
         'SELECT CAST(COALESCE(opening_balance, 0) AS REAL) AS opening_balance FROM patients WHERE id = ?'
       ).get(id) as any;
@@ -402,13 +402,13 @@ export async function updatePatientAction(id: string, formData: AddPatientInput)
         SET
           full_name = ?, name_en = ?, phone = ?, mobile = ?, address = ?, area = ?,
           birth_date = ?, gender = ?, insurance_number = ?, car_number = ?,
-          credit_limit = ?, points_balance = ?, point_value = ?,
+          credit_limit = ?, point_value = ?,
           customer_type = ?, payment_method = ?, notes = ?
         WHERE id = ?
       `).run(
         full_name, name_en || null, phone || null, mobile || null, address || null, area || null,
         birth_date || null, gender || null, insurance_number || null, car_number || null,
-        credit_limit, points_balance, point_value,
+        credit_limit, point_value,
         customer_type, payment_method, notes || null,
         id
       );
@@ -671,7 +671,7 @@ export async function getPatientStatementAction(patientId: string) {
 export async function updatePatientWalletAction(patientId: string, amount: number, notes?: string) {
   try {
     const user = await getLocalSession();
-    if (!canManagePatients(user)) {
+    if (!canManagePatients(user) || !hasUserPermissionSync(user, 'acc_can_process_cash_flow')) {
       return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
     }
     if (!Number.isFinite(amount) || amount <= 0) {
@@ -679,8 +679,8 @@ export async function updatePatientWalletAction(patientId: string, amount: numbe
     }
 
     let newBalance = 0;
-    await dbTransaction(async () => {
-      const shiftId = await requireOpenShiftId(user.id);
+    await dbTransaction(async (db) => {
+      const shiftId = await requireOpenShiftId(user.id, undefined, db);
       const patient = await db.prepare('SELECT full_name, CAST(wallet_balance AS REAL) AS wallet_balance FROM patients WHERE id = ?')
         .get(patientId) as any;
       if (!patient) throw new Error('المريض غير موجود');
@@ -745,7 +745,7 @@ export async function deletePatientAction(patientId: string) {
       return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
     }
 
-    await dbTransaction(async () => {
+    await dbTransaction(async (db) => {
       // ponytail: validate and delete under the same BEGIN IMMEDIATE lock.
       const linked = await db.prepare(`
         SELECT

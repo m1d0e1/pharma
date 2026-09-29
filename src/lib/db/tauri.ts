@@ -15,8 +15,7 @@ export function generateId(): string {
 const isServer = typeof window === 'undefined' || process.env.JEST_WORKER_ID !== undefined;
 
 let tauriDbPromise: Promise<any> | null = null;
-let tauriTransactionQueue: Promise<unknown> = Promise.resolve();
-let activeTauriTransactionId: string | null = null;
+let tauriWriteQueue: Promise<unknown> = Promise.resolve();
 
 const sqliteUtcTimestamp = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/;
 const utcTimestampColumn = /(?:_at|_time|_on|^shift_start$|^shift_end$|^last_login$)$/;
@@ -52,10 +51,85 @@ export function normalizeDatabaseTimestamps<T>(rows: T[]): T[] {
 
 async function executeTauri(
   sql: string,
-  params: any[] = []
+  params: any[] = [],
+  txId: string | null = null
 ): Promise<{ rowsAffected: number; lastInsertId?: number }> {
   const { invoke } = await import('@tauri-apps/api/core');
-  return invoke('db_execute_guarded', { sql, params, txId: activeTauriTransactionId });
+  return invoke('db_execute_guarded', { sql, params, txId });
+}
+
+async function selectTauriTransaction<T = any>(txId: string, sql: string, params: any[] = []): Promise<T[]> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  return normalizeDatabaseTimestamps(await invoke<T[]>('db_select_guarded', { sql, params, txId }));
+}
+
+function enqueueTauriWrite<T>(run: () => Promise<T>): Promise<T> {
+  const next = tauriWriteQueue.then(run, run);
+  tauriWriteQueue = next.catch(() => undefined);
+  return next;
+}
+
+export function runTauriStandaloneWrite(
+  sql: string,
+  params: any[] = []
+): Promise<{ rowsAffected: number; lastInsertId?: number }> {
+  return enqueueTauriWrite(() => executeTauri(sql, params, null));
+}
+
+export interface TransactionDb {
+  select: <T = any>(sql: string, params?: any[]) => Promise<T[]>;
+  get: <T = any>(sql: string, params?: any[]) => Promise<T | null>;
+  execute: (sql: string, params?: any[]) => Promise<{ rowsAffected: number; lastInsertId?: number }>;
+  prepare: (sql: string) => {
+    all: (...params: any[]) => Promise<any[]>;
+    get: (...params: any[]) => Promise<any | null>;
+    run: (...params: any[]) => Promise<{
+      changes: number;
+      lastInsertRowid?: number;
+      rowsAffected: number;
+      lastInsertId?: number;
+    }>;
+  };
+  transaction: <TArgs extends any[], TResult>(callback: (db: TransactionDb, ...args: TArgs) => Promise<TResult>) => (...args: TArgs) => Promise<TResult>;
+  exec: (sql: string) => Promise<{ rowsAffected: number; lastInsertId?: number }>;
+}
+
+function normalizeParams(params: any[]): any[] {
+  const values = params.length === 1 && Array.isArray(params[0]) ? params[0] : params;
+  return values.map(value => value === undefined ? null : value);
+}
+
+function createTransactionDb(
+  select: <T = any>(sql: string, params?: any[]) => Promise<T[]>,
+  execute: (sql: string, params?: any[]) => Promise<{ rowsAffected: number; lastInsertId?: number }>
+): TransactionDb {
+  const transactionDb: TransactionDb = {
+    select: (sql, params = []) => select(sql, normalizeParams(params)),
+    get: async (sql, params = []) => {
+      const rows = await select(sql, normalizeParams(params));
+      return rows.length > 0 ? rows[0] : null;
+    },
+    execute: (sql, params = []) => execute(sql, normalizeParams(params)),
+    prepare: (sql: string) => ({
+      all: (...params: any[]) => select(sql, normalizeParams(params)),
+      get: async (...params: any[]) => {
+        const rows = await select(sql, normalizeParams(params));
+        return rows.length > 0 ? rows[0] : null;
+      },
+      run: async (...params: any[]) => {
+        const result = await execute(sql, normalizeParams(params));
+        return {
+          changes: result.rowsAffected,
+          lastInsertRowid: result.lastInsertId,
+          rowsAffected: result.rowsAffected,
+          lastInsertId: result.lastInsertId,
+        };
+      },
+    }),
+    transaction: (callback) => (...args) => callback(transactionDb, ...args),
+    exec: (sql: string) => execute(sql, []),
+  };
+  return transactionDb;
 }
 
 async function getTauriDb() {
@@ -115,7 +189,7 @@ export async function dbExecute(
 
   if (isTauriEnv) {
     await getTauriDb();
-    return executeTauri(sql, safeParams);
+    return runTauriStandaloneWrite(sql, safeParams);
   }
 
   // Web client-side: call database server action
@@ -125,11 +199,11 @@ export async function dbExecute(
   return result.data;
 }
 
-export async function dbTransaction<T>(callback: () => Promise<T>): Promise<T> {
+export async function dbTransaction<T>(callback: (transactionDb: TransactionDb) => Promise<T>): Promise<T> {
   if (isServer) {
     const { transaction } = require('./client');
     return transaction(async () => {
-      return await callback();
+      return await callback(createTransactionDb(dbSelect, dbExecute));
     });
   }
 
@@ -138,26 +212,22 @@ export async function dbTransaction<T>(callback: () => Promise<T>): Promise<T> {
   }
 
   // Web client-side: execute the callback directly to run queries sequentially.
-  return await callback();
+  return await callback(createTransactionDb(dbSelect, dbExecute));
 }
 
-export async function runTauriTransaction<T>(_db: any, callback: () => Promise<T>): Promise<T> {
-  if (activeTauriTransactionId) {
-    return callback();
-  }
-
-  // ponytail: global queue; replace with Rust-side per-workflow transactions if plugin pooling still misbehaves.
+export async function runTauriTransaction<T>(_db: any, callback: (transactionDb: TransactionDb) => Promise<T>): Promise<T> {
   const run = async () => {
     const { invoke } = await import('@tauri-apps/api/core');
     const txId = await invoke<string>('db_transaction_begin');
-    activeTauriTransactionId = txId;
+    const transactionDb = createTransactionDb(
+      <TRow = any>(sql: string, params: any[] = []) => selectTauriTransaction<TRow>(txId, sql, params),
+      (sql: string, params: any[] = []) => executeTauri(sql, params, txId)
+    );
     try {
-      const result = await callback();
-      activeTauriTransactionId = null;
+      const result = await callback(transactionDb);
       await invoke('db_transaction_finish', { txId, commit: true });
       return result;
     } catch (error) {
-      activeTauriTransactionId = null;
       try {
         await invoke('db_transaction_finish', { txId, commit: false });
       } catch (rollbackError) {
@@ -167,7 +237,5 @@ export async function runTauriTransaction<T>(_db: any, callback: () => Promise<T
     }
   };
 
-  const next = tauriTransactionQueue.then(run, run);
-  tauriTransactionQueue = next.catch(() => undefined);
-  return next;
+  return enqueueTauriWrite(run);
 }

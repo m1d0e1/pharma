@@ -42,6 +42,7 @@ import { Supplier, PurchaseItem, PurchaseInvoiceHeader } from '@/types/purchases
 import BarcodePrinter from '@/components/purchases/BarcodePrinter'
 import DrugReplacementDialog from '@/components/master-drugs/DrugReplacementDialog';
 import { findDrugBarcodeConflict } from '@/app/actions-client/drug-replacement';
+import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 import {
   clampPurchasePercent,
   derivePurchaseDiscountPercent,
@@ -298,6 +299,7 @@ export default function PurchaseInvoiceClient() {
         
         const formattedCart: PurchaseItem[] = itemsRes.data.map((i: any) => ({
           id: i.drug_id,
+          unit_id: i.unit_id ?? null,
           purchase_invoice_item_id: i.id,
           cart_line_id: `invoice-${i.id}`,
           trade_name: i.trade_name_en || i.trade_name || i.drug_name || '',
@@ -428,6 +430,7 @@ export default function PurchaseInvoiceClient() {
           
           const formattedCart: PurchaseItem[] = itemsRes.data.map((i: any) => ({
             id: i.drug_id,
+            unit_id: i.unit_id ?? null,
             purchase_invoice_item_id: i.id,
             cart_line_id: `invoice-${i.id}`,
             trade_name: i.trade_name_en || i.trade_name || i.drug_name || '',
@@ -553,6 +556,11 @@ export default function PurchaseInvoiceClient() {
       if (cartLineId(item) === lineId) {
         const updated = { ...item, [field]: value };
         
+        // Completed invoice edits may change the current selling price without rewriting historic purchase values.
+        if (isEditingCompleted && field === 'selling_price') {
+          return updated;
+        }
+
         // ponytail: link selling_price, discount_percent, and cost_price bidirectionally
         if (field === 'selling_price' || field === 'discount_percent') {
           const sell = Number(field === 'selling_price' ? value : item.selling_price) || 0;
@@ -620,6 +628,7 @@ export default function PurchaseInvoiceClient() {
               
               const formattedCart: PurchaseItem[] = itemsRes.data.map((i: any) => ({
                 id: i.drug_id,
+                unit_id: i.unit_id ?? null,
                 purchase_invoice_item_id: i.id,
                 cart_line_id: `invoice-${i.id}`,
                 trade_name: i.trade_name_en || i.trade_name || i.drug_name || '',
@@ -672,6 +681,7 @@ export default function PurchaseInvoiceClient() {
                       
                       const formattedCart: PurchaseItem[] = itemsRes.data.map((i: any) => ({
                         id: i.drug_id,
+                        unit_id: i.unit_id ?? null,
                         purchase_invoice_item_id: i.id,
                         cart_line_id: `invoice-${i.id}`,
                         trade_name: i.trade_name_en || i.trade_name || i.drug_name || '',
@@ -806,6 +816,11 @@ export default function PurchaseInvoiceClient() {
       return
     }
 
+    if (isEditingCompleted && !confirm(
+      'تأكيد تعديل فاتورة شراء مكتملة؟\n\n' +
+      'سيحتفظ النظام بتكلفة البضاعة المباعة سابقاً. إذا استُهلك جزء من الفاتورة، فلا يمكن تغيير المورد أو التاريخ أو طريقة الدفع أو بيانات الشيك أو عناصر التكلفة، ولا إضافة أو حذف أو استبدال صنف أو تغيير صلاحيته/وحدة تحويله. زيادة الكمية تسجل توريداً إضافياً؛ أما خفضها فيقتصر على الرصيد غير المستهلك. أي فرق نقدي يعكس المبلغ المدفوع أو المُسترد فعلياً وسيُسوّى في الوردية الحالية.'
+    )) return
+
     // Warnings (non-blocking)
     for (const item of normalizedCart) {
       const costPriceNum = Number(item.cost_price) || 0;
@@ -838,6 +853,11 @@ export default function PurchaseInvoiceClient() {
       for (const item of normalizedCart) {
         const conflict = await findDrugBarcodeConflict(String(item.barcode || ''), Number(item.id));
         if (conflict) {
+          const currentUser = await getClientSession().catch(() => null);
+          if (!currentUser || !hasUserPermissionSync(currentUser, 'can_manage_inventory')) {
+            toast.error('تعارض الباركود يحتاج صلاحية إدارة المخزون لتصحيح الصنف قبل حفظ الفاتورة');
+            return;
+          }
           setReplacement({ source: conflict, target: item });
           return; // Keep the order; replacement and posting are separate explicit operations.
         }
@@ -953,8 +973,13 @@ export default function PurchaseInvoiceClient() {
                 {isEditingCompleted ? 'تعديل فاتورة شراء مكتملة' : 'فاتورة شراء جديدة'}
               </h1>
               <p className="text-slate-500 font-bold">
-                {isEditingCompleted ? 'تعديل أصناف الفاتورة، وتعديل كميات وأسعار المخزون المرتبط تلقائياً' : 'تسجيل توريدات جديدة وتحديث أرصدة الموردين'}
+                {isEditingCompleted ? 'تعديل آمن لفاتورة شراء مكتملة' : 'تسجيل توريدات جديدة وتحديث أرصدة الموردين'}
               </p>
+              {isEditingCompleted && (
+                <div role="note" className="mt-4 max-w-3xl rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold leading-6 text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">
+                  يحتفظ النظام بتكلفة البضاعة المباعة سابقاً. إذا استُهلك جزء من الفاتورة، فلا يمكن تغيير المورد أو التاريخ أو الدفع أو عناصر التكلفة، أو إضافة/حذف/استبدال صنف، أو تغيير صلاحيته/وحدة تحويله. زيادة الكمية تسجل توريداً إضافياً؛ أما خفضها فيقتصر على الرصيد غير المستهلك. أي فرق نقدي يعكس المدفوع أو المُسترد فعلياً ويُسوّى في الوردية الحالية.
+                </div>
+              )}
             </div>
           </div>
           <div className="flex items-center gap-3 no-print">

@@ -1,5 +1,5 @@
 
-import { dbSelect, dbExecute, dbGet, dbTransaction } from '@/lib/db/tauri';
+import { dbSelect, dbExecute, dbGet, dbTransaction, type TransactionDb } from '@/lib/db/tauri';
 const logActivity = async (userId, action, details) => {
   try {
     await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [userId, action, details]);
@@ -40,7 +40,7 @@ const db = {
     }
   }),
   transaction: (cb) => {
-    return (...args) => dbTransaction(async () => await cb(...args));
+    return (...args) => dbTransaction(async (transactionDb) => await cb(transactionDb, ...args));
   },
   exec: (sql) => {
     return dbExecute(sql);
@@ -53,16 +53,27 @@ const db = {
 
 import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { getLowStockAction } from './inventory';
+import { getSalesConversionSql, hasRecoveredStock } from '@/lib/inventory/reorder-state';
 
 const DEFAULT_REORDER_LIMIT = 10;
 
-function requestedQuantity(value: unknown): number {
+function requestedQuantity(value: unknown, allowDefault = false): number {
+  if (allowDefault && (value === undefined || value === null || value === '')) return 1;
   const quantity = Math.ceil(Number(value));
-  return Number.isFinite(quantity) && quantity > 0 ? quantity : 1;
+  if (!Number.isFinite(quantity) || quantity <= 0) {
+    throw new Error('كمية النواقص يجب أن تكون رقماً موجباً');
+  }
+  return quantity;
 }
 
-async function upsertActiveShortage(drugId: number, pharmacyId: string, quantity: number, notes?: string) {
-  const existingRows = await db.prepare(`
+async function upsertActiveShortage(
+  drugId: number,
+  pharmacyId: string,
+  quantity: number,
+  notes?: string,
+  scopedDb: Pick<TransactionDb, 'prepare'> = db,
+) {
+  const existingRows = await scopedDb.prepare(`
     SELECT id, requested_quantity, status, notes
     FROM shortages
     WHERE drug_id = ? AND pharmacy_id = ?
@@ -70,27 +81,72 @@ async function upsertActiveShortage(drugId: number, pharmacyId: string, quantity
     ORDER BY CASE WHEN status = 'ordered' THEN 0 ELSE 1 END, created_at DESC, rowid DESC
   `).all(drugId, pharmacyId) as any[];
 
-  if (existingRows.length > 0) {
-    const existing = existingRows[0];
+  const orderedRows = existingRows.filter(row => row.status === 'ordered');
+  const pendingRows = existingRows.filter(row => row.status === 'pending');
+
+  if (orderedRows.length > 0) {
+    const orderedQuantity = orderedRows.reduce(
+      (sum, row) => sum + requestedQuantity(row.requested_quantity),
+      0,
+    );
+    const pendingNeeded = Math.max(0, quantity - orderedQuantity);
+
+    if (pendingNeeded <= 0) {
+      return {
+        id: orderedRows[0].id,
+        created: false,
+        requested_quantity: orderedQuantity,
+      };
+    }
+
+    if (pendingRows.length > 0) {
+      const existing = pendingRows[0];
+      const nextQuantity = Math.max(
+        pendingNeeded,
+        ...pendingRows.map(row => requestedQuantity(row.requested_quantity)),
+      );
+      await scopedDb.prepare(`
+        UPDATE shortages
+        SET requested_quantity = ?, notes = COALESCE(NULLIF(?, ''), notes)
+        WHERE id = ?
+      `).run(nextQuantity, notes?.trim() || '', existing.id);
+      await scopedDb.prepare(`
+        DELETE FROM shortages
+        WHERE drug_id = ? AND pharmacy_id = ?
+          AND status = 'pending'
+          AND id != ?
+      `).run(drugId, pharmacyId, existing.id);
+      return { id: existing.id, created: false, requested_quantity: nextQuantity };
+    }
+
+    const inserted = await scopedDb.prepare(`
+      INSERT INTO shortages (drug_id, pharmacy_id, requested_quantity, status, notes)
+      VALUES (?, ?, ?, 'pending', ?)
+    `).run(drugId, pharmacyId, pendingNeeded, notes?.trim() || null);
+    return { id: inserted.lastInsertRowid, created: true, requested_quantity: pendingNeeded };
+  }
+
+  if (pendingRows.length > 0) {
+    const existing = pendingRows[0];
     const nextQuantity = Math.max(
       quantity,
-      ...existingRows.map(row => requestedQuantity(row.requested_quantity)),
+      ...pendingRows.map(row => requestedQuantity(row.requested_quantity)),
     );
-    await db.prepare(`
+    await scopedDb.prepare(`
       UPDATE shortages
       SET requested_quantity = ?, notes = COALESCE(NULLIF(?, ''), notes)
       WHERE id = ?
     `).run(nextQuantity, notes?.trim() || '', existing.id);
-    await db.prepare(`
+    await scopedDb.prepare(`
       DELETE FROM shortages
       WHERE drug_id = ? AND pharmacy_id = ?
-        AND status IN ('pending', 'ordered')
+        AND status = 'pending'
         AND id != ?
     `).run(drugId, pharmacyId, existing.id);
     return { id: existing.id, created: false, requested_quantity: nextQuantity };
   }
 
-  const inserted = await db.prepare(`
+  const inserted = await scopedDb.prepare(`
     INSERT INTO shortages (drug_id, pharmacy_id, requested_quantity, status, notes)
     VALUES (?, ?, ?, 'pending', ?)
   `).run(drugId, pharmacyId, quantity, notes?.trim() || null);
@@ -108,11 +164,12 @@ export async function addToShortagesAction(data: { drug_id: number | string; qty
     }
 
     const pharmacyId = user.pharmacy_id || 'local_default';
-    const result = await dbTransaction(() => upsertActiveShortage(
+    const result = await dbTransaction((transactionDb) => upsertActiveShortage(
       drugId,
       pharmacyId,
-      requestedQuantity(data.qty),
+      requestedQuantity(data.qty, true),
       data.notes,
+      transactionDb,
     ));
     return { success: true, data: result };
   } catch (error: any) {
@@ -126,8 +183,33 @@ export async function getShortagesAction() {
     const user = await getLocalSession();
     if (!user || !hasUserPermissionSync(user, 'can_view_restock')) return { success: false, error: 'غير مصرح' };
     const pharmacyId = user.pharmacy_id || 'local_default';
+    const conversion = await getSalesConversionSql(db);
 
     const items = await db.prepare(`
+      WITH MonthlySales AS (
+        SELECT
+          si.drug_id,
+          SUM(
+            CASE
+              WHEN si.unit IN ('medium', 'strip', 'شريط') OR si.unit = sales_drug.medium_unit
+                THEN si.quantity_sold / ${conversion.largeFactor}
+              WHEN si.unit = 'small' OR si.unit = sales_drug.small_unit
+                THEN si.quantity_sold / (
+                  ${conversion.largeFactor}
+                  * ${conversion.smallFactor}
+                )
+              ELSE si.quantity_sold
+            END
+          ) AS avg_monthly_usage
+        FROM sales_items si
+        JOIN sales_invoices inv ON inv.id = si.invoice_id
+        JOIN master_drugs sales_drug ON sales_drug.id = si.drug_id
+        WHERE si.is_negative = 0
+          AND (inv.status IS NULL OR inv.status = '' OR inv.status IN ('completed', 'approved', 'delivered'))
+          AND (inv.pharmacy_id = ? OR (inv.pharmacy_id IS NULL AND ? = 'local_default'))
+          AND inv.created_at >= datetime('now', '-30 days')
+        GROUP BY si.drug_id
+      )
       SELECT
         s.id,
         s.drug_id,
@@ -164,20 +246,33 @@ export async function getShortagesAction() {
           LIMIT 1
         ) AS last_cost_price,
         COALESCE(ds.current_stock, 0) AS current_stock,
-        COALESCE(NULLIF(m.reorder_point, 0), NULLIF(m.min_limit, 0), ?) AS reorder_point,
+        MAX(
+          COALESCE(NULLIF(m.reorder_point, 0), NULLIF(m.min_limit, 0), ?),
+          COALESCE(ms.avg_monthly_usage, 0)
+        ) AS reorder_point,
         MAX(
           0,
-          COALESCE(NULLIF(m.reorder_point, 0), NULLIF(m.min_limit, 0), ?) - COALESCE(ds.current_stock, 0)
+          MAX(
+            COALESCE(NULLIF(m.reorder_point, 0), NULLIF(m.min_limit, 0), ?),
+            COALESCE(ms.avg_monthly_usage, 0)
+          ) - COALESCE(ds.current_stock, 0)
         ) AS deficit,
         CASE
           WHEN COALESCE(ds.current_stock, 0) <= 0 THEN 'out_of_stock'
-          WHEN COALESCE(ds.current_stock, 0) <= (COALESCE(NULLIF(m.reorder_point, 0), NULLIF(m.min_limit, 0), ?) / 2) THEN 'critical'
-          WHEN COALESCE(ds.current_stock, 0) <= COALESCE(NULLIF(m.reorder_point, 0), NULLIF(m.min_limit, 0), ?)
+          WHEN COALESCE(ds.current_stock, 0) <= (MAX(
+            COALESCE(NULLIF(m.reorder_point, 0), NULLIF(m.min_limit, 0), ?),
+            COALESCE(ms.avg_monthly_usage, 0)
+          ) / 2) THEN 'critical'
+          WHEN COALESCE(ds.current_stock, 0) <= MAX(
+            COALESCE(NULLIF(m.reorder_point, 0), NULLIF(m.min_limit, 0), ?),
+            COALESCE(ms.avg_monthly_usage, 0)
+          )
             THEN 'low'
           ELSE 'sufficient'
         END AS inventory_status
       FROM shortages s
       JOIN master_drugs m ON m.id = s.drug_id
+      LEFT JOIN MonthlySales ms ON ms.drug_id = s.drug_id
       LEFT JOIN (
         SELECT i.drug_id, SUM(COALESCE(i.quantity, 0)) AS current_stock
         FROM inventory i
@@ -192,6 +287,7 @@ export async function getShortagesAction() {
         deficit DESC,
         s.created_at DESC
     `).all(
+      pharmacyId, pharmacyId,
       pharmacyId, pharmacyId,
       pharmacyId, pharmacyId,
       DEFAULT_REORDER_LIMIT, DEFAULT_REORDER_LIMIT, DEFAULT_REORDER_LIMIT, DEFAULT_REORDER_LIMIT,
@@ -273,22 +369,15 @@ export async function updateShortageStatusAction(id: number | string, status: st
     }
     const pharmacyId = user.pharmacy_id || 'local_default';
 
-    await dbTransaction(async () => {
+    await dbTransaction(async (db) => {
       const shortage = await db.prepare(`
         SELECT drug_id FROM shortages WHERE id = ? AND pharmacy_id = ?
       `).get(id, pharmacyId) as any;
       if (!shortage) throw new Error('بند النواقص غير موجود');
 
       if (status === 'received') {
-        const stock = await db.prepare(`
-          SELECT COALESCE(SUM(quantity), 0) AS quantity
-          FROM inventory
-          WHERE drug_id = ?
-            AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
-            AND (expiry_date IS NULL OR expiry_date >= date('now', 'localtime'))
-        `).get(shortage.drug_id, pharmacyId, pharmacyId) as any;
-        if (Number(stock?.quantity || 0) <= 0) {
-          throw new Error('لا يمكن تأكيد الاستلام قبل إضافة الكمية إلى مخزون الفرع');
+        if (!await hasRecoveredStock(db, shortage.drug_id, pharmacyId)) {
+          throw new Error('لا يمكن تأكيد الاستلام قبل إضافة الكمية ورفع رصيد الفرع فوق حد إعادة الطلب');
         }
       }
 
@@ -315,7 +404,7 @@ export async function updateShortagesStatusBulkAction(ids: (number | string)[], 
 
     const pharmacyId = user.pharmacy_id || 'local_default';
     let updatedCount = 0;
-    await dbTransaction(async () => {
+    await dbTransaction(async (db) => {
       for (const id of ids) {
         if (status === 'received') {
           const shortage = await db.prepare(`
@@ -323,14 +412,7 @@ export async function updateShortagesStatusBulkAction(ids: (number | string)[], 
           `).get(id, pharmacyId) as any;
           if (!shortage) continue;
 
-          const stock = await db.prepare(`
-            SELECT COALESCE(SUM(quantity), 0) AS quantity
-            FROM inventory
-            WHERE drug_id = ?
-              AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
-              AND (expiry_date IS NULL OR expiry_date >= date('now', 'localtime'))
-          `).get(shortage.drug_id, pharmacyId, pharmacyId) as any;
-          if (Number(stock?.quantity || 0) <= 0) {
+          if (!await hasRecoveredStock(db, shortage.drug_id, pharmacyId)) {
             continue;
           }
         }
@@ -355,20 +437,20 @@ export async function syncLowStockToShortagesAction() {
     if (!user || !hasUserPermissionSync(user, 'can_view_restock')) return { success: false, error: 'غير مصرح' };
     const pharmacyId = user.pharmacy_id || 'local_default';
 
-    const lowStock = await getLowStockAction(DEFAULT_REORDER_LIMIT);
+    const lowStock = await getLowStockAction(DEFAULT_REORDER_LIMIT, null);
     if (!lowStock.success) return { success: false, error: lowStock.error || 'فشل قراءة المخزون' };
 
     const items = lowStock.data || [];
     let created = 0;
     let updated = 0;
-    await dbTransaction(async () => {
+    await dbTransaction(async (db) => {
       for (const item of items) {
         const quantity = requestedQuantity(Math.max(
           Number(item.default_purchase_qty || 1),
           Number(item.deficit || 0),
           Math.ceil(Number(item.avg_monthly_usage || 0)),
         ));
-        const result = await upsertActiveShortage(Number(item.drug_id), pharmacyId, quantity);
+        const result = await upsertActiveShortage(Number(item.drug_id), pharmacyId, quantity, undefined, db);
         if (result.created) created += 1;
         else updated += 1;
       }

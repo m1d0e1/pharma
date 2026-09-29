@@ -8,6 +8,7 @@ import {
   saveTrialBalanceSettingAction,
 } from '@/app/actions-client/finance';
 import { toast } from 'react-hot-toast';
+import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 
 jest.mock('@/app/actions-client/finance', () => ({
   getAccountsAction: jest.fn(),
@@ -19,6 +20,11 @@ jest.mock('@/app/actions-client/finance', () => ({
 
 jest.mock('react-hot-toast', () => ({
   toast: { success: jest.fn(), error: jest.fn() },
+}));
+
+jest.mock('@/lib/auth/local', () => ({
+  getClientSession: jest.fn(),
+  hasUserPermissionSync: jest.fn(),
 }));
 
 const accounts = [
@@ -34,6 +40,8 @@ describe('trial-balance mapping settings UI', () => {
     (getBanksAction as jest.Mock).mockResolvedValue({ success: true, data: [{ id: 3, name_ar: 'بنك الاختبار' }] });
     (getExpenseDefinitionsAction as jest.Mock).mockResolvedValue({ success: true, data: [{ id: 8, name_ar: 'إيجار' }] });
     (getTrialBalanceSettingsAction as jest.Mock).mockResolvedValue({ success: true, data: [] });
+    (getClientSession as jest.Mock).mockResolvedValue({ permissions: ['acc_can_make_daily_entries'] });
+    (hasUserPermissionSync as jest.Mock).mockImplementation((user, permission) => user.permissions.includes(permission));
   });
 
   it('switches entity categories, expands the account tree, and persists a bank mapping', async () => {
@@ -69,6 +77,30 @@ describe('trial-balance mapping settings UI', () => {
     expect(toast.success).toHaveBeenCalledWith('تم ربط الحساب بنجاح');
     await waitFor(() => expect(screen.queryByRole('heading', { name: 'اختيار الحساب المحاسبي' })).not.toBeInTheDocument());
     expect(getTrialBalanceSettingsAction).toHaveBeenCalledTimes(2);
+  });
+
+  it('renders mapping settings read-only when the user lacks accounting write permission', async () => {
+    render(<TrialBalanceSettingsClient canManage={false} />);
+
+    expect(await screen.findByText('بنك الاختبار')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'ربط الحساب' })).not.toBeInTheDocument();
+    expect(saveTrialBalanceSettingAction).not.toHaveBeenCalled();
+  });
+
+  it('uses the daily-entry permission only for standalone editing', async () => {
+    const viewOnlyUser = { permissions: ['acc_can_view_general'] };
+    (getClientSession as jest.Mock).mockResolvedValue(viewOnlyUser);
+
+    const view = render(<TrialBalanceSettingsClient />);
+    expect(await screen.findByText('بنك الاختبار')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'ربط الحساب' })).not.toBeInTheDocument());
+    view.unmount();
+
+    (getClientSession as jest.Mock).mockResolvedValue({
+      permissions: ['acc_can_view_general', 'acc_can_make_daily_entries'],
+    });
+    render(<TrialBalanceSettingsClient />);
+    expect(await screen.findByRole('button', { name: 'ربط الحساب' })).toBeInTheDocument();
   });
 
   it('keeps the picker open and surfaces an action error when mapping fails', async () => {

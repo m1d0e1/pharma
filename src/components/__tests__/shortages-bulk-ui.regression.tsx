@@ -104,6 +104,26 @@ describe('shortages multi-selection and bulk actions ui', () => {
     });
   });
 
+  it('keeps unrecovered shortages visible when bulk receive only updates part of the selection', async () => {
+    (updateShortagesStatusBulkAction as jest.Mock).mockResolvedValueOnce({ success: true, count: 1 });
+    (getShortagesAction as jest.Mock).mockResolvedValueOnce({
+      success: true,
+      data: [mockInitialData[1], mockInitialData[2]],
+    });
+    render(<ShortagesClient initialData={mockInitialData} />);
+
+    const checkboxes = screen.getAllByTitle('تحديد الصنف');
+    fireEvent.click(checkboxes[0]);
+    fireEvent.click(checkboxes[1]);
+    fireEvent.click((await screen.findAllByRole('button', { name: 'تم الاستلام' }))[0]);
+
+    await waitFor(() => expect(updateShortagesStatusBulkAction).toHaveBeenCalledWith([101, 102], 'received'));
+    await waitFor(() => expect(getShortagesAction).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText('Panadol Extra')).not.toBeInTheDocument();
+    expect(screen.getAllByText('Augmentin 1g').length).toBeGreaterThan(0);
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('1'));
+  });
+
   it('selects specific drugs and performs bulk delete', async () => {
     render(<ShortagesClient initialData={mockInitialData} />);
 

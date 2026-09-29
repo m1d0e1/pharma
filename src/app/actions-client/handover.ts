@@ -40,7 +40,7 @@ const db = {
     }
   }),
   transaction: (cb) => {
-    return (...args) => dbTransaction(async () => await cb(...args));
+    return (...args) => dbTransaction(async (transactionDb) => await cb(transactionDb, ...args));
   },
   exec: (sql) => {
     return dbExecute(sql);
@@ -167,11 +167,11 @@ export async function processHandoverAction(data: {
       } catch {}
     }
 
-    const transaction = db.transaction(async () => {
+    const transaction = db.transaction(async (db) => {
       // Serialize the cash snapshot with checkout and other handovers before reading it.
       const locked = await db.prepare("UPDATE shifts SET status=status WHERE id=? AND status='open'").run(data.shiftId);
       if (locked.changes !== 1) throw new Error('تم تسليم أو إغلاق هذه الوردية بالفعل؛ حدّث الشاشة');
-      const details = await loadHandoverDetails(data.shiftId);
+      const details = await loadHandoverDetails(data.shiftId, db);
       const shiftOwnerId = managedUserId || user.id;
       if (details.status !== 'open') {
         throw new Error('الوردية المشتركة غير مفتوحة');
@@ -308,8 +308,24 @@ export async function processHandoverAction(data: {
       );
 
       if (managedUserId && data.deactivateManagedUser) {
-        const deactivated = await db.prepare('UPDATE users SET is_active = 0 WHERE id = ? AND is_active = 1').run(managedUserId);
-        if (deactivated.changes !== 1) throw new Error('تعذر تعطيل حساب المستخدم');
+        const deactivated = await db.prepare(`
+          UPDATE users SET is_active = 0
+          WHERE id = ? AND is_active = 1
+            AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+            AND (
+              role <> 'owner' OR EXISTS (
+                SELECT 1 FROM users other
+                WHERE other.id <> users.id AND other.role = 'owner' AND other.is_active = 1
+                  AND (other.pharmacy_id = ? OR (other.pharmacy_id IS NULL AND ? = 'local_default'))
+              )
+            )
+        `).run(managedUserId, pharmacyId, pharmacyId, pharmacyId, pharmacyId);
+        if (deactivated.changes !== 1) {
+          if (managedUser?.role === 'owner') {
+            throw new Error('لا يمكن تعطيل المالك الوحيد؛ أضف مالكاً آخر أولاً');
+          }
+          throw new Error('تعذر تعطيل حساب المستخدم؛ أعد تحميل البيانات وحاول مرة أخرى');
+        }
       }
 
       const nextShiftCash = carriedCash;

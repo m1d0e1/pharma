@@ -319,7 +319,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
   useHotkeys('f4', (e) => {
     e.preventDefault();
     if (
-      activeTab === 'expenses'
+      (activeTab === 'expenses' || activeTab === 'expense_definitions')
       && (
         hasConfiguredPermission(sessionUser, 'acc_can_define_expenses')
         || hasConfiguredPermission(sessionUser, 'acc_can_process_cash_flow')
@@ -414,6 +414,10 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
            const res = await getExpenseDefinitionsAction();
            if (requestId !== loadTabRequestRef.current) return;
            if (res.success) setExpenseDefinitions(res.data as any[]);
+           else {
+             setExpenseDefinitions([]);
+             setLoadError('تعذر تحميل تعريفات المصروفات');
+           }
         } else if (tab === 'banks') {
            const res = await getBanksAction();
            if (requestId !== loadTabRequestRef.current) return;
@@ -439,7 +443,15 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
            const [journalsRes, accountsRes] = await Promise.all([getJournalsAction(), getAccountsAction()]);
            if (requestId !== loadTabRequestRef.current) return;
            if (journalsRes.success) setJournals(journalsRes.data as any[]);
+           else {
+             setJournals([]);
+             setLoadError('تعذر تحميل القيود اليومية');
+           }
            if (accountsRes.success) setAccounts(accountsRes.data as any[]);
+           else {
+             setAccounts([]);
+             setLoadError('تعذر تحميل دليل الحسابات اللازم للقيود اليومية');
+           }
         } else if (tab === 'expenses') {
             const [res, defsRes] = await Promise.all([
                getExpensesAction(),
@@ -447,7 +459,15 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
             ]);
             if (requestId !== loadTabRequestRef.current) return;
             if (res.success) setExpensesList(res.data as any[]);
+            else {
+              setExpensesList([]);
+              setLoadError('تعذر تحميل سجل المصروفات');
+            }
             if (defsRes.success) setExpenseDefinitions(defsRes.data as any[]);
+            else {
+              setExpenseDefinitions([]);
+              setLoadError('تعذر تحميل تعريفات المصروفات');
+            }
         } else if (tab === 'notices') {
            const res = await getFinancialNoticesAction();
            if (requestId !== loadTabRequestRef.current) return;
@@ -466,6 +486,9 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
           banks: 'تعذر تحميل بيانات الحسابات البنكية',
           papers: 'تعذر تحميل بيانات الأوراق المالية',
           cards: 'تعذر تحميل بيانات ماكينات وبطاقات الائتمان',
+          expense_definitions: 'تعذر تحميل تعريفات المصروفات',
+          daily_journals: 'تعذر تحميل القيود اليومية',
+          expenses: 'تعذر تحميل سجل المصروفات',
         };
         if (messages[tab]) setLoadError(messages[tab]);
      } finally {
@@ -579,6 +602,8 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
   const canProcessCash = hasConfiguredPermission(sessionUser, 'acc_can_process_cash_flow');
   const canRecordExpenses = hasConfiguredPermission(sessionUser, 'acc_can_define_expenses')
     || hasConfiguredPermission(sessionUser, 'acc_can_process_cash_flow');
+  const canViewExpenses = hasConfiguredPermission(sessionUser, 'can_view_expenses');
+  const canViewHandover = hasConfiguredPermission(sessionUser, 'acc_can_view_handover');
   const canManageAccounts = hasConfiguredPermission(sessionUser, 'acc_can_make_daily_entries');
   const filteredActivityLogs = activityLogs.filter(log => {
     if (!auditSearch.trim()) return true;
@@ -664,12 +689,12 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                        <Clock className="w-4 h-4 text-blue-500" />
                        الورديات
                      </Link>
-                     <Link
+                     {canViewHandover && <Link
                        href="/finance/handover"
                        className="px-5 py-4 bg-blue-600 text-white rounded-[20px] font-black hover:bg-blue-700 transition-all shadow-xl shadow-blue-500/20 text-sm"
                      >
                        تسليم الدرج
-                     </Link>
+                     </Link>}
                      <button onClick={() => window.print()} className="p-4 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-[20px] hover:bg-slate-200 transition-all no-print">
                        <Printer className="w-5 h-5" />
                      </button>
@@ -898,13 +923,19 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                       <p className="text-slate-500 font-bold">تكويد وتصنيف أنواع المصاريف المختلفة</p>
                    </div>
                    <div className="flex flex-wrap items-center gap-3">
-                      <Link
+                      {canViewExpenses && <Link
                          href="/expenses"
                          className="px-6 py-4 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-[20px] font-black text-sm flex items-center gap-2 hover:bg-slate-200 dark:hover:bg-slate-700 transition-all"
                       >
                          <FileText className="w-5 h-5 text-amber-600" />
                          <span>سجل المصروفات التشغيلية</span>
-                      </Link>
+                      </Link>}
+                      {canRecordExpenses && <button
+                         onClick={() => setShowRecordExpenseModal(true)}
+                         className="px-8 py-4 bg-rose-600 hover:bg-rose-700 text-white rounded-[20px] font-black text-sm shadow-xl shadow-rose-500/20 flex items-center gap-2 active:scale-95 transition-all"
+                      >
+                         <Plus className="w-5 h-5" /> إضافة مصروف (F4)
+                      </button>}
                       <button
                          onClick={() => setShowAddExpenseModal(true)}
                          className="px-8 py-4 bg-amber-600 hover:bg-amber-700 text-white rounded-[20px] font-black text-sm flex items-center gap-2 shadow-lg shadow-amber-600/20 active:scale-95 transition-all"
@@ -943,7 +974,9 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                          </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                         {loadingData ? (
+                         {loadError ? (
+                            <tr><td colSpan={5} className="py-20 text-center"><div role="alert" className="space-y-3"><p className="font-black text-rose-600">{loadError}</p><button type="button" onClick={() => void loadTabData()} className="px-5 py-2.5 bg-slate-900 text-white rounded-xl font-black text-xs">إعادة المحاولة</button></div></td></tr>
+                         ) : loadingData ? (
                             <tr><td colSpan={5} className="py-20 text-center text-slate-400 italic font-bold">جاري تحميل البيانات...</td></tr>
                          ) : expenseDefinitions.filter(exp => {
                             if (!expenseDefSearch.trim()) return true;
@@ -1476,10 +1509,12 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                           </tr>
                        </thead>
                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                          {loadingData ? (
-                             <tr><td colSpan={5} className="py-20 text-center text-slate-400 italic font-bold">جاري تحميل المصروفات...</td></tr>
+                          {loadError ? (
+                             <tr><td colSpan={6} className="py-20 text-center"><div role="alert" className="space-y-3"><p className="font-black text-rose-600">{loadError}</p><button type="button" onClick={() => void loadTabData()} className="px-5 py-2.5 bg-slate-900 text-white rounded-xl font-black text-xs">إعادة المحاولة</button></div></td></tr>
+                          ) : loadingData ? (
+                             <tr><td colSpan={6} className="py-20 text-center text-slate-400 italic font-bold">جاري تحميل المصروفات...</td></tr>
                           ) : filteredExpenses.length === 0 ? (
-                             <tr><td colSpan={5} className="py-20 text-center text-slate-400 italic font-bold">{expenseSearch.trim() ? 'لا توجد نتائج مطابقة لبحثك' : 'لا توجد مصروفات مسجلة'}</td></tr>
+                             <tr><td colSpan={6} className="py-20 text-center text-slate-400 italic font-bold">{expenseSearch.trim() ? 'لا توجد نتائج مطابقة لبحثك' : 'لا توجد مصروفات مسجلة'}</td></tr>
                           ) : filteredExpenses.map(exp => (
                              <tr key={`exp-list-${exp.id}`} className="hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
                                 <td className="px-8 py-6 font-bold text-slate-500 font-mono text-xs">{safeFormat(exp.date || exp.created_at, 'yyyy/MM/dd')}</td>
@@ -1507,11 +1542,11 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                     <h3 className="text-xl font-black text-slate-800 dark:text-white">إدارة وتقارير الورديات</h3>
                     <p className="text-sm font-bold text-slate-500 mt-2">مراجعة الوردية المشتركة وحركات كل مستخدم داخلها.</p>
                  </Link>
-                 <Link href="/finance/handover" className="p-8 bg-white dark:bg-slate-900 rounded-[32px] border border-slate-100 dark:border-slate-800 shadow-sm hover:border-emerald-300 transition-all">
+                 {canViewHandover && <Link href="/finance/handover" className="p-8 bg-white dark:bg-slate-900 rounded-[32px] border border-slate-100 dark:border-slate-800 shadow-sm hover:border-emerald-300 transition-all">
                     <ArrowRightLeft className="w-10 h-10 text-emerald-600 mb-5" />
                     <h3 className="text-xl font-black text-slate-800 dark:text-white">تسليم الوردية المشتركة</h3>
                     <p className="text-sm font-bold text-slate-500 mt-2">مطابقة حركات المستخدم وتحويل النقدية مع بقاء الجلسة مفتوحة.</p>
-                 </Link>
+                 </Link>}
               </div>
            )}
 
@@ -1523,7 +1558,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
 
            {activeTab === 'trial_balance_settings' && (
               <div className="animate-in fade-in slide-in-from-left-4">
-                 <TrialBalanceSettingsClient />
+                 <TrialBalanceSettingsClient canManage={canManageAccounts} />
               </div>
            )}
 
@@ -1707,7 +1742,8 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                     </div>
                     <button
                        onClick={() => setShowAddJournalModal(true)}
-                       className="px-10 py-5 bg-blue-600 text-white rounded-[24px] font-black hover:bg-blue-700 flex items-center gap-3 shadow-xl shadow-blue-500/20"
+                       disabled={loadingData || !!loadError || accounts.length === 0}
+                       className="px-10 py-5 bg-blue-600 text-white rounded-[24px] font-black hover:bg-blue-700 flex items-center gap-3 shadow-xl shadow-blue-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                        <Plus className="w-6 h-6" /> قيد يومي جديد
                     </button>
@@ -1725,7 +1761,9 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                           </tr>
                        </thead>
                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                          {loadingData ? (
+                          {loadError ? (
+                             <tr><td colSpan={5} className="py-20 text-center"><div role="alert" className="space-y-3"><p className="font-black text-rose-600">{loadError}</p><button type="button" onClick={() => void loadTabData()} className="px-5 py-2.5 bg-slate-900 text-white rounded-xl font-black text-xs">إعادة المحاولة</button></div></td></tr>
+                          ) : loadingData ? (
                              <tr><td colSpan={5} className="py-20 text-center text-slate-400 italic font-bold">جاري تحميل البيانات...</td></tr>
                           ) : journals.length === 0 ? (
                              <tr><td colSpan={5} className="py-20 text-center text-slate-400 italic font-bold">لا توجد قيود مسجلة اليوم</td></tr>
@@ -2188,6 +2226,7 @@ function EditAccountModal({ show, account, onClose, onSuccess }: any) {
                         <option value="asset">أصول (Assets)</option>
                         <option value="liability">خصوم (Liabilities)</option>
                         <option value="equity">حقوق ملكية (Equity)</option>
+                        {formData.type === 'revenue' && <option value="revenue">إيرادات (Revenue)</option>}
                         <option value="income">إيرادات (Income)</option>
                         <option value="expense">مصروفات (Expenses)</option>
                      </select>
@@ -3575,6 +3614,11 @@ function ManualJournalModal({ show, accounts, onClose, onSuccess }: ManualJourna
     { account_id: '', type: 'credit', amount: '', notes: '' }
   ]);
   const [loading, setLoading] = useState(false);
+  const submittingRef = useRef(false);
+  const handleClose = () => {
+    if (submittingRef.current) return;
+    onClose();
+  };
 
   useEffect(() => {
     if (show) {
@@ -3624,26 +3668,35 @@ function ManualJournalModal({ show, accounts, onClose, onSuccess }: ManualJourna
       if (!parseFloat(line.amount) || parseFloat(line.amount) <= 0) { toast.error('يجب أن تكون المبالغ أكبر من صفر'); return; }
     }
 
+    if (submittingRef.current) return;
+    submittingRef.current = true;
     setLoading(true);
-    const res = await createManualJournalAction({
-      date,
-      description: description.trim(),
-      entries: entries.map(ent => ({
-        account_id: parseInt(ent.account_id),
-        type: ent.type,
-        amount: parseFloat(ent.amount),
-        notes: ent.notes?.trim() || undefined
-      }))
-    });
+    try {
+      const res = await createManualJournalAction({
+        date,
+        description: description.trim(),
+        entries: entries.map(ent => ({
+          account_id: parseInt(ent.account_id),
+          type: ent.type,
+          amount: parseFloat(ent.amount),
+          notes: ent.notes?.trim() || undefined
+        }))
+      });
 
-    if (res.success) {
-      toast.success('تم إنشاء القيد اليومي المزدوج بنجاح');
-      onSuccess();
-      onClose();
-    } else {
-      toast.error(res.error || 'فشل إنشاء القيد اليومي');
+      if (res.success) {
+        toast.success('تم إنشاء القيد اليومي المزدوج بنجاح');
+        onSuccess();
+        onClose();
+      } else {
+        toast.error(res.error || 'فشل إنشاء القيد اليومي');
+      }
+    } catch (err) {
+      console.error('Create manual journal error:', err);
+      toast.error('فشل إنشاء القيد اليومي');
+    } finally {
+      submittingRef.current = false;
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   return (
@@ -3654,7 +3707,7 @@ function ManualJournalModal({ show, accounts, onClose, onSuccess }: ManualJourna
             <h3 className="text-2xl font-black text-slate-800 dark:text-white">إنشاء سند قيد يومي يدوي</h3>
             <p className="text-xs font-bold text-slate-400 mt-1">تسجيل حركة محاسبية مزدوجة (مدين / دائن) مع التحقق الفوري من التوازن</p>
           </div>
-          <button onClick={onClose} className="p-3 bg-slate-100 dark:bg-slate-800 rounded-full hover:bg-slate-200 transition-colors">
+          <button onClick={handleClose} disabled={loading} className="p-3 bg-slate-100 dark:bg-slate-800 rounded-full hover:bg-slate-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
             <X className="w-5 h-5 text-slate-500" />
           </button>
         </div>
@@ -3776,7 +3829,7 @@ function ManualJournalModal({ show, accounts, onClose, onSuccess }: ManualJourna
           </div>
 
           <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100 dark:border-slate-800">
-            <button type="button" onClick={onClose} className="px-6 py-3.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-600 dark:text-slate-300 rounded-2xl font-bold text-sm transition-all">إلغاء</button>
+            <button type="button" onClick={handleClose} disabled={loading} className="px-6 py-3.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-600 dark:text-slate-300 rounded-2xl font-bold text-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed">إلغاء</button>
             <button
               type="submit"
               disabled={loading || !isBalanced}

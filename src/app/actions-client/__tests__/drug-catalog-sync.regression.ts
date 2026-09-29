@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { createSqliteTransactionDb as mockCreateSqliteTransactionDb } from '@/tests/helpers/sqlite-transaction-db';
 
 let mockDb: Database.Database;
 
@@ -9,7 +10,7 @@ jest.mock('@/lib/db/tauri', () => ({
     const result = mockDb.prepare(sql).run(...params);
     return { rowsAffected: result.changes, lastInsertId: Number(result.lastInsertRowid) };
   }),
-  dbTransaction: jest.fn(async (callback: () => unknown) => callback()),
+  dbTransaction: jest.fn(async (callback: any) => callback(mockCreateSqliteTransactionDb(mockDb))),
 }));
 
 import { syncMasterDrugsToLocal } from '@/app/actions-client/sync';

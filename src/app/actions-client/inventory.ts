@@ -1,5 +1,5 @@
 import { secureCache } from '@/lib/cache/secure_cache';
-import { dbSelect, dbExecute, dbGet, dbTransaction, generateId } from '@/lib/db/tauri';
+import { dbSelect, dbExecute, dbGet, dbTransaction, generateId, type TransactionDb } from '@/lib/db/tauri';
 const logActivity = async (userId, action, details) => {
   try {
     await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [userId, action, details]);
@@ -40,7 +40,7 @@ const db = {
     }
   }),
   transaction: (cb) => {
-    return (...args) => dbTransaction(async () => await cb(...args));
+    return (...args) => dbTransaction(async (transactionDb) => await cb(transactionDb, ...args));
   },
   exec: (sql) => {
     return dbExecute(sql);
@@ -57,10 +57,106 @@ import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { isBusinessDate, localDate } from '@/lib/time';
 import { importInventoryWorkbookRows } from '@/lib/inventory/import';
 import { notifyInventoryChanged } from '@/lib/inventory/refresh';
+import { resolveRecoveredShortages } from '@/lib/inventory/reorder-state';
 
 function normalizePharmacyId(value: unknown): string {
   const pharmacyId = String(value ?? '').trim();
   return pharmacyId || 'local_default';
+}
+
+function normalizeInventoryBarcode(value: unknown): string | null {
+  const barcode = String(value ?? '').trim();
+  return barcode.length > 0 ? barcode : null;
+}
+
+async function assertInventoryBarcodeAvailable(
+  barcode: string | null,
+  drugId: number,
+  scopedDb: Pick<TransactionDb, 'prepare'>,
+) {
+  if (!barcode) return;
+
+  const masterOwner = await scopedDb.prepare(`
+    SELECT id
+    FROM master_drugs
+    WHERE id != ?
+      AND barcode IS NOT NULL
+      AND TRIM(barcode) = ? COLLATE NOCASE
+    LIMIT 1
+  `).get(drugId, barcode) as any;
+  if (masterOwner) throw new Error('Barcode is already assigned to another drug');
+
+  const inventoryOwner = await scopedDb.prepare(`
+    SELECT drug_id
+    FROM inventory
+    WHERE drug_id != ?
+      AND barcode IS NOT NULL
+      AND TRIM(barcode) = ? COLLATE NOCASE
+      AND (quantity IS NULL OR quantity != 0)
+    LIMIT 1
+  `).get(drugId, barcode) as any;
+  if (inventoryOwner) throw new Error('Barcode is already assigned to another drug');
+}
+
+async function assertInventoryImportConversionPermission(
+  user: any,
+  inventoryRows: any[],
+  drugRows: any[],
+  scopedDb: Pick<TransactionDb, 'prepare'>,
+) {
+  if (hasUserPermissionSync(user, 'can_modify_unit_conversion')) return;
+
+  const requestedDrugIds = [...new Set([
+    ...drugRows.map(row => Number(row?.id)),
+    ...inventoryRows.map(row => Number(row?.drug_id)),
+  ].filter(id => Number.isSafeInteger(id) && id > 0))];
+  if (requestedDrugIds.length === 0) return;
+
+  const existingRows = await scopedDb.prepare(`
+    SELECT id,
+           COALESCE(NULLIF(large_to_medium, 0), 1) AS large_to_medium,
+           COALESCE(NULLIF(medium_to_small, 0), 1) AS medium_to_small
+    FROM master_drugs
+    WHERE id IN (${requestedDrugIds.map(() => '?').join(',')})
+  `).all(...requestedDrugIds) as any[];
+  const existingById = new Map(existingRows.map(row => [Number(row.id), row]));
+
+  const conversion = (value: unknown) => {
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && parsed > 0 && parsed <= 10_000 ? parsed : null;
+  };
+
+  for (const row of drugRows) {
+    const drugId = Number(row?.id);
+    if (!Number.isSafeInteger(drugId) || drugId <= 0) continue;
+    const current = existingById.get(drugId);
+    for (const field of ['large_to_medium', 'medium_to_small'] as const) {
+      const requested = conversion(row?.[field]);
+      if (requested === null) continue;
+      const currentValue = Number(current?.[field] || 1);
+      if (requested !== currentValue) throw new Error('غير مصرح بتعديل معاملات التحويل');
+    }
+  }
+
+  for (const row of inventoryRows) {
+    const drugId = Number(row?.drug_id);
+    if (!Number.isSafeInteger(drugId) || drugId <= 0) continue;
+    const importedMaster = drugRows.find(drug => Number(drug?.id) === drugId);
+    const largeToMedium = conversion(importedMaster?.large_to_medium)
+      ?? Number(existingById.get(drugId)?.large_to_medium || 1);
+    const mediumToSmall = conversion(importedMaster?.medium_to_small)
+      ?? Number(existingById.get(drugId)?.medium_to_small || 1);
+    const stripsPerBox = conversion(row?.strips_per_box) ?? largeToMedium;
+    if (stripsPerBox !== largeToMedium) throw new Error('غير مصرح بتعديل معاملات التحويل');
+
+    // Unlike strips_per_box, the importer writes this source value directly.
+    if (row?.medium_to_small !== undefined) {
+      const requested = conversion(row.medium_to_small);
+      if (requested === null || requested !== mediumToSmall) {
+        throw new Error('غير مصرح بتعديل معاملات التحويل');
+      }
+    }
+  }
 }
 
 export async function importInventoryWorkbookAction(inventoryRows: any[], drugRows: any[]) {
@@ -74,6 +170,9 @@ export async function importInventoryWorkbookAction(inventoryRows: any[], drugRo
       inventoryRows,
       drugRows,
       normalizePharmacyId(user.pharmacy_id),
+      undefined,
+      (effectiveInventoryRows, effectiveMasterRows, transaction) =>
+        assertInventoryImportConversionPermission(user, effectiveInventoryRows, effectiveMasterRows, transaction),
     );
     revalidatePath('/inventory');
     notifyInventoryChanged();
@@ -104,7 +203,7 @@ const updateInventorySchema = z.object({
   large_to_medium: z.coerce.number().int().positive().optional().nullable(),
   expiry_date: z.preprocess(
     val => (typeof val === 'string' && val.trim() === '' ? null : val),
-    z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'صيغة التاريخ غير صحيحة (YYYY-MM-DD)').optional().nullable()
+    z.string().refine(isBusinessDate, 'تاريخ الصلاحية غير صالح').optional().nullable()
   ),
 });
 
@@ -140,44 +239,69 @@ export async function addInventoryAction(formData: AddInventoryInput) {
     console.log('[addInventoryAction] Step 3 result: validation passed');
 
     const { drug_id, quantity, local_selling_price, expiry_date, barcode, unit, large_to_medium } = validationResult.data;
+    const normalizedBarcode = normalizeInventoryBarcode(barcode);
     const pharmacyId = normalizePharmacyId(localUser.pharmacy_id);
-    const conversion = await db.prepare(
-      'SELECT COALESCE(NULLIF(medium_to_small, 0), 1) AS medium_to_small FROM master_drugs WHERE id = ?'
-    ).get(drug_id) as any;
-    const mediumToSmall = Math.max(1, Number(conversion?.medium_to_small) || 1);
+    const catalogUnits = await db.prepare(`
+      SELECT large_unit, COALESCE(NULLIF(large_to_medium, 0), 1) AS large_to_medium
+      FROM master_drugs
+      WHERE id = ?
+    `).get(drug_id) as any;
+    if (!catalogUnits) {
+      return { success: false, error: 'الصنف غير موجود بكتالوج الأدوية' };
+    }
+    const canModifyUnitConversion = hasUserPermissionSync(localUser, 'can_modify_unit_conversion');
+    const requestedUnit = String(unit || '').trim();
+    const currentUnit = String(catalogUnits.large_unit || '').trim();
+    const changesUnit = Boolean(requestedUnit) && requestedUnit !== currentUnit;
+    const changesConversion = large_to_medium !== undefined && large_to_medium !== null
+      && Number(large_to_medium) !== Number(catalogUnits.large_to_medium || 1);
+    if ((changesUnit || changesConversion) && !canModifyUnitConversion) {
+      return { success: false, error: 'غير مصرح بتعديل معاملات التحويل' };
+    }
 
     // Step 4: Generate ID
     console.log('[addInventoryAction] Step 4: Generating UUID...');
     const id = generateId();
     console.log('[addInventoryAction] Step 4 result: id=', id);
 
-    // Step 5: Insert
+    // Step 5: Insert the lot and any shared catalog metadata atomically. If a
+    // later metadata write fails, the UI must not see a failed action after a
+    // lot has already been committed (a retry would otherwise duplicate stock).
     console.log('[addInventoryAction] Step 5: Inserting into inventory...');
-    console.log('[addInventoryAction] Step 5 params:', { id, pharmacy_id: pharmacyId, drug_id, quantity, local_selling_price, expiry_date, barcode: barcode || null, unit, large_to_medium });
-    
-    // Begin Transaction using single queries (or standard run)
-    await db.prepare(`
-      INSERT INTO inventory (id, pharmacy_id, drug_id, quantity, local_selling_price, expiry_date, barcode, strips_per_box, medium_to_small)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, pharmacyId, drug_id, quantity, local_selling_price, expiry_date, barcode || null, large_to_medium || 1, mediumToSmall);
-    
-    if (unit) {
-      await db.prepare('UPDATE master_drugs SET large_unit = ? WHERE id = ?').run(unit, drug_id);
-    }
+    console.log('[addInventoryAction] Step 5 params:', { id, pharmacy_id: pharmacyId, drug_id, quantity, local_selling_price, expiry_date, barcode: normalizedBarcode, unit, large_to_medium });
+    await dbTransaction(async (transactionDb) => {
+      const conversion = await transactionDb.prepare(
+        'SELECT COALESCE(NULLIF(medium_to_small, 0), 1) AS medium_to_small FROM master_drugs WHERE id = ?'
+      ).get(drug_id) as any;
+      const mediumToSmall = Math.max(1, Number(conversion?.medium_to_small) || 1);
 
-    if (large_to_medium !== undefined && large_to_medium !== null) {
-      await db.prepare('UPDATE master_drugs SET large_to_medium = ? WHERE id = ?').run(large_to_medium, drug_id);
-    }
+      await assertInventoryBarcodeAvailable(normalizedBarcode, drug_id, transactionDb);
 
-    if (barcode) {
-      await db.prepare("UPDATE master_drugs SET barcode = ? WHERE id = ? AND (barcode IS NULL OR barcode = '')").run(barcode, drug_id);
-    }
+      await transactionDb.prepare(`
+        INSERT INTO inventory (id, pharmacy_id, drug_id, quantity, local_selling_price, expiry_date, barcode, strips_per_box, medium_to_small)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(id, pharmacyId, drug_id, quantity, local_selling_price, expiry_date, normalizedBarcode, large_to_medium || 1, mediumToSmall);
 
-    if (unit || (large_to_medium !== undefined && large_to_medium !== null) || barcode) {
+      if (unit) {
+        await transactionDb.prepare('UPDATE master_drugs SET large_unit = ? WHERE id = ?').run(unit, drug_id);
+      }
+
+      if (large_to_medium !== undefined && large_to_medium !== null) {
+        await transactionDb.prepare('UPDATE master_drugs SET large_to_medium = ? WHERE id = ?').run(large_to_medium, drug_id);
+      }
+
+      if (normalizedBarcode) {
+        await transactionDb.prepare("UPDATE master_drugs SET barcode = ? WHERE id = ? AND (barcode IS NULL OR barcode = '')").run(normalizedBarcode, drug_id);
+      }
+
+      await resolveRecoveredShortages(transactionDb, drug_id, pharmacyId);
+    });
+
+    if (unit || (large_to_medium !== undefined && large_to_medium !== null) || normalizedBarcode) {
       secureCache.updateDrug(drug_id, {
         ...(unit ? { large_unit: unit } : {}),
         ...(large_to_medium !== undefined && large_to_medium !== null ? { large_to_medium } : {}),
-        ...(barcode ? { barcode } : {})
+        ...(normalizedBarcode ? { barcode: normalizedBarcode } : {})
       });
     }
     
@@ -228,7 +352,7 @@ export async function updateInventoryAction(formData: UpdateInventoryInput) {
     const { secureCache } = await import('@/lib/cache/secure_cache');
     await secureCache.load();
 
-    const result = await dbTransaction(async () => {
+    const result = await dbTransaction(async (db) => {
     const current = await db.prepare(`
       SELECT i.quantity, i.drug_id, i.strips_per_box, m.large_to_medium
       FROM inventory i 
@@ -324,7 +448,15 @@ export async function updateInventoryAction(formData: UpdateInventoryInput) {
       `).run(id, reason_id, current.quantity, quantity, localUser.id);
     }
 
-    await logActivity(localUser.id, 'UPDATE_INVENTORY', `عدل مخزون الصنف ${tradeName}: من ${current.quantity} إلى ${quantity}`);
+    if (Number(quantity) > Number(current.quantity) || Boolean(expiry_date)) {
+      await resolveRecoveredShortages(db, current.drug_id, pharmacyId);
+    }
+
+    await db.prepare('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)').run(
+      localUser.id,
+      'UPDATE_INVENTORY',
+      `عدل مخزون الصنف ${tradeName}: من ${current.quantity} إلى ${quantity}`
+    );
     return { success: true };
     });
 
@@ -361,9 +493,10 @@ export async function deleteInventoryAction(formData: DeleteInventoryInput) {
     const pharmacyId = normalizePharmacyId(localUser.pharmacy_id);
     const inventoryId = validationResult.data.id;
 
-    const remove = db.transaction(async () => {
+    const remove = db.transaction(async (db) => {
       const current = await db.prepare(`
-        SELECT i.drug_id, CAST(COALESCE(i.quantity, 0) AS REAL) AS quantity, i.batch_number,
+        SELECT i.drug_id, CAST(COALESCE(i.quantity, 0) AS REAL) AS quantity,
+               CAST(COALESCE(i.cost_price, 0) AS REAL) AS cost_price, i.batch_number,
                COALESCE(m.trade_name_en, m.trade_name, m.active_ingredient) AS trade_name
         FROM inventory i
         LEFT JOIN master_drugs m ON m.id = i.drug_id
@@ -395,6 +528,34 @@ export async function deleteInventoryAction(formData: DeleteInventoryInput) {
           INSERT INTO stock_adjustments (inventory_id, reason_id, old_quantity, new_quantity, user_id)
           VALUES (?, NULL, ?, 0, ?)
         `).run(inventoryId, oldQuantity, localUser.id);
+
+        const totalValue = Math.abs(oldQuantity) * Number(current.cost_price || 0);
+        if (totalValue > 0) {
+          const inventorySetting = await db.prepare(
+            'SELECT account_id FROM trial_balance_settings WHERE category = ?'
+          ).get('inventory_asset') as any;
+          const adjustmentSetting = await db.prepare(
+            'SELECT account_id FROM trial_balance_settings WHERE category = ?'
+          ).get('inventory_adjustment_expense') as any;
+          const journalId = generateId();
+          await db.prepare(`
+            INSERT INTO daily_journals (id, date, description, created_by, total_amount)
+            VALUES (?, ?, ?, ?, ?)
+          `).run(
+            journalId,
+            localDate(),
+            `تصفير مخزون الدفعة ${inventoryId} (${current.trade_name || `drug #${current.drug_id}`})`,
+            localUser.id,
+            totalValue,
+          );
+          await db.prepare(
+            'INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)'
+          ).run(journalId, Number(adjustmentSetting?.account_id || 11), 'debit', totalValue);
+          await db.prepare(
+            'INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)'
+          ).run(journalId, Number(inventorySetting?.account_id || 10), 'credit', totalValue);
+        }
+
         await db.prepare(`
           INSERT INTO activity_log (user_id, action, details)
           VALUES (?, 'ZERO_INVENTORY', ?)
@@ -599,7 +760,7 @@ export async function checkClinicalSafetyAction(patientId: string, activeIngredi
 /**
  * Get items with low stock (quantity < 10 or custom threshold)
  */
-export async function getLowStockAction(threshold?: number) {
+export async function getLowStockAction(threshold?: number, maxRows: number | null = 250) {
   try {
     const user = await getLocalSession();
     if (!user || (!hasUserPermissionSync(user, 'can_view_low_stock') && !hasUserPermissionSync(user, 'can_view_restock'))) {
@@ -608,6 +769,7 @@ export async function getLowStockAction(threshold?: number) {
 
     const defaultLimit = Number(threshold) > 0 ? Number(threshold) : 10;
     const pharmacyId = user.pharmacy_id || 'local_default';
+    const resultLimit = maxRows === null ? null : Math.max(1, Math.floor(Number(maxRows) || 250));
 
     const items = await db.prepare(`
       WITH Params AS (
@@ -652,8 +814,9 @@ export async function getLowStockAction(threshold?: number) {
           AND inv.created_at >= datetime('now', '-30 days')
         GROUP BY si.drug_id
       )
-      SELECT 
-        m.id,
+      SELECT
+        COUNT(*) OVER() AS total_count,
+       m.id,
         m.id AS drug_id,
         COALESCE(ds.current_stock, 0) AS current_stock,
         COALESCE(ds.current_stock, 0) AS quantity,
@@ -694,7 +857,8 @@ export async function getLowStockAction(threshold?: number) {
       CROSS JOIN Params p
       LEFT JOIN DrugStock ds ON m.id = ds.drug_id
       LEFT JOIN MonthlySales ms ON m.id = ms.drug_id
-      WHERE (
+      WHERE COALESCE(m.stop_dealing, 0) = 0
+        AND (
         (ds.current_stock IS NOT NULL AND ds.current_stock <= MAX(
           COALESCE(NULLIF(m.reorder_point, 0), NULLIF(m.min_limit, 0), p.default_limit),
           COALESCE(ms.avg_monthly_usage, 0)
@@ -705,10 +869,12 @@ export async function getLowStockAction(threshold?: number) {
         CASE WHEN COALESCE(ds.current_stock, 0) <= 0 THEN 0 ELSE 1 END,
         deficit DESC,
         quantity ASC
-      LIMIT 250
-    `).all(pharmacyId, defaultLimit) as any[];
+      ${resultLimit === null ? '' : 'LIMIT ?'}
+    `).all(...(resultLimit === null ? [pharmacyId, defaultLimit] : [pharmacyId, defaultLimit, resultLimit])) as any[];
 
-    return { success: true, data: items };
+    const totalCount = Number(items[0]?.total_count || 0);
+    const data = items.map(({ total_count: _totalCount, ...item }) => item);
+    return { success: true, data, totalCount };
   } catch (error) {
     console.error('Get low stock error:', error);
     return { success: false, error: 'فشل جلب الأصناف منخفضة المخزون' };
@@ -721,7 +887,8 @@ const _lowStockStmt = db.prepare(`
          m.trade_name, m.active_ingredient, m.manufacturer, m.trade_name_en
   FROM master_drugs m
   JOIN inventory i ON m.id = i.drug_id
-  WHERE (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
+  WHERE COALESCE(m.stop_dealing, 0) = 0
+    AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
     AND (i.expiry_date IS NULL OR i.expiry_date >= date('now', 'localtime'))
   GROUP BY m.id
   HAVING SUM(i.quantity) <= COALESCE(NULLIF(m.reorder_point, 0), NULLIF(m.min_limit, 0), 10)
@@ -800,7 +967,14 @@ export async function getInventoryAlertsAction() {
 export async function getDrugDetailsFullAction(drugId: number | string) {
   try {
     const user = await getLocalSession();
-    if (!user) return { success: false, error: 'غير مصرح' };
+    const canViewDrugDetails = !!user && (
+      hasUserPermissionSync(user, 'can_view_stores')
+      || hasUserPermissionSync(user, 'can_access_pos')
+      || hasUserPermissionSync(user, 'can_view_purchases')
+    );
+    if (!canViewDrugDetails) {
+      return { success: false, error: 'غير مصرح' };
+    }
     const pharmacyId = normalizePharmacyId(user.pharmacy_id);
 
     // Get basic drug info
@@ -858,9 +1032,22 @@ export async function getDrugDetailsFullAction(drugId: number | string) {
     // Get Consumption Stats (Last 6 months)
     const consumption = await db.prepare(`
       SELECT strftime('%Y', si.created_at, 'localtime') as year, strftime('%m', si.created_at, 'localtime') as month,
-             SUM(si.quantity_sold) as net_sales, COUNT(*) as transactions
+             SUM(
+               CASE
+                 WHEN si.unit IN ('medium', 'strip', 'شريط') OR si.unit = m.medium_unit
+                   THEN si.quantity_sold / COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(m.large_to_medium, 0), 1)
+                 WHEN si.unit IN ('small', 'unit', 'pill') OR si.unit = m.small_unit
+                   THEN si.quantity_sold / (
+                     COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(m.large_to_medium, 0), 1)
+                     * COALESCE(NULLIF(si.medium_to_small, 0), NULLIF(m.medium_to_small, 0), 1)
+                   )
+                 ELSE si.quantity_sold
+               END
+             ) as net_sales,
+             COUNT(*) as transactions
       FROM sales_items si
       JOIN sales_invoices invoice ON invoice.id = si.invoice_id
+      JOIN master_drugs m ON m.id = si.drug_id
       WHERE si.drug_id = ?
         AND (invoice.status IS NULL OR invoice.status = '' OR invoice.status IN ('completed', 'approved', 'delivered'))
         AND (invoice.pharmacy_id = ? OR (invoice.pharmacy_id IS NULL AND ? = 'local_default'))
@@ -954,16 +1141,18 @@ export async function getDrugDetailsFullAction(drugId: number | string) {
     drug.alternatives = alternatives.filter(a => a.id !== drugId).slice(0, 10);
     
     // Get Supplier History
-    const supplierHistory = await db.prepare(`
-      SELECT s.id as supplier_id, s.name_ar as supplier_name, pii.cost_price, pii.selling_price, 
-             pii.tax_percent, pii.discount_percent, pi.invoice_date
-      FROM purchase_invoice_items pii
-      JOIN purchase_invoices pi ON pii.invoice_id = pi.id
-      JOIN suppliers s ON pi.supplier_id = s.id
-      WHERE pii.drug_id = ?
-        AND (pi.pharmacy_id = ? OR (pi.pharmacy_id IS NULL AND ? = 'local_default'))
-      ORDER BY pi.invoice_date DESC
-    `).all(drugId, pharmacyId, pharmacyId);
+    const supplierHistory = hasUserPermissionSync(user, 'can_view_purchases')
+      ? await db.prepare(`
+          SELECT s.id as supplier_id, s.name_ar as supplier_name, pii.cost_price, pii.selling_price,
+                 pii.tax_percent, pii.discount_percent, pi.invoice_date
+          FROM purchase_invoice_items pii
+          JOIN purchase_invoices pi ON pii.invoice_id = pi.id
+          JOIN suppliers s ON pi.supplier_id = s.id
+          WHERE pii.drug_id = ?
+            AND (pi.pharmacy_id = ? OR (pi.pharmacy_id IS NULL AND ? = 'local_default'))
+          ORDER BY pi.invoice_date DESC
+        `).all(drugId, pharmacyId, pharmacyId)
+      : [];
     drug.supplier_history = supplierHistory;
 
     return { success: true, data: drug };
@@ -979,7 +1168,9 @@ export async function getDrugDetailsFullAction(drugId: number | string) {
 export async function getInventoryListAction(search?: string, drugId?: number) {
   try {
     const user = await getLocalSession();
-    if (!user) return { success: false, error: 'غير مصرح' };
+    if (!user || !hasUserPermissionSync(user, 'can_view_stores')) {
+      return { success: false, error: 'غير مصرح' };
+    }
     const pharmacyId = normalizePharmacyId(user.pharmacy_id);
     const inventoryFilter = drugId === undefined ? 'i.quantity > 0' : '(i.drug_id = ? AND i.quantity > 0)';
 
@@ -1098,11 +1289,14 @@ export async function getMovementsAction() {
       LEFT JOIN users u ON u.id = al.user_id
       WHERE al.action IN (
         'ADD_INVENTORY', 'UPDATE_INVENTORY', 'DELETE_INVENTORY', 'ADJUST_STOCK', 'STOCK_ADJUSTMENT', 'ZERO_INVENTORY',
-        'OPENING_BALANCE', 'SALE', 'RETURN', 'PURCHASE', 'PURCHASE_RETURN'
+        'OPENING_BALANCE',
+        'SALE', 'COMPLETE_SALE',
+        'RETURN', 'CREATE_RETURN',
+        'PURCHASE', 'COMPLETE_PURCHASE',
+        'PURCHASE_RETURN'
       )
         AND (al.pharmacy_id = ? OR (al.pharmacy_id IS NULL AND ? = 'local_default'))
       ORDER BY al.created_at DESC
-      LIMIT 1000
     `).all(pharmacyId, pharmacyId) as any[];
     return { success: true, data };
   } catch (error: any) {
@@ -1122,7 +1316,6 @@ export async function getOpeningBalancesAction() {
       WHERE i.batch_number LIKE 'OPEN-%'
         AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
       ORDER BY i.created_at DESC
-      LIMIT 100
     `).all(pharmacyId, pharmacyId) as any[];
     return { success: true, data };
   } catch (err: any) {
@@ -1159,7 +1352,7 @@ export async function addOpeningBalanceAction(data: {
     `).get(data.drug_id) as any;
     if (!drug) return { success: false, error: 'الصنف غير موجود' };
 
-    await dbTransaction(async () => {
+    await dbTransaction(async (db) => {
       await db.prepare(`
         INSERT INTO inventory (id, pharmacy_id, drug_id, batch_number, expiry_date, quantity, local_selling_price, cost_price, strips_per_box, medium_to_small)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1183,11 +1376,13 @@ export async function addOpeningBalanceAction(data: {
           .run(journalId, Number(equitySetting?.account_id || 21), 'credit', amount);
       }
 
-      await logActivity(
+      await db.prepare('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)').run(
         session.id,
         'OPENING_BALANCE',
         `رصيد افتتاحي ${data.quantity} من ${drug.trade_name || `صنف #${data.drug_id}`} (${batchNumber})`
       );
+
+      await resolveRecoveredShortages(db, data.drug_id, session.pharmacy_id || 'local_default');
     });
 
     revalidatePath('/inventory');

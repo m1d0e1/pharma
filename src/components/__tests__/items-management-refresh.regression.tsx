@@ -204,6 +204,10 @@ describe('ItemsManagementClient auto-refresh and total count regression', () => 
     expect(screen.getByText('Concor 5mg')).toBeInTheDocument();
     expect(screen.getByText('Panadol Blue')).toBeInTheDocument();
     expect(screen.getByText('100')).toBeInTheDocument();
+    await waitFor(() => expect(hasUserPermissionSync).toHaveBeenCalledWith(
+      expect.anything(),
+      'can_manage_inventory',
+    ));
 
     // Fast-forward past debounce timer (400ms)
     act(() => {

@@ -18,12 +18,37 @@ import {
 function adapter(db: Database.Database): InventoryImportDatabase {
   let nextId = 0;
   return {
-    select: async (sql, params = []) => db.prepare(sql).all(...params as any[]),
-    execute: async (sql, params = []) => db.prepare(sql).run(...params as any[]),
+    // A Tauri transaction queues standalone calls behind itself. Imports must only
+    // use the callback's scoped database once the transaction begins.
+    select: async (sql, params = []) => {
+      if (!/^\s*PRAGMA\s+table_info/i.test(sql)) throw new Error('standalone select inside import');
+      return db.prepare(sql).all(...params as any[]);
+    },
+    execute: async () => { throw new Error('standalone execute inside import'); },
     transaction: async callback => {
       db.exec('BEGIN IMMEDIATE');
       try {
-        const result = await callback();
+        const prepare = (sql: string) => ({
+          all: async (...params: any[]) => db.prepare(sql).all(...params),
+          get: async (...params: any[]) => db.prepare(sql).get(...params) ?? null,
+          run: async (...params: any[]) => {
+            const result = db.prepare(sql).run(...params);
+            return {
+              changes: result.changes,
+              lastInsertRowid: Number(result.lastInsertRowid),
+              rowsAffected: result.changes,
+              lastInsertId: Number(result.lastInsertRowid),
+            };
+          },
+        });
+        const result = await callback({
+          select: async (sql, params = []) => {
+            if (/^\s*PRAGMA\b/i.test(sql)) throw new Error('PRAGMA is not allowed inside a transaction');
+            return db.prepare(sql).all(...params as any[]);
+          },
+          execute: async (sql, params = []) => db.prepare(sql).run(...params as any[]),
+          prepare,
+        });
         db.exec('COMMIT');
         return result;
       } catch (error) {
@@ -117,6 +142,62 @@ describe.each(variants)('%s inventory workbook import', (_name, initialize) => {
 
     expect(db.prepare('SELECT strips_per_box FROM inventory WHERE id = ?').get('lot-pack')).toEqual({
       strips_per_box: 3,
+    });
+  });
+
+  it('preserves another pharmacy lot when the workbook reuses its global inventory id', async () => {
+    db.exec(`
+      INSERT OR IGNORE INTO master_drugs (id, trade_name, large_to_medium) VALUES (9903, 'BRANCH SAFE DRUG', 2);
+      INSERT INTO inventory (id, drug_id, pharmacy_id, quantity, strips_per_box)
+      VALUES ('shared-lot', 9903, 'other-pharmacy', 7, 2);
+    `);
+
+    await expect(importInventoryWorkbookRows(
+      [{ id: 'shared-lot', drug_id: 9903, quantity: 2, strips_per_box: 2 }],
+      [],
+      'active-pharmacy',
+      adapter(db),
+    )).rejects.toThrow(/inventory id.*another pharmacy/i);
+
+    expect(db.prepare('SELECT pharmacy_id, quantity, strips_per_box FROM inventory WHERE id = ?').get('shared-lot')).toEqual({
+      pharmacy_id: 'other-pharmacy',
+      quantity: 7,
+      strips_per_box: 2,
+    });
+  });
+
+  it('rejects negative imported stock without partially writing the workbook', async () => {
+    db.exec(`INSERT OR IGNORE INTO master_drugs (id, trade_name) VALUES (9904, 'NEGATIVE IMPORT DRUG')`);
+
+    await expect(importInventoryWorkbookRows(
+      [
+        { id: 'valid-before-negative', drug_id: 9904, quantity: 2 },
+        { id: 'negative-lot', drug_id: 9904, quantity: -1 },
+      ],
+      [],
+      'active-pharmacy',
+      adapter(db),
+    )).rejects.toThrow(/quantity/i);
+
+    expect(db.prepare("SELECT COUNT(*) AS count FROM inventory WHERE id IN ('valid-before-negative', 'negative-lot')").get())
+      .toEqual({ count: 0 });
+  });
+
+  it('uses the existing catalog conversion for an inventory-only workbook with no pack factor', async () => {
+    db.exec(`
+      INSERT OR REPLACE INTO master_drugs (id, trade_name, large_to_medium)
+      VALUES (9905, 'EXISTING CONVERSION DRUG', 6)
+    `);
+
+    await importInventoryWorkbookRows(
+      [{ id: 'inventory-only-pack', drug_id: 9905, quantity: 1 }],
+      [],
+      'active-pharmacy',
+      adapter(db),
+    );
+
+    expect(db.prepare('SELECT strips_per_box FROM inventory WHERE id = ?').get('inventory-only-pack')).toEqual({
+      strips_per_box: 6,
     });
   });
 });
@@ -364,6 +445,85 @@ describe('inventory workbook drug identity preflight', () => {
       quantity: 5,
       pharmacy_id: 'active-pharmacy',
     });
+  });
+
+  it('resolves only the destination pharmacy shortage when imported stock clears its reorder threshold', async () => {
+    db.exec(`
+      INSERT INTO master_drugs (id, trade_name, reorder_point)
+      VALUES (9906, 'IMPORTED RECOVERY DRUG', 5);
+      INSERT INTO shortages (drug_id, pharmacy_id, requested_quantity, status)
+      VALUES
+        (9906, 'active-pharmacy', 6, 'pending'),
+        (9906, 'other-pharmacy', 6, 'pending');
+    `);
+
+    await importInventoryWorkbookRows(
+      [{ id: 'recovery-lot', drug_id: 9906, quantity: 6 }],
+      [],
+      'active-pharmacy',
+      adapter(db),
+    );
+
+    expect(db.prepare('SELECT pharmacy_id, status FROM shortages WHERE drug_id = 9906 ORDER BY pharmacy_id').all()).toEqual([
+      { pharmacy_id: 'active-pharmacy', status: 'received' },
+      { pharmacy_id: 'other-pharmacy', status: 'pending' },
+    ]);
+  });
+
+  it('runs inventory validation after source IDs are remapped', async () => {
+    db.exec('ALTER TABLE inventory ADD COLUMN medium_to_small INTEGER;');
+    db.exec(`
+      INSERT INTO master_drugs (id, trade_name, large_to_medium, medium_to_small)
+      VALUES
+        (2190, 'SOURCE DRUG', 1, 1),
+        (2228, 'TARGET DRUG', 1, 2);
+    `);
+
+    await expect(importInventoryWorkbookRows(
+      [{ id: 'remapped-lot', drug_id: 2190, quantity: 1, strips_per_box: 1, medium_to_small: 1 }],
+      [{ id: 2190, trade_name: 'TARGET DRUG', large_to_medium: 1, medium_to_small: 1 }],
+      'active-pharmacy',
+      adapter(db),
+      async (rows, _masterRows, transaction) => {
+        if (rows.length === 0) return;
+        expect(rows).toEqual([expect.objectContaining({ drug_id: 2228, medium_to_small: 1 })]);
+        const target = await transaction.select<any>(
+          'SELECT large_to_medium, medium_to_small FROM master_drugs WHERE id = ?',
+          [2228],
+        );
+        if (Number(rows[0].medium_to_small) !== Number(target[0].medium_to_small)) {
+          throw new Error('غير مصرح بتعديل معاملات التحويل');
+        }
+      },
+    )).rejects.toThrow('غير مصرح بتعديل معاملات التحويل');
+
+    expect(db.prepare('SELECT COUNT(*) AS count FROM inventory WHERE id = ?').get('remapped-lot')).toEqual({ count: 0 });
+  });
+
+  it('runs master conversion validation before the master upsert', async () => {
+    db.exec(`
+      INSERT INTO master_drugs (id, trade_name, large_to_medium, medium_to_small)
+      VALUES (3001, 'EXISTING DRUG', 1, 1);
+    `);
+
+    await expect(importInventoryWorkbookRows(
+      [],
+      [{ id: 3001, trade_name: 'EXISTING DRUG', large_to_medium: 2, medium_to_small: 1 }],
+      'active-pharmacy',
+      adapter(db),
+      async (_rows, masterRows, transaction) => {
+        if (masterRows.length === 0) return;
+        const current = await transaction.select<any>(
+          'SELECT large_to_medium FROM master_drugs WHERE id = ?',
+          [3001],
+        );
+        if (Number(masterRows[0].large_to_medium) !== Number(current[0].large_to_medium)) {
+          throw new Error('غير مصرح بتعديل معاملات التحويل');
+        }
+      },
+    )).rejects.toThrow('غير مصرح بتعديل معاملات التحويل');
+
+    expect(db.prepare('SELECT large_to_medium FROM master_drugs WHERE id = ?').get(3001)).toEqual({ large_to_medium: 1 });
   });
 });
 

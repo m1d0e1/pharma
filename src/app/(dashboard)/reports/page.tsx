@@ -40,7 +40,12 @@ export default function ReportsPage() {
         return;
       }
 
-      const { salesHistoryRaw = [], topDrugsRaw = [], categoryRaw = [] } = res.data as any;
+      const {
+        salesHistoryRaw = [],
+        topDrugsRaw = [],
+        categoryRaw = [],
+        totalUnitsSold: totalUnitsSoldRaw,
+      } = res.data as any;
 
       setSalesHistoryRawCount((salesHistoryRaw || []).length);
 
@@ -52,7 +57,8 @@ export default function ReportsPage() {
       }
 
       salesHistoryRaw.forEach((inv: any) => {
-        const d = inv.created_at.includes('T') ? inv.created_at.split('T')[0] : inv.created_at.split(' ')[0];
+        const d = inv.local_date
+          || (inv.created_at.includes('T') ? inv.created_at.split('T')[0] : inv.created_at.split(' ')[0]);
         if (dailySalesMap.has(d)) {
           dailySalesMap.set(d, dailySalesMap.get(d) + Number(inv.total_amount));
         }
@@ -64,7 +70,8 @@ export default function ReportsPage() {
       }));
       setSalesHistory(salesHist);
 
-      setTotalUnitsSold(topDrugsRaw.reduce((sum: number, d: any) => sum + d.quantity_sold, 0));
+      const fallbackUnits = topDrugsRaw.reduce((sum: number, d: any) => sum + Number(d.quantity_sold || 0), 0);
+      setTotalUnitsSold(Number.isFinite(Number(totalUnitsSoldRaw)) ? Number(totalUnitsSoldRaw) : fallbackUnits);
 
       const drugSalesMap = new Map();
       topDrugsRaw.forEach((item: any) => {
@@ -193,7 +200,7 @@ export default function ReportsPage() {
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <div className="bg-gradient-to-br from-blue-600 to-indigo-700 p-6 rounded-3xl text-white shadow-xl">
-           <p className="text-blue-100 text-xs font-bold uppercase tracking-wider mb-2">إجمالي إيرادات الشهر</p>
+           <p className="text-blue-100 text-xs font-bold uppercase tracking-wider mb-2">إجمالي الإيرادات</p>
            <h3 className="text-3xl font-black">{salesHistory.reduce((sum, d) => sum + d.revenue, 0).toLocaleString()} ج.م</h3>
            <div className="mt-4 text-xs text-blue-200 font-bold">آخر 30 يوماً</div>
         </div>
@@ -205,7 +212,7 @@ export default function ReportsPage() {
         <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-xl">
            <p className="text-slate-500 text-xs font-bold uppercase tracking-wider mb-2">الأصناف المبيعة</p>
            <h3 className="text-3xl font-black text-slate-900 dark:text-white">{totalUnitsSold} وحدة</h3>
-           <p className="mt-4 text-xs text-emerald-500 font-bold">● نشاط مخزني مرتفع</p>
+           <p className="mt-4 text-xs text-slate-400 font-bold">آخر 30 يوماً</p>
         </div>
       </div>
 

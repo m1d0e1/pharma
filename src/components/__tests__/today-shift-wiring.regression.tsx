@@ -11,6 +11,7 @@ import {
   processHandoverAction,
 } from '@/app/actions-client/handover';
 import { getClientSession } from '@/lib/auth/local';
+import { getBanksAction } from '@/app/actions-client/finance';
 import toast from 'react-hot-toast';
 
 const mockPush = jest.fn();
@@ -61,6 +62,7 @@ describe('today shift UI wiring', () => {
     });
     (processHandoverAction as jest.Mock).mockReset().mockResolvedValue({ success: true });
     (getClientSession as jest.Mock).mockReset().mockResolvedValue({ role: 'owner', full_name: 'Owner' });
+    (getBanksAction as jest.Mock).mockReset().mockResolvedValue({ success: true, data: [] });
   });
 
   it('allows immediate logout while the permanent cash session remains open', async () => {
@@ -103,6 +105,17 @@ describe('today shift UI wiring', () => {
     expect(await screen.findByText('تسليم الوردية المشتركة')).toBeInTheDocument();
   });
 
+  it('shows a retryable drawer-handover load error when an action returns failure', async () => {
+    (getHandoverDetailsAction as jest.Mock)
+      .mockResolvedValueOnce({ success: false, error: 'details rejected' })
+      .mockResolvedValueOnce({ success: true, data: { id: 'shift-1', user_name: 'Cashier', expected_cash: 0, starting_cash: 0 } });
+
+    render(<DrawerHandoverClient shiftId="shift-1" onClose={jest.fn()} />);
+    expect(await screen.findByText('تعذر تحميل بيانات تسليم الوردية')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'إعادة المحاولة' }));
+    expect(await screen.findByText('تسليم الوردية المشتركة')).toBeInTheDocument();
+  });
+
   it('restores the drawer-handover submit control after a thrown financial action', async () => {
     (processHandoverAction as jest.Mock).mockRejectedValueOnce(new Error('handover bridge unavailable'));
 
@@ -142,6 +155,17 @@ describe('today shift UI wiring', () => {
     expect(await screen.findByText('تعذر تحميل بيانات الوردية والدرج')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'إعادة المحاولة' }));
 
+    expect(await screen.findByText('تسليم درج نقطة البيع')).toBeInTheDocument();
+  });
+
+  it('shows a retryable POS-handover load error when a dependent action returns failure', async () => {
+    (getBanksAction as jest.Mock)
+      .mockResolvedValueOnce({ success: false, error: 'bank load rejected' })
+      .mockResolvedValueOnce({ success: true, data: [] });
+
+    render(<PosDrawerHandoverModal isOpen onClose={jest.fn()} />);
+    expect(await screen.findByText('تعذر تحميل بيانات الوردية والدرج')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'إعادة المحاولة' }));
     expect(await screen.findByText('تسليم درج نقطة البيع')).toBeInTheDocument();
   });
 
@@ -217,6 +241,21 @@ describe('today shift UI wiring', () => {
     expect(getShiftCreditSalesAction).toHaveBeenCalledWith('shift-1');
     expect(rowText).toMatch(/0|٠/);
     expect(rowText).not.toMatch(/100|١٠٠/);
+  });
+
+  it('totals only the outstanding POS credit amount', async () => {
+    (getShiftCreditSalesAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: [
+        { id: 'partial', invoice_number: 'partial', total_amount: 100, credit_amount: 25, patient_name: 'Partial' },
+        { id: 'paid', invoice_number: 'paid', total_amount: 50, credit_amount: 0, patient_name: 'Paid' },
+      ],
+    });
+
+    render(<PosDrawerHandoverModal isOpen onClose={jest.fn()} />);
+    fireEvent.click(await screen.findByTitle('عرض تفاصيل فواتير الآجل والعملاء'));
+    expect(await screen.findByText('إجمالي الآجل: 25.00 ج.م')).toBeInTheDocument();
+    expect(screen.queryByText('إجمالي الآجل: 150.00 ج.م')).not.toBeInTheDocument();
   });
 
   it('clears POS handover state when reopening for a different shift', async () => {

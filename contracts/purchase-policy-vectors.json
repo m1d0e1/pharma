@@ -1,0 +1,413 @@
+{
+  "lifecycle": [
+    {
+      "name": "completed credit is valid",
+      "status": "completed",
+      "payment_method": "credit",
+      "check_number": null,
+      "expected_ok": true
+    },
+    {
+      "name": "draft check may omit check number",
+      "status": "draft",
+      "payment_method": "check",
+      "check_number": null,
+      "expected_ok": true
+    },
+    {
+      "name": "completed check requires check number",
+      "status": "completed",
+      "payment_method": "check",
+      "check_number": "   ",
+      "expected_ok": false
+    },
+    {
+      "name": "unknown status is invalid",
+      "status": "processing",
+      "payment_method": "credit",
+      "check_number": null,
+      "expected_ok": false
+    },
+    {
+      "name": "unknown payment method is invalid",
+      "status": "completed",
+      "payment_method": "wallet",
+      "check_number": null,
+      "expected_ok": false
+    }
+  ],
+  "dates": [
+    {
+      "name": "iso date remains stable",
+      "input": "2028-01-31",
+      "expected": "2028-01-31"
+    },
+    {
+      "name": "day first date normalizes",
+      "input": "31/01/2028",
+      "expected": "2028-01-31"
+    },
+    {
+      "name": "year first slash date normalizes",
+      "input": "2028/01/31",
+      "expected": "2028-01-31"
+    },
+    {
+      "name": "legacy month year date normalizes to first day",
+      "input": "01/2028",
+      "expected": "2028-01-01"
+    },
+    {
+      "name": "invalid calendar date is rejected",
+      "input": "2028-02-30",
+      "expected": null
+    },
+    {
+      "name": "blank date is absent",
+      "input": "   ",
+      "expected": null
+    }
+  ],
+  "expiry": [
+    {
+      "name": "missing completed expiry is invalid",
+      "today": "2026-09-28",
+      "expiry_date": null,
+      "expected_ok": false
+    },
+    {
+      "name": "expired completed expiry is invalid",
+      "today": "2026-09-28",
+      "expiry_date": "2026-09-27",
+      "expected_ok": false
+    },
+    {
+      "name": "today completed expiry is valid",
+      "today": "2026-09-28",
+      "expiry_date": "2026-09-28",
+      "expected_ok": true
+    },
+    {
+      "name": "future completed expiry is valid",
+      "today": "2026-09-28",
+      "expiry_date": "31/01/2028",
+      "expected_ok": true
+    }
+  ],
+  "lots": [
+    {
+      "name": "same drug and normalized expiry is duplicate",
+      "items": [
+        {
+          "id": 1,
+          "quantity": 1,
+          "cost_price": 10,
+          "selling_price": 12,
+          "bonus_quantity": 0,
+          "tax_percent": 0,
+          "discount_percent": 0,
+          "strips_per_box": 1,
+          "expiry_date": "2028-01-31"
+        },
+        {
+          "id": 1,
+          "quantity": 1,
+          "cost_price": 10,
+          "selling_price": 12,
+          "bonus_quantity": 0,
+          "tax_percent": 0,
+          "discount_percent": 0,
+          "strips_per_box": 1,
+          "expiry_date": "31/01/2028"
+        }
+      ],
+      "expected_ok": false
+    },
+    {
+      "name": "same drug with different expiry is distinct",
+      "items": [
+        {
+          "id": 1,
+          "quantity": 1,
+          "cost_price": 10,
+          "selling_price": 12,
+          "bonus_quantity": 0,
+          "tax_percent": 0,
+          "discount_percent": 0,
+          "strips_per_box": 1,
+          "expiry_date": "2028-01-31"
+        },
+        {
+          "id": 1,
+          "quantity": 1,
+          "cost_price": 10,
+          "selling_price": 12,
+          "bonus_quantity": 0,
+          "tax_percent": 0,
+          "discount_percent": 0,
+          "strips_per_box": 1,
+          "expiry_date": "2028-02-29"
+        }
+      ],
+      "expected_ok": true
+    }
+  ],
+  "items": [
+    {
+      "name": "valid completed item",
+      "status": "completed",
+      "items": [
+        {
+          "id": 1,
+          "quantity": 1,
+          "cost_price": 10,
+          "selling_price": 12,
+          "bonus_quantity": 0,
+          "tax_percent": 0,
+          "discount_percent": 0,
+          "strips_per_box": 1,
+          "expiry_date": "2028-01-31"
+        }
+      ],
+      "expected_ok": true
+    },
+    {
+      "name": "draft may keep zero cost",
+      "status": "draft",
+      "items": [
+        {
+          "id": 1,
+          "quantity": 1,
+          "cost_price": 0,
+          "selling_price": 0,
+          "bonus_quantity": 0,
+          "tax_percent": 0,
+          "discount_percent": 0,
+          "strips_per_box": 1,
+          "expiry_date": "2000-01-01"
+        }
+      ],
+      "expected_ok": true
+    },
+    {
+      "name": "empty draft is invalid",
+      "status": "draft",
+      "items": [],
+      "expected_ok": false
+    },
+    {
+      "name": "zero quantity is invalid",
+      "status": "draft",
+      "items": [
+        {
+          "id": 1,
+          "quantity": 0,
+          "cost_price": 0,
+          "selling_price": 0,
+          "bonus_quantity": 0,
+          "tax_percent": 0,
+          "discount_percent": 0,
+          "strips_per_box": 1,
+          "expiry_date": "2028-01-31"
+        }
+      ],
+      "expected_ok": false
+    },
+    {
+      "name": "completed zero cost is invalid",
+      "status": "completed",
+      "items": [
+        {
+          "id": 1,
+          "quantity": 1,
+          "cost_price": 0,
+          "selling_price": 0,
+          "bonus_quantity": 0,
+          "tax_percent": 0,
+          "discount_percent": 0,
+          "strips_per_box": 1,
+          "expiry_date": "2028-01-31"
+        }
+      ],
+      "expected_ok": false
+    },
+    {
+      "name": "negative selling price is invalid",
+      "status": "completed",
+      "items": [
+        {
+          "id": 1,
+          "quantity": 1,
+          "cost_price": 10,
+          "selling_price": -1,
+          "bonus_quantity": 0,
+          "tax_percent": 0,
+          "discount_percent": 0,
+          "strips_per_box": 1,
+          "expiry_date": "2028-01-31"
+        }
+      ],
+      "expected_ok": false
+    },
+    {
+      "name": "item tax above one hundred is invalid",
+      "status": "completed",
+      "items": [
+        {
+          "id": 1,
+          "quantity": 1,
+          "cost_price": 10,
+          "selling_price": 12,
+          "bonus_quantity": 0,
+          "tax_percent": 101,
+          "discount_percent": 0,
+          "strips_per_box": 1,
+          "expiry_date": "2028-01-31"
+        }
+      ],
+      "expected_ok": false
+    },
+    {
+      "name": "negative item discount is invalid",
+      "status": "completed",
+      "items": [
+        {
+          "id": 1,
+          "quantity": 1,
+          "cost_price": 10,
+          "selling_price": 12,
+          "bonus_quantity": 0,
+          "tax_percent": 0,
+          "discount_percent": -1,
+          "strips_per_box": 1,
+          "expiry_date": "2028-01-31"
+        }
+      ],
+      "expected_ok": false
+    },
+    {
+      "name": "negative bonus is invalid",
+      "status": "completed",
+      "items": [
+        {
+          "id": 1,
+          "quantity": 1,
+          "cost_price": 10,
+          "selling_price": 12,
+          "bonus_quantity": -1,
+          "tax_percent": 0,
+          "discount_percent": 0,
+          "strips_per_box": 1,
+          "expiry_date": "2028-01-31"
+        }
+      ],
+      "expected_ok": false
+    }
+  ],
+  "allocation": [
+    {
+      "name": "tax expenses discounts and bonus allocate consistently",
+      "items": [
+        {
+          "id": 1,
+          "quantity": 2,
+          "cost_price": 10,
+          "selling_price": 15,
+          "bonus_quantity": 1,
+          "tax_percent": 10,
+          "discount_percent": 0,
+          "strips_per_box": 1,
+          "expiry_date": "2028-01-31"
+        }
+      ],
+      "header": {
+        "tax_percent": 5,
+        "expenses": 3,
+        "discount_value": 1,
+        "discount_percent": 10
+      },
+      "expected_total": 22.59,
+      "expected_unit_costs": [7.53]
+    },
+    {
+      "name": "multiple lines retain per-line allocated cost",
+      "items": [
+        {
+          "id": 1,
+          "quantity": 1,
+          "cost_price": 5,
+          "selling_price": 8,
+          "bonus_quantity": 0,
+          "tax_percent": 0,
+          "discount_percent": 0,
+          "strips_per_box": 1,
+          "expiry_date": "2028-01-31"
+        },
+        {
+          "id": 2,
+          "quantity": 2,
+          "cost_price": 8,
+          "selling_price": 12,
+          "bonus_quantity": 1,
+          "tax_percent": 5,
+          "discount_percent": 0,
+          "strips_per_box": 1,
+          "expiry_date": "2028-02-29"
+        }
+      ],
+      "header": {
+        "tax_percent": 0,
+        "expenses": 0,
+        "discount_value": 0,
+        "discount_percent": 0
+      },
+      "expected_total": 21.8,
+      "expected_unit_costs": [5.0, 5.6]
+    }
+  ],
+  "accounting": [
+    {
+      "name": "credit purchase posts payable and supplier liability",
+      "payment_method": "credit",
+      "total_amount": 100,
+      "expected": {
+        "settlement_account": "payable",
+        "supplier_balance_delta": 100,
+        "supplier_transactions": [
+          { "type": "invoice", "amount": 100 }
+        ],
+        "cash_movement": null
+      }
+    },
+    {
+      "name": "check purchase posts payable and supplier liability",
+      "payment_method": "check",
+      "total_amount": 100,
+      "expected": {
+        "settlement_account": "payable",
+        "supplier_balance_delta": 100,
+        "supplier_transactions": [
+          { "type": "invoice", "amount": 100 }
+        ],
+        "cash_movement": null
+      }
+    },
+    {
+      "name": "cash purchase clears supplier subledger and credits cash",
+      "payment_method": "cash",
+      "total_amount": 100,
+      "expected": {
+        "settlement_account": "cash",
+        "supplier_balance_delta": 0,
+        "supplier_transactions": [
+          { "type": "invoice", "amount": 100 },
+          { "type": "payment", "amount": -100 }
+        ],
+        "cash_movement": {
+          "type": "disbursement",
+          "amount": 100
+        }
+      }
+    }
+  ]
+}

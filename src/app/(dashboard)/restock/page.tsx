@@ -6,6 +6,7 @@ import RestockClient from '@/components/inventory/RestockClient';
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { getRestockItemsAction } from '@/app/actions-client/inventory';
 import AccessDenied from '@/components/AccessDenied';
+import { subscribeInventoryChanges } from '@/lib/inventory/refresh';
 
 export default function RestockPage() {
   const [automatedList, setAutomatedList] = useState<any[]>([]);
@@ -50,6 +51,8 @@ export default function RestockPage() {
     loadRestockData();
     return () => { active = false; };
   }, [reloadKey]);
+
+  useEffect(() => subscribeInventoryChanges(() => setReloadKey(value => value + 1)), []);
 
   const handleUpdateQuantity = (itemId: string, newQty: number) => {
     setAutomatedList(prev =>

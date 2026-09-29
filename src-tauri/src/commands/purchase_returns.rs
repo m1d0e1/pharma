@@ -551,7 +551,7 @@ pub(crate) async fn create_purchase_return_on_connection(
             r#"
             INSERT INTO cash_movements
               (id, user_id, shift_id, type, category, amount, notes, date)
-            VALUES (?, ?, ?, 'in', 'purchase_return', ?, ?, DATE('now', 'localtime'))
+            VALUES (?, ?, ?, 'receipt', 'purchase_return', ?, ?, DATE('now', 'localtime'))
             "#,
         )
         .bind(Uuid::new_v4().to_string())
@@ -606,6 +606,18 @@ pub(crate) async fn create_purchase_return_on_connection(
         total_amount,
     )
     .await?;
+
+    sqlx::query(
+        "INSERT INTO activity_log (user_id, pharmacy_id, action, details) VALUES (?, ?, 'PURCHASE_RETURN', ?)",
+    )
+    .bind(&user_id)
+    .bind(&invoice_pharmacy)
+    .bind(format!(
+        "Purchase return {return_id} for supplier {supplier_id}; value={total_amount:.2}"
+    ))
+    .execute(&mut *connection)
+    .await
+    .map_err(|error| error.to_string())?;
 
     Ok(PurchaseReturnResult {
         return_id,
@@ -797,6 +809,7 @@ mod tests {
             CREATE TABLE trial_balance_settings (category TEXT PRIMARY KEY, account_id INTEGER);
             CREATE TABLE daily_journals (id TEXT PRIMARY KEY, date TEXT, description TEXT, created_by TEXT, total_amount REAL);
             CREATE TABLE journal_entries (id INTEGER PRIMARY KEY AUTOINCREMENT, journal_id TEXT, account_id INTEGER, type TEXT, amount REAL);
+            CREATE TABLE activity_log (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, pharmacy_id TEXT, action TEXT, details TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 
             INSERT INTO users VALUES ('user-1', NULL, 'cashier', '{"can_view_purchases":true}', 1);
             INSERT INTO suppliers VALUES (7, 500);
@@ -951,7 +964,7 @@ mod tests {
     #[tokio::test]
     async fn fractional_purchase_return_overage_is_rejected() {
         let mut connection = current_schema().await;
-        sqlx::query("INSERT INTO users (id, username, role, pharmacy_id, is_active) VALUES ('buyer', 'buyer', 'admin', 'ph-1', 1)")
+        sqlx::query(r#"INSERT INTO users (id, username, role, pharmacy_id, permissions, is_active) VALUES ('buyer', 'buyer', 'admin', 'ph-1', '{"can_view_purchases":true,"can_modify_unit_conversion":true}', 1)"#)
             .execute(&mut connection).await.unwrap();
         sqlx::query("INSERT INTO suppliers (id, name_ar, balance) VALUES (1, 'Supplier', 0)")
             .execute(&mut connection).await.unwrap();
@@ -995,9 +1008,118 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cash_purchase_return_records_receipt_cash_movement() {
+        let mut connection = current_schema().await;
+        sqlx::query(r#"INSERT INTO users (id, username, role, pharmacy_id, permissions, is_active) VALUES ('buyer', 'buyer', 'admin', 'ph-1', '{"can_view_purchases":true,"can_modify_unit_conversion":true}', 1)"#)
+            .execute(&mut connection).await.unwrap();
+        sqlx::query("INSERT INTO suppliers (id, name_ar, balance) VALUES (1, 'Supplier', 0)")
+            .execute(&mut connection).await.unwrap();
+        sqlx::query("INSERT INTO master_drugs (id, trade_name, large_to_medium, medium_to_small) VALUES (42, 'Drug', 1, 1)")
+            .execute(&mut connection).await.unwrap();
+
+        let purchase = PurchasePayload {
+            id: Some("cash-return-purchase".into()), supplier_id: 1,
+            pharmacy_id: Some("ph-1".into()), user_id: "buyer".into(),
+            invoice_number: Some("CASH-RETURN".into()), invoice_date: Some("2026-09-01".into()),
+            payment_method: Some("credit".into()), notes: None, check_number: None,
+            expenses: 0.0, discount_value: 0.0, discount_percent: 0.0, tax_percent: 0.0,
+            status: Some("completed".into()), cart: vec![PurchaseItem {
+                purchase_invoice_item_id: None, id: 42, quantity: 1.0, unit_id: Some(1),
+                expiry_date: Some("2030-01-01".into()), cost_price: 100.0,
+                selling_price: Some(150.0), bonus_quantity: 0.0, tax_percent: 0.0,
+                discount_percent: 0.0, strips_per_box: 1, barcode: None,
+            }],
+        };
+        let mut transaction = connection.begin().await.unwrap();
+        save_purchase_invoice_tx(&mut transaction, purchase).await.unwrap();
+        transaction.commit().await.unwrap();
+
+        let item_id: i64 = sqlx::query_scalar(
+            "SELECT id FROM purchase_invoice_items WHERE invoice_id = 'cash-return-purchase'",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        let supplier_balance_before: f64 = sqlx::query_scalar("SELECT balance FROM suppliers WHERE id = 1")
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+
+        let returned = run_purchase_return_transaction(
+            &mut connection,
+            PurchaseReturnPayload {
+                purchase_invoice_id: "cash-return-purchase".into(), supplier_id: 1,
+                user_id: "buyer".into(), pharmacy_id: Some("ph-1".into()), reason: None,
+                refund_method: "cash".into(), items: vec![PurchaseReturnItem {
+                    purchase_invoice_item_id: item_id, quantity: 1.0, unit: Some("large".into()),
+                }],
+            },
+        )
+        .await
+        .unwrap();
+
+        let movement = sqlx::query(
+            "SELECT type, category, amount FROM cash_movements WHERE category = 'purchase_return' ORDER BY rowid DESC LIMIT 1",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(movement.get::<String, _>("type"), "receipt");
+        assert_eq!(movement.get::<String, _>("category"), "purchase_return");
+        assert!((movement.get::<f64, _>("amount") - returned.total_amount).abs() < 0.000_001);
+
+        let journal = sqlx::query(
+            r#"
+            SELECT dj.pharmacy_id,
+                   MAX(CASE WHEN je.type = 'debit' THEN a.code END) AS debit_code,
+                   MAX(CASE WHEN je.type = 'credit' THEN a.code END) AS credit_code,
+                   SUM(CASE WHEN je.type = 'debit' THEN je.amount ELSE 0 END) AS debits,
+                   SUM(CASE WHEN je.type = 'credit' THEN je.amount ELSE 0 END) AS credits
+            FROM daily_journals dj
+            JOIN journal_entries je ON je.journal_id = dj.id
+            JOIN accounts a ON a.id = je.account_id
+            WHERE dj.description = ?
+            GROUP BY dj.id, dj.pharmacy_id
+            "#,
+        )
+        .bind(format!("Purchase return {}", returned.return_id))
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(journal.get::<String, _>("pharmacy_id"), "ph-1");
+        assert_eq!(journal.get::<String, _>("debit_code"), "1.1.1");
+        assert_eq!(journal.get::<String, _>("credit_code"), "1.1.3");
+        assert!((journal.get::<f64, _>("debits") - returned.total_amount).abs() < 0.000_001);
+        assert!((journal.get::<f64, _>("credits") - returned.total_amount).abs() < 0.000_001);
+
+        let supplier_balance_after: f64 = sqlx::query_scalar("SELECT balance FROM suppliers WHERE id = 1")
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+        assert!((supplier_balance_after - supplier_balance_before).abs() < 0.000_001);
+        let supplier_return_net: f64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(amount), 0) FROM supplier_transactions WHERE reference_id = ? AND type IN ('return','payment')",
+        )
+        .bind(&returned.return_id)
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        assert!(supplier_return_net.abs() < 0.000_001);
+
+        let audit: (String, String) = sqlx::query_as(
+            "SELECT action, pharmacy_id FROM activity_log WHERE action = 'PURCHASE_RETURN' ORDER BY id DESC LIMIT 1",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(audit.0, "PURCHASE_RETURN");
+        assert_eq!(audit.1, "ph-1");
+    }
+
+    #[tokio::test]
     async fn return_inventory_credit_matches_the_linked_purchase_lot_not_a_merged_same_number_lot() {
         let mut connection = current_schema().await;
-        sqlx::query("INSERT INTO users (id, username, role, pharmacy_id, is_active) VALUES ('buyer', 'buyer', 'admin', 'ph-1', 1)")
+        sqlx::query(r#"INSERT INTO users (id, username, role, pharmacy_id, permissions, is_active) VALUES ('buyer', 'buyer', 'admin', 'ph-1', '{"can_view_purchases":true,"can_modify_unit_conversion":true}', 1)"#)
             .execute(&mut connection).await.unwrap();
         sqlx::query("INSERT INTO suppliers (id, name_ar, balance) VALUES (1, 'Supplier', 0)")
             .execute(&mut connection).await.unwrap();
@@ -1127,7 +1249,7 @@ mod tests {
     #[tokio::test]
     async fn edit_and_delete_one_same_number_purchase_preserve_the_other_lot_and_accounting() {
         let mut connection = current_schema().await;
-        sqlx::query("INSERT INTO users (id, username, role, pharmacy_id, is_active) VALUES ('buyer', 'buyer', 'admin', 'ph-1', 1)")
+        sqlx::query(r#"INSERT INTO users (id, username, role, pharmacy_id, permissions, is_active) VALUES ('buyer', 'buyer', 'admin', 'ph-1', '{"can_view_purchases":true,"can_modify_unit_conversion":true}', 1)"#)
             .execute(&mut connection).await.unwrap();
         sqlx::query("INSERT INTO suppliers (id, name_ar, balance) VALUES (1, 'Supplier', 0)")
             .execute(&mut connection).await.unwrap();
@@ -1187,7 +1309,7 @@ mod tests {
     #[tokio::test]
     async fn legacy_shared_purchase_stock_rejects_return_edit_and_delete_without_changes() {
         let mut connection = current_schema().await;
-        sqlx::query("INSERT INTO users (id, username, role, pharmacy_id, is_active) VALUES ('buyer', 'buyer', 'admin', 'ph-1', 1)")
+        sqlx::query(r#"INSERT INTO users (id, username, role, pharmacy_id, permissions, is_active) VALUES ('buyer', 'buyer', 'admin', 'ph-1', '{"can_view_purchases":true,"can_modify_unit_conversion":true}', 1)"#)
             .execute(&mut connection).await.unwrap();
         sqlx::query("INSERT INTO suppliers (id, name_ar, balance) VALUES (1, 'Supplier', 0)")
             .execute(&mut connection).await.unwrap();
@@ -1261,7 +1383,7 @@ mod tests {
     #[tokio::test]
     async fn exclusive_legacy_purchase_lot_can_be_edited_and_deleted() {
         let mut connection = current_schema().await;
-        sqlx::query("INSERT INTO users (id, username, role, pharmacy_id, is_active) VALUES ('buyer', 'buyer', 'admin', 'ph-1', 1)")
+        sqlx::query(r#"INSERT INTO users (id, username, role, pharmacy_id, permissions, is_active) VALUES ('buyer', 'buyer', 'admin', 'ph-1', '{"can_view_purchases":true,"can_modify_unit_conversion":true}', 1)"#)
             .execute(&mut connection).await.unwrap();
         sqlx::query("INSERT INTO suppliers (id, name_ar, balance) VALUES (1, 'Supplier', 0)")
             .execute(&mut connection).await.unwrap();

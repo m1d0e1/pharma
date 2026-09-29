@@ -65,6 +65,79 @@ describe('returns-list UI behavior', () => {
     expect(screen.queryByRole('heading', { name: 'تفاصيل مرتجع المبيعات' })).not.toBeInTheDocument();
   });
 
+  it('keeps server-matched return rows visible when search text differs only by case', async () => {
+    const englishCaseReturn = {
+      ...salesReturn,
+      id: 'sales-return-case',
+      patient_name: 'John Patient',
+    };
+    (getReturnsAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: [englishCaseReturn],
+      hasMore: false,
+    });
+
+    render(<ReturnsClient title="مرتجعات العملاء" type="sales" />);
+    expect(await screen.findByText('John Patient')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText('بحث برقم المرتجع أو الفاتورة...'), {
+      target: { value: 'john' },
+    });
+
+    expect(screen.getByText('John Patient')).toBeInTheDocument();
+  });
+
+  it('labels wallet sales refunds as patient-wallet refunds in return details', async () => {
+    (getReturnsAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: [{ ...salesReturn, id: 'wallet-return', refund_method: 'wallet' }],
+    });
+
+    render(<ReturnsClient title="مرتجعات العملاء" type="sales" />);
+    fireEvent.click((await screen.findByText('عميل مرتجع')).closest('tr') as HTMLElement);
+
+    expect(screen.getByRole('heading', { name: 'تفاصيل مرتجع المبيعات' })).toBeInTheDocument();
+    expect(screen.getByText('محفظة المريض')).toBeInTheDocument();
+  });
+
+  it('labels bank sales refunds as bank/card refunds in return details', async () => {
+    (getReturnsAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: [{ ...salesReturn, id: 'bank-return', refund_method: 'bank' }],
+    });
+
+    render(<ReturnsClient title="مرتجعات العملاء" type="sales" />);
+    fireEvent.click((await screen.findByText('عميل مرتجع')).closest('tr') as HTMLElement);
+
+    expect(screen.getByRole('heading', { name: 'تفاصيل مرتجع المبيعات' })).toBeInTheDocument();
+    expect(screen.getByText('بنك / بطاقة')).toBeInTheDocument();
+  });
+
+  it('loads additional return-history pages without replacing the rows already shown', async () => {
+    const olderReturn = {
+      ...salesReturn,
+      id: 'sales-return-older',
+      invoice_id: 'invoice-sales-older',
+      patient_name: 'عميل أقدم',
+    };
+    (getReturnsAction as jest.Mock)
+      .mockResolvedValueOnce({ success: true, data: [salesReturn], hasMore: true })
+      .mockResolvedValueOnce({ success: true, data: [olderReturn], hasMore: false });
+
+    render(<ReturnsClient title="مرتجعات العملاء" type="sales" />);
+    expect(await screen.findByText('عميل مرتجع')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'تحميل المزيد' }));
+
+    expect(await screen.findByText('عميل أقدم')).toBeInTheDocument();
+    expect(screen.getByText('عميل مرتجع')).toBeInTheDocument();
+    expect(getReturnsAction).toHaveBeenNthCalledWith(2, {
+      limit: 50,
+      offset: 1,
+      search: '',
+    });
+    expect(screen.queryByRole('button', { name: 'تحميل المزيد' })).not.toBeInTheDocument();
+  });
+
   it('loads purchase-return details from a keyboard-selected row and renders returned line metadata', async () => {
     let resolveDetails: (value: any) => void = () => {};
     (getPurchaseReturnDetailsAction as jest.Mock).mockImplementation(() => new Promise(resolve => { resolveDetails = resolve; }));

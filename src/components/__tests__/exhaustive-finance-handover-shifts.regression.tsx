@@ -92,6 +92,7 @@ jest.mock('@/app/actions-client/expenses', () => ({
 }));
 
 jest.mock('@/lib/utils/printing', () => ({
+  ...jest.requireActual('@/lib/utils/printing'),
   generateReceiptHtml: jest.fn().mockReturnValue('<html>receipt</html>'),
   generateWhatsAppMessage: jest.fn().mockReturnValue('فاتورة تجريبية'),
   printHtmlContent: jest.fn(),
@@ -489,7 +490,7 @@ describe('Exhaustive Testing: Financials, Handover, Shift, and Receipt Modules',
       );
     });
 
-    it('renders ReceiptDetailsModal with line items, breakdown, and barcode display', () => {
+    it('renders ReceiptDetailsModal with line items, breakdown, and barcode display', async () => {
       const onClose = jest.fn();
 
       render(
@@ -523,6 +524,7 @@ describe('Exhaustive Testing: Financials, Handover, Shift, and Receipt Modules',
       expect(screen.getByText('Congestal')).toBeInTheDocument();
       expect(screen.getByText('نقدي (Cash)')).toBeInTheDocument();
       expect(screen.getByText('180')).toBeInTheDocument();
+      await waitFor(() => expect(getConfigAction).toHaveBeenCalledWith('pharmacy_address'));
     });
   });
 });

@@ -13,7 +13,7 @@ describe('AccessDenied navigation behavior', () => {
   });
 
   afterEach(() => {
-    jest.runOnlyPendingTimers();
+    act(() => jest.runOnlyPendingTimers());
     jest.useRealTimers();
     jest.restoreAllMocks();
   });

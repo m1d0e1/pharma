@@ -198,6 +198,10 @@ const POSSearchSidebar = memo(forwardRef<POSSearchSidebarRef, POSSearchSidebarPr
                   e.preventDefault();
                   try {
                     const res = await barcodeLookupAction(currentTerm);
+                    if (!res.success) {
+                      toast.error(res.error || 'فشل البحث بالباركود');
+                      return;
+                    }
                     if (res.success && res.data) {
                       const drug = res.data;
                       addToCart({
@@ -215,6 +219,8 @@ const POSSearchSidebar = memo(forwardRef<POSSearchSidebarRef, POSSearchSidebarPr
                     }
                   } catch (err) {
                     console.error('Direct barcode lookup error:', err);
+                    toast.error('فشل البحث بالباركود');
+                    return;
                   }
 
                   if (searchResults.length > 0) {
@@ -344,6 +350,9 @@ export default function POSPage() {
   const [canShowDrafts, setCanShowDrafts] = useState(false);
   const [canSaveDraft, setCanSaveDraft] = useState(false);
   const [canSellNoStock, setCanSellNoStock] = useState(false);
+  const [canHandover, setCanHandover] = useState(false);
+  const [canViewReturns, setCanViewReturns] = useState(false);
+  const [canViewRestock, setCanViewRestock] = useState(false);
   const [maxInvoiceDiscountPercent, setMaxInvoiceDiscountPercent] = useState(0);
   const [isUserLoading, setIsUserLoading] = useState(true);
   const [userLoadError, setUserLoadError] = useState(false);
@@ -492,6 +501,9 @@ export default function POSPage() {
       setCanShowDrafts(hasUserPermissionSync(userObj, 'show_suspended_invoices'));
       setCanSaveDraft(hasUserPermissionSync(userObj, 'suspended_can_save_invoice'));
       setCanSellNoStock(hasUserPermissionSync(userObj, 'can_sell_no_stock'));
+      setCanHandover(hasUserPermissionSync(userObj, 'acc_can_view_handover'));
+      setCanViewReturns(hasUserPermissionSync(userObj, 'can_view_returns'));
+      setCanViewRestock(hasUserPermissionSync(userObj, 'can_view_restock'));
       setMaxInvoiceDiscountPercent(permissionNumber(userObj, 'max_invoice_discount_percent'));
 
       const res = await getCurrentUserAction();
@@ -635,11 +647,14 @@ export default function POSPage() {
     const largeToMedium = Number(selectedBatch?.strips_per_box) > 0
       ? Number(selectedBatch.strips_per_box)
       : (item.units.large_to_medium || 1);
+    const mediumToSmall = Number(selectedBatch?.medium_to_small) > 0
+      ? Number(selectedBatch.medium_to_small)
+      : (item.units.medium_to_small || 1);
     let newPrice = selectedBatch?.unit_price || item.basePrice;
     if (nextUnit === item.units.medium || nextUnit === 'medium') {
       newPrice /= largeToMedium;
     } else if (nextUnit === item.units.small || nextUnit === 'small') {
-      newPrice /= largeToMedium * (item.units.medium_to_small || 1);
+      newPrice /= largeToMedium * mediumToSmall;
     }
 
     const newItemId = `${item.drug_id}-${nextUnit}-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
@@ -663,11 +678,14 @@ export default function POSPage() {
       const largeToMedium = Number(selectedBatch?.strips_per_box) > 0
         ? Number(selectedBatch.strips_per_box)
         : (item.units.large_to_medium || 1);
+      const mediumToSmall = Number(selectedBatch?.medium_to_small) > 0
+        ? Number(selectedBatch.medium_to_small)
+        : (item.units.medium_to_small || 1);
       let newPrice = selectedBatch?.unit_price || item.basePrice;
       if (unit === item.units.medium || unit === 'medium') {
         newPrice /= largeToMedium;
       } else if (unit === item.units.small || unit === 'small') {
-        newPrice /= largeToMedium * (item.units.medium_to_small || 1);
+        newPrice /= largeToMedium * mediumToSmall;
       }
       
       return { ...item, selectedUnit: unit as any, price: Number(newPrice.toFixed(2)) };
@@ -688,10 +706,13 @@ export default function POSPage() {
           const largeToMedium = Number(batch.strips_per_box) > 0
             ? Number(batch.strips_per_box)
             : (item.units.large_to_medium || 1);
+          const mediumToSmall = Number(batch.medium_to_small) > 0
+            ? Number(batch.medium_to_small)
+            : (item.units.medium_to_small || 1);
           if (item.selectedUnit === item.units.medium || item.selectedUnit === 'medium') {
             basePrice /= largeToMedium;
           } else if (item.selectedUnit === item.units.small || item.selectedUnit === 'small') {
-            basePrice /= largeToMedium * (item.units.medium_to_small || 1);
+            basePrice /= largeToMedium * mediumToSmall;
           }
           newPrice = basePrice;
         }
@@ -702,12 +723,12 @@ export default function POSPage() {
   }, [setCart]);
 
   const stockInSelectedUnit = (item: CartItem) => {
-    const m2s = item.units.medium_to_small || 1;
     const selectedBatches = item.inventory_id
       ? item.batches?.filter((batch: any) => String(batch.inventory_id) === String(item.inventory_id)) || []
       : item.batches || [];
     if (selectedBatches.length === 0) {
       const l2m = item.units.large_to_medium || 1;
+      const m2s = item.units.medium_to_small || 1;
       if (item.selectedUnit === item.units.medium || item.selectedUnit === 'medium') return item.total_stock * l2m;
       if (item.selectedUnit === item.units.small || item.selectedUnit === 'small') return item.total_stock * l2m * m2s;
       return item.total_stock;
@@ -715,6 +736,7 @@ export default function POSPage() {
     return selectedBatches.reduce((total: number, batch: any) => {
       const quantity = Number(batch.quantity) || 0;
       const l2m = Number(batch.strips_per_box) > 0 ? Number(batch.strips_per_box) : (item.units.large_to_medium || 1);
+      const m2s = Number(batch.medium_to_small) > 0 ? Number(batch.medium_to_small) : (item.units.medium_to_small || 1);
       if (item.selectedUnit === item.units.medium || item.selectedUnit === 'medium') return total + quantity * l2m;
       if (item.selectedUnit === item.units.small || item.selectedUnit === 'small') return total + quantity * l2m * m2s;
       return total + quantity;
@@ -726,7 +748,78 @@ export default function POSPage() {
     resetPOS();
   }, [cart, resetPOS]);
 
-  const hasInvalidStockQuantity = cart.some(item => !item.isNegative && item.qty > Math.floor(stockInSelectedUnit(item) + 1e-9));
+  const hasInvalidStockQuantity = (() => {
+    type SimulatedBatch = {
+      remaining: number;
+      strips_per_box?: number;
+      medium_to_small?: number;
+    };
+    type SimulatedPool = {
+      batches: Map<string, SimulatedBatch>;
+      fallbackRemaining: number;
+    };
+
+    const pools = new Map<string, SimulatedPool>();
+    for (const item of cart) {
+      if (item.isNegative) continue;
+      const key = String(item.drug_id);
+      const pool = pools.get(key) || { batches: new Map<string, SimulatedBatch>(), fallbackRemaining: 0 };
+      pool.fallbackRemaining = Math.max(pool.fallbackRemaining, Number(item.total_stock) || 0);
+      for (const batch of item.batches || []) {
+        const batchId = String(batch.inventory_id);
+        if (!pool.batches.has(batchId)) {
+          pool.batches.set(batchId, {
+            remaining: Number(batch.quantity) || 0,
+            strips_per_box: Number(batch.strips_per_box) || undefined,
+            medium_to_small: Number(batch.medium_to_small) || undefined,
+          });
+        }
+      }
+      pools.set(key, pool);
+    }
+
+    const stockPerSelectedUnit = (item: CartItem, batch?: SimulatedBatch) => {
+      const l2m = Number(batch?.strips_per_box) > 0
+        ? Number(batch!.strips_per_box)
+        : (item.units.large_to_medium || 1);
+      const m2s = Number(batch?.medium_to_small) > 0
+        ? Number(batch!.medium_to_small)
+        : (item.units.medium_to_small || 1);
+      if (item.selectedUnit === item.units.medium || item.selectedUnit === 'medium') return 1 / l2m;
+      if (item.selectedUnit === item.units.small || item.selectedUnit === 'small') return 1 / (l2m * m2s);
+      return 1;
+    };
+
+    for (const item of cart) {
+      if (item.isNegative) continue;
+      const pool = pools.get(String(item.drug_id));
+      if (!pool) return true;
+      let remainingUnits = Number(item.qty) || 0;
+
+      if (pool.batches.size > 0) {
+        const candidateIds = item.inventory_id
+          ? [String(item.inventory_id)]
+          : (item.batches || []).map((batch: any) => String(batch.inventory_id));
+        const ids = candidateIds.length > 0 ? candidateIds : Array.from(pool.batches.keys());
+        for (const batchId of ids) {
+          if (remainingUnits <= 0.000001) break;
+          const batch = pool.batches.get(batchId);
+          if (!batch) continue;
+          const stockPerUnit = stockPerSelectedUnit(item, batch);
+          const capacity = batch.remaining / stockPerUnit;
+          const consumeUnits = Math.min(remainingUnits, capacity);
+          batch.remaining = Math.max(0, batch.remaining - consumeUnits * stockPerUnit);
+          remainingUnits -= consumeUnits;
+        }
+        if (remainingUnits > 0.000001) return true;
+      } else {
+        const requiredBaseStock = remainingUnits * stockPerSelectedUnit(item);
+        if (pool.fallbackRemaining + 0.000001 < requiredBaseStock) return true;
+        pool.fallbackRemaining -= requiredBaseStock;
+      }
+    }
+    return false;
+  })();
 
   const handleCheckout = async (status: 'completed' | 'draft' = 'completed', force = false) => {
     if (cart.length === 0 || checkoutLockRef.current) return;
@@ -791,13 +884,15 @@ export default function POSPage() {
           const invoice = {
             id: result.data.sale_id,
             total_amount: total,
+            discount_amount: totalDiscount + percentDiscountValue,
+            additional_fees: additionalFees,
             created_at: result.data.created_at,
             payment_method: paymentMethod,
             profiles: { full_name: currentUserName },
             patients: selectedPatient ? { full_name: selectedPatient.full_name, phone: selectedPatient.phone } : null,
             sales_items: cart.map(item => ({
               quantity_sold: item.qty,
-              unit_price: item.price,
+              unit_price: item.price * (1 - (item.itemDiscountPercent || 0) / 100),
               unit: item.selectedUnit,
               units: item.units,
               inventory: { master_drugs: { trade_name: item.trade_name, trade_name_en: item.trade_name_en } }
@@ -883,7 +978,10 @@ export default function POSPage() {
     }
 
     setPaymentMethod(draft.payment_method);
+    setCheckNumber(draft.check_number || '');
     setTotalDiscount(draft.discount_amount || 0);
+    setDiscountPercent(0);
+    setAdditionalFees(draft.additional_fees || 0);
     setShowDraftsModal(false);
     toast.success('تم تحميل المسودة');
   };
@@ -902,11 +1000,14 @@ export default function POSPage() {
           min_price: drug.unit_price || drug.official_price,
           is_expired: drug.is_expired
         });
+      } else if (!res.success) {
+        toast.error(res.error || 'فشل البحث بالباركود');
       } else {
         toast.error('المنتج غير موجود');
       }
     } catch (error) {
       console.error('Barcode scan error:', error);
+      toast.error('فشل البحث بالباركود');
     }
   });
 
@@ -948,15 +1049,20 @@ export default function POSPage() {
         e.preventDefault();
         const selectedItem = cart.find(i => i.id === selectedRowCartId);
         if (selectedItem) {
+          if (!canViewRestock) {
+            toast.error('غير مصرح');
+            return;
+          }
           addToShortagesAction({ drug_id: selectedItem.drug_id }).then(res => {
             if (res.success) toast.success('تمت الإضافة إلى النواقص');
+            else toast.error((res as any).error || 'فشل إضافة الصنف إلى النواقص');
           });
         }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedRowCartId, cart]);
+  }, [selectedRowCartId, cart, canViewRestock]);
 
   useEffect(() => {
     const handleClick = () => closeContextMenu();
@@ -999,7 +1105,7 @@ export default function POSPage() {
       <div className="w-20 flex flex-col gap-2 bg-white dark:bg-slate-900 p-2 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xl overflow-y-auto shrink-0">
         <SidebarButton icon={Plus} label="جديد" color="bg-emerald-500" onClick={resetCart} />
         {canSaveDraft && <SidebarButton icon={Save} label="حفظ" color="bg-blue-500" onClick={() => handleCheckout('draft')} />}
-        <SidebarButton icon={Printer} label="طباعة" color="bg-indigo-500" onClick={() => handleCheckout('completed')} />
+        <SidebarButton icon={Printer} label="طباعة" color="bg-indigo-500" onClick={() => { setAutoPrintReceipt(true); handleCheckout('completed'); }} />
         <SidebarButton 
           icon={ShieldAlert} 
           label="فحص التداخلات" 
@@ -1014,9 +1120,13 @@ export default function POSPage() {
             try {
               const ingredients = cart.map(i => i.active_ingredient);
               const safetyRes = await checkDrugInteractions(ingredients, selectedPatient?.id);
+              if (!safetyRes.success) {
+                toast.error(safetyRes.error || 'فشل عملية الفحص', { id: checkToast });
+                return;
+              }
               
               const allAlerts: any[] = [];
-              if (safetyRes.success && safetyRes.data) {
+              if (safetyRes.data) {
                 allAlerts.push(...(safetyRes.data.interactions || []).map((i: any) => ({ ...i, type: 'interaction' })));
                 allAlerts.push(...(safetyRes.data.allergies || []).map((i: any) => ({ ...i, type: 'allergy' })));
               }
@@ -1037,8 +1147,8 @@ export default function POSPage() {
         />
         <div className="h-px bg-slate-100 dark:bg-slate-800 my-1" />
         {canShowDrafts && <SidebarButton icon={FileText} label="فواتير معلقة" color="bg-amber-500" onClick={() => { fetchDrafts(); setShowDraftsModal(true); }} />}
-        <SidebarButton icon={RotateCcw} label="استرجاع" color="bg-rose-500" onClick={() => setShowReturnModal(true)} />
-        <SidebarButton icon={ArrowLeftRight} label="تسليم الدرج" color="bg-blue-600" onClick={() => setShowHandoverModal(true)} />
+        {canViewReturns && <SidebarButton icon={RotateCcw} label="استرجاع" color="bg-rose-500" onClick={() => setShowReturnModal(true)} />}
+        {canHandover && <SidebarButton icon={ArrowLeftRight} label="تسليم الدرج" color="bg-blue-600" onClick={() => setShowHandoverModal(true)} />}
         <div className="h-px bg-slate-100 dark:bg-slate-800 my-1" />
         <SidebarButton icon={User} label="عميل جديد" color="bg-purple-500" onClick={() => setPatientSearch('')} />
         <SidebarButton icon={PlusCircle} label="إضافة صنف" color="bg-slate-700" onClick={() => { searchSidebarRef.current?.clear(); searchSidebarRef.current?.focus(); }} />
@@ -1360,7 +1470,10 @@ export default function POSPage() {
                   <p className="text-2xl font-black text-emerald-500">{total.toLocaleString('en-US')} ج.م</p>
                </div>
                <button 
-                 onClick={() => handleCheckout('completed')} 
+                 onClick={() => {
+                   setAutoPrintReceipt(true);
+                   handleCheckout('completed');
+                 }}
                  disabled={isProcessing || cart.length === 0 || hasInvalidStockQuantity}
                  data-nav="checkout-button"
                  onKeyDown={handleInputKeyDown}
@@ -1523,7 +1636,7 @@ export default function POSPage() {
               label="معلومات الصنف (F2)" 
               onClick={() => setShowDrugDetails(contextMenu.drugId)} 
             />
-            <ContextMenuItem 
+            {canViewRestock && <ContextMenuItem
               icon={PlusCircle} 
               label="إضافة إلى النواقص (F9)" 
               onClick={async () => {
@@ -1531,7 +1644,7 @@ export default function POSPage() {
                 if (res.success) toast.success('تمت الإضافة إلى النواقص');
                 else toast.error((res as any).error);
               }} 
-            />
+            />}
             <ContextMenuItem 
               icon={Settings} 
               label="تعديل كارت الصنف" 

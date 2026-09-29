@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { createSqliteTransactionDb as mockCreateSqliteTransactionDb } from '@/tests/helpers/sqlite-transaction-db';
 
 let mockDb: Database.Database;
 let mockSession: any;
@@ -10,7 +11,7 @@ jest.mock('@/lib/db/tauri', () => ({
     const result = mockDb.prepare(sql).run(...params);
     return { rowsAffected: result.changes, lastInsertId: Number(result.lastInsertRowid) };
   }),
-  dbTransaction: jest.fn(async (callback: () => Promise<unknown>) => callback()),
+  dbTransaction: jest.fn(async (callback: any) => callback(mockCreateSqliteTransactionDb(mockDb))),
   generateId: jest.fn(() => 'test-id'),
 }));
 
@@ -18,7 +19,6 @@ jest.mock('@/lib/auth/local', () => ({
   getLocalSession: jest.fn(async () => mockSession),
   hasUserPermissionSync: jest.fn((user: any, permission: string) =>
     user?.role === 'owner'
-    || user?.role === 'admin'
     || user?.permissions?.[permission] === true
   ),
 }));
@@ -76,6 +76,21 @@ describe('supplier management authorization and history safety', () => {
       id: 'manager-1',
       role: 'manager',
       permissions: { can_view_suppliers: true, can_view_purchases: true },
+    };
+
+    expect(await getSuppliersAction()).toMatchObject({ success: true });
+    expect(await addSupplierAction({ name_ar: 'Blocked add' })).toMatchObject({ success: false });
+    expect(await updateSupplierAction(1, { name_ar: 'Blocked update' })).toMatchObject({ success: false });
+    expect(await deleteSupplierAction(1)).toMatchObject({ success: false });
+    expect(mockDb.prepare('SELECT name_ar FROM suppliers WHERE id = 1').get()).toEqual({ name_ar: 'Existing' });
+  });
+
+  it('keeps purchase-only admins read-only when supplier management is explicitly denied', async () => {
+    mockDb.prepare("INSERT INTO suppliers (name_ar) VALUES ('Existing')").run();
+    mockSession = {
+      id: 'admin-1',
+      role: 'admin',
+      permissions: { can_view_purchases: true, can_view_suppliers: false },
     };
 
     expect(await getSuppliersAction()).toMatchObject({ success: true });

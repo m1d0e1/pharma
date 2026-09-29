@@ -39,7 +39,7 @@ const db = {
     }
   }),
   transaction: (cb: any) => {
-    return (...args: any[]) => dbTransaction(async () => await cb(...args));
+    return (...args: any[]) => dbTransaction(async (transactionDb) => await cb(transactionDb, ...args));
   },
   exec: (sql: string) => {
     return dbExecute(sql);

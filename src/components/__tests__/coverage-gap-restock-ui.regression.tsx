@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import RestockPage from '@/app/(dashboard)/restock/page';
 import { getRestockItemsAction } from '@/app/actions-client/inventory';
 import { getClientSession } from '@/lib/auth/local';
@@ -105,5 +105,22 @@ describe('restock route interactions', () => {
 
     expect(await screen.findByText('Restock Drug')).toBeInTheDocument();
     expect(getRestockItemsAction).toHaveBeenCalledTimes(2);
+  });
+
+  it('reloads the mounted restock list when inventory changes', async () => {
+    (getRestockItemsAction as jest.Mock)
+      .mockResolvedValueOnce({ success: true, data: [restockItem] })
+      .mockResolvedValueOnce({ success: true, data: [] });
+
+    render(<RestockPage />);
+    expect(await screen.findByText('Restock Drug')).toBeInTheDocument();
+
+    act(() => {
+      window.dispatchEvent(new Event('inventory-alerts-refresh'));
+    });
+
+    await waitFor(() => expect(getRestockItemsAction).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText('المخزون مكتمل! لا توجد نواقص حالياً.')).toBeInTheDocument();
+    expect(screen.queryByText('Restock Drug')).not.toBeInTheDocument();
   });
 });

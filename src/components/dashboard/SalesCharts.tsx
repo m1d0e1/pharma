@@ -76,6 +76,34 @@ export default function ReportsClient({
     return Math.max(...topDrugs.map(d => d.sales))
   }, [topDrugs])
 
+  const revenueTrend = useMemo(() => {
+    if (salesHistory.length < 2) {
+      return { label: 'لا توجد مقارنة كافية', isPositive: true }
+    }
+
+    const midpoint = Math.floor(salesHistory.length / 2)
+    const previousPeriod = salesHistory
+      .slice(0, midpoint)
+      .reduce((sum, item) => sum + Number(item.revenue || 0), 0)
+    const currentPeriod = salesHistory
+      .slice(midpoint)
+      .reduce((sum, item) => sum + Number(item.revenue || 0), 0)
+
+    if (previousPeriod <= 0) {
+      return currentPeriod > 0
+        ? { label: 'مبيعات جديدة في آخر 15 يوماً', isPositive: true }
+        : { label: 'استقرار المبيعات خلال آخر 30 يوماً', isPositive: true }
+    }
+
+    const change = ((currentPeriod - previousPeriod) / previousPeriod) * 100
+    const rounded = Math.round(change)
+    const signed = rounded > 0 ? `+${rounded}%` : `${rounded}%`
+    return {
+      label: `${signed} مقارنة بأول 15 يوماً`,
+      isPositive: change >= 0,
+    }
+  }, [salesHistory])
+
   return (
     <div className="space-y-10 animate-in fade-in slide-in-from-bottom-4 duration-1000" dir="rtl">
       {/* Revenue Over Time Chart - Premium Style */}
@@ -95,9 +123,22 @@ export default function ReportsClient({
             </div>
           </div>
           <div className="flex gap-4">
-             <div className="px-6 py-3 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-100 dark:border-emerald-800/30 rounded-2xl flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                <span className="text-emerald-600 dark:text-emerald-400 text-xs font-black">+15% نمو هذا الشهر</span>
+             <div className={cn(
+               "px-6 py-3 border rounded-2xl flex items-center gap-2",
+               revenueTrend.isPositive
+                 ? "bg-emerald-50 dark:bg-emerald-900/20 border-emerald-100 dark:border-emerald-800/30"
+                 : "bg-rose-50 dark:bg-rose-900/20 border-rose-100 dark:border-rose-800/30"
+             )}>
+                <span className={cn(
+                  "w-2 h-2 rounded-full animate-pulse",
+                  revenueTrend.isPositive ? "bg-emerald-500" : "bg-rose-500"
+                )} />
+                <span className={cn(
+                  "text-xs font-black",
+                  revenueTrend.isPositive
+                    ? "text-emerald-600 dark:text-emerald-400"
+                    : "text-rose-600 dark:text-rose-400"
+                )}>{revenueTrend.label}</span>
              </div>
           </div>
         </div>
@@ -279,4 +320,3 @@ export default function ReportsClient({
     </div>
   )
 }
-

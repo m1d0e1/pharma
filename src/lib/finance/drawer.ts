@@ -1,4 +1,4 @@
-import { dbGet, dbSelect } from '@/lib/db/tauri';
+import { dbGet, dbSelect, type TransactionDb } from '@/lib/db/tauri';
 
 const HANDOVER_DETAILS_SQL = `
   SELECT
@@ -60,8 +60,10 @@ const HANDOVER_DETAILS_SQL = `
   LEFT JOIN users u ON (CAST(u.id AS TEXT) = CAST(s.user_id AS TEXT) OR LOWER(u.username) = LOWER(s.user_id))
 `;
 
-export async function loadHandoverDetails(shiftId: string) {
-  const row = await dbGet(`${HANDOVER_DETAILS_SQL} WHERE s.id = ?`, [shiftId]) as any;
+export async function loadHandoverDetails(shiftId: string, scopedDb?: Pick<TransactionDb, 'get'>) {
+  const row = scopedDb
+    ? await scopedDb.get(`${HANDOVER_DETAILS_SQL} WHERE s.id = ?`, [shiftId]) as any
+    : await dbGet(`${HANDOVER_DETAILS_SQL} WHERE s.id = ?`, [shiftId]) as any;
   if (!row) throw new Error('الوردية غير موجودة');
   return calculateDrawer(row);
 }

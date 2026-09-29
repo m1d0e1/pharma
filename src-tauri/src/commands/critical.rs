@@ -1,12 +1,28 @@
-use serde::{de, Deserialize, Deserializer, Serialize};
-use serde_json::Value;
-use sqlx::{sqlite::SqliteConnectOptions, Connection, Row, Sqlite, SqliteConnection, Transaction};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Number, Value};
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqliteRow},
+    Column, Connection, Row, Sqlite, SqliteConnection, Transaction, TypeInfo, ValueRef,
+};
 use std::{
     collections::{HashMap, HashSet},
     str::FromStr,
 };
 use tauri::{Manager, State};
 use uuid::Uuid;
+
+use super::purchase_accounting_policy::{
+    build_purchase_accounting_plan, PurchaseSettlementAccount,
+};
+pub use super::purchase_dto::{PurchaseItem, PurchasePayload};
+pub(crate) use super::purchase_policy::purchase_inventory_paid_factor;
+#[cfg(test)]
+use super::purchase_policy::validate_purchase_items;
+use super::purchase_policy::{
+    normalize_date_ymd, normalize_valid_date_ymd, purchase_item_total,
+    validate_completed_purchase_expiry, validate_purchase_payload,
+};
+use super::serde_compat::{de_f64, de_i64, de_opt_i64, de_opt_string};
 
 #[derive(Default)]
 pub struct DbTransactions {
@@ -51,64 +67,6 @@ pub struct CheckoutResult {
     pub total_amount: f64,
     pub points_earned: i64,
     pub created_at: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct PurchasePayload {
-    #[serde(default, deserialize_with = "de_opt_string")]
-    pub id: Option<String>,
-    #[serde(deserialize_with = "de_i64")]
-    pub supplier_id: i64,
-    #[serde(default, deserialize_with = "de_opt_string")]
-    pub pharmacy_id: Option<String>,
-    #[serde(default, deserialize_with = "de_string")]
-    pub user_id: String,
-    pub invoice_number: Option<String>,
-    pub invoice_date: Option<String>,
-    pub payment_method: Option<String>,
-    pub notes: Option<String>,
-    pub check_number: Option<String>,
-    #[serde(default, deserialize_with = "de_f64")]
-    pub expenses: f64,
-    #[serde(default, deserialize_with = "de_f64")]
-    pub discount_value: f64,
-    #[serde(default, deserialize_with = "de_f64")]
-    pub discount_percent: f64,
-    #[serde(default, deserialize_with = "de_f64")]
-    pub tax_percent: f64,
-    pub status: Option<String>,
-    #[serde(default)]
-    pub cart: Vec<PurchaseItem>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct PurchaseItem {
-    #[serde(default, deserialize_with = "de_opt_i64")]
-    pub purchase_invoice_item_id: Option<i64>,
-    #[serde(deserialize_with = "de_i64")]
-    pub id: i64,
-    #[serde(default, deserialize_with = "de_f64")]
-    pub quantity: f64,
-    #[serde(default, deserialize_with = "de_opt_i64")]
-    pub unit_id: Option<i64>,
-    pub expiry_date: Option<String>,
-    /// Net (post-discount) cost price per large unit (box).
-    /// The UI pre-applies `discount_percent` before sending, so this
-    /// field already reflects the discounted price. `discount_percent`
-    /// is stored for display purposes only and is NOT re-applied in math.
-    #[serde(default, deserialize_with = "de_f64")]
-    pub cost_price: f64,
-    #[serde(default, deserialize_with = "de_opt_f64")]
-    pub selling_price: Option<f64>,
-    #[serde(default, deserialize_with = "de_f64")]
-    pub bonus_quantity: f64,
-    #[serde(default, deserialize_with = "de_f64")]
-    pub tax_percent: f64,
-    #[serde(default, deserialize_with = "de_f64")]
-    pub discount_percent: f64,
-    #[serde(default = "one_i64", deserialize_with = "de_i64")]
-    pub strips_per_box: i64,
-    pub barcode: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -213,6 +171,27 @@ pub async fn db_execute_guarded(
 }
 
 #[tauri::command]
+pub async fn db_select_guarded(
+    transactions: State<'_, DbTransactions>,
+    sql: String,
+    params: Vec<Value>,
+    tx_id: String,
+) -> Result<Vec<Value>, String> {
+    validate_read_sql(&sql)?;
+    let mut connections = transactions.connections.lock().await;
+    let conn = connections
+        .get_mut(&tx_id)
+        .ok_or_else(|| "Transaction not found".to_string())?;
+
+    let mut query = sqlx::query(&sql);
+    for param in params {
+        query = bind_json_value(query, param);
+    }
+    let rows = query.fetch_all(conn).await.map_err(|e| e.to_string())?;
+    rows.iter().map(sqlite_row_to_json).collect()
+}
+
+#[tauri::command]
 pub async fn db_transaction_begin(
     app: tauri::AppHandle,
     transactions: State<'_, DbTransactions>,
@@ -266,6 +245,40 @@ async fn execute_guarded_on_connection(
         rows_affected: result.rows_affected(),
         last_insert_id: result.last_insert_rowid(),
     })
+}
+
+fn sqlite_row_to_json(row: &SqliteRow) -> Result<Value, String> {
+    let mut object = Map::new();
+    for (index, column) in row.columns().iter().enumerate() {
+        let raw = row.try_get_raw(index).map_err(|e| e.to_string())?;
+        let value = if raw.is_null() {
+            Value::Null
+        } else {
+            match raw.type_info().name() {
+                "INTEGER" => Value::Number(
+                    row.try_get::<i64, _>(index)
+                        .map_err(|e| e.to_string())?
+                        .into(),
+                ),
+                "REAL" => {
+                    Number::from_f64(row.try_get::<f64, _>(index).map_err(|e| e.to_string())?)
+                        .map(Value::Number)
+                        .unwrap_or(Value::Null)
+                }
+                "TEXT" => {
+                    Value::String(row.try_get::<String, _>(index).map_err(|e| e.to_string())?)
+                }
+                "BLOB" => serde_json::to_value(
+                    row.try_get::<Vec<u8>, _>(index)
+                        .map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?,
+                kind => return Err(format!("Unsupported SQLite value type '{}'", kind)),
+            }
+        };
+        object.insert(column.name().to_string(), value);
+    }
+    Ok(Value::Object(object))
 }
 
 #[tauri::command]
@@ -475,6 +488,35 @@ fn validate_write_sql(sql: &str) -> Result<(), String> {
         return Err("Multiple SQL statements are not allowed".into());
     }
 
+    Ok(())
+}
+
+fn validate_read_sql(sql: &str) -> Result<(), String> {
+    let trimmed = sql.trim();
+    if trimmed.is_empty() {
+        return Err("Empty SQL is not allowed".into());
+    }
+
+    let upper = trimmed.to_ascii_uppercase();
+    let first = upper.split_whitespace().next().unwrap_or("");
+    if first != "SELECT" {
+        return Err(format!(
+            "SQL command '{}' is not allowed for transactional reads",
+            first
+        ));
+    }
+    if upper.contains("PRAGMA")
+        || upper.contains("ATTACH")
+        || upper.contains("DETACH")
+        || upper.contains("LOAD_EXTENSION")
+    {
+        return Err("SQL command contains a blocked operation".into());
+    }
+
+    let semicolons = trimmed.matches(';').count();
+    if semicolons > 1 || (semicolons == 1 && !trimmed.ends_with(';')) {
+        return Err("Multiple SQL statements are not allowed".into());
+    }
     Ok(())
 }
 
@@ -996,12 +1038,6 @@ pub(crate) async fn save_purchase_invoice_tx(
         for item in &mut payload.cart {
             item.expiry_date = normalize_valid_date_ymd(item.expiry_date.as_deref())
                 .map_err(|error| format!("Invalid expiry date for drug {}: {error}", item.id))?;
-            if item.expiry_date.is_none() {
-                return Err(format!(
-                    "Completed purchase requires an expiry date for drug {}",
-                    item.id
-                ));
-            }
         }
     }
     let (items_total, inventory_paid_factor) = validate_purchase_payload(&payload)?;
@@ -1013,18 +1049,7 @@ pub(crate) async fn save_purchase_invoice_tx(
         if payload.invoice_date.is_none() {
             payload.invoice_date = Some(today.clone());
         }
-        for item in &payload.cart {
-            if item
-                .expiry_date
-                .as_deref()
-                .is_some_and(|expiry| expiry < today.as_str())
-            {
-                return Err(format!(
-                    "Expiry date for drug {} is already expired",
-                    item.id
-                ));
-            }
-        }
+        validate_completed_purchase_expiry(&payload.cart, &today)?;
     }
     sqlx::query("ALTER TABLE purchase_invoice_items ADD COLUMN inventory_id TEXT")
         .execute(&mut **tx)
@@ -1097,21 +1122,38 @@ pub(crate) async fn save_purchase_invoice_tx(
         return Err("Purchase pharmacy does not match the current user".into());
     }
     let mut barcode_owners: HashMap<String, i64> = HashMap::new();
+    let mut changes_master_conversion = false;
     for item in &payload.cart {
-        let stopped: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(stop_dealing),0) FROM master_drugs WHERE id=?").bind(item.id).fetch_one(&mut **tx).await.map_err(|e| e.to_string())?;
-        if stopped == 1 { return Err("هذا الصنف مؤرشف أو متوقف؛ أزله من الفاتورة أو أعد تفعيله من إدارة الأصناف".into()); }
-        if sqlx::query("SELECT 1 FROM master_drugs WHERE id = ?")
+        let drug_row = sqlx::query(
+            "SELECT COALESCE(stop_dealing, 0) AS stop_dealing,
+                    COALESCE(NULLIF(large_to_medium, 0), 1) AS large_to_medium
+             FROM master_drugs
+             WHERE id = ?",
+        )
             .bind(item.id)
             .fetch_optional(&mut **tx)
             .await
-            .map_err(|e| e.to_string())?
-            .is_none()
-        {
+            .map_err(|e| e.to_string())?;
+        let Some(drug_row) = drug_row else {
             return Err(format!(
                 "Drug {} no longer exists; remove it and add it again",
                 item.id
             ));
+        };
+        let stopped = drug_row
+            .try_get::<i64, _>("stop_dealing")
+            .unwrap_or_default();
+        if stopped == 1 {
+            return Err(
+                "هذا الصنف مؤرشف أو متوقف؛ أزله من الفاتورة أو أعد تفعيله من إدارة الأصناف"
+                    .into(),
+            );
         }
+        let current_large_to_medium = drug_row
+            .try_get::<i64, _>("large_to_medium")
+            .unwrap_or(1)
+            .max(1);
+        changes_master_conversion |= item.strips_per_box.max(1) != current_large_to_medium;
         if let Some(barcode) = item
             .barcode
             .as_deref()
@@ -1149,16 +1191,35 @@ pub(crate) async fn save_purchase_invoice_tx(
         }
     }
 
-    let mut editing_completed = false;
-    if let Some(old) = sqlx::query("SELECT supplier_id, total_amount, payment_method, status, invoice_number, pharmacy_id FROM purchase_invoices WHERE id = ?")
+    let old_invoice = sqlx::query("SELECT * FROM purchase_invoices WHERE id = ?")
         .bind(&invoice_id)
         .fetch_optional(&mut **tx)
         .await
-        .map_err(|e| e.to_string())?
-    {
+        .map_err(|e| e.to_string())?;
+    if let Some(old) = old_invoice.as_ref() {
+        let old_pharmacy_id: Option<String> = old.try_get("pharmacy_id").unwrap_or(None);
+        if normalize_pharmacy_id(old_pharmacy_id.as_deref())
+            != normalize_pharmacy_id(payload.pharmacy_id.as_deref())
+        {
+            return Err("Purchase invoice belongs to another pharmacy".into());
+        }
         let old_status: String = old.try_get("status").unwrap_or_default();
         if old_status == "completed" {
             ensure_no_finalized_purchase_returns(tx, &invoice_id, "edit").await?;
+            if let Some(result) = edit_consumed_purchase(tx, &invoice_id, old, &payload, items_total, inventory_paid_factor).await? {
+                return Ok(result);
+            }
+        }
+    }
+    // Protected edits preserve the original lot conversion without rewriting the master.
+    if changes_master_conversion && !user_has_permission(
+        user_role.as_deref(), user_permissions.as_deref(), "can_modify_unit_conversion", false,
+    ) {
+        return Err("Unauthorized: can_modify_unit_conversion permission required".into());
+    }
+    let mut editing_completed = false;
+    if let Some(old) = old_invoice {
+        if old.try_get::<String, _>("status").unwrap_or_default() == "completed" {
             editing_completed = true;
             reverse_completed_purchase(
                 tx,
@@ -1310,16 +1371,7 @@ pub(crate) async fn save_purchase_invoice_tx(
                 .await
                 .map_err(|e| e.to_string())?;
 
-            let pharmacy_scope = payload.pharmacy_id.as_deref().unwrap_or("local_default");
-            sqlx::query(
-                "UPDATE shortages SET status = 'received' WHERE drug_id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default')) AND (status IN ('pending', 'ordered') OR status IS NULL OR status = '')",
-            )
-            .bind(item.id)
-            .bind(pharmacy_scope)
-            .bind(pharmacy_scope)
-            .execute(&mut **tx)
-            .await
-            .map_err(|e| e.to_string())?;
+            resolve_shortage_if_stock_recovered(tx, item.id, payload.pharmacy_id.as_deref()).await?;
         }
     }
 
@@ -1752,6 +1804,15 @@ async fn process_checkout_tx(
     payload: CheckoutPayload,
     total_amount: f64,
 ) -> Result<CheckoutResult, String> {
+    if !matches!(payload.status.as_str(), "draft" | "completed") {
+        return Err("Invalid checkout status".into());
+    }
+    if !matches!(
+        payload.payment_method.as_str(),
+        "cash" | "credit" | "check" | "visa" | "delivery" | "wallet"
+    ) {
+        return Err("Invalid checkout payment method".into());
+    }
     if !total_amount.is_finite()
         || total_amount < 0.0
         || !payload.additional_fees.is_finite()
@@ -1789,13 +1850,30 @@ async fn process_checkout_tx(
     if !user_has_permission(user_role.as_deref(), user_permissions.as_deref(), "can_access_pos", true) {
         return Err("Unauthorized: can_access_pos permission required".into());
     }
+    if payload.status == "draft"
+        && !user_has_permission(
+            user_role.as_deref(),
+            user_permissions.as_deref(),
+            "suspended_can_save_invoice",
+            false,
+        )
+    {
+        return Err("Unauthorized: suspended_can_save_invoice permission required".into());
+    }
     if payload.payment_method == "credit"
         && !user_has_permission(user_role.as_deref(), user_permissions.as_deref(), "can_sell_credit", false)
     {
         return Err("Unauthorized: can_sell_credit permission required".into());
     }
-    if payload.items.iter().any(|item| item.is_negative)
-        && !user_has_permission(user_role.as_deref(), user_permissions.as_deref(), "can_sell_no_stock", false)
+    let can_sell_no_stock = user_has_permission(
+        user_role.as_deref(),
+        user_permissions.as_deref(),
+        "can_sell_no_stock",
+        false,
+    );
+    if payload.status != "completed"
+        && payload.items.iter().any(|item| item.is_negative)
+        && !can_sell_no_stock
     {
         return Err("Unauthorized: can_sell_no_stock permission required".into());
     }
@@ -2006,22 +2084,6 @@ async fn process_checkout_tx(
             continue;
         }
 
-        if item.is_negative {
-            insert_sale_item(
-                tx,
-                &sale_id,
-                None,
-                item,
-                item.quantity_sold,
-                true,
-                0.0,
-                large_to_medium,
-                medium_to_small,
-            )
-            .await?;
-            continue;
-        }
-
         let selected_inventory_id = item.inventory_id.as_deref();
         let batches = if let Some(inventory_id) = selected_inventory_id {
             sqlx::query(
@@ -2058,7 +2120,7 @@ async fn process_checkout_tx(
             .map_err(|e| e.to_string())?
         };
 
-        if selected_inventory_id.is_some() && batches.is_empty() {
+        if selected_inventory_id.is_some() && batches.is_empty() && !item.is_negative {
             return Err(
                 "Selected inventory batch has insufficient stock, is for the wrong drug/pharmacy or is expired"
                     .to_string(),
@@ -2089,7 +2151,7 @@ async fn process_checkout_tx(
             );
             total + batch_qty / stock_per_selected_unit
         });
-        if selected_unit_capacity + 0.000001 < item.quantity_sold {
+        if !item.is_negative && selected_unit_capacity + 0.000001 < item.quantity_sold {
             return Err(format!(
                 "Insufficient stock for \"{}\" (available: {:.2} {})",
                 drug_name, selected_unit_capacity, item.selected_unit
@@ -2160,10 +2222,28 @@ async fn process_checkout_tx(
         }
 
         if remaining_selected_units > 0.000001 {
-            return Err(format!(
-                "Inventory changed while processing \"{}\"; please retry",
-                drug_name
-            ));
+            if item.is_negative {
+                if !can_sell_no_stock {
+                    return Err("Unauthorized: can_sell_no_stock permission required".into());
+                }
+                insert_sale_item(
+                    tx,
+                    &sale_id,
+                    None,
+                    item,
+                    remaining_selected_units,
+                    true,
+                    0.0,
+                    large_to_medium,
+                    medium_to_small,
+                )
+                .await?;
+            } else {
+                return Err(format!(
+                    "Inventory changed while processing \"{}\"; please retry",
+                    drug_name
+                ));
+            }
         }
 
         sqlx::query(
@@ -2312,183 +2392,6 @@ async fn process_checkout_tx(
     })
 }
 
-fn one_i64() -> i64 {
-    1
-}
-
-fn de_f64<'de, D>(deserializer: D) -> Result<f64, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    Ok(match Value::deserialize(deserializer)? {
-        Value::Null => 0.0,
-        Value::Number(n) => n.as_f64().unwrap_or(0.0),
-        Value::String(s) if s.trim().is_empty() => 0.0,
-        Value::String(s) => s.trim().parse::<f64>().map_err(de::Error::custom)?,
-        other => return Err(de::Error::custom(format!("expected number, got {other}"))),
-    })
-}
-
-fn de_opt_f64<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    Ok(match Value::deserialize(deserializer)? {
-        Value::Null => None,
-        Value::Number(n) => n.as_f64(),
-        Value::String(s) if s.trim().is_empty() => None,
-        Value::String(s) => Some(s.trim().parse::<f64>().map_err(de::Error::custom)?),
-        other => {
-            return Err(de::Error::custom(format!(
-                "expected optional number, got {other}"
-            )))
-        }
-    })
-}
-
-fn de_i64<'de, D>(deserializer: D) -> Result<i64, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    Ok(match Value::deserialize(deserializer)? {
-        Value::Null => 0,
-        Value::Number(n) => n
-            .as_i64()
-            .or_else(|| n.as_u64().map(|v| v as i64))
-            .or_else(|| n.as_f64().map(|v| v as i64))
-            .unwrap_or(0),
-        Value::String(s) if s.trim().is_empty() => 0,
-        Value::String(s) => parse_i64_lossless(s.trim()).map_err(de::Error::custom)?,
-        other => return Err(de::Error::custom(format!("expected integer, got {other}"))),
-    })
-}
-
-fn de_opt_i64<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    Ok(match Value::deserialize(deserializer)? {
-        Value::Null => None,
-        Value::Number(n) => n
-            .as_i64()
-            .or_else(|| n.as_u64().map(|v| v as i64))
-            .or_else(|| n.as_f64().map(|v| v as i64)),
-        Value::String(s) if s.trim().is_empty() => None,
-        Value::String(s) => Some(parse_i64_lossless(s.trim()).map_err(de::Error::custom)?),
-        other => {
-            return Err(de::Error::custom(format!(
-                "expected optional integer, got {other}"
-            )))
-        }
-    })
-}
-
-fn de_string<'de, D>(deserializer: D) -> Result<String, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    Ok(match Value::deserialize(deserializer)? {
-        Value::Null => String::new(),
-        Value::Number(n) => n.to_string(),
-        Value::String(s) => s,
-        Value::Bool(b) => b.to_string(),
-        other => return Err(de::Error::custom(format!("expected string, got {other}"))),
-    })
-}
-
-fn de_opt_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    Ok(match Value::deserialize(deserializer)? {
-        Value::Null => None,
-        Value::Number(n) => Some(n.to_string()),
-        Value::String(s) if s.trim().is_empty() => None,
-        Value::String(s) => Some(s),
-        Value::Bool(b) => Some(b.to_string()),
-        other => {
-            return Err(de::Error::custom(format!(
-                "expected optional string, got {other}"
-            )))
-        }
-    })
-}
-
-fn parse_i64_lossless(value: &str) -> Result<i64, String> {
-    if let Ok(parsed) = value.parse::<i64>() {
-        return Ok(parsed);
-    }
-    let parsed = value.parse::<f64>().map_err(|e| e.to_string())?;
-    if parsed.fract() != 0.0 {
-        return Err(format!("expected whole number, got {value}"));
-    }
-    Ok(parsed as i64)
-}
-
-fn normalize_date_ymd(input: Option<&str>) -> Option<String> {
-    let value = input?.trim();
-    if value.is_empty() {
-        return None;
-    }
-    let parts: Vec<&str> = value.split(&['/', '-'][..]).collect();
-    if parts.len() == 3 && parts[0].len() <= 2 && parts[2].len() == 4 {
-        return Some(format!("{}-{:0>2}-{:0>2}", parts[2], parts[1], parts[0]));
-    }
-    Some(value.to_string())
-}
-
-fn normalize_valid_date_ymd(input: Option<&str>) -> Result<Option<String>, String> {
-    let Some(raw) = input else {
-        return Ok(None);
-    };
-    let value = raw.trim();
-    if value.is_empty() {
-        return Ok(None);
-    }
-
-    let parts: Vec<&str> = value.split(&['/', '-'][..]).collect();
-    if parts.len() != 3 || parts.iter().any(|part| part.is_empty()) {
-        return Err(format!("Invalid calendar date '{value}'"));
-    }
-
-    let (year_text, month_text, day_text) = if parts[0].len() == 4 {
-        (parts[0], parts[1], parts[2])
-    } else if parts[2].len() == 4 {
-        (parts[2], parts[1], parts[0])
-    } else {
-        return Err(format!("Invalid calendar date '{value}'"));
-    };
-    if !year_text.chars().all(|c| c.is_ascii_digit())
-        || !month_text.chars().all(|c| c.is_ascii_digit())
-        || !day_text.chars().all(|c| c.is_ascii_digit())
-    {
-        return Err(format!("Invalid calendar date '{value}'"));
-    }
-
-    let year = year_text
-        .parse::<i32>()
-        .map_err(|_| format!("Invalid calendar date '{value}'"))?;
-    let month = month_text
-        .parse::<u32>()
-        .map_err(|_| format!("Invalid calendar date '{value}'"))?;
-    let day = day_text
-        .parse::<u32>()
-        .map_err(|_| format!("Invalid calendar date '{value}'"))?;
-    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-    let max_day = match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if leap => 29,
-        2 => 28,
-        _ => 0,
-    };
-    if year <= 0 || day == 0 || day > max_day {
-        return Err(format!("Invalid calendar date '{value}'"));
-    }
-
-    Ok(Some(format!("{year:04}-{month:02}-{day:02}")))
-}
-
 fn normalize_pharmacy_id(input: Option<&str>) -> String {
     input
         .map(str::trim)
@@ -2512,7 +2415,7 @@ fn decoded_permissions(permissions: Option<&str>) -> Option<Value> {
     Some(value)
 }
 
-fn user_has_permission(role: Option<&str>, permissions: Option<&str>, key: &str, legacy_pos: bool) -> bool {
+pub(crate) fn user_has_permission(role: Option<&str>, permissions: Option<&str>, key: &str, legacy_pos: bool) -> bool {
     let normalized_role = role.unwrap_or_default().trim().to_ascii_lowercase();
     if normalized_role == "owner" {
         return true;
@@ -2549,145 +2452,7 @@ fn user_permission_number(role: Option<&str>, permissions: Option<&str>, key: &s
 }
 
 pub(crate) fn user_can_view_purchases(role: Option<&str>, permissions: Option<&str>) -> bool {
-    role.is_some_and(|role| role.trim().eq_ignore_ascii_case("admin"))
-        || user_has_permission(role, permissions, "can_view_purchases", false)
-}
-
-/// Computes the gross line total for a purchase item.
-///
-/// CONVENTION: `item.cost_price` must be the net (post-discount) price.
-/// `item.discount_percent` is stored for display and is NOT applied here.
-///
-/// Tax compounds intentionally: item tax is applied first, invoice-level
-/// tax on top (e.g. excise then VAT). This matches Egyptian tax convention
-/// where VAT is levied on the already-taxed base. Both percentages combine
-/// multiplicatively, not additively.
-fn purchase_item_total(item: &PurchaseItem, invoice_tax_percent: f64) -> f64 {
-    item.quantity
-        * item.cost_price
-        * (1.0 + item.tax_percent / 100.0)
-        * (1.0 + invoice_tax_percent / 100.0)
-}
-
-// ponytail: one rule keeps purchased stock and its later return on the same net cost.
-pub(crate) fn purchase_inventory_paid_factor(
-    items_total: f64,
-    expenses: f64,
-    discount_value: f64,
-    discount_percent: f64,
-) -> f64 {
-    if items_total <= f64::EPSILON {
-        return 1.0;
-    }
-    let invoice_base = items_total + expenses;
-    ((invoice_base - discount_value).max(0.0) / items_total) * (1.0 - discount_percent / 100.0)
-}
-
-fn validate_purchase_payload(payload: &PurchasePayload) -> Result<(f64, f64), String> {
-    if payload.supplier_id <= 0 || payload.user_id.trim().is_empty() {
-        return Err("Invalid purchase identity".into());
-    }
-    if !matches!(
-        payload.status.as_deref().unwrap_or("completed"),
-        "draft" | "completed"
-    ) {
-        return Err("Invalid purchase status".into());
-    }
-    if !matches!(
-        payload.payment_method.as_deref().unwrap_or("credit"),
-        "cash" | "credit" | "check"
-    ) {
-        return Err("Invalid purchase payment method".into());
-    }
-    if payload.status.as_deref() != Some("draft")
-        && payload.payment_method.as_deref() == Some("check")
-        && payload
-            .check_number
-            .as_deref()
-            .map(str::trim)
-            .filter(|number| !number.is_empty())
-            .is_none()
-    {
-        return Err("Check number is required for check purchases".into());
-    }
-    if !payload.expenses.is_finite()
-        || payload.expenses < 0.0
-        || !payload.discount_value.is_finite()
-        || payload.discount_value < 0.0
-        || !payload.discount_percent.is_finite()
-        || !(0.0..=100.0).contains(&payload.discount_percent)
-        || !payload.tax_percent.is_finite()
-        || !(0.0..=100.0).contains(&payload.tax_percent)
-    {
-        return Err("Invalid purchase totals".into());
-    }
-    validate_purchase_items(&payload.cart)?;
-    if payload.status.as_deref() != Some("draft")
-        && payload.cart.iter().any(|item| item.cost_price <= 0.0)
-    {
-        return Err("Completed purchase items require a positive cost price".into());
-    }
-    let items_total: f64 = payload
-        .cart
-        .iter()
-        .map(|item| purchase_item_total(item, payload.tax_percent))
-        .sum();
-    let invoice_base = items_total + payload.expenses;
-    if !items_total.is_finite()
-        || (payload.status.as_deref() != Some("draft") && items_total <= 0.0)
-        || !invoice_base.is_finite()
-        || payload.discount_value > invoice_base + 0.000_001
-    {
-        return Err("Invalid purchase discount".into());
-    }
-    Ok((
-        items_total,
-        purchase_inventory_paid_factor(
-            items_total,
-            payload.expenses,
-            payload.discount_value,
-            payload.discount_percent,
-        ),
-    ))
-}
-
-fn validate_purchase_items(items: &[PurchaseItem]) -> Result<(), String> {
-    if items.is_empty() {
-        return Err("Purchase items are required".into());
-    }
-    let mut lots = HashSet::with_capacity(items.len());
-    for item in items {
-        if !item.quantity.is_finite() || item.quantity <= 0.0 {
-            return Err(format!("Invalid quantity for drug {}", item.id));
-        }
-        if !item.cost_price.is_finite() || item.cost_price < 0.0 {
-            return Err(format!("Invalid cost price for drug {}", item.id));
-        }
-        if !item.bonus_quantity.is_finite() || item.bonus_quantity < 0.0 {
-            return Err(format!("Invalid bonus quantity for drug {}", item.id));
-        }
-        if item
-            .selling_price
-            .is_some_and(|price| !price.is_finite() || price < 0.0)
-            || !item.tax_percent.is_finite()
-            || !(0.0..=100.0).contains(&item.tax_percent)
-            || !item.discount_percent.is_finite()
-            || !(0.0..=100.0).contains(&item.discount_percent)
-        {
-            return Err(format!("Invalid price or percentage for drug {}", item.id));
-        }
-        if item.strips_per_box <= 0 {
-            return Err(format!("Invalid unit conversion for drug {}", item.id));
-        }
-        let normalized_expiry = normalize_date_ymd(item.expiry_date.as_deref());
-        if !lots.insert((item.id, normalized_expiry)) {
-            return Err(format!(
-                "Duplicate purchase lot for drug {}; combine lines with the same expiry date",
-                item.id
-            ));
-        }
-    }
-    Ok(())
+    user_has_permission(role, permissions, "can_view_purchases", false)
 }
 
 fn purchase_batch_number(invoice_number: Option<&str>, invoice_id: &str) -> String {
@@ -2764,6 +2529,67 @@ async fn add_purchase_inventory(
         .await
         .map_err(|e| e.to_string())?;
     }
+    Ok(())
+}
+
+async fn resolve_shortage_if_stock_recovered(
+    tx: &mut Transaction<'_, Sqlite>,
+    drug_id: i64,
+    pharmacy_id: Option<&str>,
+) -> Result<(), String> {
+    let pharmacy_scope = normalize_pharmacy_id(pharmacy_id);
+    sqlx::query(
+        r#"
+        UPDATE shortages
+        SET status = 'received'
+        WHERE drug_id = ?
+          AND COALESCE(NULLIF(TRIM(pharmacy_id), ''), 'local_default') = ?
+          AND (status IN ('pending', 'ordered') OR status IS NULL OR status = '')
+          AND COALESCE((
+            SELECT SUM(i.quantity)
+            FROM inventory i
+            WHERE i.drug_id = shortages.drug_id
+              AND COALESCE(NULLIF(TRIM(i.pharmacy_id), ''), 'local_default') = ?
+              AND i.quantity > 0
+              AND (i.expiry_date IS NULL OR i.expiry_date >= date('now', 'localtime'))
+          ), 0) > COALESCE((
+            SELECT MAX(
+              COALESCE(NULLIF(md.reorder_point, 0), NULLIF(md.min_limit, 0), 10),
+              COALESCE((
+                SELECT SUM(
+                  CASE
+                    WHEN si.unit IN ('medium', 'strip', 'شريط') OR si.unit = sales_drug.medium_unit
+                      THEN si.quantity_sold / COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(sales_drug.large_to_medium, 0), 1)
+                    WHEN si.unit = 'small' OR si.unit = sales_drug.small_unit
+                      THEN si.quantity_sold / (
+                        COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(sales_drug.large_to_medium, 0), 1)
+                        * COALESCE(NULLIF(si.medium_to_small, 0), NULLIF(sales_drug.medium_to_small, 0), 1)
+                      )
+                    ELSE si.quantity_sold
+                  END
+                )
+                FROM sales_items si
+                JOIN sales_invoices inv ON inv.id = si.invoice_id
+                JOIN master_drugs sales_drug ON sales_drug.id = si.drug_id
+                WHERE si.drug_id = md.id
+                  AND si.is_negative = 0
+                  AND (inv.status IS NULL OR inv.status = '' OR inv.status IN ('completed', 'approved', 'delivered'))
+                  AND COALESCE(NULLIF(TRIM(inv.pharmacy_id), ''), 'local_default') = ?
+                  AND inv.created_at >= datetime('now', '-30 days')
+              ), 0)
+            )
+            FROM master_drugs md
+            WHERE md.id = shortages.drug_id
+          ), 0)
+        "#,
+    )
+    .bind(drug_id)
+    .bind(&pharmacy_scope)
+    .bind(&pharmacy_scope)
+    .bind(&pharmacy_scope)
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -2874,6 +2700,132 @@ pub(crate) async fn ensure_exclusive_purchase_inventory(
         return Err("This historical inventory batch is shared by multiple purchases; reconcile its quantities and costs before editing, deleting, or returning it".into());
     }
     Ok(())
+}
+
+// ponytail: preserve posted history; corrections change only the linked stock and post a delta.
+// Cost revaluation of sold units requires a separate accounting workflow, not an invoice edit.
+async fn edit_consumed_purchase(
+    tx: &mut Transaction<'_, Sqlite>,
+    invoice_id: &str,
+    old: &sqlx::sqlite::SqliteRow,
+    payload: &PurchasePayload,
+    items_total: f64,
+    paid_factor: f64,
+) -> Result<Option<PurchaseResult>, String> {
+    let rows = sqlx::query("SELECT p.*, CAST(i.quantity AS REAL) AS available, CAST(i.cost_price AS REAL) AS stock_cost, i.drug_id AS stock_drug, i.pharmacy_id AS stock_pharmacy, i.expiry_date AS stock_expiry, i.strips_per_box AS stock_strips, i.medium_to_small AS stock_small, i.barcode AS stock_barcode, (SELECT COUNT(*) FROM sales_items si WHERE si.inventory_id = p.inventory_id) AS sale_refs FROM purchase_invoice_items p LEFT JOIN inventory i ON i.id = p.inventory_id WHERE p.invoice_id = ? ORDER BY p.id")
+        .bind(invoice_id).fetch_all(&mut **tx).await.map_err(|e| e.to_string())?;
+    let number = |row: &sqlx::sqlite::SqliteRow, field: &str| -> f64 { row.try_get::<f64, _>(field).unwrap_or_else(|_| row.try_get::<i64, _>(field).unwrap_or(0) as f64) };
+    let marker = format!("Purchase edit [id={invoice_id}]");
+    let adjusted = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM daily_journals WHERE description = ?")
+        .bind(&marker).fetch_one(&mut **tx).await.map_err(|e| e.to_string())? > 0;
+    let consumed = rows.iter().any(|row| number(row, "sale_refs") > 0.0
+        || row.try_get::<Option<f64>, _>("available").ok().flatten().is_some_and(|available| available + 0.000_001 < number(row, "quantity") + number(row, "bonus_quantity")));
+    if !consumed && !adjusted { return Ok(None); }
+    let blocked = "بعد البيع: لا يمكن تغيير المورد أو الدفع أو التاريخ أو الأصناف أو الصلاحية أو تحويل الوحدات أو صافي تكلفة الوحدة. يمكن تعديل الكمية المتبقية وسعر البيع المستقبلي والملاحظات ورقم الفاتورة";
+    let old_pharmacy: Option<String> = old.try_get("pharmacy_id").unwrap_or(None);
+    let payment: String = old.try_get("payment_method").map_err(|e| e.to_string())?;
+    let old_date: Option<String> = old.try_get("invoice_date").unwrap_or(None);
+    let old_check: Option<String> = old.try_get("check_number").unwrap_or(None);
+    if payload.status.as_deref() != Some("completed")
+        || number(old, "supplier_id") != payload.supplier_id as f64
+        || payment != payload.payment_method.as_deref().unwrap_or("credit")
+        || normalize_pharmacy_id(old_pharmacy.as_deref()) != normalize_pharmacy_id(payload.pharmacy_id.as_deref())
+        || normalize_date_ymd(old_date.as_deref()) != normalize_date_ymd(payload.invoice_date.as_deref())
+        || old_check.as_deref().unwrap_or("").trim() != payload.check_number.as_deref().unwrap_or("").trim()
+        || (number(old, "expenses") - payload.expenses).abs() > 0.000_001
+        || (number(old, "discount_value") - payload.discount_value).abs() > 0.000_001
+        || (number(old, "discount_percent") - payload.discount_percent).abs() > 0.000_001
+        || (number(old, "tax_percent") - payload.tax_percent).abs() > 0.000_001
+        || rows.len() != payload.cart.len() { return Err(blocked.into()); }
+
+    let old_items_total: f64 = rows.iter().map(|row| number(row, "quantity") * number(row, "cost_price") * (1.0 + number(row, "tax_percent") / 100.0) * (1.0 + number(old, "tax_percent") / 100.0)).sum();
+    let old_factor = purchase_inventory_paid_factor(old_items_total, number(old, "expenses"), number(old, "discount_value"), number(old, "discount_percent"));
+    let new_total = items_total * paid_factor;
+    let old_total = number(old, "total_amount");
+    if (old_items_total * old_factor - old_total).abs() > 0.005 { return Err("يلزم تسوية إجمالي الفاتورة التاريخية قبل تعديلها".into()); }
+    let mut matched = HashSet::new();
+    let mut audit_lines = Vec::new();
+    for item in &payload.cart {
+        let candidates: Vec<_> = rows.iter().filter(|row| {
+            if let Some(line_id) = item.purchase_invoice_item_id { return row.try_get::<i64, _>("id").ok() == Some(line_id); }
+            let expiry: Option<String> = row.try_get("expiry_date").unwrap_or(None);
+            number(row, "drug_id") == item.id as f64 && normalize_date_ymd(expiry.as_deref()) == normalize_date_ymd(item.expiry_date.as_deref())
+        }).collect();
+        if candidates.len() != 1 { return Err("تعذر مطابقة سطر الفاتورة بأمان؛ أعد فتح الفاتورة".into()); }
+        let row = candidates[0];
+        let line_id: i64 = row.try_get("id").map_err(|e| e.to_string())?;
+        if !matched.insert(line_id) { return Err("سطر فاتورة مكرر".into()); }
+        let inventory_id: String = row.try_get::<Option<String>, _>("inventory_id").ok().flatten().ok_or("دفعة تاريخية غير مرتبطة؛ يلزم تسويتها قبل التعديل")?;
+        ensure_exclusive_purchase_inventory(tx, &inventory_id, invoice_id).await?;
+        // More than one line sharing a lot cannot be corrected independently.
+        if rows.iter().filter(|other| other.try_get::<String, _>("inventory_id").ok().as_deref() == Some(inventory_id.as_str())).count() != 1 { return Err("دفعة مشتركة بين أسطر؛ يلزم تسويتها قبل التعديل".into()); }
+        let old_expiry: Option<String> = row.try_get("expiry_date").unwrap_or(None);
+        let stock_expiry: Option<String> = row.try_get("stock_expiry").unwrap_or(None);
+        let stock_pharmacy: Option<String> = row.try_get("stock_pharmacy").unwrap_or(None);
+        let old_unit: Option<i64> = row.try_get("unit_id").unwrap_or(None);
+        let old_barcode: Option<String> = row.try_get::<Option<String>, _>("barcode").ok().flatten().filter(|b| !b.trim().is_empty())
+            .or_else(|| row.try_get::<Option<String>, _>("stock_barcode").ok().flatten());
+        if number(row, "drug_id") != item.id as f64 || number(row, "stock_drug") != item.id as f64
+            || old_unit != item.unit_id
+            || normalize_date_ymd(old_expiry.as_deref()) != normalize_date_ymd(item.expiry_date.as_deref())
+            || normalize_date_ymd(stock_expiry.as_deref()) != normalize_date_ymd(old_expiry.as_deref())
+            || normalize_pharmacy_id(stock_pharmacy.as_deref()) != normalize_pharmacy_id(payload.pharmacy_id.as_deref())
+            || number(row, "strips_per_box").max(1.0) != item.strips_per_box as f64
+            || number(row, "stock_strips").max(1.0) != item.strips_per_box as f64
+            || number(row, "medium_to_small").max(1.0) != number(row, "stock_small").max(1.0)
+            || (number(row, "bonus_quantity") - item.bonus_quantity).abs() > 0.000_001
+            || (number(row, "cost_price") - item.cost_price).abs() > 0.000_001
+            || (number(row, "tax_percent") - item.tax_percent).abs() > 0.000_001
+            || (number(row, "discount_percent") - item.discount_percent).abs() > 0.000_001
+            || old_barcode.as_deref().unwrap_or("").trim() != item.barcode.as_deref().unwrap_or("").trim()
+        { return Err(blocked.into()); }
+        let old_qty = number(row, "quantity") + number(row, "bonus_quantity");
+        let new_qty = item.quantity + item.bonus_quantity;
+        let available = number(row, "available");
+        let remaining = available + new_qty - old_qty;
+        if !remaining.is_finite() || available < 0.0 || remaining < -0.000_001 { return Err("لا يمكن تقليل كمية الشراء عن الكمية المستهلكة؛ لن يتم تغيير المخزون".into()); }
+        let old_cost = number(row, "quantity") * number(row, "cost_price") * (1.0 + number(row, "tax_percent") / 100.0) * (1.0 + number(old, "tax_percent") / 100.0) * old_factor / old_qty;
+        let new_cost = purchase_item_total(item, payload.tax_percent) * paid_factor / new_qty;
+        if !old_cost.is_finite() || !new_cost.is_finite() || (new_cost - old_cost).abs() > 0.000_001 || (number(row, "stock_cost") - old_cost).abs() > 0.000_001 { return Err(blocked.into()); }
+        sqlx::query("UPDATE inventory SET quantity = ?, local_selling_price = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+            .bind(remaining.max(0.0)).bind(item.selling_price.unwrap_or(number(row, "selling_price"))).bind(&inventory_id)
+            .execute(&mut **tx).await.map_err(|e| e.to_string())?;
+        sqlx::query("UPDATE purchase_invoice_items SET quantity = ?, bonus_quantity = ?, cost_price = ?, selling_price = ?, tax_percent = ?, discount_percent = ? WHERE id = ?")
+            .bind(item.quantity).bind(item.bonus_quantity).bind(item.cost_price).bind(item.selling_price.unwrap_or(number(row, "selling_price"))).bind(item.tax_percent).bind(item.discount_percent).bind(line_id)
+            .execute(&mut **tx).await.map_err(|e| e.to_string())?;
+        if new_qty > old_qty + 0.000_001 && remaining > 0.0 {
+            resolve_shortage_if_stock_recovered(tx, item.id, payload.pharmacy_id.as_deref()).await?;
+        }
+        audit_lines.push(serde_json::json!({"lineId":line_id,"inventoryId":inventory_id,"oldReceived":old_qty,"newReceived":new_qty,"oldAvailable":available,"newAvailable":remaining.max(0.0),"oldSellingPrice":number(row,"selling_price"),"newSellingPrice":item.selling_price}));
+    }
+    let delta = new_total - old_total;
+    if delta.abs() > 0.000_001 {
+        let journal_id = uuid::Uuid::new_v4().to_string();
+        let inventory = account_id(tx, "inventory_asset", "1.1.3").await?;
+        let counter = if payment == "cash" { account_id(tx, "cash_drawer", "1.1.1").await? } else { account_id(tx, "accounts_payable", "2.1").await? };
+        sqlx::query("INSERT INTO daily_journals(id,date,description,created_by,total_amount) VALUES (?,DATE('now','localtime'),?,?,?)")
+            .bind(&journal_id).bind(&marker).bind(&payload.user_id).bind(delta.abs()).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+        insert_journal_entry(tx, &journal_id, inventory, if delta > 0.0 { "debit" } else { "credit" }, delta.abs()).await?;
+        insert_journal_entry(tx, &journal_id, counter, if delta > 0.0 { "credit" } else { "debit" }, delta.abs()).await?;
+        sqlx::query("INSERT INTO supplier_transactions(supplier_id,type,amount,reference_id,notes) VALUES (?,'invoice',?,?,?)")
+            .bind(payload.supplier_id).bind(delta).bind(invoice_id).bind(&marker).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+        if payment == "cash" {
+            let shift_id = resolve_open_shift(tx, &payload.user_id, None).await?.ok_or("يلزم فتح وردية لتسوية فرق فاتورة الشراء النقدية")?;
+            sqlx::query("INSERT INTO cash_movements(id,user_id,shift_id,type,amount,category,notes,date) VALUES (?,?,?,?,?,'purchases',?,DATE('now','localtime'))")
+                .bind(uuid::Uuid::new_v4().to_string()).bind(&payload.user_id).bind(shift_id).bind(if delta > 0.0 { "disbursement" } else { "receipt" }).bind(delta.abs()).bind(&marker).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+            sqlx::query("INSERT INTO supplier_transactions(supplier_id,type,amount,reference_id,notes) VALUES (?,'payment',?,?,?)")
+                .bind(payload.supplier_id).bind(-delta).bind(invoice_id).bind(&marker).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+        } else {
+            sqlx::query("UPDATE suppliers SET balance = balance + ? WHERE id = ?").bind(delta).bind(payload.supplier_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+        }
+    }
+    sqlx::query("UPDATE purchase_invoices SET invoice_number = ?, notes = ?, expenses = ?, discount_value = ?, discount_percent = ?, tax_percent = ?, total_amount = ? WHERE id = ?")
+        .bind(&payload.invoice_number).bind(&payload.notes).bind(payload.expenses).bind(payload.discount_value).bind(payload.discount_percent).bind(payload.tax_percent).bind(new_total).bind(invoice_id)
+        .execute(&mut **tx).await.map_err(|e| e.to_string())?;
+    sqlx::query("INSERT INTO activity_log(user_id,action,details) VALUES (?,'EDIT_COMPLETED_PURCHASE',?)")
+        .bind(&payload.user_id).bind(serde_json::json!({"invoiceId":invoice_id,"oldTotal":old_total,"newTotal":new_total,"delta":delta,"lines":audit_lines,"oldNumber":old.try_get::<Option<String>,_>("invoice_number").ok().flatten(),"newNumber":payload.invoice_number,"oldNotes":old.try_get::<Option<String>,_>("notes").ok().flatten(),"newNotes":payload.notes}).to_string())
+        .execute(&mut **tx).await.map_err(|e| e.to_string())?;
+    Ok(Some(PurchaseResult { id: invoice_id.to_string(), total_amount: new_total }))
 }
 
 async fn reverse_completed_purchase(
@@ -3271,6 +3223,11 @@ pub(crate) async fn delete_purchase_invoice_tx(
     let status: String = invoice.try_get("status").unwrap_or_default();
     if status == "completed" {
         ensure_no_finalized_purchase_returns(tx, invoice_id, "delete").await?;
+        if sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM daily_journals WHERE description = ?")
+            .bind(format!("Purchase edit [id={invoice_id}]"))
+            .fetch_one(&mut **tx).await.map_err(|e| e.to_string())? > 0 {
+            return Err("لا يمكن حذف فاتورة لها تسويات بعد البيع؛ استخدم مرتجع شراء للحفاظ على القيود".into());
+        }
     }
     if status == "completed" && remove_inventory {
         let pharmacy_id: Option<String> = invoice.try_get("pharmacy_id").unwrap_or(None);
@@ -3351,6 +3308,7 @@ async fn apply_purchase_accounting(
     supplier_id: i64,
     user_id: &str,
 ) -> Result<(), String> {
+    let accounting_plan = build_purchase_accounting_plan(payment_method, total_amount)?;
     let journal_id = uuid::Uuid::new_v4().to_string();
     sqlx::query("INSERT INTO daily_journals (id, date, description, created_by, total_amount) VALUES (?, COALESCE(?, DATE('now', 'localtime')), ?, ?, ?)")
         .bind(&journal_id)
@@ -3371,39 +3329,45 @@ async fn apply_purchase_accounting(
         "Purchase invoice {}",
         payload.invoice_number.as_deref().unwrap_or(invoice_id)
     );
-    sqlx::query("INSERT INTO supplier_transactions (supplier_id, type, amount, reference_id, notes) VALUES (?, 'invoice', ?, ?, ?)")
-        .bind(supplier_id)
-        .bind(total_amount)
-        .bind(invoice_id)
-        .bind(&supplier_note)
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    if payment_method == "credit" || payment_method == "check" {
-        sqlx::query("UPDATE suppliers SET balance = balance + ? WHERE id = ?")
-            .bind(total_amount)
+    for supplier_transaction in &accounting_plan.supplier_transactions {
+        let notes = if supplier_transaction.transaction_type == "payment" {
+            format!("Cash payment for {supplier_note}")
+        } else {
+            supplier_note.clone()
+        };
+        sqlx::query("INSERT INTO supplier_transactions (supplier_id, type, amount, reference_id, notes) VALUES (?, ?, ?, ?, ?)")
             .bind(supplier_id)
-            .execute(&mut **tx)
-            .await
-            .map_err(|e| e.to_string())?;
-        insert_journal_entry(tx, &journal_id, payable, "credit", total_amount).await?;
-    } else {
-        sqlx::query("INSERT INTO supplier_transactions (supplier_id, type, amount, reference_id, notes) VALUES (?, 'payment', ?, ?, ?)")
-            .bind(supplier_id)
-            .bind(-total_amount)
+            .bind(supplier_transaction.transaction_type)
+            .bind(supplier_transaction.amount)
             .bind(invoice_id)
-            .bind(format!("Cash payment for {supplier_note}"))
+            .bind(notes)
             .execute(&mut **tx)
             .await
             .map_err(|e| e.to_string())?;
-        insert_journal_entry(tx, &journal_id, cash, "credit", total_amount).await?;
+    }
+
+    if accounting_plan.supplier_balance_delta != 0.0 {
+        sqlx::query("UPDATE suppliers SET balance = balance + ? WHERE id = ?")
+            .bind(accounting_plan.supplier_balance_delta)
+            .bind(supplier_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    let settlement_account = match accounting_plan.settlement_account {
+        PurchaseSettlementAccount::Payable => payable,
+        PurchaseSettlementAccount::Cash => cash,
+    };
+    insert_journal_entry(tx, &journal_id, settlement_account, "credit", total_amount).await?;
+
+    if let Some(cash_movement) = accounting_plan.cash_movement {
         if let Some(shift_id) = resolve_open_shift(tx, user_id, None).await? {
-            sqlx::query("INSERT INTO cash_movements (id, user_id, shift_id, type, amount, category, notes, date) VALUES (?, ?, ?, 'disbursement', ?, 'purchases', ?, DATE('now', 'localtime'))")
+            sqlx::query("INSERT INTO cash_movements (id, user_id, shift_id, type, amount, category, notes, date) VALUES (?, ?, ?, ?, ?, 'purchases', ?, DATE('now', 'localtime'))")
                 .bind(uuid::Uuid::new_v4().to_string())
                 .bind(user_id)
                 .bind(shift_id)
-                .bind(total_amount)
+                .bind(cash_movement.movement_type)
+                .bind(cash_movement.amount)
                 .bind(format!("Purchase invoice [id={invoice_id}]"))
                 .execute(&mut **tx)
                 .await
@@ -3631,7 +3595,7 @@ async fn apply_return_accounting(
             .bind(notes)
             .execute(&mut **tx)
             .await
-            .ok();
+            .map_err(|e| e.to_string())?;
         }
     }
 
@@ -3642,7 +3606,7 @@ async fn apply_return_accounting(
     .bind(format!("Return {} value {}", return_id, total_refund))
     .execute(&mut **tx)
     .await
-    .ok();
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -3659,13 +3623,14 @@ async fn insert_sale_item(
     medium_to_small: f64,
 ) -> Result<(), String> {
     sqlx::query(
-        "INSERT INTO sales_items (invoice_id, inventory_id, drug_id, quantity_sold, unit_price, unit, is_negative, cost_price, large_to_medium, medium_to_small, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+        "INSERT INTO sales_items (invoice_id, inventory_id, drug_id, quantity_sold, unit_price, item_discount_percent, unit, is_negative, cost_price, large_to_medium, medium_to_small, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
     )
     .bind(sale_id)
     .bind(inventory_id)
     .bind(item.drug_id)
     .bind(quantity_sold)
     .bind(item.unit_price)
+    .bind(item.item_discount_percent)
     .bind(&item.selected_unit)
     .bind(if is_negative { 1 } else { 0 })
     .bind(cost_price)
@@ -3745,7 +3710,7 @@ mod tests {
         large_quantity_in_unit, sale_stock_qty, save_purchase_invoice_tx,
         settle_negative_sale_item_tx, unit_quantity_in_large,
         user_can_view_purchases, user_has_permission, user_permission_number,
-        validate_purchase_items, validate_write_sql, CheckoutItem, CheckoutPayload,
+        validate_purchase_items, validate_read_sql, validate_write_sql, CheckoutItem, CheckoutPayload,
         NegativeStockSettlementPayload, PurchaseItem, PurchasePayload, ReturnItem, ReturnPayload,
     };
     use crate::commands::purchase_returns::{
@@ -3841,7 +3806,15 @@ mod tests {
     #[test]
     fn purchase_permission_parser_matches_frontend() {
         assert!(user_can_view_purchases(Some("owner"), None));
-        assert!(user_can_view_purchases(Some("ADMIN"), Some("{}")));
+        assert!(!user_can_view_purchases(Some("ADMIN"), Some("{}")));
+        assert!(!user_can_view_purchases(
+            Some("ADMIN"),
+            Some(r#"{"can_view_purchases":false}"#),
+        ));
+        assert!(user_can_view_purchases(
+            Some("ADMIN"),
+            Some(r#"{"can_view_purchases":true}"#),
+        ));
         assert!(user_can_view_purchases(
             Some("cashier"),
             Some(r#"{"can_view_purchases":"true"}"#),
@@ -3980,6 +3953,115 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn consumed_purchase_edits_preserve_sales_costs_and_post_only_deltas() {
+        for payment in ["cash", "credit"] {
+            let mut conn = current_fresh_schema().await;
+            sqlx::raw_sql("INSERT INTO users(id,username,role,pharmacy_id,is_active) VALUES ('fresh-admin','fresh-admin','owner','fresh-pharmacy',1); INSERT INTO suppliers(id,name_ar,balance) VALUES(1,'Supplier',0); INSERT INTO master_drugs(id,trade_name,official_price,large_to_medium,medium_to_small) VALUES(90001,'Drug',150,10,1);")
+                .execute(&mut conn).await.unwrap();
+            let purchase = |quantity, line_id| fresh_purchase("guarded", "N1", payment, "completed", vec![fresh_purchase_line("2099-01-01", quantity, 0.0, line_id)]);
+            let mut tx = conn.begin().await.unwrap();
+            save_purchase_invoice_tx(&mut tx, purchase(10.0, None)).await.unwrap();
+            tx.commit().await.unwrap();
+            let line = sqlx::query("SELECT id,inventory_id FROM purchase_invoice_items WHERE invoice_id='guarded'").fetch_one(&mut conn).await.unwrap();
+            let line_id: i64 = line.try_get("id").unwrap();
+            let inventory_id: String = line.try_get("inventory_id").unwrap();
+            let mut tx = conn.begin().await.unwrap();
+            let sale = process_checkout_tx(&mut tx, CheckoutPayload {
+                pharmacy_id: "fresh-pharmacy".into(), user_id: "fresh-admin".into(), patient_id: None, shift_id: None,
+                payment_method: "cash".into(), status: "completed".into(), check_number: None, total_discount: 0.0, additional_fees: 0.0,
+                items: vec![CheckoutItem { drug_id: 90001, inventory_id: Some(inventory_id.clone()), quantity_sold: 4.0, unit_price: 150.0, item_discount_percent: 0.0, selected_unit: "large".into(), is_negative: false }],
+            }, 600.0).await.unwrap();
+            tx.commit().await.unwrap();
+            let old_cash: f64 = sqlx::query_scalar("SELECT CAST(COALESCE(SUM(amount),0) AS REAL) FROM cash_movements WHERE notes='Purchase invoice [id=guarded]'").fetch_one(&mut conn).await.unwrap();
+            sqlx::query("UPDATE shifts SET status='closed'").execute(&mut conn).await.unwrap();
+            for (qty, expected) in [(8.0,4.0), (12.0,8.0), (4.0,0.0)] {
+                let mut payload = purchase(qty, Some(line_id));
+                payload.cart[0].selling_price = Some(160.0);
+                payload.notes = Some("corrected".into());
+                let mut tx = conn.begin().await.unwrap();
+                save_purchase_invoice_tx(&mut tx, payload).await.unwrap();
+                tx.commit().await.unwrap();
+                let stock: f64 = sqlx::query_scalar("SELECT CAST(quantity AS REAL) FROM inventory WHERE id=?").bind(&inventory_id).fetch_one(&mut conn).await.unwrap();
+                assert!((stock - expected).abs() < 0.000_001);
+                let still_linked: String = sqlx::query_scalar("SELECT inventory_id FROM purchase_invoice_items WHERE id=?").bind(line_id).fetch_one(&mut conn).await.unwrap();
+                assert_eq!(still_linked, inventory_id);
+            }
+            let cost: f64 = sqlx::query_scalar("SELECT CAST(cost_price AS REAL) FROM sales_items WHERE invoice_id=?").bind(&sale.sale_id).fetch_one(&mut conn).await.unwrap();
+            assert!((cost - 115.5).abs() < 0.000_001);
+            let invoice_journals: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM daily_journals WHERE description='Purchase invoice [id=guarded]'").fetch_one(&mut conn).await.unwrap();
+            assert_eq!(invoice_journals,1);
+            let original_cash: f64 = sqlx::query_scalar("SELECT CAST(COALESCE(SUM(amount),0) AS REAL) FROM cash_movements WHERE notes='Purchase invoice [id=guarded]'").fetch_one(&mut conn).await.unwrap();
+            assert_eq!(original_cash,old_cash);
+            let edit_net: f64 = sqlx::query_scalar("SELECT CAST(SUM(CASE WHEN je.type='debit' THEN je.amount ELSE -je.amount END) AS REAL) FROM journal_entries je JOIN daily_journals dj ON dj.id=je.journal_id WHERE dj.description='Purchase edit [id=guarded]'").fetch_one(&mut conn).await.unwrap();
+            assert!(edit_net.abs() < 0.000_001);
+            let supplier: f64 = sqlx::query_scalar("SELECT CAST(balance AS REAL) FROM suppliers WHERE id=1").fetch_one(&mut conn).await.unwrap();
+            assert!((supplier - if payment == "credit" {462.0} else {0.0}).abs() < 0.000_001);
+            if payment == "cash" {
+                let adjustments: f64 = sqlx::query_scalar("SELECT CAST(SUM(CASE WHEN type='disbursement' THEN amount ELSE -amount END) AS REAL) FROM cash_movements WHERE notes='Purchase edit [id=guarded]'").fetch_one(&mut conn).await.unwrap();
+                assert!((adjustments + 693.0).abs() < 0.000_001);
+                let old_shift_adjustments: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cash_movements cm JOIN shifts s ON s.id=cm.shift_id WHERE cm.notes='Purchase edit [id=guarded]' AND s.status='closed'").fetch_one(&mut conn).await.unwrap();
+                assert_eq!(old_shift_adjustments,0);
+            }
+            // A replay has no new accounting effect, and failed changes roll back entirely.
+            let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM daily_journals").fetch_one(&mut conn).await.unwrap();
+            let mut tx = conn.begin().await.unwrap();
+            save_purchase_invoice_tx(&mut tx,purchase(4.0,Some(line_id))).await.unwrap();
+            tx.commit().await.unwrap();
+            for case in 0..5 {
+                let mut invalid = purchase(4.0, Some(line_id));
+                match case { 0 => invalid.cart[0].quantity=3.5, 1 => invalid.cart[0].cost_price=110.0, 2 => invalid.cart[0].strips_per_box=12, 3 => invalid.cart[0].expiry_date=Some("2099-02-01".into()), _ => invalid.payment_method=Some(if payment == "cash" {"credit"} else {"cash"}.into()) }
+                let mut tx = conn.begin().await.unwrap();
+                assert!(save_purchase_invoice_tx(&mut tx,invalid).await.is_err());
+                tx.rollback().await.unwrap();
+            }
+            let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM daily_journals").fetch_one(&mut conn).await.unwrap();
+            assert_eq!(before,after);
+            sqlx::raw_sql("CREATE TRIGGER reject_edit_audit BEFORE INSERT ON activity_log WHEN NEW.action='EDIT_COMPLETED_PURCHASE' BEGIN SELECT RAISE(ABORT,'injected failure'); END;").execute(&mut conn).await.unwrap();
+            let mut tx = conn.begin().await.unwrap();
+            assert!(save_purchase_invoice_tx(&mut tx,purchase(5.0,Some(line_id))).await.is_err());
+            tx.rollback().await.unwrap();
+            let qty: f64 = sqlx::query_scalar("SELECT CAST(quantity AS REAL) FROM inventory WHERE id=?").bind(&inventory_id).fetch_one(&mut conn).await.unwrap();
+            assert_eq!(qty,0.0);
+            let mut tx = conn.begin().await.unwrap();
+            assert!(delete_purchase_invoice_tx(&mut tx,"guarded",true,"fresh-admin",Some("fresh-pharmacy")).await.unwrap_err().contains("تسويات"));
+            tx.rollback().await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn protected_purchase_retains_historical_conversion_without_master_edit_permission() {
+        let mut conn = current_fresh_schema().await;
+        sqlx::raw_sql("INSERT INTO users(id,username,role,pharmacy_id,is_active) VALUES ('fresh-admin','fresh-admin','owner','fresh-pharmacy',1); INSERT INTO suppliers(id,name_ar,balance) VALUES(1,'Supplier',0); INSERT INTO master_drugs(id,trade_name,official_price,large_to_medium,medium_to_small) VALUES(90001,'Drug',150,10,1);")
+            .execute(&mut conn).await.unwrap();
+        let purchase = |quantity, line_id| fresh_purchase("conversion-history", "N1", "credit", "completed", vec![fresh_purchase_line("2099-01-01", quantity, 0.0, line_id)]);
+        let mut tx = conn.begin().await.unwrap();
+        save_purchase_invoice_tx(&mut tx, purchase(10.0, None)).await.unwrap();
+        tx.commit().await.unwrap();
+        let line_id: i64 = sqlx::query_scalar("SELECT id FROM purchase_invoice_items WHERE invoice_id='conversion-history'").fetch_one(&mut conn).await.unwrap();
+        sqlx::raw_sql(r#"UPDATE inventory SET quantity=6 WHERE drug_id=90001;
+            UPDATE master_drugs SET large_to_medium=12 WHERE id=90001;
+            UPDATE users SET role='pharmacist', permissions='{"can_view_purchases":true,"can_modify_unit_conversion":false}' WHERE id='fresh-admin';"#)
+            .execute(&mut conn).await.unwrap();
+        let mut payload = purchase(12.0, Some(line_id));
+        payload.cart[0].selling_price = Some(160.0);
+        let mut tx = conn.begin().await.unwrap();
+        save_purchase_invoice_tx(&mut tx, payload).await.unwrap();
+        tx.commit().await.unwrap();
+        let row = sqlx::query("SELECT CAST(quantity AS REAL) AS quantity,strips_per_box,CAST(cost_price AS REAL) AS cost_price,CAST(local_selling_price AS REAL) AS local_selling_price FROM inventory WHERE drug_id=90001").fetch_one(&mut conn).await.unwrap();
+        assert_eq!(row.get::<f64, _>("quantity"), 8.0);
+        assert_eq!(row.get::<i64, _>("strips_per_box"), 10);
+        assert!((row.get::<f64, _>("cost_price") - 115.5).abs() < 0.000_001);
+        assert_eq!(row.get::<f64, _>("local_selling_price"), 160.0);
+        let master: i64 = sqlx::query_scalar("SELECT large_to_medium FROM master_drugs WHERE id=90001").fetch_one(&mut conn).await.unwrap();
+        assert_eq!(master, 12);
+        let mut invalid = purchase(12.0, Some(line_id));
+        invalid.cart[0].strips_per_box = 12;
+        let mut tx = conn.begin().await.unwrap();
+        assert!(save_purchase_invoice_tx(&mut tx, invalid).await.is_err());
+        tx.rollback().await.unwrap();
+    }
+
     #[test]
     fn calculates_checkout_money() {
         let items = vec![
@@ -4052,6 +4134,14 @@ mod tests {
         assert!(validate_write_sql("SELECT * FROM users").is_err());
         assert!(validate_write_sql("DELETE FROM users; DROP TABLE users").is_err());
         assert!(validate_write_sql("PRAGMA writable_schema = 1").is_err());
+    }
+
+    #[test]
+    fn guards_transactional_read_sql() {
+        assert!(validate_read_sql("SELECT id FROM users WHERE id = ?").is_ok());
+        assert!(validate_read_sql("UPDATE users SET username = ?").is_err());
+        assert!(validate_read_sql("PRAGMA table_info(users)").is_err());
+        assert!(validate_read_sql("SELECT 1; DELETE FROM users").is_err());
     }
 
     #[test]
@@ -4287,11 +4377,13 @@ mod tests {
     async fn completed_purchase_reduction_and_taxes_update_inventory() {
         let mut conn = SqliteConnection::connect("sqlite::memory:").await.unwrap();
         for sql in [
-            "CREATE TABLE master_drugs (id INTEGER PRIMARY KEY, large_to_medium INTEGER, medium_to_small INTEGER, barcode TEXT, stop_dealing INTEGER DEFAULT 0)",
+            "CREATE TABLE master_drugs (id INTEGER PRIMARY KEY, large_to_medium INTEGER, medium_to_small INTEGER, medium_unit TEXT, small_unit TEXT, barcode TEXT, stop_dealing INTEGER DEFAULT 0, min_limit REAL, reorder_point REAL)",
             "CREATE TABLE inventory (id TEXT PRIMARY KEY, drug_id INTEGER, pharmacy_id TEXT, quantity INTEGER, local_selling_price REAL, cost_price REAL, expiry_date TEXT, barcode TEXT, batch_number TEXT, strips_per_box INTEGER, medium_to_small INTEGER, created_at TEXT, updated_at TEXT)",
             "CREATE TABLE purchase_invoices (id TEXT PRIMARY KEY, supplier_id INTEGER, pharmacy_id TEXT, user_id TEXT, invoice_number TEXT, invoice_date TEXT, payment_method TEXT, notes TEXT, check_number TEXT, expenses REAL, discount_value REAL, discount_percent REAL, tax_percent REAL, status TEXT, total_amount REAL)",
             "CREATE TABLE purchase_invoice_items (id INTEGER PRIMARY KEY AUTOINCREMENT, invoice_id TEXT, drug_id INTEGER, quantity INTEGER, unit_id INTEGER, expiry_date TEXT, cost_price REAL, selling_price REAL, bonus_quantity INTEGER, tax_percent REAL, discount_percent REAL, strips_per_box INTEGER, medium_to_small INTEGER, inventory_id TEXT)",
             "CREATE TABLE purchase_returns (purchase_invoice_id TEXT, status TEXT)",
+            "CREATE TABLE sales_invoices (id TEXT PRIMARY KEY, pharmacy_id TEXT, status TEXT, created_at TEXT)",
+            "CREATE TABLE sales_items (invoice_id TEXT, inventory_id TEXT, drug_id INTEGER, quantity_sold REAL, unit TEXT, is_negative INTEGER DEFAULT 0, large_to_medium REAL, medium_to_small REAL)",
             "CREATE TABLE suppliers (id INTEGER PRIMARY KEY, balance REAL)",
             "CREATE TABLE users (id TEXT PRIMARY KEY, pharmacy_id TEXT, role TEXT, permissions TEXT, is_active INTEGER)",
             "CREATE TABLE accounts (id INTEGER PRIMARY KEY, code TEXT)",
@@ -4474,11 +4566,11 @@ mod tests {
         .await
         .unwrap();
         let mut tx = conn.begin().await.unwrap();
-        let consumed_inventory_error = save_purchase_invoice_tx(&mut tx, purchase(5.0))
+        let consumed_inventory_error = save_purchase_invoice_tx(&mut tx, purchase(0.5))
             .await
             .unwrap_err();
         tx.rollback().await.unwrap();
-        assert!(consumed_inventory_error.contains("already been consumed"));
+        assert!(consumed_inventory_error.contains("الكمية المستهلكة"));
         let unchanged_invoice_quantity: f64 = sqlx::query("SELECT CAST(quantity AS REAL) AS quantity FROM purchase_invoice_items WHERE invoice_id = 'purchase-1'")
             .fetch_one(&mut conn)
             .await
@@ -4769,12 +4861,87 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn purchase_conversion_change_requires_backend_permission() {
+        let mut conn = current_fresh_schema().await;
+        sqlx::query(
+            r#"INSERT INTO users (id, username, role, full_name, pharmacy_id, permissions, is_active)
+               VALUES ('conversion-user', 'conversion-user', 'cashier', 'Conversion User', 'ph-1',
+                       '{"can_view_purchases":true,"can_modify_unit_conversion":false}', 1)"#,
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO suppliers (id, name_ar, balance) VALUES (101, 'Supplier', 0)")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO master_drugs
+               (id, trade_name, trade_name_en, official_price, large_to_medium, medium_to_small)
+             VALUES (90101, 'دواء تحويل', 'CONVERSION DRUG', 100, 10, 1)",
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+
+        let payload = PurchasePayload {
+            id: Some("conversion-draft".into()),
+            supplier_id: 101,
+            pharmacy_id: Some("ph-1".into()),
+            user_id: "conversion-user".into(),
+            invoice_number: Some("CONV-1".into()),
+            invoice_date: Some("2026-09-27".into()),
+            payment_method: Some("credit".into()),
+            notes: None,
+            check_number: None,
+            expenses: 0.0,
+            discount_value: 0.0,
+            discount_percent: 0.0,
+            tax_percent: 0.0,
+            status: Some("draft".into()),
+            cart: vec![PurchaseItem {
+                purchase_invoice_item_id: None,
+                id: 90101,
+                quantity: 1.0,
+                unit_id: None,
+                expiry_date: None,
+                cost_price: 10.0,
+                selling_price: Some(20.0),
+                bonus_quantity: 0.0,
+                tax_percent: 0.0,
+                discount_percent: 0.0,
+                strips_per_box: 1,
+                barcode: None,
+            }],
+        };
+
+        let mut tx = conn.begin().await.unwrap();
+        let result = save_purchase_invoice_tx(&mut tx, payload).await;
+        tx.rollback().await.unwrap();
+
+        assert!(
+            result
+                .unwrap_err()
+                .contains("can_modify_unit_conversion"),
+            "backend must enforce conversion permission even when the renderer invokes the command directly"
+        );
+        let conversion: i64 = sqlx::query_scalar(
+            "SELECT large_to_medium FROM master_drugs WHERE id = 90101",
+        )
+        .fetch_one(&mut conn)
+        .await
+        .unwrap();
+        assert_eq!(conversion, 10);
+    }
+
+    #[tokio::test]
     async fn fresh_schema_purchase_lifecycle_covers_stock_money_returns_and_deletion() {
         let mut conn = current_fresh_schema().await;
         sqlx::query(
             r#"
-            INSERT INTO users (id, username, role, full_name, pharmacy_id, is_active)
-            VALUES ('fresh-admin', 'fresh-admin', 'admin', 'Fresh Admin', 'fresh-pharmacy', 1);
+            INSERT INTO users (id, username, role, full_name, pharmacy_id, permissions, is_active)
+            VALUES ('fresh-admin', 'fresh-admin', 'admin', 'Fresh Admin', 'fresh-pharmacy',
+                    '{"can_view_purchases":true,"can_modify_unit_conversion":true}', 1);
             "#,
         )
         .execute(&mut conn)
@@ -4788,10 +4955,10 @@ mod tests {
             r#"
             INSERT INTO master_drugs
               (id, trade_name, trade_name_en, active_ingredient, official_price, barcode,
-               large_unit, medium_unit, small_unit, large_to_medium, medium_to_small)
+               large_unit, medium_unit, small_unit, large_to_medium, medium_to_small, reorder_point)
             VALUES
               (90001, 'دواء مخصص', 'CUSTOM FRESH DRUG', 'TEST INGREDIENT', 150, NULL,
-               'Box', 'Strip', 'Tablet', 10, 10)
+               'Box', 'Strip', 'Tablet', 10, 10, 5)
             "#,
         )
         .execute(&mut conn)
@@ -5062,7 +5229,7 @@ mod tests {
                 "BLOCKED-PURCHASE",
                 "cash",
                 "completed",
-                vec![fresh_purchase_line("2032-01-01", 1.0, 0.0, None)],
+                vec![fresh_purchase_line("2032-01-01", 11.0, 0.0, None)],
             ),
         )
         .await
@@ -5458,7 +5625,9 @@ mod tests {
         assert!((returned_line.get::<f64, _>("remaining") - 1.5).abs() < 0.001);
 
         sqlx::query(
-            "INSERT INTO users (id, username, role, full_name, pharmacy_id, is_active) VALUES ('other-admin', 'other-admin', 'admin', 'Other Admin', 'other-pharmacy', 1)",
+            r#"INSERT INTO users (id, username, role, full_name, pharmacy_id, permissions, is_active)
+               VALUES ('other-admin', 'other-admin', 'admin', 'Other Admin', 'other-pharmacy',
+                       '{"can_view_purchases":true}', 1)"#,
         )
         .execute(&mut conn)
         .await
@@ -5581,6 +5750,246 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn partial_purchase_receipt_keeps_shortage_active_below_reorder_point() {
+        let mut conn = current_fresh_schema().await;
+        sqlx::query(
+            r#"INSERT INTO users (id, username, role, full_name, pharmacy_id, permissions, is_active)
+               VALUES ('fresh-admin', 'fresh-admin', 'admin', 'Fresh Admin', 'fresh-pharmacy',
+                       '{"can_view_purchases":true,"can_modify_unit_conversion":true}', 1)"#,
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO suppliers (id, name_ar, balance) VALUES (1, 'Fresh Supplier', 0)")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"
+            INSERT INTO master_drugs
+              (id, trade_name, trade_name_en, official_price, large_to_medium, medium_to_small, reorder_point)
+            VALUES (90001, 'دواء جزئي', 'PARTIAL DRUG', 25, 1, 1, 5)
+            "#,
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO shortages (drug_id, pharmacy_id, requested_quantity, status) VALUES (90001, 'fresh-pharmacy', 10, 'pending')",
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO shifts (id, user_id, starting_cash, status) VALUES ('fresh-shift', 'fresh-admin', 0, 'open')")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+
+        let purchase = fresh_purchase(
+            "partial-shortage-purchase",
+            "PARTIAL-SHORTAGE",
+            "cash",
+            "completed",
+            vec![fresh_purchase_line("2030-01-01", 1.0, 0.0, None)],
+        );
+        let mut tx = conn.begin().await.unwrap();
+        save_purchase_invoice_tx(&mut tx, purchase).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let status: String = sqlx::query_scalar(
+            "SELECT status FROM shortages WHERE drug_id = 90001 AND pharmacy_id = 'fresh-pharmacy'",
+        )
+        .fetch_one(&mut conn)
+        .await
+        .unwrap();
+        assert_eq!(status, "pending");
+        let active_stock: f64 = sqlx::query_scalar(
+            "SELECT CAST(COALESCE(SUM(quantity), 0) AS REAL) FROM inventory WHERE drug_id = 90001 AND pharmacy_id = 'fresh-pharmacy' AND (expiry_date IS NULL OR expiry_date >= date('now', 'localtime'))",
+        )
+        .fetch_one(&mut conn)
+        .await
+        .unwrap();
+        assert_eq!(active_stock, 1.0);
+    }
+
+    #[tokio::test]
+    async fn purchase_receipt_keeps_shortage_active_below_default_reorder_limit() {
+        let mut conn = current_fresh_schema().await;
+        sqlx::query(
+            r#"INSERT INTO users (id, username, role, full_name, pharmacy_id, permissions, is_active)
+               VALUES ('fresh-admin', 'fresh-admin', 'admin', 'Fresh Admin', 'fresh-pharmacy',
+                       '{"can_view_purchases":true,"can_modify_unit_conversion":true}', 1)"#,
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO suppliers (id, name_ar, balance) VALUES (1, 'Fresh Supplier', 0)")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"
+            INSERT INTO master_drugs
+              (id, trade_name, trade_name_en, official_price, large_to_medium, medium_to_small,
+               min_limit, reorder_point)
+            VALUES (90001, 'دواء افتراضي', 'DEFAULT LIMIT DRUG', 25, 1, 1, 0, 0)
+            "#,
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO shortages (drug_id, pharmacy_id, requested_quantity, status) VALUES (90001, 'fresh-pharmacy', 10, 'pending')",
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+
+        let purchase = fresh_purchase(
+            "default-limit-shortage-purchase",
+            "DEFAULT-LIMIT-SHORTAGE",
+            "credit",
+            "completed",
+            vec![fresh_purchase_line("2030-01-01", 5.0, 0.0, None)],
+        );
+        let mut tx = conn.begin().await.unwrap();
+        save_purchase_invoice_tx(&mut tx, purchase).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let status: String = sqlx::query_scalar(
+            "SELECT status FROM shortages WHERE drug_id = 90001 AND pharmacy_id = 'fresh-pharmacy'",
+        )
+        .fetch_one(&mut conn)
+        .await
+        .unwrap();
+        assert_eq!(status, "pending");
+    }
+
+    #[tokio::test]
+    async fn purchase_receipt_keeps_shortage_active_below_recent_sales_demand() {
+        let mut conn = current_fresh_schema().await;
+        sqlx::query(
+            r#"INSERT INTO users (id, username, role, full_name, pharmacy_id, permissions, is_active)
+               VALUES ('fresh-admin', 'fresh-admin', 'admin', 'Fresh Admin', 'fresh-pharmacy',
+                       '{"can_view_purchases":true,"can_modify_unit_conversion":true}', 1)"#,
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO suppliers (id, name_ar, balance) VALUES (1, 'Fresh Supplier', 0)")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"
+            INSERT INTO master_drugs
+              (id, trade_name, trade_name_en, official_price, large_to_medium, medium_to_small, reorder_point)
+            VALUES (90001, 'دواء طلب حديث', 'RECENT DEMAND DRUG', 25, 1, 1, 2)
+            "#,
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO shortages (drug_id, pharmacy_id, requested_quantity, status) VALUES (90001, 'fresh-pharmacy', 10, 'pending')",
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"
+            INSERT INTO sales_invoices
+              (id, pharmacy_id, user_id, total_amount, payment_method, status, created_at)
+            VALUES ('recent-demand-sale', 'fresh-pharmacy', 'fresh-admin', 80, 'cash', 'completed', CURRENT_TIMESTAMP)
+            "#,
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"
+            INSERT INTO sales_items
+              (invoice_id, drug_id, quantity_sold, unit_price, unit, is_negative, large_to_medium, medium_to_small)
+            VALUES ('recent-demand-sale', 90001, 8, 10, 'large', 0, 1, 1)
+            "#,
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+
+        let purchase = fresh_purchase(
+            "recent-demand-shortage-purchase",
+            "RECENT-DEMAND-SHORTAGE",
+            "credit",
+            "completed",
+            vec![fresh_purchase_line("2030-01-01", 5.0, 0.0, None)],
+        );
+        let mut tx = conn.begin().await.unwrap();
+        save_purchase_invoice_tx(&mut tx, purchase).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let status: String = sqlx::query_scalar(
+            "SELECT status FROM shortages WHERE drug_id = 90001 AND pharmacy_id = 'fresh-pharmacy'",
+        )
+        .fetch_one(&mut conn)
+        .await
+        .unwrap();
+        assert_eq!(status, "pending");
+    }
+
+    #[tokio::test]
+    async fn purchase_save_cannot_replace_another_pharmacy_draft() {
+        let mut conn = current_fresh_schema().await;
+        sqlx::query(
+            r#"INSERT INTO users (id, username, role, full_name, pharmacy_id, permissions, is_active)
+               VALUES
+                 ('fresh-admin', 'fresh-admin', 'admin', 'Fresh Admin', 'fresh-pharmacy',
+                  '{"can_view_purchases":true,"can_modify_unit_conversion":true}', 1),
+                 ('other-admin', 'other-admin', 'admin', 'Other Admin', 'other-pharmacy',
+                  '{"can_view_purchases":true,"can_modify_unit_conversion":true}', 1)"#,
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO suppliers (id, name_ar, balance) VALUES (1, 'Fresh Supplier', 0)")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO master_drugs (id, trade_name, trade_name_en, official_price, large_to_medium, medium_to_small) VALUES (90001, 'دواء', 'DRUG', 150, 10, 10)",
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO purchase_invoices (id, supplier_id, pharmacy_id, user_id, invoice_number, invoice_date, payment_method, status) VALUES ('foreign-draft', 1, 'other-pharmacy', 'other-admin', 'FOREIGN', '2026-08-12', 'credit', 'draft')",
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+
+        let payload = fresh_purchase(
+            "foreign-draft",
+            "TAKEOVER",
+            "credit",
+            "draft",
+            vec![fresh_purchase_line("2030-01-01", 1.0, 0.0, None)],
+        );
+        let mut tx = conn.begin().await.unwrap();
+        let error = save_purchase_invoice_tx(&mut tx, payload).await.unwrap_err();
+        tx.rollback().await.unwrap();
+
+        assert!(error.contains("another pharmacy"), "unexpected error: {error}");
+        let row = sqlx::query("SELECT pharmacy_id, user_id, invoice_number FROM purchase_invoices WHERE id = 'foreign-draft'")
+            .fetch_one(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(row.get::<String, _>("pharmacy_id"), "other-pharmacy");
+        assert_eq!(row.get::<String, _>("user_id"), "other-admin");
+        assert_eq!(row.get::<String, _>("invoice_number"), "FOREIGN");
+    }
+
+    #[tokio::test]
     async fn sales_return_unit_math_uses_selected_unit() {
         let mut conn = SqliteConnection::connect("sqlite::memory:").await.unwrap();
         sqlx::query("CREATE TABLE master_drugs (id INTEGER PRIMARY KEY, large_to_medium INTEGER, medium_to_small INTEGER, medium_unit TEXT, small_unit TEXT)")
@@ -5646,6 +6055,8 @@ mod tests {
             "CREATE TABLE journal_entries (journal_id TEXT, account_id INTEGER, type TEXT, amount REAL)",
             "CREATE TABLE trial_balance_settings (category TEXT, account_id INTEGER)",
             "CREATE TABLE accounts (id INTEGER PRIMARY KEY, code TEXT)",
+            "CREATE TABLE patient_transactions (id TEXT PRIMARY KEY, patient_id TEXT, user_id TEXT, type TEXT, amount REAL, payment_method TEXT, notes TEXT, date TEXT)",
+            "CREATE TABLE activity_log (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, action TEXT, details TEXT)",
         ] {
             sqlx::query(sql).execute(&mut conn).await.unwrap();
         }
@@ -6080,6 +6491,259 @@ mod tests {
         let error = create_return_tx(&mut tx, excessive).await.unwrap_err();
         tx.rollback().await.unwrap();
         assert!(error.contains("exceeds remaining quantity"));
+
+        sqlx::query("INSERT INTO sales_invoices VALUES ('rollback-return', NULL, 'ph-1', 10, 0, 'cash', 'completed', 0)")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO sales_items (id, invoice_id, inventory_id, drug_id, quantity_sold, unit_price, unit, cost_price, large_to_medium, medium_to_small) VALUES (5, 'rollback-return', 'batch-2027', 4463, 1, 10, 'large', 40, 10, 2)")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        sqlx::raw_sql("CREATE TRIGGER reject_return_audit BEFORE INSERT ON activity_log WHEN NEW.action='CREATE_RETURN' BEGIN SELECT RAISE(ABORT,'injected return audit failure'); END;")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        let stock_before_audit_failure: f64 = sqlx::query_scalar("SELECT quantity FROM inventory WHERE id = 'batch-2027'")
+            .fetch_one(&mut conn)
+            .await
+            .unwrap();
+        let returns_before_audit_failure: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM returns WHERE invoice_id = 'rollback-return'")
+            .fetch_one(&mut conn)
+            .await
+            .unwrap();
+        let journals_before_audit_failure: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM daily_journals")
+            .fetch_one(&mut conn)
+            .await
+            .unwrap();
+        let mut tx = conn.begin().await.unwrap();
+        let audit_failure = create_return_tx(
+            &mut tx,
+            ReturnPayload {
+                invoice_id: "rollback-return".into(),
+                user_id: "admin".into(),
+                pharmacy_id: Some("ph-1".into()),
+                shift_id: None,
+                refund_method: "cash".into(),
+                reason: Some("audit rollback".into()),
+                patient_id: None,
+                items: vec![ReturnItem {
+                    sale_item_id: Some(5),
+                    inventory_id: Some("batch-2027".into()),
+                    drug_name: "COLONA".into(),
+                    quantity: 1.0,
+                    unit_price: 10.0,
+                    unit: Some("large".into()),
+                }],
+            },
+        )
+        .await;
+        assert!(audit_failure.is_err(), "return must fail when its audit write fails");
+        tx.rollback().await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, f64>("SELECT quantity FROM inventory WHERE id = 'batch-2027'")
+                .fetch_one(&mut conn)
+                .await
+                .unwrap(),
+            stock_before_audit_failure
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM returns WHERE invoice_id = 'rollback-return'")
+                .fetch_one(&mut conn)
+                .await
+                .unwrap(),
+            returns_before_audit_failure
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM daily_journals")
+                .fetch_one(&mut conn)
+                .await
+                .unwrap(),
+            journals_before_audit_failure
+        );
+
+        sqlx::query("DROP TRIGGER reject_return_audit")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO sales_invoices VALUES ('patient-ledger-rollback', 'patient-1', 'ph-1', 10, 0, 'credit', 'completed', 0)")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO sales_items (id, invoice_id, inventory_id, drug_id, quantity_sold, unit_price, unit, cost_price, large_to_medium, medium_to_small) VALUES (6, 'patient-ledger-rollback', 'batch-2027', 4463, 1, 10, 'large', 40, 10, 2)")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        sqlx::raw_sql("CREATE TRIGGER reject_patient_refund BEFORE INSERT ON patient_transactions WHEN NEW.type='refund' BEGIN SELECT RAISE(ABORT,'injected patient refund failure'); END;")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        let patient_stock_before: f64 = sqlx::query_scalar("SELECT quantity FROM inventory WHERE id = 'batch-2027'")
+            .fetch_one(&mut conn)
+            .await
+            .unwrap();
+        let mut tx = conn.begin().await.unwrap();
+        let patient_failure = create_return_tx(
+            &mut tx,
+            ReturnPayload {
+                invoice_id: "patient-ledger-rollback".into(),
+                user_id: "admin".into(),
+                pharmacy_id: Some("ph-1".into()),
+                shift_id: None,
+                refund_method: "patient_account".into(),
+                reason: Some("patient ledger rollback".into()),
+                patient_id: Some("patient-1".into()),
+                items: vec![ReturnItem {
+                    sale_item_id: Some(6),
+                    inventory_id: Some("batch-2027".into()),
+                    drug_name: "COLONA".into(),
+                    quantity: 1.0,
+                    unit_price: 10.0,
+                    unit: Some("large".into()),
+                }],
+            },
+        )
+        .await;
+        assert!(patient_failure.is_err(), "patient-account return must fail when its patient ledger write fails");
+        tx.rollback().await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, f64>("SELECT quantity FROM inventory WHERE id = 'batch-2027'")
+                .fetch_one(&mut conn)
+                .await
+                .unwrap(),
+            patient_stock_before
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM returns WHERE invoice_id = 'patient-ledger-rollback'")
+                .fetch_one(&mut conn)
+                .await
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn sales_return_bank_and_wallet_accounting_are_native_and_atomic() {
+        let mut conn = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        for sql in [
+            "CREATE TABLE master_drugs (id INTEGER PRIMARY KEY, trade_name TEXT, no_return INTEGER, large_to_medium INTEGER, medium_to_small INTEGER, medium_unit TEXT, small_unit TEXT)",
+            "CREATE TABLE inventory (id TEXT PRIMARY KEY, pharmacy_id TEXT, drug_id INTEGER, batch_number TEXT, expiry_date TEXT, quantity REAL, unit_price REAL, local_selling_price REAL, cost_price REAL, strips_per_box INTEGER, medium_to_small INTEGER, created_at TEXT, updated_at TEXT)",
+            "CREATE TABLE sales_invoices (id TEXT PRIMARY KEY, patient_id TEXT, pharmacy_id TEXT, total_amount REAL, discount_amount REAL, payment_method TEXT, status TEXT, points_earned INTEGER DEFAULT 0)",
+            "CREATE TABLE users (id TEXT PRIMARY KEY, pharmacy_id TEXT, role TEXT, permissions TEXT, is_active INTEGER DEFAULT 1)",
+            "CREATE TABLE shifts (id TEXT, user_id TEXT, pharmacy_id TEXT, status TEXT, start_time TEXT)",
+            "CREATE TABLE patients (id TEXT PRIMARY KEY, wallet_balance REAL, points_balance REAL DEFAULT 0)",
+            "CREATE TABLE sales_items (id INTEGER PRIMARY KEY, invoice_id TEXT, inventory_id TEXT, drug_id INTEGER, quantity_sold REAL, unit_price REAL, unit TEXT, cost_price REAL, large_to_medium INTEGER DEFAULT 1, medium_to_small INTEGER DEFAULT 1)",
+            "CREATE TABLE returns (id TEXT PRIMARY KEY, invoice_id TEXT, user_id TEXT, pharmacy_id TEXT, shift_id TEXT, reason TEXT, total_refund REAL, refund_method TEXT, status TEXT)",
+            "CREATE TABLE return_items (id INTEGER PRIMARY KEY AUTOINCREMENT, return_id TEXT, inventory_id TEXT, drug_name TEXT, quantity_returned REAL, unit_price REAL)",
+            "CREATE TABLE daily_journals (id TEXT PRIMARY KEY, date TEXT, description TEXT, created_by TEXT, total_amount REAL)",
+            "CREATE TABLE journal_entries (journal_id TEXT, account_id INTEGER, type TEXT, amount REAL)",
+            "CREATE TABLE trial_balance_settings (category TEXT, account_id INTEGER)",
+            "CREATE TABLE accounts (id INTEGER PRIMARY KEY, code TEXT)",
+            "CREATE TABLE patient_transactions (id TEXT PRIMARY KEY, patient_id TEXT, user_id TEXT, type TEXT, amount REAL, payment_method TEXT, notes TEXT, date TEXT)",
+            "CREATE TABLE activity_log (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, action TEXT, details TEXT)",
+        ] {
+            sqlx::query(sql).execute(&mut conn).await.unwrap();
+        }
+        sqlx::query("INSERT INTO accounts (id, code) VALUES (6,'1.1.1'),(8,'1.1.2'),(9,'3.1'),(10,'1.1.3'),(11,'4.1'),(12,'1.1.4'),(13,'2.2')")
+            .execute(&mut conn).await.unwrap();
+        sqlx::query("INSERT INTO trial_balance_settings (category, account_id) VALUES ('bank_clearing',12),('patient_wallet_liability',13)")
+            .execute(&mut conn).await.unwrap();
+        sqlx::query(r#"INSERT INTO users (id, pharmacy_id, role, permissions, is_active)
+                       VALUES ('return-user','ph-1','pharmacist','{"can_view_returns":true}',1)"#)
+            .execute(&mut conn).await.unwrap();
+        sqlx::query("INSERT INTO shifts VALUES ('shift-1','return-user','ph-1','open',CURRENT_TIMESTAMP)")
+            .execute(&mut conn).await.unwrap();
+        sqlx::query("INSERT INTO patients VALUES ('patient-1',5,0)")
+            .execute(&mut conn).await.unwrap();
+        sqlx::query("INSERT INTO master_drugs VALUES (77,'RETURN DRUG',0,1,1,NULL,NULL)")
+            .execute(&mut conn).await.unwrap();
+        sqlx::query("INSERT INTO inventory VALUES ('bank-lot','ph-1',77,'B1','2030-01-01',0,20,20,5,1,1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),('wallet-lot','ph-1',77,'W1','2030-01-01',0,30,30,6,1,1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),('wallet-fail-lot','ph-1',77,'WF1','2030-01-01',0,15,15,4,1,1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)")
+            .execute(&mut conn).await.unwrap();
+        sqlx::query("INSERT INTO sales_invoices VALUES ('bank-invoice',NULL,'ph-1',20,0,'visa','completed',0),('wallet-invoice','patient-1','ph-1',30,0,'wallet','completed',0),('wallet-fail','patient-1','ph-1',15,0,'wallet','completed',0)")
+            .execute(&mut conn).await.unwrap();
+        sqlx::query("INSERT INTO sales_items VALUES (71,'bank-invoice','bank-lot',77,1,20,'large',5,1,1),(72,'wallet-invoice','wallet-lot',77,1,30,'large',6,1,1),(73,'wallet-fail','wallet-fail-lot',77,1,15,'large',4,1,1)")
+            .execute(&mut conn).await.unwrap();
+
+        let make_return = |invoice_id: &str, item_id: i64, lot: &str, amount: f64, method: &str| ReturnPayload {
+            invoice_id: invoice_id.into(),
+            user_id: "return-user".into(),
+            pharmacy_id: Some("ph-1".into()),
+            shift_id: Some("shift-1".into()),
+            refund_method: method.into(),
+            reason: None,
+            patient_id: None,
+            items: vec![ReturnItem {
+                sale_item_id: Some(item_id),
+                inventory_id: Some(lot.into()),
+                drug_name: "RETURN DRUG".into(),
+                quantity: 1.0,
+                unit_price: amount,
+                unit: Some("large".into()),
+            }],
+        };
+
+        let mut tx = conn.begin().await.unwrap();
+        let bank = create_return_tx(
+            &mut tx,
+            make_return("bank-invoice", 71, "bank-lot", 20.0, "bank"),
+        ).await.unwrap();
+        tx.commit().await.unwrap();
+        assert!((bank.total_refund - 20.0).abs() < 0.000_001);
+        let bank_credit: f64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(je.amount),0) FROM journal_entries je
+             JOIN daily_journals dj ON dj.id=je.journal_id
+             WHERE dj.description='Sales return bank-inv' AND je.account_id=12 AND je.type='credit'",
+        ).fetch_one(&mut conn).await.unwrap();
+        assert!((bank_credit - 20.0).abs() < 0.000_001);
+
+        sqlx::raw_sql("CREATE TRIGGER reject_wallet_return_audit BEFORE INSERT ON activity_log WHEN NEW.action='CREATE_RETURN' BEGIN SELECT RAISE(ABORT,'wallet audit failure'); END;")
+            .execute(&mut conn).await.unwrap();
+        let wallet_before: f64 = sqlx::query_scalar("SELECT wallet_balance FROM patients WHERE id='patient-1'")
+            .fetch_one(&mut conn).await.unwrap();
+        let fail_stock_before: f64 = sqlx::query_scalar("SELECT quantity FROM inventory WHERE id='wallet-fail-lot'")
+            .fetch_one(&mut conn).await.unwrap();
+        let mut tx = conn.begin().await.unwrap();
+        let failure = create_return_tx(
+            &mut tx,
+            make_return("wallet-fail", 73, "wallet-fail-lot", 15.0, "wallet"),
+        ).await.unwrap_err();
+        tx.rollback().await.unwrap();
+        assert!(failure.contains("wallet audit failure"));
+        assert_eq!(
+            sqlx::query_scalar::<_, f64>("SELECT wallet_balance FROM patients WHERE id='patient-1'")
+                .fetch_one(&mut conn).await.unwrap(),
+            wallet_before
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, f64>("SELECT quantity FROM inventory WHERE id='wallet-fail-lot'")
+                .fetch_one(&mut conn).await.unwrap(),
+            fail_stock_before
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM returns WHERE invoice_id='wallet-fail'")
+                .fetch_one(&mut conn).await.unwrap(),
+            0
+        );
+        sqlx::query("DROP TRIGGER reject_wallet_return_audit").execute(&mut conn).await.unwrap();
+
+        let mut tx = conn.begin().await.unwrap();
+        let wallet = create_return_tx(
+            &mut tx,
+            make_return("wallet-invoice", 72, "wallet-lot", 30.0, "wallet"),
+        ).await.unwrap();
+        tx.commit().await.unwrap();
+        assert!((wallet.total_refund - 30.0).abs() < 0.000_001);
+        assert_eq!(
+            sqlx::query_scalar::<_, f64>("SELECT wallet_balance FROM patients WHERE id='patient-1'")
+                .fetch_one(&mut conn).await.unwrap(),
+            wallet_before + 30.0
+        );
+        let wallet_credit: f64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(je.amount),0) FROM journal_entries je
+             JOIN daily_journals dj ON dj.id=je.journal_id
+             WHERE dj.description='Sales return wallet-i' AND je.account_id=13 AND je.type='credit'",
+        ).fetch_one(&mut conn).await.unwrap();
+        assert!((wallet_credit - 30.0).abs() < 0.000_001);
     }
 
     #[tokio::test]
@@ -6412,7 +7076,7 @@ mod tests {
             "CREATE TABLE inventory (id TEXT PRIMARY KEY, drug_id INTEGER, pharmacy_id TEXT, quantity REAL, cost_price REAL, local_selling_price REAL, expiry_date TEXT, created_at TEXT, updated_at TEXT, strips_per_box INTEGER, medium_to_small INTEGER)",
             "CREATE TABLE users (id TEXT PRIMARY KEY, role TEXT, permissions TEXT, is_active INTEGER, pharmacy_id TEXT)",
             "CREATE TABLE sales_invoices (id TEXT PRIMARY KEY, pharmacy_id TEXT, user_id TEXT, patient_id TEXT, shift_id TEXT, total_amount REAL, payment_method TEXT, check_number TEXT, status TEXT, discount_amount REAL, points_earned INTEGER DEFAULT 0, created_at TEXT)",
-            "CREATE TABLE sales_items (id INTEGER PRIMARY KEY AUTOINCREMENT, invoice_id TEXT, inventory_id TEXT, drug_id INTEGER, quantity_sold REAL, unit_price REAL, unit TEXT, is_negative INTEGER, cost_price REAL, large_to_medium INTEGER DEFAULT 1, medium_to_small INTEGER DEFAULT 1, created_at TEXT)",
+            "CREATE TABLE sales_items (id INTEGER PRIMARY KEY AUTOINCREMENT, invoice_id TEXT, inventory_id TEXT, drug_id INTEGER, quantity_sold REAL, unit_price REAL, item_discount_percent REAL DEFAULT 0, unit TEXT, is_negative INTEGER, cost_price REAL, large_to_medium INTEGER DEFAULT 1, medium_to_small INTEGER DEFAULT 1, created_at TEXT)",
             "CREATE TABLE daily_journals (id TEXT PRIMARY KEY, date TEXT, description TEXT, created_by TEXT, total_amount REAL)",
             "CREATE TABLE journal_entries (journal_id TEXT, account_id INTEGER, type TEXT, amount REAL)",
             "CREATE TABLE trial_balance_settings (category TEXT, account_id INTEGER)",
@@ -6428,7 +7092,7 @@ mod tests {
         ] {
             sqlx::query(sql).execute(&mut conn).await.unwrap();
         }
-        sqlx::query("INSERT INTO users VALUES ('admin', 'owner', '{}', 1, 'local_default'), ('foreign-admin', 'owner', '{}', 1, 'ph-2')")
+        sqlx::query("INSERT INTO users VALUES ('admin', 'owner', '{}', 1, 'local_default'), ('foreign-admin', 'owner', '{}', 1, 'ph-2'), ('limited-pos', 'pharmacist', '{\"can_access_pos\":true,\"can_change_price_sale\":true,\"suspended_can_save_invoice\":false,\"can_sell_no_stock\":false}', 1, 'local_default')")
             .execute(&mut conn)
             .await
             .unwrap();
@@ -6480,6 +7144,88 @@ mod tests {
         }
         assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM sales_invoices").fetch_one(&mut conn).await.unwrap(), 0);
         assert_eq!(sqlx::query_scalar::<_, f64>("SELECT quantity FROM inventory WHERE id = 'full'").fetch_one(&mut conn).await.unwrap(), 7.0);
+
+        let mut invalid_payment = cash_payload(Some("full"));
+        invalid_payment.payment_method = "crypto".into();
+        let mut tx = conn.begin().await.unwrap();
+        assert_eq!(process_checkout_tx(&mut tx, invalid_payment, 69.0).await.unwrap_err(), "Invalid checkout payment method");
+        tx.rollback().await.unwrap();
+
+        let mut invalid_status = cash_payload(Some("full"));
+        invalid_status.status = "voided".into();
+        let mut tx = conn.begin().await.unwrap();
+        assert_eq!(process_checkout_tx(&mut tx, invalid_status, 69.0).await.unwrap_err(), "Invalid checkout status");
+        tx.rollback().await.unwrap();
+
+        let mut forbidden_draft = cash_payload(Some("full"));
+        forbidden_draft.user_id = "limited-pos".into();
+        forbidden_draft.status = "draft".into();
+        let mut tx = conn.begin().await.unwrap();
+        assert_eq!(
+            process_checkout_tx(&mut tx, forbidden_draft, 69.0)
+                .await
+                .unwrap_err(),
+            "Unauthorized: suspended_can_save_invoice permission required"
+        );
+        tx.rollback().await.unwrap();
+
+        let mut replenished_without_negative_permission = cash_payload(None);
+        replenished_without_negative_permission.user_id = "limited-pos".into();
+        replenished_without_negative_permission.items[0].is_negative = true;
+        let mut tx = conn.begin().await.unwrap();
+        let replenished_without_negative_permission_sale = process_checkout_tx(
+            &mut tx,
+            replenished_without_negative_permission,
+            69.0,
+        )
+        .await
+        .unwrap();
+        let stored_negative: i64 = sqlx::query_scalar(
+            "SELECT is_negative FROM sales_items WHERE invoice_id = ?",
+        )
+        .bind(&replenished_without_negative_permission_sale.sale_id)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+        assert_eq!(stored_negative, 0);
+        tx.rollback().await.unwrap();
+
+        let mut stale_negative = cash_payload(None);
+        stale_negative.items[0].is_negative = true;
+        let mut tx = conn.begin().await.unwrap();
+        let replenished_sale = process_checkout_tx(&mut tx, stale_negative, 69.0).await.unwrap();
+        let remaining_stock: f64 = sqlx::query_scalar("SELECT quantity FROM inventory WHERE id = 'full'")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        assert!((remaining_stock - 6.0).abs() < 0.000_001);
+        let replenished_line = sqlx::query(
+            "SELECT inventory_id, is_negative, cost_price FROM sales_items WHERE invoice_id = ?",
+        )
+        .bind(&replenished_sale.sale_id)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+        assert_eq!(replenished_line.try_get::<String, _>("inventory_id").unwrap(), "full");
+        assert_eq!(replenished_line.try_get::<i64, _>("is_negative").unwrap(), 0);
+        assert!((replenished_line.try_get::<f64, _>("cost_price").unwrap() - 40.0).abs() < 0.000_001);
+        tx.rollback().await.unwrap();
+
+        let mut discounted_draft = cash_payload(Some("full"));
+        discounted_draft.status = "draft".into();
+        discounted_draft.items[0].unit_price = 62.1;
+        discounted_draft.items[0].item_discount_percent = 10.0;
+        let mut tx = conn.begin().await.unwrap();
+        let draft_result = process_checkout_tx(&mut tx, discounted_draft, 62.1).await.unwrap();
+        let saved_discount: f64 = sqlx::query_scalar(
+            "SELECT item_discount_percent FROM sales_items WHERE invoice_id = ?",
+        )
+        .bind(&draft_result.sale_id)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+        assert!((saved_discount - 10.0).abs() < 0.000_001);
+        tx.rollback().await.unwrap();
 
         let mut foreign_user_payload = cash_payload(Some("full"));
         foreign_user_payload.user_id = "foreign-admin".into();

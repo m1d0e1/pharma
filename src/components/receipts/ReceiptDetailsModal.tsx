@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
 import { getConfigAction } from '@/app/actions-client/config'
 import toast from 'react-hot-toast'
-import { generateReceiptHtml, generateWhatsAppMessage, printHtmlContent } from '@/lib/utils/printing'
+import { calculateReceiptTotals, generateReceiptHtml, generateWhatsAppMessage, printHtmlContent } from '@/lib/utils/printing'
 import { Printer, X, Phone } from 'lucide-react'
 
 interface SaleItem {
@@ -31,6 +31,8 @@ interface Invoice {
   patients: { full_name: string, phone: string } | null
   sales_items: SaleItem[]
   payment_method?: string
+  discount_amount?: number
+  additional_fees?: number
 }
 
 interface Props {
@@ -135,9 +137,7 @@ export default function ReceiptDetailsModal({ invoice, onClose, autoPrint = fals
     window.open(whatsappUrl, '_blank');
   };
 
-  const subtotal = invoice.sales_items?.reduce((s, i) => s + (i.quantity_sold * i.unit_price), 0) || 0;
-  const totalAmount = invoice.total_amount;
-  const discount = Math.max(0, subtotal - totalAmount);
+  const { subtotal, discount, additionalFees } = calculateReceiptTotals(invoice);
 
   return (
     <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-3 z-[200]" dir="rtl">
@@ -223,14 +223,20 @@ export default function ReceiptDetailsModal({ invoice, onClose, autoPrint = fals
                 <span className="text-sm">
                   {invoice.payment_method === 'cash' ? '💵' : 
                    invoice.payment_method === 'credit' ? '💳' :
-                   invoice.payment_method === 'visa' ? '🏦' : '💸'}
+                   invoice.payment_method === 'visa' ? '🏦' :
+                   invoice.payment_method === 'wallet' ? '👛' :
+                   invoice.payment_method === 'check' ? '📝' :
+                   invoice.payment_method === 'delivery' ? '🛵' : '💸'}
                 </span>
                 <div>
                   <p className="text-[8px] font-black text-slate-400 uppercase">طريقة الدفع</p>
                   <span className="font-bold text-slate-800 dark:text-white text-xs">
                     {invoice.payment_method === 'cash' ? 'نقدي (Cash)' : 
                      invoice.payment_method === 'credit' ? 'حساب أجل (Credit)' :
-                     invoice.payment_method === 'visa' ? 'فيزا (Visa)' : 'طرق أخرى'}
+                     invoice.payment_method === 'visa' ? 'فيزا (Visa)' :
+                     invoice.payment_method === 'wallet' ? 'محفظة (Wallet)' :
+                     invoice.payment_method === 'check' ? 'شيك (Check)' :
+                     invoice.payment_method === 'delivery' ? 'توصيل (Delivery)' : 'طرق أخرى'}
                   </span>
                 </div>
               </div>
@@ -245,6 +251,12 @@ export default function ReceiptDetailsModal({ invoice, onClose, autoPrint = fals
                 <div className="flex justify-between items-center px-1 text-rose-500 text-[10px]">
                   <span className="font-bold">إجمالي الخصم:</span>
                   <span className="font-bold">-{discount.toFixed(2)} ج.م</span>
+                </div>
+              )}
+              {additionalFees > 0 && (
+                <div className="flex justify-between items-center px-1 text-amber-600 text-[10px]">
+                  <span className="font-bold">رسوم إضافية:</span>
+                  <span className="font-bold">+{additionalFees.toFixed(2)} ج.م</span>
                 </div>
               )}
               <div className="pt-1.5 border-t border-slate-200 dark:border-slate-700 flex justify-between items-baseline">

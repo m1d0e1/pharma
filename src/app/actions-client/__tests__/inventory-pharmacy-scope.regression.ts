@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import { readFileSync } from 'fs';
+import { createSqliteTransactionDb as mockCreateSqliteTransactionDb } from '@/tests/helpers/sqlite-transaction-db';
 
 let mockDb: Database.Database;
 let mockSession: { id: string; role: string; pharmacy_id: string | null; permissions?: unknown };
@@ -11,7 +12,7 @@ jest.mock('@/lib/db/tauri', () => ({
     const result = mockDb.prepare(sql).run(...params);
     return { rowsAffected: result.changes, lastInsertId: Number(result.lastInsertRowid) };
   }),
-  dbTransaction: jest.fn(async (callback: () => unknown) => callback()),
+  dbTransaction: jest.fn(async (callback: any) => callback(mockCreateSqliteTransactionDb(mockDb))),
   generateId: jest.fn(() => 'test-id'),
 }));
 
@@ -29,6 +30,8 @@ jest.mock('@/lib/cache/secure_cache', () => ({
   },
 }));
 
+jest.mock('@/lib/inventory/refresh', () => ({ notifyInventoryChanged: jest.fn() }));
+
 jest.unmock('@/app/actions-client/inventory');
 jest.unmock('@/app/actions-client/master-drugs');
 
@@ -41,6 +44,7 @@ import {
   getOpeningBalancesAction,
 } from '@/app/actions-client/inventory';
 import { createStockAdjustmentAction } from '@/app/actions-client/master-drugs';
+import { notifyInventoryChanged } from '@/lib/inventory/refresh';
 
 describe('inventory read models preserve pharmacy boundaries', () => {
   beforeEach(() => {
@@ -207,6 +211,28 @@ describe('inventory read models preserve pharmacy boundaries', () => {
     expect(item).toEqual(expect.objectContaining({ avg_monthly_usage: 5 }));
   });
 
+  it('normalizes mixed sale units to large units for box-per-month consumption', async () => {
+    mockDb.exec(`
+      UPDATE master_drugs
+      SET large_to_medium = 10, medium_to_small = 2, medium_unit = 'strip', small_unit = 'tablet'
+      WHERE id = 9201;
+      INSERT INTO sales_invoices (id, user_id, total_amount, status, pharmacy_id, created_at)
+      VALUES ('mixed-unit-consumption', 'admin', 100, 'completed', NULL, CURRENT_TIMESTAMP);
+      INSERT INTO sales_items (
+        invoice_id, drug_id, quantity_sold, unit_price, unit, is_negative, large_to_medium, medium_to_small
+      ) VALUES
+        ('mixed-unit-consumption', 9201, 10, 2, 'medium', 0, 10, 2),
+        ('mixed-unit-consumption', 9201, 20, 1, 'small', 0, 10, 2);
+    `);
+
+    const details = await getDrugDetailsFullAction(9201);
+
+    expect(details.success).toBe(true);
+    expect(details.data?.consumption_stats).toEqual([
+      expect.objectContaining({ net_sales: 2, transactions: 2 }),
+    ]);
+  });
+
   it('keeps stock adjustments in the local pharmacy, rejects negative quantity, and posts valuation entries', async () => {
     mockDb.exec(`
       UPDATE inventory SET cost_price = 5 WHERE id = 'local-active';
@@ -223,6 +249,7 @@ describe('inventory read models preserve pharmacy boundaries', () => {
     expect(mockDb.prepare("SELECT quantity FROM inventory WHERE id = 'foreign-active'").get()).toEqual({ quantity: 7 });
     expect(mockDb.prepare("SELECT COUNT(*) AS count FROM stock_adjustments WHERE inventory_id = 'local-active'").get()).toEqual({ count: 1 });
     expect(mockDb.prepare("SELECT COUNT(*) AS count FROM journal_entries WHERE journal_id = 'test-id'").get()).toEqual({ count: 2 });
+    expect(notifyInventoryChanged).toHaveBeenCalledTimes(1);
   });
 
   it('includes stock adjustments and zeroing in item movements', async () => {
@@ -235,5 +262,61 @@ describe('inventory read models preserve pharmacy boundaries', () => {
       'STOCK_ADJUSTMENT',
       'ZERO_INVENTORY',
     ]));
+  });
+
+  it('includes the canonical sale, return, and purchase events emitted by current workflows', async () => {
+    const insert = mockDb.prepare(`INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)`);
+    insert.run('admin', 'COMPLETE_SALE', 'Sale sale-1 value 15');
+    insert.run('admin', 'CREATE_RETURN', 'Return ret-1 value 5');
+    insert.run('admin', 'COMPLETE_PURCHASE', 'Purchase purchase-1 completed');
+
+    const movements = await getMovementsAction();
+    expect(movements.success).toBe(true);
+    expect(movements.data?.map((row: any) => row.action)).toEqual(expect.arrayContaining([
+      'COMPLETE_SALE',
+      'CREATE_RETURN',
+      'COMPLETE_PURCHASE',
+    ]));
+  });
+
+  it('does not silently hide older item movements beyond 1,000 rows', async () => {
+    const insertMovement = mockDb.prepare(`
+      INSERT INTO activity_log (user_id, action, details, pharmacy_id, created_at)
+      VALUES ('admin', 'ADD_INVENTORY', ?, NULL, ?)
+    `);
+    const batch = mockDb.transaction(() => {
+      for (let index = 0; index < 1001; index += 1) {
+        insertMovement.run(`أضيفت دفعة ${index} من Scoped inventory drug`, `2026-09-${String((index % 27) + 1).padStart(2, '0')} 12:00:00`);
+      }
+    });
+    batch();
+
+    const movements = await getMovementsAction();
+
+    expect(movements.success).toBe(true);
+    expect(movements.data).toHaveLength(1001);
+  });
+
+  it('does not silently hide opening-balance rows beyond 100 records', async () => {
+    const insertOpening = mockDb.prepare(`
+      INSERT INTO inventory (
+        id, pharmacy_id, drug_id, batch_number, quantity, cost_price, local_selling_price, expiry_date, created_at
+      ) VALUES (?, NULL, 9201, ?, 1, 5, 10, '2099-12-31', ?)
+    `);
+    const batch = mockDb.transaction(() => {
+      for (let index = 0; index < 101; index += 1) {
+        insertOpening.run(
+          `opening-history-${index}`,
+          `OPEN-HISTORY-${index}`,
+          `2026-09-${String((index % 27) + 1).padStart(2, '0')} 12:00:00`,
+        );
+      }
+    });
+    batch();
+
+    const balances = await getOpeningBalancesAction();
+
+    expect(balances.success).toBe(true);
+    expect(balances.data).toHaveLength(102);
   });
 });

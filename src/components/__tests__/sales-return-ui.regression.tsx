@@ -103,6 +103,159 @@ describe('rendered customer-return flow', () => {
     expect(mockPush).toHaveBeenCalledWith('/returns');
   });
 
+  it('resets a stale patient-account refund when switching to a patient cash invoice', async () => {
+    (searchRecentReturnInvoicesAction as jest.Mock).mockImplementation(async (term: string) => ({
+      success: true,
+      data: term.includes('cash')
+        ? [{ id: 'cash-invoice', total_amount: 20, payment_method: 'cash', patient_name: 'Cash Patient', created_at: '2026-08-26T10:00:00.000Z' }]
+        : [{ id: 'credit-invoice', total_amount: 20, payment_method: 'credit', patient_name: 'Credit Patient', created_at: '2026-08-25T10:00:00.000Z' }],
+    }));
+    (getInvoiceForReturnAction as jest.Mock).mockImplementation(async (id: string) => ({
+      success: true,
+      data: {
+        id,
+        patient_id: id === 'cash-invoice' ? 'patient-cash' : 'patient-credit',
+        patient_name: id === 'cash-invoice' ? 'Cash Patient' : 'Credit Patient',
+        total_amount: 20,
+        discount_amount: 0,
+        payment_method: id === 'cash-invoice' ? 'cash' : 'credit',
+        status: 'completed',
+        already_refunded: 0,
+        items: [{
+          id: id === 'cash-invoice' ? 'cash-item' : 'credit-item',
+          inventory_id: id === 'cash-invoice' ? 'cash-batch' : 'credit-batch',
+          drug_name: id === 'cash-invoice' ? 'Cash Drug' : 'Credit Drug',
+          quantity_sold: 1,
+          returned_quantity: 0,
+          unit_price: 20,
+          unit: 'large',
+          large_to_medium: 1,
+          medium_to_small: 1,
+        }],
+      },
+    }));
+
+    render(<SalesReturnClient />);
+    const search = screen.getByPlaceholderText('امسح الباركود، أو اكتب اسم الدواء، أو رقم الفاتورة...');
+    fireEvent.change(search, { target: { value: 'credit' } });
+    expect(await screen.findByText('Credit Drug')).toBeInTheDocument();
+
+    const refundMethod = screen.getAllByRole('combobox').at(-1)!;
+    fireEvent.change(refundMethod, { target: { value: 'patient_account' } });
+    expect(refundMethod).toHaveValue('patient_account');
+
+    fireEvent.change(search, { target: { value: 'cash' } });
+    expect(await screen.findByText('Cash Drug')).toBeInTheDocument();
+    expect(screen.getAllByRole('combobox').at(-1)).toHaveValue('cash');
+  });
+
+  it('can refund a wallet-funded patient sale back to the patient wallet', async () => {
+    (searchRecentReturnInvoicesAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: [{
+        id: 'wallet-invoice',
+        total_amount: 30,
+        payment_method: 'wallet',
+        patient_name: 'Wallet Patient',
+        created_at: '2026-08-25T10:00:00.000Z',
+      }],
+    });
+    (getInvoiceForReturnAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: {
+        id: 'wallet-invoice',
+        patient_id: 'patient-wallet',
+        patient_name: 'Wallet Patient',
+        total_amount: 30,
+        discount_amount: 0,
+        payment_method: 'wallet',
+        status: 'completed',
+        already_refunded: 0,
+        items: [{
+          id: 'wallet-sale-item',
+          inventory_id: 'wallet-batch',
+          drug_name: 'Wallet Return Drug',
+          quantity_sold: 1,
+          returned_quantity: 0,
+          unit_price: 30,
+          unit: 'large',
+          large_to_medium: 1,
+          medium_to_small: 1,
+        }],
+      },
+    });
+
+    render(<SalesReturnClient />);
+    fireEvent.change(screen.getByPlaceholderText('امسح الباركود، أو اكتب اسم الدواء، أو رقم الفاتورة...'), {
+      target: { value: 'wallet' },
+    });
+
+    expect(await screen.findByText('Wallet Return Drug')).toBeInTheDocument();
+    const refundMethod = screen.getAllByRole('combobox').at(-1)!;
+    expect(screen.getByRole('option', { name: 'إرجاع الرصيد إلى محفظة المريض' })).toBeInTheDocument();
+    fireEvent.change(refundMethod, { target: { value: 'wallet' } });
+    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'تنفيذ المرتجع' }));
+
+    await waitFor(() => expect(createReturnAction).toHaveBeenCalledWith(expect.objectContaining({
+      invoice_id: 'wallet-invoice',
+      patient_id: 'patient-wallet',
+      refund_method: 'wallet',
+    })));
+  });
+
+  it('can route a card-funded sale refund through the native bank-clearing path', async () => {
+    (searchRecentReturnInvoicesAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: [{
+        id: 'visa-invoice',
+        total_amount: 30,
+        payment_method: 'visa',
+        created_at: '2026-08-25T10:00:00.000Z',
+      }],
+    });
+    (getInvoiceForReturnAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: {
+        id: 'visa-invoice',
+        patient_id: null,
+        total_amount: 30,
+        discount_amount: 0,
+        payment_method: 'visa',
+        status: 'completed',
+        already_refunded: 0,
+        items: [{
+          id: 'visa-sale-item',
+          inventory_id: 'visa-batch',
+          drug_name: 'Visa Return Drug',
+          quantity_sold: 1,
+          returned_quantity: 0,
+          unit_price: 30,
+          unit: 'large',
+          large_to_medium: 1,
+          medium_to_small: 1,
+        }],
+      },
+    });
+
+    render(<SalesReturnClient />);
+    fireEvent.change(screen.getByPlaceholderText('امسح الباركود، أو اكتب اسم الدواء، أو رقم الفاتورة...'), {
+      target: { value: 'visa' },
+    });
+
+    expect(await screen.findByText('Visa Return Drug')).toBeInTheDocument();
+    const refundMethod = screen.getAllByRole('combobox').at(-1)!;
+    expect(screen.getByRole('option', { name: 'استرداد بنكي / بطاقة' })).toBeInTheDocument();
+    expect(refundMethod).toHaveValue('bank');
+    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'تنفيذ المرتجع' }));
+
+    await waitFor(() => expect(createReturnAction).toHaveBeenCalledWith(expect.objectContaining({
+      invoice_id: 'visa-invoice',
+      refund_method: 'bank',
+    })));
+  });
+
   it('scans barcode and presses Enter to select receipt and return item', async () => {
     render(<SalesReturnClient />);
     const searchInput = screen.getByPlaceholderText('امسح الباركود، أو اكتب اسم الدواء، أو رقم الفاتورة...');

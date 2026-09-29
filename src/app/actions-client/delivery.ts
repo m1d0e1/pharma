@@ -40,7 +40,7 @@ const db = {
     }
   }),
   transaction: (cb) => {
-    return (...args) => dbTransaction(async () => await cb(...args));
+    return (...args) => dbTransaction(async (transactionDb) => await cb(transactionDb, ...args));
   },
   exec: (sql) => {
     return dbExecute(sql);
@@ -86,14 +86,14 @@ export async function closeDeliveryInvoiceAction(invoiceId: string, deliveryFee:
     if (!user || !hasUserPermissionSync(user, 'can_view_delivery')) return { success: false, error: 'غير مصرح' };
     if (!Number.isFinite(deliveryFee) || deliveryFee < 0) return { success: false, error: 'رسوم التوصيل غير صالحة' };
 
-    const transaction = db.transaction(async () => {
+    const transaction = db.transaction(async (db) => {
       const pharmacyId = user.pharmacy_id || 'local_default';
       const pharmacyClause = ` AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))`;
       const invoiceParams = [invoiceId, pharmacyId, pharmacyId];
       // 1. Fetch invoice info to get total
       const invoice = await db.prepare(`SELECT total_amount FROM sales_invoices WHERE id = ? AND payment_method = 'delivery' AND status = 'completed'${pharmacyClause}`).get(...invoiceParams) as any;
       if (!invoice) throw new Error('فاتورة التوصيل غير موجودة أو تم تحصيلها بالفعل');
-      const shiftId = await requireOpenShiftId(user.id);
+      const shiftId = await requireOpenShiftId(user.id, undefined, db);
       const totalCollected = Number(invoice.total_amount || 0) + deliveryFee;
       const originalTotal = Number(invoice.total_amount || 0);
 

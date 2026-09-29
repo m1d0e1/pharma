@@ -51,7 +51,20 @@ export default function ReorderAlerts() {
     try {
       const result = await getLowStockAction(10)
       if (requestId !== loadRequestRef.current) return
-      if (!result.success) throw new Error(result.error || 'فشل تحميل تنبيهات إعادة الطلب')
+      if (!result.success) {
+        const message = result.error || 'فشل تحميل تنبيهات إعادة الطلب'
+        const unauthorized = message.includes('غير مصرح') || message.toLowerCase().includes('unauthor')
+        if (unauthorized) {
+          setItems([])
+          setSelectedIds([])
+          setHiddenCount(0)
+          hasLoadedRef.current = false
+          setRefreshError(false)
+          setLoadError(true)
+          return
+        }
+        throw new Error(message)
+      }
 
       const mapped = (result.data || []).map((item: any) => {
         const deficit = Number(item.deficit || 0)

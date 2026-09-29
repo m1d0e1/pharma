@@ -47,4 +47,18 @@ describe('PermissionGuard', () => {
     expect(await screen.findByText('protected report')).toBeInTheDocument();
     expect(getClientSession).toHaveBeenCalledTimes(2);
   });
+
+  it('allows a route guarded by alternative permissions when any one permission is granted', async () => {
+    (getClientSession as jest.Mock).mockResolvedValue({ id: 'restock-user', role: 'pharmacist' });
+    (hasUserPermissionSync as jest.Mock).mockImplementation((_user: any, key: string) => key === 'can_view_restock');
+
+    render(
+      <PermissionGuard permissionKey={['can_view_purchases', 'can_view_restock'] as any} fallback={<div>blocked</div>}>
+        <div>purchase orders</div>
+      </PermissionGuard>
+    );
+
+    expect(await screen.findByText('purchase orders')).toBeInTheDocument();
+    expect(screen.queryByText('blocked')).not.toBeInTheDocument();
+  });
 });

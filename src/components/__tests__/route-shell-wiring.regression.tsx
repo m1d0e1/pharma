@@ -48,8 +48,8 @@ jest.mock('@/components/finance/CashTransactionsClient', () => function MockCash
   return <div data-testid="cash-transactions-client" />;
 });
 
-jest.mock('@/components/finance/TrialBalanceSettingsClient', () => function MockTrialBalanceSettingsClient() {
-  return <div data-testid="trial-balance-settings-client" />;
+jest.mock('@/components/finance/TrialBalanceSettingsClient', () => function MockTrialBalanceSettingsClient({ canManage }: any) {
+  return <div data-testid="trial-balance-settings-client" data-can-manage={String(canManage)} />;
 });
 
 jest.mock('@/app/(dashboard)/purchases/new/PurchaseInvoiceClient', () => function MockPurchaseInvoiceClient() {
@@ -98,7 +98,7 @@ describe('thin route shell wiring', () => {
 
     render(<TrialBalanceSettingsPage />);
     expect(screen.getByTestId('guard-acc_can_view_general')).toBeInTheDocument();
-    expect(screen.getByTestId('trial-balance-settings-client')).toBeInTheDocument();
+    expect(screen.getByTestId('trial-balance-settings-client')).toHaveAttribute('data-can-manage', 'undefined');
   });
 
   it('wires active purchase and settlement route shells to the exercised clients', () => {

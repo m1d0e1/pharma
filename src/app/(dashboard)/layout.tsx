@@ -35,7 +35,10 @@ export default function DashboardLayout({
   const [loading, setLoading] = useState(true);
   const [isTauri, setIsTauri] = useState(false);
   const roleLabel = userRole === 'owner' ? 'مالك' : userRole === 'admin' ? 'مدير النظام' : userRole === 'manager' ? 'مدير' : userRole === 'cashier' ? 'كاشير' : 'صيدلي';
-  const canAccessPos = hasUserPermissionSync({ role: userRole, permissions }, 'can_access_pos');
+  const permissionUser = { role: userRole, permissions };
+  const canAccessPos = hasUserPermissionSync(permissionUser, 'can_access_pos');
+  const canViewInventory = hasUserPermissionSync(permissionUser, 'can_view_stores');
+  const canViewPurchases = hasUserPermissionSync(permissionUser, 'can_view_purchases');
 
   const log = (m: string) => typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__?.invoke('log_frontend_error', { message: m });
 
@@ -259,12 +262,12 @@ export default function DashboardLayout({
 
   useHotkeys('ctrl+i, meta+i', (e) => {
     e.preventDefault();
-    router.push('/inventory');
+    if (canViewInventory) router.push('/inventory');
   }, { enableOnFormTags: true });
 
   useHotkeys('ctrl+o, meta+o', (e) => {
     e.preventDefault();
-    router.push('/purchases');
+    if (canViewPurchases) router.push('/purchases');
   }, { enableOnFormTags: true });
 
   useHotkeys('ctrl+d, meta+d', (e) => {

@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { createFunctionTransactionDb as mockCreateFunctionTransactionDb } from '@/tests/helpers/sqlite-transaction-db';
 
 let sqlite: Database.Database;
 let inTransaction = false;
@@ -21,11 +22,25 @@ jest.mock('@/lib/db/tauri', () => ({
     const result = sqlite.prepare(sql).run(...params);
     return { rowsAffected: result.changes, lastInsertId: Number(result.lastInsertRowid) };
   }),
-  dbTransaction: jest.fn(async (callback: () => Promise<unknown>) => {
+  dbTransaction: jest.fn(async (callback: any) => {
     sqlite.exec('BEGIN IMMEDIATE');
     inTransaction = true;
     try {
-      const result = await callback();
+      const transactionDb = mockCreateFunctionTransactionDb({
+        select: async (sql: string, params: unknown[] = []) => {
+          if (/linked_count[\s\S]*FROM patients p/.test(sql)) linkageCheckedInTransaction = inTransaction;
+          return sqlite.prepare(sql).all(...params);
+        },
+        get: async (sql: string, params: unknown[] = []) => {
+          if (/linked_count[\s\S]*FROM patients p/.test(sql)) linkageCheckedInTransaction = inTransaction;
+          return sqlite.prepare(sql).get(...params) ?? null;
+        },
+        execute: async (sql: string, params: unknown[] = []) => {
+          const result = sqlite.prepare(sql).run(...params);
+          return { rowsAffected: result.changes, lastInsertId: Number(result.lastInsertRowid) };
+        },
+      });
+      const result = await callback(transactionDb);
       sqlite.exec('COMMIT');
       return result;
     } catch (error) {

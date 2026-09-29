@@ -40,7 +40,7 @@ const db = {
     }
   }),
   transaction: (cb) => {
-    return (...args) => dbTransaction(async () => await cb(...args));
+    return (...args) => dbTransaction(async (transactionDb) => await cb(transactionDb, ...args));
   },
   exec: (sql) => {
     return dbExecute(sql);
@@ -74,7 +74,7 @@ export async function addExpenseAction(data: {
     if (!data.category.trim() || !isBusinessDate(data.date)) return { success: false, error: 'بيانات المصروف أو التاريخ غير صالحة' };
 
     const id = generateId();
-    await dbTransaction(async () => {
+    await dbTransaction(async (db) => {
       await db.prepare(`
         INSERT INTO expenses (id, user_id, category, amount, description, date)
         VALUES (?, ?, ?, ?, ?, ?)
@@ -87,7 +87,7 @@ export async function addExpenseAction(data: {
         amount: data.amount,
         notes: data.description,
         date: data.date,
-      });
+      }, db);
       if (!cashMovement.success) throw new Error(cashMovement.error || 'فشل تسجيل حركة المصروف النقدية');
     });
 
@@ -108,7 +108,7 @@ export async function addExpenseAction(data: {
 export async function getExpensesAction(filter?: { from?: string; to?: string; category?: string }) {
   try {
     const user = await getLocalSession();
-    if (!user || (!hasUserPermissionSync(user, 'can_view_expenses') && !hasUserPermissionSync(user, 'acc_can_define_expenses'))) return { success: false, error: 'غير مصرح' };
+    if (!user || !hasUserPermissionSync(user, 'can_view_expenses')) return { success: false, error: 'غير مصرح' };
     const pharmacyId = user.pharmacy_id || 'local_default';
 
     let query = `
@@ -171,7 +171,7 @@ export async function deleteExpenseAction(id: string) {
 export async function getExpenseSummaryAction(month?: string) {
   try {
     const user = await getLocalSession();
-    if (!user || (!hasUserPermissionSync(user, 'can_view_expenses') && !hasUserPermissionSync(user, 'acc_can_define_expenses'))) return { success: false, error: 'غير مصرح' };
+    if (!user || !hasUserPermissionSync(user, 'can_view_expenses')) return { success: false, error: 'غير مصرح' };
     const pharmacyId = user.pharmacy_id || 'local_default';
 
     const targetMonth = month || localMonth();
@@ -209,11 +209,11 @@ export async function getExpenseSummaryAction(month?: string) {
         COALESCE(si.cost_price, 0) *
         CASE
           WHEN si.unit IN ('medium', 'strip', 'شريط') OR si.unit = md.medium_unit
-            THEN si.quantity_sold / COALESCE(NULLIF(i.strips_per_box, 0), NULLIF(md.large_to_medium, 0), 1)
+            THEN si.quantity_sold / COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(i.strips_per_box, 0), NULLIF(md.large_to_medium, 0), 1)
           WHEN si.unit = 'small' OR si.unit = md.small_unit
             THEN si.quantity_sold / (
-              COALESCE(NULLIF(i.strips_per_box, 0), NULLIF(md.large_to_medium, 0), 1) *
-              COALESCE(NULLIF(md.medium_to_small, 0), 1)
+              COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(i.strips_per_box, 0), NULLIF(md.large_to_medium, 0), 1) *
+              COALESCE(NULLIF(si.medium_to_small, 0), NULLIF(i.medium_to_small, 0), NULLIF(md.medium_to_small, 0), 1)
             )
           ELSE si.quantity_sold
         END
@@ -233,11 +233,11 @@ export async function getExpenseSummaryAction(month?: string) {
         COALESCE(si.cost_price, 0) *
         CASE
           WHEN ri.unit IN ('medium', 'strip', 'شريط') OR ri.unit = md.medium_unit
-            THEN ri.quantity_returned / COALESCE(NULLIF(i.strips_per_box, 0), NULLIF(md.large_to_medium, 0), 1)
+            THEN ri.quantity_returned / COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(i.strips_per_box, 0), NULLIF(md.large_to_medium, 0), 1)
           WHEN ri.unit = 'small' OR ri.unit = md.small_unit
             THEN ri.quantity_returned / (
-              COALESCE(NULLIF(i.strips_per_box, 0), NULLIF(md.large_to_medium, 0), 1) *
-              COALESCE(NULLIF(md.medium_to_small, 0), 1)
+              COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(i.strips_per_box, 0), NULLIF(md.large_to_medium, 0), 1) *
+              COALESCE(NULLIF(si.medium_to_small, 0), NULLIF(i.medium_to_small, 0), NULLIF(md.medium_to_small, 0), 1)
             )
           ELSE ri.quantity_returned
         END

@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { createSqliteTransactionDb as mockCreateSqliteTransactionDb } from '@/tests/helpers/sqlite-transaction-db';
 
 let mockDb: Database.Database;
 let mockSession: any;
@@ -10,7 +11,7 @@ jest.mock('@/lib/db/tauri', () => ({
     const result = mockDb.prepare(sql).run(...params);
     return { rowsAffected: result.changes, lastInsertId: Number(result.lastInsertRowid) };
   }),
-  dbTransaction: jest.fn(async (callback: () => Promise<unknown>) => callback()),
+  dbTransaction: jest.fn(async (callback: any) => callback(mockCreateSqliteTransactionDb(mockDb))),
   generateId: jest.fn(() => 'test-id'),
 }));
 
@@ -67,6 +68,25 @@ describe('sales dashboard pharmacy scope', () => {
         deliveryCount: 1,
         pendingDeliveryCountText: 'يوجد 1 طلبات قيد الانتظار',
         averageInvoice: 70,
+      },
+    });
+  });
+
+  it('uses the same finalized-sale statuses as reports and excludes draft/cancelled deliveries', async () => {
+    mockDb.exec(`
+      INSERT INTO sales_invoices VALUES
+        ('ph1-approved', 'ph-1', 30, 'cash', 'approved', datetime('now')),
+        ('ph1-legacy', 'ph-1', 20, 'cash', NULL, datetime('now')),
+        ('ph1-draft-delivery', 'ph-1', 500, 'delivery', 'draft', datetime('now')),
+        ('ph1-cancelled-delivery', 'ph-1', 600, 'delivery', 'cancelled', datetime('now'));
+    `);
+
+    expect(await getSalesDashboardStatsAction()).toMatchObject({
+      success: true,
+      data: {
+        todaySales: 190,
+        deliveryCount: 1,
+        averageInvoice: 48,
       },
     });
   });

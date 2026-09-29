@@ -74,7 +74,9 @@ export const PAGE_PERMISSIONS = {
 
 // Configurable permission required by each navigable route. Longest matches
 // win so exceptions such as the shortages notebook override /stores.
-export const ROUTE_PERMISSIONS: Record<string, string> = {
+export type PermissionRequirement = string | string[];
+
+export const ROUTE_PERMISSIONS: Record<string, PermissionRequirement> = {
   '/pos': 'can_access_pos',
   '/receipts': 'can_view_receipts',
   '/sales/delivery': 'can_view_delivery',
@@ -88,7 +90,7 @@ export const ROUTE_PERMISSIONS: Record<string, string> = {
   '/inventory/settlement': 'can_view_settlement',
   '/stores/shortages': 'can_view_restock',
   '/restock': 'can_view_restock',
-  '/purchase-orders': 'can_view_purchases',
+  '/purchase-orders': ['can_view_purchases', 'can_view_restock'],
   '/purchases/suppliers': 'can_view_suppliers',
   '/purchases': 'can_view_purchases',
   '/inventory': 'can_view_stores',
@@ -122,7 +124,7 @@ export const ROUTE_PERMISSIONS: Record<string, string> = {
 const ROUTE_PERMISSION_ENTRIES = Object.entries(ROUTE_PERMISSIONS)
   .sort(([a], [b]) => b.length - a.length);
 
-export function getRoutePermission(pathname: string): string | undefined {
+export function getRoutePermission(pathname: string): PermissionRequirement | undefined {
   return ROUTE_PERMISSION_ENTRIES.find(([route]) =>
     pathname === route || pathname.startsWith(`${route}/`)
   )?.[1];

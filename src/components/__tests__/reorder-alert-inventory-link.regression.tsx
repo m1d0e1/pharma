@@ -102,6 +102,25 @@ describe('reorder alert inventory link', () => {
     expect(getLowStockAction).toHaveBeenCalledTimes(3);
   });
 
+  it('clears previously authorized reorder data when a background refresh becomes unauthorized', async () => {
+    (getLowStockAction as jest.Mock)
+      .mockResolvedValueOnce({
+        success: true,
+        data: [{ drug_id: 89, trade_name_en: 'Private Reorder Drug', current_stock: 1, reorder_point: 10, deficit: 9 }],
+      })
+      .mockResolvedValueOnce({ success: false, error: 'غير مصرح' });
+
+    render(<ReorderAlerts />);
+    expect(await screen.findByText('Private Reorder Drug')).toBeInTheDocument();
+
+    await act(async () => {
+      window.dispatchEvent(new Event('inventory-alerts-refresh'));
+    });
+
+    expect(await screen.findByText('تعذر تحميل تنبيهات إعادة الطلب')).toBeInTheDocument();
+    expect(screen.queryByText('Private Reorder Drug')).not.toBeInTheDocument();
+  });
+
   it('keeps reorder alerts owned by the newest background refresh when an older refresh resolves later', async () => {
     let resolveOlder!: (value: any) => void;
     let resolveNewer!: (value: any) => void;
@@ -116,10 +135,14 @@ describe('reorder alert inventory link', () => {
     render(<ReorderAlerts />);
     expect(await screen.findByText('المخزون: 1')).toBeInTheDocument();
 
-    window.dispatchEvent(new Event('inventory-alerts-refresh'));
-    await act(async () => Promise.resolve());
-    window.dispatchEvent(new Event('inventory-alerts-refresh'));
-    await act(async () => Promise.resolve());
+    await act(async () => {
+      window.dispatchEvent(new Event('inventory-alerts-refresh'));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      window.dispatchEvent(new Event('inventory-alerts-refresh'));
+      await Promise.resolve();
+    });
     expect(getLowStockAction).toHaveBeenCalledTimes(3);
 
     await act(async () => resolveNewer({

@@ -39,9 +39,9 @@ export async function updatePharmacyClient(formData: any) {
       return { success: false, error: 'غير مصرح' };
     }
     // Pharmacy identity is local-first; cloud sync is read-only public catalog data.
-    await dbTransaction(async () => {
+    await dbTransaction(async (db) => {
       for (const [field, key] of Object.entries(LOCAL_PHARMACY_FIELDS)) {
-        await dbExecute(`
+        await db.execute(`
           INSERT INTO config (key, value) VALUES (?, ?)
           ON CONFLICT(key) DO UPDATE SET value = excluded.value
         `, [key, formData[field] == null ? '' : String(formData[field])]);

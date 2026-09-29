@@ -29,12 +29,40 @@ describe('receipt printing contracts', () => {
     expect(html).toContain('90 EGP');
   });
 
+  it('shows invoice discount and additional fees separately instead of netting them together', () => {
+    const html = generateReceiptHtml(
+      {
+        ...invoice,
+        total_amount: 95,
+        discount_amount: 10,
+        additional_fees: 5,
+      },
+      { name: 'Pharma', phone: '', address: '' },
+    );
+
+    expect(html).toContain('- 10.00 EGP');
+    expect(html).toContain('+ 5.00 EGP');
+    expect(html).toContain('95 EGP');
+  });
+
   it('creates a plain-text share message with the invoice identity, lines, and total', () => {
     const message = generateWhatsAppMessage(invoice, { name: 'Pharma', phone: '0100' });
     expect(message).toContain('#invoice-');
     expect(message).toContain('(2 × 50) = 100.00');
     expect(message).toContain('*Total:* 90 EGP');
     expect(message).toContain('Contact: 0100');
+  });
+
+  it.each([
+    ['wallet', '👛 Wallet'],
+    ['check', '📝 Check'],
+    ['delivery', '🛵 Delivery'],
+  ])('prints an explicit %s payment-method label', (paymentMethod, expectedLabel) => {
+    const html = generateReceiptHtml(
+      { ...invoice, payment_method: paymentMethod },
+      { name: 'Pharma', phone: '', address: '' },
+    );
+    expect(html).toContain(expectedLabel);
   });
 
   it('writes to an isolated iframe and triggers its print dialog', () => {

@@ -17,7 +17,9 @@ export async function findDrugBarcodeConflict(barcode: string, targetId?: number
 export async function replaceDrugAction(sourceId: number, targetId: number | null, newDrug: any, password: string, edits?: Record<string, unknown>) {
   try {
     const user = await getLocalSession();
-    if (!user || !['owner', 'admin'].includes(user.role)) return { success: false, error: 'يلزم تسجيل الدخول بحساب مدير أو مالك لإجراء الاستبدال' };
+    if (!user || !['owner', 'admin'].includes(user.role) || !hasUserPermissionSync(user, 'can_manage_inventory')) {
+      return { success: false, error: 'يلزم حساب مدير أو مالك لديه صلاحية إدارة المخزون لإجراء الاستبدال' };
+    }
     if (!isTauri) return { success: false, error: 'الاستبدال الآمن متاح في تطبيق سطح المكتب فقط' };
     const { invoke } = await import('@tauri-apps/api/core');
     const result = await invoke<{ id: number; backup_path: string }>('replace_master_drug', {

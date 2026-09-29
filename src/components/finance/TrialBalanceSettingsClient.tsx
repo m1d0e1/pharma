@@ -14,6 +14,7 @@ import {
   saveTrialBalanceSettingAction
 } from '@/app/actions-client/finance';
 import { toast } from 'react-hot-toast';
+import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 
 interface Account {
   id: number;
@@ -26,7 +27,11 @@ interface Account {
   children?: Account[];
 }
 
-export default function TrialBalanceSettingsClient() {
+export default function TrialBalanceSettingsClient({
+  canManage,
+}: {
+  canManage?: boolean;
+}) {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [banks, setBanks] = useState<any[]>([]);
   const [expenses, setExpenses] = useState<any[]>([]);
@@ -38,6 +43,7 @@ export default function TrialBalanceSettingsClient() {
   const savingMappingRef = useRef(false);
   const loadRequestRef = useRef(0);
   const [activeCategory, setActiveCategory] = useState<'bank' | 'expense'>('bank');
+  const [sessionCanManage, setSessionCanManage] = useState(false);
   
   const [showPicker, setShowPicker] = useState<{ show: boolean, targetId?: string, targetName?: string, category: string, targetType?: string } | null>(null);
 
@@ -47,6 +53,20 @@ export default function TrialBalanceSettingsClient() {
       loadRequestRef.current += 1;
     };
   }, []);
+
+  useEffect(() => {
+    if (canManage !== undefined) return;
+
+    let active = true;
+    void getClientSession().then(user => {
+      if (active) setSessionCanManage(hasUserPermissionSync(user, 'acc_can_make_daily_entries'));
+    }).catch(() => {
+      if (active) setSessionCanManage(false);
+    });
+    return () => { active = false; };
+  }, [canManage]);
+
+  const canEdit = canManage ?? sessionCanManage;
 
   async function loadData(preserveExisting = false) {
     const requestId = ++loadRequestRef.current;
@@ -91,7 +111,7 @@ export default function TrialBalanceSettingsClient() {
   };
 
   const handleSelectAccount = async (accountId: number) => {
-    if (!showPicker || savingMappingRef.current) return;
+    if (!canEdit || !showPicker || savingMappingRef.current) return;
 
     savingMappingRef.current = true;
     setSavingMapping(true);
@@ -191,6 +211,7 @@ export default function TrialBalanceSettingsClient() {
                     name={bank.name_ar}
                     mapping={getMapping('bank', bank.id.toString())}
                     onLink={() => setShowPicker({ show: true, category: 'bank', targetId: bank.id.toString(), targetName: bank.name_ar })}
+                    canManage={canEdit}
                   />
                 ))}
                 {activeCategory === 'expense' && expenses.map(exp => (
@@ -199,6 +220,7 @@ export default function TrialBalanceSettingsClient() {
                     name={exp.name_ar}
                     mapping={getMapping('expense', exp.id.toString())}
                     onLink={() => setShowPicker({ show: true, category: 'expense', targetId: exp.id.toString(), targetName: exp.name_ar })}
+                    canManage={canEdit}
                   />
                 ))}
               </tbody>
@@ -270,7 +292,7 @@ function CategoryButton({ active, onClick, icon: Icon, label, color }: any) {
   );
 }
 
-function MappingRow({ name, mapping, onLink }: any) {
+function MappingRow({ name, mapping, onLink, canManage = true }: any) {
   return (
     <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
       <td className="px-8 py-6 font-black text-slate-800 dark:text-white">{name}</td>
@@ -285,17 +307,21 @@ function MappingRow({ name, mapping, onLink }: any) {
         )}
       </td>
       <td className="px-8 py-6 text-center">
-        <button 
-          onClick={onLink}
-          className={cn(
-            "px-6 py-2 rounded-xl text-xs font-black transition-all",
-            mapping 
-              ? "bg-slate-100 text-slate-500 hover:bg-blue-50 hover:text-blue-600" 
-              : "bg-blue-600 text-white shadow-lg shadow-blue-500/20 hover:bg-blue-700"
-          )}
-        >
-          {mapping ? 'تعديل الربط' : 'ربط الحساب'}
-        </button>
+        {canManage ? (
+          <button
+            onClick={onLink}
+            className={cn(
+              "px-6 py-2 rounded-xl text-xs font-black transition-all",
+              mapping
+                ? "bg-slate-100 text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                : "bg-blue-600 text-white shadow-lg shadow-blue-500/20 hover:bg-blue-700"
+            )}
+          >
+            {mapping ? 'تعديل الربط' : 'ربط الحساب'}
+          </button>
+        ) : (
+          <span className="text-xs font-bold text-slate-400">للعرض فقط</span>
+        )}
       </td>
     </tr>
   );

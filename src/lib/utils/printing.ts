@@ -7,6 +7,24 @@ export const escapeHtml = (str: string): string => {
     .replace(/'/g, '&#039;')
 }
 
+export const calculateReceiptTotals = (invoice: any) => {
+  const subtotal = invoice.sales_items?.reduce(
+    (sum: number, item: any) => sum + (Number(item.quantity_sold) * Number(item.unit_price)),
+    0,
+  ) || 0;
+  const totalAmount = Number(invoice.total_amount) || 0;
+  const explicitDiscount = Number(invoice.discount_amount);
+  const discount = Number.isFinite(explicitDiscount)
+    ? Math.max(0, explicitDiscount)
+    : Math.max(0, subtotal - totalAmount);
+  const explicitFees = Number(invoice.additional_fees);
+  const additionalFees = Number.isFinite(explicitFees)
+    ? Math.max(0, explicitFees)
+    : Math.max(0, totalAmount - subtotal + discount);
+
+  return { subtotal, discount, additionalFees };
+};
+
 export const generateReceiptHtml = (invoice: any, pharmacyInfo: any) => {
   const safeInvoiceId = escapeHtml(invoice.id.substring(0, 8).toUpperCase())
   const safePatientName = invoice.patients?.full_name
@@ -20,15 +38,15 @@ export const generateReceiptHtml = (invoice: any, pharmacyInfo: any) => {
   const safePharmacyPhone = escapeHtml(pharmacyInfo.phone)
   const safePharmacyAddress = escapeHtml(pharmacyInfo.address)
 
-  const subtotal = invoice.sales_items?.reduce((s: number, item: any) => s + (item.quantity_sold * item.unit_price), 0) || 0;
-  const discount = Math.max(0, subtotal - invoice.total_amount);
+  const { subtotal, discount, additionalFees } = calculateReceiptTotals(invoice);
 
   const paymentLabels: Record<string, string> = {
     cash: '💵 Cash', 
     credit: '💳 Credit', 
     check: '📝 Check', 
     visa: '🏦 Card', 
-    delivery: '🛵 Delivery'
+    delivery: '🛵 Delivery',
+    wallet: '👛 Wallet'
   };
   const paymentLabel = paymentLabels[invoice.payment_method] || 'Cash';
 
@@ -138,6 +156,12 @@ export const generateReceiptHtml = (invoice: any, pharmacyInfo: any) => {
           <div class="total-row">
             <span style="font-weight: bold;">Total Discount:</span>
             <span>- ${discount.toFixed(2)} EGP</span>
+          </div>
+          ` : ''}
+          ${additionalFees > 0 ? `
+          <div class="total-row">
+            <span style="font-weight: bold;">Additional Fees:</span>
+            <span>+ ${additionalFees.toFixed(2)} EGP</span>
           </div>
           ` : ''}
           <div class="total-row grand">

@@ -1,5 +1,5 @@
 
-import { dbSelect, dbExecute, dbGet, dbTransaction, generateId } from '@/lib/db/tauri';
+import { dbSelect, dbExecute, dbGet, dbTransaction, generateId, type TransactionDb } from '@/lib/db/tauri';
 const logActivity = async (userId, action, details) => {
   try {
     await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [userId, action, details]);
@@ -40,7 +40,7 @@ const db = {
     }
   }),
   transaction: (cb) => {
-    return (...args) => dbTransaction(async () => await cb(...args));
+    return (...args) => dbTransaction(async (transactionDb) => await cb(transactionDb, ...args));
   },
   exec: (sql) => {
     return dbExecute(sql);
@@ -53,28 +53,74 @@ const db = {
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 
 import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
+import { ensurePermanentShiftForUser, getShiftForPharmacy } from './shifts';
 import { format } from 'date-fns';
 import { z } from 'zod';
 import { patientOutstandingBalanceQuery } from '@/lib/patients/balance';
-import { ensurePermanentShiftForUser, getShiftForPharmacy } from './shifts';
 import { isBusinessDate, localDate } from '@/lib/time';
 import { getOpenDrawerSnapshot } from '@/lib/finance/drawer';
 
 const hasAnyFinancePermission = (user: any, ...permissions: string[]) =>
   !!user && permissions.some(permission => hasUserPermissionSync(user, permission));
 
-export async function requireOpenShiftId(userId: string, requestedShiftId?: string) {
-  const user = await db.prepare('SELECT pharmacy_id FROM users WHERE CAST(id AS TEXT) = CAST(? AS TEXT) LIMIT 1').get(userId) as any;
+type FinanceDb = Pick<TransactionDb, 'prepare'>;
+
+// These codes are also used by native posting and startup account repair.
+const canonicalCoreAccounts: Record<string, string> = {
+  cash_drawer: '1.1.1', accounts_payable: '2.1', accounts_receivable: '1.1.2',
+  sales_revenue: '3.1', inventory_asset: '1.1.3', cogs_expense: '4.1',
+  bank_clearing: '1.1.4', patient_wallet_liability: '2.2', customer_adjustments: '4.2',
+  opening_balance_equity: '3.9', cash_difference: '4.3', other_cash_income: '3.2',
+  supplier_cash_adjustments: '3.3', owner_drawings: '3.8', general_operating_expenses: '4.4',
+};
+
+async function resolveFinanceAccountId(category: string, fallbackCode: string, scopedDb: FinanceDb = db) {
+  const configured = await scopedDb.prepare(`
+    SELECT a.id
+    FROM trial_balance_settings t
+    JOIN accounts a ON a.id = t.account_id
+    WHERE t.category = ? AND a.code = ?
+    LIMIT 1
+  `).get(category, fallbackCode) as any;
+  if (configured?.id) return Number(configured.id);
+
+  const fallback = await scopedDb.prepare('SELECT id FROM accounts WHERE code = ? LIMIT 1').get(fallbackCode) as any;
+  if (!fallback?.id) throw new Error('الحساب المحاسبي المطلوب غير مضبوط');
+  return Number(fallback.id);
+}
+
+async function postOpeningBalanceJournal(user: any, rawAmount: number | undefined, description: string, scopedDb: FinanceDb = db) {
+  const balance = rawAmount == null ? 0 : Number(rawAmount);
+  if (!Number.isFinite(balance)) throw new Error('الرصيد الافتتاحي غير صالح');
+  if (Math.abs(balance) <= 0.005) return;
+
+  const balanceAccount = await resolveFinanceAccountId('bank_clearing', '1.1.4', scopedDb);
+  const equityAccount = await resolveFinanceAccountId('opening_balance_equity', '3.9', scopedDb);
+
+  const amount = Math.abs(balance);
+  const journalId = generateId();
+  await scopedDb.prepare(`
+    INSERT INTO daily_journals (id, date, description, created_by, total_amount, pharmacy_id)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(journalId, localDate(), description, user.id, amount, user.pharmacy_id || 'local_default');
+  await scopedDb.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
+    .run(journalId, balance > 0 ? balanceAccount : equityAccount, 'debit', amount);
+  await scopedDb.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
+    .run(journalId, balance > 0 ? equityAccount : balanceAccount, 'credit', amount);
+}
+
+export async function requireOpenShiftId(userId: string, requestedShiftId?: string, scopedDb: FinanceDb = db) {
+  const user = await scopedDb.prepare('SELECT pharmacy_id FROM users WHERE CAST(id AS TEXT) = CAST(? AS TEXT) LIMIT 1').get(userId) as any;
   if (!user) throw new Error('المستخدم غير موجود');
   const pharmacyId = user.pharmacy_id || 'local_default';
   const requestedShift = requestedShiftId
-    ? await getShiftForPharmacy(requestedShiftId, pharmacyId, true)
+    ? await getShiftForPharmacy(requestedShiftId, pharmacyId, true, scopedDb)
     : null;
   if (requestedShift?.id) return String(requestedShift.id);
 
   // A stale shift id can remain in an already-open POS after handover or login.
   // Every user resolves the same pharmacy-wide open shift.
-  const shift = await ensurePermanentShiftForUser(userId);
+  const shift = await ensurePermanentShiftForUser(userId, 0, 'وردية مشتركة أُنشئت تلقائياً', scopedDb);
   return String(shift.id);
 }
 
@@ -99,7 +145,7 @@ export async function addFinancialNoticeAction(rawData: z.infer<typeof noticeSch
     }
 
     const id = generateId();
-    await dbTransaction(async () => {
+    await dbTransaction(async (db) => {
       if (data.target_type === 'customer') {
         const patient = await db.prepare('SELECT id FROM patients WHERE id = ?').get(data.target_id) as any;
         if (!patient) throw new Error('المريض غير موجود');
@@ -122,35 +168,26 @@ export async function addFinancialNoticeAction(rawData: z.infer<typeof noticeSch
         `).run(generateId(), data.target_id, user.id, signedAmount, data.reason, data.date);
       } else if (data.target_type === 'supplier' && data.target_id) {
         const signedAmount = data.type === 'credit' ? -data.amount : data.amount;
-        try {
-          await db.prepare(`
-            INSERT INTO supplier_transactions (id, supplier_id, user_id, type, amount, notes, date)
-            VALUES (?, ?, ?, 'adjustment', ?, ?, ?)
-          `).run(generateId(), data.target_id, user.id, signedAmount, data.reason, data.date);
-        } catch {}
-        try {
-          await db.prepare(`
-            UPDATE suppliers 
-            SET balance = COALESCE(balance, 0) + ?
-            WHERE CAST(id AS TEXT) = ?
-          `).run(signedAmount, data.target_id);
-        } catch {}
+        await db.prepare(`
+          INSERT INTO supplier_transactions (supplier_id, user_id, type, amount, notes, date)
+          VALUES (?, ?, 'adjustment', ?, ?, ?)
+        `).run(data.target_id, user.id, signedAmount, data.reason, data.date);
+        const supplierUpdate = await db.prepare(`
+          UPDATE suppliers
+          SET balance = COALESCE(balance, 0) + ?
+          WHERE CAST(id AS TEXT) = ?
+        `).run(signedAmount, data.target_id);
+        if (supplierUpdate.changes !== 1) throw new Error('تعذر تحديث رصيد المورد');
       }
 
-      const getAccount = async (category: string, fallback: number) => {
-        const setting = await db.prepare(
-          'SELECT account_id FROM trial_balance_settings WHERE category = ? LIMIT 1'
-        ).get(category) as any;
-        return Number(setting?.account_id || fallback);
-      };
       const targetCategory = data.target_type === 'customer'
         ? 'accounts_receivable'
         : data.target_type === 'supplier'
           ? 'accounts_payable'
           : 'cash_drawer';
-      const targetFallback = data.target_type === 'customer' ? 8 : data.target_type === 'supplier' ? 7 : 6;
-      const targetAccountId = await getAccount(targetCategory, targetFallback);
-      const adjustmentAccountId = await getAccount('customer_adjustments', 14); // 4.2 Customer Adjustments
+      const targetFallbackCode = data.target_type === 'customer' ? '1.1.2' : data.target_type === 'supplier' ? '2.1' : '1.1.1';
+      const targetAccountId = await resolveFinanceAccountId(targetCategory, targetFallbackCode, db);
+      const adjustmentAccountId = await resolveFinanceAccountId('customer_adjustments', '4.2', db);
       const journalId = generateId();
 
       await db.prepare(`
@@ -158,17 +195,14 @@ export async function addFinancialNoticeAction(rawData: z.infer<typeof noticeSch
         VALUES (?, ?, ?, ?, ?)
       `).run(journalId, data.date, `إشعار ${data.type === 'credit' ? 'دائن' : 'مدين'}: ${data.reason}`, user.id, data.amount);
 
-      if (data.type === 'credit') {
-        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
-          .run(journalId, adjustmentAccountId, 'debit', data.amount);
-        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
-          .run(journalId, targetAccountId, 'credit', data.amount);
-      } else {
-        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
-          .run(journalId, targetAccountId, 'debit', data.amount);
-        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
-          .run(journalId, adjustmentAccountId, 'credit', data.amount);
-      }
+      const targetEntryType = data.target_type === 'supplier'
+        ? (data.type === 'credit' ? 'debit' : 'credit')
+        : (data.type === 'credit' ? 'credit' : 'debit');
+      const adjustmentEntryType = targetEntryType === 'debit' ? 'credit' : 'debit';
+      await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
+        .run(journalId, targetAccountId, targetEntryType, data.amount);
+      await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
+        .run(journalId, adjustmentAccountId, adjustmentEntryType, data.amount);
     });
 
     revalidatePath('/patients');
@@ -199,7 +233,7 @@ export async function addPatientPaymentAction(rawData: z.infer<typeof paymentSch
 
     const id = generateId();
     let remainingBalance = 0;
-    await dbTransaction(async () => {
+    await dbTransaction(async (db) => {
       const patient = await db.prepare('SELECT id, full_name FROM patients WHERE id = ?').get(data.patient_id) as any;
       if (!patient) throw new Error('المريض غير موجود');
 
@@ -216,7 +250,7 @@ export async function addPatientPaymentAction(rawData: z.infer<typeof paymentSch
       `).run(id, data.patient_id, user.id, data.amount, data.payment_method, data.notes || null, data.date);
 
       if (data.payment_method === 'cash') {
-        const shiftId = await requireOpenShiftId(user.id, data.shift_id);
+        const shiftId = await requireOpenShiftId(user.id, data.shift_id, db);
         await db.prepare(`
           INSERT INTO cash_movements (
             id, user_id, shift_id, type, category, amount, source_type, target_name, notes, date
@@ -224,16 +258,10 @@ export async function addPatientPaymentAction(rawData: z.infer<typeof paymentSch
         `).run(generateId(), user.id, shiftId, data.amount, data.patient_id, `دفعة من المريض ${patient.full_name}: ${data.notes || ''}`, data.date);
       }
 
-      const getAccount = async (category: string, fallback: number) => {
-        const setting = await db.prepare(
-          'SELECT account_id FROM trial_balance_settings WHERE category = ? LIMIT 1'
-        ).get(category) as any;
-        return Number(setting?.account_id || fallback);
-      };
       const debitAccountId = data.payment_method === 'bank'
-        ? await getAccount('bank_clearing', 6)
-        : await getAccount('cash_drawer', 6);
-      const receivableAccountId = await getAccount('accounts_receivable', 8);
+        ? await resolveFinanceAccountId('bank_clearing', '1.1.4', db)
+        : await resolveFinanceAccountId('cash_drawer', '1.1.1', db);
+      const receivableAccountId = await resolveFinanceAccountId('accounts_receivable', '1.1.2', db);
       const journalId = generateId();
       await db.prepare(`
         INSERT INTO daily_journals (id, date, description, created_by, total_amount)
@@ -271,7 +299,7 @@ const cashMovementSchema = z.object({
   shift_id: z.string().optional(),
 });
 
-export async function createCashMovementAction(rawData: z.infer<typeof cashMovementSchema>) {
+export async function createCashMovementAction(rawData: z.infer<typeof cashMovementSchema>, transactionDb?: TransactionDb) {
   try {
     const data = cashMovementSchema.parse(rawData);
     const user = await getLocalSession();
@@ -284,8 +312,8 @@ export async function createCashMovementAction(rawData: z.infer<typeof cashMovem
     }
 
     const cashMovementId = generateId();
-    const transaction = db.transaction(async () => {
-      const shiftId = await requireOpenShiftId(user.id, data.shift_id);
+    const run = async (db: TransactionDb) => {
+      const shiftId = await requireOpenShiftId(user.id, data.shift_id, db);
       await db.prepare(`
         INSERT INTO cash_movements (
           id, user_id, shift_id, type, category, sub_category, 
@@ -320,7 +348,7 @@ export async function createCashMovementAction(rawData: z.infer<typeof cashMovem
         return setting?.account_id;
       };
 
-      const mainCashAccountId = await getAccount('cash_drawer') || 6;
+      const mainCashAccountId = await resolveFinanceAccountId('cash_drawer', '1.1.1', db);
       let categoryAccountId: number | undefined;
       if (data.category === 'operating_expenses' && data.sub_category) {
         const expenseDefinition = await db.prepare(`
@@ -332,10 +360,27 @@ export async function createCashMovementAction(rawData: z.infer<typeof cashMovem
           categoryAccountId = await getAccount(`expense:${expenseDefinition.id}`);
         }
       }
-      categoryAccountId = categoryAccountId || await getAccount(data.category, data.target_name) || 11;
-
-
-
+      categoryAccountId = categoryAccountId || await getAccount(data.category, data.target_name);
+      const canonicalCashCategories: Record<string, [string, string]> = {
+        collection: ['accounts_receivable', '1.1.2'],
+        patient: ['accounts_receivable', '1.1.2'],
+        accounts_receivable: ['accounts_receivable', '1.1.2'],
+        supplier_payment: ['accounts_payable', '2.1'],
+        accounts_payable: ['accounts_payable', '2.1'],
+        patient_wallet: ['patient_wallet_liability', '2.2'],
+        pharmacy: ['opening_balance_equity', '3.9'],
+        supplier: ['supplier_cash_adjustments', '3.3'],
+        other: ['other_cash_income', '3.2'],
+        personal: ['owner_drawings', '3.8'],
+        operating_expenses: ['general_operating_expenses', '4.4'],
+      };
+      const canonical = canonicalCashCategories[data.category];
+      if (!categoryAccountId && canonical) {
+        categoryAccountId = await resolveFinanceAccountId(canonical[0], canonical[1], db);
+      }
+      if (!categoryAccountId) {
+        throw new Error('لا يوجد حساب محاسبي مضبوط لهذه الحركة النقدية');
+      }
       const debitAccountId = data.type === 'receipt' ? mainCashAccountId : categoryAccountId;
       const creditAccountId = data.type === 'receipt' ? categoryAccountId : mainCashAccountId;
 
@@ -352,9 +397,10 @@ export async function createCashMovementAction(rawData: z.infer<typeof cashMovem
         console.error("credit journal_entries INSERT failed for account:", creditAccountId, e);
         throw e;
       }
-    });
+    };
 
-    await transaction();
+    if (transactionDb) await run(transactionDb);
+    else await dbTransaction(run);
 
     revalidatePath('/finance');
     revalidatePath('/accounts');
@@ -725,7 +771,7 @@ export async function deleteExpenseDefinitionAction(id: number) {
       return { success: false, error: 'لا يمكن حذف هذا المصروف لوجود حركات نقدية مسجلة عليه' };
     }
 
-    await dbTransaction(async () => {
+    await dbTransaction(async (db) => {
       await db.prepare('DELETE FROM trial_balance_settings WHERE category = ?').run(`expense:${id}`);
       await db.prepare('DELETE FROM expense_definitions WHERE id = ?').run(id);
     });
@@ -752,7 +798,12 @@ export async function getPapersAction() {
   try {
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_view_securities')) return { success: false, error: 'غير مصرح' };
-    const results = await db.prepare(`SELECT * FROM commercial_papers ORDER BY due_date ASC`).all();
+    const pharmacyId = user.pharmacy_id || 'local_default';
+    const results = await db.prepare(`
+      SELECT * FROM commercial_papers
+      WHERE (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+      ORDER BY due_date ASC
+    `).all(pharmacyId, pharmacyId);
     return { success: true, data: results };
   } catch (error) {
     console.error('Get papers error:', error);
@@ -776,6 +827,7 @@ export async function getAccountsAction() {
   try {
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_view_general', 'acc_can_make_daily_entries')) return { success: false, error: 'غير مصرح' };
+    const pharmacyId = user.pharmacy_id || 'local_default';
 
     const accounts = await db.prepare(`SELECT * FROM accounts ORDER BY code ASC`).all() as any[];
 
@@ -785,9 +837,11 @@ export async function getAccountsAction() {
         account_id,
         COALESCE(SUM(CASE WHEN type = 'debit' THEN amount ELSE 0 END), 0) as debit,
         COALESCE(SUM(CASE WHEN type = 'credit' THEN amount ELSE 0 END), 0) as credit
-      FROM journal_entries
+      FROM journal_entries je
+      JOIN daily_journals dj ON dj.id = je.journal_id
+      WHERE (dj.pharmacy_id = ? OR (dj.pharmacy_id IS NULL AND ? = 'local_default'))
       GROUP BY account_id
-    `).all() as any[];
+    `).all(pharmacyId, pharmacyId) as any[];
 
     // Map account_id -> {debit, credit}
     const entriesMap = new Map();
@@ -865,10 +919,10 @@ export async function addAccountAction(rawData: z.infer<typeof addAccountSchema>
 }
 
 const updateAccountSchema = z.object({
-  code: z.string().optional(),
+  code: z.string().trim().min(1).optional(),
   name_ar: z.string().optional(),
   name_en: z.string().optional(),
-  type: z.enum(['asset', 'liability', 'equity', 'income', 'expense']).optional(),
+  type: z.enum(['asset', 'liability', 'equity', 'income', 'revenue', 'expense']).optional(),
   is_group: z.number().int().min(0).max(1).optional(),
 });
 
@@ -878,9 +932,38 @@ export async function updateAccountAction(id: number, rawData: z.infer<typeof up
     if (!hasAnyFinancePermission(user, 'acc_can_make_daily_entries')) return { success: false, error: 'غير مصرح' };
 
     const data = updateAccountSchema.parse(rawData);
+    const current = await db.prepare('SELECT id, code, type, is_group FROM accounts WHERE id = ?').get(id) as any;
+    if (!current) return { success: false, error: 'الحساب غير موجود' };
+
+    if (data.code !== undefined && data.code !== current.code) {
+      if (Object.values(canonicalCoreAccounts).includes(current.code)) {
+        return { success: false, error: 'لا يمكن تغيير كود حساب أساسي مستخدم في الترحيل الآلي؛ يمكنك تعديل اسمه فقط' };
+      }
+      const duplicate = await db.prepare('SELECT id FROM accounts WHERE code = ? AND id != ?').get(data.code, id) as any;
+      if (duplicate) return { success: false, error: 'كود الحساب مستخدم بالفعل' };
+    }
+
+    const changingType = data.type !== undefined && data.type !== current.type;
+    const changingGroup = data.is_group !== undefined && Number(data.is_group) !== Number(current.is_group);
+    if (changingType || changingGroup) {
+      const usage = await db.prepare('SELECT COUNT(*) as count FROM journal_entries WHERE account_id = ?').get(id) as any;
+      if (Number(usage?.count || 0) > 0) {
+        return { success: false, error: 'لا يمكن تغيير نوع الحساب أو حالته الرئيسية بعد استخدامه في قيود مالية' };
+      }
+      const settings = await db.prepare('SELECT COUNT(*) as count FROM trial_balance_settings WHERE account_id = ?').get(id) as any;
+      if (Number(settings?.count || 0) > 0) {
+        return { success: false, error: 'لا يمكن تغيير نوع حساب مرتبط بإعدادات ميزان المراجعة أو تحويله إلى حساب رئيسي' };
+      }
+    }
+    if (changingGroup && Number(data.is_group) === 0) {
+      const children = await db.prepare('SELECT COUNT(*) as count FROM accounts WHERE parent_id = ?').get(id) as any;
+      if (Number(children?.count || 0) > 0) {
+        return { success: false, error: 'لا يمكن تحويل حساب رئيسي يحتوي على حسابات فرعية إلى حساب حركة' };
+      }
+    }
     
     const ALLOWED_ACCOUNT_FIELDS: Record<string, true> = {
-      name_ar: true, name_en: true, type: true, is_group: true,
+      code: true, name_ar: true, name_en: true, type: true, is_group: true,
     };
     const keys = Object.keys(data).filter(k => ALLOWED_ACCOUNT_FIELDS[k]);
     if (keys.length === 0) return { success: true };
@@ -1001,8 +1084,8 @@ export async function seedFinanceTestDataAction() {
         INSERT INTO points_of_sale (name_ar, name_en, location, computer_name, current_balance)
         VALUES (?, ?, ?, ?, ?)
       `);
-      await posStmt.run('نقطة البيع الرئيسية', 'Main POS', 'المحل', 'PC-01', 2057.80);
-      await posStmt.run('نقطة بيع الفرع', 'Branch POS', 'الفرع', 'PC-02', 1500.00);
+      await posStmt.run('نقطة البيع الرئيسية', 'Main POS', 'المحل', 'PC-01', 0);
+      await posStmt.run('نقطة بيع الفرع', 'Branch POS', 'الفرع', 'PC-02', 0);
     }
 
     // 2. Seed Expense Definitions
@@ -1023,17 +1106,25 @@ export async function seedFinanceTestDataAction() {
     // 3. Seed Banks
     const bankCount = await db.prepare('SELECT COUNT(*) as count FROM banks').get() as any;
     if (bankCount.count === 0) {
-       const bankStmt = db.prepare(`INSERT INTO banks (name_ar, name_en, account_number, branch, current_balance) VALUES (?, ?, ?, ?, ?)`);
-       await bankStmt.run('البنك التجاري الدولي', 'CIB', '100012345678', 'فرع المهندسين', 125000.00);
-       await bankStmt.run('بنك مصر', 'Banque Misr', '200098765432', 'فرع الدقي', 45000.00);
+       await dbTransaction(async (db) => {
+         const bankStmt = db.prepare(`INSERT INTO banks (name_ar, name_en, account_number, branch, current_balance) VALUES (?, ?, ?, ?, ?)`);
+         await bankStmt.run('البنك التجاري الدولي', 'CIB', '100012345678', 'فرع المهندسين', 125000.00);
+         await postOpeningBalanceJournal(user, 125000, 'رصيد افتتاحي للبنك: البنك التجاري الدولي', db);
+         await bankStmt.run('بنك مصر', 'Banque Misr', '200098765432', 'فرع الدقي', 45000.00);
+         await postOpeningBalanceJournal(user, 45000, 'رصيد افتتاحي للبنك: بنك مصر', db);
+       });
     }
 
     // 4. Seed Credit Cards / Terminals
     const cardCount = await db.prepare('SELECT COUNT(*) as count FROM credit_cards').get() as any;
     if (cardCount.count === 0) {
-       const cardStmt = db.prepare(`INSERT INTO credit_cards (name_ar, name_en, bank_id, commission_pct, current_balance) VALUES (?, ?, ?, ?, ?)`);
-       await cardStmt.run('ماكينة فوري', 'Fawry Terminal', 1, 1.5, 3200.00);
-       await cardStmt.run('فيزا بنك مصر', 'BM Visa', 2, 2.0, 1500.00);
+       await dbTransaction(async (db) => {
+         const cardStmt = db.prepare(`INSERT INTO credit_cards (name_ar, name_en, bank_id, commission_pct, current_balance) VALUES (?, ?, ?, ?, ?)`);
+         await cardStmt.run('ماكينة فوري', 'Fawry Terminal', 1, 1.5, 3200.00);
+         await postOpeningBalanceJournal(user, 3200, 'رصيد افتتاحي لماكينة الدفع: ماكينة فوري', db);
+         await cardStmt.run('فيزا بنك مصر', 'BM Visa', 2, 2.0, 1500.00);
+         await postOpeningBalanceJournal(user, 1500, 'رصيد افتتاحي لماكينة الدفع: فيزا بنك مصر', db);
+       });
     }
 
     // 5. Seed some Cash Movements
@@ -1184,10 +1275,14 @@ export async function saveTrialBalanceSettingAction(data: {
 }) {
   try {
     const user = await getLocalSession();
-    if (!hasAnyFinancePermission(user, 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
-    const account = await db.prepare('SELECT id, is_group FROM accounts WHERE id = ?').get(data.account_id) as any;
+    if (!hasAnyFinancePermission(user, 'acc_can_make_daily_entries')) return { success: false, error: 'غير مصرح' };
+    const account = await db.prepare('SELECT id, code, is_group FROM accounts WHERE id = ?').get(data.account_id) as any;
     if (!account) return { success: false, error: 'الحساب المحاسبي غير موجود' };
     if (Number(account.is_group) === 1) return { success: false, error: 'يجب الربط بحساب فرعي وليس حساباً رئيسياً' };
+    const expectedCoreCode = !data.target_id ? canonicalCoreAccounts[data.category] : undefined;
+    if (expectedCoreCode && account.code !== expectedCoreCode) {
+      return { success: false, error: 'هذا الربط المحاسبي أساسي ولا يمكن تحويله إلى حساب آخر' };
+    }
     // The schema keeps `category` unique. Scope entity mappings by id so
     // linking a second bank/POS/expense never overwrites the first mapping.
     const storageCategory = data.target_id ? `${data.category}:${data.target_id}` : data.category;
@@ -1350,20 +1445,27 @@ export async function addBankAction(data: { name_ar: string; name_en?: string; a
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_view_bank_accounts')) return { success: false, error: 'غير مصرح' };
     if (!data.name_ar?.trim()) return { success: false, error: 'اسم البنك بالعربي مطلوب' };
+    const openingBalance = data.current_balance == null ? 0 : Number(data.current_balance);
+    if (!Number.isFinite(openingBalance)) return { success: false, error: 'الرصيد الافتتاحي غير صالح' };
 
-    const res = await db.prepare(`
-      INSERT INTO banks (name_ar, name_en, account_number, branch, current_balance)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(
-      data.name_ar.trim(),
-      data.name_en?.trim() || null,
-      data.account_number?.trim() || null,
-      data.branch?.trim() || null,
-      Number(data.current_balance) || 0
-    );
+    let bankId: number | undefined;
+    await dbTransaction(async (db) => {
+      const res = await db.prepare(`
+        INSERT INTO banks (name_ar, name_en, account_number, branch, current_balance)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(
+        data.name_ar.trim(),
+        data.name_en?.trim() || null,
+        data.account_number?.trim() || null,
+        data.branch?.trim() || null,
+        openingBalance
+      );
+      bankId = Number(res.lastInsertId);
+      await postOpeningBalanceJournal(user, openingBalance, `رصيد افتتاحي للبنك: ${data.name_ar.trim()}`, db);
+    });
 
     await logActivity(user?.id, 'ADD_BANK', `إضافة حساب بنكي: ${data.name_ar}`);
-    return { success: true, id: res.lastInsertId };
+    return { success: true, id: bankId };
   } catch (error: any) {
     console.error('Add bank error:', error);
     return { success: false, error: error.message || 'فشل إضافة الحساب البنكي' };
@@ -1416,7 +1518,7 @@ export async function deleteBankAction(id: number) {
       return { success: false, error: 'لا يمكن حذف هذا البنك لوجود أوراق مالية مرتبطة به' };
     }
 
-    await dbTransaction(async () => {
+    await dbTransaction(async (db) => {
       await db.prepare('DELETE FROM trial_balance_settings WHERE category = ?').run(`bank:${id}`);
       await db.prepare('DELETE FROM banks WHERE id = ?').run(id);
     });
@@ -1436,20 +1538,31 @@ export async function addCardAction(data: { name_ar: string; name_en?: string; b
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_collect_credit_cards')) return { success: false, error: 'غير مصرح' };
     if (!data.name_ar?.trim()) return { success: false, error: 'اسم الماكينة / البطاقة مطلوب' };
+    const openingBalance = data.current_balance == null ? 0 : Number(data.current_balance);
+    if (!Number.isFinite(openingBalance)) return { success: false, error: 'الرصيد الافتتاحي غير صالح' };
+    const commissionPct = data.commission_pct == null ? 0 : Number(data.commission_pct);
+    if (!Number.isFinite(commissionPct) || commissionPct < 0 || commissionPct > 100) {
+      return { success: false, error: 'نسبة العمولة يجب أن تكون بين 0 و100' };
+    }
 
-    const res = await db.prepare(`
-      INSERT INTO credit_cards (name_ar, name_en, bank_id, commission_pct, current_balance)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(
-      data.name_ar.trim(),
-      data.name_en?.trim() || null,
-      data.bank_id || null,
-      Number(data.commission_pct) || 0,
-      Number(data.current_balance) || 0
-    );
+    let cardId: number | undefined;
+    await dbTransaction(async (db) => {
+      const res = await db.prepare(`
+        INSERT INTO credit_cards (name_ar, name_en, bank_id, commission_pct, current_balance)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(
+        data.name_ar.trim(),
+        data.name_en?.trim() || null,
+        data.bank_id || null,
+        commissionPct,
+        openingBalance
+      );
+      cardId = Number(res.lastInsertId);
+      await postOpeningBalanceJournal(user, openingBalance, `رصيد افتتاحي لماكينة الدفع: ${data.name_ar.trim()}`, db);
+    });
 
     await logActivity(user?.id, 'ADD_CARD', `إضافة ماكينة دفع: ${data.name_ar}`);
-    return { success: true, id: res.lastInsertId };
+    return { success: true, id: cardId };
   } catch (error: any) {
     console.error('Add card error:', error);
     return { success: false, error: error.message || 'فشل إضافة ماكينة الدفع' };
@@ -1461,6 +1574,10 @@ export async function updateCardAction(id: number, data: { name_ar: string; name
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_collect_credit_cards')) return { success: false, error: 'غير مصرح' };
     if (!data.name_ar?.trim()) return { success: false, error: 'اسم الماكينة / البطاقة مطلوب' };
+    const commissionPct = data.commission_pct == null ? 0 : Number(data.commission_pct);
+    if (!Number.isFinite(commissionPct) || commissionPct < 0 || commissionPct > 100) {
+      return { success: false, error: 'نسبة العمولة يجب أن تكون بين 0 و100' };
+    }
 
     await db.prepare(`
       UPDATE credit_cards 
@@ -1470,7 +1587,7 @@ export async function updateCardAction(id: number, data: { name_ar: string; name
       data.name_ar.trim(),
       data.name_en?.trim() || null,
       data.bank_id || null,
-      Number(data.commission_pct) || 0,
+      commissionPct,
       id
     );
 
@@ -1512,13 +1629,12 @@ export async function addPointOfSaleAction(data: { name_ar: string; name_en?: st
 
     const res = await db.prepare(`
       INSERT INTO points_of_sale (name_ar, name_en, location, computer_name, current_balance, status)
-      VALUES (?, ?, ?, ?, ?, 'active')
+      VALUES (?, ?, ?, ?, 0, 'active')
     `).run(
       data.name_ar.trim(),
       data.name_en?.trim() || null,
       data.location?.trim() || null,
-      data.computer_name?.trim() || null,
-      Number(data.current_balance) || 0
+      data.computer_name?.trim() || null
     );
 
     await logActivity(user?.id, 'ADD_POS', `إضافة نقطة بيع: ${data.name_ar}`);
@@ -1537,14 +1653,13 @@ export async function updatePointOfSaleAction(id: number, data: { name_ar: strin
 
     await db.prepare(`
       UPDATE points_of_sale 
-      SET name_ar = ?, name_en = ?, location = ?, computer_name = ?, current_balance = COALESCE(?, current_balance), status = COALESCE(?, status)
+      SET name_ar = ?, name_en = ?, location = ?, computer_name = ?, status = COALESCE(?, status)
       WHERE id = ?
     `).run(
       data.name_ar.trim(),
       data.name_en?.trim() || null,
       data.location?.trim() || null,
       data.computer_name?.trim() || null,
-      data.current_balance !== undefined ? Number(data.current_balance) : null,
       data.status || 'active',
       id
     );
@@ -1566,7 +1681,7 @@ export async function deletePointOfSaleAction(id: number) {
     if (Math.abs(Number(point.current_balance || 0)) > 0.005) {
       return { success: false, error: 'لا يمكن حذف نقطة بيع لها رصيد. حوّل الرصيد أولاً' };
     }
-    await dbTransaction(async () => {
+    await dbTransaction(async (db) => {
       await db.prepare('DELETE FROM trial_balance_settings WHERE category = ?').run(`cash:${id}`);
       await db.prepare('DELETE FROM points_of_sale WHERE id = ?').run(id);
     });
@@ -1595,14 +1710,15 @@ export async function addPaperAction(data: {
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_view_securities')) return { success: false, error: 'غير مصرح' };
     if (!data.paper_number?.trim()) return { success: false, error: 'رقم الورقة / الشيك مطلوب' };
-    if (!data.amount || data.amount <= 0) return { success: false, error: 'المبلغ يجب أن يكون أكبر من صفر' };
+    if (!Number.isFinite(Number(data.amount)) || Number(data.amount) <= 0) return { success: false, error: 'المبلغ يجب أن يكون أكبر من صفر' };
     if (!data.target_name?.trim()) return { success: false, error: 'اسم الجهة / الساحب مطلوب' };
     if (!isBusinessDate(data.due_date)) return { success: false, error: 'تاريخ الاستحقاق غير صالح' };
 
     const id = generateId();
+    const pharmacyId = user.pharmacy_id || 'local_default';
     await db.prepare(`
-      INSERT INTO commercial_papers (id, type, direction, paper_number, bank_id, amount, due_date, status, target_name, notes)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+      INSERT INTO commercial_papers (id, type, direction, paper_number, bank_id, amount, due_date, status, target_name, notes, pharmacy_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
     `).run(
       id,
       data.type || 'check',
@@ -1612,7 +1728,8 @@ export async function addPaperAction(data: {
       Number(data.amount),
       data.due_date,
       data.target_name.trim(),
-      data.notes?.trim() || null
+      data.notes?.trim() || null,
+      pharmacyId
     );
 
     await logActivity(user?.id, 'ADD_COMMERCIAL_PAPER', `تسجيل ورقة مالية (${data.type === 'check' ? 'شيك' : 'كمبيالة'} ${data.direction === 'in' ? 'وارد' : 'صادر'}) رقم: ${data.paper_number} بقيمة: ${data.amount}`);
@@ -1627,8 +1744,12 @@ export async function updatePaperStatusAction(id: string, newStatus: 'pending' |
   try {
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_view_securities')) return { success: false, error: 'غير مصرح' };
+    const pharmacyId = user.pharmacy_id || 'local_default';
 
-    const paper = await db.prepare('SELECT * FROM commercial_papers WHERE id = ?').get(id) as any;
+    const paper = await db.prepare(`
+      SELECT * FROM commercial_papers
+      WHERE id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+    `).get(id, pharmacyId, pharmacyId) as any;
     if (!paper) return { success: false, error: 'الورقة المالية غير موجودة' };
     if (paper.status === 'cashed' && newStatus !== 'cashed') {
       return { success: false, error: 'لا يمكن تغيير حالة ورقة تم ترحيلها. يجب إنشاء قيد عكسي موثق.' };
@@ -1638,8 +1759,22 @@ export async function updatePaperStatusAction(id: string, newStatus: 'pending' |
     }
     if (paper.status === newStatus) return { success: true };
 
-    await dbTransaction(async () => {
-      await db.prepare('UPDATE commercial_papers SET status = ? WHERE id = ?').run(newStatus, id);
+    let statusChanged = false;
+    await dbTransaction(async (db) => {
+      const updated = await db.prepare(`
+        UPDATE commercial_papers SET status = ?
+        WHERE id = ? AND status = ?
+          AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+      `).run(newStatus, id, paper.status, pharmacyId, pharmacyId);
+      if (updated.changes !== 1) {
+        const currentPaper = await db.prepare(`
+          SELECT status FROM commercial_papers
+          WHERE id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+        `).get(id, pharmacyId, pharmacyId) as any;
+        if (currentPaper?.status === newStatus) return;
+        throw new Error('تغيرت حالة الورقة المالية بواسطة عملية أخرى؛ أعد تحميل البيانات');
+      }
+      statusChanged = true;
 
       // Cash posting and lifecycle state must commit or roll back together.
       if (newStatus === 'cashed') {
@@ -1656,11 +1791,12 @@ export async function updatePaperStatusAction(id: string, newStatus: 'pending' |
           target_name: id,
           notes: note,
           date
-        });
+        }, db);
         if (!movement.success) throw new Error(movement.error || 'فشل ترحيل حركة الورقة المالية');
       }
     });
 
+    if (!statusChanged) return { success: true };
     await logActivity(user?.id, 'UPDATE_PAPER_STATUS', `تحديث حالة الورقة المالية #${id} إلى: ${newStatus}`);
     return { success: true };
   } catch (error: any) {
@@ -1673,12 +1809,20 @@ export async function deletePaperAction(id: string) {
   try {
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_view_securities')) return { success: false, error: 'غير مصرح' };
-    const paper = await db.prepare('SELECT status FROM commercial_papers WHERE id = ?').get(id) as any;
+    const pharmacyId = user.pharmacy_id || 'local_default';
+    const paper = await db.prepare(`
+      SELECT status FROM commercial_papers
+      WHERE id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+    `).get(id, pharmacyId, pharmacyId) as any;
     if (!paper) return { success: false, error: 'الورقة المالية غير موجودة' };
     if (paper.status === 'cashed') {
       return { success: false, error: 'لا يمكن حذف ورقة مالية تم ترحيلها للنقدية' };
     }
-    await db.prepare('DELETE FROM commercial_papers WHERE id = ?').run(id);
+    const deleted = await db.prepare(`
+      DELETE FROM commercial_papers
+      WHERE id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+    `).run(id, pharmacyId, pharmacyId);
+    if (deleted.changes !== 1) return { success: false, error: 'الورقة المالية غير موجودة' };
     await logActivity(user?.id, 'DELETE_PAPER', `حذف ورقة مالية #${id}`);
     return { success: true };
   } catch (error: any) {
@@ -1704,25 +1848,36 @@ export async function createManualJournalAction(data: {
     if (!data.entries || data.entries.length < 2) {
       return { success: false, error: 'القيد اليومي يجب أن يتضمن طرفين على الأقل (طرف مدين وطرف دائن)' };
     }
+    if (data.entries.length > 100) return { success: false, error: 'القيد اليومي يحتوي على عدد كبير جداً من الأطراف' };
 
-    let totalDebit = 0;
-    let totalCredit = 0;
+    let totalDebitCents = 0;
+    let totalCreditCents = 0;
+    const normalizedEntries: Array<{ account_id: number; type: 'debit' | 'credit'; amount: number; notes?: string }> = [];
     for (const ent of data.entries) {
-      const amt = Number(ent.amount) || 0;
-      if (amt <= 0) return { success: false, error: 'يجب أن تكون جميع المبالغ في القيد أكبر من صفر' };
-      const account = await db.prepare('SELECT id, is_group FROM accounts WHERE id = ?').get(ent.account_id) as any;
-      if (!account) return { success: false, error: `الحساب #${ent.account_id} غير موجود` };
+      const accountId = Number(ent.account_id);
+      const amount = Number(ent.amount);
+      if (!Number.isInteger(accountId) || accountId <= 0) return { success: false, error: 'رقم الحساب غير صالح' };
+      if (ent.type !== 'debit' && ent.type !== 'credit') return { success: false, error: 'نوع طرف القيد غير صالح' };
+      if (!Number.isFinite(amount) || amount <= 0) return { success: false, error: 'يجب أن تكون جميع المبالغ في القيد أكبر من صفر' };
+      const amountCents = Math.round(amount * 100);
+      if (Math.abs(amount * 100 - amountCents) > 1e-7) return { success: false, error: 'مبالغ القيود يجب ألا تتجاوز منزلتين عشريتين' };
+      const account = await db.prepare('SELECT id, is_group FROM accounts WHERE id = ?').get(accountId) as any;
+      if (!account) return { success: false, error: `الحساب #${accountId} غير موجود` };
       if (Number(account.is_group) === 1) return { success: false, error: 'لا يمكن الترحيل إلى حساب رئيسي' };
-      if (ent.type === 'debit') totalDebit += amt;
-      else if (ent.type === 'credit') totalCredit += amt;
+      if (ent.type === 'debit') totalDebitCents += amountCents;
+      else totalCreditCents += amountCents;
+      normalizedEntries.push({ ...ent, account_id: accountId, amount: amountCents / 100 });
     }
 
-    if (Math.abs(totalDebit - totalCredit) > 0.01) {
+    if (totalDebitCents !== totalCreditCents) {
+      const totalDebit = totalDebitCents / 100;
+      const totalCredit = totalCreditCents / 100;
       return { success: false, error: `القيد غير متزن: مجموع المدين (${totalDebit.toFixed(2)}) لا يساوي مجموع الدائن (${totalCredit.toFixed(2)})` };
     }
+    const totalDebit = totalDebitCents / 100;
 
     const journalId = generateId();
-    await dbTransaction(async () => {
+    await dbTransaction(async (db) => {
       await db.prepare(`
         INSERT INTO daily_journals (id, date, description, created_by, total_amount)
         VALUES (?, ?, ?, ?, ?)
@@ -1734,7 +1889,7 @@ export async function createManualJournalAction(data: {
         totalDebit
       );
 
-      for (const ent of data.entries) {
+      for (const ent of normalizedEntries) {
         await db.prepare(`
           INSERT INTO journal_entries (journal_id, account_id, type, amount, notes)
           VALUES (?, ?, ?, ?, ?)
@@ -1742,7 +1897,7 @@ export async function createManualJournalAction(data: {
           journalId,
           ent.account_id,
           ent.type,
-          Number(ent.amount),
+          ent.amount,
           ent.notes?.trim() || data.description?.trim() || null
         );
       }

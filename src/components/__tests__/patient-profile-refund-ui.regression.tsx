@@ -124,6 +124,39 @@ test('keeps payment history visible but hides payment creation without cash-flow
   expect(screen.queryByRole('button', { name: /إضافة توريد/ })).not.toBeInTheDocument();
 });
 
+test('keeps wallet balance visible but hides wallet top-up controls without cash-flow permission', async () => {
+  mockSession.permissions.acc_can_process_cash_flow = false;
+  (getPatientProfileAction as jest.Mock).mockResolvedValue({ success: true, data: profileData });
+
+  render(<PatientProfileModal patientId="p1" onClose={jest.fn()} onSuccess={jest.fn()} />);
+  await screen.findByDisplayValue('محمد أحمد');
+  fireEvent.click(screen.getByRole('button', { name: 'المالية والتأمين' }));
+
+  expect(screen.getByText('رصيد المحفظة')).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'تأكيد الشحن' })).not.toBeInTheDocument();
+  expect(screen.queryByText('شحن محفظة العميل')).not.toBeInTheDocument();
+});
+
+test('hides financial notice creation when financial-notification permission is denied', async () => {
+  mockSession.permissions.acc_can_view_notifications = false;
+  (getPatientProfileAction as jest.Mock).mockResolvedValue({ success: true, data: profileData });
+
+  render(<PatientProfileModal patientId="p1" onClose={jest.fn()} onSuccess={jest.fn()} />);
+  await screen.findByDisplayValue('محمد أحمد');
+
+  expect(screen.queryByRole('button', { name: 'إشعارات' })).not.toBeInTheDocument();
+});
+
+test('shows patient financial notices when financial-notification permission is granted', async () => {
+  mockSession.permissions.acc_can_view_notifications = true;
+  (getPatientProfileAction as jest.Mock).mockResolvedValue({ success: true, data: profileData });
+
+  render(<PatientProfileModal patientId="p1" onClose={jest.fn()} onSuccess={jest.fn()} />);
+  await screen.findByDisplayValue('محمد أحمد');
+
+  expect(screen.getByRole('button', { name: 'إشعارات' })).toBeInTheDocument();
+});
+
 test('restores profile-save controls and preserves edits when update throws', async () => {
   (getPatientProfileAction as jest.Mock).mockResolvedValue({ success: true, data: profileData });
   (updatePatientAction as jest.Mock).mockRejectedValueOnce(new Error('bridge unavailable'));

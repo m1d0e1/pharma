@@ -7,6 +7,7 @@ jest.mock('@/app/actions-client/config', () => ({
   getConfigAction: jest.fn(async () => ({ value: '' })),
 }));
 jest.mock('@/lib/utils/printing', () => ({
+  ...jest.requireActual('@/lib/utils/printing'),
   generateReceiptHtml: jest.fn(() => '<html>receipt</html>'),
   generateWhatsAppMessage: jest.fn(),
   printHtmlContent: jest.fn(),

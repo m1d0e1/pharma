@@ -1,3 +1,7 @@
+/** @jest-environment node */
+
+import { createFunctionTransactionDb as mockCreateFunctionTransactionDb } from '@/tests/helpers/sqlite-transaction-db';
+
 let permissions: Record<string, unknown> = {};
 const session = { id: 'admin-1', role: 'admin', pharmacy_id: 'local_default' };
 
@@ -40,7 +44,7 @@ import {
 import { importInventoryWorkbookAction } from '@/app/actions-client/inventory';
 import { createPurchaseInvoiceAction } from '@/app/actions-client/purchases';
 import { addToShortagesAction } from '@/app/actions-client/shortages';
-import { dbExecute, dbGet, dbTransaction } from '@/lib/db/tauri';
+import { dbExecute, dbGet, dbSelect, dbTransaction } from '@/lib/db/tauri';
 import { secureCache } from '@/lib/cache/secure_cache';
 
 const item = { drug_id: 1, quantity_sold: 1, unit_price: 100, selected_unit: 'large' };
@@ -129,8 +133,14 @@ describe('business permission enforcement', () => {
 
   it('keeps the loaded catalog cache coherent after an authorized manual drug add', async () => {
     permissions = { can_manage_inventory: true };
-    (dbTransaction as jest.Mock).mockImplementationOnce(async (callback: () => unknown) => callback());
     (dbExecute as jest.Mock).mockResolvedValue({ rowsAffected: 1, lastInsertId: 321 });
+    (dbGet as jest.Mock).mockResolvedValue(null);
+    (dbSelect as jest.Mock).mockResolvedValue([]);
+    (dbTransaction as jest.Mock).mockImplementationOnce(async (callback: any) => callback(mockCreateFunctionTransactionDb({
+      select: dbSelect as jest.Mock,
+      get: dbGet as jest.Mock,
+      execute: dbExecute as jest.Mock,
+    })));
     (secureCache.addDrug as jest.Mock).mockClear();
 
     expect(await addMasterDrugAction({

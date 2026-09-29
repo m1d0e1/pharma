@@ -32,7 +32,9 @@ export default function SuppliersPage() {
         hasUserPermissionSync(session, 'can_view_suppliers')
         || hasUserPermissionSync(session, 'can_view_purchases')
       );
-      setCanMutate(canViewSuppliers && !!session && (session.role === 'owner' || session.role === 'admin'));
+      setCanMutate(!!session
+        && (session.role === 'owner' || session.role === 'admin')
+        && hasUserPermissionSync(session, 'can_view_suppliers'));
       setCanPay(!!session
         && hasUserPermissionSync(session, 'can_view_suppliers')
         && hasUserPermissionSync(session, 'acc_can_process_cash_flow'));

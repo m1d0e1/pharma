@@ -47,13 +47,15 @@ export function DashboardCharts({ trendData = [], topItemsData = [] }: Dashboard
     const profit = net_sales - (item.cogs || 0);
     return {
       ...item,
-      net_sales: Math.max(0, net_sales),
-      profit: Math.max(0, profit),
+      net_sales,
+      profit,
       displayDate: new Date(item.date).toLocaleDateString('ar-EG', { day: 'numeric', month: 'short' })
     };
   });
 
-  const hasTrendData = formattedTrendData.some(d => d.net_sales > 0 || d.profit > 0);
+  const hasTrendData = formattedTrendData.some(
+    d => Number(d.sales || 0) !== 0 || Number(d.returns || 0) !== 0 || Number(d.cogs || 0) !== 0
+  );
   const hasTopItems = topItemsData.length > 0;
 
   const CustomTooltip = ({ active, payload, label }: any) => {

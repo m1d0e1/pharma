@@ -35,7 +35,7 @@ export default function PatientsPage() {
           const result = await getPatientsAction();
           if (requestId !== loadRequestRef.current) return;
           if (result.success) {
-            setPatients((result.data || []).slice(0, 200));
+            setPatients(result.data || []);
           } else {
             setLoadError(true);
           }

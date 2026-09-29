@@ -6,9 +6,13 @@ import {
   checkSupplierPendingInvoiceAction,
   createPurchaseInvoiceAction,
   getSuppliersAction,
+  getPurchaseInvoiceAction,
+  getPurchaseInvoiceDetailsAction,
+  updateCompletedPurchaseInvoiceAction,
 } from '@/app/actions-client/purchases';
 import { dbGet } from '@/lib/db/tauri';
 import { toast } from 'react-hot-toast';
+import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 
 const mockPush = jest.fn();
 const draftKey = 'pharma_purchase_draft_v2:["local_default","buyer-1"]';
@@ -16,10 +20,14 @@ const shortageHandoffKey = 'pharma_shortages_to_purchase_v2:["local_default","bu
 
 jest.mock('next/navigation', () => ({
   useRouter: () => ({ push: mockPush }),
-  useSearchParams: () => new URLSearchParams(),
+  useSearchParams: () => new URLSearchParams(window.location.search),
 }));
 jest.mock('react-hotkeys-hook', () => ({ useHotkeys: jest.fn() }));
 jest.mock('@/lib/db/tauri', () => ({ dbGet: jest.fn().mockResolvedValue(null) }));
+jest.mock('@/lib/auth/local', () => ({
+  getClientSession: jest.fn(),
+  hasUserPermissionSync: jest.fn(),
+}));
 jest.mock('@/components/purchases/BarcodePrinter', () => () => null);
 jest.mock('@/components/pos/DrugDetailsModal', () => () => null);
 jest.mock('@/components/master-drugs/QuickAddDrugModal', () => () => null);
@@ -55,6 +63,12 @@ describe('rendered purchase-invoice flow', () => {
     (findDrugBarcodeConflict as jest.Mock).mockResolvedValue(null);
     sessionStorage.clear();
     localStorage.setItem('pharma_session_user', JSON.stringify({ id: 'buyer-1' }));
+    (getClientSession as jest.Mock).mockResolvedValue({
+      id: 'buyer-1',
+      role: 'admin',
+      permissions: { can_view_purchases: true, can_manage_inventory: true },
+    });
+    (hasUserPermissionSync as jest.Mock).mockImplementation((user: any, key: string) => user?.role === 'owner' || user?.permissions?.[key] === true);
     mockPush.mockReset();
     jest.spyOn(window, 'confirm').mockReturnValue(false);
     (getSuppliersAction as jest.Mock).mockResolvedValue({
@@ -75,9 +89,78 @@ describe('rendered purchase-invoice flow', () => {
       }],
     });
     (createPurchaseInvoiceAction as jest.Mock).mockResolvedValue({ success: true, id: 'purchase-1' });
+    (updateCompletedPurchaseInvoiceAction as jest.Mock).mockResolvedValue({ success: true });
   });
 
   afterEach(() => jest.restoreAllMocks());
+
+  it('warns on completed receipt edits, keeps the original line ID, and asks before saving', async () => {
+    window.history.replaceState({}, '', '/purchases/new?edit_invoice_id=purchase-1');
+    (getPurchaseInvoiceAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: {
+        id: 'purchase-1', status: 'completed', supplier_id: 7,
+        invoice_number: 'INV-ORIGINAL', invoice_date: '2026-08-30', payment_method: 'cash',
+      },
+    });
+    (getPurchaseInvoiceDetailsAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: [{
+        id: 44, drug_id: 101, trade_name: 'دواء شراء', trade_name_en: 'Purchase Drug',
+        unit_id: 6,
+        quantity: 5, bonus_quantity: 0, cost_price: 12, selling_price: 20,
+        discount_percent: 40, discount_value: 48,
+        expiry_date: '2029-12-31', strips_per_box: 2, barcode: '123456',
+      }],
+    });
+
+    const view = render(<PurchaseInvoiceClient />);
+    expect(await screen.findByRole('note')).toHaveTextContent(/تكلفة البضاعة المباعة سابقاً/);
+    expect(screen.getByRole('note')).toHaveTextContent(/الرصيد غير المستهلك/);
+    expect(screen.getByRole('note')).toHaveTextContent(/زيادة الكمية تسجل توريداً إضافياً/);
+    expect(screen.getByRole('heading', { name: 'تعديل فاتورة شراء مكتملة' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox')).toBeEnabled();
+    expect(screen.getByDisplayValue('2026-08-30')).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'نقدي' })).toBeEnabled();
+
+    const itemRow = screen.getAllByText('Purchase Drug')[1].closest('tr')!;
+    fireEvent.change(within(itemRow).getByDisplayValue('20'), { target: { value: '25' } });
+    expect(within(itemRow).getByDisplayValue('25')).toBeInTheDocument();
+    expect(within(itemRow).getByDisplayValue('12')).toBeInTheDocument();
+    expect(within(itemRow).getByDisplayValue('40')).toBeInTheDocument();
+
+    const save = screen.getByRole('button', { name: /حفظ التعديلات/ });
+    jest.mocked(window.confirm).mockReturnValueOnce(false);
+    fireEvent.click(save);
+    await waitFor(() => expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('الوردية الحالية')));
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('إذا استُهلك جزء من الفاتورة'));
+    expect(updateCompletedPurchaseInvoiceAction).not.toHaveBeenCalled();
+    expect(screen.getByDisplayValue('INV-ORIGINAL')).toBeInTheDocument();
+
+    (updateCompletedPurchaseInvoiceAction as jest.Mock).mockResolvedValueOnce({ success: false, error: 'تعذر حفظ التعديل' });
+    jest.mocked(window.confirm).mockReturnValueOnce(true);
+    fireEvent.click(save);
+    await waitFor(() => expect(updateCompletedPurchaseInvoiceAction).toHaveBeenCalledTimes(1));
+    expect(updateCompletedPurchaseInvoiceAction).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'purchase-1',
+      supplier_id: 7,
+      cart: [expect.objectContaining({
+        id: 101, unit_id: 6, purchase_invoice_item_id: 44, quantity: 5,
+        selling_price: '25', cost_price: 12, discount_percent: 40, discount_value: 48,
+      })],
+    }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('تعذر حفظ التعديل'));
+    expect(screen.getByDisplayValue('INV-ORIGINAL')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('5')).toBeInTheDocument();
+
+    (updateCompletedPurchaseInvoiceAction as jest.Mock).mockResolvedValueOnce({ success: true });
+    jest.mocked(window.confirm).mockReturnValueOnce(true);
+    fireEvent.click(save);
+    await waitFor(() => expect(updateCompletedPurchaseInvoiceAction).toHaveBeenCalledTimes(2));
+
+    view.unmount();
+    window.history.replaceState({}, '', '/purchases');
+  });
 
   it('warns before a conflicting purchase, allows cancellation or replacement, then saves only after review', async () => {
     render(<PurchaseInvoiceClient />);
@@ -112,6 +195,28 @@ describe('rendered purchase-invoice flow', () => {
     fireEvent.click(screen.getByRole('button', { name: /حفظ نهائي/ }));
     await waitFor(() => expect(createPurchaseInvoiceAction).toHaveBeenCalledTimes(1));
     expect(createPurchaseInvoiceAction).toHaveBeenCalledWith(expect.objectContaining({ invoice_number: 'CONFLICT-ORDER', cart: [expect.objectContaining({ id: 101, trade_name: 'Reviewed Drug', selling_price: 45, barcode: '123456' })] }));
+  });
+
+  it('does not offer destructive catalog replacement to a purchase-only admin', async () => {
+    (getClientSession as jest.Mock).mockResolvedValue({
+      id: 'buyer-1',
+      role: 'admin',
+      permissions: { can_view_purchases: true, can_manage_inventory: false },
+    });
+    render(<PurchaseInvoiceClient />);
+    fireEvent.change(screen.getByPlaceholderText('اسم الصنف أو الباركود...'), { target: { value: '123456' } });
+    fireEvent.click(await screen.findByRole('button', { name: /Purchase Drug/ }));
+    fireEvent.change(await screen.findByRole('combobox'), { target: { value: '7' } });
+    fireEvent.change(screen.getByPlaceholderText('مثلاً: INV-2024-001'), { target: { value: 'CONFLICT-DENIED' } });
+    fireEvent.change(document.querySelectorAll<HTMLInputElement>('input[type="date"]')[1], { target: { value: '2030-01-01' } });
+    (findDrugBarcodeConflict as jest.Mock).mockResolvedValue({ id: 99, trade_name: 'Old drug', barcode: '123456' });
+
+    fireEvent.click(screen.getByRole('button', { name: /حفظ نهائي/ }));
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('إدارة المخزون')));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(replaceDrugAction).not.toHaveBeenCalled();
+    expect(createPurchaseInvoiceAction).not.toHaveBeenCalled();
   });
 
   it.each([false, true])('submits the full invoice and clears the local draft (print barcodes: %s)', async printBarcodes => {

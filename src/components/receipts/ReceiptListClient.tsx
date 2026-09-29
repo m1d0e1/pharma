@@ -20,6 +20,8 @@ interface SaleItem {
 interface Invoice {
   id: string
   total_amount: number
+  discount_amount?: number
+  additional_fees?: number
   created_at: string
   profiles: { full_name: string }
   patients: { full_name: string, phone: string } | null

@@ -8,8 +8,8 @@ jest.mock('@/lib/auth/local', () => ({
   hasUserPermissionSync: jest.fn(),
 }));
 jest.mock('@/app/actions-client/patients', () => ({ getPatientsAction: jest.fn() }));
-jest.mock('@/components/patients/PatientListClient', () => function MockPatientListClient({ canDeletePatients }: any) {
-  return <div>delete-patients:{String(canDeletePatients)}</div>;
+jest.mock('@/components/patients/PatientListClient', () => function MockPatientListClient({ canDeletePatients, initialPatients }: any) {
+  return <div><span>{`delete-patients:${String(canDeletePatients)}`}</span><span>{`patient-count:${initialPatients.length}`}</span></div>;
 });
 
 beforeEach(() => {
@@ -28,7 +28,7 @@ it('passes the dedicated patient-delete permission through to the patient list',
 
   render(<PatientsPage />);
 
-  expect(await screen.findByText('delete-patients:true')).toBeInTheDocument();
+  expect(await screen.findByText(/delete-patients:true/)).toBeInTheDocument();
 });
 
 it('does not grant patient deletion from the admin role when the dedicated permission is off', async () => {
@@ -41,7 +41,24 @@ it('does not grant patient deletion from the admin role when the dedicated permi
 
   render(<PatientsPage />);
 
-  expect(await screen.findByText('delete-patients:false')).toBeInTheDocument();
+  expect(await screen.findByText(/delete-patients:false/)).toBeInTheDocument();
+});
+
+it('does not truncate the authorized patient directory before client search can reach later patients', async () => {
+  (getClientSession as jest.Mock).mockResolvedValue({
+    id: 'patient-viewer',
+    role: 'pharmacist',
+    pharmacy_id: 'local_default',
+    permissions: { can_view_patients: true, can_delete_patients: false },
+  });
+  (getPatientsAction as jest.Mock).mockResolvedValue({
+    success: true,
+    data: Array.from({ length: 201 }, (_, index) => ({ id: `patient-${index + 1}`, full_name: `Patient ${index + 1}` })),
+  });
+
+  render(<PatientsPage />);
+
+  expect(await screen.findByText(/patient-count:201/)).toBeInTheDocument();
 });
 
 it('does not keep an earlier patient-view authorization when retry resolves to a denied session', async () => {

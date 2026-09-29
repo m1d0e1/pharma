@@ -23,7 +23,7 @@ import packageInfo from '../../package.json'
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 type MenuItem =
-  | { type: 'link';      label: string; href: string;   icon: any; permission?: string; roles?: string[] }
+  | { type: 'link';      label: string; href: string;   icon: any; permission?: string | string[]; roles?: string[] }
   | { type: 'action';    label: string; action: string; icon: any }
   | { type: 'separator' }
 
@@ -40,8 +40,8 @@ const MENUS: Menu[] = [
   {
     id: 'file', label: 'ملف', ownerRoutes: [],
     items: [
-      { type: 'link',   label: 'فاتورة مبيعات جديدة',  href: '/pos',           icon: PlusCircle },
-      { type: 'link',   label: 'فاتورة مشتريات جديدة', href: '/purchases/new', icon: PlusCircle },
+      { type: 'link',   label: 'فاتورة مبيعات جديدة',  href: '/pos',           icon: PlusCircle, permission: 'can_access_pos' },
+      { type: 'link',   label: 'فاتورة مشتريات جديدة', href: '/purchases/new', icon: PlusCircle, permission: 'can_view_purchases' },
       { type: 'separator' },
       { type: 'action', label: 'طباعة',                 action: 'print',        icon: Printer },
       { type: 'separator' },
@@ -52,9 +52,9 @@ const MENUS: Menu[] = [
     id: 'sales', label: 'المبيعات',
     ownerRoutes: ['/pos', '/receipts', '/sales', '/returns', '/reports/sales', '/sales/delivery', '/sales/cogs', '/sales/settlement'],
     items: [
-      { type: 'link', label: 'فاتورة مبيعات جديدة', href: '/pos',            icon: PlusCircle,     roles: ['owner','admin','pharmacist'] },
+      { type: 'link', label: 'فاتورة مبيعات جديدة', href: '/pos',            icon: PlusCircle,     roles: ['owner','admin','pharmacist'], permission: 'can_access_pos' },
       { type: 'link', label: 'الفواتير',          href: '/receipts',         icon: Receipt,        roles: ['owner','admin','pharmacist'], permission: 'can_view_receipts' },
-      { type: 'link', label: 'المبيعات والتحصيل', href: '/sales',            icon: ShoppingCart,   roles: ['owner','admin','pharmacist'] },
+      { type: 'link', label: 'المبيعات والتحصيل', href: '/sales',            icon: ShoppingCart,   roles: ['owner','admin','pharmacist'], permission: 'can_view_sales' },
       { type: 'link', label: 'مرتجعات العملاء', href: '/returns',          icon: RotateCcw,      roles: ['owner','admin','pharmacist'], permission: 'can_view_returns' },
       { type: 'separator' },
       { type: 'link', label: 'تقارير المبيعات',   href: '/reports/sales',    icon: BarChart3,      roles: ['owner','admin'], permission: 'rep_can_view_sales' },
@@ -67,7 +67,7 @@ const MENUS: Menu[] = [
     id: 'inventory', label: 'العمليات المخزنية',
     ownerRoutes: ['/inventory','/inventory/low-stock','/inventory/item-movements','/restock','/inventory/settlement','/inventory/opening-balances'],
     items: [
-      { type: 'link', label: 'المخزون',             href: '/inventory',                  icon: Package,        roles: ['owner','admin','pharmacist'] },
+      { type: 'link', label: 'المخزون',             href: '/inventory',                  icon: Package,        roles: ['owner','admin','pharmacist'], permission: 'can_view_stores' },
       { type: 'link', label: 'النواقص',             href: '/inventory/low-stock',        icon: AlertTriangle,  roles: ['owner','admin','pharmacist'], permission: 'can_view_low_stock' },
       { type: 'link', label: 'حركات الأصناف',       href: '/inventory/item-movements',   icon: Activity,       roles: ['owner','admin','pharmacist'], permission: 'preview_item_movements' },
       { type: 'separator' },
@@ -82,7 +82,7 @@ const MENUS: Menu[] = [
     items: [
       { type: 'link', label: 'المشتريات',              href: '/purchases',                 icon: ShoppingCart,  roles: ['owner','admin'], permission: 'can_view_purchases' },
       { type: 'link', label: 'فاتورة مشتريات جديدة',  href: '/purchases/new',             icon: PlusCircle,    roles: ['owner','admin'], permission: 'can_view_purchases' },
-      { type: 'link', label: 'أوامر الشراء',           href: '/purchase-orders',           icon: ClipboardList, roles: ['owner','admin'], permission: 'can_view_purchases' },
+      { type: 'link', label: 'أوامر الشراء',           href: '/purchase-orders',           icon: ClipboardList, roles: ['owner','admin'], permission: ['can_view_purchases', 'can_view_restock'] },
       { type: 'link', label: 'الموردون',               href: '/purchases/suppliers',       icon: Truck,         roles: ['owner','admin'], permission: 'can_view_suppliers' },
       { type: 'separator' },
       { type: 'link', label: 'مرتجعات للموردين',      href: '/purchases/returns',         icon: RotateCcw,     roles: ['owner','admin'], permission: 'can_view_purchases' },
@@ -250,7 +250,9 @@ export default function TopMenuBar({ userRole, permissions }: Props) {
   const canSee = useCallback((item: MenuItem): boolean => {
     if (item.type === 'separator' || item.type === 'action') return true
     if (item.permission) {
-      return hasUserPermissionSync({ role: userRole, permissions }, item.permission)
+      return Array.isArray(item.permission)
+        ? item.permission.some(key => hasUserPermissionSync({ role: userRole, permissions }, key))
+        : hasUserPermissionSync({ role: userRole, permissions }, item.permission)
     }
     return !item.roles || item.roles.includes(userRole)
   }, [userRole, permissions])

@@ -148,8 +148,16 @@ export default function ShortagesClient({ initialData }: { initialData: any[] })
       const result = await updateShortagesStatusBulkAction(selectedIds, newStatus)
       if (!result.success) throw new Error(result.error || 'فشل تحديث الحالة')
       if (newStatus === 'received') {
-        setData(prev => prev.filter(item => !selectedIds.includes(item.id)))
-        toast.success(`تم استلام وتوريد الأصناف المحددة`)
+        const updatedCount = Number(result.count || 0)
+        if (updatedCount < selectedIds.length) {
+          const refreshed = await getShortagesAction()
+          if (!refreshed.success) throw new Error(refreshed.error || 'تعذر تحديث كشكول النواقص بعد الاستلام الجزئي')
+          setData(refreshed.data || [])
+          toast.error(`تم استلام ${updatedCount} من ${selectedIds.length} صنف فقط؛ بقي ${selectedIds.length - updatedCount} صنف دون رصيد كافٍ`)
+        } else {
+          setData(prev => prev.filter(item => !selectedIds.includes(item.id)))
+          toast.success(`تم استلام وتوريد الأصناف المحددة`)
+        }
       } else {
         setData(prev => prev.map(item => selectedIds.includes(item.id) ? { ...item, status: newStatus } : item))
         toast.success(`تم تحديث حالة ${result.count || selectedIds.length} صنف بنجاح`)

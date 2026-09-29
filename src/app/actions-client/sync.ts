@@ -40,7 +40,7 @@ const db = {
     }
   }),
   transaction: (cb) => {
-    return (...args) => dbTransaction(async () => await cb(...args));
+    return (...args) => dbTransaction(async (transactionDb) => await cb(transactionDb, ...args));
   },
   exec: (sql) => {
     return dbExecute(sql);
@@ -84,22 +84,21 @@ export async function syncMasterDrugsToLocal(drugList: any[]) {
     addName(drug.trade_name_en, Number(drug.id));
   }
 
-  const insertWithoutId = db.prepare(`
-    INSERT INTO master_drugs (trade_name, active_ingredient, category, manufacturer, official_price)
-    VALUES (?, ?, ?, ?, ?)
-  `);
-  const saveMapping = db.prepare(`
-    INSERT INTO cloud_drug_mappings (cloud_id, local_drug_id, last_cloud_name, updated_at)
-    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-    ON CONFLICT(cloud_id) DO UPDATE SET
-      local_drug_id = excluded.local_drug_id,
-      last_cloud_name = excluded.last_cloud_name,
-      updated_at = CURRENT_TIMESTAMP
-  `);
-
   let synced = 0;
   let skipped = 0;
-  await dbTransaction(async () => {
+  await dbTransaction(async (db) => {
+    const insertWithoutId = db.prepare(`
+      INSERT INTO master_drugs (trade_name, active_ingredient, category, manufacturer, official_price)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+    const saveMapping = db.prepare(`
+      INSERT INTO cloud_drug_mappings (cloud_id, local_drug_id, last_cloud_name, updated_at)
+      VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(cloud_id) DO UPDATE SET
+        local_drug_id = excluded.local_drug_id,
+        last_cloud_name = excluded.last_cloud_name,
+        updated_at = CURRENT_TIMESTAMP
+    `);
     for (const drug of drugList) {
       const cloudId = Number(drug.id);
       const tradeName = String(drug.trade_name ?? '').trim();
@@ -254,15 +253,14 @@ export async function syncFromCloudAction() {
     console.log(`Fetched ${allInteractions.length} new/updated interactions.`);
 
     if (allInteractions.length > 0) {
-      const insertInter = db.prepare(`
-        INSERT INTO drug_interactions 
-        (ingredient_a, ingredient_b, description_en) 
-        VALUES (?, ?, ?)
-        ON CONFLICT(ingredient_a, ingredient_b) DO UPDATE SET
-          description_en = excluded.description_en
-      `);
-
-      const intTransaction = db.transaction(async (intList) => {
+      const intTransaction = db.transaction(async (db, intList) => {
+        const insertInter = db.prepare(`
+          INSERT INTO drug_interactions
+          (ingredient_a, ingredient_b, description_en)
+          VALUES (?, ?, ?)
+          ON CONFLICT(ingredient_a, ingredient_b) DO UPDATE SET
+            description_en = excluded.description_en
+        `);
         for (const inter of intList) {
           await insertInter.run(
             inter.drug_1,

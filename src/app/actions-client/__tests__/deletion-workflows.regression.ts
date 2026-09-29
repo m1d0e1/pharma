@@ -1,10 +1,12 @@
 import Database from 'better-sqlite3';
 import { readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
+import { createSqliteTransactionDb as mockCreateSqliteTransactionDb } from '@/tests/helpers/sqlite-transaction-db';
 
 let mockDb: Database.Database;
 let mockSession: any = { id: 'admin', role: 'owner', pharmacy_id: null };
 let mockPermission = true;
+let mockGeneratedId = 0;
 
 jest.mock('@/lib/db/tauri', () => ({
   dbSelect: jest.fn(async (sql: string, params: unknown[] = []) => mockDb.prepare(sql).all(...params)),
@@ -13,10 +15,10 @@ jest.mock('@/lib/db/tauri', () => ({
     const result = mockDb.prepare(sql).run(...params);
     return { rowsAffected: result.changes, lastInsertId: Number(result.lastInsertRowid) };
   }),
-  dbTransaction: jest.fn(async (callback: () => Promise<unknown>) => {
+  dbTransaction: jest.fn(async (callback: any) => {
     mockDb.exec('BEGIN IMMEDIATE');
     try {
-      const result = await callback();
+      const result = await callback(mockCreateSqliteTransactionDb(mockDb));
       mockDb.exec('COMMIT');
       return result;
     } catch (error) {
@@ -24,7 +26,7 @@ jest.mock('@/lib/db/tauri', () => ({
       throw error;
     }
   }),
-  generateId: jest.fn(() => 'test-id'),
+  generateId: jest.fn(() => `test-id-${++mockGeneratedId}`),
 }));
 
 jest.mock('@/lib/auth/local', () => ({
@@ -237,6 +239,7 @@ const databaseVariants = [
 
 describe.each(databaseVariants)('$name deletion invariants', ({ initialize }) => {
   beforeEach(() => {
+    mockGeneratedId = 0;
     mockPermission = true;
     mockSession = { id: 'admin', role: 'owner', pharmacy_id: null };
     mockDb = new Database(':memory:');
@@ -265,6 +268,19 @@ describe.each(databaseVariants)('$name deletion invariants', ({ initialize }) =>
       SELECT old_quantity, new_quantity, user_id FROM stock_adjustments
       WHERE inventory_id = 'manual-positive'
     `).get()).toEqual({ old_quantity: 7, new_quantity: 0, user_id: 'admin' });
+    const zeroJournal = mockDb.prepare(`
+      SELECT id, total_amount FROM daily_journals
+      WHERE description LIKE '%manual-positive%'
+      ORDER BY rowid DESC LIMIT 1
+    `).get() as any;
+    expect(zeroJournal).toEqual(expect.objectContaining({ total_amount: 14 }));
+    expect(mockDb.prepare(`
+      SELECT type, amount FROM journal_entries
+      WHERE journal_id = ? ORDER BY type
+    `).all(zeroJournal.id)).toEqual([
+      { type: 'credit', amount: 14 },
+      { type: 'debit', amount: 14 },
+    ]);
 
     const zeroLog = mockDb.prepare(`
       SELECT details FROM activity_log

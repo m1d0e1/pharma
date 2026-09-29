@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { createSqliteTransactionDb as mockCreateSqliteTransactionDb } from '@/tests/helpers/sqlite-transaction-db';
 
 let mockDb: Database.Database;
 
@@ -9,7 +10,7 @@ jest.mock('@/lib/db/tauri', () => ({
     const result = mockDb.prepare(sql).run(...params);
     return { rowsAffected: result.changes, lastInsertId: Number(result.lastInsertRowid) };
   }),
-  dbTransaction: jest.fn(async (callback: () => Promise<unknown>) => callback()),
+  dbTransaction: jest.fn(async (callback: any) => callback(mockCreateSqliteTransactionDb(mockDb))),
 }));
 
 jest.mock('@/lib/auth/local', () => ({
@@ -49,19 +50,22 @@ describe('report KPI pharmacy scope', () => {
         id INTEGER PRIMARY KEY,
         large_to_medium REAL,
         medium_to_small REAL,
-        reorder_point REAL
+        reorder_point REAL,
+        medium_unit TEXT,
+        small_unit TEXT
       );
       CREATE TABLE accounts (id INTEGER PRIMARY KEY);
       CREATE TABLE trial_balance_settings (category TEXT PRIMARY KEY, account_id INTEGER);
       CREATE TABLE daily_journals (id TEXT PRIMARY KEY, created_by TEXT, pharmacy_id TEXT);
       CREATE TABLE journal_entries (journal_id TEXT, account_id INTEGER, type TEXT, amount REAL);
-      CREATE TABLE inventory (
-        id TEXT PRIMARY KEY,
-        pharmacy_id TEXT,
-        drug_id INTEGER,
-        quantity REAL,
-        cost_price REAL
-      );
+     CREATE TABLE inventory (
+       id TEXT PRIMARY KEY,
+       pharmacy_id TEXT,
+       drug_id INTEGER,
+       quantity REAL,
+        cost_price REAL,
+        expiry_date TEXT
+     );
       CREATE TABLE stock_adjustments (
         inventory_id TEXT,
         old_quantity REAL,
@@ -90,10 +94,10 @@ describe('report KPI pharmacy scope', () => {
       INSERT INTO daily_journals VALUES ('j1', 'u1', 'ph-1'), ('j2', 'u2', 'ph-2');
       INSERT INTO journal_entries VALUES ('j1', 6, 'debit', 30), ('j2', 6, 'debit', 90);
 
-      INSERT INTO master_drugs VALUES (1, 1, 1, 5);
-      INSERT INTO inventory VALUES
-        ('i1', 'ph-1', 1, 2, 10),
-        ('i2', 'ph-2', 1, 1, 10);
+      INSERT INTO master_drugs VALUES (1, 1, 1, 5, 'strip', 'tablet');
+     INSERT INTO inventory VALUES
+        ('i1', 'ph-1', 1, 2, 10, NULL),
+        ('i2', 'ph-2', 1, 1, 10, NULL);
       INSERT INTO stock_adjustments VALUES
         ('i1', 4, 2, datetime('now')),
         ('i2', 6, 1, datetime('now'));
@@ -120,6 +124,29 @@ describe('report KPI pharmacy scope', () => {
     });
   });
 
+  it('uses custom master unit labels when calculating report KPI COGS', async () => {
+    mockDb.exec(`
+      DELETE FROM sales_items;
+      DELETE FROM sales_invoices;
+      UPDATE master_drugs
+      SET large_to_medium = 10, medium_to_small = 1, medium_unit = 'blister', small_unit = 'tablet'
+      WHERE id = 1;
+      INSERT INTO sales_invoices VALUES
+        ('custom-unit-sale', 'ph-1', 'cash', 'completed', 200, datetime('now'));
+      INSERT INTO sales_items
+        (invoice_id, drug_id, quantity_sold, unit, cost_price, large_to_medium, medium_to_small)
+      VALUES ('custom-unit-sale', 1, 10, 'blister', 100, 10, 1);
+    `);
+
+    expect(await getDashboardKPIsAction()).toMatchObject({
+      success: true,
+      data: {
+        sales_today: 200,
+        gross_profit_today: 100,
+      },
+    });
+  });
+
   it('scopes sales and general returns in the trend by pharmacy', async () => {
     const result = await getSalesTrendAction(1);
     expect(result.success).toBe(true);
@@ -128,6 +155,38 @@ describe('report KPI pharmacy scope', () => {
       sales: 150,
       returns: 10,
       net_sales: 140,
+    });
+  });
+
+  it('counts low-stock alerts per drug after aggregating all pharmacy batches', async () => {
+    mockDb.prepare("DELETE FROM inventory WHERE pharmacy_id = 'ph-1'").run();
+    mockDb.prepare(`
+      INSERT INTO inventory (id, pharmacy_id, drug_id, quantity, cost_price) VALUES
+        ('ph1-batch-a', 'ph-1', 1, 3, 10),
+        ('ph1-batch-b', 'ph-1', 1, 3, 12)
+    `).run();
+
+    const result = await getDashboardKPIsAction();
+
+    expect(result).toMatchObject({
+      success: true,
+      data: { stock_alerts_count: 0 },
+    });
+  });
+
+  it('ignores expired inventory when calculating report stock alerts', async () => {
+    mockDb.prepare("DELETE FROM inventory WHERE pharmacy_id = 'ph-1'").run();
+    mockDb.prepare(`
+      INSERT INTO inventory (id, pharmacy_id, drug_id, quantity, cost_price, expiry_date) VALUES
+        ('ph1-usable', 'ph-1', 1, 1, 10, date('now', '+30 days')),
+        ('ph1-expired', 'ph-1', 1, 100, 10, date('now', '-1 day'))
+    `).run();
+
+    const result = await getDashboardKPIsAction();
+
+    expect(result).toMatchObject({
+      success: true,
+      data: { stock_alerts_count: 1 },
     });
   });
 });

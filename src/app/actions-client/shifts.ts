@@ -1,5 +1,5 @@
 
-import { dbSelect, dbExecute, dbGet, dbTransaction, generateId } from '@/lib/db/tauri';
+import { dbSelect, dbExecute, dbGet, dbTransaction, generateId, type TransactionDb } from '@/lib/db/tauri';
 const logActivity = async (userId, action, details) => {
   try {
     await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [userId, action, details]);
@@ -40,7 +40,7 @@ const db = {
     }
   }),
   transaction: (cb) => {
-    return (...args) => dbTransaction(async () => await cb(...args));
+    return (...args) => dbTransaction(async (transactionDb) => await cb(transactionDb, ...args));
   },
   exec: (sql) => {
     return dbExecute(sql);
@@ -56,8 +56,10 @@ import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 const normalizePharmacyId = (pharmacyId?: string | null) =>
   pharmacyId && String(pharmacyId).trim() ? String(pharmacyId).trim() : 'local_default';
 
-async function resolveUserPharmacyId(userId: string | number) {
-  const row = await db.prepare(`
+type ShiftDb = Pick<TransactionDb, 'prepare'>;
+
+async function resolveUserPharmacyId(userId: string | number, scopedDb: ShiftDb = db) {
+  const row = await scopedDb.prepare(`
     SELECT pharmacy_id
     FROM users
     WHERE CAST(id AS TEXT) = CAST(? AS TEXT)
@@ -68,9 +70,9 @@ async function resolveUserPharmacyId(userId: string | number) {
   return normalizePharmacyId(row.pharmacy_id);
 }
 
-async function getOpenShiftForPharmacy(pharmacyId?: string | null) {
+async function getOpenShiftForPharmacy(pharmacyId?: string | null, scopedDb: ShiftDb = db) {
   const scope = normalizePharmacyId(pharmacyId);
-  return await db.prepare(`
+  return await scopedDb.prepare(`
     SELECT s.id, s.user_id, s.start_time, s.starting_cash, s.status
     FROM shifts s
     WHERE LOWER(COALESCE(s.status, '')) = 'open'
@@ -83,10 +85,11 @@ async function getOpenShiftForPharmacy(pharmacyId?: string | null) {
 export async function getShiftForPharmacy(
   shiftId: string,
   pharmacyId?: string | null,
-  openOnly = false
+  openOnly = false,
+  scopedDb: ShiftDb = db,
 ) {
   const scope = normalizePharmacyId(pharmacyId);
-  return await db.prepare(`
+  return await scopedDb.prepare(`
     SELECT s.id, s.user_id, s.start_time, s.starting_cash, s.status
     FROM shifts s
     WHERE s.id = ?
@@ -103,14 +106,15 @@ export async function getShiftForPharmacy(
 export async function ensurePermanentShiftForUser(
   userId: string | number,
   startingCash = 0,
-  notes = 'وردية مشتركة أُنشئت تلقائياً'
+  notes = 'وردية مشتركة أُنشئت تلقائياً',
+  scopedDb: ShiftDb = db,
 ) {
-  const pharmacyId = await resolveUserPharmacyId(userId);
-  const existing = await getOpenShiftForPharmacy(pharmacyId);
+  const pharmacyId = await resolveUserPharmacyId(userId, scopedDb);
+  const existing = await getOpenShiftForPharmacy(pharmacyId, scopedDb);
   if (existing?.id) return existing;
 
   const shiftId = generateId();
-  await db.prepare(`
+  await scopedDb.prepare(`
     INSERT INTO shifts (id, user_id, pharmacy_id, starting_cash, notes, status)
     SELECT ?, ?, ?, ?, ?, 'open'
     WHERE NOT EXISTS (
@@ -121,7 +125,7 @@ export async function ensurePermanentShiftForUser(
     )
   `).run(shiftId, userId, pharmacyId, startingCash, notes, pharmacyId);
 
-  const created = await getOpenShiftForPharmacy(pharmacyId);
+  const created = await getOpenShiftForPharmacy(pharmacyId, scopedDb);
   if (!created?.id) throw new Error('تعذر إنشاء الوردية المشتركة');
   return created;
 }
@@ -133,7 +137,9 @@ export async function ensurePermanentShiftForUser(
 export async function openShiftAction(data: { starting_cash_amount: number; opening_notes?: string; user_id?: string | number }) {
   try {
     const user = await getLocalSession();
-    if (!user) return { success: false, error: 'غير مصرح' };
+    if (!user || !hasUserPermissionSync(user, 'can_view_shifts')) {
+      return { success: false, error: 'غير مصرح' };
+    }
     if (!Number.isFinite(data.starting_cash_amount) || data.starting_cash_amount < 0) {
       return { success: false, error: 'الرصيد الافتتاحي غير صالح' };
     }
@@ -168,7 +174,9 @@ export async function openShiftAction(data: { starting_cash_amount: number; open
 export async function closeShiftAction(data: { shift_id?: string; ending_cash_amount: number; closing_notes?: string }) {
   try {
     const user = await getLocalSession();
-    if (!user) return { success: false, error: 'غير مصرح' };
+    if (!user || !hasUserPermissionSync(user, 'acc_can_view_handover')) {
+      return { success: false, error: 'غير مصرح' };
+    }
     if (!Number.isFinite(data.ending_cash_amount) || data.ending_cash_amount < 0) {
       return { success: false, error: 'الرصيد الختامي غير صالح' };
     }
@@ -183,7 +191,7 @@ export async function closeShiftAction(data: { shift_id?: string; ending_cash_am
       return { success: false, error: 'الوردية غير موجودة أو لا تخص هذه الصيدلية' };
     }
 
-    const transaction = db.transaction(async () => {
+    const transaction = db.transaction(async (db) => {
       // 1. Calculate reconciliation difference
       const shift = await db.prepare(`
         SELECT CAST(COALESCE(starting_cash, 0) AS REAL) as starting_cash
@@ -260,23 +268,23 @@ export async function closeShiftAction(data: { shift_id?: string; ending_cash_am
         }
 
         if (diffAcc && cashAcc) {
-          try {
-            if (difference > 0) {
-              // Overage: Debit Cash (Asset), Credit Difference (Income/Gain)
-              await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, cashAcc, 'debit', difference);
-              await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, diffAcc, 'credit', difference);
-            } else {
-              // Shortage: Debit Difference (Loss/Expense), Credit Cash (Asset)
-              await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, diffAcc, 'debit', Math.abs(difference));
-              await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, cashAcc, 'credit', Math.abs(difference));
-            }
-          } catch (jErr) {
-            console.warn('Could not post difference journal entry in closeShiftAction:', jErr);
+          if (difference > 0) {
+            // Overage: Debit Cash (Asset), Credit Difference (Income/Gain)
+            await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, cashAcc, 'debit', difference);
+            await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, diffAcc, 'credit', difference);
+          } else {
+            // Shortage: Debit Difference (Loss/Expense), Credit Cash (Asset)
+            await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, diffAcc, 'debit', Math.abs(difference));
+            await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, cashAcc, 'credit', Math.abs(difference));
           }
         }
       }
 
-      await logActivity(user.id, 'END_SHIFT', `أنهى الوردية بمبلغ ${data.ending_cash_amount}. الفرق: ${difference.toFixed(2)}`);
+      await db.prepare('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)').run(
+        user.id,
+        'END_SHIFT',
+        `أنهى الوردية بمبلغ ${data.ending_cash_amount}. الفرق: ${difference.toFixed(2)}`
+      );
     });
 
     await transaction();
@@ -357,9 +365,14 @@ export async function getShiftsAction(filter: { status: string }) {
 
       const expectedCash = startingCash + totalSales - totalRefunds + netMovements;
 
-      let difference = (s.cash_difference !== null && s.cash_difference !== undefined)
-        ? Number(s.cash_difference)
-        : (s.status !== 'open' && s.ending_cash_amount !== null && s.ending_cash_amount !== undefined ? (Number(s.ending_cash_amount) - expectedCash) : 0);
+      let difference: number | null = null;
+      if (s.status !== 'open') {
+        if (s.actual_cash !== null && s.actual_cash !== undefined && s.cash_difference !== null && s.cash_difference !== undefined) {
+          difference = Number(s.cash_difference);
+        } else if (s.ending_cash_amount !== null && s.ending_cash_amount !== undefined) {
+          difference = Number(s.ending_cash_amount) - expectedCash;
+        }
+      }
 
       // Self-heal legacy bug where shift handover calculated deficit as: actual_cash - (starting + sales - refunds),
       // ignoring all the money already transferred to the treasury!
@@ -551,7 +564,8 @@ export async function forceCloseAllShiftsAction() {
 
     await db.prepare(`
       UPDATE shifts 
-      SET end_time = CURRENT_TIMESTAMP, status = 'closed', notes = 'إغلاق اضطراري من قبل المالك'
+      SET end_time = CURRENT_TIMESTAMP, status = 'closed', cash_difference = NULL,
+          notes = 'إغلاق اضطراري من قبل المالك'
       WHERE status = 'open'
         AND COALESCE(NULLIF(TRIM(pharmacy_id), ''), 'local_default') = ?
     `).run(pharmacyId);

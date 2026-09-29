@@ -1,4 +1,5 @@
 import { dbSelect } from '@/lib/db/tauri';
+import { isTauri } from '@/lib/env';
 
 export interface MasterDrug {
   id: number;
@@ -160,7 +161,7 @@ export const secureCache = new SecureCache();
 // Auto-preload in background as soon as the module is imported.
 // In Tauri (client-side), this fires when the app first loads any action,
 // so the cache is ready before the user clicks any search field.
-if (typeof window !== 'undefined') {
+if (isTauri) {
   // Small delay to avoid blocking initial page render
   setTimeout(() => {
     secureCache.load().catch(() => {});

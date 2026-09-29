@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import PurchaseInvoiceClient from '@/app/(dashboard)/purchases/new/PurchaseInvoiceClient';
 import { useHotkeys } from 'react-hotkeys-hook';
 import { searchMasterDrugsAction } from '@/app/actions-client/master-drugs';
@@ -112,7 +112,9 @@ describe('coverage-gap: purchase invoice keyboard shortcuts', () => {
     expect(screen.getByText('Purchase Drug')).toBeInTheDocument();
 
     jest.mocked(window.confirm).mockReturnValue(true);
-    lastHotkeyHandler('f2')({ preventDefault: jest.fn() });
+    await act(async () => {
+      lastHotkeyHandler('f2')({ preventDefault: jest.fn() });
+    });
     await waitFor(() => expect(screen.queryByText('Purchase Drug')).not.toBeInTheDocument());
   });
 
@@ -121,7 +123,9 @@ describe('coverage-gap: purchase invoice keyboard shortcuts', () => {
     await populateValidInvoice('HOTKEY-F9');
     const preventDefault = jest.fn();
 
-    lastHotkeyHandler('f9')({ preventDefault });
+    await act(async () => {
+      lastHotkeyHandler('f9')({ preventDefault });
+    });
 
     expect(preventDefault).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(createPurchaseInvoiceAction).toHaveBeenCalledWith(expect.objectContaining({
@@ -137,7 +141,9 @@ describe('coverage-gap: purchase invoice keyboard shortcuts', () => {
     await populateValidInvoice('HOTKEY-F10');
     const preventDefault = jest.fn();
 
-    lastHotkeyHandler('f10')({ preventDefault });
+    await act(async () => {
+      lastHotkeyHandler('f10')({ preventDefault });
+    });
 
     expect(preventDefault).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(createPurchaseInvoiceAction).toHaveBeenCalledWith(expect.objectContaining({

@@ -2,6 +2,7 @@
 
 import Database from 'better-sqlite3';
 import { readFileSync } from 'fs';
+import { createSqliteTransactionDb as mockCreateSqliteTransactionDb } from '@/tests/helpers/sqlite-transaction-db';
 
 let sqlite: Database.Database;
 let nextId = 0;
@@ -14,10 +15,10 @@ jest.mock('@/lib/db/tauri', () => ({
     const result = sqlite.prepare(sql).run(...params);
     return { rowsAffected: result.changes, lastInsertId: Number(result.lastInsertRowid) };
   }),
-  dbTransaction: jest.fn(async (callback: () => unknown) => {
-    if (sqlite.inTransaction) return callback();
+  dbTransaction: jest.fn(async (callback: any) => {
+    if (sqlite.inTransaction) return callback(mockCreateSqliteTransactionDb(sqlite));
     sqlite.exec('BEGIN IMMEDIATE');
-    try { const result = await callback(); sqlite.exec('COMMIT'); return result; }
+    try { const result = await callback(mockCreateSqliteTransactionDb(sqlite)); sqlite.exec('COMMIT'); return result; }
     catch (error) { sqlite.exec('ROLLBACK'); throw error; }
   }),
   generateId: jest.fn(() => `drawer-test-${++nextId}`),
@@ -34,8 +35,9 @@ import { processCheckoutAction } from '@/app/actions-client/sales';
 import { createCashMovementAction, getTreasuryDashboardAction } from '@/app/actions-client/finance';
 import { createReturnAction } from '@/app/actions-client/returns';
 import { processHandoverAction } from '@/app/actions-client/handover';
+import { closeShiftAction } from '@/app/actions-client/shifts';
 
-const migrations = ['001_initial.sql', '008_patient_accounting.sql', '011_shift_cash_difference_account.sql', '013_shift_handover_details.sql'];
+const migrations = ['001_initial.sql', '008_patient_accounting.sql', '011_shift_cash_difference_account.sql', '013_shift_handover_details.sql', '024_commercial_papers_pharmacy_scope.sql', '025_sales_item_discount_snapshot.sql'];
 
 function dashboard() {
   return getTreasuryDashboardAction('treasury');
@@ -181,5 +183,18 @@ describe('current drawer treasury balance', () => {
     expect(legacyUnrecorded.data?.details).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'legacy:legacy-transfers', amount: 20, type: 'disbursement' }),
     ]));
+  });
+
+  it('rolls back legacy shift closure when its cash-difference journal cannot post', async () => {
+    sqlite.prepare("INSERT INTO shifts(id, user_id, starting_cash, status) VALUES ('legacy-close', 'owner', 100, 'open')").run();
+    const beforeShift = sqlite.prepare("SELECT status, ending_cash, cash_difference FROM shifts WHERE id='legacy-close'").get();
+    sqlite.exec("CREATE TRIGGER block_shift_difference_entry BEFORE INSERT ON journal_entries BEGIN SELECT RAISE(ABORT, 'shift difference journal blocked'); END");
+
+    const result = await closeShiftAction({ shift_id: 'legacy-close', ending_cash_amount: 120 });
+
+    expect(result).toMatchObject({ success: false });
+    expect(sqlite.prepare("SELECT status, ending_cash, cash_difference FROM shifts WHERE id='legacy-close'").get()).toEqual(beforeShift);
+    expect(sqlite.prepare("SELECT COUNT(*) AS count FROM daily_journals WHERE description='تسوية وردية: عجز/زيادة نقدية'").get()).toEqual({ count: 0 });
+    expect(sqlite.prepare("SELECT COUNT(*) AS count FROM activity_log WHERE action='END_SHIFT'").get()).toEqual({ count: 0 });
   });
 });

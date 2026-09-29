@@ -92,6 +92,22 @@ describe('coverage-gap: supplier management UI permissions and interactions', ()
     expect(screen.getAllByRole('button', { name: 'سداد دفعة' })).toHaveLength(2);
   });
 
+  it('keeps a purchase-only admin supplier view read-only when can_view_suppliers is explicitly denied', async () => {
+    (getClientSession as jest.Mock).mockResolvedValue({
+      id: 'admin-purchase-only',
+      role: 'admin',
+      permissions: { can_view_purchases: true, can_view_suppliers: false, acc_can_process_cash_flow: true },
+    });
+    (hasUserPermissionSync as jest.Mock).mockImplementation((user: any, key: string) => user?.permissions?.[key] === true);
+
+    render(<SuppliersPage />);
+    expect(await screen.findByText('مورد مدين')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /إضافة مورد جديد/ })).not.toBeInTheDocument();
+    expect(screen.queryByTitle('تعديل')).not.toBeInTheDocument();
+    expect(screen.queryByTitle('حذف')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'سداد دفعة' })).not.toBeInTheDocument();
+  });
+
   it('shows a retryable statement error instead of presenting a failed statement request as an empty account', async () => {
     (getClientSession as jest.Mock).mockResolvedValue({
       id: 'viewer-1', role: 'manager', permissions: { can_view_suppliers: true },

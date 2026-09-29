@@ -1,5 +1,7 @@
 
-import { dbSelect, dbExecute, dbGet, dbTransaction, generateId } from '@/lib/db/tauri';
+import { dbSelect, dbExecute, dbGet, dbTransaction, generateId, type TransactionDb } from '@/lib/db/tauri';
+import { notifyInventoryChanged } from '@/lib/inventory/refresh';
+import { resolveRecoveredShortages } from '@/lib/inventory/reorder-state';
 const logActivity = async (userId, action, details) => {
   try {
     await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [userId, action, details]);
@@ -40,7 +42,7 @@ const db = {
     }
   }),
   transaction: (cb) => {
-    return (...args) => dbTransaction(async () => await cb(...args));
+    return (...args) => dbTransaction(async (transactionDb) => await cb(transactionDb, ...args));
   },
   exec: (sql) => {
     return dbExecute(sql);
@@ -52,16 +54,20 @@ function normalizeBarcode(value: unknown): string | null {
   return barcode.length > 0 ? barcode : null;
 }
 
-async function assertBarcodeAvailable(barcode: string | null, excludedDrugId?: number) {
+async function assertBarcodeAvailable(
+  barcode: string | null,
+  excludedDrugId?: number,
+  scopedDb: Pick<TransactionDb, 'prepare'> = db,
+) {
   if (!barcode) return;
 
   const existing = excludedDrugId === undefined
-    ? await db.prepare(`
+    ? await scopedDb.prepare(`
         SELECT id FROM master_drugs
         WHERE barcode IS NOT NULL AND TRIM(barcode) = ? COLLATE NOCASE
         LIMIT 1
       `).get(barcode) as any
-    : await db.prepare(`
+    : await scopedDb.prepare(`
         SELECT id FROM master_drugs
         WHERE id != ? AND barcode IS NOT NULL AND TRIM(barcode) = ? COLLATE NOCASE
         LIMIT 1
@@ -72,13 +78,13 @@ async function assertBarcodeAvailable(barcode: string | null, excludedDrugId?: n
   }
 
   const inventoryOwner = excludedDrugId === undefined
-    ? await db.prepare(`
+    ? await scopedDb.prepare(`
         SELECT drug_id FROM inventory
         WHERE barcode IS NOT NULL AND TRIM(barcode) = ? COLLATE NOCASE
           AND (quantity IS NULL OR quantity != 0)
         LIMIT 1
       `).get(barcode) as any
-    : await db.prepare(`
+    : await scopedDb.prepare(`
         SELECT drug_id FROM inventory
         WHERE drug_id != ? AND barcode IS NOT NULL AND TRIM(barcode) = ? COLLATE NOCASE
           AND (quantity IS NULL OR quantity != 0)
@@ -147,7 +153,7 @@ export async function addMasterDrugAction(data: any) {
     }
     const barcode = normalizeBarcode(data.barcode);
 
-    const stmt = db.prepare(`
+    const insertSql = `
       INSERT INTO master_drugs (
         trade_name, trade_name_en, generic_name, active_ingredient, barcode, 
         official_price, category, manufacturer, is_medicine, is_service, 
@@ -157,11 +163,11 @@ export async function addMasterDrugAction(data: any) {
         tax_percent, discount_percent, stop_dealing, code_2, item_nature,
         scientific_group, usage_method, active_ingredient_ratio, is_table
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
+    `;
 
-    const insert = db.transaction(async () => {
-      await assertBarcodeAvailable(barcode);
-      return stmt.run(
+    const insert = db.transaction(async (db) => {
+      await assertBarcodeAvailable(barcode, undefined, db);
+      return db.prepare(insertSql).run(
       tradeName,
       tradeNameEn,
       data.generic_name || null,
@@ -316,7 +322,7 @@ export async function updateMasterDrugAction(id: number, data: any) {
     const oldBarcode = normalizeBarcode(current.barcode);
     const barcode = data.barcode === undefined ? oldBarcode : normalizeBarcode(data.barcode);
 
-    const stmt = db.prepare(`
+    const updateSql = `
       UPDATE master_drugs SET
         trade_name = ?, trade_name_en = ?, generic_name = ?, active_ingredient = ?, barcode = ?, 
         official_price = ?, category = ?, manufacturer = ?, is_medicine = ?, is_service = ?, 
@@ -327,10 +333,10 @@ export async function updateMasterDrugAction(id: number, data: any) {
         code_2 = ?, item_nature = ?, scientific_group = ?, usage_method = ?,
         active_ingredient_ratio = ?, is_table = ?, indications = ?, side_effects = ?
       WHERE id = ?
-    `);
+    `;
 
-    const update = db.transaction(async () => {
-      await assertBarcodeAvailable(barcode, id);
+    const update = db.transaction(async (db) => {
+      await assertBarcodeAvailable(barcode, id, db);
       // ponytail: existing packages keep their old scannable code when the manufacturer changes it.
       const inventoryBarcode = oldBarcode || barcode;
       if (inventoryBarcode) {
@@ -339,7 +345,7 @@ export async function updateMasterDrugAction(id: number, data: any) {
           WHERE drug_id = ? AND (barcode IS NULL OR TRIM(barcode) = '')
         `).run(inventoryBarcode, id);
       }
-      await stmt.run(
+      await db.prepare(updateSql).run(
       tradeName,
       tradeNameEn,
       data.generic_name || null,
@@ -1063,7 +1069,7 @@ export async function archiveMasterDrugAction(id: number, confirmed: boolean) {
     const user = await getLocalSession();
     if (!user || !hasUserPermissionSync(user, 'can_manage_inventory')) return { success: false, error: 'غير مصرح' };
     if (confirmed !== true || !Number.isInteger(id) || id <= 0) return { success: false, error: 'يلزم تأكيد الحذف الآمن لصنف صحيح' };
-    await db.transaction(async () => {
+    await db.transaction(async (db) => {
       const result = await db.prepare('UPDATE master_drugs SET stop_dealing=1 WHERE id=?').run(id);
       if (Number(result.changes) !== 1) throw new Error('الصنف غير موجود');
       await db.prepare("INSERT INTO activity_log(user_id,action,details) VALUES(?,'ARCHIVE_MASTER_DRUG',?)").run(user.id, `Archived drug #${id}; inventory, barcodes and history preserved`);
@@ -1085,7 +1091,7 @@ export async function deleteMasterDrugAction(id: number) {
       return { success: false, error: 'Invalid drug id' };
     }
 
-    const remove = db.transaction(async () => {
+    const remove = db.transaction(async (db) => {
       const item = await db.prepare(`
         SELECT m.id, CASE WHEN (${MASTER_DRUG_REFERENCE_PREDICATE}) THEN 1 ELSE 0 END AS is_referenced
         FROM master_drugs m
@@ -1127,7 +1133,7 @@ export async function migrateNamesToEnglishAction() {
     const localUser = await getLocalSession();
     if (!localUser || localUser.role !== 'owner') return { success: false, error: 'غير مصرح' };
 
-    const transaction = db.transaction(async () => {
+    const transaction = db.transaction(async (db) => {
       // 1. Where trade_name_en exists, make it the main trade_name
       await db.prepare(`
         UPDATE master_drugs 
@@ -1224,7 +1230,7 @@ export async function completeOpeningBalanceAction(obId: string) {
     const session = await getLocalSession();
     if (!session || !hasUserPermissionSync(session, 'can_view_opening_balances')) return { success: false, error: 'Unauthorized' };
 
-    const transaction = db.transaction(async () => {
+    const transaction = db.transaction(async (db) => {
       // 1. Update status
       await db.prepare('UPDATE opening_balances SET status = ? WHERE id = ?').run('completed', obId);
 
@@ -1256,9 +1262,9 @@ export async function createStockAdjustmentAction(inventoryId: string, data: { r
     if (!Number.isFinite(Number(data.new_quantity)) || Number(data.new_quantity) < 0) return { success: false, error: 'الكمية الجديدة غير صالحة' };
     const pharmacyId = session.pharmacy_id || 'local_default';
 
-    const transaction = db.transaction(async () => {
+    const transaction = db.transaction(async (db) => {
       const current = await db.prepare(
-        `SELECT quantity, cost_price FROM inventory
+        `SELECT quantity, cost_price, drug_id FROM inventory
          WHERE id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))`
       ).get(inventoryId, pharmacyId, pharmacyId) as any;
       if (!current) throw new Error('الصنف غير موجود في مخزون الصيدلية');
@@ -1279,6 +1285,9 @@ export async function createStockAdjustmentAction(inventoryId: string, data: { r
       ).run(data.new_quantity, inventoryId, pharmacyId, pharmacyId);
 
       const diff = Number(data.new_quantity) - Number(current.quantity);
+      if (diff > 0) {
+        await resolveRecoveredShortages(db, current.drug_id, pharmacyId);
+      }
       const value = Math.abs(diff) * Number(current.cost_price || 0);
       if (value > 0) {
         const getAccountId = async (category: string, fallback: number) =>
@@ -1302,6 +1311,7 @@ export async function createStockAdjustmentAction(inventoryId: string, data: { r
 
     await transaction();
     revalidatePath('/inventory');
+    notifyInventoryChanged();
     return { success: true };
   } catch (error: any) {
     return { success: false, error: error.message };

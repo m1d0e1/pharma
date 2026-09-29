@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import POSPage from '@/app/(dashboard)/pos/page';
 import { useHotkeys } from 'react-hotkeys-hook';
-import { processCheckoutAction, searchDrugsAction } from '@/app/actions-client/sales';
+import { barcodeLookupAction, processCheckoutAction, searchDrugsAction } from '@/app/actions-client/sales';
 import { searchPatientsAction } from '@/app/actions-client/patients';
 import { checkDrugInteractions } from '@/app/actions-client/interactions';
 import { addToShortagesAction } from '@/app/actions-client/shortages';
@@ -11,6 +11,7 @@ import { getCurrentUserAction } from '@/app/actions-client/auth';
 import { fetchDraftsAction } from '@/app/actions-client/sales';
 import { toast } from 'react-hot-toast';
 import { notifyInventoryChanged } from '@/lib/inventory/refresh';
+import { useBarcodeScanner } from '@/hooks/useBarcodeScanner';
 
 const mockPush = jest.fn();
 const mockRouter = { push: mockPush };
@@ -53,7 +54,10 @@ jest.mock('@/components/pos/DrugDetailsModal', () => function MockDrugDetailsMod
   return <div data-testid="drug-details-modal">drug:{drugId}</div>;
 });
 jest.mock('@/components/returns/ReturnsClient', () => () => null);
-jest.mock('@/components/pos/DraftsModal', () => () => null);
+jest.mock('@/components/pos/DraftsModal', () => function MockDraftsModal({ isOpen, drafts, onLoadDraft }: any) {
+  if (!isOpen || !drafts?.length) return null;
+  return <button onClick={() => onLoadDraft(drafts[0])}>LOAD TEST DRAFT</button>;
+});
 jest.mock('@/components/pos/StockWarningModal', () => () => null);
 jest.mock('@/components/pos/PosDrawerHandoverModal', () => () => null);
 jest.mock('@/components/pos/DrugInteractionModal', () => () => null);
@@ -106,7 +110,9 @@ describe('coverage-gap: POS keyboard shortcuts', () => {
     (addToShortagesAction as jest.Mock).mockResolvedValue({ success: true });
   });
 
-  afterEach(() => usePOSStore.getState().resetPOS());
+  afterEach(() => {
+    act(() => usePOSStore.getState().resetPOS());
+  });
 
   it('Insert focuses and selects the actual POS search field', async () => {
     render(<POSPage />);
@@ -121,13 +127,81 @@ describe('coverage-gap: POS keyboard shortcuts', () => {
     expect(selectSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('does not fall through to the first text result when an entered barcode is ambiguous', async () => {
+    (barcodeLookupAction as jest.Mock).mockResolvedValueOnce({
+      success: false,
+      error: 'الباركود مرتبط بأكثر من صنف؛ يرجى تصحيحه من إدارة الأصناف',
+    });
+    (searchDrugsAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: [{
+        id: 'drug-ambiguous',
+        trade_name: 'Ambiguous Drug',
+        trade_name_en: 'Ambiguous Drug',
+        active_ingredient: 'X',
+        total_stock: 2,
+        min_price: 10,
+        units: { large: 'علبة', large_to_medium: 1, medium_to_small: 1 },
+        batches: [],
+      }],
+    });
+
+    render(<POSPage />);
+    const search = await screen.findByPlaceholderText('بحث (اسم أو كود)...');
+    fireEvent.change(search, { target: { value: 'DUP-BARCODE' } });
+    await waitFor(() => expect(searchDrugsAction).toHaveBeenCalled());
+    fireEvent.keyDown(search, { key: 'Enter' });
+
+    await waitFor(() => expect(barcodeLookupAction).toHaveBeenCalledWith('DUP-BARCODE'));
+    expect(usePOSStore.getState().cart).toHaveLength(0);
+    expect(toast.error).toHaveBeenCalledWith('الباركود مرتبط بأكثر من صنف؛ يرجى تصحيحه من إدارة الأصناف');
+  });
+
+  it('surfaces the specific scanner ambiguity error without adding a product', async () => {
+    (barcodeLookupAction as jest.Mock).mockResolvedValueOnce({
+      success: false,
+      error: 'الباركود مرتبط بأكثر من صنف؛ يرجى تصحيحه من إدارة الأصناف',
+    });
+    render(<POSPage />);
+    const scannerCalls = (useBarcodeScanner as jest.Mock).mock.calls;
+    const scan = scannerCalls[scannerCalls.length - 1][0] as (barcode: string) => Promise<void>;
+
+    await act(async () => { await scan('DUP-BARCODE'); });
+
+    expect(usePOSStore.getState().cart).toHaveLength(0);
+    expect(toast.error).toHaveBeenCalledWith('الباركود مرتبط بأكثر من صنف؛ يرجى تصحيحه من إدارة الأصناف');
+  });
+
+  it('reports a manual interaction-check failure instead of claiming there are no interactions', async () => {
+    usePOSStore.getState().setCart([
+      cartItem,
+      { ...cartItem, id: 'line-2', drug_id: 'drug-2', trade_name_en: 'Second Drug', active_ingredient: 'Ingredient B' },
+    ]);
+    (checkDrugInteractions as jest.Mock).mockResolvedValueOnce({
+      success: false,
+      error: 'interaction service unavailable',
+    });
+
+    render(<POSPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'فحص التداخلات' }));
+
+    await waitFor(() => expect(checkDrugInteractions).toHaveBeenCalled());
+    expect(toast.error).toHaveBeenCalledWith('interaction service unavailable', expect.any(Object));
+    expect(toast.success).not.toHaveBeenCalledWith(
+      'لا توجد تداخلات دوائية معروفة في هذه الفاتورة',
+      expect.any(Object),
+    );
+  });
+
   it('Ctrl+S executes the real completed-checkout path for a populated cart', async () => {
     usePOSStore.getState().setCart([cartItem]);
     render(<POSPage />);
     await screen.findByRole('button', { name: /إتمام وطباعة/ });
 
     const preventDefault = jest.fn();
-    lastHotkeyHandler('ctrl+s')({ preventDefault });
+    await act(async () => {
+      lastHotkeyHandler('ctrl+s')({ preventDefault });
+    });
 
     expect(preventDefault).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(processCheckoutAction).toHaveBeenCalledWith(expect.objectContaining({
@@ -147,8 +221,10 @@ describe('coverage-gap: POS keyboard shortcuts', () => {
     await screen.findByRole('button', { name: /إتمام وطباعة/ });
 
     const handler = lastHotkeyHandler('ctrl+s');
-    handler({ preventDefault: jest.fn() });
-    handler({ preventDefault: jest.fn() });
+    await act(async () => {
+      handler({ preventDefault: jest.fn() });
+      handler({ preventDefault: jest.fn() });
+    });
 
     await waitFor(() => expect(processCheckoutAction).toHaveBeenCalled());
     expect(processCheckoutAction).toHaveBeenCalledTimes(1);
@@ -180,6 +256,19 @@ describe('coverage-gap: POS keyboard shortcuts', () => {
 
     fireEvent.keyDown(window, { key: 'F9' });
     await waitFor(() => expect(addToShortagesAction).toHaveBeenCalledWith({ drug_id: 'drug-1' }));
+  });
+
+  it('surfaces a backend shortage-permission denial from the F9 hotkey', async () => {
+    usePOSStore.getState().setCart([cartItem]);
+    (addToShortagesAction as jest.Mock).mockResolvedValueOnce({ success: false, error: 'غير مصرح' });
+    render(<POSPage />);
+    const row = (await screen.findByText('Test Drug')).closest('tr')!;
+    fireEvent.click(row);
+
+    fireEvent.keyDown(window, { key: 'F9' });
+
+    await waitFor(() => expect(addToShortagesAction).toHaveBeenCalledWith({ drug_id: 'drug-1' }));
+    expect(toast.error).toHaveBeenCalledWith('غير مصرح');
   });
 
   it('Delete removes a selected cart row unless an input currently owns focus', async () => {
@@ -233,6 +322,36 @@ describe('coverage-gap: POS keyboard shortcuts', () => {
 
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith('فشل تحميل المسودات'));
     expect(fetchDraftsAction).toHaveBeenCalledTimes(1);
+  });
+
+  it('replaces stale POS discount, fee, and check state when loading a suspended invoice', async () => {
+    usePOSStore.getState().setDiscountPercent(17);
+    usePOSStore.getState().setAdditionalFees(9);
+    usePOSStore.getState().setCheckNumber('STALE-CHECK');
+    (fetchDraftsAction as jest.Mock).mockResolvedValueOnce({
+      success: true,
+      data: [{
+        id: 'draft-1',
+        patient_id: null,
+        payment_method: 'check',
+        check_number: 'CHK-DRAFT-1',
+        discount_amount: 2,
+        additional_fees: 3,
+        items: [{ ...cartItem, qty: 1 }],
+      }],
+    });
+
+    render(<POSPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'فواتير معلقة' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'LOAD TEST DRAFT' }));
+
+    await waitFor(() => expect(usePOSStore.getState()).toMatchObject({
+      paymentMethod: 'check',
+      checkNumber: 'CHK-DRAFT-1',
+      totalDiscount: 2,
+      discountPercent: 0,
+      additionalFees: 3,
+    }));
   });
 
   it('keeps POS drug search results owned by the newest query when an older request resolves later', async () => {

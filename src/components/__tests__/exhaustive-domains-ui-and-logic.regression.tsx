@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 
 // UI Components
 import InventoryTable from '@/components/inventory/InventoryTable';
@@ -595,7 +595,9 @@ describe('Exhaustive Frontend UI & Business Logic Test Suite (All Domains & Feat
       });
     });
 
-    afterEach(() => usePOSStore.getState().resetPOS());
+    afterEach(() => {
+      act(() => usePOSStore.getState().resetPOS());
+    });
 
     it('renders POS cart with items, calculates totals, and supports checkout', async () => {
       (processCheckoutAction as jest.Mock).mockResolvedValue({

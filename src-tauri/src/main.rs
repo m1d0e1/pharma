@@ -600,6 +600,18 @@ fn main() {
             sql: include_str!("../migrations/023_shift_immutable_scope.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 24,
+            description: "commercial_papers_pharmacy_scope",
+            sql: include_str!("../migrations/024_commercial_papers_pharmacy_scope.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 25,
+            description: "sales_item_discount_snapshot",
+            sql: include_str!("../migrations/025_sales_item_discount_snapshot.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()
@@ -711,6 +723,7 @@ fn main() {
             commands::auth::bcrypt_hash,
             commands::auth::bcrypt_compare,
             commands::critical::db_execute_guarded,
+            commands::critical::db_select_guarded,
             commands::critical::db_transaction_begin,
             commands::critical::db_transaction_finish,
             commands::critical::process_checkout_critical,
@@ -849,6 +862,26 @@ mod tests {
         install_seed_database(&source, &destination).unwrap();
 
         assert_eq!(fs::read(&destination).unwrap(), bytes);
+        assert!(!destination.with_extension("db.installing").exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn refuses_to_replace_existing_nonempty_database() {
+        let dir = std::env::temp_dir().join(format!("pharma existing db {}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("seed.db");
+        let destination = dir.join("pharma_local.db");
+        let mut seed_bytes = b"SQLite format 3\0".to_vec();
+        seed_bytes.extend_from_slice(b"new seed payload");
+        let existing_bytes = b"existing user database must remain untouched";
+        fs::write(&source, &seed_bytes).unwrap();
+        fs::write(&destination, existing_bytes).unwrap();
+
+        let error = install_seed_database(&source, &destination).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&destination).unwrap(), existing_bytes);
         assert!(!destination.with_extension("db.installing").exists());
         fs::remove_dir_all(dir).unwrap();
     }

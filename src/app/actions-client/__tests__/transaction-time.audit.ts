@@ -1,3 +1,4 @@
+import { createSqliteTransactionDb as mockCreateSqliteTransactionDb } from '@/tests/helpers/sqlite-transaction-db';
 // Audit-only contract tests. Known failures are intentionally retained; production code is not changed.
 import Database from 'better-sqlite3';
 import { readFileSync } from 'fs';
@@ -10,10 +11,10 @@ jest.mock('@/lib/db/tauri', () => ({
     const result = mockDb.prepare(sql).run(...params);
     return { rowsAffected: result.changes, lastInsertId: Number(result.lastInsertRowid) };
   }),
-  dbTransaction: jest.fn(async (callback: () => unknown) => {
-    if (mockDb.inTransaction) return callback();
+  dbTransaction: jest.fn(async (callback: any) => {
+    if (mockDb.inTransaction) return callback(mockCreateSqliteTransactionDb(mockDb));
     mockDb.exec('BEGIN IMMEDIATE');
-    try { const result = await callback(); mockDb.exec('COMMIT'); return result; }
+    try { const result = await callback(mockCreateSqliteTransactionDb(mockDb)); mockDb.exec('COMMIT'); return result; }
     catch (error) { mockDb.exec('ROLLBACK'); throw error; }
   }),
   generateId: jest.fn(() => `time-audit-${++mockId}`),
@@ -31,6 +32,9 @@ beforeEach(() => {
     mockDb.exec(readFileSync(`src-tauri/migrations/${file}`, 'utf8'));
   }
   mockDb.exec("ALTER TABLE shifts ADD COLUMN pharmacy_id TEXT");
+  mockDb.exec("ALTER TABLE supplier_transactions ADD COLUMN user_id TEXT");
+  mockDb.exec("ALTER TABLE supplier_transactions ADD COLUMN payment_method TEXT DEFAULT 'cash'");
+  mockDb.exec("ALTER TABLE supplier_transactions ADD COLUMN date TEXT");
   mockDb.exec("INSERT INTO shifts(id,user_id,pharmacy_id,starting_cash,status) VALUES('audit-shift','admin','local_default',100,'open')");
 });
 afterEach(() => mockDb.close());

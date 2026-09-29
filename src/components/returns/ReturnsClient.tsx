@@ -12,7 +12,10 @@ export default function ReturnsClient({ title, type = 'sales' }: { title: string
   const [searchTerm, setSearchTerm] = useState('');
   const [returns, setReturns] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
   const [selectedReturn, setSelectedReturn] = useState<any>(null);
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [detailsError, setDetailsError] = useState<string | null>(null);
@@ -22,48 +25,86 @@ export default function ReturnsClient({ title, type = 'sales' }: { title: string
   const newReturnLink = type === 'sales' ? '/returns/new' : '/purchases/returns/new';
   const placeholderText = type === 'sales' ? 'بحث برقم المرتجع أو الفاتورة...' : 'بحث برقم المرتجع أو المورد...';
 
-  const fetchData = React.useCallback(async () => {
+  const fetchData = React.useCallback(async ({
+    append = false,
+    offset = 0,
+    search = '',
+  }: { append?: boolean; offset?: number; search?: string } = {}) => {
       const requestId = ++loadRequestRef.current;
-      setLoading(true);
-      setLoadError(null);
+      if (append) {
+        setLoadingMore(true);
+        setLoadMoreError(null);
+      } else {
+        setLoading(true);
+        setLoadError(null);
+      }
       try {
       if (type === 'sales') {
-        const res = await getReturnsAction();
+        const res = await getReturnsAction({ limit: 50, offset, search });
         if (requestId !== loadRequestRef.current) return;
         if (res.success && res.data) {
-          setReturns(res.data);
+          setReturns(current => append ? [...current, ...res.data] : res.data);
+          setHasMore(Boolean(res.hasMore));
         } else {
-          setReturns([]);
-          setLoadError(res.error || 'فشل تحميل المرتجعات');
+          if (append) {
+            setLoadMoreError(res.error || 'فشل تحميل المزيد من المرتجعات');
+          } else {
+            setReturns([]);
+            setLoadError(res.error || 'فشل تحميل المرتجعات');
+          }
         }
       } else {
-        const res = await getPurchaseReturnsAction();
+        const res = await getPurchaseReturnsAction({ limit: 50, offset, search });
         if (requestId !== loadRequestRef.current) return;
         if (res.success && res.data) {
-          setReturns(res.data);
+          setReturns(current => append ? [...current, ...res.data] : res.data);
+          setHasMore(Boolean(res.hasMore));
         } else {
-          setReturns([]);
-          setLoadError(res.error || 'فشل تحميل المرتجعات');
+          if (append) {
+            setLoadMoreError(res.error || 'فشل تحميل المزيد من المرتجعات');
+          } else {
+            setReturns([]);
+            setLoadError(res.error || 'فشل تحميل المرتجعات');
+          }
         }
       }
       } catch {
         if (requestId !== loadRequestRef.current) return;
-        setReturns([]);
-        setLoadError('فشل تحميل المرتجعات');
+        if (append) {
+          setLoadMoreError('فشل تحميل المزيد من المرتجعات');
+        } else {
+          setReturns([]);
+          setLoadError('فشل تحميل المرتجعات');
+        }
       } finally {
-      if (requestId === loadRequestRef.current) setLoading(false);
+      if (requestId === loadRequestRef.current) {
+        if (append) setLoadingMore(false);
+        else setLoading(false);
+      }
       }
   }, [type]);
 
   useEffect(() => {
-    void fetchData();
-  }, [fetchData]);
+    const timer = window.setTimeout(() => {
+      void fetchData({ search: searchTerm.trim() });
+    }, searchTerm.trim() ? 250 : 0);
+    return () => window.clearTimeout(timer);
+  }, [fetchData, searchTerm]);
 
-  const filteredReturns = returns.filter(r => 
-    r.id?.includes(searchTerm) || 
-    r.invoice_id?.includes(searchTerm) ||
-    (type === 'purchases' ? r.supplier_name?.includes(searchTerm) : false)
-  );
+  const normalizedSearch = searchTerm.trim().toLocaleLowerCase();
+  const filteredReturns = returns.filter(r => {
+    if (!normalizedSearch) return true;
+    const fields = [
+      r.id,
+      r.invoice_id,
+      r.purchase_invoice_id,
+      r.invoice_number,
+      r.patient_name,
+      r.user_name,
+      ...(type === 'purchases' ? [r.supplier_name] : []),
+    ];
+    return fields.some(value => String(value || '').toLocaleLowerCase().includes(normalizedSearch));
+  });
 
   const openReturn = async (r: any) => {
     const requestId = ++detailsRequestRef.current;
@@ -128,7 +169,7 @@ export default function ReturnsClient({ title, type = 'sales' }: { title: string
             <p className="text-slate-500">تعذر التحقق من سجل المرتجعات الحالي.</p>
             <button
               type="button"
-              onClick={() => void fetchData()}
+              onClick={() => void fetchData({ search: searchTerm.trim() })}
               className="px-5 py-2.5 rounded-xl bg-primary-600 text-white font-bold hover:bg-primary-700"
             >
               إعادة المحاولة
@@ -176,6 +217,25 @@ export default function ReturnsClient({ title, type = 'sales' }: { title: string
                 ))}
               </tbody>
             </table>
+            {(hasMore || loadingMore || loadMoreError) && (
+              <div className="flex flex-col items-center gap-2 border-t border-slate-100 p-4 dark:border-slate-800">
+                {loadMoreError && <p className="text-sm font-bold text-rose-600">{loadMoreError}</p>}
+                {hasMore && (
+                  <button
+                    type="button"
+                    disabled={loadingMore}
+                    onClick={() => void fetchData({
+                      append: true,
+                      offset: returns.length,
+                      search: searchTerm.trim(),
+                    })}
+                    className="rounded-xl bg-slate-100 px-5 py-2.5 text-sm font-bold text-slate-700 hover:bg-slate-200 disabled:opacity-50 dark:bg-slate-800 dark:text-slate-200"
+                  >
+                    {loadingMore ? 'جاري تحميل المزيد...' : 'تحميل المزيد'}
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -205,7 +265,7 @@ export default function ReturnsClient({ title, type = 'sales' }: { title: string
                 <div><span className="text-slate-500">العميل</span><p className="font-bold">{selectedReturn.patient_name || 'عميل نقدي'}</p></div>
               )}
               <div><span className="text-slate-500">المستخدم</span><p className="font-bold">{selectedReturn.user_name || '-'}</p></div>
-              <div><span className="text-slate-500">طريقة الاسترداد</span><p className="font-bold">{selectedReturn.refund_method === 'cash' ? 'نقدي' : selectedReturn.refund_method === 'patient_account' ? 'حساب المريض' : 'خصم من حساب المورد'}</p></div>
+              <div><span className="text-slate-500">طريقة الاسترداد</span><p className="font-bold">{selectedReturn.refund_method === 'cash' ? 'نقدي' : selectedReturn.refund_method === 'patient_account' ? 'حساب المريض' : selectedReturn.refund_method === 'wallet' ? 'محفظة المريض' : selectedReturn.refund_method === 'bank' ? 'بنك / بطاقة' : 'خصم من حساب المورد'}</p></div>
               <div><span className="text-slate-500">الحالة</span><p className="font-bold">{selectedReturn.status || 'مكتمل'}</p></div>
               <div><span className="text-slate-500">إجمالي المرتجع</span><p className="font-bold text-primary-600">{Number(selectedReturn.total_refund || selectedReturn.total_amount || 0).toFixed(2)} ج.م</p></div>
               <div><span className="text-slate-500">التاريخ</span><p className="font-bold">{selectedReturn.created_at ? format(new Date(selectedReturn.created_at), 'yyyy-MM-dd HH:mm') : '-'}</p></div>

@@ -48,7 +48,7 @@ export default function PatientListClient({ initialPatients, pharmacyId, canDele
       const result = await getPatientsAction()
       if (!result.success) throw new Error(result.error)
       if (requestId !== patientsRequestRef.current) return false
-      setPatients(((result.data || []) as Patient[]).slice(0, 200))
+      setPatients((result.data || []) as Patient[])
       return true
     } catch (err) {
       console.error('Failed to load patients:', err)

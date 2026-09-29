@@ -1,6 +1,10 @@
 const mockInvoke = jest.fn(async (_command: string, _args?: unknown) => ({ id: 'purchase-1' }));
-const mockDbSelect = jest.fn(async (_sql: string, _params: unknown[] = []) => [{ name: 'barcode' }]);
+const mockDbSelect = jest.fn(async (sql: string, _params: unknown[] = []) => {
+  if (/FROM\s+master_drugs/i.test(sql)) return [{ id: 9001, large_to_medium: 10 }];
+  return [{ name: 'barcode' }];
+});
 const mockDbGet = jest.fn(async (..._args: unknown[]) => ({ id: 'purchase-1' }));
+let canModifyUnitConversion = true;
 
 jest.mock('@tauri-apps/api/core', () => ({
   invoke: (command: string, args?: unknown) => mockInvoke(command, args),
@@ -16,7 +20,8 @@ jest.mock('@/lib/db/tauri', () => ({
 
 jest.mock('@/lib/auth/local', () => ({
   getLocalSession: jest.fn(async () => ({ id: 'admin', role: 'owner', pharmacy_id: 'pharmacy-1' })),
-  hasUserPermissionSync: jest.fn(() => true),
+  hasUserPermissionSync: jest.fn((_user: unknown, permission: string) =>
+    permission === 'can_modify_unit_conversion' ? canModifyUnitConversion : true),
 }));
 
 jest.mock('@/lib/cache/secure_cache', () => ({
@@ -31,6 +36,7 @@ describe('Tauri purchase payload regressions', () => {
   beforeEach(() => {
     mockInvoke.mockClear();
     mockDbGet.mockReset().mockResolvedValue({ id: 'purchase-1' });
+    canModifyUnitConversion = true;
   });
 
   it('preserves item barcode when updating a completed purchase', async () => {
@@ -64,6 +70,34 @@ describe('Tauri purchase payload regressions', () => {
         })],
       }),
     });
+  });
+
+  it('defers historical conversion validation to the native transaction for completed edits', async () => {
+    canModifyUnitConversion = false;
+
+    const result = await updateCompletedPurchaseInvoiceAction({
+      id: 'purchase-1',
+      supplier_id: 7,
+      cart: [{
+        id: 9001,
+        purchase_invoice_item_id: 42,
+        quantity: 2,
+        cost_price: 10,
+        selling_price: 15,
+        expiry_date: '2099-12-31',
+      }],
+    });
+
+    expect(result.success).toBe(true);
+    expect(mockInvoke).toHaveBeenCalledWith('save_purchase_invoice_critical', {
+      payload: expect.objectContaining({ cart: [expect.objectContaining({ strips_per_box: 1 })] }),
+    });
+    mockInvoke.mockRejectedValueOnce(new Error('Unauthorized: can_modify_unit_conversion permission required'));
+    const rejected = await updateCompletedPurchaseInvoiceAction({
+      id: 'purchase-1', supplier_id: 7,
+      cart: [{ id: 9001, quantity: 2, cost_price: 10, expiry_date: '2099-12-31' }],
+    });
+    expect(rejected).toMatchObject({ success: false, error: expect.stringContaining('can_modify_unit_conversion') });
   });
 
   it('scopes purchase deletion to the signed-in pharmacy and forwards the authoritative native payload', async () => {

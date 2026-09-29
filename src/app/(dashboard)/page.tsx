@@ -45,11 +45,12 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [masterDrugCount, setMasterDrugCount] = useState(0);
-  const [isOwner, setIsOwner] = useState(false);
+  const [canManageSettings, setCanManageSettings] = useState(false);
   
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(null);
   const [invoiceItems, setInvoiceItems] = useState<any[]>([]);
   const [loadingReceipt, setLoadingReceipt] = useState(false);
+  const dashboardLoadRequestRef = useRef(0);
   const invoiceDetailsRequestRef = useRef(0);
   const [isPharmacist, setIsPharmacist] = useState(false);
   const [isTauri, setIsTauri] = useState(false);
@@ -76,6 +77,7 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => () => {
+    dashboardLoadRequestRef.current += 1;
     invoiceDetailsRequestRef.current += 1;
   }, []);
 
@@ -90,19 +92,23 @@ export default function DashboardPage() {
   };
 
   const loadDashboardData = useCallback(async () => {
+    const requestId = ++dashboardLoadRequestRef.current;
     const log = (m: string) => typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__?.invoke('log_frontend_error', { message: m });
     setLoading(true);
     setLoadError(false);
     try {
         log('PAGE: loadDashboardData start');
         const localUser = await getClientSession();
+        if (requestId !== dashboardLoadRequestRef.current) return;
         log('PAGE: loadDashboardData user=' + (localUser ? localUser.username : 'NULL'));
-        if (!localUser) return;
+        if (!localUser) {
+          setLoadError(true);
+          return;
+        }
 
         setUser(localUser);
-        const owner = localUser.role === 'owner' || localUser.role === 'admin';
         const pharmacist = localUser.role === 'pharmacist';
-        setIsOwner(owner);
+        setCanManageSettings(hasUserPermissionSync(localUser, 'can_view_settings'));
         setIsPharmacist(pharmacist);
 
         const todayStr = format(new Date(), 'yyyy-MM-dd');
@@ -111,6 +117,7 @@ export default function DashboardPage() {
 
         // 1. Fetch total master drugs
         const drugCountRow = await dbGet('SELECT COUNT(*) as count FROM master_drugs');
+        if (requestId !== dashboardLoadRequestRef.current) return;
         setMasterDrugCount(drugCountRow?.count || 0);
 
         if (!hasUserPermissionSync(localUser, 'rep_can_view_sales')) {
@@ -127,10 +134,18 @@ export default function DashboardPage() {
           SELECT COALESCE(SUM(total_amount), 0) as total,
                  (SELECT COALESCE(SUM(
                     CASE 
-                      WHEN si.unit IN ('medium', 'strip', 'شريط') AND COALESCE(md.large_to_medium, 1) > 0 
-                        THEN (si.quantity_sold / md.large_to_medium) * si.cost_price
-                      WHEN si.unit = 'small' AND (COALESCE(md.large_to_medium, 1) * COALESCE(md.medium_to_small, 1)) > 0 
-                        THEN (si.quantity_sold / (md.large_to_medium * md.medium_to_small)) * si.cost_price
+                      WHEN (si.unit IN ('medium', 'strip', 'شريط') OR si.unit = md.medium_unit) AND COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(md.large_to_medium, 0), 1) > 0
+                        THEN (si.quantity_sold / COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(md.large_to_medium, 0), 1)) * si.cost_price
+                      WHEN (si.unit = 'small' OR si.unit = md.small_unit) AND (
+                        COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(md.large_to_medium, 0), 1)
+                        * COALESCE(NULLIF(si.medium_to_small, 0), NULLIF(md.medium_to_small, 0), 1)
+                      ) > 0
+                        THEN (
+                          si.quantity_sold / (
+                            COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(md.large_to_medium, 0), 1)
+                            * COALESCE(NULLIF(si.medium_to_small, 0), NULLIF(md.medium_to_small, 0), 1)
+                          )
+                        ) * si.cost_price
                       ELSE si.quantity_sold * si.cost_price
                     END
                   ), 0) 
@@ -147,6 +162,7 @@ export default function DashboardPage() {
             AND (status IS NULL OR status = '' OR status IN ('completed', 'approved', 'delivered'))
             AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
         `, [todayStr, pharmacyId, pharmacyId, todayStr, pharmacyId, pharmacyId]);
+        if (requestId !== dashboardLoadRequestRef.current) return;
 
         const salesYesterdayRow = await dbGet(`
           SELECT COALESCE(SUM(total_amount), 0) as total
@@ -155,9 +171,11 @@ export default function DashboardPage() {
             AND (status IS NULL OR status = '' OR status IN ('completed', 'approved', 'delivered'))
             AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
         `, [yesterdayStr, pharmacyId, pharmacyId]);
+        if (requestId !== dashboardLoadRequestRef.current) return;
 
         // Current liquidity
         const cashAccRow = await dbGet("SELECT account_id FROM trial_balance_settings WHERE category = 'cash_drawer'");
+        if (requestId !== dashboardLoadRequestRef.current) return;
         const cashAccId = cashAccRow?.account_id || 6;
         const liquidityRow = await dbGet(`
           SELECT COALESCE(SUM(CASE WHEN je.type = 'debit' THEN je.amount ELSE -je.amount END), 0) as balance
@@ -166,6 +184,7 @@ export default function DashboardPage() {
           WHERE je.account_id = ?
             AND (dj.pharmacy_id = ? OR (dj.pharmacy_id IS NULL AND ? = 'local_default'))
         `, [cashAccId, pharmacyId, pharmacyId]);
+        if (requestId !== dashboardLoadRequestRef.current) return;
 
         // Pending delivery cash
         const pendingDeliveryRow = await dbGet(`
@@ -174,6 +193,7 @@ export default function DashboardPage() {
           WHERE payment_method = 'delivery' AND status = 'completed'
             AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
         `, [pharmacyId, pharmacyId]);
+        if (requestId !== dashboardLoadRequestRef.current) return;
 
         // Shrinkage today
         const shrinkageRow = await dbGet(`
@@ -183,12 +203,17 @@ export default function DashboardPage() {
           WHERE date(sa.created_at, 'localtime') = ? AND new_quantity < old_quantity
             AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
         `, [todayStr, pharmacyId, pharmacyId]);
+        if (requestId !== dashboardLoadRequestRef.current) return;
 
         // Keep this KPI on the same pharmacy-scoped, expiry-aware source as the
         // reorder widget and low-stock page so all three surfaces stay in sync.
         const lowStockResult = await getLowStockAction(10);
-        const stockAlertsCount = lowStockResult.success && Array.isArray(lowStockResult.data)
-          ? lowStockResult.data.length
+        if (requestId !== dashboardLoadRequestRef.current) return;
+        const lowStockRows = lowStockResult.success && Array.isArray(lowStockResult.data)
+          ? lowStockResult.data
+          : [];
+        const stockAlertsCount = lowStockResult.success
+          ? ('totalCount' in lowStockResult ? Number(lowStockResult.totalCount) : lowStockRows.length)
           : 0;
 
         const kpis = {
@@ -202,21 +227,25 @@ export default function DashboardPage() {
         const yesterdayRevenue = Number(salesYesterdayRow?.total || 0);
         const revenueChange = yesterdayRevenue > 0
           ? ((todayRevenue - yesterdayRevenue) / yesterdayRevenue) * 100
-          : (todayRevenue > 0 ? 100 : 0);
+          : null;
+        const revenueComparisonText = yesterdayRevenue > 0
+          ? null
+          : (todayRevenue > 0 ? 'مبيعات أولية اليوم' : 'لا توجد مبيعات اليوم أو أمس');
 
         setStats([
           {
             title: 'إيرادات اليوم',
             value: `ج.م ${kpis.sales_today.toLocaleString('ar-EG')}`,
             change: revenueChange,
+            comparisonText: revenueComparisonText,
             icon: DollarSign,
             color: 'primary',
-            trend: revenueChange >= 0 ? 'up' : 'down'
+            trend: revenueChange === null || revenueChange >= 0 ? 'up' : 'down'
           },
           {
             title: 'سيولة المناديب',
             value: `ج.م ${kpis.pending_delivery_cash.toLocaleString('ar-EG')}`,
-            change: 0,
+            change: null,
             icon: ShoppingCart,
             color: 'success',
             trend: 'up'
@@ -224,7 +253,7 @@ export default function DashboardPage() {
           {
             title: 'عجز المخزون (اليوم)',
             value: `ج.م ${kpis.shrinkage_today.toLocaleString('ar-EG')}`,
-            change: 0,
+            change: null,
             icon: Package,
             color: 'warning',
             trend: 'down'
@@ -232,7 +261,7 @@ export default function DashboardPage() {
           {
             title: 'تنبيهات المخزون',
             value: kpis.stock_alerts_count.toString(),
-            change: 0,
+            change: null,
             icon: Users,
             color: 'info',
             trend: 'down'
@@ -252,33 +281,87 @@ export default function DashboardPage() {
             d.date,
             (SELECT COALESCE(SUM(total_amount), 0) FROM sales_invoices WHERE date(created_at, 'localtime') = d.date AND (status IS NULL OR status = '' OR status IN ('completed', 'approved', 'delivered')) AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))) as sales,
             (SELECT COALESCE(SUM(total_refund), 0) FROM returns r WHERE date(r.created_at, 'localtime') = d.date AND status IN ('approved', 'completed') AND (r.pharmacy_id = ? OR (r.pharmacy_id IS NULL AND ? = 'local_default'))) as returns,
-            (SELECT COALESCE(SUM(si.quantity_sold * COALESCE(NULLIF(si.cost_price, 0), i.cost_price, m.base_price, 0)), 0) 
+            (SELECT COALESCE(SUM(
+               CASE
+                 WHEN (si.unit IN ('medium', 'strip', 'شريط') OR si.unit = m.medium_unit) AND COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(m.large_to_medium, 0), 1) > 0
+                   THEN (
+                     si.quantity_sold / COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(m.large_to_medium, 0), 1)
+                   ) * COALESCE(NULLIF(si.cost_price, 0), i.cost_price, m.base_price, 0)
+                 WHEN (si.unit = 'small' OR si.unit = m.small_unit) AND (
+                   COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(m.large_to_medium, 0), 1)
+                   * COALESCE(NULLIF(si.medium_to_small, 0), NULLIF(m.medium_to_small, 0), 1)
+                 ) > 0
+                   THEN (
+                     si.quantity_sold / (
+                       COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(m.large_to_medium, 0), 1)
+                       * COALESCE(NULLIF(si.medium_to_small, 0), NULLIF(m.medium_to_small, 0), 1)
+                     )
+                   ) * COALESCE(NULLIF(si.cost_price, 0), i.cost_price, m.base_price, 0)
+                 ELSE si.quantity_sold * COALESCE(NULLIF(si.cost_price, 0), i.cost_price, m.base_price, 0)
+               END
+             ), 0)
              FROM sales_items si 
              LEFT JOIN inventory i ON si.inventory_id = i.id
-             LEFT JOIN master_drugs m ON i.drug_id = m.id
-             WHERE si.invoice_id IN (SELECT id FROM sales_invoices WHERE date(created_at, 'localtime') = d.date AND (status IS NULL OR status = '' OR status IN ('completed', 'approved', 'delivered')) AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default')))) as cogs
+             LEFT JOIN master_drugs m ON COALESCE(si.drug_id, i.drug_id) = m.id
+             WHERE si.invoice_id IN (SELECT id FROM sales_invoices WHERE date(created_at, 'localtime') = d.date AND (status IS NULL OR status = '' OR status IN ('completed', 'approved', 'delivered')) AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default')))
+            ) - (
+              SELECT COALESCE(SUM(
+                COALESCE(NULLIF(si.cost_price, 0), i.cost_price, m.base_price, 0) *
+                CASE
+                  WHEN ri.unit IN ('medium', 'strip', 'شريط') OR ri.unit = m.medium_unit
+                    THEN ri.quantity_returned / COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(i.strips_per_box, 0), NULLIF(m.large_to_medium, 0), 1)
+                  WHEN ri.unit = 'small' OR ri.unit = m.small_unit
+                    THEN ri.quantity_returned / (
+                      COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(i.strips_per_box, 0), NULLIF(m.large_to_medium, 0), 1)
+                      * COALESCE(NULLIF(si.medium_to_small, 0), NULLIF(i.medium_to_small, 0), NULLIF(m.medium_to_small, 0), 1)
+                    )
+                  ELSE ri.quantity_returned
+                END
+              ), 0)
+              FROM return_items ri
+              JOIN returns rr ON rr.id = ri.return_id
+              LEFT JOIN sales_items si ON si.id = ri.sale_item_id
+              LEFT JOIN inventory i ON i.id = COALESCE(ri.inventory_id, si.inventory_id)
+              LEFT JOIN master_drugs m ON m.id = COALESCE(ri.drug_id, si.drug_id, i.drug_id)
+              WHERE date(rr.created_at, 'localtime') = d.date
+                AND rr.status IN ('approved', 'completed')
+                AND (rr.pharmacy_id = ? OR (rr.pharmacy_id IS NULL AND ? = 'local_default'))
+            ) as cogs
           FROM dates d
           ORDER BY d.date ASC
-        `, [pharmacyId, pharmacyId, pharmacyId, pharmacyId, pharmacyId, pharmacyId]);
+        `, [pharmacyId, pharmacyId, pharmacyId, pharmacyId, pharmacyId, pharmacyId, pharmacyId, pharmacyId]);
+        if (requestId !== dashboardLoadRequestRef.current) return;
         setTrendData(trend || []);
 
         // 3.5 Fetch Top Selling Items (Past 30 days)
         const topItems = await dbSelect(`
           SELECT 
             COALESCE(NULLIF(m.trade_name_en, ''), m.trade_name, 'بدون اسم') as name,
-            SUM(si.quantity_sold) as quantity,
+            SUM(
+              CASE
+                WHEN si.unit IN ('medium', 'strip', 'شريط') OR si.unit = m.medium_unit
+                  THEN si.quantity_sold / COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(m.large_to_medium, 0), 1)
+                WHEN si.unit = 'small' OR si.unit = m.small_unit
+                  THEN si.quantity_sold / (
+                    COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(m.large_to_medium, 0), 1)
+                    * COALESCE(NULLIF(si.medium_to_small, 0), NULLIF(m.medium_to_small, 0), 1)
+                  )
+                ELSE si.quantity_sold
+              END
+            ) as quantity,
             SUM(si.quantity_sold * si.unit_price) as revenue
           FROM sales_items si
           JOIN sales_invoices s ON si.invoice_id = s.id
           JOIN inventory i ON si.inventory_id = i.id
           JOIN master_drugs m ON i.drug_id = m.id
-          WHERE date(s.created_at, 'localtime') >= date('now', '-30 days', 'localtime')
+          WHERE date(s.created_at, 'localtime') >= date('now', '-29 days', 'localtime')
             AND (s.status IS NULL OR s.status = '' OR s.status IN ('completed', 'approved', 'delivered'))
             AND (s.pharmacy_id = ? OR (s.pharmacy_id IS NULL AND ? = 'local_default'))
           GROUP BY i.drug_id, name
           ORDER BY quantity DESC
           LIMIT 5
         `, [pharmacyId, pharmacyId]);
+        if (requestId !== dashboardLoadRequestRef.current) return;
         setTopItemsData(topItems || []);
 
         // 4. Fetch Recent Transactions
@@ -287,9 +370,11 @@ export default function DashboardPage() {
           FROM sales_invoices s
           LEFT JOIN patients p ON s.patient_id = p.id
           WHERE (s.pharmacy_id = ? OR (s.pharmacy_id IS NULL AND ? = 'local_default'))
+            AND (s.status IS NULL OR s.status = '' OR s.status IN ('completed', 'approved', 'delivered'))
           ORDER BY s.created_at DESC
           LIMIT 5
         `, [pharmacyId, pharmacyId]);
+        if (requestId !== dashboardLoadRequestRef.current) return;
         setRecentTransactions(recent || []);
 
         // 5. Fetch Activity Logs (If Owner)
@@ -302,15 +387,19 @@ export default function DashboardPage() {
             ORDER BY a.created_at DESC 
             LIMIT 5
           `, [pharmacyId, pharmacyId]);
+          if (requestId !== dashboardLoadRequestRef.current) return;
           setActivityLogs(logs || []);
         }
     } catch (err: any) {
+      if (requestId !== dashboardLoadRequestRef.current) return;
       log('PAGE: loadDashboardData error=' + err.message + ' stack=' + err.stack);
       console.error('Failed to load dashboard data:', err);
       setLoadError(true);
     } finally {
-      log('PAGE: loadDashboardData finally');
-      setLoading(false);
+      if (requestId === dashboardLoadRequestRef.current) {
+        log('PAGE: loadDashboardData finally');
+        setLoading(false);
+      }
     }
   }, []);
 
@@ -458,13 +547,18 @@ export default function DashboardPage() {
                   </div>
                   <p className="text-3xl font-black tracking-tight text-slate-900 dark:text-white drop-shadow-sm mt-1">{stat.value}</p>
                   <p className="text-sm font-bold text-slate-500 dark:text-slate-400 mt-1">{stat.title}</p>
-                  <div className="flex items-center gap-3 mt-3">
-                    <div className={`flex items-center gap-1.5 px-2 py-1 rounded-lg ${stat.trend === 'up' ? 'text-emerald-700 bg-emerald-100 dark:bg-emerald-500/20 dark:text-emerald-400' : 'text-rose-700 bg-rose-100 dark:bg-rose-500/20 dark:text-rose-400'}`}>
-                      {stat.trend === 'up' ? <ArrowUpLeft className="w-4 h-4" /> : <ArrowDownLeft className="w-4 h-4" />}
-                      <span className="text-xs font-bold">{stat.change >= 0 ? '+' : ''}{stat.change.toFixed(1)}%</span>
+                  {typeof stat.change === 'number' && (
+                    <div className="flex items-center gap-3 mt-3">
+                      <div className={`flex items-center gap-1.5 px-2 py-1 rounded-lg ${stat.trend === 'up' ? 'text-emerald-700 bg-emerald-100 dark:bg-emerald-500/20 dark:text-emerald-400' : 'text-rose-700 bg-rose-100 dark:bg-rose-500/20 dark:text-rose-400'}`}>
+                        {stat.trend === 'up' ? <ArrowUpLeft className="w-4 h-4" /> : <ArrowDownLeft className="w-4 h-4" />}
+                        <span className="text-xs font-bold">{stat.change >= 0 ? '+' : ''}{stat.change.toFixed(1)}%</span>
+                      </div>
+                      <span className="text-xs font-medium text-slate-400">من الأمس</span>
                     </div>
-                    <span className="text-xs font-medium text-slate-400">من الأمس</span>
-                  </div>
+                  )}
+                  {typeof stat.change !== 'number' && stat.comparisonText && (
+                    <p className="text-xs font-medium text-slate-400 mt-3">{stat.comparisonText}</p>
+                  )}
                 </div>
               </div>
             </div>
@@ -483,10 +577,12 @@ export default function DashboardPage() {
       </div>
 
       {/* Advanced PMS Features: Inventory Alerts Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-7">
-        <ExpiryWidget />
-        <DeadStockWidget />
-      </div>
+      {canViewInventory && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-7">
+          <ExpiryWidget />
+          <DeadStockWidget />
+        </div>
+      )}
 
       {/* Auto-Reorder Alerts */}
       <ReorderAlerts />
@@ -494,7 +590,7 @@ export default function DashboardPage() {
       {/* Management Row */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-7">
         {canViewShifts && <ShiftManagement />}
-        {isOwner && <SubscriptionStatus />}
+        {canManageSettings && <SubscriptionStatus />}
       </div>
 
       {/* Quick Actions */}

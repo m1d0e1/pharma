@@ -81,4 +81,22 @@ describe('coverage-gap: dashboard global keyboard shortcuts', () => {
     expect(preventDefault).toHaveBeenCalledTimes(1);
     expect(mockPush).not.toHaveBeenCalledWith('/pos');
   });
+
+  it('keeps inventory and purchase shortcuts permission-sensitive', async () => {
+    (hasUserPermissionSync as jest.Mock).mockImplementation((_user, key) =>
+      key !== 'can_view_stores' && key !== 'can_view_purchases'
+    );
+    render(<DashboardLayout><div>content</div></DashboardLayout>);
+    await waitFor(() => expect(screen.getByText('content')).toBeInTheDocument());
+
+    for (const [keys, destination] of [
+      ['ctrl+i, meta+i', '/inventory'],
+      ['ctrl+o, meta+o', '/purchases'],
+    ] as const) {
+      const preventDefault = jest.fn();
+      lastHotkeyHandler(keys)({ preventDefault });
+      expect(preventDefault).toHaveBeenCalledTimes(1);
+      expect(mockPush).not.toHaveBeenCalledWith(destination);
+    }
+  });
 });

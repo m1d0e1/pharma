@@ -40,7 +40,7 @@ const db = {
     }
   }),
   transaction: (cb) => {
-    return (...args) => dbTransaction(async () => await cb(...args));
+    return (...args) => dbTransaction(async (transactionDb) => await cb(transactionDb, ...args));
   },
   exec: (sql) => {
     return dbExecute(sql);
@@ -96,7 +96,7 @@ export async function updateSoldItemCostAction(itemId: number | string, newCost:
     if (!isStaffOwner(user)) return { success: false, error: 'غير مصرح' };
     if (!Number.isFinite(newCost) || newCost <= 0) return { success: false, error: 'التكلفة الجديدة غير صالحة' };
 
-    await dbTransaction(async () => {
+    await dbTransaction(async (db) => {
       const item = await db.prepare(`
         SELECT si.id, si.invoice_id, si.quantity_sold, si.unit,
                COALESCE(si.cost_price, 0) AS old_cost,

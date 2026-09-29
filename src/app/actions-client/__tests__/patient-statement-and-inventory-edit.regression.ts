@@ -3,6 +3,7 @@
 import Database from 'better-sqlite3';
 import { readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
+import { createSqliteTransactionDb as mockCreateSqliteTransactionDb } from '@/tests/helpers/sqlite-transaction-db';
 
 let mockDb: Database.Database;
 let mockSession: any = { id: 'admin', role: 'owner', pharmacy_id: 'local_default' };
@@ -15,10 +16,10 @@ jest.mock('@/lib/db/tauri', () => ({
     const result = mockDb.prepare(sql).run(...params);
     return { rowsAffected: result.changes, lastInsertId: Number(result.lastInsertRowid) };
   }),
-  dbTransaction: jest.fn(async (callback: () => Promise<unknown>) => {
+  dbTransaction: jest.fn(async (callback: any) => {
     mockDb.exec('BEGIN IMMEDIATE');
     try {
-      const result = await callback();
+      const result = await callback(mockCreateSqliteTransactionDb(mockDb));
       mockDb.exec('COMMIT');
       return result;
     } catch (error) {
@@ -171,6 +172,20 @@ describe('Patient Statement, Inventory Amount Editing, and Credit Returns', () =
       local_selling_price: 25,
     });
     expect(mockDb.prepare('SELECT COUNT(*) AS n FROM stock_adjustments WHERE inventory_id = ?').get('inv-1')).toEqual({ n: 0 });
+  });
+
+  it('rejects impossible inventory expiry dates instead of persisting regex-valid text', async () => {
+    const before = (mockDb.prepare('SELECT expiry_date FROM inventory WHERE id = ?').get('inv-1') as any).expiry_date;
+
+    const updateRes = await updateInventoryAction({
+      id: 'inv-1',
+      quantity: 50,
+      local_selling_price: 20,
+      expiry_date: '2029-02-31',
+    });
+
+    expect(updateRes.success).toBe(false);
+    expect((mockDb.prepare('SELECT expiry_date FROM inventory WHERE id = ?').get('inv-1') as any).expiry_date).toBe(before);
   });
 
   it('preserves a historical lot conversion on price-only edits and exposes it to the editor', async () => {

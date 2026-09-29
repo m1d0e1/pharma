@@ -25,6 +25,22 @@ const REFS: &[(&str, &[&str])] = &[
     ("drug_indications", &["drug_id"]),
     ("drug_alternatives", &["drug_id", "alternative_id"]),
 ];
+
+fn ensure_replacement_permission(role: Option<&str>, permissions: Option<&str>) -> Result<(), String> {
+    if !role.is_some_and(|role| matches!(role.trim().to_ascii_lowercase().as_str(), "admin" | "owner")) {
+        return Err("يلزم حساب مدير أو مالك نشط".into());
+    }
+    if !crate::commands::critical::user_has_permission(
+        role,
+        permissions,
+        "can_manage_inventory",
+        false,
+    ) {
+        return Err("Unauthorized: can_manage_inventory permission required".into());
+    }
+    Ok(())
+}
+
 fn quote(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
@@ -43,6 +59,25 @@ pub async fn replace_master_drug(
         .join("pharma_local.db");
     // This operation affects historical/clinical links: require a real active admin and password.
     crate::database_backup::require_backup_admin(&path, &user_id, &password).await?;
+    // Check the granular inventory permission before creating a backup so an explicitly
+    // denied admin cannot trigger disk side effects through a direct native invocation.
+    let mut permission_conn = SqliteConnection::connect_with(
+        &SqliteConnectOptions::new().filename(&path).read_only(true),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    let permission_user = sqlx::query(
+        "SELECT role, permissions FROM users WHERE id=? AND is_active=1",
+    )
+    .bind(&user_id)
+    .fetch_optional(&mut permission_conn)
+    .await
+    .map_err(|e| e.to_string())?
+    .ok_or_else(|| "يلزم حساب مدير أو مالك نشط".to_string())?;
+    let role: Option<String> = permission_user.try_get("role").unwrap_or(None);
+    let permissions: Option<String> = permission_user.try_get("permissions").unwrap_or(None);
+    ensure_replacement_permission(role.as_deref(), permissions.as_deref())?;
+    permission_conn.close().await.map_err(|e| e.to_string())?;
     let backup = crate::database_backup::create_backup(&path).await?;
     let mut conn = SqliteConnection::connect_with(
         &SqliteConnectOptions::new()
@@ -69,16 +104,19 @@ async fn replace_tx(
     user_id: &str,
     payload: Replacement,
 ) -> Result<i64, String> {
-    let admin: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM users WHERE id=? AND is_active=1 AND role IN ('admin','owner')",
+    let admin = sqlx::query(
+        "SELECT role, permissions FROM users WHERE id=? AND is_active=1",
     )
     .bind(user_id)
-    .fetch_one(&mut **tx)
+    .fetch_optional(&mut **tx)
     .await
     .map_err(|e| e.to_string())?;
-    if admin != 1 {
+    let Some(admin) = admin else {
         return Err("يلزم حساب مدير أو مالك نشط".into());
-    }
+    };
+    let role: Option<String> = admin.try_get("role").unwrap_or(None);
+    let permissions: Option<String> = admin.try_get("permissions").unwrap_or(None);
+    ensure_replacement_permission(role.as_deref(), permissions.as_deref())?;
     if !payload.confirmed_same_product
         || payload.source_id <= 0
         || payload.target_id.is_some() == payload.new_drug.is_some()
@@ -574,7 +612,7 @@ mod tests {
         let mut tx = db.begin().await.unwrap();
         crate::schema::ensure_compatibility(&mut tx).await.unwrap();
         tx.commit().await.unwrap();
-        sqlx::raw_sql("INSERT INTO users(id,username,role,is_active) VALUES('admin','replacement-admin','admin',1),('cashier','replacement-cashier','cashier',1) ON CONFLICT(id) DO UPDATE SET role=excluded.role,is_active=1;
+        sqlx::raw_sql(r#"INSERT INTO users(id,username,role,permissions,is_active) VALUES('admin','replacement-admin','admin','{"can_view_purchases":true,"can_modify_unit_conversion":true,"can_manage_inventory":true}',1),('cashier','replacement-cashier','cashier','{}',1) ON CONFLICT(id) DO UPDATE SET role=excluded.role,permissions=excluded.permissions,is_active=1;
           INSERT INTO master_drugs(id,trade_name,barcode,official_price,large_to_medium,notes) VALUES(10,'Old name','123',20,2,'keep'),(20,'Correct name',NULL,25,2,NULL);
           INSERT INTO inventory(id,drug_id,pharmacy_id,quantity,cost_price,local_selling_price,strips_per_box,barcode,expiry_date,batch_number) VALUES('old-lot',10,'local_default',1.5,10,20,2,'123','2030-01-01','old'),('target-lot',20,'local_default',0.5,11,22,2,NULL,'2030-02-01','other');
           INSERT INTO sales_invoices(id,user_id,total_amount,status) VALUES('historical','admin',30,'completed');
@@ -583,7 +621,7 @@ mod tests {
           INSERT INTO return_items(return_id,drug_id,inventory_id,quantity_returned,unit_price,total_price,sale_item_id) VALUES('old-return',10,'old-lot',0.5,30,15,1);
           INSERT INTO suppliers(id,name_ar) VALUES(1,'Supplier');
           INSERT INTO shortages(drug_id,requested_quantity,notes) VALUES(10,3,'keep request');
-          INSERT INTO cloud_drug_mappings(cloud_id,local_drug_id,last_cloud_name) VALUES(555,10,'Old name');").execute(&mut db).await.unwrap();
+          INSERT INTO cloud_drug_mappings(cloud_id,local_drug_id,last_cloud_name) VALUES(555,10,'Old name');"#).execute(&mut db).await.unwrap();
         db
     }
     fn payload(target: Option<i64>, new_drug: Option<Value>) -> Replacement {
@@ -594,6 +632,31 @@ mod tests {
             edits: None,
             confirmed_same_product: true,
         }
+    }
+
+    #[tokio::test]
+    async fn replacement_honors_explicit_inventory_management_denial() {
+        let mut db = fixture().await;
+        sqlx::query(r#"UPDATE users SET permissions='{"can_view_purchases":true,"can_manage_inventory":false}' WHERE id='admin'"#)
+            .execute(&mut db)
+            .await
+            .unwrap();
+
+        let mut tx = db.begin().await.unwrap();
+        let result = replace_tx(&mut tx, "admin", payload(Some(20), None)).await;
+        tx.rollback().await.unwrap();
+
+        assert!(
+            result.unwrap_err().contains("can_manage_inventory"),
+            "replacement must honor the same explicit inventory-management denial as the UI"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM master_drugs WHERE id IN (10,20)")
+                .fetch_one(&mut db)
+                .await
+                .unwrap(),
+            2
+        );
     }
     fn purchase() -> super::super::critical::PurchasePayload {
         serde_json::from_value(json!({"supplier_id":1,"user_id":"admin","invoice_number":"new-purchase","status":"completed","cart":[{"id":20,"quantity":1,"cost_price":10,"selling_price":25,"expiry_date":"2030-03-01","strips_per_box":2,"barcode":"123"}]})).unwrap()

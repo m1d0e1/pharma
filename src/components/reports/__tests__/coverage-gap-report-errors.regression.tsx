@@ -58,8 +58,15 @@ jest.mock('@/components/purchases/BarcodePrinter', () => () => null);
 jest.mock('@/components/receipts/ReceiptDetailsModal', () => function ReceiptDetailsModalStub({ invoice }: any) {
   return <div>receipt-modal:{invoice.id}</div>;
 });
-jest.mock('@/components/dashboard/SalesCharts', () => function MockSalesCharts({ topDrugs }: any) {
-  return <div>sales-charts:{topDrugs?.[0]?.name || 'empty'}</div>;
+jest.mock('@/components/dashboard/SalesCharts', () => function MockSalesCharts({ topDrugs, salesHistory }: any) {
+  return (
+    <div>
+      <div>sales-charts:{topDrugs?.[0]?.name || 'empty'}</div>
+      <div data-testid="sales-history-stub">
+        {(salesHistory || []).map((item: any) => `${item.date}:${item.revenue}`).join('|')}
+      </div>
+    </div>
+  );
 });
 
 describe('coverage gap: report error recovery', () => {
@@ -309,6 +316,33 @@ describe('coverage gap: report error recovery', () => {
 
     expect(await screen.findByText('التقارير والتحليلات')).toBeInTheDocument();
     expect(screen.getByText('sales-charts:Panadol')).toBeInTheDocument();
+  });
+
+  it('buckets report sales by the database-local day instead of the raw UTC timestamp day', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-09-28T12:00:00'));
+    (getReportsDataAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: {
+        salesHistoryRaw: [{
+          created_at: '2026-09-27 23:30:00',
+          local_date: '2026-09-28',
+          total_amount: 55,
+        }],
+        topDrugsRaw: [],
+        categoryRaw: [],
+        totalUnitsSold: 0,
+      },
+    });
+
+    try {
+      render(<ReportsPage />);
+      const history = await screen.findByTestId('sales-history-stub');
+      expect(history).toHaveTextContent('2026-09-28:55');
+      expect(history).toHaveTextContent('2026-09-27:0');
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('suppresses a stale same-tick reports-dashboard retry before it can own report data', async () => {

@@ -1,23 +1,33 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { dbSelect } from '@/lib/db/tauri';
-import { getClientSession } from '@/lib/auth/local';
+import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
+import { subscribeInventoryChanges } from '@/lib/inventory/refresh';
 
 export default function DeadStockWidget() {
   const [items, setItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
+  const [accessDenied, setAccessDenied] = useState(false);
   const [loadAttempt, setLoadAttempt] = useState(0);
+  const loadRequestRef = useRef(0);
 
   useEffect(() => {
+    const requestId = ++loadRequestRef.current;
     async function loadDeadStock() {
       setLoading(true);
       setLoadError(false);
+      setAccessDenied(false);
       try {
         const user = await getClientSession();
+        if (requestId !== loadRequestRef.current) return;
         if (!user) {
           setLoadError(true);
+          return;
+        }
+        if (!hasUserPermissionSync(user, 'can_view_stores')) {
+          setAccessDenied(true);
           return;
         }
         const pharmacyId = user.pharmacy_id || 'local_default';
@@ -34,6 +44,7 @@ export default function DeadStockWidget() {
                  FROM sales_items si
                  JOIN sales_invoices sinv ON sinv.id = si.invoice_id
                  WHERE si.drug_id = i.drug_id
+                   AND (sinv.status IS NULL OR sinv.status = '' OR sinv.status IN ('completed', 'approved', 'delivered'))
                    AND (sinv.pharmacy_id = ? OR (sinv.pharmacy_id IS NULL AND ? = 'local_default'))),
                 MIN(i.created_at)
               )
@@ -47,9 +58,11 @@ export default function DeadStockWidget() {
           ORDER BY months_idle DESC
           LIMIT 5
         `, [pharmacyId, pharmacyId, pharmacyId, pharmacyId]);
+        if (requestId !== loadRequestRef.current) return;
 
         const { secureCache } = require('@/lib/cache/secure_cache');
         await secureCache.load();
+        if (requestId !== loadRequestRef.current) return;
 
         const enriched = secureCache.enrich(results.map((r: any) => ({ ...r, id: r.drug_id })));
         const mapped = results.map((item: any, idx: number) => ({
@@ -59,20 +72,37 @@ export default function DeadStockWidget() {
 
         setItems(mapped);
       } catch (e) {
+        if (requestId !== loadRequestRef.current) return;
         console.error('Failed to load dead stock:', e);
         setLoadError(true);
       } finally {
-        setLoading(false);
+        if (requestId === loadRequestRef.current) setLoading(false);
       }
     }
 
     loadDeadStock();
   }, [loadAttempt]);
 
+  useEffect(() => subscribeInventoryChanges(
+    () => setLoadAttempt(attempt => attempt + 1)
+  ), []);
+
+  useEffect(() => () => {
+    loadRequestRef.current += 1;
+  }, []);
+
   if (loading) {
     return (
       <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-xl h-full flex items-center justify-center">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+      </div>
+    );
+  }
+
+  if (accessDenied) {
+    return (
+      <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-xl h-full flex items-center justify-center">
+        <p className="font-black text-slate-500 dark:text-slate-300">غير مصرح بعرض بيانات المخزون</p>
       </div>
     );
   }

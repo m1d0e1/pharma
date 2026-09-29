@@ -61,25 +61,24 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
 
         const detailsRes = await getHandoverDetailsAction(shiftId);
         if (cancelled) return;
-        if (detailsRes.success && detailsRes.data) {
-          setDetails(detailsRes.data);
-          setForm(prev => ({
-            ...prev,
-            actualCash: prev.actualCash || 0
-          }));
-        }
+        if (!detailsRes.success || !detailsRes.data) throw new Error(detailsRes.error || 'فشل تحميل بيانات التسليم');
+        setDetails(detailsRes.data);
+        setForm(prev => ({
+          ...prev,
+          actualCash: prev.actualCash || 0
+        }));
 
         const banksRes = await getBanksAction();
         if (cancelled) return;
-        if (banksRes.success) setBanks(banksRes.data || []);
+        if (!banksRes.success) throw new Error(banksRes.error || 'فشل تحميل البنوك');
+        setBanks(banksRes.data || []);
 
         const staffRes = await getStaffAction();
         if (cancelled) return;
-        if (staffRes.success) {
-          setStaff(staffRes.data || []);
-          if (staffRes.data && staffRes.data.length > 0) {
-            setForm(prev => ({ ...prev, receiverUsername: staffRes.data[0].username }));
-          }
+        if (!staffRes.success) throw new Error(staffRes.error || 'فشل تحميل المستخدمين');
+        setStaff(staffRes.data || []);
+        if (staffRes.data && staffRes.data.length > 0) {
+          setForm(prev => ({ ...prev, receiverUsername: staffRes.data[0].username }));
         }
       } catch {
         if (!cancelled) {

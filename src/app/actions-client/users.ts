@@ -40,7 +40,7 @@ const db = {
     }
   }),
   transaction: (cb) => {
-    return (...args) => dbTransaction(async () => await cb(...args));
+    return (...args) => dbTransaction(async (transactionDb) => await cb(transactionDb, ...args));
   },
   exec: (sql) => {
     return dbExecute(sql);
@@ -390,11 +390,24 @@ export async function deleteUserAction(userId: string) {
       };
     }
 
-    await db.prepare(`
+    const deactivated = await db.prepare(`
       UPDATE users SET is_active = 0
       WHERE id = ? AND is_active = 1
         AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
-    `).run(userId, pharmacyId, pharmacyId);
+        AND (
+          role <> 'owner' OR EXISTS (
+            SELECT 1 FROM users other
+            WHERE other.id <> users.id AND other.role = 'owner' AND other.is_active = 1
+              AND (other.pharmacy_id = ? OR (other.pharmacy_id IS NULL AND ? = 'local_default'))
+          )
+        )
+    `).run(userId, pharmacyId, pharmacyId, pharmacyId, pharmacyId);
+    if (deactivated.changes !== 1) {
+      if (targetUser.role === 'owner' && targetUser.is_active === 1) {
+        return { success: false, error: 'لا يمكن تعطيل المالك الوحيد؛ أضف مالكاً آخر أولاً' };
+      }
+      return { success: false, error: 'تعذر تعطيل المستخدم؛ أعد تحميل البيانات وحاول مرة أخرى' };
+    }
     
     logActivity(localUser.id, 'DEACTIVATE_USER', `تعطيل المستخدم مع الاحتفاظ بسجلاته: ${targetUser.username}`);
 
@@ -471,6 +484,7 @@ export async function updateUserAction(userId: string, data: {
     }
 
     // Only update user profile fields here — permissions are saved separately by updateUserPermissionsAction
+    let updated: any;
     if (password) {
       const bcrypt = {
       hash: async (pw: any, ...args: any[]) => {
@@ -483,15 +497,36 @@ export async function updateUserAction(userId: string, data: {
       }
     };
       const passwordHash = await bcrypt.hash(password, 10);
-      await db.prepare(`
+      updated = await db.prepare(`
         UPDATE users SET username = ?, full_name = ?, role = ?, password_hash = ?, job_id = ?, qualification = ?, hire_date = ?, shift = ?, code = ?
         WHERE id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
-      `).run(username, full_name, role, passwordHash, job_id || null, qualification || null, hire_date || null, shift || null, code || null, userId, pharmacyId, pharmacyId);
+          AND (
+            role <> 'owner' OR ? = 'owner' OR EXISTS (
+              SELECT 1 FROM users other
+              WHERE other.id <> users.id AND other.role = 'owner' AND other.is_active = 1
+                AND (other.pharmacy_id = ? OR (other.pharmacy_id IS NULL AND ? = 'local_default'))
+            )
+          )
+      `).run(username, full_name, role, passwordHash, job_id || null, qualification || null, hire_date || null, shift || null, code || null, userId, pharmacyId, pharmacyId, role, pharmacyId, pharmacyId);
     } else {
-      await db.prepare(`
+      updated = await db.prepare(`
         UPDATE users SET username = ?, full_name = ?, role = ?, job_id = ?, qualification = ?, hire_date = ?, shift = ?, code = ?
         WHERE id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
-      `).run(username, full_name, role, job_id || null, qualification || null, hire_date || null, shift || null, code || null, userId, pharmacyId, pharmacyId);
+          AND (
+            role <> 'owner' OR ? = 'owner' OR EXISTS (
+              SELECT 1 FROM users other
+              WHERE other.id <> users.id AND other.role = 'owner' AND other.is_active = 1
+                AND (other.pharmacy_id = ? OR (other.pharmacy_id IS NULL AND ? = 'local_default'))
+            )
+          )
+      `).run(username, full_name, role, job_id || null, qualification || null, hire_date || null, shift || null, code || null, userId, pharmacyId, pharmacyId, role, pharmacyId, pharmacyId);
+    }
+
+    if (updated?.changes !== 1) {
+      if (targetUser?.role === 'owner' && role !== 'owner') {
+        return { success: false, error: 'لا يمكن تغيير دور المالك الوحيد؛ أضف مالكاً آخر أولاً' };
+      }
+      return { success: false, error: 'تعذر تحديث المستخدم؛ أعد تحميل البيانات وحاول مرة أخرى' };
     }
 
     logActivity(localUser.id, 'UPDATE_USER', `حدث بيانات المستخدم: ${username}`);

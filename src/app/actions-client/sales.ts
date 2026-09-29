@@ -45,7 +45,7 @@ const db = {
     }
   }),
   transaction: (cb: (...args: any[]) => any) => {
-    return (...args: any[]) => dbTransaction(async () => await cb(...args));
+    return (...args: any[]) => dbTransaction(async (transactionDb) => await cb(transactionDb, ...args));
   },
   exec: (sql: string) => {
     return dbExecute(sql);
@@ -274,7 +274,7 @@ export async function searchDrugsAction(searchTerm: string, limit = 20, searchBy
     const matchedPlaceholders = matchedIds.map(() => '?').join(',');
 
     const batchesData = matchedIds.length > 0 ? await db.prepare(`
-      SELECT id as inventory_id, drug_id, quantity, expiry_date, local_selling_price, cost_price, strips_per_box
+      SELECT id as inventory_id, drug_id, quantity, expiry_date, local_selling_price, cost_price, strips_per_box, medium_to_small
       FROM inventory
       WHERE drug_id IN (${matchedPlaceholders})
         AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
@@ -292,7 +292,8 @@ export async function searchDrugsAction(searchTerm: string, limit = 20, searchBy
         quantity: b.quantity,
         expiry_date: b.expiry_date ? normalizeDateToYMD(b.expiry_date) : null,
         unit_price: b.local_selling_price || drug.official_price,
-        strips_per_box: Number(b.strips_per_box) > 0 ? Number(b.strips_per_box) : (drug.large_to_medium || 1)
+        strips_per_box: Number(b.strips_per_box) > 0 ? Number(b.strips_per_box) : (drug.large_to_medium || 1),
+        medium_to_small: Number(b.medium_to_small) > 0 ? Number(b.medium_to_small) : (drug.medium_to_small || 1)
       }));
       return {
         id: drug.id,
@@ -432,7 +433,7 @@ export async function barcodeLookupAction(barcode: string) {
     const actualLargeToMedium = drug.strips_per_box > 1 ? drug.strips_per_box : (drug.large_to_medium || 1);
 
     const drugBatches = await db.prepare(`
-      SELECT id as inventory_id, quantity, expiry_date, local_selling_price, cost_price, strips_per_box
+      SELECT id as inventory_id, quantity, expiry_date, local_selling_price, cost_price, strips_per_box, medium_to_small
       FROM inventory
       WHERE drug_id = ?
         AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
@@ -471,7 +472,8 @@ export async function barcodeLookupAction(barcode: string) {
         quantity: b.quantity,
         expiry_date: b.expiry_date ? normalizeDateToYMD(b.expiry_date) : null,
         unit_price: b.local_selling_price || drug.official_price,
-        strips_per_box: Number(b.strips_per_box) > 0 ? Number(b.strips_per_box) : (drug.large_to_medium || 1)
+        strips_per_box: Number(b.strips_per_box) > 0 ? Number(b.strips_per_box) : (drug.large_to_medium || 1),
+        medium_to_small: Number(b.medium_to_small) > 0 ? Number(b.medium_to_small) : (drug.medium_to_small || 1)
       }))
     };
 
@@ -498,6 +500,7 @@ export async function fetchDraftsAction() {
         p.full_name as patient_name,
         si.patient_id,
         si.payment_method,
+        si.check_number,
         si.discount_amount
       FROM sales_invoices si
       LEFT JOIN patients p ON si.patient_id = p.id
@@ -512,6 +515,7 @@ export async function fetchDraftsAction() {
           si.drug_id,
           si.quantity_sold as qty,
           si.unit_price as price,
+          COALESCE(si.item_discount_percent, 0) as item_discount_percent,
           si.unit as selectedUnit,
           si.is_negative,
           md.trade_name,
@@ -536,7 +540,7 @@ export async function fetchDraftsAction() {
           .filter((drugId: any) => drugId !== null && drugId !== undefined)
       ));
       const liveBatches = liveDrugIds.length > 0 ? await db.prepare(`
-        SELECT id as inventory_id, drug_id, quantity, expiry_date, local_selling_price, strips_per_box
+        SELECT id as inventory_id, drug_id, quantity, expiry_date, local_selling_price, strips_per_box, medium_to_small
         FROM inventory
         WHERE drug_id IN (${liveDrugIds.map(() => '?').join(',')})
           AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
@@ -545,37 +549,52 @@ export async function fetchDraftsAction() {
         ORDER BY CASE WHEN expiry_date IS NULL THEN 1 ELSE 0 END, expiry_date ASC, created_at ASC
       `).all(...liveDrugIds, pharmacyId, pharmacyId, today) as any[] : [];
 
-      return {
-        ...draft,
-        items: (items as any[]).map((item: any) => {
-          const batches = item.is_negative
-            ? []
-            : liveBatches
-                .filter((batch: any) => String(batch.drug_id) === String(item.drug_id))
-                .map((batch: any) => ({
-                  inventory_id: batch.inventory_id,
-                  quantity: batch.quantity,
-                  expiry_date: batch.expiry_date ? normalizeDateToYMD(batch.expiry_date) : null,
-                  unit_price: batch.local_selling_price || item.official_price,
-                  strips_per_box: Number(batch.strips_per_box) > 0
-                    ? Number(batch.strips_per_box)
-                    : (item.large_to_medium || 1),
-                }));
+      const mappedItems = (items as any[]).map((item: any) => {
+        const batches = item.is_negative
+          ? []
+          : liveBatches
+              .filter((batch: any) => String(batch.drug_id) === String(item.drug_id))
+              .map((batch: any) => ({
+                inventory_id: batch.inventory_id,
+                quantity: batch.quantity,
+                expiry_date: batch.expiry_date ? normalizeDateToYMD(batch.expiry_date) : null,
+                unit_price: batch.local_selling_price || item.official_price,
+                strips_per_box: Number(batch.strips_per_box) > 0
+                  ? Number(batch.strips_per_box)
+                  : (item.large_to_medium || 1),
+                medium_to_small: Number(batch.medium_to_small) > 0
+                  ? Number(batch.medium_to_small)
+                  : (item.medium_to_small || 1),
+              }));
           return {
             ...item,
+            itemDiscountPercent: Number(item.item_discount_percent) || 0,
             trade_name: item.trade_name_en || item.trade_name,
-            total_stock: batches.reduce((sum: number, batch: any) => sum + Number(batch.quantity || 0), 0),
-            batches,
-            units: {
-              large: item.large_unit || 'علبة',
-              medium: item.medium_unit,
-              small: item.small_unit,
-              large_to_medium: item.large_to_medium || 1,
-              medium_to_small: item.medium_to_small || 1
-            },
-            basePrice: item.official_price
-          };
-        })
+          total_stock: batches.reduce((sum: number, batch: any) => sum + Number(batch.quantity || 0), 0),
+          batches,
+          units: {
+            large: item.large_unit || 'علبة',
+            medium: item.medium_unit,
+            small: item.small_unit,
+            large_to_medium: item.large_to_medium || 1,
+            medium_to_small: item.medium_to_small || 1
+          },
+          basePrice: item.official_price
+        };
+      });
+      const itemSubtotal = mappedItems.reduce(
+        (sum: number, item: any) => sum + (Number(item.qty) || 0) * (Number(item.price) || 0),
+        0,
+      );
+      const additionalFees = Math.max(
+        0,
+        (Number(draft.total_amount) || 0) - itemSubtotal + (Number(draft.discount_amount) || 0),
+      );
+
+      return {
+        ...draft,
+        additional_fees: additionalFees,
+        items: mappedItems,
       };
     }));
 
@@ -590,6 +609,12 @@ export async function processCheckoutAction(data: any) {
   try {
     const localUser = await getLocalSession();
     if (!canUsePos(localUser)) return { success: false, error: 'غير مصرح' };
+    if (!isTauri && typeof window !== 'undefined') {
+      return {
+        success: false,
+        error: 'إتمام البيع من المتصفح غير مدعوم لأنه يتطلب معاملة ذرية؛ استخدم تطبيق سطح المكتب',
+      };
+    }
 
     const pharmacyId = localUser.pharmacy_id || 'local_default';
     const userId = localUser.id;
@@ -695,7 +720,7 @@ export async function processCheckoutAction(data: any) {
     const totalAmount = calculateCheckoutTotal(validatedData.items, validatedData.total_discount || 0, validatedData.additional_fees || 0);
     let pointsEarned = 0;
 
-    await dbTransaction(async () => {
+    await dbTransaction(async (db) => {
       try {
         await db.exec('ALTER TABLE sales_invoices ADD COLUMN points_earned INTEGER DEFAULT 0');
       } catch {}
@@ -734,14 +759,6 @@ export async function processCheckoutAction(data: any) {
         const mediumToSmall = Math.max(1, Number(drugInfo?.medium_to_small) || 1);
 
         if (validatedData.status === 'completed') {
-          if (item.is_negative) {
-            await db.prepare(`
-              INSERT INTO sales_items (invoice_id, inventory_id, drug_id, quantity_sold, unit_price, unit, is_negative, cost_price, large_to_medium, medium_to_small, created_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            `).run(saleId, null, item.drug_id, item.quantity_sold, item.unit_price, item.selected_unit, 1, 0, fallbackLargeToMedium, mediumToSmall);
-            continue;
-          }
-
           const batches = item.inventory_id 
             ? await db.prepare(`
                 SELECT id, quantity, cost_price, expiry_date, strips_per_box, medium_to_small
@@ -761,7 +778,7 @@ export async function processCheckoutAction(data: any) {
                 ORDER BY CASE WHEN expiry_date IS NULL THEN 1 ELSE 0 END, expiry_date ASC, created_at ASC
               `).all(item.drug_id, pharmacyId, pharmacyId, today) as any[];
 
-          if (item.inventory_id && batches.length === 0) {
+          if (item.inventory_id && batches.length === 0 && !item.is_negative) {
             throw new Error(`دفعة المخزون المحددة للصنف "${drugName}" غير صالحة أو منتهية`);
           }
 
@@ -783,7 +800,7 @@ export async function processCheckoutAction(data: any) {
             return total + (Number(batch.quantity) || 0) / stockPerSelectedUnit;
           }, 0);
 
-          if (selectedUnitCapacity + 0.000001 < item.quantity_sold) {
+          if (!item.is_negative && selectedUnitCapacity + 0.000001 < item.quantity_sold) {
             throw new Error(`الكمية غير كافية للصنف "${drugName}" (المتاح: ${selectedUnitCapacity.toFixed(2)} ${item.selected_unit})`);
           }
 
@@ -831,16 +848,23 @@ export async function processCheckoutAction(data: any) {
             }
             
             await db.prepare(`
-              INSERT INTO sales_items (invoice_id, inventory_id, drug_id, quantity_sold, unit_price, unit, is_negative, cost_price, large_to_medium, medium_to_small, created_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            `).run(saleId, batch.id, item.drug_id, quantityInSelectedUnit, item.unit_price, item.selected_unit, 0, batch.cost_price || 0, batchLargeToMedium, batchMediumToSmall);
+              INSERT INTO sales_items (invoice_id, inventory_id, drug_id, quantity_sold, unit_price, item_discount_percent, unit, is_negative, cost_price, large_to_medium, medium_to_small, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            `).run(saleId, batch.id, item.drug_id, quantityInSelectedUnit, item.unit_price, item.item_discount_percent, item.selected_unit, 0, batch.cost_price || 0, batchLargeToMedium, batchMediumToSmall);
 
             totalCogs += (batch.cost_price || 0) * deductFromThisBatch;
             remainingSelectedUnits -= quantityInSelectedUnit;
           }
 
           if (remainingSelectedUnits > 0.000001) {
-            throw new Error(`تغير المخزون أثناء معالجة "${drugName}"؛ يرجى إعادة المحاولة`);
+            if (item.is_negative) {
+              await db.prepare(`
+                INSERT INTO sales_items (invoice_id, inventory_id, drug_id, quantity_sold, unit_price, item_discount_percent, unit, is_negative, cost_price, large_to_medium, medium_to_small, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+              `).run(saleId, null, item.drug_id, remainingSelectedUnits, item.unit_price, item.item_discount_percent, item.selected_unit, 1, 0, fallbackLargeToMedium, mediumToSmall);
+            } else {
+              throw new Error(`تغير المخزون أثناء معالجة "${drugName}"؛ يرجى إعادة المحاولة`);
+            }
           }
 
           await db.prepare(`
@@ -867,9 +891,9 @@ export async function processCheckoutAction(data: any) {
           `).run(pharmacyId, item.drug_id, pharmacyId, pharmacyId, today, pharmacyId);
         } else {
           await db.prepare(`
-            INSERT INTO sales_items (invoice_id, inventory_id, drug_id, quantity_sold, unit_price, unit, is_negative, cost_price, large_to_medium, medium_to_small, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-          `).run(saleId, null, item.drug_id, item.quantity_sold, item.unit_price, item.selected_unit, item.is_negative ? 1 : 0, 0, fallbackLargeToMedium, mediumToSmall);
+            INSERT INTO sales_items (invoice_id, inventory_id, drug_id, quantity_sold, unit_price, item_discount_percent, unit, is_negative, cost_price, large_to_medium, medium_to_small, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+          `).run(saleId, null, item.drug_id, item.quantity_sold, item.unit_price, item.item_discount_percent, item.selected_unit, item.is_negative ? 1 : 0, 0, fallbackLargeToMedium, mediumToSmall);
         }
       }
 
@@ -969,7 +993,7 @@ export async function getSalesDashboardStatsAction() {
       SELECT COALESCE(SUM(total_amount), 0) as total 
       FROM sales_invoices 
       WHERE DATE(created_at, 'localtime') = DATE('now', 'localtime')
-        AND status IN ('completed', 'delivered')
+        AND (status IS NULL OR status = '' OR status IN ('completed', 'approved', 'delivered'))
         AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
     `).get(pharmacyId, pharmacyId) as any;
     const todaySales = todaySalesRow?.total || 0;
@@ -979,7 +1003,7 @@ export async function getSalesDashboardStatsAction() {
       SELECT COALESCE(SUM(total_amount), 0) as total 
       FROM sales_invoices 
       WHERE DATE(created_at, 'localtime') = DATE('now', '-1 day', 'localtime')
-        AND status IN ('completed', 'delivered')
+        AND (status IS NULL OR status = '' OR status IN ('completed', 'approved', 'delivered'))
         AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
     `).get(pharmacyId, pharmacyId) as any;
     const yesterdaySales = yesterdaySalesRow?.total || 0;
@@ -1002,6 +1026,7 @@ export async function getSalesDashboardStatsAction() {
       FROM sales_invoices 
       WHERE payment_method = 'delivery'
         AND DATE(created_at, 'localtime') = DATE('now', 'localtime')
+        AND (status IS NULL OR status = '' OR status IN ('completed', 'approved', 'delivered'))
         AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
     `).get(pharmacyId, pharmacyId) as any;
     const deliveryCount = deliveryCountRow?.total || 0;
@@ -1021,7 +1046,7 @@ export async function getSalesDashboardStatsAction() {
       SELECT COALESCE(AVG(total_amount), 0) as avg_val 
       FROM sales_invoices 
       WHERE DATE(created_at, 'localtime') = DATE('now', 'localtime')
-        AND status IN ('completed', 'delivered')
+        AND (status IS NULL OR status = '' OR status IN ('completed', 'approved', 'delivered'))
         AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
     `).get(pharmacyId, pharmacyId) as any;
     const averageInvoice = Math.round(todayAvgInvoiceRow?.avg_val || 0);
@@ -1030,7 +1055,7 @@ export async function getSalesDashboardStatsAction() {
       SELECT COALESCE(AVG(total_amount), 0) as avg_val 
       FROM sales_invoices 
       WHERE DATE(created_at, 'localtime') = DATE('now', '-1 day', 'localtime')
-        AND status IN ('completed', 'delivered')
+        AND (status IS NULL OR status = '' OR status IN ('completed', 'approved', 'delivered'))
         AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
     `).get(pharmacyId, pharmacyId) as any;
     const yesterdayAverageInvoice = Math.round(yesterdayAvgInvoiceRow?.avg_val || 0);

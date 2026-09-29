@@ -6,6 +6,7 @@ import { getConfigAction } from '@/app/actions-client/config';
 jest.mock('react-hotkeys-hook', () => ({ useHotkeys: jest.fn() }));
 jest.mock('@/app/actions-client/config', () => ({ getConfigAction: jest.fn() }));
 jest.mock('@/lib/utils/printing', () => ({
+  ...jest.requireActual('@/lib/utils/printing'),
   generateReceiptHtml: jest.fn(() => '<html>receipt</html>'),
   generateWhatsAppMessage: jest.fn(() => 'receipt message'),
   printHtmlContent: jest.fn(),

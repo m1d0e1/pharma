@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { createSqliteTransactionDb as mockCreateSqliteTransactionDb } from '@/tests/helpers/sqlite-transaction-db';
 
 let mockDb: Database.Database;
 let mockSession: any;
@@ -10,7 +11,7 @@ jest.mock('@/lib/db/tauri', () => ({
     const result = mockDb.prepare(sql).run(...params);
     return { rowsAffected: result.changes, lastInsertId: Number(result.lastInsertRowid) };
   }),
-  dbTransaction: jest.fn(async (callback: () => Promise<unknown>) => callback()),
+  dbTransaction: jest.fn(async (callback: any) => callback(mockCreateSqliteTransactionDb(mockDb))),
   generateId: jest.fn(() => 'test-id'),
 }));
 
@@ -32,6 +33,10 @@ import {
   getTreasuryDashboardAction,
   getTrialBalanceAction,
   generateDailySnapshotAction,
+  addPaperAction,
+  deletePaperAction,
+  getPapersAction,
+  updatePaperStatusAction,
 } from '@/app/actions-client/finance';
 
 describe('finance pharmacy scope', () => {
@@ -148,6 +153,20 @@ describe('finance pharmacy scope', () => {
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (date, pharmacy_id)
       );
+      CREATE TABLE commercial_papers (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        direction TEXT NOT NULL,
+        paper_number TEXT,
+        bank_id INTEGER,
+        amount REAL NOT NULL,
+        due_date TEXT,
+        status TEXT DEFAULT 'pending',
+        target_name TEXT,
+        notes TEXT,
+        pharmacy_id TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
 
       INSERT INTO users VALUES
         ('u1', 'u1', 'User One', 'ph-1'),
@@ -189,6 +208,11 @@ describe('finance pharmacy scope', () => {
         ('return-2', 'sale-2', 'u2', 'ph-2', 9, 'approved', datetime('now')),
         ('general-return-1', NULL, 'u1', 'ph-1', 6, 'approved', datetime('now')),
         ('general-return-2', NULL, 'u2', 'ph-2', 11, 'approved', datetime('now'));
+      INSERT INTO commercial_papers
+        (id,type,direction,paper_number,amount,due_date,status,target_name,pharmacy_id)
+      VALUES
+        ('paper-1','check','in','P1',10,'2026-10-01','pending','PH1 Paper','ph-1'),
+        ('paper-2','check','in','P2',20,'2026-10-01','pending','PH2 Paper','ph-2');
       ALTER TABLE shifts ADD COLUMN user_id TEXT;
       ALTER TABLE shifts ADD COLUMN start_time TEXT;
       ALTER TABLE shifts ADD COLUMN end_time TEXT;
@@ -252,5 +276,21 @@ describe('finance pharmacy scope', () => {
       { pharmacy_id:'ph-1', total_sales:30, total_returns:10, total_cash_movements:10, net_profit:30 },
       { pharmacy_id:'ph-2', total_sales:70, total_returns:20, total_cash_movements:20, net_profit:70 },
     ]);
+  });
+
+  it('keeps commercial papers inside their pharmacy for list, status, create, and delete', async () => {
+    expect((await getPapersAction()).data?.map((row: any) => row.id)).toEqual(['paper-1']);
+    expect(await updatePaperStatusAction('paper-2', 'bounced')).toMatchObject({ success: false });
+    expect(await deletePaperAction('paper-2')).toMatchObject({ success: false });
+    expect(mockDb.prepare("SELECT status FROM commercial_papers WHERE id='paper-2'").get()).toEqual({ status: 'pending' });
+
+    expect(await addPaperAction({
+      type: 'check', direction: 'in', paper_number: 'P3', amount: 30,
+      due_date: '2026-10-02', target_name: 'PH1 New Paper',
+    })).toMatchObject({ success: true });
+    expect(mockDb.prepare("SELECT pharmacy_id FROM commercial_papers WHERE id='test-id'").get()).toEqual({ pharmacy_id: 'ph-1' });
+
+    mockSession = { id: 'u2', role: 'owner', pharmacy_id: 'ph-2' };
+    expect((await getPapersAction()).data?.map((row: any) => row.id)).toEqual(['paper-2']);
   });
 });

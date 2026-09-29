@@ -1,8 +1,16 @@
-jest.mock('@/lib/db/tauri', () => ({
-  dbSelect: jest.fn(),
-  dbExecute: jest.fn(async () => ({ rowsAffected: 1 })),
-  dbTransaction: jest.fn(async (callback: () => unknown) => callback()),
-}));
+import { createFunctionTransactionDb as mockCreateFunctionTransactionDb } from '@/tests/helpers/sqlite-transaction-db';
+
+jest.mock('@/lib/db/tauri', () => {
+  const dbSelect = jest.fn(async () => []);
+  const dbGet = jest.fn(async () => null);
+  const dbExecute = jest.fn(async () => ({ rowsAffected: 1 }));
+  return {
+    dbSelect,
+    dbGet,
+    dbExecute,
+    dbTransaction: jest.fn(async (callback: any) => callback(mockCreateFunctionTransactionDb({ select: dbSelect, get: dbGet, execute: dbExecute }))),
+  };
+});
 
 let mockUser: any = { id: 'owner', role: 'owner', permissions: {} };
 jest.mock('@/lib/auth/local', () => ({

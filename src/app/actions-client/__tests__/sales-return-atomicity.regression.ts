@@ -1,6 +1,7 @@
 /** @jest-environment node */
 
 import Database from 'better-sqlite3';
+import { createSqliteTransactionDb as mockCreateSqliteTransactionDb } from '@/tests/helpers/sqlite-transaction-db';
 
 let mockDb: Database.Database;
 let idCounter = 0;
@@ -12,10 +13,10 @@ jest.mock('@/lib/db/tauri', () => ({
     const result = mockDb.prepare(sql).run(...params);
     return { rowsAffected: result.changes, lastInsertId: Number(result.lastInsertRowid) };
   }),
-  dbTransaction: jest.fn(async (callback: () => Promise<unknown>) => {
+  dbTransaction: jest.fn(async (callback: any) => {
     mockDb.exec('BEGIN IMMEDIATE');
     try {
-      const result = await callback();
+      const result = await callback(mockCreateSqliteTransactionDb(mockDb));
       mockDb.exec('COMMIT');
       return result;
     } catch (error) {
@@ -89,11 +90,22 @@ describe('sales return fallback atomicity', () => {
       CREATE TABLE journal_entries (journal_id TEXT, account_id INTEGER, type TEXT, amount REAL);
       CREATE TABLE trial_balance_settings (category TEXT, account_id INTEGER);
       CREATE TABLE activity_log (user_id TEXT, action TEXT, details TEXT);
+      CREATE TABLE patients (
+        id TEXT PRIMARY KEY, wallet_balance REAL DEFAULT 0, points_balance REAL DEFAULT 0
+      );
 
       INSERT INTO sales_invoices VALUES ('sale-1', 'ph-1', NULL, 50, 0, 'cash', 'completed');
       INSERT INTO master_drugs VALUES (101, 0, 'Test drug', NULL, NULL);
       INSERT INTO sales_items VALUES (1, 'sale-1', 'lot-1', 101, 5, 10, 'large', 4, 1, 1);
       INSERT INTO inventory VALUES ('lot-1', 'ph-1', 101, 10, 10, 4, 1, 1);
+      INSERT INTO trial_balance_settings VALUES
+        ('cash_drawer', 6),
+        ('accounts_receivable', 8),
+        ('sales_revenue', 9),
+        ('inventory_asset', 10),
+        ('cogs_expense', 11),
+        ('bank_clearing', 12),
+        ('patient_wallet_liability', 13);
     `);
   });
 
@@ -123,6 +135,63 @@ describe('sales return fallback atomicity', () => {
     expect(mockDb.prepare('SELECT COUNT(*) AS count FROM returns').get()).toEqual({ count: 2 });
     expect(mockDb.prepare('SELECT SUM(quantity_returned) AS quantity FROM return_items').get()).toEqual({ quantity: 5 });
     expect(mockDb.prepare('SELECT quantity FROM inventory WHERE id = ?').get('lot-1')).toEqual({ quantity: 15 });
+  });
+
+  it('rejects duplicate sale-item lines whose combined quantity exceeds the invoice remainder', async () => {
+    const duplicateLineReturn = returnData(3);
+    duplicateLineReturn.items.push({ ...duplicateLineReturn.items[0], quantity: 3 });
+
+    expect(await createReturnAction(duplicateLineReturn)).toMatchObject({ success: false });
+    expect(mockDb.prepare('SELECT COUNT(*) AS count FROM returns').get()).toEqual({ count: 0 });
+    expect(mockDb.prepare('SELECT COUNT(*) AS count FROM return_items').get()).toEqual({ count: 0 });
+    expect(mockDb.prepare('SELECT quantity FROM inventory WHERE id = ?').get('lot-1')).toEqual({ quantity: 10 });
+  });
+
+  it('credits the configured bank-clearing account for a bank/card refund', async () => {
+    const result = await createReturnAction({ ...returnData(1), refund_method: 'bank' });
+
+    expect(result).toMatchObject({ success: true, totalRefund: 10 });
+    expect(mockDb.prepare(
+      "SELECT account_id FROM journal_entries WHERE type = 'credit' AND amount = 10"
+    ).get()).toEqual({ account_id: 12 });
+  });
+
+  it('rejects a wallet refund when the sale has no linked patient', async () => {
+    expect(await createReturnAction({ ...returnData(1), refund_method: 'wallet' })).toMatchObject({
+      success: false,
+    });
+    expect(mockDb.prepare('SELECT COUNT(*) AS count FROM returns').get()).toEqual({ count: 0 });
+    expect(mockDb.prepare('SELECT quantity FROM inventory WHERE id = ?').get('lot-1')).toEqual({ quantity: 10 });
+  });
+
+  it('rejects unsupported refund methods before writing return or accounting state', async () => {
+    const result = await createReturnAction({
+      ...returnData(1),
+      refund_method: 'coupon',
+    } as any);
+
+    expect(result).toMatchObject({ success: false });
+    expect(mockDb.prepare('SELECT COUNT(*) AS count FROM returns').get()).toEqual({ count: 0 });
+    expect(mockDb.prepare('SELECT quantity FROM inventory WHERE id = ?').get('lot-1')).toEqual({ quantity: 10 });
+  });
+
+  it('credits a valid wallet refund to the patient wallet and wallet-liability account', async () => {
+    mockDb.prepare("INSERT INTO patients (id, wallet_balance) VALUES ('patient-1', 5)").run();
+    mockDb.prepare("UPDATE sales_invoices SET patient_id = 'patient-1', payment_method = 'wallet' WHERE id = 'sale-1'").run();
+
+    const result = await createReturnAction({
+      ...returnData(1),
+      refund_method: 'wallet',
+      patient_id: 'patient-1',
+    });
+
+    expect(result).toMatchObject({ success: true, totalRefund: 10 });
+    expect(mockDb.prepare("SELECT wallet_balance FROM patients WHERE id = 'patient-1'").get()).toEqual({
+      wallet_balance: 15,
+    });
+    expect(mockDb.prepare(
+      "SELECT account_id FROM journal_entries WHERE type = 'credit' AND amount = 10"
+    ).get()).toEqual({ account_id: 13 });
   });
 
   it('accepts exact fractional partial returns but rejects a quantity beyond the stock tolerance', async () => {

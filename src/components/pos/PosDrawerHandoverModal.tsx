@@ -83,10 +83,12 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
 
         const shiftRes = await getCurrentShiftAction();
         if (cancelled) return;
+        if (!shiftRes.success) throw new Error(shiftRes.error || 'فشل تحميل الوردية الحالية');
         let activeShiftId = shiftRes.data?.id;
         if (!activeShiftId) {
           const openShiftRes = await getOpenShiftHandoverAction();
           if (cancelled) return;
+          if (!openShiftRes.success) throw new Error(openShiftRes.error || 'فشل تحميل الوردية المفتوحة');
           activeShiftId = openShiftRes.data?.id;
         }
 
@@ -94,29 +96,28 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
           setShiftId(activeShiftId);
           const detailsRes = await getHandoverDetailsAction(activeShiftId);
           if (cancelled) return;
-          if (detailsRes.success && detailsRes.data) {
-            setDetails({
-              ...detailsRes.data,
-              user_name: activeUserName
-            });
-            setForm(prev => ({
-              ...prev,
-              actualCash: prev.actualCash || 0
-            }));
-          }
+          if (!detailsRes.success || !detailsRes.data) throw new Error(detailsRes.error || 'فشل تحميل تفاصيل الوردية');
+          setDetails({
+            ...detailsRes.data,
+            user_name: activeUserName
+          });
+          setForm(prev => ({
+            ...prev,
+            actualCash: prev.actualCash || 0
+          }));
         }
 
         const banksRes = await getBanksAction();
         if (cancelled) return;
-        if (banksRes.success) setBanks(banksRes.data || []);
+        if (!banksRes.success) throw new Error(banksRes.error || 'فشل تحميل البنوك');
+        setBanks(banksRes.data || []);
 
         const staffRes = await getStaffAction();
         if (cancelled) return;
-        if (staffRes.success) {
-          setStaff(staffRes.data || []);
-          if (staffRes.data && staffRes.data.length > 0) {
-            setForm(prev => ({ ...prev, receiverUsername: staffRes.data[0].username }));
-          }
+        if (!staffRes.success) throw new Error(staffRes.error || 'فشل تحميل المستخدمين');
+        setStaff(staffRes.data || []);
+        if (staffRes.data && staffRes.data.length > 0) {
+          setForm(prev => ({ ...prev, receiverUsername: staffRes.data[0].username }));
         }
       } catch {
         if (!cancelled) {
@@ -536,7 +537,7 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
 
             <div className="p-3 bg-slate-50 dark:bg-slate-800/50 border-t border-slate-200 dark:border-slate-700 flex justify-between items-center shrink-0">
               <span className="font-black text-xs text-slate-600 dark:text-slate-400">
-                إجمالي الآجل: {creditSalesList.reduce((sum, item) => sum + Number(item.total_amount || 0), 0).toFixed(2)} ج.م
+                إجمالي الآجل: {creditSalesList.reduce((sum, item) => sum + Number(item.credit_amount ?? item.total_amount ?? 0), 0).toFixed(2)} ج.م
               </span>
               <button 
                 onClick={() => setShowCreditModal(false)}

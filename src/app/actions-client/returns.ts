@@ -44,7 +44,7 @@ const db = {
     }
   }),
   transaction: (cb) => {
-    return (...args) => dbTransaction(async () => await cb(...args));
+    return (...args) => dbTransaction(async (transactionDb) => await cb(transactionDb, ...args));
   },
   exec: (sql) => {
     return dbExecute(sql);
@@ -149,7 +149,7 @@ export async function getSalesInvoicesByDateAction(dateStr: string) {
 export async function createReturnAction(data: {
   invoice_id: string;
   shift_id?: string;
-  refund_method: 'cash' | 'patient_account' | 'coupon';
+  refund_method: 'cash' | 'patient_account' | 'wallet' | 'bank';
   reason: string;
   patient_id?: string | number;
   items: { sale_item_id?: number; inventory_id: string; drug_name: string; quantity: number; unit_price: number; unit?: string }[];
@@ -163,7 +163,9 @@ export async function createReturnAction(data: {
         error: 'إنشاء مرتجع من المتصفح غير مدعوم لأنه يتطلب معاملة ذرية؛ استخدم تطبيق سطح المكتب',
       };
     }
-    const shiftId = await requireOpenShiftId(String(user.id), data.shift_id);
+    if (!['cash', 'patient_account', 'wallet', 'bank'].includes(String(data.refund_method || ''))) {
+      return { success: false, error: 'طريقة الاسترداد غير مدعومة' };
+    }
     const pharmacyId = user.pharmacy_id || 'local_default';
 
     if (isTauri) {
@@ -173,7 +175,7 @@ export async function createReturnAction(data: {
           invoice_id: data.invoice_id,
           user_id: user.id,
           pharmacy_id: user.pharmacy_id || null,
-          shift_id: shiftId,
+          shift_id: data.shift_id || null,
           refund_method: data.refund_method || 'cash',
           reason: data.reason || '',
           patient_id: data.patient_id ? String(data.patient_id) : null,
@@ -198,7 +200,7 @@ export async function createReturnAction(data: {
       await db.exec('ALTER TABLE sales_invoices ADD COLUMN points_earned INTEGER DEFAULT 0');
     } catch(e) {}
 
-    const result = await dbTransaction(async () => {
+    const result = await dbTransaction(async (db) => {
     const dbHeader = await db.prepare(`
       SELECT *
       FROM sales_invoices
@@ -212,11 +214,12 @@ export async function createReturnAction(data: {
     ) {
       return { success: false, error: 'يجب تسوية تحصيل فاتورة التوصيل قبل إجراء المرتجع' };
     }
-    if (data.refund_method === 'patient_account' && !dbHeader.patient_id) {
+    const patientLinkedRefund = data.refund_method === 'patient_account' || data.refund_method === 'wallet';
+    if (patientLinkedRefund && !dbHeader.patient_id) {
       return { success: false, error: 'لا يمكن ترحيل المرتجع لحساب مريض لأن الفاتورة غير مرتبطة بمريض' };
     }
     if (
-      data.refund_method === 'patient_account' &&
+      patientLinkedRefund &&
       data.patient_id != null &&
       String(data.patient_id) !== String(dbHeader.patient_id)
     ) {
@@ -253,6 +256,7 @@ export async function createReturnAction(data: {
         AND ri.sale_item_id IS NOT NULL
     `).all(data.invoice_id) as any[];
 
+    const requestedBySaleItem = new Map<number, number>();
     const preparedReturns: any[] = [];
     for (const returnItem of data.items) {
       const soldItem = invoiceItems.find(si => si.id === returnItem.sale_item_id);
@@ -297,7 +301,10 @@ export async function createReturnAction(data: {
             soldItem.small_unit,
           );
         }, 0);
-      if (returnedInSoldUnit > (Number(soldItem.quantity_sold) - returned + 0.000001)) {
+      const saleItemId = Number(returnItem.sale_item_id);
+      const requested = (requestedBySaleItem.get(saleItemId) || 0) + returnedInSoldUnit;
+      requestedBySaleItem.set(saleItemId, requested);
+      if (requested > (Number(soldItem.quantity_sold) - returned + 0.000001)) {
         return { success: false, error: `كمية المرتجع تتجاوز الكمية المتبقية للصنف "${returnItem.drug_name}"` };
       }
       preparedReturns.push({
@@ -337,6 +344,7 @@ export async function createReturnAction(data: {
       Math.max(0, refundableInvoiceTotal - Number(priorRefund?.total || 0))
     );
 
+      const shiftId = await requireOpenShiftId(String(user.id), data.shift_id, db);
       // 3. Create return header
       await db.prepare(`
         INSERT INTO returns (id, invoice_id, user_id, pharmacy_id, shift_id, reason, total_refund, refund_method, status)
@@ -444,13 +452,27 @@ export async function createReturnAction(data: {
       const accounts = {
         cash: await getAccountId('cash_drawer') || 6,
         receivable: await getAccountId('accounts_receivable') || 8,
+        bank: await getAccountId('bank_clearing'),
+        wallet: await getAccountId('patient_wallet_liability'),
         sales: await getAccountId('sales_revenue') || 9,
         inventory: await getAccountId('inventory_asset') || 10,
         cogs: await getAccountId('cogs_expense') || 11
       };
 
       // Reverse Revenue: Debit Sales Revenue, Credit Cash/AR
-      const creditAccount = data.refund_method === 'patient_account' ? accounts.receivable : accounts.cash;
+      if (data.refund_method === 'bank' && !accounts.bank) {
+        throw new Error('Bank clearing account is not configured');
+      }
+      if (data.refund_method === 'wallet' && !accounts.wallet) {
+        throw new Error('Patient wallet liability account is not configured');
+      }
+      const creditAccount = data.refund_method === 'patient_account'
+        ? accounts.receivable
+        : data.refund_method === 'bank'
+          ? accounts.bank
+          : data.refund_method === 'wallet'
+            ? accounts.wallet
+          : accounts.cash;
       await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, accounts.sales, 'debit', totalRefund);
       await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, creditAccount, 'credit', totalRefund);
 
@@ -462,6 +484,14 @@ export async function createReturnAction(data: {
 
       // ponytail: record refund in patient_transactions for customer ledger visibility
       const patientId = data.patient_id || dbHeader?.patient_id;
+      if (data.refund_method === 'wallet' && patientId) {
+        const walletUpdate = await db.prepare(
+          'UPDATE patients SET wallet_balance = COALESCE(wallet_balance, 0) + ? WHERE id = ?'
+        ).run(totalRefund, String(patientId));
+        if (walletUpdate.changes !== 1) {
+          throw new Error('Invoice patient no longer exists');
+        }
+      }
       if (data.refund_method === 'patient_account' && patientId) {
         const txId = generateId();
         await db.prepare(`
@@ -511,35 +541,73 @@ export async function createReturnAction(data: {
 }
 
 
+type ReturnListOptions = {
+  limit?: number;
+  offset?: number;
+  search?: string;
+};
+
 /**
- * Get all returns
+ * Get a bounded page of returns.
  */
-export async function getReturnsAction() {
+export async function getReturnsAction(options: ReturnListOptions = {}) {
   try {
     const user = await getLocalSession();
     if (!user || !hasUserPermissionSync(user, 'can_view_returns')) return { success: false, error: 'غير مصرح' };
     const pharmacyId = user.pharmacy_id || 'local_default';
+    const limit = Math.min(100, Math.max(1, Math.trunc(Number(options.limit) || 50)));
+    const offset = Math.max(0, Math.trunc(Number(options.offset) || 0));
+    const search = String(options.search || '').trim();
+    const like = `%${search}%`;
 
     await ensureReturnItemsSchema();
 
-    const returns = await db.prepare(`
+    const params: any[] = [pharmacyId, pharmacyId];
+    let sql = `
       SELECT r.*, u.full_name as user_name, p.full_name as patient_name, si.total_amount as invoice_total, si.created_at as invoice_date
       FROM returns r
       LEFT JOIN users u ON r.user_id = u.id
       LEFT JOIN sales_invoices si ON r.invoice_id = si.id
       LEFT JOIN patients p ON si.patient_id = p.id
       WHERE (r.pharmacy_id = ? OR (r.pharmacy_id IS NULL AND ? = 'local_default'))
-      ORDER BY r.created_at DESC
-      LIMIT 100
-    `).all(pharmacyId, pharmacyId) as any[];
+    `;
+    if (search) {
+      sql += `
+        AND (
+          r.id LIKE ? OR r.invoice_id LIKE ? OR
+          COALESCE(p.full_name, '') LIKE ? OR COALESCE(u.full_name, '') LIKE ?
+        )
+      `;
+      params.push(like, like, like, like);
+    }
+    sql += ' ORDER BY r.created_at DESC LIMIT ? OFFSET ?';
+    params.push(limit + 1, offset);
+    const fetched = await db.prepare(sql).all(...params) as any[];
+    const hasMore = fetched.length > limit;
+    const returns = fetched.slice(0, limit);
 
-    // Get items for each return
-    const returnsWithItems = await Promise.all(returns.map(async ret => {
-      const items = await db.prepare('SELECT ri.*, md.trade_name_en, md.trade_name AS trade_name_ar FROM return_items ri LEFT JOIN master_drugs md ON ri.drug_id = md.id WHERE ri.return_id = ?').all(ret.id);
-      return { ...ret, items };
+    const returnIds = returns.map(ret => String(ret.id));
+    const items = returnIds.length
+      ? await db.prepare(`
+          SELECT ri.*, md.trade_name_en, md.trade_name AS trade_name_ar
+          FROM return_items ri
+          LEFT JOIN master_drugs md ON ri.drug_id = md.id
+          WHERE ri.return_id IN (${returnIds.map(() => '?').join(',')})
+        `).all(...returnIds) as any[]
+      : [];
+    const itemsByReturn = new Map<string, any[]>();
+    for (const item of items) {
+      const key = String(item.return_id);
+      const group = itemsByReturn.get(key) || [];
+      group.push(item);
+      itemsByReturn.set(key, group);
+    }
+    const returnsWithItems = returns.map(ret => ({
+      ...ret,
+      items: itemsByReturn.get(String(ret.id)) || [],
     }));
 
-    return { success: true, data: returnsWithItems };
+    return { success: true, data: returnsWithItems, hasMore };
   } catch (error) {
     console.error('getReturnsAction error:', error);
     return { success: false, error: 'فشل جلب المرتجعات' };

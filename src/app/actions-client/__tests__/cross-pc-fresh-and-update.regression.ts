@@ -1,7 +1,10 @@
 /** @jest-environment node */
 
 import Database from 'better-sqlite3';
-import { readFileSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { createSqliteTransactionDb as mockCreateSqliteTransactionDb } from '@/tests/helpers/sqlite-transaction-db';
 
 let mockDb: Database.Database;
 let mockId = 0;
@@ -16,7 +19,7 @@ jest.mock('@/lib/db/tauri', () => {
       const result = mockDb.prepare(sql).run(...params);
       return { rowsAffected: result.changes, lastInsertId: Number(result.lastInsertRowid) };
     }),
-    dbTransaction: jest.fn(async (callback: () => unknown) => callback()),
+    dbTransaction: jest.fn(async (callback: any) => callback(mockCreateSqliteTransactionDb(mockDb))),
     generateId: jest.fn(() => `test-id-${++mockId}`),
   };
 });
@@ -48,6 +51,7 @@ jest.unmock('@/app/actions-client/handover');
 jest.unmock('@/app/actions-client/shifts');
 jest.unmock('@/app/actions-client/returns');
 jest.unmock('@/app/actions-client/finance');
+jest.unmock('@/app/actions-client/patients');
 
 import { normalizeDatabaseTimestamps } from '@/lib/db/tauri';
 import {
@@ -55,7 +59,10 @@ import {
   completePurchaseInvoiceAction,
   updateCompletedPurchaseInvoiceAction,
   createPurchaseReturnAction,
+  addSupplierPaymentAction,
+  getSuppliersAction,
 } from '@/app/actions-client/purchases';
+import { getPatientProfileAction } from '@/app/actions-client/patients';
 import {
   addToShortagesAction,
   getShortagesAction,
@@ -73,8 +80,12 @@ import {
   addCardAction,
   getCardsAction,
   addPointOfSaleAction,
+  updatePointOfSaleAction,
   getPointsOfSaleAction,
   addPaperAction,
+  addFinancialNoticeAction,
+  addPatientPaymentAction,
+  createCashMovementAction,
   getPapersAction,
   updatePaperStatusAction,
   createManualJournalAction,
@@ -82,7 +93,10 @@ import {
   getFinancialNoticesAction,
   getJournalsAction,
   getTreasuryDashboardAction,
+  getTrialBalanceAction,
   saveTrialBalanceSettingAction,
+  getAccountsAction,
+  updateAccountAction,
 } from '@/app/actions-client/finance';
 
 function applyAllMigrations(db: Database.Database) {
@@ -109,6 +123,9 @@ function applyAllMigrations(db: Database.Database) {
     '020_daily_snapshot_pharmacy_scope.sql',
     '021_returns_pharmacy_scope.sql',
     '022_finance_pharmacy_scope.sql',
+    '023_shift_immutable_scope.sql',
+    '024_commercial_papers_pharmacy_scope.sql',
+    '025_sales_item_discount_snapshot.sql',
   ];
   for (const file of files) {
     const sql = readFileSync(`src-tauri/migrations/${file}`, 'utf8');
@@ -143,7 +160,11 @@ function applyV0292OrV0293Migrations(db: Database.Database) {
 }
 
 function applyLocalSchemaRepairs(db: Database.Database) {
+  const tableExists = (table: string) => !!db.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1"
+  ).get(table);
   const addCol = (table: string, col: string, typeDef: string) => {
+    if (!tableExists(table)) return;
     const cols = db.prepare(`PRAGMA table_info(${table})`).all() as any[];
     if (!cols.some(c => c.name === col)) {
       db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${typeDef}`);
@@ -173,14 +194,22 @@ function applyLocalSchemaRepairs(db: Database.Database) {
   addCol('daily_journals', 'pharmacy_id', 'TEXT');
   addCol('expenses', 'pharmacy_id', 'TEXT');
   addCol('financial_notices', 'pharmacy_id', 'TEXT');
+  addCol('commercial_papers', 'pharmacy_id', 'TEXT');
   addCol('sales_invoices', 'user_id', 'TEXT');
   addCol('sales_invoices', 'pharmacy_id', 'TEXT');
   addCol('returns', 'pharmacy_id', 'TEXT');
+  addCol('supplier_transactions', 'user_id', 'TEXT');
+  addCol('supplier_transactions', 'payment_method', "TEXT DEFAULT 'cash'");
+  addCol('supplier_transactions', 'date', 'TEXT');
 
   db.exec('CREATE INDEX IF NOT EXISTS idx_shortages_pharmacy_drug_status ON shortages(pharmacy_id, drug_id, status)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_shortages_pharmacy_status ON shortages(pharmacy_id, status)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_shortages_drug_id ON shortages(drug_id)');
   db.exec("UPDATE shortages SET pharmacy_id = 'local_default' WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = ''");
+  if (tableExists('commercial_papers')) {
+    db.exec("UPDATE commercial_papers SET pharmacy_id = 'local_default' WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = ''");
+    db.exec('CREATE INDEX IF NOT EXISTS idx_commercial_papers_pharmacy_due ON commercial_papers(pharmacy_id, due_date)');
+  }
   db.exec('UPDATE shortages SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL');
   db.exec(`
     UPDATE shifts
@@ -661,7 +690,10 @@ describe('Cross-computer consistency across fresh install and update', () => {
       '019_shift_pharmacy_scope.sql',
       '020_daily_snapshot_pharmacy_scope.sql',
       '021_returns_pharmacy_scope.sql',
-      '021_returns_pharmacy_scope.sql',
+      '022_finance_pharmacy_scope.sql',
+      '023_shift_immutable_scope.sql',
+      '024_commercial_papers_pharmacy_scope.sql',
+      '025_sales_item_discount_snapshot.sql',
     ]) {
       mockDb.exec(readFileSync(`src-tauri/migrations/${file}`, 'utf8'));
     }
@@ -972,7 +1004,8 @@ describe('Cross-computer consistency across fresh install and update', () => {
     const completeRes = await completePurchaseInvoiceAction(draftRes.id!);
     expect(completeRes.success).toBe(true);
     const completedShortage = mockDb.prepare('SELECT status FROM shortages WHERE drug_id = 5001').get() as any;
-    expect(completedShortage.status).toBe('received');
+    // Stock exactly at the reorder point is still low stock, so the shortage remains active.
+    expect(completedShortage.status).toBe('pending');
 
     // B. Unit options: sell 1 strip (medium unit) instead of whole box
     const invRow = mockDb.prepare('SELECT id, quantity FROM inventory WHERE drug_id = 5001').get() as any;
@@ -1307,5 +1340,367 @@ describe('Cross-computer consistency across fresh install and update', () => {
     expect((await updateBankAction(bankId, { name_ar: 'بنك محدث', current_balance: 0 })).success).toBe(true);
     expect((mockDb.prepare('SELECT current_balance FROM banks WHERE id = ?').get(bankId) as any).current_balance).toBe(250);
     expect(await deleteBankAction(bankId)).toMatchObject({ success: false, error: expect.stringContaining('رصيد') });
+  });
+
+  it('scopes Chart-of-Accounts balances to the signed-in pharmacy', async () => {
+    mockDb = new Database(':memory:');
+    applyAllMigrations(mockDb);
+    seedBaselineEntities(mockDb);
+    mockSession = { id: 'admin', role: 'owner', pharmacy_id: 'ph-1' };
+    mockDb.exec(`
+      INSERT INTO daily_journals(id,date,description,created_by,total_amount,pharmacy_id) VALUES
+        ('scope-local','2026-09-27','local','admin',10,'ph-1'),
+        ('scope-foreign','2026-09-27','foreign','admin',222,'ph-2');
+      INSERT INTO journal_entries(journal_id,account_id,type,amount) VALUES
+        ('scope-local',6,'debit',10),
+        ('scope-foreign',6,'debit',222);
+    `);
+
+    const result = await getAccountsAction();
+    expect(result.success).toBe(true);
+    expect((result.data as any[]).find(account => Number(account.id) === 6)?.balance).toBe(10);
+  });
+
+  it('persists account-code edits while protecting posted and parent account structure', async () => {
+    mockDb = new Database(':memory:');
+    applyAllMigrations(mockDb);
+    seedBaselineEntities(mockDb);
+    mockDb.prepare("INSERT INTO accounts(code,name_ar,type,is_group) VALUES('9.1','Editable','expense',0)").run();
+    const editable = mockDb.prepare("SELECT id FROM accounts WHERE code='9.1'").get() as any;
+
+    expect(await updateAccountAction(editable.id, { code: '   ' })).toMatchObject({ success: false });
+    mockDb.prepare("INSERT INTO accounts(code,name_ar,type,is_group) VALUES('9.9','Duplicate','expense',0)").run();
+    expect(await updateAccountAction(editable.id, { code: '9.9' })).toMatchObject({ success: false, error: expect.stringContaining('مستخدم') });
+
+    expect(await updateAccountAction(editable.id, { code: '9.2', name_ar: 'Editable', type: 'expense', is_group: 0 })).toMatchObject({ success: true });
+    expect(mockDb.prepare('SELECT code FROM accounts WHERE id = ?').get(editable.id)).toEqual({ code: '9.2' });
+
+    mockDb.prepare("INSERT INTO daily_journals(id,date,description,created_by,total_amount,pharmacy_id) VALUES('posted','2026-09-27','posted','admin',1,'local_default')").run();
+    mockDb.prepare("INSERT INTO journal_entries(journal_id,account_id,type,amount) VALUES('posted',?,'debit',1)").run(editable.id);
+    expect(await updateAccountAction(editable.id, { type: 'asset' })).toMatchObject({ success: false });
+    expect(await updateAccountAction(editable.id, { is_group: 1 })).toMatchObject({ success: false });
+
+    mockDb.prepare("INSERT INTO accounts(code,name_ar,type,is_group) VALUES('9.3','Parent','asset',1)").run();
+    const parent = mockDb.prepare("SELECT id FROM accounts WHERE code='9.3'").get() as any;
+    mockDb.prepare("INSERT INTO accounts(parent_id,code,name_ar,type,is_group) VALUES(?,'9.3.1','Child','asset',0)").run(parent.id);
+    expect(await updateAccountAction(parent.id, { is_group: 0 })).toMatchObject({ success: false });
+
+    const mapped = mockDb.prepare("SELECT account_id FROM trial_balance_settings WHERE category='bank_clearing'").get() as any;
+    expect(await updateAccountAction(Number(mapped.account_id), { is_group: 1 })).toMatchObject({ success: false });
+    expect(await updateAccountAction(Number(mapped.account_id), { type: 'liability' })).toMatchObject({ success: false });
+
+    const revenue = mockDb.prepare("SELECT id FROM accounts WHERE code='3.1'").get() as any;
+    expect(await updateAccountAction(Number(revenue.id), { code: '3.1', name_ar: 'إيرادات محدثة', type: 'revenue', is_group: 0 })).toMatchObject({ success: true });
+    expect(mockDb.prepare('SELECT name_ar FROM accounts WHERE id = ?').get(revenue.id)).toEqual({ name_ar: 'إيرادات محدثة' });
+  });
+
+  it('does not allow core accounting categories to be remapped away from their canonical accounts', async () => {
+    mockDb = new Database(':memory:');
+    applyAllMigrations(mockDb);
+    seedBaselineEntities(mockDb);
+    mockDb.prepare("INSERT INTO accounts(code,name_ar,type,is_group) VALUES('9.7','Wrong AP','liability',0)").run();
+    const wrong = mockDb.prepare("SELECT id FROM accounts WHERE code='9.7'").get() as any;
+
+    expect(await saveTrialBalanceSettingAction({ category: 'accounts_payable', account_id: Number(wrong.id) }))
+      .toMatchObject({ success: false });
+    expect(mockDb.prepare(`
+      SELECT a.code FROM trial_balance_settings t JOIN accounts a ON a.id=t.account_id
+      WHERE t.category='accounts_payable'
+    `).get()).toEqual({ code: '2.1' });
+  });
+
+  it('protects reserved account codes while allowing custom mapped account renaming', async () => {
+    mockDb = new Database(':memory:');
+    applyAllMigrations(mockDb);
+    seedBaselineEntities(mockDb);
+    for (const code of ['1.1.1', '2.1', '1.1.4', '3.2', '3.3', '3.8', '4.4']) {
+      const account = mockDb.prepare('SELECT id FROM accounts WHERE code=?').get(code) as any;
+      expect(await updateAccountAction(account.id, { code: `${code}x` })).toMatchObject({ success: false, error: expect.stringContaining('حساب أساسي') });
+      expect(mockDb.prepare('SELECT code FROM accounts WHERE id=?').get(account.id)).toEqual({ code });
+    }
+    mockDb.exec("INSERT INTO accounts(code,name_ar,type,is_group) VALUES('9.71','Custom expense','expense',0)");
+    const custom = mockDb.prepare("SELECT id FROM accounts WHERE code='9.71'").get() as any;
+    expect(await saveTrialBalanceSettingAction({ category: 'expense', target_id: '77', account_id: custom.id })).toMatchObject({ success: true });
+    expect(await updateAccountAction(custom.id, { code: '9.72' })).toMatchObject({ success: true });
+    expect(mockDb.prepare("SELECT a.code FROM trial_balance_settings t JOIN accounts a ON a.id=t.account_id WHERE t.category='expense:77'").get()).toEqual({ code: '9.72' });
+    const { createCashMovementAction } = await import('@/app/actions-client/finance');
+    expect(await createCashMovementAction({ type: 'receipt', category: 'other', amount: 25, date: '2026-09-27' })).toMatchObject({ success: true });
+  });
+
+  it('posts bank/card opening balances and keeps POS balance changes on transactional flows only', async () => {
+    mockDb = new Database(':memory:');
+    applyAllMigrations(mockDb);
+    seedBaselineEntities(mockDb);
+
+    const bank = await addBankAction({ name_ar: 'Opening Bank', current_balance: 50 });
+    expect(bank.success).toBe(true);
+    const card = await addCardAction({ name_ar: 'Opening Card', bank_id: Number(bank.id), current_balance: 15 });
+    expect(card.success).toBe(true);
+
+    const opening = mockDb.prepare(`
+      SELECT a.code, je.type, SUM(je.amount) amount
+      FROM journal_entries je
+      JOIN daily_journals dj ON dj.id = je.journal_id
+      JOIN accounts a ON a.id = je.account_id
+      WHERE dj.description LIKE 'رصيد افتتاحي للبنك:%' OR dj.description LIKE 'رصيد افتتاحي لماكينة الدفع:%'
+      GROUP BY a.code, je.type ORDER BY a.code, je.type
+    `).all();
+    expect(opening).toEqual([
+      { code: '1.1.4', type: 'debit', amount: 65 },
+      { code: '3.9', type: 'credit', amount: 65 },
+    ]);
+    expect(mockDb.prepare("SELECT COUNT(*) AS count FROM daily_journals WHERE pharmacy_id='local_default' AND (description LIKE 'رصيد افتتاحي للبنك:%' OR description LIKE 'رصيد افتتاحي لماكينة الدفع:%')").get()).toEqual({ count: 2 });
+
+    const pos = await addPointOfSaleAction({ name_ar: 'Operational POS', current_balance: 99 });
+    expect(pos.success).toBe(true);
+    expect(mockDb.prepare('SELECT current_balance FROM points_of_sale WHERE id = ?').get(pos.id)).toEqual({ current_balance: 0 });
+    expect((await updatePointOfSaleAction(Number(pos.id), { name_ar: 'Operational POS', current_balance: 25 })).success).toBe(true);
+    expect(mockDb.prepare('SELECT current_balance FROM points_of_sale WHERE id = ?').get(pos.id)).toEqual({ current_balance: 0 });
+  });
+
+  it('rejects non-finite opening balances before they can enter bank/card ledgers', async () => {
+    mockDb = new Database(':memory:');
+    applyAllMigrations(mockDb);
+    seedBaselineEntities(mockDb);
+
+    expect(await addBankAction({ name_ar: 'Infinite Bank', current_balance: Number.POSITIVE_INFINITY })).toMatchObject({ success: false });
+    expect(await addCardAction({ name_ar: 'Infinite Card', current_balance: Number.NEGATIVE_INFINITY })).toMatchObject({ success: false });
+
+    expect(mockDb.prepare("SELECT COUNT(*) AS count FROM banks WHERE name_ar='Infinite Bank'").get()).toEqual({ count: 0 });
+    expect(mockDb.prepare("SELECT COUNT(*) AS count FROM credit_cards WHERE name_ar='Infinite Card'").get()).toEqual({ count: 0 });
+    expect(mockDb.prepare("SELECT COUNT(*) AS count FROM daily_journals WHERE description LIKE '%Infinite%'").get()).toEqual({ count: 0 });
+  });
+
+  it('rejects invalid card commission percentages instead of persisting corrupt financial rates', async () => {
+    mockDb = new Database(':memory:');
+    applyAllMigrations(mockDb);
+    seedBaselineEntities(mockDb);
+
+    expect(await addCardAction({ name_ar: 'Infinite Commission', commission_pct: Number.POSITIVE_INFINITY })).toMatchObject({ success: false });
+    expect(await addCardAction({ name_ar: 'Negative Commission', commission_pct: -0.01 })).toMatchObject({ success: false });
+    expect(await addCardAction({ name_ar: 'Over Commission', commission_pct: 100.01 })).toMatchObject({ success: false });
+
+    expect(mockDb.prepare("SELECT COUNT(*) AS count FROM credit_cards WHERE name_ar IN ('Infinite Commission','Negative Commission','Over Commission')").get()).toEqual({ count: 0 });
+  });
+
+  it('skips zero opening journals and reverses debit/credit for negative openings', async () => {
+    mockDb = new Database(':memory:');
+    applyAllMigrations(mockDb);
+    seedBaselineEntities(mockDb);
+
+    expect(await addBankAction({ name_ar: 'Zero Bank', current_balance: 0 })).toMatchObject({ success: true });
+    expect(await addCardAction({ name_ar: 'Overdrawn Card', current_balance: -25 })).toMatchObject({ success: true });
+
+    expect(mockDb.prepare("SELECT COUNT(*) AS count FROM daily_journals WHERE description='رصيد افتتاحي للبنك: Zero Bank'").get()).toEqual({ count: 0 });
+    expect(mockDb.prepare(`
+      SELECT a.code, je.type, je.amount
+      FROM journal_entries je
+      JOIN daily_journals dj ON dj.id = je.journal_id
+      JOIN accounts a ON a.id = je.account_id
+      WHERE dj.description = 'رصيد افتتاحي لماكينة الدفع: Overdrawn Card'
+      ORDER BY je.type
+    `).all()).toEqual([
+      { code: '1.1.4', type: 'credit', amount: 25 },
+      { code: '3.9', type: 'debit', amount: 25 },
+    ]);
+  });
+
+  it('persists a cross-feature financial lifecycle across a database restart with balanced, pharmacy-scoped journals', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'pharma-financial-restart-'));
+    const dbPath = join(tempDir, 'financial-lifecycle.sqlite');
+
+    try {
+      mockDb = new Database(dbPath);
+      applyAllMigrations(mockDb);
+      seedBaselineEntities(mockDb);
+      mockDb.exec(`
+        UPDATE users SET pharmacy_id = 'ph-restart' WHERE id = 'admin';
+        INSERT INTO users (id, username, password_hash, role, full_name, pharmacy_id, is_active)
+        VALUES ('foreign-owner', 'foreign-owner', 'hash', 'owner', 'Foreign Owner', 'ph-foreign', 1);
+      `);
+      mockSession = { id: 'admin', role: 'owner', pharmacy_id: 'ph-restart' };
+
+      const opened = await openShiftAction({ starting_cash_amount: 200 });
+      expect(opened).toMatchObject({ success: true });
+      const shiftId = String(opened.shiftId);
+
+      expect(await createPurchaseInvoiceAction({
+        supplier_id: 1,
+        invoice_number: 'PERSIST-PURCHASE-1',
+        invoice_date: '2026-09-28',
+        payment_method: 'credit',
+        status: 'completed',
+        cart: [{
+          id: 5001,
+          quantity: 10,
+          cost_price: 30,
+          selling_price: 40,
+          expiry_date: '2029-12-31',
+          strips_per_box: 2,
+          barcode: '62210001',
+        }],
+      })).toMatchObject({ success: true });
+
+      const inventory = mockDb.prepare('SELECT id FROM inventory WHERE drug_id = 5001').get() as any;
+      const sale = await processCheckoutAction({
+        patient_id: 'patient-1',
+        shift_id: shiftId,
+        payment_method: 'credit',
+        status: 'completed',
+        total_discount: 0,
+        items: [{
+          drug_id: 5001,
+          inventory_id: inventory.id,
+          quantity_sold: 2,
+          unit_price: 40,
+          selected_unit: 'large',
+        }],
+      });
+      expect(sale).toMatchObject({ success: true });
+
+      expect(await addPatientPaymentAction({
+        patient_id: 'patient-1',
+        shift_id: shiftId,
+        amount: 30,
+        payment_method: 'cash',
+        notes: 'restart lifecycle patient payment',
+        date: '2026-09-28',
+      })).toMatchObject({ success: true, remainingBalance: 50 });
+
+      expect(await addSupplierPaymentAction({
+        supplier_id: 1,
+        amount: 50,
+        payment_method: 'cash',
+        notes: 'restart lifecycle supplier payment',
+        date: '2026-09-28',
+      })).toMatchObject({ success: true, remainingBalance: 250 });
+
+      expect(await addFinancialNoticeAction({
+        target_type: 'supplier',
+        target_id: '1',
+        type: 'debit',
+        amount: 20,
+        reason: 'supplier balance correction',
+        date: '2026-09-28',
+      })).toMatchObject({ success: true });
+
+      expect(await addFinancialNoticeAction({
+        target_type: 'customer',
+        target_id: 'patient-1',
+        type: 'credit',
+        amount: 10,
+        reason: 'customer balance correction',
+        date: '2026-09-28',
+      })).toMatchObject({ success: true });
+
+      expect(await createCashMovementAction({
+        type: 'receipt',
+        category: 'other',
+        amount: 15,
+        notes: 'restart lifecycle other income',
+        date: '2026-09-28',
+        shift_id: shiftId,
+      })).toMatchObject({ success: true });
+
+      expect(mockDb.prepare('SELECT balance FROM suppliers WHERE id = 1').get()).toEqual({ balance: 270 });
+      expect(mockDb.prepare('SELECT quantity FROM inventory WHERE id = ?').get(inventory.id)).toEqual({ quantity: 8 });
+
+      const patientOutstanding = mockDb.prepare(`
+        SELECT
+          COALESCE((SELECT SUM(total_amount) FROM sales_invoices WHERE patient_id='patient-1' AND payment_method='credit' AND status='completed'), 0)
+          - COALESCE((SELECT SUM(amount) FROM patient_transactions WHERE patient_id='patient-1' AND type='payment'), 0)
+          + COALESCE((SELECT SUM(amount) FROM patient_transactions WHERE patient_id='patient-1' AND type='adjustment'), 0)
+          AS balance
+      `).get() as any;
+      expect(Number(patientOutstanding.balance)).toBe(40);
+
+      const unbalancedBeforeRestart = mockDb.prepare(`
+        SELECT dj.id
+        FROM daily_journals dj
+        JOIN journal_entries je ON je.journal_id = dj.id
+        GROUP BY dj.id
+        HAVING ABS(
+          SUM(CASE WHEN je.type='debit' THEN je.amount ELSE 0 END)
+          - SUM(CASE WHEN je.type='credit' THEN je.amount ELSE 0 END)
+        ) > 0.000001
+      `).all();
+      expect(unbalancedBeforeRestart).toEqual([]);
+
+      const expectedDrawerCash = 200 + 30 - 50 + 15;
+      const handover = await processHandoverAction({
+        shiftId,
+        actualCash: expectedDrawerCash,
+        transferAmount: 100,
+        transferTargetId: '1',
+        transferTargetType: 'bank',
+        receiverUsername: 'admin',
+        receiverPasswordHash: 'hash',
+      });
+      expect(handover).toMatchObject({
+        success: true,
+        difference: 0,
+        remainingCash: expectedDrawerCash - 100,
+      });
+      expect(mockDb.prepare('SELECT current_balance FROM banks WHERE id=1').get()).toEqual({ current_balance: 5100 });
+
+      const persistedBeforeRestart = {
+        supplier: mockDb.prepare('SELECT balance FROM suppliers WHERE id=1').get(),
+        patientPayments: mockDb.prepare("SELECT COUNT(*) AS count, SUM(amount) AS amount FROM patient_transactions WHERE patient_id='patient-1' AND type='payment'").get(),
+        patientAdjustments: mockDb.prepare("SELECT COUNT(*) AS count, SUM(amount) AS amount FROM patient_transactions WHERE patient_id='patient-1' AND type='adjustment'").get(),
+        inventory: mockDb.prepare('SELECT quantity FROM inventory WHERE id=?').get(inventory.id),
+        bank: mockDb.prepare('SELECT current_balance FROM banks WHERE id=1').get(),
+        journals: mockDb.prepare("SELECT COUNT(*) AS count FROM daily_journals WHERE pharmacy_id='ph-restart'").get(),
+        entries: mockDb.prepare('SELECT COUNT(*) AS count FROM journal_entries').get(),
+        notices: mockDb.prepare("SELECT COUNT(*) AS count FROM financial_notices WHERE pharmacy_id='ph-restart'").get(),
+        movements: mockDb.prepare("SELECT COUNT(*) AS count FROM cash_movements WHERE pharmacy_id='ph-restart'").get(),
+        openShift: mockDb.prepare("SELECT id, starting_cash FROM shifts WHERE pharmacy_id='ph-restart' AND status='open'").get(),
+      };
+
+      mockDb.close();
+      mockDb = new Database(dbPath);
+
+      expect({
+        supplier: mockDb.prepare('SELECT balance FROM suppliers WHERE id=1').get(),
+        patientPayments: mockDb.prepare("SELECT COUNT(*) AS count, SUM(amount) AS amount FROM patient_transactions WHERE patient_id='patient-1' AND type='payment'").get(),
+        patientAdjustments: mockDb.prepare("SELECT COUNT(*) AS count, SUM(amount) AS amount FROM patient_transactions WHERE patient_id='patient-1' AND type='adjustment'").get(),
+        inventory: mockDb.prepare('SELECT quantity FROM inventory WHERE id=?').get(inventory.id),
+        bank: mockDb.prepare('SELECT current_balance FROM banks WHERE id=1').get(),
+        journals: mockDb.prepare("SELECT COUNT(*) AS count FROM daily_journals WHERE pharmacy_id='ph-restart'").get(),
+        entries: mockDb.prepare('SELECT COUNT(*) AS count FROM journal_entries').get(),
+        notices: mockDb.prepare("SELECT COUNT(*) AS count FROM financial_notices WHERE pharmacy_id='ph-restart'").get(),
+        movements: mockDb.prepare("SELECT COUNT(*) AS count FROM cash_movements WHERE pharmacy_id='ph-restart'").get(),
+        openShift: mockDb.prepare("SELECT id, starting_cash FROM shifts WHERE pharmacy_id='ph-restart' AND status='open'").get(),
+      }).toEqual(persistedBeforeRestart);
+
+      const trialBalance = await getTrialBalanceAction();
+      expect(trialBalance.success).toBe(true);
+      const totalDebits = (trialBalance.data || []).reduce((sum: number, row: any) => sum + Number(row.total_debit || 0), 0);
+      const totalCredits = (trialBalance.data || []).reduce((sum: number, row: any) => sum + Number(row.total_credit || 0), 0);
+      expect(totalDebits).toBeCloseTo(totalCredits, 8);
+
+      expect((await getJournalsAction()).data?.length).toBe((persistedBeforeRestart.journals as any).count);
+      mockSession = { id: 'foreign-owner', role: 'owner', pharmacy_id: 'ph-foreign' };
+      expect((await getJournalsAction()).data).toEqual([]);
+
+      // These financial master/subledger tables currently have no pharmacy key.
+      // Keep the observed cross-pharmacy exposure explicit until a safe migration
+      // can define legacy ownership for them.
+      expect((await getBanksAction()).data?.find((bank: any) => Number(bank.id) === 1)?.current_balance).toBe(5100);
+      expect((await getSuppliersAction()).data?.find((supplier: any) => Number(supplier.id) === 1)?.balance).toBe(270);
+      const foreignPatientProfile = await getPatientProfileAction('patient-1');
+      expect(foreignPatientProfile).toMatchObject({
+        success: true,
+        data: {
+          purchaseHistory: [],
+          outstandingBalance: 40,
+        },
+      });
+      expect((foreignPatientProfile.data as any)?.payments).toHaveLength(1);
+    } finally {
+      try { mockDb?.close(); } catch {}
+      rmSync(tempDir, { recursive: true, force: true });
+      mockDb = new Database(':memory:');
+      mockSession = { id: 'admin', role: 'owner', pharmacy_id: null };
+    }
   });
 });
