@@ -27,9 +27,16 @@ const Input = React.forwardRef<HTMLInputElement, InputProps>(
     inputSize = 'md',
     id,
     disabled,
+    'aria-describedby': ariaDescribedBy,
+    'aria-invalid': ariaInvalid,
     ...props
   }, ref) => {
-    const inputId = id || `input-${Math.random().toString(36).substr(2, 9)}`;
+    const reactId = React.useId();
+    const inputId = id || `input-${reactId.replace(/:/g, '')}`;
+    const messageId = `${inputId}-message`;
+    const describedBy = [ariaDescribedBy, (error || success || helperText) ? messageId : undefined]
+      .filter(Boolean)
+      .join(' ') || undefined;
     
     const variantClasses = {
       default: 'input-primary',
@@ -78,6 +85,8 @@ const Input = React.forwardRef<HTMLInputElement, InputProps>(
             )}
             ref={ref}
             disabled={disabled}
+            aria-invalid={error ? true : ariaInvalid}
+            aria-describedby={describedBy}
             {...props}
           />
           
@@ -97,7 +106,7 @@ const Input = React.forwardRef<HTMLInputElement, InputProps>(
         </div>
         
         {(error || success || helperText) && (
-          <p className={cn(
+          <p id={messageId} className={cn(
             'text-sm flex items-center gap-1.5',
             error && 'text-danger-600 dark:text-danger-400',
             success && 'text-success-600 dark:text-success-400',

@@ -7,6 +7,7 @@ import Link from 'next/link';
 import { getReturnsAction } from '@/app/actions-client/returns';
 import { getPurchaseReturnDetailsAction, getPurchaseReturnsAction } from '@/app/actions-client/purchases';
 import { format } from 'date-fns';
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap';
 
 export default function ReturnsClient({ title, type = 'sales' }: { title: string, type?: 'sales' | 'purchases' }) {
   const [searchTerm, setSearchTerm] = useState('');
@@ -18,6 +19,7 @@ export default function ReturnsClient({ title, type = 'sales' }: { title: string
   const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
   const [selectedReturn, setSelectedReturn] = useState<any>(null);
   const [detailsLoading, setDetailsLoading] = useState(false);
+  const detailsDialogRef = useDialogFocusTrap<HTMLDivElement>(Boolean(selectedReturn));
   const [detailsError, setDetailsError] = useState<string | null>(null);
   const loadRequestRef = React.useRef(0);
   const detailsRequestRef = React.useRef(0);
@@ -150,6 +152,7 @@ export default function ReturnsClient({ title, type = 'sales' }: { title: string
             <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
             <input 
               type="text"
+              aria-label="بحث في سجل المرتجعات"
               placeholder={placeholderText}
               value={searchTerm}
               onChange={e => setSearchTerm(e.target.value)}
@@ -203,7 +206,12 @@ export default function ReturnsClient({ title, type = 'sales' }: { title: string
                   <tr
                     key={i}
                     onClick={() => openReturn(r)}
-                    onKeyDown={e => e.key === 'Enter' && openReturn(r)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        openReturn(r);
+                      }
+                    }}
                     tabIndex={0}
                     className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-inset focus:ring-primary-500"
                   >
@@ -244,14 +252,23 @@ export default function ReturnsClient({ title, type = 'sales' }: { title: string
       {detailsError && <div className="text-center text-sm font-bold text-rose-600">{detailsError}</div>}
       {selectedReturn && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setSelectedReturn(null)}>
-          <div className="max-h-[90vh] w-full max-w-5xl overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl dark:bg-slate-900" onClick={e => e.stopPropagation()} dir="rtl">
+          <div
+            ref={detailsDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="return-details-title"
+            tabIndex={-1}
+            className="max-h-[90vh] w-full max-w-5xl overflow-y-auto rounded-2xl bg-white p-4 sm:p-6 shadow-2xl dark:bg-slate-900"
+            onClick={e => e.stopPropagation()}
+            dir="rtl"
+          >
             <div className="mb-5 flex items-center justify-between">
-              <h2 className="text-xl font-black text-slate-900 dark:text-white">
+              <h2 id="return-details-title" className="text-xl font-black text-slate-900 dark:text-white">
                 {type === 'sales' ? 'تفاصيل مرتجع المبيعات' : 'تفاصيل مرتجع المشتريات'}
               </h2>
               <button onClick={() => setSelectedReturn(null)} aria-label="إغلاق" className="rounded-lg p-2 hover:bg-slate-100 dark:hover:bg-slate-800"><X className="h-5 w-5" /></button>
             </div>
-            <div className="mb-6 grid grid-cols-2 gap-3 rounded-xl bg-slate-50 p-4 text-sm dark:bg-slate-800 md:grid-cols-4">
+            <div className="mb-6 grid grid-cols-1 gap-3 rounded-xl bg-slate-50 p-4 text-sm dark:bg-slate-800 sm:grid-cols-2 md:grid-cols-4">
               <div><span className="text-slate-500">رقم المرتجع</span><p className="font-bold">{selectedReturn.id}</p></div>
               <div><span className="text-slate-500">الفاتورة الأصلية</span><p className="font-bold">{selectedReturn.invoice_number || selectedReturn.invoice_id || selectedReturn.purchase_invoice_id || 'غير مرتبطة'}</p></div>
               <div><span className="text-slate-500">تاريخ الفاتورة</span><p className="font-bold">{selectedReturn.invoice_date || '-'}</p></div>

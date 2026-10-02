@@ -34,7 +34,7 @@ jest.mock('@/lib/auth/local', () => ({
 jest.mock('@/lib/cache/secure_cache', () => ({ secureCache: { updateDrug: jest.fn() } }));
 jest.mock('@/lib/env', () => ({ isTauri: false }));
 
-import { addPurchaseInvoiceItemAction, createPurchaseInvoiceAction, completePurchaseInvoiceAction, createPurchaseReturnAction, updateCompletedPurchaseInvoiceAction } from '@/app/actions-client/purchases';
+import { addPurchaseInvoiceItemAction, createPurchaseInvoiceAction, completePurchaseInvoiceAction, createPurchaseReturnAction, getPurchaseInvoiceDetailsAction, updateCompletedPurchaseInvoiceAction } from '@/app/actions-client/purchases';
 
 const item = (cost = 10) => ({ id: 9001, quantity: 2, bonus_quantity: 1, cost_price: cost, selling_price: 20,
   expiry_date: '2028-01-31', tax_percent: 10, discount_percent: 0, strips_per_box: 1 });
@@ -112,6 +112,62 @@ describe('purchase SQLite fallback accounting and lot safety', () => {
     expect(sqlite.prepare('SELECT large_to_medium FROM master_drugs WHERE id = 9001').get()).toEqual({ large_to_medium: 1 });
     expect(sqlite.prepare('SELECT COUNT(*) AS n FROM purchase_invoices').get()).toEqual({ n: 0 });
     expect(sqlite.prepare('SELECT COUNT(*) AS n FROM inventory').get()).toEqual({ n: 0 });
+  });
+
+  it('rejects a fake sub-unit conversion for Dexatrol-like single-container drugs with missing unit metadata', async () => {
+    sqlite.prepare(`
+      UPDATE master_drugs
+      SET trade_name = 'DEXATROL EYE/EAR DROPS 5 ML',
+          trade_name_en = NULL,
+          large_unit = NULL,
+          medium_unit = NULL,
+          small_unit = NULL,
+          large_to_medium = NULL,
+          medium_to_small = NULL
+      WHERE id = 9001
+    `).run();
+
+    const result = await createPurchaseInvoiceAction({
+      supplier_id: 1,
+      status: 'completed',
+      payment_method: 'credit',
+      cart: [{ ...plainItem(), quantity: 2, strips_per_box: 5 }],
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      error: expect.stringContaining('وحدة مفردة'),
+    });
+    expect(sqlite.prepare('SELECT COUNT(*) AS n FROM purchase_invoices').get()).toEqual({ n: 0 });
+    expect(sqlite.prepare('SELECT COUNT(*) AS n FROM inventory').get()).toEqual({ n: 0 });
+  });
+
+  it('purchases Dexatrol-like drops as whole bottles with a 1:1 stock conversion', async () => {
+    sqlite.prepare(`
+      UPDATE master_drugs
+      SET trade_name = 'DEXATROL EYE/EAR DROPS 5 ML',
+          trade_name_en = NULL,
+          large_unit = NULL,
+          medium_unit = NULL,
+          small_unit = NULL,
+          large_to_medium = NULL,
+          medium_to_small = NULL
+      WHERE id = 9001
+    `).run();
+
+    const result = await createPurchaseInvoiceAction({
+      supplier_id: 1,
+      invoice_number: 'DEXATROL-SIM',
+      status: 'completed',
+      payment_method: 'credit',
+      cart: [{ ...plainItem(), quantity: 2, bonus_quantity: 0, cost_price: 20, selling_price: 27, tax_percent: 0, strips_per_box: 1 }],
+    });
+
+    expect(result).toMatchObject({ success: true });
+    expect(sqlite.prepare('SELECT quantity,strips_per_box,cost_price,local_selling_price FROM inventory WHERE drug_id=9001').get())
+      .toEqual({ quantity: 2, strips_per_box: 1, cost_price: 20, local_selling_price: 27 });
+    expect(sqlite.prepare('SELECT large_to_medium FROM master_drugs WHERE id=9001').get())
+      .toEqual({ large_to_medium: 1 });
   });
 
   it('rechecks conversion permission inside create transaction when the shared factor changes concurrently', async () => {
@@ -265,6 +321,45 @@ describe('purchase SQLite fallback accounting and lot safety', () => {
     expect(sqlite.prepare('SELECT quantity,expiry_date FROM inventory WHERE drug_id=9001').get()).toEqual(before.stock);
     expect(sqlite.prepare('SELECT COUNT(*) AS n FROM daily_journals').get()).toEqual(before.journals);
     expect(sqlite.prepare('SELECT balance FROM suppliers WHERE id=1').get()).toEqual(before.balance);
+  });
+
+  it('allows completed receiving without expiry only for master drugs marked non-expiring', async () => {
+    sqlite.prepare('UPDATE master_drugs SET has_expiry = 0 WHERE id = 9001').run();
+    const nonExpiringItem = { ...plainItem(), expiry_date: '' };
+
+    const completed = await createPurchaseInvoiceAction({
+      supplier_id: 1,
+      status: 'completed',
+      payment_method: 'credit',
+      cart: [nonExpiringItem],
+    });
+    expect(completed).toMatchObject({ success: true });
+    expect(sqlite.prepare('SELECT expiry_date, quantity FROM inventory WHERE drug_id=9001').get()).toEqual({
+      expiry_date: null,
+      quantity: 2,
+    });
+
+    sqlite.exec("INSERT INTO master_drugs(id,trade_name,official_price,large_to_medium,medium_to_small,has_expiry) VALUES(9002,'No Expiry Draft',20,1,1,0)");
+    const draft = await createPurchaseInvoiceAction({
+      supplier_id: 1,
+      status: 'draft',
+      payment_method: 'credit',
+      cart: [{ ...nonExpiringItem, id: 9002 }],
+    });
+    expect(draft).toMatchObject({ success: true });
+    expect(await completePurchaseInvoiceAction(draft.id!)).toMatchObject({ success: true });
+    expect(sqlite.prepare('SELECT expiry_date, quantity FROM inventory WHERE drug_id=9002').get()).toEqual({
+      expiry_date: null,
+      quantity: 2,
+    });
+
+    sqlite.prepare('UPDATE master_drugs SET has_expiry = 1 WHERE id = 9001').run();
+    expect(await createPurchaseInvoiceAction({
+      supplier_id: 1,
+      status: 'completed',
+      payment_method: 'credit',
+      cart: [nonExpiringItem],
+    })).toMatchObject({ success: false, error: expect.stringContaining('الصلاحية') });
   });
 
   it('matches native duplicate-lot rejection before shared inventory can be created', async () => {
@@ -598,6 +693,74 @@ describe('purchase SQLite fallback accounting and lot safety', () => {
     const before = sqlite.prepare('SELECT quantity FROM inventory WHERE id=?').get(source.inventory_id);
     expect(await createPurchaseReturnAction({ ...payload, items: [{ ...payload.items[0], quantity: .002 }] })).toMatchObject({ success: false });
     expect(sqlite.prepare('SELECT quantity FROM inventory WHERE id=?').get(source.inventory_id)).toEqual(before);
+  });
+
+  it('returns master purchase unit names with canonical Arabic fallbacks in invoice details', async () => {
+    sqlite.prepare(`
+      UPDATE master_drugs
+      SET large_unit = ?, medium_unit = ?, small_unit = ?
+      WHERE id = 9001
+    `).run('زجاجة', 'باكيت', 'مل');
+    const purchase = await createPurchaseInvoiceAction({
+      supplier_id: 1,
+      status: 'completed',
+      payment_method: 'credit',
+      cart: [plainItem()],
+    });
+
+    expect(await getPurchaseInvoiceDetailsAction(purchase.id!)).toMatchObject({
+      success: true,
+      data: [expect.objectContaining({
+        large_unit: 'زجاجة',
+        medium_unit: 'باكيت',
+        small_unit: 'مل',
+      })],
+    });
+
+    sqlite.prepare(`
+      UPDATE master_drugs
+      SET large_unit = '   ', medium_unit = '', small_unit = NULL
+      WHERE id = 9001
+    `).run();
+    expect(await getPurchaseInvoiceDetailsAction(purchase.id!)).toMatchObject({
+      success: true,
+      data: [expect.objectContaining({
+        large_unit: 'علبة',
+        medium_unit: 'شريط',
+        small_unit: 'وحدة',
+      })],
+    });
+  });
+
+  it('counts an approved purchase return as finalized when showing and validating the remaining quantity', async () => {
+    const purchase = await createPurchaseInvoiceAction({ supplier_id: 1, status: 'completed', payment_method: 'credit', cart: [plainItem()] });
+    const source = sqlite.prepare('SELECT id,inventory_id FROM purchase_invoice_items WHERE invoice_id=?').get(purchase.id) as any;
+    sqlite.prepare(`
+      INSERT INTO purchase_returns
+        (id, purchase_invoice_id, supplier_id, user_id, reason, total_amount, refund_method, status)
+      VALUES ('approved-return', ?, 1, 'admin', 'approved legacy return', 20, 'credit', 'approved')
+    `).run(purchase.id);
+    sqlite.prepare(`
+      INSERT INTO purchase_return_items
+        (purchase_return_id, purchase_invoice_item_id, inventory_id, drug_id, drug_name, quantity_returned, unit_price, total_price, unit)
+      VALUES ('approved-return', ?, ?, 9001, 'Drug', 2, 10, 20, 'large')
+    `).run(source.id, source.inventory_id);
+
+    const details = await getPurchaseInvoiceDetailsAction(purchase.id!);
+    expect(details).toMatchObject({
+      success: true,
+      data: [expect.objectContaining({ remaining_large_quantity: 0, returned_large_quantity: 2 })],
+    });
+
+    const stockBefore = sqlite.prepare('SELECT quantity FROM inventory WHERE id=?').get(source.inventory_id);
+    const supplierBefore = sqlite.prepare('SELECT balance FROM suppliers WHERE id=1').get();
+    expect(await createPurchaseReturnAction({
+      purchase_invoice_id: purchase.id!, supplier_id: 1, refund_method: 'credit', reason: 'must reject',
+      items: [{ purchase_invoice_item_id: source.id, inventory_id: source.inventory_id, drug_id: 9001, drug_name: 'Drug', quantity: 1, unit_price: 10, unit: 'large' }],
+    })).toMatchObject({ success: false });
+    expect(sqlite.prepare('SELECT quantity FROM inventory WHERE id=?').get(source.inventory_id)).toEqual(stockBefore);
+    expect(sqlite.prepare('SELECT balance FROM suppliers WHERE id=1').get()).toEqual(supplierBefore);
+    expect(sqlite.prepare('SELECT COUNT(*) AS n FROM purchase_returns').get()).toEqual({ n: 1 });
   });
 
   it('refunds stored allocated cost and bonus stock despite a forged client price', async () => {

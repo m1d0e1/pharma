@@ -7,6 +7,7 @@ import { settleSaleItemAction, getDrugBatchesAction, getUnsettledSalesAction } f
 import { format } from 'date-fns'
 import { ar } from 'date-fns/locale'
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local'
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap'
 
 interface UnsettledItem {
   item_id: number
@@ -53,6 +54,7 @@ export default function SettlementClient({ initialItems }: { initialItems: Unset
   const batchRequestRef = useRef(0)
   const settlementSubmissionRef = useRef(false)
   const loadRequestRef = useRef(0)
+  const settlementDialogRef = useDialogFocusTrap<HTMLDivElement>(isModalOpen && Boolean(selectedItem))
 
   useEffect(() => {
     let active = true
@@ -170,6 +172,7 @@ export default function SettlementClient({ initialItems }: { initialItems: Unset
           </div>
           <input
             type="text"
+            aria-label="بحث في عناصر التسوية"
             placeholder="ابحث برقم الفاتورة أو اسم الصنف..."
             className="w-full bg-white dark:bg-slate-900 border-2 border-slate-100 dark:border-slate-800 p-5 pr-14 rounded-[30px] focus:ring-4 focus:ring-purple-500/10 focus:border-purple-500 outline-none transition-all font-black text-lg shadow-xl shadow-slate-200/20"
             value={searchTerm}
@@ -188,15 +191,16 @@ export default function SettlementClient({ initialItems }: { initialItems: Unset
 
       {/* Table */}
       <div className="bg-white dark:bg-slate-900 rounded-[40px] shadow-2xl border border-slate-100 dark:border-slate-800 overflow-hidden">
-        <table className="w-full text-right">
+        <div className="overflow-x-auto">
+        <table className="w-full min-w-[900px] text-right">
           <thead>
             <tr className="bg-slate-50 dark:bg-slate-800/50 border-b border-slate-100 dark:border-slate-800">
-              <th className="p-6 font-black text-slate-500 uppercase tracking-widest text-[10px]">الصنف</th>
-              <th className="p-6 font-black text-slate-500 uppercase tracking-widest text-[10px]">رقم الفاتورة</th>
-              <th className="p-6 font-black text-slate-500 uppercase tracking-widest text-[10px]">الكمية المباعة</th>
-              <th className="p-6 font-black text-slate-500 uppercase tracking-widest text-[10px]">رصيد المخزن الحالي</th>
-              <th className="p-6 font-black text-slate-500 uppercase tracking-widest text-[10px]">التاريخ</th>
-              <th className="p-6 font-black text-slate-500 uppercase tracking-widest text-[10px]">الإجراء</th>
+              <th className="p-6 font-black text-slate-500 text-xs">الصنف</th>
+              <th className="p-6 font-black text-slate-500 text-xs">رقم الفاتورة</th>
+              <th className="p-6 font-black text-slate-500 text-xs">الكمية المباعة</th>
+              <th className="p-6 font-black text-slate-500 text-xs">رصيد المخزن الحالي</th>
+              <th className="p-6 font-black text-slate-500 text-xs">التاريخ</th>
+              <th className="p-6 font-black text-slate-500 text-xs">الإجراء</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-50 dark:divide-slate-800">
@@ -210,9 +214,9 @@ export default function SettlementClient({ initialItems }: { initialItems: Unset
                     <div>
                       <p className="font-black text-slate-900 dark:text-white">{item.trade_name_en || item.trade_name}</p>
                       {item.trade_name_en && (
-                        <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">{item.trade_name}</p>
+                        <p className="text-[11px] font-bold text-slate-500">{item.trade_name}</p>
                       )}
-                      <p className="text-[10px] font-bold text-slate-400">ID: {item.drug_id}</p>
+                      <p className="text-[11px] font-bold text-slate-500">ID: {item.drug_id}</p>
                     </div>
                   </div>
                 </td>
@@ -224,7 +228,7 @@ export default function SettlementClient({ initialItems }: { initialItems: Unset
                 <td className="p-6">
                   <div className="flex flex-col">
                     <span className="font-black text-rose-600 dark:text-rose-400 text-lg">{item.quantity_sold}</span>
-                    <span className="text-[10px] font-bold text-slate-400">وحدة: {item.unit === 'large' ? 'كبرى' : item.unit === 'medium' ? 'متوسطة' : 'صغرى'}</span>
+                    <span className="text-[11px] font-bold text-slate-500">وحدة: {item.unit === 'large' ? 'كبرى' : item.unit === 'medium' ? 'متوسطة' : 'صغرى'}</span>
                   </div>
                 </td>
                 <td className="p-6">
@@ -264,18 +268,26 @@ export default function SettlementClient({ initialItems }: { initialItems: Unset
             )}
           </tbody>
         </table>
+        </div>
       </div>
 
       {/* Settlement Modal */}
       {isModalOpen && selectedItem && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4 z-[250]" dir="rtl">
-          <div className="bg-white dark:bg-slate-900 rounded-[40px] shadow-2xl w-full max-w-xl overflow-hidden border border-white/20 animate-in zoom-in duration-300">
+          <div
+            ref={settlementDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="settlement-dialog-title"
+            tabIndex={-1}
+            className="bg-white dark:bg-slate-900 rounded-[40px] shadow-2xl w-full max-w-xl max-h-[calc(100vh-2rem)] overflow-hidden border border-white/20 animate-in zoom-in duration-300"
+          >
             <div className="bg-gradient-to-r from-purple-600 to-indigo-600 p-8 flex justify-between items-center text-white">
               <div>
-                <h2 className="text-2xl font-black">اختيار دفعة التسوية</h2>
+                <h2 id="settlement-dialog-title" className="text-2xl font-black">اختيار دفعة التسوية</h2>
                 <p className="text-purple-100 text-sm mt-1 font-bold">للصنف: {selectedItem.trade_name_en || selectedItem.trade_name}</p>
               </div>
-              <button disabled={isProcessing} onClick={handleCloseSettlement} className="p-2 hover:bg-white/10 rounded-full transition-colors disabled:opacity-50">
+              <button type="button" aria-label="إغلاق نافذة التسوية" disabled={isProcessing} onClick={handleCloseSettlement} className="p-2 hover:bg-white/10 rounded-full transition-colors disabled:opacity-50">
                 <ChevronDown className="w-8 h-8 rotate-180" />
               </button>
             </div>
@@ -303,14 +315,14 @@ export default function SettlementClient({ initialItems }: { initialItems: Unset
                            <Package className="w-4 h-4 text-slate-400 group-hover:text-emerald-500" />
                            <span className="font-black text-slate-900 dark:text-white">دفعة: {batch.id.substring(0, 8)}</span>
                         </div>
-                        <div className="flex gap-4 text-[10px] font-bold text-slate-400">
+                        <div className="flex flex-wrap gap-4 text-xs font-bold text-slate-500">
                            <span className="flex items-center gap-1"><Calendar className="w-3 h-3" /> انتهاء: {batch.expiry_date || '---'}</span>
                            <span className="flex items-center gap-1"><CreditCard className="w-3 h-3" /> سعر الشراء: {batch.cost_price}</span>
                         </div>
                       </div>
                       <div className="text-left">
                         <div className="font-black text-emerald-600 dark:text-emerald-400 text-lg">{batch.quantity}</div>
-                        <div className="text-[10px] font-bold text-slate-400 uppercase">الرصيد المتاح</div>
+                        <div className="text-xs font-bold text-slate-500">الرصيد المتاح</div>
                       </div>
                     </button>
                   ))

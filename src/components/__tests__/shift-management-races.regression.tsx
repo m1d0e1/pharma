@@ -148,6 +148,55 @@ describe('ShiftManagementClient async race regressions', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'إغلاق جميع الشفتات اضطرارياً' })).toBeEnabled());
   });
 
+  it('keeps force-close owner-only while preserving admin financial-detail visibility', () => {
+    render(
+      <ShiftManagementClient
+        initialShifts={[closedShift]}
+        currentShift={null}
+        hasOpenShift={false}
+        userRole="admin"
+      />
+    );
+
+    expect(screen.queryByRole('button', { name: 'إغلاق جميع الشفتات اضطرارياً' })).not.toBeInTheDocument();
+    expect(screen.getByText('عرض تفاصيل الرقابة المالية')).toBeInTheDocument();
+    expect(screen.getByText('نقدية الدرج الفعلية')).toBeInTheDocument();
+  });
+
+  it('shows shift close reports only with report permission while keeping shift receipts available', () => {
+    const props = {
+      initialShifts: [closedShift],
+      currentShift: null,
+      hasOpenShift: false,
+      userRole: 'pharmacist',
+    };
+    const view = render(<ShiftManagementClient {...props} canViewShiftReports={false} />);
+
+    expect(screen.getByRole('button', { name: /فواتير الوردية/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'تقرير الإغلاق' })).not.toBeInTheDocument();
+
+    view.rerender(<ShiftManagementClient {...props} canViewShiftReports />);
+
+    expect(screen.getByRole('button', { name: /فواتير الوردية/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'تقرير الإغلاق' })).toBeInTheDocument();
+  });
+
+  it('hides the handover launcher when handover permission is absent', () => {
+    render(
+      <ShiftManagementClient
+        {...({
+          initialShifts: [openShift],
+          currentShift: openShift,
+          hasOpenShift: true,
+          userRole: 'pharmacist',
+          canHandover: false,
+        } as any)}
+      />,
+    );
+
+    expect(screen.queryByRole('link', { name: /فتح شاشة تسليم الدرج والمناوبة/ })).not.toBeInTheDocument();
+  });
+
   it('does not misreport a completed open-shift write as failed when the follow-up list refresh rejects', async () => {
     (openShiftAction as jest.Mock).mockResolvedValueOnce({ success: true });
     (getShiftsAction as jest.Mock).mockRejectedValueOnce(new Error('shift list unavailable'));

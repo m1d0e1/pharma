@@ -1,5 +1,5 @@
 import React from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import DraftsModal from '@/components/pos/DraftsModal';
 import { useHotkeys } from 'react-hotkeys-hook';
 
@@ -29,12 +29,16 @@ describe('DraftsModal direct behavior', () => {
     expect(screen.getByText('لا يوجد مسودات حالياً')).toBeInTheDocument();
   });
 
-  it('delegates draft selection and both explicit and Escape close actions', () => {
+  it('delegates draft selection and both explicit and Escape close actions', async () => {
     const onClose = jest.fn();
     const onLoadDraft = jest.fn();
     render(<DraftsModal isOpen drafts={[draft]} isLoadingDrafts={false} onClose={onClose} onLoadDraft={onLoadDraft} />);
 
-    fireEvent.click(screen.getByText('Draft Customer').closest('.group') as HTMLElement);
+    const dialog = screen.getByRole('dialog', { name: '📁 المسودات المحفوظة' });
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+    await waitFor(() => expect(screen.getByRole('button', { name: 'إغلاق المسودات' })).toHaveFocus());
+
+    fireEvent.click(screen.getByRole('button', { name: /Draft Customer/ }));
     expect(onLoadDraft).toHaveBeenCalledWith(draft);
 
     fireEvent.click(screen.getByRole('button', { name: 'إغلاق' }));

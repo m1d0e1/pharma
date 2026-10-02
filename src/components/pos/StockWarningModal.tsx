@@ -1,8 +1,9 @@
 'use client';
 import { useHotkeys } from 'react-hotkeys-hook';;
 
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { X, PlusCircle } from 'lucide-react';
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap';
 
 interface StockWarningModalProps {
   isOpen: boolean;
@@ -21,18 +22,19 @@ export default function StockWarningModal({
   onNegativeSale,
   allowNegativeSale = false,
 }: StockWarningModalProps) {
+  const dialogRef = useDialogFocusTrap<HTMLDivElement>(isOpen && Boolean(drug));
   
   useHotkeys('esc', () => { if(typeof onClose === 'function') onClose(); }, { enableOnFormTags: true });
 if (!isOpen || !drug) return null;
 
   return (
     <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
-      <div className="bg-white dark:bg-slate-900 rounded-[40px] p-10 max-w-lg w-full shadow-2xl border border-slate-100 dark:border-slate-800 text-center space-y-6">
+      <div ref={dialogRef} role="alertdialog" aria-modal="true" aria-labelledby="stock-warning-title" aria-describedby="stock-warning-description" tabIndex={-1} className="bg-white dark:bg-slate-900 rounded-3xl p-8 max-w-lg w-full shadow-2xl border border-slate-100 dark:border-slate-800 text-center space-y-6">
         <div className="w-20 h-20 bg-rose-100 dark:bg-rose-900/30 rounded-full flex items-center justify-center mx-auto text-rose-600">
           <X className="w-10 h-10" />
         </div>
-        <h3 className="text-2xl font-black text-slate-950 dark:text-white">نفد المخزون!</h3>
-        <p className="text-slate-500 font-bold text-sm">
+        <h3 id="stock-warning-title" className="text-2xl font-black text-slate-950 dark:text-white">نفد المخزون!</h3>
+        <p id="stock-warning-description" className="text-slate-600 dark:text-slate-300 font-bold text-sm">
           لا يوجد كميات متوفرة من &quot;{drug.trade_name}&quot; حالياً. كيف ترغب في المتابعة؟
         </p>
         <div className="flex flex-col gap-3">

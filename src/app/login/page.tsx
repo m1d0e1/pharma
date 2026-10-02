@@ -40,8 +40,9 @@ export default function LoginPage() {
         localStorage.setItem('pharma_session_user', JSON.stringify(sessionUser));
 
         toast.success(`أهلاً بك، ${result.user.full_name}`);
-        // Use window.location for a full reload to dashboard to avoid ChunkLoadError
-        window.location.href = '/';
+        // Keep navigation inside the packaged SPA. A full location reload can
+        // tear down the Tauri WebView instead of resolving the exported route.
+        router.replace('/');
         return;
       }
 
@@ -103,10 +104,11 @@ export default function LoginPage() {
           {/* Form */}
           <form onSubmit={handleLogin} className="space-y-6">
             <div className="space-y-2">
-              <label className="text-xs font-black text-slate-500 uppercase tracking-widest mr-2">اسم المستخدم / البريد</label>
+              <label htmlFor="login-username" className="text-xs font-black text-slate-500 mr-2">اسم المستخدم / البريد</label>
               <div className="relative group">
                 <User className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-500 group-focus-within:text-blue-400 transition-colors" />
                 <input
+                  id="login-username"
                   type="text"
                   autoComplete="username"
                   value={formData.username}
@@ -119,10 +121,11 @@ export default function LoginPage() {
             </div>
 
             <div className="space-y-2">
-              <label className="text-xs font-black text-slate-500 uppercase tracking-widest mr-2">كلمة المرور</label>
+              <label htmlFor="login-password" className="text-xs font-black text-slate-500 mr-2">كلمة المرور</label>
               <div className="relative group">
                 <Lock className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-500 group-focus-within:text-blue-400 transition-colors" />
                 <input
+                  id="login-password"
                   type="password"
                   autoComplete="current-password"
                   value={formData.password}

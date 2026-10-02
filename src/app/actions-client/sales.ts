@@ -2,6 +2,7 @@
 import { dbSelect, dbExecute, dbGet, dbTransaction, generateId } from '@/lib/db/tauri';
 import { ensurePermanentShiftForUser, getShiftForPharmacy } from './shifts';
 import { notifyInventoryChanged } from '@/lib/inventory/refresh';
+import { resolveDrugUnitProfile } from '@/lib/inventory/unit-profile';
 const logActivity = async (userId: string, action: string, details: string) => {
   try {
     await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [userId, action, details]);
@@ -64,6 +65,7 @@ import {
   patientOutstandingBalanceQuery,
 } from '@/lib/patients/balance';
 import { normalizeUtcTimestamp } from '@/lib/time';
+import { EGP_PER_REDEEMED_POINT, MIN_REDEEM_POINTS, loyaltyDiscountAmount } from '@/lib/loyalty/policy';
 
 const CheckoutItemSchema = z.object({
   drug_id: z.coerce.number(),
@@ -79,11 +81,13 @@ const CheckoutRequestSchema = z.object({
   items: z.array(CheckoutItemSchema).min(1),
   patient_id: z.union([z.string(), z.number(), z.null()]).optional().nullable(),
   shift_id: z.union([z.string(), z.number(), z.null()]).optional().nullable(),
+  source_draft_id: z.union([z.string(), z.null()]).optional().nullable(),
   payment_method: z.enum(['cash', 'credit', 'check', 'visa', 'delivery', 'wallet']).default('cash'),
   check_number: z.string().optional().nullable(),
   status: z.enum(['completed', 'draft']).default('completed'),
   total_discount: z.coerce.number().nonnegative().optional().default(0),
   additional_fees: z.coerce.number().nonnegative().optional().default(0),
+  points_to_redeem: z.coerce.number().int().nonnegative().optional().default(0),
 });
 
 function saleStockQty(quantity: number, unit: string, largeToMedium: number, mediumToSmall: number, mediumUnit?: string, smallUnit?: string) {
@@ -94,6 +98,14 @@ function saleStockQty(quantity: number, unit: string, largeToMedium: number, med
 
 function canUsePos(user: any): boolean {
   return !!user && hasUserPermissionSync(user, 'can_access_pos');
+}
+
+function sourceDraftValidationError(sourceDraft: any, pharmacyId: string): string | null {
+  if (!sourceDraft) return 'الفاتورة المعلقة المحددة غير موجودة';
+  const sourcePharmacy = sourceDraft.pharmacy_id || 'local_default';
+  if (sourcePharmacy !== pharmacyId) return 'الفاتورة المعلقة تتبع صيدلية أخرى';
+  if (sourceDraft.status !== 'draft') return 'الفاتورة المحددة لم تعد فاتورة معلقة';
+  return null;
 }
 
 function permissionNumber(user: any, key: string, fallback = 0): number {
@@ -114,7 +126,11 @@ async function validateCheckoutPrices(items: z.infer<typeof CheckoutItemSchema>[
           FROM inventory i
           JOIN master_drugs md ON md.id = i.drug_id
           WHERE i.id = ? AND i.drug_id = ?
-        `).get(item.inventory_id, item.drug_id) as any
+            AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
+            AND i.quantity > 0
+            AND (COALESCE(md.has_expiry, 1) = 0 OR i.expiry_date IS NOT NULL)
+            AND (i.expiry_date IS NULL OR i.expiry_date >= date('now', 'localtime'))
+        `).get(item.inventory_id, item.drug_id, pharmacyId, pharmacyId) as any
       : await db.prepare(`
           SELECT COALESCE(MIN(i.local_selling_price), md.official_price, 0) AS large_price,
                  COALESCE(NULLIF(MAX(i.strips_per_box), 0), NULLIF(md.large_to_medium, 0), 1) AS large_to_medium,
@@ -124,6 +140,7 @@ async function validateCheckoutPrices(items: z.infer<typeof CheckoutItemSchema>[
           LEFT JOIN inventory i ON i.drug_id = md.id
             AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
             AND i.quantity > 0
+            AND (COALESCE(md.has_expiry, 1) = 0 OR i.expiry_date IS NOT NULL)
             AND (i.expiry_date IS NULL OR i.expiry_date >= date('now', 'localtime'))
           WHERE md.id = ?
           GROUP BY md.id
@@ -251,6 +268,10 @@ export async function searchDrugsAction(searchTerm: string, limit = 20, searchBy
       WHERE drug_id IN (${placeholders})
         AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
         AND quantity > 0
+        AND (
+          COALESCE((SELECT md.has_expiry FROM master_drugs md WHERE md.id = inventory.drug_id), 1) = 0
+          OR expiry_date IS NOT NULL
+        )
         AND (expiry_date IS NULL OR expiry_date >= ?)
       GROUP BY drug_id
     `).all(...candidateIds, pharmacyId, pharmacyId, today) as any[];
@@ -279,6 +300,10 @@ export async function searchDrugsAction(searchTerm: string, limit = 20, searchBy
       WHERE drug_id IN (${matchedPlaceholders})
         AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
         AND quantity > 0
+        AND (
+          COALESCE((SELECT md.has_expiry FROM master_drugs md WHERE md.id = inventory.drug_id), 1) = 0
+          OR expiry_date IS NOT NULL
+        )
         AND (expiry_date IS NULL OR expiry_date >= ?)
       ORDER BY CASE WHEN expiry_date IS NULL THEN 1 ELSE 0 END, expiry_date ASC, created_at ASC
     `).all(...matchedIds, pharmacyId, pharmacyId, today) as any[] : [];
@@ -286,14 +311,20 @@ export async function searchDrugsAction(searchTerm: string, limit = 20, searchBy
     const data = finalSelection.map((item: any) => {
       const drug = item.drug;
       const inv = item.inv;
-      const actualLargeToMedium = inv.max_strips > 1 ? inv.max_strips : (drug.large_to_medium || 1);
+      const rawLargeToMedium = inv.max_strips > 1 ? inv.max_strips : (drug.large_to_medium || 1);
+      const unitProfile = resolveDrugUnitProfile({ ...drug, large_to_medium: rawLargeToMedium });
+      const actualLargeToMedium = unitProfile.largeToMedium;
       const drugBatches = batchesData.filter((b: any) => String(b.drug_id) === String(drug.id)).map((b: any) => ({
         inventory_id: b.inventory_id,
         quantity: b.quantity,
         expiry_date: b.expiry_date ? normalizeDateToYMD(b.expiry_date) : null,
         unit_price: b.local_selling_price || drug.official_price,
-        strips_per_box: Number(b.strips_per_box) > 0 ? Number(b.strips_per_box) : (drug.large_to_medium || 1),
-        medium_to_small: Number(b.medium_to_small) > 0 ? Number(b.medium_to_small) : (drug.medium_to_small || 1)
+        strips_per_box: unitProfile.isSingleContainer
+          ? 1
+          : (Number(b.strips_per_box) > 0 ? Number(b.strips_per_box) : (drug.large_to_medium || 1)),
+        medium_to_small: unitProfile.isSingleContainer
+          ? 1
+          : (Number(b.medium_to_small) > 0 ? Number(b.medium_to_small) : (drug.medium_to_small || 1))
       }));
       return {
         id: drug.id,
@@ -306,11 +337,11 @@ export async function searchDrugsAction(searchTerm: string, limit = 20, searchBy
         cost_price: inv.avg_cost_price || 0,
         nearest_expiry: inv.nearest_expiry,
         is_expired: inv.nearest_expiry ? (normalizeDateToYMD(inv.nearest_expiry) || '') < today : false,
-        large_unit: drug.large_unit,
-        medium_unit: drug.medium_unit,
-        small_unit: drug.small_unit,
+        large_unit: unitProfile.largeUnit,
+        medium_unit: unitProfile.mediumUnit,
+        small_unit: unitProfile.smallUnit,
         large_to_medium: actualLargeToMedium,
-        medium_to_small: drug.medium_to_small || 1,
+        medium_to_small: unitProfile.mediumToSmall,
         reorder_point: drug.reorder_point || 0,
         profit_margin: (inv.min_price && inv.avg_cost_price > 0)
           ? Math.round(((inv.min_price - inv.avg_cost_price) / inv.min_price) * 100)
@@ -318,11 +349,11 @@ export async function searchDrugsAction(searchTerm: string, limit = 20, searchBy
         needs_reorder: drug.reorder_point ? (inv.total_stock || 0) <= drug.reorder_point : false,
         batches: drugBatches,
         units: {
-          large: drug.large_unit || 'علبة',
-          medium: drug.medium_unit || (actualLargeToMedium > 1 ? 'شريط' : undefined),
-          small: drug.small_unit,
+          large: unitProfile.largeUnit,
+          medium: unitProfile.mediumUnit,
+          small: unitProfile.smallUnit,
           large_to_medium: actualLargeToMedium,
-          medium_to_small: drug.medium_to_small || 1
+          medium_to_small: unitProfile.mediumToSmall
         }
       };
     });
@@ -351,6 +382,7 @@ export async function searchPatientsAction(query: string) {
         p.credit_limit,
         p.wallet_balance,
         p.opening_balance,
+        p.points_balance,
         p.payment_method,
         CAST(${patientOutstandingBalanceExpression('p')} AS REAL) AS outstanding_balance
       FROM patients p
@@ -385,6 +417,7 @@ export async function barcodeLookupAction(barcode: string) {
         AND COALESCE(md.stop_dealing,0)=0
         AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
         AND i.quantity > 0
+        AND (COALESCE(md.has_expiry, 1) = 0 OR i.expiry_date IS NOT NULL)
         AND (i.expiry_date IS NULL OR i.expiry_date >= ?)
       LIMIT 2
     `).all(normalizedBarcode, normalizedBarcode, pharmacyId, pharmacyId, today) as any[];
@@ -421,6 +454,7 @@ export async function barcodeLookupAction(barcode: string) {
         AND COALESCE(md.stop_dealing,0)=0
         AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
         AND i.quantity > 0
+        AND (COALESCE(md.has_expiry, 1) = 0 OR i.expiry_date IS NOT NULL)
         AND (i.expiry_date IS NULL OR i.expiry_date >= ?)
       ORDER BY CASE WHEN i.expiry_date IS NULL THEN 1 ELSE 0 END, i.expiry_date ASC, i.created_at ASC
       LIMIT 1
@@ -430,7 +464,9 @@ export async function barcodeLookupAction(barcode: string) {
       return { success: true, data: null };
     }
 
-    const actualLargeToMedium = drug.strips_per_box > 1 ? drug.strips_per_box : (drug.large_to_medium || 1);
+    const rawLargeToMedium = drug.strips_per_box > 1 ? drug.strips_per_box : (drug.large_to_medium || 1);
+    const unitProfile = resolveDrugUnitProfile({ ...drug, large_to_medium: rawLargeToMedium });
+    const actualLargeToMedium = unitProfile.largeToMedium;
 
     const drugBatches = await db.prepare(`
       SELECT id as inventory_id, quantity, expiry_date, local_selling_price, cost_price, strips_per_box, medium_to_small
@@ -438,6 +474,10 @@ export async function barcodeLookupAction(barcode: string) {
       WHERE drug_id = ?
         AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
         AND quantity > 0
+        AND (
+          COALESCE((SELECT md.has_expiry FROM master_drugs md WHERE md.id = inventory.drug_id), 1) = 0
+          OR expiry_date IS NOT NULL
+        )
         AND (expiry_date IS NULL OR expiry_date >= ?)
       ORDER BY CASE WHEN expiry_date IS NULL THEN 1 ELSE 0 END, expiry_date ASC, created_at ASC
     `).all(drug.id, pharmacyId, pharmacyId, today) as any[];
@@ -461,19 +501,23 @@ export async function barcodeLookupAction(barcode: string) {
         ? Math.round(((drug.unit_price - drug.avg_cost_price) / drug.unit_price) * 100) 
         : null,
       units: {
-        large: drug.large_unit || 'علبة',
-        medium: drug.medium_unit || (actualLargeToMedium > 1 ? 'شريط' : undefined),
-        small: drug.small_unit,
+        large: unitProfile.largeUnit,
+        medium: unitProfile.mediumUnit,
+        small: unitProfile.smallUnit,
         large_to_medium: actualLargeToMedium,
-        medium_to_small: drug.medium_to_small || 1
+        medium_to_small: unitProfile.mediumToSmall
       },
       batches: drugBatches.map((b: any) => ({
         inventory_id: b.inventory_id,
         quantity: b.quantity,
         expiry_date: b.expiry_date ? normalizeDateToYMD(b.expiry_date) : null,
         unit_price: b.local_selling_price || drug.official_price,
-        strips_per_box: Number(b.strips_per_box) > 0 ? Number(b.strips_per_box) : (drug.large_to_medium || 1),
-        medium_to_small: Number(b.medium_to_small) > 0 ? Number(b.medium_to_small) : (drug.medium_to_small || 1)
+        strips_per_box: unitProfile.isSingleContainer
+          ? 1
+          : (Number(b.strips_per_box) > 0 ? Number(b.strips_per_box) : (drug.large_to_medium || 1)),
+        medium_to_small: unitProfile.isSingleContainer
+          ? 1
+          : (Number(b.medium_to_small) > 0 ? Number(b.medium_to_small) : (drug.medium_to_small || 1))
       }))
     };
 
@@ -545,6 +589,10 @@ export async function fetchDraftsAction() {
         WHERE drug_id IN (${liveDrugIds.map(() => '?').join(',')})
           AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
           AND quantity > 0
+          AND (
+            COALESCE((SELECT md.has_expiry FROM master_drugs md WHERE md.id = inventory.drug_id), 1) = 0
+            OR expiry_date IS NOT NULL
+          )
           AND (expiry_date IS NULL OR expiry_date >= ?)
         ORDER BY CASE WHEN expiry_date IS NULL THEN 1 ELSE 0 END, expiry_date ASC, created_at ASC
       `).all(...liveDrugIds, pharmacyId, pharmacyId, today) as any[] : [];
@@ -620,6 +668,30 @@ export async function processCheckoutAction(data: any) {
     const userId = localUser.id;
 
     const validatedData = CheckoutRequestSchema.parse(data);
+    const normalizedCheckNumber = validatedData.payment_method === 'check'
+      ? String(validatedData.check_number || '').trim()
+      : '';
+    if (validatedData.status === 'completed' && validatedData.payment_method === 'check' && !normalizedCheckNumber) {
+      return { success: false, error: 'رقم الشيك مطلوب للبيع المكتمل بالشيك' };
+    }
+    if (validatedData.status === 'completed' && validatedData.payment_method === 'delivery' && !validatedData.patient_id) {
+      return { success: false, error: 'يجب اختيار مريض لفاتورة التوصيل' };
+    }
+    const loyaltyDiscount = loyaltyDiscountAmount(validatedData.points_to_redeem);
+    if (!Number.isFinite(loyaltyDiscount)) {
+      return { success: false, error: 'عدد نقاط الولاء غير صالح' };
+    }
+    if (validatedData.points_to_redeem > 0) {
+      if (validatedData.status !== 'completed') {
+        return { success: false, error: 'لا يمكن استرداد نقاط الولاء في فاتورة معلقة' };
+      }
+      if (!validatedData.patient_id) {
+        return { success: false, error: 'يجب اختيار مريض لاسترداد نقاط الولاء' };
+      }
+      if (validatedData.points_to_redeem < MIN_REDEEM_POINTS) {
+        return { success: false, error: `الحد الأدنى للاسترداد ${MIN_REDEEM_POINTS} نقطة` };
+      }
+    }
     if (validatedData.status === 'draft' && !hasUserPermissionSync(localUser, 'suspended_can_save_invoice')) {
       return { success: false, error: 'غير مصرح بحفظ الفواتير المعلقة' };
     }
@@ -642,8 +714,25 @@ export async function processCheckoutAction(data: any) {
         return { success: false, error: `نسبة الخصم تتجاوز الحد المسموح (${maxDiscountPercent}%)` };
       }
     }
+    const merchandiseGross = validatedData.items.reduce((sum, item) => sum + item.quantity_sold * item.unit_price, 0);
+    const eligibleMerchandiseAfterManualDiscount = Math.max(0, merchandiseGross - validatedData.total_discount);
+    if (loyaltyDiscount > eligibleMerchandiseAfterManualDiscount + 0.000001) {
+      return { success: false, error: 'خصم نقاط الولاء يتجاوز قيمة الأصناف بعد الخصم اليدوي' };
+    }
+    const combinedDiscount = validatedData.total_discount + loyaltyDiscount;
+    const requestedTotalAmount = calculateCheckoutTotal(validatedData.items, combinedDiscount, validatedData.additional_fees || 0);
     if (!hasUserPermissionSync(localUser, 'can_change_price_sale') && !(await validateCheckoutPrices(validatedData.items, pharmacyId))) {
       return { success: false, error: 'غير مصرح بتغيير سعر الصنف أثناء البيع' };
+    }
+    if (validatedData.source_draft_id) {
+      if (!hasUserPermissionSync(localUser, 'show_suspended_invoices')) {
+        return { success: false, error: 'غير مصرح باستكمال الفواتير المعلقة' };
+      }
+      const sourceDraft = await db.prepare(`
+        SELECT id, pharmacy_id, status FROM sales_invoices WHERE id = ?
+      `).get(validatedData.source_draft_id) as any;
+      const sourceDraftError = sourceDraftValidationError(sourceDraft, pharmacyId);
+      if (sourceDraftError) return { success: false, error: sourceDraftError };
     }
     const requestedShiftId = validatedData.shift_id ? String(validatedData.shift_id) : null;
     const requestedShift = requestedShiftId
@@ -661,11 +750,13 @@ export async function processCheckoutAction(data: any) {
           items: validatedData.items,
           patient_id: validatedData.patient_id ? String(validatedData.patient_id) : null,
           shift_id: shiftId,
+          source_draft_id: validatedData.source_draft_id ? String(validatedData.source_draft_id) : null,
           payment_method: validatedData.payment_method,
-          check_number: validatedData.check_number || null,
+          check_number: normalizedCheckNumber || null,
           status: validatedData.status,
           total_discount: validatedData.total_discount || 0,
           additional_fees: validatedData.additional_fees || 0,
+          points_to_redeem: validatedData.points_to_redeem || 0,
         }
       }) as any;
 
@@ -677,6 +768,8 @@ export async function processCheckoutAction(data: any) {
           sale_id: result.sale_id,
           total_amount: result.total_amount,
           points_earned: result.points_earned,
+          points_redeemed: result.points_redeemed,
+          loyalty_discount_amount: result.loyalty_discount_amount,
           created_at: result.created_at,
         }
       };
@@ -685,13 +778,17 @@ export async function processCheckoutAction(data: any) {
     // Patient Financial Validation
     let patientLoyaltyLevel: string | null = null;
     if (validatedData.patient_id && validatedData.status === 'completed') {
-      const patient = await db.prepare('SELECT credit_limit, wallet_balance, loyalty_level FROM patients WHERE id = ?').get(validatedData.patient_id) as any;
+      const patient = await db.prepare('SELECT credit_limit, wallet_balance, loyalty_level, points_balance FROM patients WHERE id = ?').get(validatedData.patient_id) as any;
       if (!patient) {
         return { success: false, error: 'المريض المحدد غير موجود' };
       }
       if (patient) {
         patientLoyaltyLevel = patient.loyalty_level || null;
-        const subTotal = calculateCheckoutTotal(validatedData.items, validatedData.total_discount || 0, validatedData.additional_fees || 0);
+        const subTotal = requestedTotalAmount;
+
+        if (validatedData.points_to_redeem > Number(patient.points_balance || 0)) {
+          return { success: false, error: `رصيد النقاط غير كافٍ (${Math.floor(Number(patient.points_balance || 0))} نقطة متاحة)` };
+        }
 
         if (validatedData.payment_method === 'credit') {
           const balanceRow = await db.prepare(patientOutstandingBalanceQuery()).get(validatedData.patient_id) as any;
@@ -717,28 +814,87 @@ export async function processCheckoutAction(data: any) {
     }
 
     const saleId = generateId();
-    const totalAmount = calculateCheckoutTotal(validatedData.items, validatedData.total_discount || 0, validatedData.additional_fees || 0);
+    const totalAmount = requestedTotalAmount;
     let pointsEarned = 0;
 
     await dbTransaction(async (db) => {
-      try {
-        await db.exec('ALTER TABLE sales_invoices ADD COLUMN points_earned INTEGER DEFAULT 0');
-      } catch {}
+      if (validatedData.source_draft_id) {
+        if (!hasUserPermissionSync(localUser, 'show_suspended_invoices')) {
+          throw new Error('غير مصرح باستكمال الفواتير المعلقة');
+        }
+        const sourceDraft = await db.prepare(`
+          SELECT id, pharmacy_id, status FROM sales_invoices WHERE id = ?
+        `).get(validatedData.source_draft_id) as any;
+        const sourceDraftError = sourceDraftValidationError(sourceDraft, pharmacyId);
+        if (sourceDraftError) throw new Error(sourceDraftError);
+        await db.prepare('DELETE FROM sales_items WHERE invoice_id = ?').run(validatedData.source_draft_id);
+        const deletedDraft = await db.prepare("DELETE FROM sales_invoices WHERE id = ? AND status = 'draft'")
+          .run(validatedData.source_draft_id);
+        if (deletedDraft.changes !== 1) throw new Error('تعذر استبدال الفاتورة المعلقة؛ أعد المحاولة');
+      }
+
+      if (validatedData.patient_id && validatedData.status === 'completed') {
+        const patient = await db.prepare('SELECT credit_limit, wallet_balance, loyalty_level, points_balance FROM patients WHERE id = ?')
+          .get(validatedData.patient_id) as any;
+        if (!patient) throw new Error('المريض المحدد غير موجود');
+        patientLoyaltyLevel = patient.loyalty_level || null;
+
+        if (validatedData.payment_method === 'credit') {
+          const balanceRow = await db.prepare(patientOutstandingBalanceQuery()).get(validatedData.patient_id) as any;
+          const currentDebt = Number(balanceRow?.outstanding_balance || 0);
+          const creditLimit = Number(patient.credit_limit || 0);
+          const creditLeft = creditLimit - currentDebt;
+          if (currentDebt + totalAmount > creditLimit + 0.000001) {
+            throw new Error(`تجاوز العميل الحد الائتماني المسموح به. الائتمان المتبقي الحالي: ${creditLeft.toFixed(2)} ج.م (قيمة الفاتورة: ${totalAmount.toFixed(2)} ج.م، الحد الأقصى: ${creditLimit} ج.م)`);
+          }
+        }
+
+        if (validatedData.payment_method === 'wallet') {
+          const walletBalance = Number(patient.wallet_balance || 0);
+          if (totalAmount > walletBalance + 0.000001) {
+            throw new Error(`رصيد المحفظة غير كافٍ (${walletBalance} ج.م)`);
+          }
+        }
+
+        if (validatedData.points_to_redeem > 0) {
+          const loyaltyUpdate = await db.prepare(`
+            UPDATE patients
+            SET points_balance = COALESCE(points_balance, 0) - ?
+            WHERE id = ? AND COALESCE(points_balance, 0) >= ?
+          `).run(validatedData.points_to_redeem, validatedData.patient_id, validatedData.points_to_redeem);
+          if (!loyaltyUpdate.changes) {
+            const current = await db.prepare('SELECT COALESCE(points_balance, 0) AS points_balance FROM patients WHERE id = ?')
+              .get(validatedData.patient_id) as any;
+            throw new Error(`رصيد النقاط غير كافٍ (${Math.floor(Number(current?.points_balance || 0))} نقطة متاحة)`);
+          }
+          await db.prepare("INSERT INTO activity_log (user_id, action, details) VALUES (?, 'REDEEM_POINTS', ?)")
+            .run(
+              userId,
+              `Redeemed ${validatedData.points_to_redeem} points = ${loyaltyDiscount.toFixed(2)} EGP on sale ${saleId}`,
+            );
+        }
+      }
+
       const today = format(new Date(), 'yyyy-MM-dd');
       let totalCogs = 0;
 
       await db.prepare(`
-        INSERT INTO sales_invoices (id, pharmacy_id, user_id, patient_id, shift_id, total_amount, payment_method, check_number, status, discount_amount, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        INSERT INTO sales_invoices (
+          id, pharmacy_id, user_id, patient_id, shift_id, total_amount, payment_method, check_number,
+          status, discount_amount, points_redeemed, loyalty_discount_amount, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
       `).run(
         saleId, pharmacyId, userId, 
         validatedData.patient_id || null, 
         shiftId,
         totalAmount, 
         validatedData.payment_method,
-        validatedData.check_number || null,
+        normalizedCheckNumber || null,
         validatedData.status,
-        validatedData.total_discount || 0
+        combinedDiscount,
+        validatedData.points_to_redeem || 0,
+        loyaltyDiscount,
       );
 
       for (const item of validatedData.items) {
@@ -757,6 +913,7 @@ export async function processCheckoutAction(data: any) {
         
         const fallbackLargeToMedium = Math.max(1, Number(drugInfo?.large_to_medium) || 1);
         const mediumToSmall = Math.max(1, Number(drugInfo?.medium_to_small) || 1);
+        const requiresExpiry = Number(drugInfo?.has_expiry ?? 1) !== 0;
 
         if (validatedData.status === 'completed') {
           const batches = item.inventory_id 
@@ -766,17 +923,19 @@ export async function processCheckoutAction(data: any) {
                 WHERE id = ? AND drug_id = ?
                   AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
                   AND quantity > 0
+                  AND (? = 0 OR expiry_date IS NOT NULL)
                   AND (expiry_date IS NULL OR expiry_date >= ?)
-              `).all(item.inventory_id, item.drug_id, pharmacyId, pharmacyId, today) as any[]
+              `).all(item.inventory_id, item.drug_id, pharmacyId, pharmacyId, requiresExpiry ? 1 : 0, today) as any[]
             : await db.prepare(`
                 SELECT id, quantity, cost_price, expiry_date, strips_per_box, medium_to_small
                 FROM inventory
                 WHERE drug_id = ?
                   AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
                   AND quantity > 0
+                  AND (? = 0 OR expiry_date IS NOT NULL)
                   AND (expiry_date IS NULL OR expiry_date >= ?)
                 ORDER BY CASE WHEN expiry_date IS NULL THEN 1 ELSE 0 END, expiry_date ASC, created_at ASC
-              `).all(item.drug_id, pharmacyId, pharmacyId, today) as any[];
+              `).all(item.drug_id, pharmacyId, pharmacyId, requiresExpiry ? 1 : 0, today) as any[];
 
           if (item.inventory_id && batches.length === 0 && !item.is_negative) {
             throw new Error(`دفعة المخزون المحددة للصنف "${drugName}" غير صالحة أو منتهية`);
@@ -881,6 +1040,7 @@ export async function processCheckoutAction(data: any) {
                 FROM inventory i
                 WHERE i.drug_id = md.id
                   AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
+                  AND (COALESCE(md.has_expiry, 1) = 0 OR i.expiry_date IS NOT NULL)
                   AND (i.expiry_date IS NULL OR i.expiry_date >= ?)
               ), 0) <= 0.0001
               AND NOT EXISTS (
@@ -931,7 +1091,12 @@ export async function processCheckoutAction(data: any) {
         await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)').run(journalId, accounts.sales, 'credit', totalAmount);
 
         if (validatedData.payment_method === 'wallet' && validatedData.patient_id) {
-          await db.prepare('UPDATE patients SET wallet_balance = wallet_balance - ? WHERE id = ?').run(totalAmount, validatedData.patient_id);
+          const walletUpdate = await db.prepare(`
+            UPDATE patients
+            SET wallet_balance = wallet_balance - ?
+            WHERE id = ? AND COALESCE(wallet_balance, 0) + 0.000001 >= ?
+          `).run(totalAmount, validatedData.patient_id, totalAmount);
+          if (!walletUpdate.changes) throw new Error('رصيد المحفظة غير كافٍ');
         }
 
         if (totalCogs > 0) {
@@ -958,7 +1123,7 @@ export async function processCheckoutAction(data: any) {
 
         pointsEarned = calculateLoyaltyPoints(totalAmount, patient?.loyalty_level || patientLoyaltyLevel);
         if (pointsEarned > 0) {
-          await db.prepare('UPDATE patients SET points_balance = points_balance + ? WHERE id = ?').run(pointsEarned, validatedData.patient_id);
+          await db.prepare('UPDATE patients SET points_balance = COALESCE(points_balance, 0) + ? WHERE id = ?').run(pointsEarned, validatedData.patient_id);
         }
         await db.prepare('UPDATE sales_invoices SET points_earned = ? WHERE id = ?').run(pointsEarned, saleId);
       }
@@ -973,6 +1138,8 @@ export async function processCheckoutAction(data: any) {
         sale_id: saleId,
         total_amount: totalAmount,
         points_earned: pointsEarned,
+        points_redeemed: validatedData.points_to_redeem,
+        loyalty_discount_amount: loyaltyDiscount,
         created_at: normalizeUtcTimestamp(savedInvoice?.created_at),
       }
     };

@@ -13,6 +13,7 @@ import { getBanksAction } from '@/app/actions-client/finance';
 import { getStaffAction } from '@/app/actions-client/users';
 import { format } from 'date-fns';
 import toast from 'react-hot-toast';
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap';
 
 interface DrawerHandoverProps {
   shiftId: string;
@@ -34,6 +35,7 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
   const [showCreditModal, setShowCreditModal] = useState(false);
   const [creditSalesList, setCreditSalesList] = useState<any[]>([]);
   const [loadingCredit, setLoadingCredit] = useState(false);
+  const creditDialogRef = useDialogFocusTrap<HTMLDivElement>(showCreditModal);
 
   const [form, setForm] = useState({
     actualCash: 0,
@@ -167,13 +169,14 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
   return (
     <div className="max-w-4xl mx-auto space-y-8" dir="rtl">
       {/* Summary Header */}
-      <div className="bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 overflow-hidden shadow-xl">
-        <div className="p-8 bg-slate-900 text-white flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+      <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-lg">
+        <div className="p-4 sm:p-6 bg-slate-900 text-white flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
           <div className="flex items-center gap-4">
             {!onClose && (
               <Link 
                 href="/shifts" 
-                className="p-3 bg-white/10 hover:bg-white/20 rounded-2xl text-white transition-all no-print flex items-center justify-center"
+                aria-label="العودة إلى إدارة الشفتات"
+                className="p-2.5 bg-white/10 hover:bg-white/20 rounded-xl text-white transition-colors no-print flex items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
                 title="العودة إلى إدارة الشفتات"
               >
                 <ArrowRight className="w-5 h-5" />
@@ -190,13 +193,13 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
             </div>
           </div>
           <div className="flex items-center gap-4">
-            <button onClick={() => window.print()} className="p-3 bg-white/10 hover:bg-white/20 rounded-xl transition-all no-print" title="طباعة">
+            <button type="button" aria-label="طباعة تفاصيل التسليم" onClick={() => window.print()} className="p-2.5 bg-white/10 hover:bg-white/20 rounded-xl transition-colors no-print focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white" title="طباعة">
               <Printer className="w-6 h-6 text-white" />
             </button>
           </div>
         </div>
 
-        <div className="p-10 grid grid-cols-1 lg:grid-cols-2 gap-10">
+        <div className="p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-2 gap-6 lg:gap-8">
           {/* Details Table */}
           <div className="space-y-6">
             <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
@@ -214,7 +217,7 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
                   <button 
                     type="button"
                     onClick={handleOpenCreditDetails}
-                    className="px-2 py-0.5 rounded bg-blue-100 hover:bg-blue-200 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 text-[10px] font-bold flex items-center gap-1 transition-colors"
+                    className="px-2.5 py-1 rounded-lg bg-blue-100 hover:bg-blue-200 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 text-xs font-bold flex items-center gap-1 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
                     title="أين ذهب الآجل؟"
                   >
                     <Eye className="w-3 h-3" />
@@ -238,7 +241,7 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
 
             <div className="p-6 bg-blue-50 dark:bg-blue-900/10 rounded-3xl border border-blue-100 dark:border-blue-800 flex items-start gap-4">
               <AlertTriangle className="w-6 h-6 text-blue-600 shrink-0" />
-              <p className="text-xs font-bold text-blue-800 dark:text-blue-300 leading-relaxed">
+              <p className="text-sm font-bold text-blue-800 dark:text-blue-300 leading-relaxed">
                 تُحسب النقدية الدفترية المتوقعة في درج الوردية من الحركات المسجلة خلال الوردية. طابقها مع النقدية المعدودة فعليًا في الدرج قبل التسليم.
               </p>
             </div>
@@ -247,16 +250,17 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
           {/* Handover Form */}
           <form onSubmit={handleSubmit} className="space-y-8">
             <div className="space-y-6">
-              <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
+              <h3 className="text-sm font-black text-slate-500 dark:text-slate-400 flex items-center gap-2">
                 <ArrowLeftRight className="w-4 h-4" /> بيانات التحويل والتسليم
               </h3>
 
               <div className="grid grid-cols-1 gap-6">
                 <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-400 uppercase mr-2">النقدية المعدودة فعليًا في درج الوردية</label>
+                  <label htmlFor="handover-actual-cash" className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">النقدية المعدودة فعليًا في درج الوردية</label>
                   <div className="relative">
                     <DollarSign className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
                     <input 
+                      id="handover-actual-cash"
                       type="number" 
                       step="0.01" 
                       className="w-full pr-12 pl-4 py-4 bg-slate-50 dark:bg-slate-800 border-none rounded-2xl font-black text-xl outline-none focus:ring-2 ring-blue-500 text-slate-900 dark:text-white"
@@ -268,10 +272,11 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
                 </div>
 
                 <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-400 uppercase mr-2">المبلغ المراد تحويله</label>
+                  <label htmlFor="handover-transfer-amount" className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">المبلغ المراد تحويله</label>
                   <div className="relative">
                     <DollarSign className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
                     <input 
+                      id="handover-transfer-amount"
                       type="number" 
                       step="0.01" 
                       className="w-full pr-12 pl-4 py-4 bg-slate-50 dark:bg-slate-800 border-none rounded-2xl font-black text-xl outline-none focus:ring-2 ring-blue-500 text-slate-900 dark:text-white"
@@ -282,10 +287,11 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <label className="text-[10px] font-black text-slate-400 uppercase mr-2">الجهة المحول إليها</label>
+                    <label htmlFor="handover-target-type" className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">الجهة المحول إليها</label>
                     <select 
+                      id="handover-target-type"
                       className="w-full p-4 bg-slate-50 dark:bg-slate-800 border-none rounded-2xl font-bold text-sm outline-none focus:ring-2 ring-blue-500"
                       value={form.transferTargetType}
                       onChange={(e) => setForm({...form, transferTargetType: e.target.value as any})}
@@ -298,8 +304,9 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
 
                   {form.transferTargetType === 'bank' && (
                     <div className="space-y-2">
-                      <label className="text-[10px] font-black text-slate-400 uppercase mr-2">اختر البنك</label>
+                      <label htmlFor="handover-bank" className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">اختر البنك</label>
                       <select 
+                        id="handover-bank"
                         className="w-full p-4 bg-slate-50 dark:bg-slate-800 border-none rounded-2xl font-bold text-sm outline-none focus:ring-2 ring-blue-500"
                         value={form.transferTargetId}
                         onChange={(e) => setForm({...form, transferTargetId: e.target.value})}
@@ -313,10 +320,11 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
                   )}
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <label className="text-[10px] font-black text-slate-400 uppercase mr-2">المستلم</label>
+                    <label htmlFor="handover-receiver" className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">المستلم</label>
                     <select 
+                      id="handover-receiver"
                       className="w-full p-4 bg-slate-50 dark:bg-slate-800 border-none rounded-2xl font-bold text-sm outline-none focus:ring-2 ring-blue-500"
                       value={form.receiverUsername}
                       onChange={(e) => setForm({...form, receiverUsername: e.target.value})}
@@ -329,8 +337,9 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
                   </div>
 
                   <div className="space-y-2">
-                    <label className="text-[10px] font-black text-slate-400 uppercase mr-2">كلمة مرور المستلم</label>
+                    <label htmlFor="handover-password" className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">كلمة مرور المستلم</label>
                     <input 
+                      id="handover-password"
                       type="password" 
                       className="w-full p-4 bg-slate-50 dark:bg-slate-800 border-none rounded-2xl font-bold text-sm outline-none focus:ring-2 ring-blue-500"
                       placeholder="••••••••"
@@ -341,8 +350,9 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
                 </div>
 
                 <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-400 uppercase mr-2">ملاحظات التحويل</label>
+                  <label htmlFor="handover-notes" className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">ملاحظات التحويل</label>
                   <textarea 
+                    id="handover-notes"
                     rows={2}
                     className="w-full p-4 bg-slate-50 dark:bg-slate-800 border-none rounded-2xl font-bold text-sm outline-none focus:ring-2 ring-blue-500 resize-none"
                     placeholder="أي ملاحظات إضافية بخصوص التحويل أو العجز..."
@@ -359,13 +369,13 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
                 type="submit"
                 disabled={processing}
                 className={cn(
-                  "w-full py-5 bg-slate-900 text-white rounded-3xl font-black text-lg shadow-xl flex items-center justify-center gap-3 transition-all",
-                  processing ? "opacity-50 cursor-not-allowed" : "hover:scale-[1.02] active:scale-[0.98] hover:bg-slate-800"
+                  "w-full py-4 bg-slate-900 text-white rounded-2xl font-black text-lg flex items-center justify-center gap-3 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2",
+                  processing ? "opacity-50 cursor-not-allowed" : "hover:bg-slate-800"
                 )}
               >
                 {processing ? 'جاري التنفيذ...' : (
                   <>
-                    <ShieldCheck className="w-8 h-8" /> إتمام تسليم الدرج (S)
+                    <ShieldCheck className="w-8 h-8" /> إتمام تسليم الدرج
                   </>
                 )}
               </button>
@@ -376,32 +386,34 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
 
       {/* Credit Sales Details Sub-Modal */}
       {showCreditModal && (
-        <div className="fixed inset-0 z-[210] flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-sm animate-in fade-in" dir="rtl">
-          <div className="w-full max-w-2xl bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col max-h-[85vh]">
+        <div className="fixed inset-0 z-[210] flex items-center justify-center p-3 sm:p-4 bg-slate-950/70 animate-in fade-in" dir="rtl">
+          <div ref={creditDialogRef} role="dialog" aria-modal="true" aria-labelledby="credit-sales-dialog-title" tabIndex={-1} className="w-full max-w-2xl bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col max-h-[90vh]">
             
             {/* Header */}
-            <div className="p-5 bg-gradient-to-r from-blue-900 via-indigo-900 to-slate-900 text-white flex justify-between items-center shrink-0">
+            <div className="p-4 sm:p-5 bg-slate-900 text-white flex justify-between items-center shrink-0">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-2xl bg-blue-500/20 flex items-center justify-center border border-blue-400/30">
                   <Receipt className="w-5 h-5 text-blue-300" />
                 </div>
                 <div>
-                  <h3 className="font-black text-base">تفاصيل مبيعات الآجل للوردية</h3>
+                  <h3 id="credit-sales-dialog-title" className="font-black text-base">تفاصيل مبيعات الآجل للوردية</h3>
                   <p className="text-xs text-blue-200 font-bold">
                     إجمالي الآجل: {(details?.credit_sales || 0).toLocaleString('ar-EG')} ج.م
                   </p>
                 </div>
               </div>
               <button 
+                type="button"
+                aria-label="إغلاق تفاصيل مبيعات الآجل"
                 onClick={() => setShowCreditModal(false)}
-                className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors"
+                className="w-9 h-9 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
               >
                 <X className="w-5 h-5 text-white" />
               </button>
             </div>
 
             {/* Content Table */}
-            <div className="p-6 overflow-y-auto flex-1 divide-y divide-slate-100 dark:divide-slate-800">
+            <div className="p-4 sm:p-6 overflow-y-auto flex-1 divide-y divide-slate-100 dark:divide-slate-800">
               {loadingCredit ? (
                 <div className="py-16 text-center text-slate-400 font-bold animate-pulse">
                   جاري تحميل فواتير الآجل...
@@ -412,7 +424,8 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
                   <p className="font-black text-base text-slate-600 dark:text-slate-300">لا توجد مبيعات آجل مسجلة في هذه الوردية</p>
                 </div>
               ) : (
-                <table className="w-full text-right text-xs">
+                <div className="overflow-x-auto">
+                <table className="w-full min-w-[620px] text-right text-sm">
                   <thead>
                     <tr className="text-slate-400 font-black border-b border-slate-100 dark:border-slate-800 pb-2">
                       <th className="pb-3 px-2">الفاتورة</th>
@@ -431,7 +444,7 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
                         <td className="py-3 px-2">
                           <div className="font-bold text-slate-900 dark:text-white">{inv.patient_name}</div>
                           {inv.patient_phone && (
-                            <div className="text-[10px] text-slate-400 font-mono">{inv.patient_phone}</div>
+                            <div className="text-xs text-slate-500 dark:text-slate-400 font-mono">{inv.patient_phone}</div>
                           )}
                         </td>
                         <td className="py-3 px-2 text-slate-500 font-mono dir-ltr text-right">
@@ -440,13 +453,14 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
                         <td className="py-3 px-2 text-center font-black text-emerald-600 dark:text-emerald-400">
                           {Number(inv.credit_amount ?? inv.total_amount ?? 0).toLocaleString('ar-EG')} ج.م
                         </td>
-                        <td className="py-3 px-2 text-slate-400 max-w-[150px] truncate text-[11px]">
+                        <td className="py-3 px-2 text-slate-500 dark:text-slate-400 max-w-[180px] truncate text-xs">
                           {inv.notes || '---'}
                         </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
+                </div>
               )}
             </div>
 

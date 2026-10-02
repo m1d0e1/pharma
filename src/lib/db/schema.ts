@@ -106,7 +106,6 @@ export type CreateInventory = z.infer<typeof CreateInventorySchema>;
 // Patient Schema
 export const PatientSchema = z.object({
   id: z.string().uuid(),
-  pharmacy_id: z.string().uuid(),
   full_name: z.string().min(1),
   name_en: z.string().optional(),
   phone: z.string().optional(),
@@ -115,7 +114,8 @@ export const PatientSchema = z.object({
   gender: z.enum(['male', 'female', 'other']).optional().nullable(),
   insurance_number: z.string().optional().nullable(),
   credit_limit: z.number().nonnegative().default(0),
-  points_balance: z.number().nonnegative().default(0),
+  // May be negative when a return claws back points that were already spent.
+  points_balance: z.number().default(0),
   customer_type: z.string().default('individual'),
   notes: z.string().optional(),
   created_at: z.string().datetime(),

@@ -11,6 +11,48 @@ jest.mock('react-hot-toast', () => ({ toast: { success: jest.fn(), error: jest.f
 describe('add-patient modal interactions', () => {
   beforeEach(() => jest.clearAllMocks());
 
+  it('exposes an accessible dialog with associated form labels and initial focus', () => {
+    render(<AddPatientModal pharmacyId="ph-1" onClose={jest.fn()} onSuccess={jest.fn()} />);
+
+    expect(screen.getByRole('dialog', { name: 'إضافة عميل جديد' })).toBeInTheDocument();
+    expect(screen.getByLabelText('الاسم بالكامل (ع) *')).toHaveFocus();
+    expect(screen.getByLabelText('تاريخ الميلاد')).toBeInTheDocument();
+    expect(screen.getByLabelText('طبيعة العميل')).toBeInTheDocument();
+    expect(screen.getByLabelText('طريقة الدفع')).toBeInTheDocument();
+    expect(screen.getByLabelText('ملاحظات إضافية')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'إغلاق نافذة إضافة العميل' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'ذكر' })).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('does not advertise unregistered single-letter save or close shortcuts', () => {
+    render(<AddPatientModal pharmacyId="ph-1" onClose={jest.fn()} onSuccess={jest.fn()} />);
+
+    expect(screen.getByRole('button', { name: 'حفظ العميل' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'إغلاق' })).toBeInTheDocument();
+    expect(screen.queryByText(/\(S\)|\(C\)/)).not.toBeInTheDocument();
+  });
+
+  it('offers wallet as a default payment method and persists the selection', async () => {
+    (addPatientAction as jest.Mock).mockResolvedValue({ success: true, id: 'patient-wallet-default' });
+    const onSuccess = jest.fn();
+
+    render(<AddPatientModal pharmacyId="ph-1" onClose={jest.fn()} onSuccess={onSuccess} />);
+
+    const paymentMethod = screen.getByLabelText('طريقة الدفع');
+    expect(paymentMethod).toHaveDisplayValue('نقدي (Cash)');
+    expect(screen.getByRole('option', { name: 'محفظة (Wallet)' })).toBeInTheDocument();
+
+    fireEvent.change(paymentMethod, { target: { value: 'wallet' } });
+    fireEvent.change(screen.getByPlaceholderText('محمد أحمد...'), { target: { value: 'عميل محفظة' } });
+    fireEvent.click(screen.getByRole('button', { name: /حفظ العميل/ }));
+
+    await waitFor(() => expect(addPatientAction).toHaveBeenCalledWith(expect.objectContaining({
+      full_name: 'عميل محفظة',
+      payment_method: 'wallet',
+    })));
+    expect(onSuccess).toHaveBeenCalledWith(expect.objectContaining({ payment_method: 'wallet' }));
+  });
+
   it('validates required name and keeps the form open when the action fails', async () => {
     const onClose = jest.fn();
     const onSuccess = jest.fn();
@@ -108,10 +150,8 @@ describe('add-patient modal interactions', () => {
     fireEvent.click(screen.getByRole('button', { name: /حفظ العميل/ }));
     await waitFor(() => expect(addPatientAction).toHaveBeenCalledTimes(1));
 
-    fireEvent.click(screen.getByRole('button', { name: /إغلاق/ }));
-    const headerClose = screen.getAllByRole('button').find(button => button.querySelector('svg.lucide-x'));
-    expect(headerClose).toBeDefined();
-    fireEvent.click(headerClose!);
+    fireEvent.click(screen.getByRole('button', { name: 'إغلاق' }));
+    fireEvent.click(screen.getByRole('button', { name: 'إغلاق نافذة إضافة العميل' }));
     const escCall = [...(useHotkeys as jest.Mock).mock.calls].reverse().find(call => call[0] === 'esc');
     expect(escCall).toBeDefined();
     escCall?.[1]();

@@ -82,6 +82,10 @@ describe('ReceiptDetailsModal interactions', () => {
   ])('shows an explicit %s payment-method label', async (paymentMethod, expectedLabel) => {
     render(<ReceiptDetailsModal invoice={{ ...invoice, payment_method: paymentMethod } as any} onClose={jest.fn()} />);
     await waitFor(() => expect(getConfigAction).toHaveBeenCalledTimes(3));
+    const dialog = screen.getByRole('dialog', { name: 'فاتورة مبيعات' });
+    expect(dialog).toHaveAttribute('tabindex', '-1');
+    await waitFor(() => expect(dialog).toContainElement(document.activeElement as HTMLElement));
+    expect(screen.getByText('طريقة الدفع')).toHaveClass('text-xs');
     expect(screen.getByText(expectedLabel)).toBeInTheDocument();
   });
 
@@ -95,7 +99,26 @@ describe('ReceiptDetailsModal interactions', () => {
     } as any} onClose={jest.fn()} />);
     await waitFor(() => expect(getConfigAction).toHaveBeenCalledTimes(3));
 
+    expect(screen.getByText('المجموع الفرعي:')).toHaveClass('text-xs');
+    expect(screen.getByText('إجمالي الخصم:').parentElement).toHaveClass('text-xs');
+    expect(screen.getByText('رسوم إضافية:').parentElement).toHaveClass('text-xs');
     expect(screen.getByText('-10.00 ج.م')).toBeInTheDocument();
     expect(screen.getByText('+5.00 ج.م')).toBeInTheDocument();
+  });
+
+  it('shows loyalty redemption as a component of the persisted invoice discount', async () => {
+    render(<ReceiptDetailsModal invoice={{
+      ...invoice,
+      total_amount: 90,
+      discount_amount: 10,
+      points_redeemed: 100,
+      loyalty_discount_amount: 10,
+      sales_items: [{ quantity_sold: 1, unit_price: 100 }],
+    } as any} onClose={jest.fn()} />);
+    await waitFor(() => expect(getConfigAction).toHaveBeenCalledTimes(3));
+
+    expect(screen.getByText('إجمالي الخصم:')).toBeInTheDocument();
+    expect(screen.getByText('منه خصم نقاط الولاء (100 نقطة):').parentElement).toHaveClass('text-xs');
+    expect(screen.getAllByText('-10.00 ج.م')).toHaveLength(2);
   });
 });

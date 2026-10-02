@@ -142,6 +142,9 @@ describe('PurchaseReportsClient async/error behavior', () => {
       resolveSecond({ success: true, data: [item('item-b', 'Latest Item B')] });
     });
     expect(await screen.findByText('Latest Item B')).toBeInTheDocument();
+    const dialog = screen.getByRole('dialog', { name: /فاتورة شراء PO-B/ });
+    expect(dialog).toHaveAttribute('tabindex', '-1');
+    await waitFor(() => expect(dialog).toContainElement(document.activeElement as HTMLElement));
     expect(screen.getByRole('heading', { name: /فاتورة شراء PO-B/ })).toBeInTheDocument();
 
     await act(async () => {

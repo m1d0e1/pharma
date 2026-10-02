@@ -11,6 +11,7 @@ import ReceiptDetailsModal from '@/components/receipts/ReceiptDetailsModal';
 import { generateReceiptHtml, printHtmlContent } from '@/lib/utils/printing';
 import { getConfigAction } from '@/app/actions-client/config';
 import toast from 'react-hot-toast';
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap';
 
 interface ShiftReceiptsModalProps {
   isOpen: boolean;
@@ -32,6 +33,7 @@ export default function ShiftReceiptsModal({
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedInvoice, setSelectedInvoice] = useState<any | null>(null);
   const [pharmacyInfo, setPharmacyInfo] = useState({ name: 'صيدلية فارما تيك', phone: '', address: '' });
+  const dialogRef = useDialogFocusTrap<HTMLDivElement>(isOpen && !selectedInvoice);
 
   useHotkeys('esc', () => {
     if (isOpen && !selectedInvoice) onClose();
@@ -118,7 +120,14 @@ export default function ShiftReceiptsModal({
 
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in" dir="rtl">
-      <div className="w-full max-w-4xl bg-white dark:bg-slate-900 text-slate-900 dark:text-white rounded-3xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col max-h-[90vh]">
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="shift-receipts-dialog-title"
+        tabIndex={-1}
+        className="w-full max-w-4xl bg-white dark:bg-slate-900 text-slate-900 dark:text-white rounded-3xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col max-h-[90vh]"
+      >
         
         {/* Header */}
         <div className="bg-gradient-to-r from-blue-900 via-blue-800 to-indigo-950 text-white p-5 flex justify-between items-center shrink-0">
@@ -127,13 +136,15 @@ export default function ShiftReceiptsModal({
               <Receipt className="w-6 h-6" />
             </div>
             <div>
-              <h2 className="text-lg font-black tracking-tight">فواتير وإيصالات الوردية</h2>
+              <h2 id="shift-receipts-dialog-title" className="text-lg font-black tracking-tight">فواتير وإيصالات الوردية</h2>
               <p className="text-xs text-blue-200 font-mono">
                 {shiftTitle || `وردية #${shiftId.slice(0, 12).toUpperCase()}`}
               </p>
             </div>
           </div>
           <button
+            type="button"
+            aria-label="إغلاق فواتير الوردية"
             onClick={onClose}
             className="w-8 h-8 rounded-full bg-white/10 hover:bg-rose-600 flex items-center justify-center text-white transition-colors"
           >
@@ -149,7 +160,7 @@ export default function ShiftReceiptsModal({
               <ShoppingBag className="w-4 h-4" />
             </div>
             <div>
-              <p className="text-[10px] text-slate-400 font-bold">عدد الفواتير</p>
+              <p className="text-xs text-slate-500 font-bold">عدد الفواتير</p>
               <p className="font-black text-sm">{receipts.length}</p>
             </div>
           </div>
@@ -159,7 +170,7 @@ export default function ShiftReceiptsModal({
               <DollarSign className="w-4 h-4" />
             </div>
             <div>
-              <p className="text-[10px] text-slate-400 font-bold">إجمالي المبيعات</p>
+              <p className="text-xs text-slate-500 font-bold">إجمالي المبيعات</p>
               <p className="font-black text-sm text-emerald-600">{totalSalesAmount.toFixed(2)} ج.م</p>
             </div>
           </div>
@@ -169,7 +180,7 @@ export default function ShiftReceiptsModal({
               <span className="font-bold text-xs">💵</span>
             </div>
             <div>
-              <p className="text-[10px] text-slate-400 font-bold">المبيعات النقدية</p>
+              <p className="text-xs text-slate-500 font-bold">المبيعات النقدية</p>
               <p className="font-black text-sm">{cashSalesAmount.toFixed(2)} ج.م</p>
             </div>
           </div>
@@ -179,7 +190,7 @@ export default function ShiftReceiptsModal({
               <CreditCard className="w-4 h-4" />
             </div>
             <div>
-              <p className="text-[10px] text-slate-400 font-bold">المبيعات الآجل</p>
+              <p className="text-xs text-slate-500 font-bold">المبيعات الآجل</p>
               <p className="font-black text-sm text-amber-600">{creditSalesAmount.toFixed(2)} ج.م</p>
             </div>
           </div>
@@ -193,6 +204,7 @@ export default function ShiftReceiptsModal({
             <Search className="absolute right-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
             <input
               type="text"
+              aria-label="بحث في فواتير الوردية"
               placeholder="بحث برقم الفاتورة أو اسم العميل أو اسم الصنف..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
@@ -227,8 +239,8 @@ export default function ShiftReceiptsModal({
               </p>
             </div>
           ) : (
-            <div className="border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden divide-y divide-slate-100 dark:divide-slate-800">
-              <div className="grid grid-cols-12 bg-slate-50 dark:bg-slate-800/80 p-3 text-xs font-black text-slate-500 select-none">
+            <div className="border border-slate-200 dark:border-slate-800 rounded-2xl overflow-x-auto divide-y divide-slate-100 dark:divide-slate-800">
+              <div className="grid min-w-[760px] grid-cols-12 bg-slate-50 dark:bg-slate-800/80 p-3 text-xs font-black text-slate-500 select-none">
                 <span className="col-span-2 text-center">رقم الفاتورة</span>
                 <span className="col-span-2 text-center">التاريخ والوقت</span>
                 <span className="col-span-3">العميل</span>
@@ -241,13 +253,13 @@ export default function ShiftReceiptsModal({
               {filteredReceipts.map((inv) => (
                 <div
                   key={inv.id}
-                  className="grid grid-cols-12 p-3 text-xs font-bold items-center hover:bg-blue-50/40 dark:hover:bg-slate-800/50 transition-colors"
+                  className="grid min-w-[760px] grid-cols-12 p-3 text-xs font-bold items-center hover:bg-blue-50/40 dark:hover:bg-slate-800/50 transition-colors"
                 >
                   <span className="col-span-2 text-center font-mono font-bold text-slate-700 dark:text-slate-300">
                     #{inv.invoice_number || inv.id.slice(0, 8).toUpperCase()}
                   </span>
 
-                  <span className="col-span-2 text-center text-slate-500 text-[11px] font-mono">
+                  <span className="col-span-2 text-center text-slate-500 text-xs font-mono">
                     {inv.created_at ? new Date(inv.created_at).toLocaleTimeString('ar-EG-u-nu-latn', { hour: '2-digit', minute: '2-digit', hour12: true }) : '---'}
                   </span>
 
@@ -256,14 +268,14 @@ export default function ShiftReceiptsModal({
                       {inv.patient_name || inv.patients?.full_name || 'عميل نقدي'}
                     </span>
                     {(inv.patient_phone || inv.patients?.phone) && (
-                      <span className="text-[10px] text-slate-400 font-mono block">
+                      <span className="text-xs text-slate-500 font-mono block">
                         {inv.patient_phone || inv.patients?.phone}
                       </span>
                     )}
                   </div>
 
                   <span className="col-span-2 text-center">
-                    <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-black ${
+                    <span className={`px-2.5 py-0.5 rounded-full text-xs font-black ${
                       inv.payment_method === 'cash'
                         ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300'
                         : inv.payment_method === 'credit'
@@ -286,6 +298,8 @@ export default function ShiftReceiptsModal({
 
                   <div className="col-span-1 flex items-center justify-center gap-1.5">
                     <button
+                      type="button"
+                      aria-label={`عرض تفاصيل الفاتورة ${inv.invoice_number || inv.id.slice(0, 8)}`}
                       onClick={() => setSelectedInvoice(inv)}
                       className="p-1.5 hover:bg-blue-100 dark:hover:bg-slate-700 text-blue-600 rounded-lg transition-colors"
                       title="عرض تفاصيل الفاتورة"
@@ -293,6 +307,8 @@ export default function ShiftReceiptsModal({
                       <Eye className="w-4 h-4" />
                     </button>
                     <button
+                      type="button"
+                      aria-label={`طباعة الفاتورة ${inv.invoice_number || inv.id.slice(0, 8)}`}
                       onClick={() => handlePrint(inv)}
                       className="p-1.5 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-lg transition-colors"
                       title="طباعة سريعة"

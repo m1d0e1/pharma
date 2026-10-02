@@ -101,7 +101,7 @@ export default function NewsBar() {
   const Icon = TYPE_ICON[item.type || 'general'] ?? Megaphone;
 
   return (
-    <div className="flex items-center gap-3 px-4 py-2.5 bg-gradient-to-l from-blue-600 to-indigo-700 text-white text-sm font-bold rounded-2xl shadow-lg w-full overflow-hidden animate-in slide-in-from-top-2 duration-300">
+    <div role="region" aria-label="أخبار النظام" className="flex items-center gap-3 px-4 py-2.5 bg-gradient-to-l from-blue-600 to-indigo-700 text-white text-sm font-bold rounded-2xl shadow-lg w-full overflow-hidden animate-in slide-in-from-top-2 duration-300 motion-reduce:animate-none">
       <style>{`
         @keyframes marquee {
           0% { transform: translate3d(50%, 0, 0); }
@@ -109,6 +109,12 @@ export default function NewsBar() {
         }
         .animate-marquee {
           animation: marquee 20s linear infinite;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .animate-marquee {
+            animation: none;
+            transform: none;
+          }
         }
       `}</style>
       <Globe className="w-4 h-4 shrink-0 opacity-70" />
@@ -119,9 +125,10 @@ export default function NewsBar() {
         </div>
       </div>
       <button
+        type="button"
         onClick={dismiss}
         className="shrink-0 p-1 rounded-full hover:bg-white/20 transition-colors"
-        aria-label="إخفاء"
+        aria-label="إخفاء شريط الأخبار"
       >
         <X className="w-3.5 h-3.5" />
       </button>

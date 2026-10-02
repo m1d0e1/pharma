@@ -20,6 +20,17 @@ import { useHotkeys } from 'react-hotkeys-hook';
 
 const ReceiptDetailsModal = dynamic(() => import('@/components/receipts/ReceiptDetailsModal'), { ssr: false });
 
+const paymentMethodLabels: Record<string, string> = {
+  cash: 'نقدي',
+  visa: 'فيزا',
+  credit: 'آجل',
+  wallet: 'محفظة',
+  check: 'شيك',
+  delivery: 'توصيل',
+};
+
+const paymentMethodLabel = (method?: string) => paymentMethodLabels[String(method || '').toLowerCase()] || method || 'غير محدد';
+
 export default function SalesReportsClient({ userRole, user }: { userRole?: string; user?: any }) {
   const [invoices, setInvoices] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
@@ -45,7 +56,7 @@ export default function SalesReportsClient({ userRole, user }: { userRole?: stri
     async function loadData() {
       const [staffResult, patientResult] = await Promise.allSettled([
         getStaffAction(),
-        getPatientsAction(),
+        getPatientsAction({ reportScope: true }),
       ]);
       let metadataFailed = false;
 
@@ -125,25 +136,36 @@ export default function SalesReportsClient({ userRole, user }: { userRole?: stri
     }
   };
 
-  const totalGrossAmount = invoices.reduce((sum, inv) => sum + Number(inv.total_amount || 0), 0);
+  // sales_invoices.total_amount is persisted as the final/net invoice amount.
+  // Reconstruct the pre-discount display value instead of subtracting discount twice.
+  const totalGrossAmount = invoices.reduce(
+    (sum, inv) => sum + Number(inv.total_amount || 0) + Number(inv.discount_amount || 0),
+    0,
+  );
   const totalDiscountAmount = invoices.reduce((sum, inv) => sum + Number(inv.discount_amount || 0), 0);
-  const totalNetAmount = invoices.reduce((sum, inv) => sum + (Number(inv.total_amount || 0) - Number(inv.discount_amount || 0)), 0);
+  const totalNetAmount = invoices.reduce((sum, inv) => sum + Number(inv.total_amount || 0), 0);
   const cashSalesTotal = invoices
     .filter(i => i.payment_method === 'cash')
-    .reduce((sum, inv) => sum + (Number(inv.total_amount || 0) - Number(inv.discount_amount || 0)), 0);
+    .reduce((sum, inv) => sum + Number(inv.total_amount || 0), 0);
   const visaSalesTotal = invoices
     .filter(i => i.payment_method === 'visa')
-    .reduce((sum, inv) => sum + (Number(inv.total_amount || 0) - Number(inv.discount_amount || 0)), 0);
+    .reduce((sum, inv) => sum + Number(inv.total_amount || 0), 0);
   const creditSalesTotal = invoices
     .filter(i => i.payment_method === 'credit')
-    .reduce((sum, inv) => sum + (Number(inv.total_amount || 0) - Number(inv.discount_amount || 0)), 0);
+    .reduce((sum, inv) => sum + Number(inv.total_amount || 0), 0);
+  const walletSalesTotal = invoices
+    .filter(i => i.payment_method === 'wallet')
+    .reduce((sum, inv) => sum + Number(inv.total_amount || 0), 0);
+  const otherSalesTotal = invoices
+    .filter(i => !['cash', 'visa', 'credit', 'wallet'].includes(String(i.payment_method || '').toLowerCase()))
+    .reduce((sum, inv) => sum + Number(inv.total_amount || 0), 0);
   const reportUser = user || (userRole ? { role: userRole } : null);
 
   return (
     <div className="space-y-8 pb-20" dir="rtl">
       {/* Header */}
       <div className="bg-white dark:bg-slate-900 p-8 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-sm">
-        <div className="flex justify-between items-center mb-8">
+        <div className="flex flex-col gap-4 sm:flex-row sm:justify-between sm:items-center mb-8">
           <div>
             <h1 className="text-3xl font-black text-slate-800 dark:text-white">تقرير فواتير المبيعات</h1>
             <p className="text-slate-500 font-bold">عرض وتحليل تفصيلي لعمليات البيع والمرتجعات</p>
@@ -166,13 +188,13 @@ export default function SalesReportsClient({ userRole, user }: { userRole?: stri
                 const headers = ['رقم الفاتورة', 'طريقة الدفع', 'التاريخ', 'العميل', 'الموظف', 'قيمة الفاتورة', 'الخصم', 'الصافي', 'الحالة'];
                 const rows = invoices.map(inv => [
                   `#${inv.id.slice(0, 8)}`,
-                  inv.payment_method === 'cash' ? 'نقدي' : inv.payment_method === 'visa' ? 'فيزا' : 'آجل',
+                  paymentMethodLabel(inv.payment_method),
                   format(new Date(inv.created_at), 'yyyy/MM/dd HH:mm'),
                   `"${(inv.patient_name || '-').replace(/"/g, '""')}"`,
                   `"${(inv.staff_name || 'غير محدد').replace(/"/g, '""')}"`,
-                  inv.total_amount,
+                  Number(inv.total_amount || 0) + Number(inv.discount_amount || 0),
                   inv.discount_amount || 0,
-                  inv.total_amount - (inv.discount_amount || 0),
+                  inv.total_amount,
                   inv.status || 'منتهية'
                 ]);
                 const csvContent = '\uFEFF' + [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
@@ -195,10 +217,11 @@ export default function SalesReportsClient({ userRole, user }: { userRole?: stri
         {/* Filters */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-6 p-8 bg-slate-50 dark:bg-slate-800/50 rounded-[32px] border border-slate-100 dark:border-slate-700">
           <div className="space-y-2">
-            <label className="text-[10px] font-black text-slate-400 uppercase mr-2">من تاريخ</label>
+            <label htmlFor="sales-report-start-date" className="text-xs font-black text-slate-500 mr-2">من تاريخ</label>
             <div className="relative">
               <Calendar className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
               <input 
+                id="sales-report-start-date"
                 type="date" 
                 className="w-full pr-12 pl-4 py-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 font-bold outline-none focus:border-blue-500"
                 value={filters.startDate}
@@ -207,10 +230,11 @@ export default function SalesReportsClient({ userRole, user }: { userRole?: stri
             </div>
           </div>
           <div className="space-y-2">
-            <label className="text-[10px] font-black text-slate-400 uppercase mr-2">إلى تاريخ</label>
+            <label htmlFor="sales-report-end-date" className="text-xs font-black text-slate-500 mr-2">إلى تاريخ</label>
             <div className="relative">
               <Calendar className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
               <input 
+                id="sales-report-end-date"
                 type="date" 
                 className="w-full pr-12 pl-4 py-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 font-bold outline-none focus:border-blue-500"
                 value={filters.endDate}
@@ -219,8 +243,9 @@ export default function SalesReportsClient({ userRole, user }: { userRole?: stri
             </div>
           </div>
           <div className="space-y-2">
-            <label className="text-[10px] font-black text-slate-400 uppercase mr-2">الموظف / الصيدلي</label>
+            <label htmlFor="sales-report-staff" className="text-xs font-black text-slate-500 mr-2">الموظف / الصيدلي</label>
             <select 
+              id="sales-report-staff"
               className="w-full px-4 py-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 font-bold outline-none"
               value={filters.userId}
               onChange={(e) => setFilters({...filters, userId: e.target.value})}
@@ -230,8 +255,9 @@ export default function SalesReportsClient({ userRole, user }: { userRole?: stri
             </select>
           </div>
           <div className="space-y-2">
-            <label className="text-[10px] font-black text-slate-400 uppercase mr-2">طريقة الدفع</label>
+            <label htmlFor="sales-report-payment" className="text-xs font-black text-slate-500 mr-2">طريقة الدفع</label>
             <select 
+              id="sales-report-payment"
               className="w-full px-4 py-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 font-bold outline-none"
               value={filters.paymentMethod}
               onChange={(e) => setFilters({...filters, paymentMethod: e.target.value})}
@@ -240,11 +266,15 @@ export default function SalesReportsClient({ userRole, user }: { userRole?: stri
               <option value="cash">نقدي</option>
               <option value="credit">آجل / عملاء</option>
               <option value="visa">فيزا / شبكة</option>
+              <option value="wallet">محفظة</option>
+              <option value="check">شيك</option>
+              <option value="delivery">توصيل</option>
             </select>
           </div>
           <div className="md:col-span-2 space-y-2">
-            <label className="text-[10px] font-black text-slate-400 uppercase mr-2">العميل</label>
+            <label htmlFor="sales-report-patient" className="text-xs font-black text-slate-500 mr-2">العميل</label>
             <select 
+              id="sales-report-patient"
               className="w-full px-4 py-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 font-bold outline-none"
               value={filters.patientId}
               onChange={(e) => setFilters({...filters, patientId: e.target.value})}
@@ -254,8 +284,9 @@ export default function SalesReportsClient({ userRole, user }: { userRole?: stri
             </select>
           </div>
           <div className="space-y-2">
-            <label className="text-[10px] font-black text-slate-400 uppercase mr-2">رقم الفاتورة</label>
+            <label htmlFor="sales-report-invoice" className="text-xs font-black text-slate-500 mr-2">رقم الفاتورة</label>
             <input 
+              id="sales-report-invoice"
               type="text" 
               placeholder="ابحث برقم الفاتورة..."
               className="w-full px-4 py-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 font-bold outline-none"
@@ -265,6 +296,7 @@ export default function SalesReportsClient({ userRole, user }: { userRole?: stri
           </div>
           <div className="flex items-end">
             <button 
+              type="button"
               onClick={handleSearch}
               className="w-full py-3 bg-slate-900 text-white rounded-xl font-black flex items-center justify-center gap-2 hover:bg-slate-800 transition-all shadow-lg"
             >
@@ -321,7 +353,7 @@ export default function SalesReportsClient({ userRole, user }: { userRole?: stri
             <p className="text-2xl font-black text-slate-900 dark:text-white">
               {totalNetAmount.toLocaleString()} <span className="text-xs text-slate-400">ج.م</span>
             </p>
-            <p className="text-[10px] text-slate-400 font-bold mt-0.5">{invoices.length} فاتورة</p>
+            <p className="text-xs text-slate-500 font-bold mt-0.5">{invoices.length} فاتورة</p>
           </div>
         </div>
 
@@ -358,8 +390,9 @@ export default function SalesReportsClient({ userRole, user }: { userRole?: stri
             <p className="text-xl font-black text-emerald-600">
               {(cashSalesTotal + visaSalesTotal).toLocaleString()} <span className="text-xs text-slate-400">ج.م</span>
             </p>
-            <p className="text-[10px] text-slate-400 font-bold mt-0.5">
-              آجل: {creditSalesTotal.toLocaleString()} ج.م
+            <p className="text-xs text-slate-500 font-bold mt-0.5">
+              آجل: {creditSalesTotal.toLocaleString()} ج.م · محفظة: {walletSalesTotal.toLocaleString()} ج.م
+              {otherSalesTotal > 0 ? ` · أخرى: ${otherSalesTotal.toLocaleString()} ج.م` : ''}
             </p>
           </div>
         </div>
@@ -369,9 +402,9 @@ export default function SalesReportsClient({ userRole, user }: { userRole?: stri
       <div className="grid grid-cols-1 gap-8">
         <div className="bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 overflow-hidden shadow-sm">
           <TableScrollContainer>
-            <table className="w-full text-right">
+            <table className="w-full min-w-[1100px] text-right">
               <thead className="bg-slate-50 dark:bg-slate-800/50">
-                <tr className="text-slate-400 text-[10px] font-black uppercase tracking-widest">
+                <tr className="text-slate-500 text-xs font-black">
                   <th className="px-8 py-6">الرقم</th>
                   <th className="px-8 py-6">النوع</th>
                   <th className="px-8 py-6">التاريخ</th>
@@ -394,34 +427,36 @@ export default function SalesReportsClient({ userRole, user }: { userRole?: stri
                     tabIndex={0}
                     onClick={() => handleInvoiceClick(inv.id)}
                     onKeyDown={(event) => {
-                      if (event.target === event.currentTarget && event.key === 'Enter') {
+                      if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) {
+                        event.preventDefault();
                         void handleInvoiceClick(inv.id);
                       }
                     }}
                     className={cn(
-                      "hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors cursor-pointer group",
+                      "hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors cursor-pointer group focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500",
                       selectedInvoice === inv.id ? "bg-blue-50/50 dark:bg-blue-900/10" : ""
                     )}
                   >
                     <td className="px-8 py-6 font-mono font-black text-blue-600 group-hover:underline">#{inv.id.slice(0, 8)}</td>
                     <td className="px-8 py-6">
                       <span className={cn(
-                        "px-4 py-1.5 rounded-full text-[10px] font-black",
+                        "px-4 py-1.5 rounded-full text-xs font-black",
                         inv.payment_method === 'cash' ? "bg-emerald-50 text-emerald-600" :
-                        inv.payment_method === 'visa' ? "bg-blue-50 text-blue-600" : "bg-purple-50 text-purple-600"
+                        inv.payment_method === 'visa' ? "bg-blue-50 text-blue-600" :
+                        inv.payment_method === 'wallet' ? "bg-amber-50 text-amber-700" : "bg-purple-50 text-purple-600"
                       )}>
-                        {inv.payment_method === 'cash' ? 'نقدي' : inv.payment_method === 'visa' ? 'فيزا' : 'آجل'}
+                        {paymentMethodLabel(inv.payment_method)}
                       </span>
                     </td>
                     <td className="px-8 py-6 font-bold text-slate-500">{format(new Date(inv.created_at), 'yyyy/MM/dd HH:mm')}</td>
                     <td className="px-8 py-6 font-black">{inv.patient_name || '-'}</td>
                     <td className="px-8 py-6 font-bold text-slate-400 italic">{inv.staff_name || 'غير محدد'}</td>
-                    <td className="px-8 py-6 font-black">{inv.total_amount.toLocaleString()}</td>
+                    <td className="px-8 py-6 font-black">{(Number(inv.total_amount || 0) + Number(inv.discount_amount || 0)).toLocaleString()}</td>
                     <td className="px-8 py-6 font-black text-rose-500">{inv.discount_amount?.toLocaleString() || 0}</td>
-                    <td className="px-8 py-6 font-black text-lg text-slate-900 dark:text-white">{(inv.total_amount - (inv.discount_amount || 0)).toLocaleString()}</td>
+                    <td className="px-8 py-6 font-black text-lg text-slate-900 dark:text-white">{Number(inv.total_amount || 0).toLocaleString()}</td>
                     <td className="px-8 py-6">
                       <span className={cn(
-                        "px-3 py-1 rounded-lg text-[10px] font-black uppercase",
+                        "px-3 py-1 rounded-lg text-xs font-black",
                         inv.status === 'completed' ? "bg-emerald-50 text-emerald-600 dark:bg-emerald-950/20 dark:text-emerald-400" :
                         inv.status === 'delivered' ? "bg-blue-50 text-blue-600 dark:bg-blue-950/20 dark:text-blue-400" :
                         inv.status === 'draft' ? "bg-amber-50 text-amber-600 dark:bg-amber-950/20 dark:text-amber-400" :
@@ -462,6 +497,9 @@ export default function SalesReportsClient({ userRole, user }: { userRole?: stri
             invoice={{
               id: selectedInvoice,
               total_amount: invoices.find(i => i.id === selectedInvoice)?.total_amount || 0,
+              discount_amount: invoices.find(i => i.id === selectedInvoice)?.discount_amount || 0,
+              points_redeemed: invoices.find(i => i.id === selectedInvoice)?.points_redeemed || 0,
+              loyalty_discount_amount: invoices.find(i => i.id === selectedInvoice)?.loyalty_discount_amount || 0,
               created_at: invoices.find(i => i.id === selectedInvoice)?.created_at || new Date().toISOString(),
               payment_method: invoices.find(i => i.id === selectedInvoice)?.payment_method || 'cash',
               profiles: { full_name: invoices.find(i => i.id === selectedInvoice)?.staff_name || 'System' },

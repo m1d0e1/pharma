@@ -6,6 +6,7 @@ import {
   Landmark, Receipt, CheckCircle, AlertCircle
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap';
 import { 
   getAccountsAction, 
   getBanksAction, 
@@ -46,6 +47,7 @@ export default function TrialBalanceSettingsClient({
   const [sessionCanManage, setSessionCanManage] = useState(false);
   
   const [showPicker, setShowPicker] = useState<{ show: boolean, targetId?: string, targetName?: string, category: string, targetType?: string } | null>(null);
+  const pickerDialogRef = useDialogFocusTrap<HTMLDivElement>(Boolean(showPicker));
 
   useEffect(() => {
     void loadData();
@@ -171,7 +173,7 @@ export default function TrialBalanceSettingsClient({
           </button>
         </div>
       )}
-      <div className="bg-white dark:bg-slate-900 p-8 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-sm">
+      <div className="bg-white dark:bg-slate-900 p-4 sm:p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm">
         <h2 className="text-2xl font-black text-slate-800 dark:text-white mb-2">إعدادات ميزان المراجعة</h2>
         <p className="text-slate-500 font-bold">ربط الكيانات (بنوك، نقدية، مصروفات) بشجرة الحسابات العامة</p>
       </div>
@@ -195,10 +197,10 @@ export default function TrialBalanceSettingsClient({
         </div>
 
         <div className="lg:col-span-3">
-          <div className="bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 overflow-hidden shadow-sm">
-            <table className="w-full text-right">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-x-auto shadow-sm">
+            <table className="w-full min-w-[640px] text-right">
               <thead className="bg-slate-50 dark:bg-slate-800/50">
-                <tr className="text-slate-400 text-[10px] font-black uppercase tracking-widest">
+                <tr className="text-slate-500 dark:text-slate-400 text-xs font-black">
                   <th className="px-8 py-6">البيان</th>
                   <th className="px-8 py-6">الحساب المرتبط</th>
                   <th className="px-8 py-6 text-center">الإجراء</th>
@@ -230,19 +232,19 @@ export default function TrialBalanceSettingsClient({
       </div>
 
       {showPicker && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-8">
-          <div className="bg-white dark:bg-slate-900 w-full max-w-4xl max-h-[80vh] rounded-[40px] shadow-2xl flex flex-col overflow-hidden border border-slate-200 dark:border-slate-800">
-             <div className="p-8 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center">
+        <div className="fixed inset-0 bg-slate-950/65 z-[100] flex items-center justify-center p-3 sm:p-6">
+          <div ref={pickerDialogRef} role="dialog" aria-modal="true" aria-labelledby="trial-balance-picker-title" tabIndex={-1} className="bg-white dark:bg-slate-900 w-full max-w-4xl max-h-[92vh] rounded-3xl shadow-xl flex flex-col overflow-hidden border border-slate-200 dark:border-slate-800">
+             <div className="p-4 sm:p-6 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center gap-4">
                 <div>
-                   <h3 className="text-2xl font-black">اختيار الحساب المحاسبي</h3>
+                   <h3 id="trial-balance-picker-title" className="text-xl sm:text-2xl font-black">اختيار الحساب المحاسبي</h3>
                    <p className="text-slate-500 font-bold">ربط &quot;{showPicker.targetName}&quot; بحساب من الشجرة</p>
                    {savingMapping && <p className="text-xs font-black text-blue-600 mt-2">جاري الربط...</p>}
                 </div>
-                <button disabled={savingMapping} onClick={() => setShowPicker(null)} className="w-12 h-12 bg-slate-100 dark:bg-slate-800 rounded-2xl flex items-center justify-center text-slate-500 hover:text-rose-500 transition-all disabled:opacity-50">
+                <button type="button" aria-label="إغلاق اختيار الحساب" disabled={savingMapping} onClick={() => setShowPicker(null)} className="w-10 h-10 bg-slate-100 dark:bg-slate-800 rounded-xl flex items-center justify-center text-slate-600 dark:text-slate-300 hover:text-rose-600 transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
                    <X className="w-6 h-6" />
                 </button>
              </div>
-             <div className="flex-1 overflow-y-auto p-8 custom-scrollbar bg-slate-50/50 dark:bg-slate-800/20">
+             <div className="flex-1 overflow-y-auto p-4 sm:p-6 custom-scrollbar bg-slate-50/50 dark:bg-slate-800/20">
                 <AccountTree 
                   accounts={accounts} 
                   onSelect={(accId) => handleSelectAccount(accId)} 
@@ -273,11 +275,13 @@ function CategoryButton({ active, onClick, icon: Icon, label, color }: any) {
 
   return (
     <button
+      type="button"
+      aria-pressed={active}
       onClick={onClick}
       className={cn(
-        "w-full flex items-center gap-4 px-6 py-5 rounded-[24px] font-black transition-all",
+        "w-full flex items-center gap-3 px-4 py-4 rounded-2xl font-black transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500",
         active 
-          ? activeColors[color] + " shadow-xl scale-105" 
+          ? activeColors[color] + " shadow-sm"
           : "bg-white dark:bg-slate-900 text-slate-500 border border-slate-100 dark:border-slate-800 hover:bg-slate-50"
       )}
     >
@@ -311,7 +315,7 @@ function MappingRow({ name, mapping, onLink, canManage = true }: any) {
           <button
             onClick={onLink}
             className={cn(
-              "px-6 py-2 rounded-xl text-xs font-black transition-all",
+              "px-5 py-2.5 rounded-xl text-sm font-black transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500",
               mapping
                 ? "bg-slate-100 text-slate-500 hover:bg-blue-50 hover:text-blue-600"
                 : "bg-blue-600 text-white shadow-lg shadow-blue-500/20 hover:bg-blue-700"
@@ -349,7 +353,7 @@ function AccountTree({ accounts, onSelect, disabled = false }: { accounts: Accou
     <div key={`node-${node.id}-${node.code}`} className="mr-4">
       <div className="flex items-center gap-3 py-2 group">
         {node.is_group ? (
-          <button onClick={() => toggle(node.id)} className="text-slate-400 hover:text-slate-600">
+          <button type="button" aria-label={`${expanded[node.id] ? 'طي' : 'فتح'} ${node.name_ar}`} aria-expanded={!!expanded[node.id]} onClick={() => toggle(node.id)} className="p-1 rounded text-slate-500 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
             {expanded[node.id] ? <ChevronDown className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
           </button>
         ) : (
@@ -358,8 +362,17 @@ function AccountTree({ accounts, onSelect, disabled = false }: { accounts: Accou
         <div className={cn(
           "flex items-center gap-3 px-4 py-2 rounded-xl transition-all cursor-pointer",
           node.is_group ? "font-black text-slate-800 dark:text-white" : "font-bold text-slate-500 hover:bg-blue-50 hover:text-blue-600",
-          disabled && !node.is_group && "pointer-events-none opacity-50"
+          disabled && !node.is_group && "pointer-events-none opacity-50",
+          !node.is_group && !disabled && "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
         )}
+        role={!node.is_group ? 'button' : undefined}
+        tabIndex={!node.is_group && !disabled ? 0 : undefined}
+        aria-disabled={!node.is_group && disabled ? true : undefined}
+        onKeyDown={(event) => {
+          if (node.is_group || disabled || (event.key !== 'Enter' && event.key !== ' ')) return;
+          event.preventDefault();
+          onSelect(node.id);
+        }}
         onClick={() => !node.is_group && !disabled && onSelect(node.id)}>
           {node.is_group ? <FolderOpen className="w-4 h-4 text-amber-500" /> : <Receipt className="w-4 h-4 text-blue-500" />}
           <span className="text-xs font-mono opacity-50">{node.code}</span>

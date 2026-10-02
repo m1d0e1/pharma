@@ -8,6 +8,7 @@ import { toast } from 'react-hot-toast';
 import { getDrugDetailsFullAction } from '@/app/actions-client/inventory';
 import { updateMasterDrugAction, searchMasterDrugsAction, addDrugAlternativeAction, removeDrugAlternativeAction, addDrugInteractionAction, removeDrugInteractionAction } from '@/app/actions-client/master-drugs';
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap';
 
 interface DrugDetailsModalProps {
   drugId: number | string;
@@ -44,6 +45,8 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: Dru
   const [conflictIngredientB, setConflictIngredientB] = useState('');
   const [conflictSeverity, setConflictSeverity] = useState('minor');
   const [expandedConflicts, setExpandedConflicts] = useState<number[]>([]);
+  const mainDialogRef = useDialogFocusTrap<HTMLDivElement>(!loading && !loadError);
+  const errorDialogRef = useDialogFocusTrap<HTMLDivElement>(loadError);
 
   React.useEffect(() => {
     setCurrentId(drugId);
@@ -184,7 +187,7 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: Dru
   if (loading) {
     return (
       <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[200] flex items-center justify-center">
-        <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl animate-pulse flex flex-col items-center gap-4">
+        <div role="status" aria-live="polite" className="bg-white dark:bg-slate-900 p-8 rounded-3xl animate-pulse flex flex-col items-center gap-4">
           <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
           <p className="font-bold text-slate-500">جاري تحميل بيانات الصنف...</p>
         </div>
@@ -195,9 +198,9 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: Dru
   if (loadError) {
     return (
       <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[200] flex items-center justify-center p-4" dir="rtl">
-        <div className="bg-white dark:bg-slate-900 p-10 rounded-3xl shadow-2xl text-center space-y-4 min-w-[320px]">
+        <div ref={errorDialogRef} role="alertdialog" aria-modal="true" aria-labelledby="drug-details-error-title" tabIndex={-1} className="bg-white dark:bg-slate-900 p-8 rounded-3xl shadow-2xl text-center space-y-4 min-w-[320px]">
           <AlertTriangle className="w-10 h-10 text-rose-500 mx-auto" />
-          <p className="font-black text-slate-800 dark:text-slate-100">تعذر تحميل بيانات الصنف</p>
+          <p id="drug-details-error-title" className="font-black text-slate-800 dark:text-slate-100">تعذر تحميل بيانات الصنف</p>
           <div className="flex justify-center gap-3">
             <button
               type="button"
@@ -253,16 +256,16 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: Dru
 
   return (
     <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[200] flex items-center justify-center p-4">
-      <div className="bg-white dark:bg-slate-900 w-full max-w-5xl rounded-[40px] shadow-2xl border border-slate-100 dark:border-slate-800 flex flex-col max-h-[90vh] overflow-hidden animate-in zoom-in duration-300" dir="rtl">
+      <div ref={mainDialogRef} role="dialog" aria-modal="true" aria-labelledby="drug-details-title" tabIndex={-1} className="bg-white dark:bg-slate-900 w-full max-w-5xl rounded-3xl shadow-2xl border border-slate-100 dark:border-slate-800 flex flex-col max-h-[90vh] overflow-hidden animate-in zoom-in duration-300" dir="rtl">
         
         {/* Header */}
-        <div className="p-8 bg-gradient-to-r from-blue-600 to-indigo-700 text-white flex justify-between items-center shrink-0">
+        <div className="p-6 bg-gradient-to-r from-blue-600 to-indigo-700 text-white flex justify-between items-center shrink-0">
           <div className="flex items-center gap-6">
-             <div className="w-16 h-16 bg-white/10 rounded-2xl flex items-center justify-center border border-white/20">
-                <Package className="w-8 h-8" />
+             <div className="w-12 h-12 bg-white/10 rounded-xl flex items-center justify-center border border-white/20">
+                <Package className="w-6 h-6" />
              </div>
              <div>
-               <h3 className="text-3xl font-black">{drugData?.trade_name || drugData?.trade_name_en || drugData?.active_ingredient || 'صنف بدون اسم'}</h3>
+               <h3 id="drug-details-title" className="text-2xl font-black">{drugData?.trade_name || drugData?.trade_name_en || drugData?.active_ingredient || 'صنف بدون اسم'}</h3>
                <p className="text-blue-100 font-bold mt-1">
                  {drugData?.trade_name_en && `${drugData.trade_name_en} | `}
                  {drugData?.active_ingredient}
@@ -286,6 +289,8 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: Dru
             ) : null}
             {history.length > 0 && (
               <button 
+                type="button"
+                aria-label="رجوع للصنف السابق"
                 onClick={() => {
                   const newHistory = [...history];
                   const prevId = newHistory.pop();
@@ -293,12 +298,11 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: Dru
                   if (prevId) setCurrentId(prevId);
                 }} 
                 className="p-3 bg-white/10 hover:bg-white/20 rounded-2xl transition-all"
-                title="رجوع للصنف السابق"
               >
                 <ArrowRight className="w-6 h-6" />
               </button>
             )}
-            <button onClick={onClose} className="p-3 bg-white/10 hover:bg-white/20 rounded-2xl transition-all">
+            <button type="button" aria-label="إغلاق تفاصيل الصنف" onClick={onClose} className="p-3 bg-white/10 hover:bg-white/20 rounded-2xl transition-all">
               <X className="w-6 h-6" />
             </button>
           </div>
@@ -318,9 +322,11 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: Dru
         )}
 
         {/* Tabs Bar */}
-        <div className="flex bg-slate-50 dark:bg-slate-800/50 p-2 gap-2 border-b border-slate-100 dark:border-slate-800 shrink-0 overflow-x-auto no-scrollbar">
+        <div role="group" aria-label="أقسام تفاصيل الصنف" className="flex bg-slate-50 dark:bg-slate-800/50 p-2 gap-2 border-b border-slate-100 dark:border-slate-800 shrink-0 overflow-x-auto no-scrollbar">
           {tabs.map(tab => (
             <button
+              type="button"
+              aria-pressed={activeTab === tab.id}
               key={tab.id}
               onClick={() => setActiveTab(tab.id as any)}
               className={cn(
@@ -337,7 +343,7 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: Dru
         </div>
 
         {/* Content Area */}
-        <div className="flex-1 overflow-y-auto p-8 custom-scrollbar bg-slate-50/30 dark:bg-slate-950/30">
+        <div className="flex-1 overflow-y-auto p-6 custom-scrollbar bg-slate-50/30 dark:bg-slate-950/30">
           {activeTab === 'info' && (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 animate-in fade-in slide-in-from-bottom-4">
               <InfoItem label="كود 1" value={isEditing ? formData?.id : drugData?.id} isEditing={false} />
@@ -370,9 +376,10 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: Dru
               </div>
 
               <div className="col-span-full bg-amber-50 dark:bg-amber-900/10 p-5 rounded-3xl border border-amber-100 dark:border-amber-900/20">
-                <p className="text-[10px] font-black text-amber-800 dark:text-amber-400 uppercase tracking-widest mb-1">ملاحظات إضافية</p>
+                <p className="text-[11px] font-black text-amber-800 dark:text-amber-400 mb-1">ملاحظات إضافية</p>
                 {isEditing ? (
                   <textarea 
+                    aria-label="ملاحظات إضافية عن الصنف"
                     value={formData?.notes || ''} 
                     onChange={(e) => setFormData({...formData, notes: e.target.value})}
                     className="w-full bg-white dark:bg-slate-900 border border-amber-200 dark:border-amber-800 rounded-xl p-3 text-sm font-bold text-slate-700 dark:text-slate-300 min-h-[100px]"
@@ -486,12 +493,12 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: Dru
                       <table className="w-full text-right">
                          <thead className="bg-slate-50/50 dark:bg-slate-900/50">
                             <tr>
-                               <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">المورد</th>
-                               <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase text-center">سعر الشراء</th>
-                               <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase text-center">الضريبة</th>
-                               <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase text-center">سعر البيع</th>
-                               <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase text-center">الخصم</th>
-                               <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase text-left">التاريخ</th>
+                               <th className="px-6 py-4 text-[11px] font-black text-slate-500">المورد</th>
+                               <th className="px-6 py-4 text-[11px] font-black text-slate-500 text-center">سعر الشراء</th>
+                               <th className="px-6 py-4 text-[11px] font-black text-slate-500 text-center">الضريبة</th>
+                               <th className="px-6 py-4 text-[11px] font-black text-slate-500 text-center">سعر البيع</th>
+                               <th className="px-6 py-4 text-[11px] font-black text-slate-500 text-center">الخصم</th>
+                               <th className="px-6 py-4 text-[11px] font-black text-slate-500 text-left">التاريخ</th>
                             </tr>
                          </thead>
                          <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -536,7 +543,7 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: Dru
                           <td className="p-4 font-black text-center">{batch.quantity}</td>
                           <td className="p-4">
                              <span className={cn(
-                               "px-3 py-1 rounded-full text-[10px] font-bold",
+                               "px-3 py-1 rounded-full text-[11px] font-bold",
                                batch.is_expired ? "bg-red-100 text-red-600" : "bg-emerald-100 text-emerald-600"
                              )}>
                                {batch.is_expired ? 'منتهي الصلاحية' : 'صالح'}
@@ -614,7 +621,7 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: Dru
                                   >
                                      <div>
                                         <p className="font-bold text-sm text-slate-800 dark:text-white">{res.trade_name}</p>
-                                        <p className="text-[10px] text-slate-500">{res.active_ingredient}</p>
+                                        <p className="text-[11px] text-slate-500">{res.active_ingredient}</p>
                                      </div>
                                      <button className="text-xs font-bold text-blue-600 bg-blue-50 dark:bg-blue-900/30 px-3 py-1 rounded-md">إضافة</button>
                                   </div>
@@ -640,15 +647,17 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: Dru
                          >
                             <div>
                               <p className="font-black text-slate-800 dark:text-white group-hover:text-blue-600 transition-colors">{alt.trade_name}</p>
-                              <p className="text-[10px] text-slate-400 font-bold">{alt.active_ingredient}</p>
+                              <p className="text-[11px] text-slate-500 font-bold">{alt.active_ingredient}</p>
                             </div>
                             <div className="text-left flex items-center gap-4">
                                <div>
                                    <p className="font-black text-blue-600 text-lg" dir="ltr">{alt.min_price} EGP</p>
-                                   <p className="text-[10px] font-bold text-slate-400" dir="ltr">{(alt as any).total_stock || 0} in stock</p>
+                                   <p className="text-[11px] font-bold text-slate-500" dir="ltr">{(alt as any).total_stock || 0} in stock</p>
                                 </div>
                                {isEditing && (
                                   <button 
+                                    type="button"
+                                    aria-label={`إزالة البديل ${alt.trade_name_en || alt.trade_name || alt.id}`}
                                     onClick={(e) => handleRemoveAlternative(alt.id, e)}
                                     className="bg-rose-50 dark:bg-rose-900/20 text-rose-600 p-2 rounded-xl hover:bg-rose-100 dark:hover:bg-rose-900/40 transition-colors"
                                   >
@@ -669,8 +678,9 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: Dru
                     {isEditing && (
                       <div className="bg-white dark:bg-slate-800 p-4 rounded-2xl border border-slate-100 dark:border-slate-700 flex flex-col md:flex-row gap-3 items-end">
                          <div className="flex-1 w-full space-y-1">
-                            <label className="text-[10px] font-bold text-slate-500">المادة الفعالة الأولى</label>
+                            <label htmlFor="conflict-ingredient-a" className="text-[11px] font-bold text-slate-500">المادة الفعالة الأولى</label>
                             <input 
+                              id="conflict-ingredient-a"
                               type="text" 
                               value={conflictIngredientA || (drugData?.active_ingredient || '')} 
                               onChange={(e) => setConflictIngredientA(e.target.value)}
@@ -678,8 +688,9 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: Dru
                             />
                          </div>
                          <div className="flex-1 w-full space-y-1">
-                            <label className="text-[10px] font-bold text-slate-500">المادة الفعالة المتعارضة</label>
+                            <label htmlFor="conflict-ingredient-b" className="text-[11px] font-bold text-slate-500">المادة الفعالة المتعارضة</label>
                             <input 
+                              id="conflict-ingredient-b"
                               type="text" 
                               value={conflictIngredientB} 
                               onChange={(e) => setConflictIngredientB(e.target.value)}
@@ -688,8 +699,9 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: Dru
                             />
                          </div>
                          <div className="w-full md:w-32 space-y-1">
-                            <label className="text-[10px] font-bold text-slate-500">الخطورة</label>
+                            <label htmlFor="conflict-severity" className="text-[11px] font-bold text-slate-500">الخطورة</label>
                             <select 
+                              id="conflict-severity"
                               value={conflictSeverity}
                               onChange={(e) => setConflictSeverity(e.target.value)}
                               className="w-full bg-slate-50 dark:bg-slate-900 border-none rounded-xl p-3 text-sm font-bold"
@@ -710,13 +722,23 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: Dru
                     {drugData?.conflicts?.length > 0 ? drugData.conflicts.map((conf: any, idx: number) => {
                       const isExpanded = expandedConflicts.includes(idx);
                       return (
-                      <div key={idx} className="bg-rose-50 dark:bg-rose-900/10 p-5 rounded-2xl border border-rose-100 dark:border-rose-900/20 flex gap-4 items-start justify-between cursor-pointer transition-all hover:bg-rose-100 dark:hover:bg-rose-900/20" onClick={() => {
-                        if (isExpanded) {
-                          setExpandedConflicts(prev => prev.filter(i => i !== idx));
-                        } else {
-                          setExpandedConflicts(prev => [...prev, idx]);
-                        }
-                      }}>
+                      <div
+                        key={idx}
+                        className="w-full bg-rose-50 dark:bg-rose-900/10 p-5 rounded-2xl border border-rose-100 dark:border-rose-900/20 flex gap-4 items-start justify-between transition-all hover:bg-rose-100 dark:hover:bg-rose-900/20"
+                      >
+                        <button
+                          type="button"
+                          aria-expanded={isExpanded}
+                          aria-label={`${isExpanded ? 'إخفاء' : 'عرض'} تفاصيل التداخل مع ${conf.trade_name}`}
+                          className="flex-1 min-w-0 text-right rounded-xl focus-visible:ring-2 focus-visible:ring-rose-500"
+                          onClick={() => {
+                            if (isExpanded) {
+                              setExpandedConflicts(prev => prev.filter(i => i !== idx));
+                            } else {
+                              setExpandedConflicts(prev => [...prev, idx]);
+                            }
+                          }}
+                        >
                          <div className="flex gap-4 w-full">
                             <div className="p-3 bg-rose-100 dark:bg-rose-900/30 rounded-xl text-rose-600 shrink-0 h-fit">
                                <AlertTriangle className="w-5 h-5" />
@@ -727,7 +749,7 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: Dru
                                    <p className="font-black text-rose-800 dark:text-rose-300 mb-1">{conf.trade_name}</p>
                                    <p className="text-xs font-bold text-rose-600/70 mb-2">تداخل بسبب: {conf.conflicting_ingredient}</p>
                                  </div>
-                                 <div className="px-3 py-1 bg-white dark:bg-slate-800 rounded-lg w-fit text-[10px] font-black text-rose-500 uppercase tracking-widest border border-rose-100 dark:border-rose-900/30">
+                                 <div className="px-3 py-1 bg-white dark:bg-slate-800 rounded-lg w-fit text-[11px] font-black text-rose-500 border border-rose-100 dark:border-rose-900/30">
                                     درجة الخطورة: {conf.severity}
                                  </div>
                                </div>
@@ -738,8 +760,11 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: Dru
                                )}
                             </div>
                          </div>
+                        </button>
                          {isEditing && (
                             <button 
+                              type="button"
+                              aria-label={`حذف التفاعل مع ${conf.trade_name || conf.conflicting_ingredient || 'الصنف'}`}
                               onClick={(e) => { e.stopPropagation(); handleRemoveConflict(conf.interaction_id); }}
                               className="text-rose-500 hover:text-rose-700 p-2 bg-white dark:bg-slate-800 rounded-lg border border-rose-100 dark:border-rose-900/30 shrink-0"
                             >
@@ -763,6 +788,7 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: Dru
                   </h4>
                   {isEditing ? (
                     <textarea 
+                      aria-label="دواعي استعمال الصنف"
                       value={formData?.indications || ''} 
                       onChange={(e) => setFormData({...formData, indications: e.target.value})}
                       className="w-full bg-white dark:bg-slate-900 border border-blue-200 dark:border-blue-800 rounded-xl p-3 text-sm font-bold text-slate-700 dark:text-slate-300 min-h-[100px]"
@@ -780,6 +806,7 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: Dru
                   </h4>
                   {isEditing ? (
                     <textarea 
+                      aria-label="تحذيرات وآثار الصنف الجانبية"
                       value={formData?.side_effects || ''} 
                       onChange={(e) => setFormData({...formData, side_effects: e.target.value})}
                       className="w-full bg-white dark:bg-slate-900 border border-rose-200 dark:border-rose-800 rounded-xl p-3 text-sm font-bold text-slate-700 dark:text-slate-300 min-h-[100px]"
@@ -815,11 +842,11 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: Dru
                   <table className="w-full text-right" dir="rtl">
                     <thead className="bg-slate-50 dark:bg-slate-900/50">
                       <tr>
-                        <th className="px-8 py-4 text-[10px] font-black text-slate-400 uppercase">السنة</th>
-                        <th className="px-8 py-4 text-[10px] font-black text-slate-400 uppercase">الشهر</th>
-                        <th className="px-8 py-4 text-[10px] font-black text-slate-400 uppercase">صافي المبيعات</th>
-                        <th className="px-8 py-4 text-[10px] font-black text-slate-400 uppercase">عدد العمليات</th>
-                        <th className="px-8 py-4 text-[10px] font-black text-slate-400 uppercase text-left">الإجمالي</th>
+                        <th className="px-8 py-4 text-[11px] font-black text-slate-500">السنة</th>
+                        <th className="px-8 py-4 text-[11px] font-black text-slate-500">الشهر</th>
+                        <th className="px-8 py-4 text-[11px] font-black text-slate-500">صافي المبيعات</th>
+                        <th className="px-8 py-4 text-[11px] font-black text-slate-500">عدد العمليات</th>
+                        <th className="px-8 py-4 text-[11px] font-black text-slate-500 text-left">الإجمالي</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-50 dark:divide-slate-700">
@@ -858,11 +885,13 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: Dru
 }
 
 function InfoItem({ label, value, color = "text-slate-800 dark:text-white", isEditing, onChange, type = "text" }: any) {
+  const inputId = React.useId();
   return (
     <div className="space-y-1">
-      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{label}</p>
+      <label htmlFor={isEditing ? inputId : undefined} className="block text-[11px] font-black text-slate-500">{label}</label>
       {isEditing ? (
         <input 
+          id={inputId}
           type={type}
           value={value || ''}
           onChange={(e) => onChange && onChange(e.target.value)}
@@ -876,15 +905,28 @@ function InfoItem({ label, value, color = "text-slate-800 dark:text-white", isEd
 }
 
 function StatusTag({ label, active, isEditing, onChange }: any) {
+   const classes = cn(
+      "px-4 py-2 rounded-xl text-[11px] font-black border transition-colors flex items-center justify-center gap-2",
+      active
+         ? "bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 border-emerald-100 dark:border-emerald-800"
+         : "bg-slate-50 dark:bg-slate-800/50 text-slate-500 border-slate-100 dark:border-slate-800 opacity-70",
+      isEditing && "cursor-pointer hover:ring-2 hover:ring-emerald-500/50"
+   );
+   if (isEditing) {
+      return <button
+         type="button"
+         aria-pressed={Boolean(active)}
+         onClick={() => onChange && onChange(!active)}
+         className={classes}>
+         {active ? <ShieldCheck className="w-3 h-3" /> : null}
+         {label}
+      </button>;
+   }
    return (
-      <div 
-         onClick={() => isEditing && onChange && onChange(!active)}
+      <div
          className={cn(
-            "px-4 py-2 rounded-xl text-[10px] font-black border transition-all flex items-center justify-center gap-2",
-            active 
-               ? "bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 border-emerald-100 dark:border-emerald-800" 
-               : "bg-slate-50 dark:bg-slate-800/50 text-slate-400 border-slate-100 dark:border-slate-800 opacity-50",
-            isEditing && "cursor-pointer hover:ring-2 hover:ring-emerald-500/50"
+            classes,
+            "cursor-default"
          )}>
          {active ? <ShieldCheck className="w-3 h-3" /> : null}
          {label}
@@ -893,12 +935,14 @@ function StatusTag({ label, active, isEditing, onChange }: any) {
 }
 
 function UnitRow({ label, value, factor, isEditing, onChange, onChangeFactor, type = "text" }: any) {
+   const inputId = React.useId();
    return (
       <div className="flex justify-between items-center text-sm">
-         <span className="font-bold text-slate-500">{label}</span>
+         <label htmlFor={isEditing && onChange ? inputId : undefined} className="font-bold text-slate-500">{label}</label>
          <div className="flex items-center gap-2">
             {isEditing && onChange ? (
                <input 
+                 id={inputId}
                  type={type}
                  value={value || ''} 
                  onChange={(e) => onChange(type === 'number' ? Number(e.target.value) : e.target.value)}
@@ -912,12 +956,13 @@ function UnitRow({ label, value, factor, isEditing, onChange, onChangeFactor, ty
                isEditing && onChangeFactor ? (
                  <input 
                    type="number"
+                   aria-label={`معامل تحويل ${label}`}
                    value={factor || ''} 
                    onChange={(e) => onChangeFactor(Number(e.target.value))}
-                   className="w-12 text-[10px] bg-slate-100 dark:bg-slate-800 border-none rounded p-1 text-center text-slate-600 dark:text-slate-300"
+                   className="w-12 text-[11px] bg-slate-100 dark:bg-slate-800 border-none rounded p-1 text-center text-slate-600 dark:text-slate-300"
                  />
                ) : (
-                 <span className="text-[10px] bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded text-slate-400">{factor}</span>
+                 <span className="text-[11px] bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded text-slate-500">{factor}</span>
                )
             )}
          </div>
@@ -940,7 +985,7 @@ function StockCard({ label, value, color }: any) {
 function UnitBalance({ label, value }: any) {
   return (
     <div className="text-center px-4">
-      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">{label}</p>
+      <p className="text-[11px] font-black text-slate-500 mb-1">{label}</p>
       <p className="text-xl font-black text-slate-800 dark:text-white">{Number(value).toFixed(2)}</p>
     </div>
   );

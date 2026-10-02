@@ -50,28 +50,31 @@ const db = {
 
 
 import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
+import { isStaffOwner } from '@/lib/auth/staff-policy';
+import { pharmacyIdentityConfigKey } from '@/lib/settings/pharmacy-identity';
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 
 export async function updatePharmacyAction(formData: any) {
   try {
     const localUser = await getLocalSession();
     if (!localUser || !hasUserPermissionSync(localUser, 'can_view_settings')) return { success: false, error: 'غير مصرح' };
+    const pharmacyId = localUser.pharmacy_id || 'local_default';
 
     // Update Local Enforcer (SQLite). Cloud sync is read-only public catalog data.
     await db.prepare(`
       INSERT INTO config (key, value) VALUES (?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value
-    `).run('pharmacy_name', formData.name);
+    `).run(pharmacyIdentityConfigKey('pharmacy_name', pharmacyId), formData.name);
 
     await db.prepare(`
       INSERT INTO config (key, value) VALUES (?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value
-    `).run('pharmacy_phone', formData.phone);
+    `).run(pharmacyIdentityConfigKey('pharmacy_phone', pharmacyId), formData.phone);
 
     await db.prepare(`
       INSERT INTO config (key, value) VALUES (?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value
-    `).run('pharmacy_address', formData.address);
+    `).run(pharmacyIdentityConfigKey('pharmacy_address', pharmacyId), formData.address);
 
     revalidatePath('/settings');
     return { success: true };
@@ -84,7 +87,7 @@ export async function updatePharmacyAction(formData: any) {
 export async function runDatabaseMaintenanceAction() {
   try {
     const localUser = await getLocalSession();
-    if (!localUser || !hasUserPermissionSync(localUser, 'can_view_settings')) return { success: false, error: 'غير مصرح' };
+    if (!isStaffOwner(localUser)) return { success: false, error: 'غير مصرح - للمالك فقط' };
 
     await db.exec('VACUUM');
     await db.exec('ANALYZE');

@@ -28,6 +28,7 @@ const MIGRATIONS_DIR = path.join(ROOT, 'src-tauri', 'migrations');
 
 const args = process.argv.slice(2);
 const DRY_RUN = args.includes('--dry-run');
+const BASELINE_ONLY = args.includes('--baseline-only');
 const COPY_DEST = (() => {
   const idx = args.indexOf('--dest');
   if (idx === -1) return null;
@@ -127,8 +128,9 @@ if (DRY_RUN) console.log('⚠  DRY RUN mode — no writes will be made\n');
 
 // 1. Parse CSVs first (fail fast before touching DB)
 console.log('📂 Parsing CSVs...');
-const csvReference = loadReference(DRUGS_CSV);
-const drugsData = parseCsv(DRUGS_CSV, false);
+const catalogSourcePath = BASELINE_ONLY ? BASELINE_DRUGS_CSV : DRUGS_CSV;
+const csvReference = BASELINE_ONLY ? null : loadReference(catalogSourcePath);
+const drugsData = BASELINE_ONLY ? { header: [], rows: [] } : parseCsv(DRUGS_CSV, false);
 const baselineDrugsData = parseCsv(BASELINE_DRUGS_CSV, true);
 const interactionsData = parseCsv(INTERACTIONS_CSV);
 assertColumns(baselineDrugsData.header, ['id', 'Trade Name', 'Price', 'Active Ingredient', 'Category', 'Manufacturer'], path.basename(BASELINE_DRUGS_CSV));
@@ -145,6 +147,7 @@ console.log('');
 
 if (DRY_RUN) {
   console.log('✅ Dry run complete.');
+  console.log(`   catalog mode:          ${BASELINE_ONLY ? 'baseline only (DrugEye excluded)' : 'DrugEye enriched'}`);
   console.log(`   updated source rows:   ${drugsData.rows.length.toLocaleString()}`);
   console.log(`   preserved + updated:   ${preparedDrugRows.length.toLocaleString()}`);
   console.log(`   drug_interactions rows: ${interactionsData.rows.length.toLocaleString()}`);
@@ -175,7 +178,7 @@ for (const filename of fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.s
 // 4. Import master_drugs
 // ─────────────────────────────────────────────────
 console.log('\n💊 Importing master_drugs...');
-installReference(db, csvReference);
+if (csvReference) installReference(db, csvReference);
 
 // Prepared columns: id, Trade Name, Price, Active Ingredient, Category, Manufacturer
 const existingDrugs = db.prepare('SELECT COUNT(*) as count FROM master_drugs').get();

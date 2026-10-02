@@ -1,5 +1,5 @@
 import React from 'react';
-import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import ShortagesClient from '@/app/(dashboard)/stores/shortages/ShortagesClient';
 import {
   deleteShortagesBulkAction,
@@ -160,25 +160,21 @@ describe('shortages multi-selection and bulk actions ui', () => {
       expect.stringContaining('Panadol Extra')
     );
     await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/purchases/new'));
+    expect(updateShortagesStatusBulkAction).not.toHaveBeenCalled();
   });
 
-  it('does not falsely mark a shortage ordered when purchase handoff status persistence fails', async () => {
-    (updateShortagesStatusBulkAction as jest.Mock).mockResolvedValueOnce({
-      success: false,
-      error: 'status persistence failed',
-    });
+  it('keeps a pending shortage pending when staging a purchase invoice handoff', async () => {
     render(<ShortagesClient initialData={mockInitialData} />);
 
     const checkboxes = screen.getAllByTitle('تحديد الصنف');
     fireEvent.click(checkboxes[0]);
     fireEvent.click(await screen.findByRole('button', { name: /تحويل للمشتريات \(1\)/ }));
 
-    await waitFor(() => expect(updateShortagesStatusBulkAction).toHaveBeenCalledWith([101], 'ordered'));
-    expect(mockPush).toHaveBeenCalledWith('/purchases/new');
-    expect(toast.error).toHaveBeenCalledWith('تم تجهيز فاتورة المشتريات لكن تعذر تحديث حالة 1 صنف');
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/purchases/new'));
+    expect(updateShortagesStatusBulkAction).not.toHaveBeenCalled();
     const panadolCard = screen.getAllByText('Panadol Extra')[0].closest('.group') as HTMLElement;
-    expect(within(panadolCard).getByRole('button', { name: 'تم الطلب' })).toBeInTheDocument();
-    expect(within(panadolCard).queryByRole('button', { name: 'إعادة لـ مطلوب' })).not.toBeInTheDocument();
+    expect(panadolCard).toHaveTextContent('تم الطلب');
+    expect(panadolCard).not.toHaveTextContent('إعادة لـ مطلوب');
   });
 
   it('blocks repeated bulk status writes while the first bulk mutation is pending', async () => {

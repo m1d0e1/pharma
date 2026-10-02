@@ -125,6 +125,11 @@ export function getDatabase(): Database.Database {
       initLocalDb();
     } catch (e) {
       console.error("Failed to initialize database tables:", e);
+      statementCache.clear();
+      try { db.close(); } catch {}
+      db = null;
+      (global as any).__db_initialized = false;
+      throw e;
     }
   }
 

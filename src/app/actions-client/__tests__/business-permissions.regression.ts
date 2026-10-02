@@ -84,6 +84,23 @@ describe('business permission enforcement', () => {
     expect(result.success).toBe(false);
   });
 
+  it('rejects a completed delivery checkout without a selected patient before touching the database', async () => {
+    const result = await processCheckoutAction({
+      items: [item],
+      payment_method: 'delivery',
+      status: 'completed',
+    });
+
+    expect(result).toEqual({
+      success: false,
+      error: 'يجب اختيار مريض لفاتورة التوصيل',
+    });
+    expect(dbSelect).not.toHaveBeenCalled();
+    expect(dbGet).not.toHaveBeenCalled();
+    expect(dbExecute).not.toHaveBeenCalled();
+    expect(dbTransaction).not.toHaveBeenCalled();
+  });
+
   it('rejects product-category mutations without inventory-management permission before touching the database', async () => {
     expect(await addProductCategoryAction({ name_ar: 'Blocked category' })).toEqual({ success: false, error: 'غير مصرح' });
     expect(await updateProductCategoryAction(1, { name_ar: 'Blocked category' })).toEqual({ success: false, error: 'غير مصرح' });

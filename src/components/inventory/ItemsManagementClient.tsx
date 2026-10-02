@@ -38,13 +38,17 @@ import { dbSelect } from '@/lib/db/tauri'
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local'
 import { findDrugBarcodeConflict } from '@/app/actions-client/drug-replacement';
 import DrugReplacementDialog from '@/components/master-drugs/DrugReplacementDialog';
+import BarcodeConflictReviewModal from '@/components/inventory/BarcodeConflictReviewModal';
+import DrugCatalogUpdateReviewModal from '@/components/inventory/DrugCatalogUpdateReviewModal';
 import {
    addMasterDrugAction,
    deleteMasterDrugAction,
-   importMasterDrugWorkbookAction,
+   previewMasterDrugCatalogUpdateAction,
    searchMasterDrugsAction,
    updateMasterDrugAction
 } from '@/app/actions-client/master-drugs'
+import type { MasterDrugCatalogUpdatePreview } from '@/lib/inventory/catalog-update';
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap';
 
 interface MasterDrug {
    id: number;
@@ -113,7 +117,14 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
    const pageSize = 100;
    const [filteredTotal, setFilteredTotal] = useState<number | null>(null);
    const [canManageInventory, setCanManageInventory] = useState(false);
+   const [canApplyCatalogUpdate, setCanApplyCatalogUpdate] = useState(false);
    const [replacement, setReplacement] = useState<any>(null);
+   const [barcodeConflictReviewOpen, setBarcodeConflictReviewOpen] = useState(false);
+   const [catalogReview, setCatalogReview] = useState<{
+      preview: MasterDrugCatalogUpdatePreview;
+      rows: Record<string, unknown>[];
+      sourceName: string;
+   } | null>(null);
    const [searchTerm, setSearchTerm] = useState('');
    const [searchByActive, setSearchByActive] = useState(false);
    const [filterType, setFilterType] = useState<FilterType>('all');
@@ -137,11 +148,16 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
    const catalogRequestRef = useRef(0);
    const editRequestRef = useRef(0);
    const [purchaseHistory, setPurchaseHistory] = useState<any[]>([]);
+   const itemEditorDialogRef = useDialogFocusTrap<HTMLDivElement>(isModalOpen && !replacement);
 
    useEffect(() => {
       let active = true;
       getClientSession().then(user => {
-         if (active) setCanManageInventory(hasUserPermissionSync(user, 'can_manage_inventory'));
+         if (!active) return;
+         const canManage = hasUserPermissionSync(user, 'can_manage_inventory');
+         const role = String(user?.role || '').toLowerCase();
+         setCanManageInventory(canManage);
+         setCanApplyCatalogUpdate(canManage && (role === 'owner' || role === 'admin'));
       });
       return () => { active = false; };
    }, []);
@@ -274,7 +290,6 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
       }
       const file = e.target.files?.[0];
       if (!file) return;
-      const listVersionAtImport = catalogRequestRef.current;
       
       const toastId = toast.loading('جاري قراءة الملف...');
       try {
@@ -293,44 +308,23 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                   return;
                }
 
-               toast.loading(`جاري استيراد ${data.length} صنف...`, { id: toastId });
+               toast.loading(`جاري مقارنة ${data.length} صنف بدون إجراء أي تعديل...`, { id: toastId });
 
-               const importResult = await importMasterDrugWorkbookAction(data);
-               if (!importResult.success || !importResult.data) {
-                  throw new Error(importResult.error || 'فشل استيراد بيانات الأصناف');
+               const previewResult = await previewMasterDrugCatalogUpdateAction(data);
+               if (!previewResult.success || !previewResult.data) {
+                  throw new Error(previewResult.error || 'فشل تحليل تحديث دليل الأدوية');
                }
-               const imported = importResult.data;
-
-               const { secureCache } = await import('@/lib/cache/secure_cache');
-               await secureCache.reload();
-
-               toast.success(`تم استيراد ${imported.masterDrugCount} صنف بنجاح!`, { id: toastId });
-               if (listVersionAtImport !== catalogRequestRef.current) return;
-
-               const refreshRequestId = ++catalogRequestRef.current;
-               const searchRes = await searchMasterDrugsAction({
-                  query: searchTerm,
-                  searchByActiveIngredient: searchByActive,
-                  ...(hasActiveListFilters ? {
-                     type: filterType,
-                     status: filterStatus,
-                     minPrice: minPrice ? parseFloat(minPrice) : undefined,
-                     maxPrice: maxPrice ? parseFloat(maxPrice) : undefined,
-                     page: 1,
-                     pageSize
-                  } : {})
+               setCatalogReview({
+                  preview: previewResult.data,
+                  rows: data,
+                  sourceName: file.name,
                });
-               if (refreshRequestId !== catalogRequestRef.current) return;
-               if (searchRes.success && searchRes.data) {
-                  setItems(searchRes.data);
-                  if (hasActiveListFilters) {
-                     setFilteredTotal(searchRes.total ?? searchRes.data.length);
-                     setCurrentPage(searchRes.page ?? 1);
-                  }
-               }
+               toast.success('تم تجهيز المراجعة. لم يتم تعديل أي بيانات بعد.', { id: toastId });
             } catch (err: any) {
                console.error(err);
                toast.error(`فشل معالجة البيانات: ${err.message || String(err)}`, { id: toastId });
+            } finally {
+               e.target.value = '';
             }
          };
          reader.readAsBinaryString(file);
@@ -338,6 +332,43 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
          console.error(err);
          toast.error(`فشل قراءة الملف: ${err.message || String(err)}`, { id: toastId });
       }
+   };
+
+   const handleCatalogUpdateApplied = async (result: any) => {
+      setCatalogReview(null);
+
+      const refreshRequestId = ++catalogRequestRef.current;
+      const searchRes = await searchMasterDrugsAction({
+         query: searchTerm,
+         searchByActiveIngredient: searchByActive,
+         ...(hasActiveListFilters ? {
+            type: filterType,
+            status: filterStatus,
+            minPrice: minPrice ? parseFloat(minPrice) : undefined,
+            maxPrice: maxPrice ? parseFloat(maxPrice) : undefined,
+            page: 1,
+            pageSize
+         } : {})
+      });
+      if (refreshRequestId === catalogRequestRef.current && searchRes.success && searchRes.data) {
+         setItems(searchRes.data);
+         if (hasActiveListFilters) {
+            setFilteredTotal(searchRes.total ?? searchRes.data.length);
+            setCurrentPage(searchRes.page ?? 1);
+         }
+      }
+      toast.success(
+         `تم تحديث الدليل بأمان: ${result.updatedDrugs || 0} صنف محدث، ${result.addedDrugs || 0} صنف مضاف. المخزون والسجل التاريخي لم يتغيرا.`
+      );
+   };
+
+   const handleCatalogReviewStale = async () => {
+      if (!catalogReview) return;
+      const refreshed = await previewMasterDrugCatalogUpdateAction(catalogReview.rows);
+      if (!refreshed.success || !refreshed.data) {
+         throw new Error(refreshed.error || 'فشل تحديث مراجعة دليل الأدوية');
+      }
+      setCatalogReview(current => current ? { ...current, preview: refreshed.data! } : current);
    };
 
    // Advanced search effect
@@ -384,8 +415,8 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
       return () => clearTimeout(delayDebounceFn);
    }, [searchTerm, filterType, filterStatus, minPrice, maxPrice, searchByActive, initialItems]);
 
-   const loadCatalogPage = async (page: number) => {
-      if (page < 1 || page > totalPages || page === currentPage) return;
+   const loadCatalogPage = async (page: number, force = false) => {
+      if (page < 1 || page > totalPages || (!force && page === currentPage)) return;
       const requestId = ++catalogRequestRef.current;
       try {
          if (hasActiveListFilters) {
@@ -448,9 +479,13 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
        const requestId = ++editRequestRef.current;
        const fresh = await dbSelect('SELECT * FROM master_drugs WHERE id = ?', [item.id]);
        if (requestId !== editRequestRef.current) return;
-       setEditingItem((fresh && fresh[0]) || item);
+       if (!fresh || !fresh[0]) {
+          toast.error('هذا الصنف لم يعد موجوداً؛ تم تحديث البيانات في عملية أخرى');
+          return;
+       }
+       setEditingItem(fresh[0]);
        setPurchaseHistory([]); // Reset previous
-       if (item.id) loadPurchaseHistory(item.id, requestId);
+       if (fresh[0].id) loadPurchaseHistory(fresh[0].id, requestId);
        setActiveTab('basic');
        setIsModalOpen(true);
     };
@@ -541,6 +576,16 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
 
    return (
       <div className="space-y-8 animate-in fade-in duration-700" dir="rtl">
+         {barcodeConflictReviewOpen && <BarcodeConflictReviewModal
+            onClose={() => setBarcodeConflictReviewOpen(false)}
+            onEditDrug={async (drug) => {
+               setBarcodeConflictReviewOpen(false);
+               await openEditModal(drug as MasterDrug);
+            }}
+            onResolved={async () => {
+               await loadCatalogPage(currentPage, true);
+            }}
+         />}
          {replacement && <DrugReplacementDialog {...replacement} onClose={() => setReplacement(null)} onArchived={!replacement.target && !replacement.newDrug ? () => {
             setItems(current => current.map(item => Number(item.id) === Number(replacement.source.id) ? { ...item, stop_dealing: 1 } : item));
             setReplacement(null);
@@ -567,6 +612,9 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                      setFilteredTotal(refreshed.total ?? refreshed.data?.length ?? 0);
                      setCurrentPage(refreshed.page ?? currentPage);
                   }
+               } else {
+                  console.error('Failed to refresh master drugs after replacement:', refreshed.error);
+                  toast.error('تم الاستبدال لكن تعذر تحديث القائمة');
                }
             } catch (err) {
                if (refreshRequestId !== catalogRequestRef.current) return;
@@ -605,18 +653,29 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                    
                    {canManageInventory && (
                       <>
-                         <label
-                            className="px-6 py-5 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-[24px] font-black hover:bg-slate-200 transition-all flex items-center gap-2 cursor-pointer"
+                         <button
+                            type="button"
+                            onClick={() => setBarcodeConflictReviewOpen(true)}
+                            className="px-6 py-5 bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-200 border border-amber-300 dark:border-amber-800 rounded-[24px] font-black hover:bg-amber-100 dark:hover:bg-amber-950/50 transition-all flex items-center gap-2"
                          >
-                            <Upload className="w-5 h-5" />
-                            استيراد الكل
-                            <input
-                               type="file"
-                               accept=".xlsx, .xls"
-                               onChange={handleImportAll}
-                               className="hidden"
-                            />
-                         </label>
+                            <Barcode className="w-5 h-5" />
+                            مراجعة تعارضات الباركود
+                         </button>
+                         {canApplyCatalogUpdate && (
+                            <label
+                               className="px-6 py-5 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-[24px] font-black hover:bg-slate-200 transition-all flex items-center gap-2 cursor-pointer"
+                            >
+                               <Upload className="w-5 h-5" />
+                               مراجعة تحديث الدليل
+                               <input
+                                  type="file"
+                                  accept=".xlsx, .xls"
+                                  onChange={handleImportAll}
+                                  aria-label="اختيار ملف تحديث دليل الأدوية للمراجعة"
+                                  className="hidden"
+                               />
+                            </label>
+                         )}
 
                          <button
                             onClick={openAddModal}
@@ -705,7 +764,7 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
          </div>
 
          {/* ITEMS DISPLAY */}
-         <div className="bg-white dark:bg-slate-900/60 backdrop-blur-xl rounded-[48px] shadow-hard border border-slate-100 dark:border-slate-800 overflow-hidden relative">
+         <div className="bg-white dark:bg-slate-900/60 rounded-3xl shadow-hard border border-slate-100 dark:border-slate-800 overflow-hidden relative">
             <div className="overflow-x-auto custom-scrollbar">
                <table className="w-full text-right border-collapse">
                   <thead>
@@ -733,7 +792,7 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                                     {item.trade_name_en || item.trade_name || item.active_ingredient || '---'}
                                  </div>
                                  {item.trade_name && (
-                                    <div className="font-bold text-slate-400 uppercase text-[10px] tracking-widest mt-1">
+                                    <div className="font-bold text-slate-500 text-xs mt-1">
                                        {item.trade_name}
                                     </div>
                                   )}
@@ -749,7 +808,7 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                                  </div>
                                  <div className="flex items-center gap-2">
                                     <Barcode className="w-3.5 h-3.5 text-slate-400" />
-                                    <span className="text-[10px] font-bold text-slate-400 tracking-wider">
+                                    <span className="text-xs font-bold text-slate-500">
                                        {item.barcode || '---'}
                                     </span>
                                  </div>
@@ -758,7 +817,7 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                            <td className="px-10 py-6 text-center">
                               <div className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400 rounded-2xl font-black border border-emerald-100 dark:border-emerald-800/30">
                                  <span className="text-lg">{item.official_price}</span>
-                                 <span className="text-[10px] opacity-70">ج.م</span>
+                                 <span className="text-xs opacity-80">ج.م</span>
                               </div>
                            </td>
                            <td className="px-10 py-6">
@@ -770,9 +829,10 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                               </div>
                            </td>
                            <td className="px-10 py-6">
-                              <div className="flex justify-center gap-3 opacity-0 group-hover:opacity-100 transition-all scale-95 group-hover:scale-100">
+                              <div className="flex justify-center gap-3 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 transition-opacity">
                                  <button
                                     onClick={() => setDetailsDrugId(item.id)}
+                                    aria-label={`عرض تفاصيل ${item.trade_name_en || item.trade_name || item.id}`}
                                     className="p-3 bg-white dark:bg-slate-800 text-slate-500 rounded-2xl shadow-soft hover:bg-slate-100 dark:hover:bg-slate-700 transition-all active:scale-90"
                                     title="عرض التفاصيل الكاملة"
                                  >
@@ -782,6 +842,7 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                                     <>
                                        <button
                                           onClick={() => openEditModal(item)}
+                                          aria-label={`تعديل ${item.trade_name_en || item.trade_name || item.id}`}
                                           className="p-3 bg-white dark:bg-slate-800 text-primary-600 rounded-2xl shadow-soft hover:bg-primary-600 hover:text-white transition-all active:scale-90"
                                           title="تعديل بيانات الصنف"
                                        >
@@ -789,6 +850,7 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                                        </button>
                                        <button
                                           onClick={() => handleCopy(item)}
+                                          aria-label={`نسخ بيانات ${item.trade_name_en || item.trade_name || item.id}`}
                                           className="p-3 bg-white dark:bg-slate-800 text-slate-400 rounded-2xl shadow-soft hover:bg-slate-900 dark:hover:bg-slate-700 hover:text-white transition-all active:scale-90"
                                           title="نسخ بيانات الصنف"
                                        >
@@ -840,16 +902,16 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
 
          {/* PREMIUM MODAL */}
          {isModalOpen && (
-            <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-slate-900/70 backdrop-blur-md animate-in fade-in duration-300 overflow-y-auto">
-               <div className="bg-white dark:bg-slate-900 w-full max-w-6xl rounded-[56px] shadow-hard border border-slate-100 dark:border-slate-800 overflow-hidden my-auto animate-in zoom-in slide-in-from-bottom-10 duration-500">
+            <div className="fixed inset-0 z-[100] flex items-center justify-center p-2 sm:p-4 bg-slate-900/70 animate-in fade-in duration-200 overflow-y-auto">
+               <div ref={itemEditorDialogRef} role="dialog" aria-modal="true" aria-labelledby="item-editor-title" tabIndex={-1} className="bg-white dark:bg-slate-900 w-full max-w-6xl max-h-[calc(100vh-1rem)] rounded-2xl sm:rounded-3xl shadow-hard border border-slate-100 dark:border-slate-800 overflow-hidden my-auto animate-in zoom-in duration-200 flex flex-col">
                   {/* Modal Header */}
-                  <div className="p-10 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center bg-slate-50/30 dark:bg-slate-800/20">
-                     <div className="flex items-center gap-6">
-                        <div className="w-20 h-20 bg-gradient-to-br from-primary-600 to-primary-800 rounded-[32px] flex items-center justify-center text-white shadow-2xl shadow-primary-500/20">
-                           {editingItem.id ? <Edit className="w-10 h-10" /> : <Plus className="w-10 h-10" />}
+                  <div className="p-4 sm:p-6 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center bg-slate-50/30 dark:bg-slate-800/20 gap-4">
+                     <div className="flex items-center gap-4 min-w-0">
+                        <div className="w-14 h-14 bg-primary-600 rounded-2xl flex items-center justify-center text-white shrink-0">
+                           {editingItem.id ? <Edit className="w-7 h-7" /> : <Plus className="w-7 h-7" />}
                         </div>
-                        <div>
-                           <h2 className="text-3xl font-black text-slate-900 dark:text-white tracking-tight">
+                        <div className="min-w-0">
+                           <h2 id="item-editor-title" className="text-2xl sm:text-3xl font-black text-slate-900 dark:text-white tracking-tight">
                               {editingItem.id ? 'تعديل بيانات الصنف' : 'إضافة صنف جديد لقاعدة البيانات'}
                            </h2>
                            <p className="text-slate-500 font-bold mt-1">
@@ -858,37 +920,39 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                         </div>
                      </div>
                      <button
+                        type="button"
+                        aria-label="إغلاق محرر الصنف"
                         onClick={() => setIsModalOpen(false)}
-                        className="p-5 bg-white dark:bg-slate-800 rounded-3xl border border-slate-100 dark:border-slate-700 hover:bg-rose-50 dark:hover:bg-rose-900/20 text-slate-400 hover:text-rose-500 transition-all shadow-sm active:scale-90"
+                        className="p-3 bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-rose-50 dark:hover:bg-rose-900/20 text-slate-500 hover:text-rose-500 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500"
                      >
-                        <X className="w-8 h-8" />
+                        <X className="w-6 h-6" />
                      </button>
                   </div>
 
                   {/* Modal Tabs */}
-                  <div className="flex bg-slate-50 dark:bg-slate-900 p-2 gap-3 mx-10 mt-10 rounded-[32px] border border-slate-100 dark:border-slate-800/60 overflow-x-auto no-scrollbar">
-                     <button onClick={() => setActiveTab('basic')} className={cn(
+                  <div className="flex bg-slate-50 dark:bg-slate-900 p-2 gap-2 mx-4 sm:mx-6 mt-4 sm:mt-6 rounded-2xl border border-slate-100 dark:border-slate-800/60 overflow-x-auto no-scrollbar">
+                     <button type="button" aria-pressed={activeTab === 'basic'} onClick={() => setActiveTab('basic')} className={cn(
                         "flex-1 min-w-[150px] py-5 px-8 rounded-2xl font-black transition-all flex items-center justify-center gap-3 relative overflow-hidden",
                         activeTab === 'basic' ? "bg-white dark:bg-slate-700 text-primary-600 shadow-xl" : "text-slate-400 hover:text-slate-600 dark:text-slate-500"
                      )}>
                         <Info className="w-6 h-6" /> البيانات الأساسية
                         {activeTab === 'basic' && <div className="absolute bottom-0 left-0 right-0 h-1 bg-primary-600" />}
                      </button>
-                     <button onClick={() => setActiveTab('units')} className={cn(
+                     <button type="button" aria-pressed={activeTab === 'units'} onClick={() => setActiveTab('units')} className={cn(
                         "flex-1 min-w-[150px] py-5 px-8 rounded-2xl font-black transition-all flex items-center justify-center gap-3 relative overflow-hidden",
                         activeTab === 'units' ? "bg-white dark:bg-slate-700 text-primary-600 shadow-xl" : "text-slate-400 hover:text-slate-600 dark:text-slate-500"
                      )}>
                         <Layers className="w-6 h-6" /> الوحدات والأسعار
                         {activeTab === 'units' && <div className="absolute bottom-0 left-0 right-0 h-1 bg-primary-600" />}
                      </button>
-                     <button onClick={() => setActiveTab('financial')} className={cn(
+                     <button type="button" aria-pressed={activeTab === 'financial'} onClick={() => setActiveTab('financial')} className={cn(
                         "flex-1 min-w-[150px] py-5 px-8 rounded-2xl font-black transition-all flex items-center justify-center gap-3 relative overflow-hidden",
                         activeTab === 'financial' ? "bg-white dark:bg-slate-700 text-primary-600 shadow-xl" : "text-slate-400 hover:text-slate-600 dark:text-slate-500"
                      )}>
                         <DollarSign className="w-6 h-6" /> البيانات المالية
                         {activeTab === 'financial' && <div className="absolute bottom-0 left-0 right-0 h-1 bg-primary-600" />}
                      </button>
-                     <button onClick={() => setActiveTab('advanced')} className={cn(
+                     <button type="button" aria-pressed={activeTab === 'advanced'} onClick={() => setActiveTab('advanced')} className={cn(
                         "flex-1 min-w-[150px] py-5 px-8 rounded-2xl font-black transition-all flex items-center justify-center gap-3 relative overflow-hidden",
                         activeTab === 'advanced' ? "bg-white dark:bg-slate-700 text-primary-600 shadow-xl" : "text-slate-400 hover:text-slate-600 dark:text-slate-500"
                      )}>
@@ -897,65 +961,65 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                      </button>
                   </div>
 
-                  <div className="p-12 max-h-[55vh] overflow-y-auto custom-scrollbar">
+                  <div className="p-4 sm:p-6 flex-1 min-h-0 overflow-y-auto custom-scrollbar">
                      {activeTab === 'basic' && (
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-10 animate-in slide-in-from-left-4 duration-500">
                            <div className="space-y-3">
-                              <label className="text-xs font-black text-slate-400 uppercase tracking-widest mr-2">Trade Name (English) *</label>
-                              <input type="text" dir="ltr" className="w-full px-7 py-5 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-bold dark:text-white transition-all text-lg shadow-inner-lg" value={editingItem.trade_name_en || ''} onChange={(e) => updateField('trade_name_en', e.target.value)} />
+                              <label htmlFor="item-trade-name-en" className="text-xs font-black text-slate-500 mr-2">Trade Name (English) *</label>
+                              <input id="item-trade-name-en" type="text" dir="ltr" autoFocus className="w-full px-7 py-5 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-bold dark:text-white transition-all text-lg shadow-inner-lg" value={editingItem.trade_name_en || ''} onChange={(e) => updateField('trade_name_en', e.target.value)} />
                            </div>
                            <div className="space-y-3">
-                              <label className="text-xs font-black text-slate-400 uppercase tracking-widest mr-2">Arabic Name (Optional)</label>
-                              <input type="text" className="w-full px-7 py-5 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-bold dark:text-white transition-all text-lg shadow-inner-lg" value={editingItem.trade_name || ''} onChange={(e) => updateField('trade_name', e.target.value)} />
+                              <label htmlFor="item-trade-name-ar" className="text-xs font-black text-slate-500 mr-2">Arabic Name (Optional)</label>
+                              <input id="item-trade-name-ar" type="text" className="w-full px-7 py-5 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-bold dark:text-white transition-all text-lg shadow-inner-lg" value={editingItem.trade_name || ''} onChange={(e) => updateField('trade_name', e.target.value)} />
                            </div>
                            <div className="space-y-3">
-                              <label className="text-xs font-black text-slate-400 uppercase tracking-widest mr-2">المادة الفعالة</label>
-                              <input type="text" className="w-full px-7 py-5 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-bold dark:text-white transition-all text-lg shadow-inner-lg" value={editingItem.active_ingredient || ''} onChange={(e) => updateField('active_ingredient', e.target.value)} />
+                              <label htmlFor="item-active-ingredient" className="text-xs font-black text-slate-500 mr-2">المادة الفعالة</label>
+                              <input id="item-active-ingredient" type="text" className="w-full px-7 py-5 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-bold dark:text-white transition-all text-lg shadow-inner-lg" value={editingItem.active_ingredient || ''} onChange={(e) => updateField('active_ingredient', e.target.value)} />
                            </div>
                            <div className="space-y-3">
-                              <label className="text-xs font-black text-slate-400 uppercase tracking-widest mr-2">الباركود</label>
+                              <label htmlFor="item-barcode" className="text-xs font-black text-slate-500 mr-2">الباركود</label>
                               <div className="relative">
                                  <Barcode className="absolute right-5 top-1/2 -translate-y-1/2 w-6 h-6 text-slate-300" />
-                                 <input type="text" className="w-full pr-14 pl-7 py-5 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-bold dark:text-white transition-all text-lg shadow-inner-lg" value={editingItem.barcode || ''} onChange={(e) => updateField('barcode', e.target.value)} />
+                                 <input id="item-barcode" type="text" className="w-full pr-14 pl-7 py-5 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-bold dark:text-white transition-all text-lg shadow-inner-lg" value={editingItem.barcode || ''} onChange={(e) => updateField('barcode', e.target.value)} />
                               </div>
                            </div>
                            <div className="space-y-3">
-                              <label className="text-xs font-black text-slate-400 uppercase tracking-widest mr-2">السعر الرسمي</label>
+                              <label htmlFor="item-official-price" className="text-xs font-black text-slate-500 mr-2">السعر الرسمي</label>
                               <div className="relative">
                                  <DollarSign className="absolute right-5 top-1/2 -translate-y-1/2 w-6 h-6 text-emerald-500/50" />
-                                 <input type="number" className="w-full pr-14 pl-7 py-5 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-black text-emerald-600 dark:text-emerald-400 transition-all text-lg shadow-inner-lg" value={editingItem.official_price || 0} onChange={(e) => updateField('official_price', parseFloat(e.target.value))} />
+                                 <input id="item-official-price" type="number" className="w-full pr-14 pl-7 py-5 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-black text-emerald-600 dark:text-emerald-400 transition-all text-lg shadow-inner-lg" value={editingItem.official_price || 0} onChange={(e) => updateField('official_price', parseFloat(e.target.value))} />
                               </div>
                            </div>
                            <div className="space-y-3">
-                              <label className="text-xs font-black text-slate-400 uppercase tracking-widest mr-2">الشركة المصنعة</label>
+                              <label htmlFor="item-manufacturer" className="text-xs font-black text-slate-500 mr-2">الشركة المصنعة</label>
                               <div className="relative">
                                  <Factory className="absolute right-5 top-1/2 -translate-y-1/2 w-6 h-6 text-slate-300" />
-                                 <input type="text" className="w-full pr-14 pl-7 py-5 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-bold dark:text-white transition-all text-lg shadow-inner-lg" value={editingItem.manufacturer || ''} onChange={(e) => updateField('manufacturer', e.target.value)} />
+                                 <input id="item-manufacturer" type="text" className="w-full pr-14 pl-7 py-5 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-bold dark:text-white transition-all text-lg shadow-inner-lg" value={editingItem.manufacturer || ''} onChange={(e) => updateField('manufacturer', e.target.value)} />
                               </div>
                            </div>
                            <div className="space-y-3">
-                              <label className="text-xs font-black text-slate-400 uppercase tracking-widest mr-2">كود 2</label>
-                              <input type="text" className="w-full px-7 py-5 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-bold dark:text-white transition-all text-lg shadow-inner-lg" value={editingItem.code_2 || ''} onChange={(e) => updateField('code_2', e.target.value)} />
+                              <label htmlFor="item-code-2" className="text-xs font-black text-slate-500 mr-2">كود 2</label>
+                              <input id="item-code-2" type="text" className="w-full px-7 py-5 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-bold dark:text-white transition-all text-lg shadow-inner-lg" value={editingItem.code_2 || ''} onChange={(e) => updateField('code_2', e.target.value)} />
                            </div>
                            <div className="space-y-3">
-                              <label className="text-xs font-black text-slate-400 uppercase tracking-widest mr-2">نسبة المادة الفعالة</label>
-                              <input type="text" className="w-full px-7 py-5 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-bold dark:text-white transition-all text-lg shadow-inner-lg" value={editingItem.active_ingredient_ratio || ''} onChange={(e) => updateField('active_ingredient_ratio', e.target.value)} />
+                              <label htmlFor="item-active-ratio" className="text-xs font-black text-slate-500 mr-2">نسبة المادة الفعالة</label>
+                              <input id="item-active-ratio" type="text" className="w-full px-7 py-5 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-bold dark:text-white transition-all text-lg shadow-inner-lg" value={editingItem.active_ingredient_ratio || ''} onChange={(e) => updateField('active_ingredient_ratio', e.target.value)} />
                            </div>
                            <div className="space-y-3">
-                              <label className="text-xs font-black text-slate-400 uppercase tracking-widest mr-2">المجموعة العلمية</label>
-                              <input type="text" className="w-full px-7 py-5 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-bold dark:text-white transition-all text-lg shadow-inner-lg" value={editingItem.scientific_group || ''} onChange={(e) => updateField('scientific_group', e.target.value)} />
+                              <label htmlFor="item-scientific-group" className="text-xs font-black text-slate-500 mr-2">المجموعة العلمية</label>
+                              <input id="item-scientific-group" type="text" className="w-full px-7 py-5 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-bold dark:text-white transition-all text-lg shadow-inner-lg" value={editingItem.scientific_group || ''} onChange={(e) => updateField('scientific_group', e.target.value)} />
                            </div>
                            <div className="space-y-3">
-                              <label className="text-xs font-black text-slate-400 uppercase tracking-widest mr-2">طبيعة الصنف</label>
-                              <input type="text" className="w-full px-7 py-5 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-bold dark:text-white transition-all text-lg shadow-inner-lg" value={editingItem.item_nature || ''} onChange={(e) => updateField('item_nature', e.target.value)} />
+                              <label htmlFor="item-nature" className="text-xs font-black text-slate-500 mr-2">طبيعة الصنف</label>
+                              <input id="item-nature" type="text" className="w-full px-7 py-5 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-bold dark:text-white transition-all text-lg shadow-inner-lg" value={editingItem.item_nature || ''} onChange={(e) => updateField('item_nature', e.target.value)} />
                            </div>
                            <div className="space-y-3">
-                              <label className="text-xs font-black text-slate-400 uppercase tracking-widest mr-2">طريقة الاستخدام</label>
-                              <input type="text" className="w-full px-7 py-5 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-bold dark:text-white transition-all text-lg shadow-inner-lg" value={editingItem.usage_method || ''} onChange={(e) => updateField('usage_method', e.target.value)} />
+                              <label htmlFor="item-usage-method" className="text-xs font-black text-slate-500 mr-2">طريقة الاستخدام</label>
+                              <input id="item-usage-method" type="text" className="w-full px-7 py-5 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-bold dark:text-white transition-all text-lg shadow-inner-lg" value={editingItem.usage_method || ''} onChange={(e) => updateField('usage_method', e.target.value)} />
                            </div>
                            <div className="space-y-3">
-                              <label className="text-xs font-black text-slate-400 uppercase tracking-widest mr-2">المنشأ</label>
-                              <input type="text" className="w-full px-7 py-5 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-bold dark:text-white transition-all text-lg shadow-inner-lg" value={editingItem.origin || ''} onChange={(e) => updateField('origin', e.target.value)} />
+                              <label htmlFor="item-origin" className="text-xs font-black text-slate-500 mr-2">المنشأ</label>
+                              <input id="item-origin" type="text" className="w-full px-7 py-5 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-bold dark:text-white transition-all text-lg shadow-inner-lg" value={editingItem.origin || ''} onChange={(e) => updateField('origin', e.target.value)} />
                            </div>
                         </div>
                      )}
@@ -964,42 +1028,42 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                         <div className="space-y-10 animate-in slide-in-from-right-4 duration-500">
                            <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
                               <div className="space-y-3">
-                                 <label className="text-xs font-black text-slate-400 uppercase tracking-widest mr-2">الوحدة الكبرى (Box)</label>
-                                 <input type="text" className="w-full px-7 py-5 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-bold dark:text-white shadow-inner-lg" value={editingItem.large_unit || ''} onChange={(e) => updateField('large_unit', e.target.value)} />
+                                 <label htmlFor="item-large-unit" className="text-xs font-black text-slate-500 mr-2">الوحدة الكبرى (Box)</label>
+                                 <input id="item-large-unit" type="text" className="w-full px-7 py-5 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-bold dark:text-white shadow-inner-lg" value={editingItem.large_unit || ''} onChange={(e) => updateField('large_unit', e.target.value)} />
                               </div>
                               <div className="space-y-3">
-                                 <label className="text-xs font-black text-slate-400 uppercase tracking-widest mr-2">الوحدة المتوسطة (Strip)</label>
-                                 <input type="text" className="w-full px-7 py-5 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-bold dark:text-white shadow-inner-lg" value={editingItem.medium_unit || ''} onChange={(e) => updateField('medium_unit', e.target.value)} />
+                                 <label htmlFor="item-medium-unit" className="text-xs font-black text-slate-500 mr-2">الوحدة المتوسطة (Strip)</label>
+                                 <input id="item-medium-unit" type="text" className="w-full px-7 py-5 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-bold dark:text-white shadow-inner-lg" value={editingItem.medium_unit || ''} onChange={(e) => updateField('medium_unit', e.target.value)} />
                               </div>
                               <div className="space-y-3">
-                                 <label className="text-xs font-black text-slate-400 uppercase tracking-widest mr-2">الوحدة الصغرى (Tab)</label>
-                                 <input type="text" className="w-full px-7 py-5 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-bold dark:text-white shadow-inner-lg" value={editingItem.small_unit || ''} onChange={(e) => updateField('small_unit', e.target.value)} />
+                                 <label htmlFor="item-small-unit" className="text-xs font-black text-slate-500 mr-2">الوحدة الصغرى (Tab)</label>
+                                 <input id="item-small-unit" type="text" className="w-full px-7 py-5 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-bold dark:text-white shadow-inner-lg" value={editingItem.small_unit || ''} onChange={(e) => updateField('small_unit', e.target.value)} />
                               </div>
                            </div>
 
-                           <div className="grid grid-cols-1 md:grid-cols-2 gap-10 p-10 bg-primary-500/5 rounded-[40px] border border-primary-500/10">
+                           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 p-6 bg-primary-500/5 rounded-3xl border border-primary-500/10">
                               <div className="space-y-3">
-                                 <label className="text-sm font-black text-primary-700 dark:text-primary-300">معامل التحويل (كبرى {'<-'} متوسطة)</label>
-                                 <input type="number" className="w-full px-8 py-5 bg-white dark:bg-slate-800 border-2 border-transparent focus:border-primary-500 rounded-3xl outline-none font-black text-primary-600 text-xl shadow-sm" value={editingItem.large_to_medium || ''} onChange={(e) => updateField('large_to_medium', parseInt(e.target.value))} />
+                                 <label htmlFor="item-large-to-medium" className="text-sm font-black text-primary-700 dark:text-primary-300">معامل التحويل (كبرى {'<-'} متوسطة)</label>
+                                 <input id="item-large-to-medium" type="number" className="w-full px-8 py-5 bg-white dark:bg-slate-800 border-2 border-transparent focus:border-primary-500 rounded-3xl outline-none font-black text-primary-600 text-xl shadow-sm" value={editingItem.large_to_medium || ''} onChange={(e) => updateField('large_to_medium', parseInt(e.target.value))} />
                               </div>
                               <div className="space-y-3">
-                                 <label className="text-sm font-black text-primary-700 dark:text-primary-300">معامل التحويل (متوسطة {'<-'} صغرى)</label>
-                                 <input type="number" className="w-full px-8 py-5 bg-white dark:bg-slate-800 border-2 border-transparent focus:border-primary-500 rounded-3xl outline-none font-black text-primary-600 text-xl shadow-sm" value={editingItem.medium_to_small || ''} onChange={(e) => updateField('medium_to_small', parseInt(e.target.value))} />
+                                 <label htmlFor="item-medium-to-small" className="text-sm font-black text-primary-700 dark:text-primary-300">معامل التحويل (متوسطة {'<-'} صغرى)</label>
+                                 <input id="item-medium-to-small" type="number" className="w-full px-8 py-5 bg-white dark:bg-slate-800 border-2 border-transparent focus:border-primary-500 rounded-3xl outline-none font-black text-primary-600 text-xl shadow-sm" value={editingItem.medium_to_small || ''} onChange={(e) => updateField('medium_to_small', parseInt(e.target.value))} />
                               </div>
                            </div>
 
                            <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
                               <div className="space-y-3">
-                                 <label className="text-xs font-black text-slate-400 uppercase tracking-widest mr-2">كمية الطلب الافتراضية</label>
-                                 <input type="number" className="w-full px-7 py-5 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-bold dark:text-white shadow-inner-lg" value={editingItem.default_purchase_qty || ''} onChange={(e) => updateField('default_purchase_qty', parseInt(e.target.value))} />
+                                 <label htmlFor="item-default-purchase-qty" className="text-xs font-black text-slate-500 mr-2">كمية الطلب الافتراضية</label>
+                                 <input id="item-default-purchase-qty" type="number" className="w-full px-7 py-5 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-bold dark:text-white shadow-inner-lg" value={editingItem.default_purchase_qty || ''} onChange={(e) => updateField('default_purchase_qty', parseInt(e.target.value))} />
                               </div>
                               <div className="space-y-3">
-                                 <label className="text-xs font-black text-slate-400 uppercase tracking-widest mr-2">نسبة الضريبة (%)</label>
-                                 <input type="number" className="w-full px-7 py-5 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-bold dark:text-white shadow-inner-lg" value={editingItem.tax_percent || 0} onChange={(e) => updateField('tax_percent', parseFloat(e.target.value))} />
+                                 <label htmlFor="item-tax-percent" className="text-xs font-black text-slate-500 mr-2">نسبة الضريبة (%)</label>
+                                 <input id="item-tax-percent" type="number" className="w-full px-7 py-5 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-bold dark:text-white shadow-inner-lg" value={editingItem.tax_percent || 0} onChange={(e) => updateField('tax_percent', parseFloat(e.target.value))} />
                               </div>
                               <div className="space-y-3">
-                                 <label className="text-xs font-black text-slate-400 uppercase tracking-widest mr-2">نسبة الخصم (%)</label>
-                                 <input type="number" className="w-full px-7 py-5 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-bold dark:text-white shadow-inner-lg" value={editingItem.discount_percent || 0} onChange={(e) => updateField('discount_percent', parseFloat(e.target.value))} />
+                                 <label htmlFor="item-discount-percent" className="text-xs font-black text-slate-500 mr-2">نسبة الخصم (%)</label>
+                                 <input id="item-discount-percent" type="number" className="w-full px-7 py-5 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-bold dark:text-white shadow-inner-lg" value={editingItem.discount_percent || 0} onChange={(e) => updateField('discount_percent', parseFloat(e.target.value))} />
                               </div>
                            </div>
                         </div>
@@ -1008,23 +1072,23 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                      {activeTab === 'financial' && (
                         <div className="space-y-10 animate-in fade-in slide-in-from-bottom-4 duration-500">
                            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                              <div className="bg-emerald-50 dark:bg-emerald-900/10 p-8 rounded-[40px] border border-emerald-100 dark:border-emerald-900/20">
+                              <div className="bg-emerald-50 dark:bg-emerald-900/10 p-6 rounded-3xl border border-emerald-100 dark:border-emerald-900/20">
                                  <div className="flex items-center gap-4 mb-4">
                                     <DollarSign className="w-8 h-8 text-emerald-600" />
                                     <h4 className="font-black text-emerald-900 dark:text-emerald-400">تحليل الربحية والأسعار</h4>
                                  </div>
                                  <div className="grid grid-cols-2 gap-6">
                                     <div className="space-y-1">
-                                       <p className="text-[10px] font-black text-emerald-600/60 uppercase">سعر البيع الحالي</p>
+                                       <p className="text-xs font-black text-emerald-700">سعر البيع الحالي</p>
                                        <p className="text-2xl font-black">{editingItem.official_price} ج.م</p>
                                     </div>
                                     <div className="space-y-1">
-                                       <p className="text-[10px] font-black text-emerald-600/60 uppercase">متوسط التكلفة</p>
+                                       <p className="text-xs font-black text-emerald-700">متوسط التكلفة</p>
                                        <p className="text-2xl font-black text-slate-500">---</p>
                                     </div>
                                  </div>
                               </div>
-                              <div className="bg-blue-50 dark:bg-blue-900/10 p-8 rounded-[40px] border border-blue-100 dark:border-blue-900/20">
+                              <div className="bg-blue-50 dark:bg-blue-900/10 p-6 rounded-3xl border border-blue-100 dark:border-blue-900/20">
                                  <div className="flex items-center gap-4 mb-4">
                                     <History className="w-8 h-8 text-blue-600" />
                                     <h4 className="font-black text-blue-900 dark:text-blue-400">آخر حركات الشراء</h4>
@@ -1060,7 +1124,7 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                               </div>
                            </div>
 
-                           <div className="bg-slate-50 dark:bg-slate-950/50 p-10 rounded-[40px] border border-slate-100 dark:border-slate-800">
+                           <div className="bg-slate-50 dark:bg-slate-950/50 p-6 rounded-3xl border border-slate-100 dark:border-slate-800">
                               <h4 className="text-lg font-black mb-6 flex items-center gap-3">
                                  <Activity className="w-6 h-6 text-primary-500" /> تقرير مبيعات الصنف (آخر 30 يوم)
                               </h4>
@@ -1101,18 +1165,18 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                            ))}
                         </div>
 
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-8 p-10 bg-slate-50 dark:bg-slate-900/50 rounded-[40px] border border-slate-100 dark:border-slate-800">
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 p-6 bg-slate-50 dark:bg-slate-900/50 rounded-3xl border border-slate-100 dark:border-slate-800">
                            <div className="space-y-3">
-                              <label className="text-xs font-black text-rose-500 uppercase tracking-widest mr-2">الحد الأدنى للنقص</label>
-                              <input type="number" className="w-full px-7 py-5 bg-white dark:bg-slate-800 border-2 border-transparent focus:border-rose-500/20 rounded-3xl outline-none font-black text-rose-600 shadow-sm" value={editingItem.min_limit || ''} onChange={(e) => updateField('min_limit', parseInt(e.target.value))} />
+                              <label htmlFor="item-min-limit" className="text-xs font-black text-rose-600 mr-2">الحد الأدنى للنقص</label>
+                              <input id="item-min-limit" type="number" className="w-full px-7 py-5 bg-white dark:bg-slate-800 border-2 border-transparent focus:border-rose-500/20 rounded-3xl outline-none font-black text-rose-600 shadow-sm" value={editingItem.min_limit || ''} onChange={(e) => updateField('min_limit', parseInt(e.target.value))} />
                            </div>
                            <div className="space-y-3">
-                              <label className="text-xs font-black text-primary-500 uppercase tracking-widest mr-2">نقطة إعادة الطلب</label>
-                              <input type="number" className="w-full px-7 py-5 bg-white dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-black text-primary-600 shadow-sm" value={editingItem.reorder_point || ''} onChange={(e) => updateField('reorder_point', parseInt(e.target.value))} />
+                              <label htmlFor="item-reorder-point" className="text-xs font-black text-primary-600 mr-2">نقطة إعادة الطلب</label>
+                              <input id="item-reorder-point" type="number" className="w-full px-7 py-5 bg-white dark:bg-slate-800 border-2 border-transparent focus:border-primary-500/20 rounded-3xl outline-none font-black text-primary-600 shadow-sm" value={editingItem.reorder_point || ''} onChange={(e) => updateField('reorder_point', parseInt(e.target.value))} />
                            </div>
                            <div className="space-y-3">
-                              <label className="text-xs font-black text-emerald-500 uppercase tracking-widest mr-2">الحد الأقصى (السقف)</label>
-                              <input type="number" className="w-full px-7 py-5 bg-white dark:bg-slate-800 border-2 border-transparent focus:border-emerald-500/20 rounded-3xl outline-none font-black text-emerald-600 shadow-sm" value={editingItem.max_limit || ''} onChange={(e) => updateField('max_limit', parseInt(e.target.value))} />
+                              <label htmlFor="item-max-limit" className="text-xs font-black text-emerald-600 mr-2">الحد الأقصى (السقف)</label>
+                              <input id="item-max-limit" type="number" className="w-full px-7 py-5 bg-white dark:bg-slate-800 border-2 border-transparent focus:border-emerald-500/20 rounded-3xl outline-none font-black text-emerald-600 shadow-sm" value={editingItem.max_limit || ''} onChange={(e) => updateField('max_limit', parseInt(e.target.value))} />
                            </div>
                         </div>
                      </div>
@@ -1120,17 +1184,19 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                   </div>
 
                   {/* Modal Footer */}
-                  <div className="p-10 border-t border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/30 flex justify-end gap-6">
+                  <div className="p-4 sm:p-6 border-t border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/30 flex flex-wrap justify-end gap-3">
                      <button
+                        type="button"
                         onClick={() => setIsModalOpen(false)}
-                        className="px-12 py-5 bg-white dark:bg-slate-800 border-2 border-slate-200 dark:border-slate-700 rounded-[28px] font-black text-slate-700 dark:text-white hover:bg-slate-50 transition-all active:scale-95 shadow-sm"
+                        className="px-6 py-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl font-black text-slate-700 dark:text-white hover:bg-slate-50 transition-colors shadow-sm"
                      >
                         إلغاء التغييرات
                      </button>
                      <button
+                        type="button"
                         onClick={handleSave}
                         disabled={isSaving}
-                        className="px-16 py-5 bg-gradient-to-r from-primary-600 to-primary-700 text-white rounded-[28px] font-black shadow-2xl shadow-primary-500/40 hover:from-primary-700 hover:to-primary-800 hover:-translate-y-1 transition-all flex items-center gap-3 disabled:opacity-50 active:scale-95"
+                        className="px-8 py-3 bg-primary-600 text-white rounded-xl font-black hover:bg-primary-700 transition-colors flex items-center gap-3 disabled:opacity-50"
                      >
                         {isSaving ? 'جاري المعالجة...' : <><Save className="w-7 h-7" /> حفظ البيانات</>}
                      </button>
@@ -1187,6 +1253,18 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                 ...updatedDrug
              } : item));
           }}
+        />
+      )}
+
+      {catalogReview && (
+        <DrugCatalogUpdateReviewModal
+          key={catalogReview.preview.signature}
+          preview={catalogReview.preview}
+          rows={catalogReview.rows}
+          sourceName={catalogReview.sourceName}
+          onClose={() => setCatalogReview(null)}
+          onApplied={handleCatalogUpdateApplied}
+          onReviewStale={handleCatalogReviewStale}
         />
       )}
 </div>

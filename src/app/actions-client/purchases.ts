@@ -1,7 +1,11 @@
 import { secureCache } from '@/lib/cache/secure_cache';
 import { dbSelect, dbExecute, dbGet, dbTransaction, generateId, type TransactionDb } from '@/lib/db/tauri';
 import { isTauri } from '@/lib/env';
-import { purchaseReturnRemainingLargeQuantity } from '@/lib/purchases/return-units';
+import {
+  normalizePurchaseReturnUnit,
+  purchaseReturnQuantityInLargeUnits,
+  purchaseReturnRemainingLargeQuantity,
+} from '@/lib/purchases/return-units';
 import { buildPurchaseAccountingPlan } from '@/lib/purchases/accounting-policy';
 import {
   assertCompletedPurchaseExpiryPolicy,
@@ -17,6 +21,8 @@ import { requireOpenShiftId } from './finance';
 import { isBusinessDate, localDate } from '@/lib/time';
 import { notifyInventoryChanged } from '@/lib/inventory/refresh';
 import { hasRecoveredStock } from '@/lib/inventory/reorder-state';
+import { assertBarcodeOwnershipAvailable, normalizeBarcode } from '@/lib/inventory/barcode-ownership';
+import { resolveDrugUnitProfile } from '@/lib/inventory/unit-profile';
 const logActivity = async (userId, action, details) => {
   try {
     await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [userId, action, details]);
@@ -25,20 +31,6 @@ const logActivity = async (userId, action, details) => {
   }
 };
 const initLocalDb = () => {};
-let migrationDone = false;
-async function ensureBarcodeColumn() {
-  if (migrationDone) return;
-  try {
-    const cols = await dbSelect("PRAGMA table_info(purchase_invoice_items)");
-    const hasBarcode = cols.some((c: any) => c.name === 'barcode');
-    if (!hasBarcode) {
-      await dbExecute("ALTER TABLE purchase_invoice_items ADD COLUMN barcode TEXT");
-    }
-  } catch (e) {
-    // ponytail: migration safe fallback
-  }
-  migrationDone = true;
-}
 const clearAuditLogs = async () => {
   try {
     await dbExecute('DELETE FROM activity_log');
@@ -93,8 +85,9 @@ async function assertPurchaseConversionPermission(
   user: any,
   items: any[],
   scopedDb: PurchaseDb = db,
+  preserveHistoricalSingleConversion = false,
 ) {
-  if (hasUserPermissionSync(user, 'can_modify_unit_conversion')) return;
+  const canModifyConversion = hasUserPermissionSync(user, 'can_modify_unit_conversion');
 
   const requested = items
     .map(item => ({
@@ -109,18 +102,49 @@ async function assertPurchaseConversionPermission(
 
   const ids = [...new Set(requested.map(item => item.drugId))];
   const currentRows = await scopedDb.prepare(`
-    SELECT id, COALESCE(NULLIF(large_to_medium, 0), 1) AS large_to_medium
+    SELECT id, trade_name, trade_name_en, large_unit, medium_unit, small_unit,
+           large_to_medium, medium_to_small
     FROM master_drugs
     WHERE id IN (${ids.map(() => '?').join(',')})
   `).all(...ids) as any[];
-  const currentById = new Map(currentRows.map(row => [Number(row.id), Number(row.large_to_medium || 1)]));
+  const currentById = new Map(currentRows.map(row => [Number(row.id), row]));
 
   for (const item of requested) {
     const current = currentById.get(item.drugId);
-    if (current !== undefined && Number(item.conversion) !== current) {
+    if (!current) continue;
+    const profile = resolveDrugUnitProfile(current);
+    if (!preserveHistoricalSingleConversion && profile.isSingleContainer && Number(item.conversion) !== 1) {
+      throw new Error(`الصنف ${current.trade_name_en || current.trade_name || item.drugId} وحدة مفردة؛ معامل التحويل يجب أن يكون 1`);
+    }
+    const expectedConversion = preserveHistoricalSingleConversion
+      ? Number(current.large_to_medium || 1)
+      : profile.largeToMedium;
+    if (!canModifyConversion && Number(item.conversion) !== expectedConversion) {
       throw new Error('غير مصرح بتعديل معاملات التحويل');
     }
   }
+}
+
+async function assertCompletedPurchaseExpiryPolicyForDb(
+  items: any[],
+  scopedDb: PurchaseDb = db,
+) {
+  const drugIds = [...new Set(
+    items
+      .map(item => Number(item?.drug_id ?? item?.id))
+      .filter(id => Number.isSafeInteger(id) && id > 0),
+  )];
+  const nonExpiringDrugIds = new Set<number>();
+  if (drugIds.length > 0) {
+    const rows = await scopedDb.prepare(`
+      SELECT id
+      FROM master_drugs
+      WHERE id IN (${drugIds.map(() => '?').join(',')})
+        AND COALESCE(has_expiry, 1) = 0
+    `).all(...drugIds) as any[];
+    for (const row of rows) nonExpiringDrugIds.add(Number(row.id));
+  }
+  assertCompletedPurchaseExpiryPolicy(items, localDate(), nonExpiringDrugIds);
 }
 
 async function resolveShortageIfStockRecovered(
@@ -350,29 +374,20 @@ function browserPurchaseMutationUnsupported() {
 }
 
 async function assertPurchaseBarcodesAvailable(cart: any[] = [], scopedDb: PurchaseDb = db) {
-  const owners = new Map<string, string>();
+  const claims: Array<{ barcode: string; drugId: number | string }> = [];
   for (const item of cart) {
     const state = await scopedDb.prepare('SELECT stop_dealing FROM master_drugs WHERE id=?').get(item.id || item.drug_id) as any;
     if (!state) throw new Error('الصنف غير موجود؛ أزله من الفاتورة وأضفه من جديد');
     if (Number(state?.stop_dealing) === 1) throw new Error('هذا الصنف مؤرشف أو متوقف؛ أزله من الفاتورة أو أعد تفعيله من إدارة الأصناف');
-    const barcode = String(item.barcode || '').trim();
+    const barcode = normalizeBarcode(item.barcode);
     if (!barcode) continue;
-    const drugId = String(item.id || item.drug_id);
-    const cartOwner = owners.get(barcode.toLowerCase());
-    if (cartOwner && cartOwner !== drugId) throw new Error('الباركود مستخدم لصنف آخر');
-    owners.set(barcode.toLowerCase(), drugId);
-
-    const conflict = await scopedDb.prepare(`
-      SELECT id AS drug_id FROM master_drugs
-      WHERE id != ? AND barcode IS NOT NULL AND TRIM(barcode) = ? COLLATE NOCASE
-      UNION ALL
-      SELECT drug_id FROM inventory
-      WHERE drug_id != ? AND barcode IS NOT NULL AND TRIM(barcode) = ? COLLATE NOCASE
-        AND (quantity IS NULL OR quantity != 0)
-      LIMIT 1
-    `).get(item.id || item.drug_id, barcode, item.id || item.drug_id, barcode) as any;
-    if (conflict) throw new Error('الباركود مستخدم لصنف آخر');
+    claims.push({ barcode, drugId: item.id || item.drug_id });
   }
+  await assertBarcodeOwnershipAvailable(
+    scopedDb,
+    claims,
+    { conflictMessage: 'الباركود مستخدم لصنف آخر' },
+  );
 }
 
 
@@ -422,9 +437,26 @@ function normalizeSupplierInput(data: SupplierInput) {
   };
 }
 
-export async function getSuppliersAction() {
+export async function getSuppliersAction(options: { reportScope?: boolean } = {}) {
   try {
     const session = await getLocalSession();
+    if (options.reportScope) {
+      if (!session || (
+        !hasUserPermissionSync(session, 'rep_can_view_purchases')
+        && !hasUserPermissionSync(session, 'can_view_purchases')
+      )) {
+        return { success: false, error: SUPPLIER_PERMISSION_ERROR };
+      }
+      const pharmacyId = session.pharmacy_id || 'local_default';
+      const items = await db.prepare(`
+        SELECT DISTINCT s.id, s.name_ar, s.name_en
+        FROM suppliers s
+        JOIN purchase_invoices i ON i.supplier_id = s.id
+        WHERE i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default')
+        ORDER BY s.name_ar ASC
+      `).all(pharmacyId, pharmacyId);
+      return { success: true, data: items };
+    }
     if (!canViewSuppliers(session)) return { success: false, error: SUPPLIER_PERMISSION_ERROR };
 
     const items = await db.prepare(`
@@ -760,11 +792,10 @@ export async function createPurchaseInvoiceAction(data: {
     }
     assertNoDuplicatePurchaseLots(data.cart || []);
     if ((data.status || 'completed') !== 'draft') {
-      assertCompletedPurchaseExpiryPolicy(data.cart || []);
+      await assertCompletedPurchaseExpiryPolicyForDb(data.cart || []);
     }
     await assertPurchaseConversionPermission(session, data.cart || []);
 
-    await ensureBarcodeColumn();
     if (!isTauri) await assertPurchaseBarcodesAvailable(data.cart || []);
     if (data.id) {
       const pharmacyId = session.pharmacy_id || 'local_default';
@@ -812,7 +843,10 @@ export async function createPurchaseInvoiceAction(data: {
 
     const cacheUpdates: Array<{ drugId: number; patch: Record<string, unknown> }> = [];
     const transaction = db.transaction(async (db) => {
-      await assertPurchaseConversionPermission(session, data.cart || [], db);
+      if ((data.status || 'completed') !== 'draft') {
+        await assertCompletedPurchaseExpiryPolicyForDb(data.cart || [], db);
+      }
+      await assertPurchaseConversionPermission(session, data.cart || [], db, true);
       await assertPurchaseBarcodesAvailable(data.cart || [], db);
       const id = data.id || generateId();
       if (data.id) {
@@ -1085,7 +1119,7 @@ export async function completePurchaseInvoiceAction(invoiceId: string) {
       const items = await db.prepare('SELECT * FROM purchase_invoice_items WHERE invoice_id = ?').all(invoiceId) as any[];
       assertPurchaseItemsPolicy(items, 'completed');
       assertNoDuplicatePurchaseLots(items.map(item => ({ ...item, id: item.drug_id })));
-      assertCompletedPurchaseExpiryPolicy(items);
+      await assertCompletedPurchaseExpiryPolicyForDb(items, db);
       await assertPurchaseConversionPermission(session, items.map(item => ({ ...item, id: item.drug_id })), db);
       await assertPurchaseBarcodesAvailable(items.map(item => ({ ...item, id: item.drug_id })), db);
 
@@ -1452,7 +1486,6 @@ export async function searchPurchaseInvoicesForReturnAction(searchTerm: string) 
   try {
     const session = await getLocalSession();
     if (!session || !hasUserPermissionSync(session, 'can_view_purchases')) return { success: false, error: 'Unauthorized', data: [] };
-    await ensureBarcodeColumn();
     const pharmacyId = session.pharmacy_id || 'local_default';
     const term = searchTerm.trim();
     if (!term) return { success: true, data: [] };
@@ -1498,11 +1531,17 @@ export async function searchPurchaseInvoicesForReturnAction(searchTerm: string) 
   }
 }
 
-export async function getPurchaseInvoiceDetailsAction(invoiceId: string) {
+export async function getPurchaseInvoiceDetailsAction(
+  invoiceId: string,
+  options: { reportScope?: boolean } = {},
+) {
   try {
     const session = await getLocalSession();
-    if (!session || !hasUserPermissionSync(session, 'can_view_purchases')) return { success: false, error: 'Unauthorized' };
-    await ensureBarcodeColumn();
+    const canViewDetails = !!session && (
+      hasUserPermissionSync(session, 'can_view_purchases')
+      || (options.reportScope && hasUserPermissionSync(session, 'rep_can_view_purchases'))
+    );
+    if (!canViewDetails) return { success: false, error: 'Unauthorized' };
     const pharmacyId = session.pharmacy_id || 'local_default';
     let invoice = await db.prepare(`
       SELECT * FROM purchase_invoices
@@ -1539,6 +1578,10 @@ export async function getPurchaseInvoiceDetailsAction(invoiceId: string) {
                'صنف #' || pii.drug_id
              ) AS trade_name_en,
              COALESCE(NULLIF(pii.barcode, ''), NULLIF(lot.barcode, ''), d.barcode) AS barcode,
+             COALESCE(NULLIF(TRIM(d.large_unit), ''), 'علبة') AS large_unit,
+             COALESCE(NULLIF(TRIM(d.medium_unit), ''), 'شريط') AS medium_unit,
+             COALESCE(NULLIF(TRIM(d.small_unit), ''), 'وحدة') AS small_unit,
+             COALESCE(d.has_expiry, 1) AS has_expiry,
              d.large_to_medium,
              COALESCE(NULLIF(pii.medium_to_small, 0), NULLIF(d.medium_to_small, 0), 1) AS medium_to_small,
              d.official_price as base_price, u.name_en as unit,
@@ -1580,7 +1623,8 @@ export async function getPurchaseInvoiceDetailsAction(invoiceId: string) {
              pri.quantity_returned, COALESCE(pri.unit, 'large') AS unit
       FROM purchase_return_items pri
       JOIN purchase_returns pr ON pr.id = pri.purchase_return_id
-      WHERE pr.purchase_invoice_id = ? AND pr.status = 'completed'
+      WHERE pr.purchase_invoice_id = ?
+        AND LOWER(COALESCE(pr.status, '')) IN ('completed', 'approved')
     `).all(String(invoice.id)) as any[];
 
     const data = items.map(item => {
@@ -1649,26 +1693,6 @@ type ValidatedPurchaseReturnLine = {
   large_to_medium: number;
   medium_to_small: number;
 };
-
-function purchaseReturnQuantityInLargeUnits(
-  quantity: number,
-  unit: string | undefined,
-  largeToMedium: number,
-  mediumToSmall: number
-) {
-  if (unit === 'medium') return quantity / Math.max(1, largeToMedium);
-  if (unit === 'small') return quantity / (Math.max(1, largeToMedium) * Math.max(1, mediumToSmall));
-  return quantity;
-}
-
-function normalizePurchaseReturnUnit(unit: string | undefined): 'large' | 'medium' | 'small' | null {
-  switch ((unit || 'large').trim().toLowerCase()) {
-    case 'large': case 'box': return 'large';
-    case 'medium': case 'strip': return 'medium';
-    case 'small': case 'unit': case 'pill': return 'small';
-    default: return null;
-  }
-}
 
 async function validatePurchaseReturnRequest(
   data: PurchaseReturnRequest,
@@ -1746,14 +1770,14 @@ async function validatePurchaseReturnRequest(
     FROM purchase_return_items pri
     JOIN purchase_returns pr ON pr.id = pri.purchase_return_id
     WHERE pr.purchase_invoice_id = ?
-      AND pr.status = 'completed'
+      AND LOWER(COALESCE(pr.status, '')) IN ('completed', 'approved')
       AND pri.purchase_invoice_item_id IN (${placeholders})
   `, [data.purchase_invoice_id, ...itemIds]) : await dbSelect<any>(`
     SELECT pri.purchase_invoice_item_id, pri.quantity_returned, COALESCE(pri.unit, 'large') AS unit
     FROM purchase_return_items pri
     JOIN purchase_returns pr ON pr.id = pri.purchase_return_id
     WHERE pr.purchase_invoice_id = ?
-      AND pr.status = 'completed'
+      AND LOWER(COALESCE(pr.status, '')) IN ('completed', 'approved')
       AND pri.purchase_invoice_item_id IN (${placeholders})
   `, [data.purchase_invoice_id, ...itemIds]);
 
@@ -1849,9 +1873,6 @@ export async function createPurchaseReturnAction(data: PurchaseReturnRequest) {
       revalidatePath('/inventory');
       return { success: true, id: result.return_id };
     }
-
-    await dbExecute('ALTER TABLE purchase_return_items ADD COLUMN purchase_invoice_item_id INTEGER').catch(() => {});
-    await dbExecute("ALTER TABLE purchase_return_items ADD COLUMN unit TEXT DEFAULT 'large'").catch(() => {});
 
     const transaction = db.transaction(async (db) => {
       const returnId = generateId();
@@ -2070,11 +2091,13 @@ export async function getDrugInventoryQuantityAction(drugId: number) {
   }
   const pharmacyId = user.pharmacy_id || 'local_default';
   const row = await db.prepare(`
-    SELECT COALESCE(SUM(quantity), 0) as quantity
-    FROM inventory
-    WHERE drug_id = ?
-      AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
-      AND (expiry_date IS NULL OR expiry_date >= date('now', 'localtime'))
+    SELECT COALESCE(SUM(i.quantity), 0) as quantity
+    FROM inventory i
+    JOIN master_drugs md ON md.id = i.drug_id
+    WHERE i.drug_id = ?
+      AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
+      AND (COALESCE(md.has_expiry, 1) = 0 OR i.expiry_date IS NOT NULL)
+      AND (i.expiry_date IS NULL OR i.expiry_date >= date('now', 'localtime'))
   `).get(drugId, pharmacyId, pharmacyId) as any;
   return { success: true, data: Number(row?.quantity || 0) };
 }
@@ -2177,9 +2200,8 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
     }
     assertPurchaseItemsPolicy(data.cart, 'completed');
     assertNoDuplicatePurchaseLots(data.cart);
-    assertCompletedPurchaseExpiryPolicy(data.cart);
+    await assertCompletedPurchaseExpiryPolicyForDb(data.cart);
 
-    await ensureBarcodeColumn();
     const pharmacyId = session.pharmacy_id || 'local_default';
     const ownedInvoice = await db.prepare(`
       SELECT id FROM purchase_invoices
@@ -2222,6 +2244,7 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
 
     const cacheUpdates: Array<{ drugId: number; patch: Record<string, unknown> }> = [];
     const transaction = db.transaction(async (db) => {
+      await assertCompletedPurchaseExpiryPolicyForDb(data.cart, db);
       await assertPurchaseBarcodesAvailable(data.cart || [], db);
       // 1. Get existing completed invoice and items
       const invoice = await db.prepare('SELECT * FROM purchase_invoices WHERE id = ?').get(data.id) as any;

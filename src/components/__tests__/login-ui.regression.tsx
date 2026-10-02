@@ -5,6 +5,11 @@ import { loginLocalAction } from '@/app/actions-client/auth';
 import { syncFromCloud } from '@/lib/sync/universal';
 import { toast } from 'react-hot-toast';
 
+const mockReplace = jest.fn();
+
+jest.mock('next/navigation', () => ({
+  useRouter: () => ({ replace: mockReplace }),
+}));
 jest.mock('@/app/actions-client/auth', () => ({ loginLocalAction: jest.fn() }));
 jest.mock('@/lib/sync/universal', () => ({ syncFromCloud: jest.fn() }));
 jest.mock('react-hot-toast', () => {
@@ -47,6 +52,7 @@ it('keeps user provisioning local when public catalog sync succeeds', async () =
 });
 
 it('stores the authenticated local user before navigating to the dashboard', async () => {
+  mockReplace.mockReset();
   (loginLocalAction as jest.Mock).mockResolvedValue({
     success: true,
     user: {
@@ -75,6 +81,7 @@ it('stores the authenticated local user before navigating to the dashboard', asy
     permissions: '{"can_view_sales":true}',
   });
   expect(toast.success).toHaveBeenCalledWith('أهلاً بك، Owner User');
+  expect(mockReplace).toHaveBeenCalledWith('/');
 });
 
 it('blocks repeated local-login submissions while authentication is pending', async () => {

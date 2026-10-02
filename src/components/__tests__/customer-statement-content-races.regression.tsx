@@ -56,4 +56,26 @@ describe('CustomerStatementContent active profile subclient', () => {
     fireEvent.click(screen.getByRole('button', { name: 'إعادة المحاولة' }));
     expect(await screen.findByText((_, element) => element?.textContent?.trim() === '333 ج.م')).toBeInTheDocument();
   });
+
+  it('labels running and filtered balances as visible-movement balances when chain-wide debt includes hidden branch activity', async () => {
+    (getPatientStatementAction as jest.Mock).mockResolvedValueOnce({
+      success: true,
+      data: {
+        patient: { id: 'patient-1', full_name: 'Chain Patient', opening_balance: 100 },
+        movements: [
+          { doc_no: 'visible-1', type: 'فاتورة بيع', date: '2026-09-01', balance_effect: 55, value: 55 },
+        ],
+        currentBalance: 226,
+      },
+    });
+
+    render(<CustomerStatementContent patientId="patient-1" />);
+    expect(await screen.findByText((_, element) => element?.textContent?.trim() === '226 ج.م')).toBeInTheDocument();
+    expect(screen.getByText('الرصيد المتراكم للحركات المعروضة')).toBeInTheDocument();
+
+    const dates = screen.getAllByDisplayValue('');
+    fireEvent.change(dates[0], { target: { value: '2026-09-01' } });
+    fireEvent.click(screen.getByRole('button', { name: 'بحث' }));
+    expect(screen.getByText('رصيد نهاية الفترة للحركات المعروضة')).toBeInTheDocument();
+  });
 });

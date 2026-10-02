@@ -49,8 +49,9 @@ export default function PharmacySettingsForm({ pharmacy: rawPharmacy }: Pharmacy
         
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div className="space-y-1.5">
-            <label className="text-xs font-black text-slate-400 mr-2 uppercase">الإسم (بالعربية)</label>
+            <label htmlFor="pharmacy-name" className="text-xs font-black text-slate-500 mr-2">الإسم (بالعربية)</label>
             <input 
+              id="pharmacy-name"
               name="name"
               type="text" 
               defaultValue={pharmacy?.name}
@@ -59,8 +60,9 @@ export default function PharmacySettingsForm({ pharmacy: rawPharmacy }: Pharmacy
             />
           </div>
           <div className="space-y-1.5">
-            <label className="text-xs font-black text-slate-400 mr-2 uppercase">الإسم (English)</label>
+            <label htmlFor="pharmacy-name-en" className="text-xs font-black text-slate-500 mr-2">الإسم (English)</label>
             <input 
+              id="pharmacy-name-en"
               name="name_en"
               type="text" 
               defaultValue={pharmacy?.name_en}
@@ -68,8 +70,9 @@ export default function PharmacySettingsForm({ pharmacy: rawPharmacy }: Pharmacy
             />
           </div>
           <div className="space-y-1.5">
-            <label className="text-xs font-black text-slate-400 mr-2 uppercase">التليفون</label>
+            <label htmlFor="pharmacy-phone" className="text-xs font-black text-slate-500 mr-2">التليفون</label>
             <input 
+              id="pharmacy-phone"
               name="phone"
               type="text" 
               defaultValue={pharmacy?.phone}
@@ -77,8 +80,9 @@ export default function PharmacySettingsForm({ pharmacy: rawPharmacy }: Pharmacy
             />
           </div>
           <div className="space-y-1.5">
-            <label className="text-xs font-black text-slate-400 mr-2 uppercase">العنوان بالتفصيل</label>
+            <label htmlFor="pharmacy-address" className="text-xs font-black text-slate-500 mr-2">العنوان بالتفصيل</label>
             <input 
+              id="pharmacy-address"
               name="address"
               type="text" 
               defaultValue={pharmacy?.address}
@@ -97,8 +101,9 @@ export default function PharmacySettingsForm({ pharmacy: rawPharmacy }: Pharmacy
         
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div className="space-y-1.5">
-            <label className="text-xs font-black text-slate-400 mr-2 uppercase">رقم السجل التجاري</label>
+            <label htmlFor="commercial-registry" className="text-xs font-black text-slate-500 mr-2">رقم السجل التجاري</label>
             <input 
+              id="commercial-registry"
               name="commercial_registry"
               type="text" 
               defaultValue={pharmacy?.commercial_registry}
@@ -106,8 +111,9 @@ export default function PharmacySettingsForm({ pharmacy: rawPharmacy }: Pharmacy
             />
           </div>
           <div className="space-y-1.5">
-            <label className="text-xs font-black text-slate-400 mr-2 uppercase">رقم البطاقة الضريبية</label>
+            <label htmlFor="tax-card" className="text-xs font-black text-slate-500 mr-2">رقم البطاقة الضريبية</label>
             <input 
+              id="tax-card"
               name="tax_card"
               type="text" 
               defaultValue={pharmacy?.tax_card}
@@ -127,21 +133,21 @@ export default function PharmacySettingsForm({ pharmacy: rawPharmacy }: Pharmacy
           </div>
           <div className="space-y-4">
             <div className="space-y-1.5">
-              <label className="text-xs font-black text-slate-400 mr-2 uppercase">إسم المالك</label>
-              <input name="owner_name" type="text" defaultValue={pharmacy?.owner_name} className="w-full bg-slate-50 dark:bg-slate-800 border-none p-4 rounded-2xl font-bold outline-none focus:ring-2 focus:ring-purple-500" />
+              <label htmlFor="owner-name" className="text-xs font-black text-slate-500 mr-2">إسم المالك</label>
+              <input id="owner-name" name="owner_name" type="text" defaultValue={pharmacy?.owner_name} className="w-full bg-slate-50 dark:bg-slate-800 border-none p-4 rounded-2xl font-bold outline-none focus:ring-2 focus:ring-purple-500" />
             </div>
             <div className="space-y-1.5">
-              <label className="text-xs font-black text-slate-400 mr-2 uppercase">العنوان</label>
-              <input name="owner_address" type="text" defaultValue={pharmacy?.owner_address} className="w-full bg-slate-50 dark:bg-slate-800 border-none p-4 rounded-2xl font-bold outline-none focus:ring-2 focus:ring-purple-500" />
+              <label htmlFor="owner-address" className="text-xs font-black text-slate-500 mr-2">العنوان</label>
+              <input id="owner-address" name="owner_address" type="text" defaultValue={pharmacy?.owner_address} className="w-full bg-slate-50 dark:bg-slate-800 border-none p-4 rounded-2xl font-bold outline-none focus:ring-2 focus:ring-purple-500" />
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1.5">
-                <label className="text-xs font-black text-slate-400 mr-2 uppercase">التليفون</label>
-                <input name="owner_phone" type="text" defaultValue={pharmacy?.owner_phone} className="w-full bg-slate-50 dark:bg-slate-800 border-none p-4 rounded-2xl font-bold outline-none focus:ring-2 focus:ring-purple-500" />
+                <label htmlFor="owner-phone" className="text-xs font-black text-slate-500 mr-2">التليفون</label>
+                <input id="owner-phone" name="owner_phone" type="text" defaultValue={pharmacy?.owner_phone} className="w-full bg-slate-50 dark:bg-slate-800 border-none p-4 rounded-2xl font-bold outline-none focus:ring-2 focus:ring-purple-500" />
               </div>
               <div className="space-y-1.5">
-                <label className="text-xs font-black text-slate-400 mr-2 uppercase">الموبايل</label>
-                <input name="owner_mobile" type="text" defaultValue={pharmacy?.owner_mobile} className="w-full bg-slate-50 dark:bg-slate-800 border-none p-4 rounded-2xl font-bold outline-none focus:ring-2 focus:ring-purple-500" />
+                <label htmlFor="owner-mobile" className="text-xs font-black text-slate-500 mr-2">الموبايل</label>
+                <input id="owner-mobile" name="owner_mobile" type="text" defaultValue={pharmacy?.owner_mobile} className="w-full bg-slate-50 dark:bg-slate-800 border-none p-4 rounded-2xl font-bold outline-none focus:ring-2 focus:ring-purple-500" />
               </div>
             </div>
           </div>
@@ -155,28 +161,28 @@ export default function PharmacySettingsForm({ pharmacy: rawPharmacy }: Pharmacy
           </div>
           <div className="space-y-4">
             <div className="space-y-1.5">
-              <label className="text-xs font-black text-slate-400 mr-2 uppercase">إسم المدير</label>
-              <input name="manager_name" type="text" defaultValue={pharmacy?.manager_name} className="w-full bg-slate-50 dark:bg-slate-800 border-none p-4 rounded-2xl font-bold outline-none focus:ring-2 focus:ring-orange-500" />
+              <label htmlFor="manager-name" className="text-xs font-black text-slate-500 mr-2">إسم المدير</label>
+              <input id="manager-name" name="manager_name" type="text" defaultValue={pharmacy?.manager_name} className="w-full bg-slate-50 dark:bg-slate-800 border-none p-4 rounded-2xl font-bold outline-none focus:ring-2 focus:ring-orange-500" />
             </div>
             <div className="space-y-1.5">
-              <label className="text-xs font-black text-slate-400 mr-2 uppercase">العنوان</label>
-              <input name="manager_address" type="text" defaultValue={pharmacy?.manager_address} className="w-full bg-slate-50 dark:bg-slate-800 border-none p-4 rounded-2xl font-bold outline-none focus:ring-2 focus:ring-orange-500" />
+              <label htmlFor="manager-address" className="text-xs font-black text-slate-500 mr-2">العنوان</label>
+              <input id="manager-address" name="manager_address" type="text" defaultValue={pharmacy?.manager_address} className="w-full bg-slate-50 dark:bg-slate-800 border-none p-4 rounded-2xl font-bold outline-none focus:ring-2 focus:ring-orange-500" />
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1.5">
-                <label className="text-xs font-black text-slate-400 mr-2 uppercase">التليفون</label>
-                <input name="manager_phone" type="text" defaultValue={pharmacy?.manager_phone} className="w-full bg-slate-50 dark:bg-slate-800 border-none p-4 rounded-2xl font-bold outline-none focus:ring-2 focus:ring-orange-500" />
+                <label htmlFor="manager-phone" className="text-xs font-black text-slate-500 mr-2">التليفون</label>
+                <input id="manager-phone" name="manager_phone" type="text" defaultValue={pharmacy?.manager_phone} className="w-full bg-slate-50 dark:bg-slate-800 border-none p-4 rounded-2xl font-bold outline-none focus:ring-2 focus:ring-orange-500" />
               </div>
               <div className="space-y-1.5">
-                <label className="text-xs font-black text-slate-400 mr-2 uppercase">الموبايل</label>
-                <input name="manager_mobile" type="text" defaultValue={pharmacy?.manager_mobile} className="w-full bg-slate-50 dark:bg-slate-800 border-none p-4 rounded-2xl font-bold outline-none focus:ring-2 focus:ring-orange-500" />
+                <label htmlFor="manager-mobile" className="text-xs font-black text-slate-500 mr-2">الموبايل</label>
+                <input id="manager-mobile" name="manager_mobile" type="text" defaultValue={pharmacy?.manager_mobile} className="w-full bg-slate-50 dark:bg-slate-800 border-none p-4 rounded-2xl font-bold outline-none focus:ring-2 focus:ring-orange-500" />
               </div>
             </div>
           </div>
         </div>
       </div>
 
-      <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-800/50 p-6 rounded-3xl border border-slate-200 dark:border-slate-800">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between bg-slate-50 dark:bg-slate-800/50 p-6 rounded-3xl border border-slate-200 dark:border-slate-800">
         <p className="text-slate-500 text-sm font-bold">* يرجى التأكد من صحة البيانات المدخلة لأغراض الفواتير والتقارير القانونية.</p>
         <button 
           disabled={loading}

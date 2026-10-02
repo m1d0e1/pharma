@@ -22,6 +22,10 @@ export interface PurchaseItem {
   expiry_date: string;
   official_price: number;
   strips_per_box?: number | string;
+  large_unit?: string;
+  medium_unit?: string;
+  small_unit?: string;
+  has_expiry?: number | boolean;
   barcode?: string;
 }
 

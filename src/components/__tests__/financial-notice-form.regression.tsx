@@ -45,9 +45,15 @@ describe('FinancialNoticeForm Component', () => {
 
     // Patients dropdown should populate
     expect(await screen.findByText(/أحمد محمود/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'عميل / مريض' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'خصم (Credit) تخفيض المديونية / دائن' })).toHaveAttribute('aria-pressed', 'true');
 
     // Select amount
-    const amountInput = screen.getByPlaceholderText('0.00');
+    const amountInput = screen.getByLabelText('المبلغ المستحق *');
+    expect(amountInput).toBe(screen.getByPlaceholderText('0.00'));
+    expect(screen.getByLabelText('تاريخ العملية')).toHaveAttribute('type', 'date');
+    expect(screen.getByLabelText('سبب الإشعار *')).toBeInTheDocument();
+    expect(screen.getByLabelText('ملاحظات إضافية')).toBeInTheDocument();
     fireEvent.change(amountInput, { target: { value: '75' } });
 
     // Submit
@@ -65,6 +71,27 @@ describe('FinancialNoticeForm Component', () => {
       );
       expect(onSuccess).toHaveBeenCalled();
     });
+  });
+
+  it('renders the real patient-list response shape and submits the selected patient id', async () => {
+    (patients.getPatientsAction as jest.Mock).mockResolvedValueOnce({
+      success: true,
+      data: [
+        { id: 'p-real', full_name: 'عميل حقيقي', phone: '01044444444', outstanding_balance: 325 },
+      ],
+    });
+    render(<FinancialNoticeForm />);
+
+    expect(await screen.findByText(/عميل حقيقي/)).toBeInTheDocument();
+    expect(screen.getByText(/325/)).toBeInTheDocument();
+    const select = screen.getAllByRole('combobox')[0];
+    fireEvent.change(select, { target: { value: 'p-real' } });
+    fireEvent.change(screen.getByPlaceholderText('0.00'), { target: { value: '50' } });
+    fireEvent.click(screen.getByRole('button', { name: /حفظ الإشعار/i }));
+
+    await waitFor(() => expect(finance.addFinancialNoticeAction).toHaveBeenCalledWith(
+      expect.objectContaining({ target_type: 'customer', target_id: 'p-real', amount: 50 })
+    ));
   });
 
   it('switches target type to supplier and selects supplier from dropdown', async () => {

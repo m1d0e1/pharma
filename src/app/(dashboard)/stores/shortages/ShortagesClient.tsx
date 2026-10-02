@@ -257,21 +257,6 @@ export default function ShortagesClient({ initialData }: { initialData: any[] })
       const storageKey = purchaseShortageHandoffStorageKey()
       if (!storageKey) throw new Error('Missing signed-in purchase scope')
       sessionStorage.setItem(storageKey, JSON.stringify(itemsToConvert))
-
-      const idsToUpdate = itemsToConvert.filter(i => i.status === 'pending').map(i => i.id);
-      if (idsToUpdate.length > 0) {
-        try {
-          const statusResult = await updateShortagesStatusBulkAction(idsToUpdate, 'ordered')
-          if (statusResult.success) {
-            setData(prev => prev.map(item => idsToUpdate.includes(item.id) ? { ...item, status: 'ordered' } : item))
-          } else {
-            toast.error(`تم تجهيز فاتورة المشتريات لكن تعذر تحديث حالة ${idsToUpdate.length} صنف`)
-          }
-        } catch (statusError) {
-          console.error(statusError)
-          toast.error(`تم تجهيز فاتورة المشتريات لكن تعذر تحديث حالة ${idsToUpdate.length} صنف`)
-        }
-      }
       toast.success(`جاري تحويل ${itemsToConvert.length} صنف إلى فاتورة مشتريات...`)
       router.push('/purchases/new')
     } catch (e) {
@@ -610,19 +595,19 @@ export default function ShortagesClient({ initialData }: { initialData: any[] })
                   
                   <div className="flex items-center gap-1.5 flex-wrap justify-end">
                     {Number(item.current_stock || 0) <= 0 ? (
-                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-400 border border-rose-200 dark:border-rose-900/60 flex items-center gap-1">
+                      <span className="px-2.5 py-0.5 rounded-full text-[11px] font-black bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-400 border border-rose-200 dark:border-rose-900/60 flex items-center gap-1">
                         <AlertCircle className="w-3 h-3 text-rose-600" />
                         منتهي
                       </span>
                     ) : item.inventory_status === 'critical' ? (
-                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black bg-orange-100 text-orange-700 dark:bg-orange-950/60 dark:text-orange-400 border border-orange-200 dark:border-orange-900/60 flex items-center gap-1">
+                      <span className="px-2.5 py-0.5 rounded-full text-[11px] font-black bg-orange-100 text-orange-700 dark:bg-orange-950/60 dark:text-orange-400 border border-orange-200 dark:border-orange-900/60 flex items-center gap-1">
                         <AlertCircle className="w-3 h-3 text-orange-600" />
                         حرج
                       </span>
                     ) : null}
 
                     <span className={cn(
-                      "px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider",
+                      "px-3 py-1 rounded-full text-[11px] font-black",
                       item.status === 'pending' ? "bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-400" : "bg-blue-100 text-blue-700 dark:bg-blue-950/60 dark:text-blue-400"
                     )}>
                       {item.status === 'pending' ? 'مطلوب' : 'قيد الطلب'}
@@ -630,6 +615,8 @@ export default function ShortagesClient({ initialData }: { initialData: any[] })
 
                     {/* Delete button */}
                     <button
+                      type="button"
+                      aria-label={`حذف ${item.trade_name_en || item.trade_name} من كشكول النواقص`}
                       onClick={() => handleDelete(item.id, item.trade_name_en || item.trade_name)}
                       className="text-slate-300 hover:text-red-500 dark:hover:text-red-400 p-1 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/30 transition-all no-print"
                       title="حذف من الكشكول"
@@ -642,17 +629,17 @@ export default function ShortagesClient({ initialData }: { initialData: any[] })
                 {/* Stock Details Grid */}
                 <div className="grid grid-cols-3 gap-2 py-3 border-y border-slate-50 dark:border-slate-800 text-center">
                   <div className="rounded-xl bg-slate-50 dark:bg-slate-800 p-2">
-                    <span className="block text-[9px] font-black text-slate-400">الرصيد الحالي</span>
+                    <span className="block text-[11px] font-black text-slate-500">الرصيد الحالي</span>
                     <span className={cn('text-sm font-black', Number(item.current_stock) <= 0 ? 'text-red-600' : 'text-slate-700 dark:text-slate-200')}>
                       {Number(item.current_stock || 0).toLocaleString('ar-EG')}
                     </span>
                   </div>
                   <div className="rounded-xl bg-slate-50 dark:bg-slate-800 p-2">
-                    <span className="block text-[9px] font-black text-slate-400">حد إعادة الطلب</span>
+                    <span className="block text-[11px] font-black text-slate-500">حد إعادة الطلب</span>
                     <span className="text-sm font-black text-amber-600">{Number(item.reorder_point || 0).toLocaleString('ar-EG')}</span>
                   </div>
                   <div className="rounded-xl bg-red-50 dark:bg-red-900/10 p-2">
-                    <span className="block text-[9px] font-black text-slate-400">العجز</span>
+                    <span className="block text-[11px] font-black text-slate-500">العجز</span>
                     <span className="text-sm font-black text-red-600">{Number(item.deficit || 0).toLocaleString('ar-EG')}</span>
                   </div>
                 </div>
@@ -679,8 +666,9 @@ export default function ShortagesClient({ initialData }: { initialData: any[] })
                 {isEditing ? (
                   <div className="p-3 bg-primary-50 dark:bg-primary-950/30 rounded-2xl space-y-2 border border-primary-200 dark:border-primary-800/50">
                     <div className="flex items-center gap-2">
-                      <label className="text-xs font-black text-slate-700 dark:text-slate-300 w-20">الكمية:</label>
+                      <label htmlFor={`shortage-qty-${item.id}`} className="text-xs font-black text-slate-700 dark:text-slate-300 w-20">الكمية:</label>
                       <input
+                        id={`shortage-qty-${item.id}`}
                         type="number"
                         min="1"
                         value={editQty}
@@ -689,8 +677,9 @@ export default function ShortagesClient({ initialData }: { initialData: any[] })
                       />
                     </div>
                     <div className="flex items-center gap-2">
-                      <label className="text-xs font-black text-slate-700 dark:text-slate-300 w-20">ملاحظة:</label>
+                      <label htmlFor={`shortage-note-${item.id}`} className="text-xs font-black text-slate-700 dark:text-slate-300 w-20">ملاحظة:</label>
                       <input
+                        id={`shortage-note-${item.id}`}
                         type="text"
                         placeholder="مثل: مطلوب لعميل..."
                         value={editNotes}
@@ -722,6 +711,8 @@ export default function ShortagesClient({ initialData }: { initialData: any[] })
                         الكمية المطلوبة: <span className="text-primary-600">{item.requested_quantity}</span>
                       </span>
                       <button
+                        type="button"
+                        aria-label={`تعديل كمية وملاحظات ${item.trade_name_en || item.trade_name}`}
                         onClick={() => startEditing(item)}
                         className="text-slate-400 hover:text-primary-600 p-0.5 rounded transition-colors no-print"
                         title="تعديل الكمية والملاحظات"
@@ -730,7 +721,7 @@ export default function ShortagesClient({ initialData }: { initialData: any[] })
                       </button>
                     </div>
 
-                    <div className="flex items-center gap-1 text-slate-400 text-[10px]">
+                    <div className="flex items-center gap-1 text-slate-500 text-[11px]">
                       <Clock className="w-3.5 h-3.5" />
                       <span>{new Date(item.created_at).toLocaleDateString('ar-EG')}</span>
                     </div>

@@ -99,6 +99,42 @@ describe('DrugDetailsModal inventory-management permissions', () => {
     expect(await screen.findByRole('button', { name: /تعديل/ })).toBeInTheDocument();
   });
 
+  it('exposes interaction detail cards as keyboard-native disclosure buttons', async () => {
+    (getDrugDetailsFullAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: {
+        id: 11,
+        trade_name: 'Panadol',
+        active_ingredient: 'Paracetamol',
+        official_price: 10,
+        min_price: 10,
+        total_stock: 1,
+        units: { large: 'box', medium: 'strip', small: 'tablet' },
+        expiry_batches: [],
+        alternatives: [],
+        conflicts: [{
+          interaction_id: 77,
+          trade_name: 'Warfarin',
+          conflicting_ingredient: 'Warfarin',
+          severity: 'major',
+          description: 'راقب النزيف',
+        }],
+        consumption_stats: [],
+      },
+    });
+
+    render(<DrugDetailsModal drugId={11} onClose={jest.fn()} />);
+    await screen.findByText('Panadol');
+    fireEvent.click(screen.getByRole('button', { name: 'البدائل' }));
+    fireEvent.click(screen.getByRole('button', { name: 'الأدوية المتعارضة' }));
+
+    const disclosure = screen.getByRole('button', { name: 'عرض تفاصيل التداخل مع Warfarin' });
+    expect(disclosure).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(disclosure);
+    expect(disclosure).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText('راقب النزيف')).toBeInTheDocument();
+  });
+
   it('uses the displayed active ingredient when an authorized manager adds a conflict', async () => {
     mockUser = {
       id: 'owner',

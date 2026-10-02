@@ -85,6 +85,7 @@ export default function CogsAdjustmentClient() {
             <Search className="absolute right-4 top-1/2 -translate-y-1/2 w-6 h-6 text-slate-400" />
             <input 
               type="text" 
+              aria-label="بحث باسم الصنف أو رقم الفاتورة"
               className="w-full pr-14 pl-6 py-4 bg-slate-50 dark:bg-slate-800 border-none rounded-2xl font-bold outline-none focus:ring-2 ring-blue-500"
               placeholder="ابحث باسم الصنف أو رقم الفاتورة..."
               value={searchTerm}
@@ -106,9 +107,10 @@ export default function CogsAdjustmentClient() {
 
       {items.length > 0 ? (
         <div className="bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 overflow-hidden shadow-sm">
-          <table className="w-full text-right">
+          <div className="overflow-x-auto">
+          <table className="w-full min-w-[900px] text-right">
             <thead className="bg-slate-50 dark:bg-slate-800/50">
-              <tr className="text-slate-400 text-[10px] font-black uppercase tracking-widest">
+              <tr className="text-slate-500 text-xs font-black">
                 <th className="px-8 py-6">الصنف والفاتورة</th>
                 <th className="px-8 py-6">التاريخ</th>
                 <th className="px-8 py-6">سعر البيع</th>
@@ -127,7 +129,7 @@ export default function CogsAdjustmentClient() {
                   <tr key={item.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
                     <td className="px-8 py-6">
                       <p className="font-black text-slate-800 dark:text-white">{item.trade_name}</p>
-                      <p className="text-[10px] font-mono text-blue-500 font-bold">INV #{item.invoice_id.slice(0, 8)}</p>
+                      <p className="text-xs font-mono text-blue-500 font-bold">INV #{item.invoice_id.slice(0, 8)}</p>
                     </td>
                     <td className="px-8 py-6 font-bold text-slate-400 text-xs">
                       {format(new Date(item.invoice_date), 'yyyy/MM/dd')}
@@ -147,6 +149,7 @@ export default function CogsAdjustmentClient() {
                         <DollarSign className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                         <input 
                           type="number" 
+                          aria-label={`التكلفة الجديدة لـ ${item.trade_name}`}
                           step="0.01"
                           className="w-full pr-10 pl-3 py-3 bg-slate-50 dark:bg-slate-800 border border-slate-100 dark:border-slate-700 rounded-xl font-black outline-none focus:ring-2 ring-blue-500"
                           value={newCosts[item.id] || ''}
@@ -156,6 +159,8 @@ export default function CogsAdjustmentClient() {
                     </td>
                     <td className="px-8 py-6 text-left">
                       <button 
+                        type="button"
+                        aria-label={`حفظ تكلفة ${item.trade_name}`}
                         onClick={() => handleUpdate(item.id)}
                         disabled={adjustingId === item.id}
                         className={cn(
@@ -171,6 +176,7 @@ export default function CogsAdjustmentClient() {
               })}
             </tbody>
           </table>
+          </div>
         </div>
       ) : !loading && searchTerm && (
         <div className="p-20 text-center bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 text-slate-400 font-bold italic">

@@ -8,6 +8,7 @@ import { getPatientStatementAction, getReceiptDetailsAction } from '@/app/action
 import { toast } from 'react-hot-toast';
 import ReceiptDetailsModal from '../receipts/ReceiptDetailsModal';
 import { isBusinessDate, parseBusinessDate } from '@/lib/time';
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap';
 
 const statementDate = (value: string) => isBusinessDate(value) ? parseBusinessDate(value) : new Date(value);
 
@@ -27,6 +28,8 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
   const [selectedReceipt, setSelectedReceipt] = useState<any>(null);
   const [loadingReceipt, setLoadingReceipt] = useState(false);
   const receiptRequestRef = useRef(0);
+  const dialogRef = useDialogFocusTrap<HTMLDivElement>(!loading && !loadError && Boolean(data?.patient) && !selectedReceipt);
+  const errorDialogRef = useDialogFocusTrap<HTMLDivElement>(!loading && (loadError || !data || !data.patient));
 
   useEffect(() => {
     return () => {
@@ -95,7 +98,7 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
   if (loading) {
     return (
       <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[250] flex items-center justify-center">
-         <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl flex flex-col items-center gap-4 shadow-2xl">
+         <div role="status" aria-live="polite" className="bg-white dark:bg-slate-900 p-8 rounded-3xl flex flex-col items-center gap-4 shadow-2xl">
             <Loader2 className="w-10 h-10 animate-spin text-blue-600" />
             <p className="font-black text-slate-500">جاري تحميل كشف حساب العميل...</p>
          </div>
@@ -106,8 +109,8 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
   if (loadError || !data || !data.patient) {
     return (
       <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[250] flex items-center justify-center p-4">
-        <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl flex flex-col items-center gap-4 shadow-2xl border border-slate-200 dark:border-slate-800">
-          <p className="font-black text-rose-500 text-lg">فشل تحميل كشف حساب العميل</p>
+        <div ref={errorDialogRef} role="alertdialog" aria-modal="true" aria-labelledby="statement-error-title" tabIndex={-1} className="bg-white dark:bg-slate-900 p-8 rounded-3xl flex flex-col items-center gap-4 shadow-2xl border border-slate-200 dark:border-slate-800">
+          <p id="statement-error-title" className="font-black text-rose-500 text-lg">فشل تحميل كشف حساب العميل</p>
           <div className="flex items-center gap-3">
             <button
               type="button"
@@ -116,7 +119,7 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
             >
               إعادة المحاولة
             </button>
-            <button onClick={onClose} className="px-6 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 rounded-xl font-bold transition-all">
+            <button type="button" onClick={onClose} className="px-6 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 rounded-xl font-bold transition-all">
               إغلاق
             </button>
           </div>
@@ -136,38 +139,38 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
     });
 
   return (
-    <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[250] flex items-center justify-center p-4">
-      <div className="bg-slate-50 dark:bg-slate-900 w-full max-w-6xl h-[90vh] rounded-[40px] shadow-2xl border border-slate-200 dark:border-slate-800 flex flex-col overflow-hidden animate-in zoom-in duration-300" dir="rtl">
+    <div className="fixed inset-0 bg-slate-900/60 z-[250] flex items-center justify-center p-2 sm:p-4">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="customer-statement-title" tabIndex={-1} className="bg-slate-50 dark:bg-slate-900 w-full max-w-6xl h-[calc(100vh-1rem)] sm:h-[90vh] rounded-2xl sm:rounded-3xl shadow-2xl border border-slate-200 dark:border-slate-800 flex flex-col overflow-hidden animate-in zoom-in duration-200 focus:outline-none" dir="rtl">
         
         {/* Header */}
-        <div className="p-8 bg-white dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 shrink-0">
-           <div className="flex justify-between items-start mb-6">
+        <div className="p-4 sm:p-6 bg-white dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 shrink-0">
+           <div className="flex justify-between items-start mb-4 gap-4">
               <div>
-                <h3 className="text-3xl font-black text-slate-800 dark:text-white flex items-center gap-3">
+                <h3 id="customer-statement-title" className="text-2xl sm:text-3xl font-black text-slate-800 dark:text-white flex items-center gap-3">
                    <FileText className="w-8 h-8 text-blue-600" /> كشف حساب عميل
                 </h3>
                 <p className="text-slate-500 font-bold mt-1">عرض جميع الحركات المالية والأصناف للعميل</p>
               </div>
-              <button onClick={onClose} className="p-3 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-2xl transition-all no-print">
+              <button type="button" aria-label="إغلاق كشف الحساب" onClick={onClose} className="p-3 hover:bg-slate-100 dark:hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded-xl transition-colors no-print">
                  <X className="w-6 h-6" />
               </button>
            </div>
 
            <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
               <div className="bg-slate-50 dark:bg-slate-900 p-4 rounded-2xl border border-slate-100 dark:border-slate-800">
-                 <p className="text-[10px] font-black text-slate-400 uppercase mb-1">إسم العميل</p>
+                 <p className="text-xs font-black text-slate-500 mb-1">إسم العميل</p>
                  <p className="font-black text-slate-800 dark:text-white">{patient.full_name}</p>
               </div>
               <div className="bg-slate-50 dark:bg-slate-900 p-4 rounded-2xl border border-slate-100 dark:border-slate-800">
-                 <p className="text-[10px] font-black text-slate-400 uppercase mb-1">كود العميل</p>
+                 <p className="text-xs font-black text-slate-500 mb-1">كود العميل</p>
                  <p className="font-black text-slate-800 dark:text-white">#{patient.id.slice(0, 8)}</p>
               </div>
               <div className="bg-blue-50 dark:bg-blue-900/10 p-4 rounded-2xl border border-blue-100 dark:border-blue-900/20">
-                 <p className="text-[10px] font-black text-blue-400 uppercase mb-1">الرصيد الحالي</p>
+                 <p className="text-xs font-black text-blue-600 mb-1">الرصيد الحالي</p>
                  <p className="text-2xl font-black text-blue-600">{currentBalance.toLocaleString()} ج.م</p>
               </div>
               <div className="bg-emerald-50 dark:bg-emerald-900/10 p-4 rounded-2xl border border-emerald-100 dark:border-emerald-900/20">
-                 <p className="text-[10px] font-black text-emerald-400 uppercase mb-1">رصيد أول المدة</p>
+                 <p className="text-xs font-black text-emerald-600 mb-1">رصيد أول المدة</p>
                  <p className="text-2xl font-black text-emerald-600">{(patient.opening_balance || 0).toLocaleString()} ج.م</p>
               </div>
            </div>
@@ -196,20 +199,20 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
         </div>
 
         {/* Content Area */}
-        <div className="flex-1 overflow-auto p-8">
+        <div className="flex-1 overflow-auto p-4 sm:p-6">
            {activeTab === 'movements' && (
              <div className="bg-white dark:bg-slate-950 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm animate-in fade-in slide-in-from-bottom-4">
                 <table className="w-full text-right">
                   <thead className="bg-slate-50 dark:bg-slate-900/50">
                     <tr>
-                       <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">الحركة</th>
-                       <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">البيان / الملاحظات</th>
-                       <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">رقم المستند</th>
-                       <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">التاريخ</th>
-                       <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">المبلغ</th>
-                       <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">الرصيد</th>
-                       <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">طريقة الدفع</th>
-                       <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">المستخدم</th>
+                       <th className="px-6 py-4 text-xs font-black text-slate-500">الحركة</th>
+                       <th className="px-6 py-4 text-xs font-black text-slate-500">البيان / الملاحظات</th>
+                       <th className="px-6 py-4 text-xs font-black text-slate-500">رقم المستند</th>
+                       <th className="px-6 py-4 text-xs font-black text-slate-500">التاريخ</th>
+                       <th className="px-6 py-4 text-xs font-black text-slate-500">المبلغ</th>
+                       <th className="px-6 py-4 text-xs font-black text-slate-500">الرصيد للحركات المعروضة</th>
+                       <th className="px-6 py-4 text-xs font-black text-slate-500">طريقة الدفع</th>
+                       <th className="px-6 py-4 text-xs font-black text-slate-500">المستخدم</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -228,7 +231,7 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
                       >
                          <td className="px-6 py-4">
                             <span className={cn(
-                               "px-3 py-1 rounded-full text-[10px] font-bold flex items-center gap-2 w-fit",
+                               "px-3 py-1 rounded-full text-xs font-bold flex items-center gap-2 w-fit",
                                mov.balanceEffect > 0 ? "bg-blue-100 text-blue-600" : "bg-emerald-100 text-emerald-600"
                             )}>
                                {mov.balanceEffect > 0 ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownLeft className="w-3 h-3" />}
@@ -249,7 +252,7 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
                          </td>
                          <td className="px-6 py-4 font-black text-slate-800 dark:text-white">{mov.runningBalance.toLocaleString()} ج.م</td>
                          <td className="px-6 py-4">
-                            <span className="bg-slate-100 dark:bg-slate-800 px-3 py-1 rounded-lg text-[10px] font-black">
+                            <span className="bg-slate-100 dark:bg-slate-800 px-3 py-1 rounded-lg text-xs font-black">
                                {mov.payment_method === 'cash' ? 'نقدي' : mov.payment_method === 'credit' ? 'آجل' : mov.payment_method}
                             </span>
                          </td>
@@ -271,12 +274,12 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
                   <table className="w-full text-right">
                     <thead className="bg-slate-50 dark:bg-slate-900/50">
                       <tr>
-                        <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">نوع الإشعار</th>
-                        <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">المبلغ</th>
-                        <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">السبب / البيان</th>
-                        <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">ملاحظات</th>
-                        <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">التاريخ</th>
-                        <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">المستخدم</th>
+                        <th className="px-6 py-4 text-xs font-black text-slate-500">نوع الإشعار</th>
+                        <th className="px-6 py-4 text-xs font-black text-slate-500">المبلغ</th>
+                        <th className="px-6 py-4 text-xs font-black text-slate-500">السبب / البيان</th>
+                        <th className="px-6 py-4 text-xs font-black text-slate-500">ملاحظات</th>
+                        <th className="px-6 py-4 text-xs font-black text-slate-500">التاريخ</th>
+                        <th className="px-6 py-4 text-xs font-black text-slate-500">المستخدم</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -310,12 +313,12 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
                 <table className="w-full text-right">
                   <thead className="bg-slate-50 dark:bg-slate-900/50">
                     <tr>
-                       <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">الصنف</th>
-                       <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">العملية</th>
-                       <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">الكمية</th>
-                       <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">الوحدة</th>
-                       <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">السعر</th>
-                       <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">التاريخ</th>
+                       <th className="px-6 py-4 text-xs font-black text-slate-500">الصنف</th>
+                       <th className="px-6 py-4 text-xs font-black text-slate-500">العملية</th>
+                       <th className="px-6 py-4 text-xs font-black text-slate-500">الكمية</th>
+                       <th className="px-6 py-4 text-xs font-black text-slate-500">الوحدة</th>
+                       <th className="px-6 py-4 text-xs font-black text-slate-500">السعر</th>
+                       <th className="px-6 py-4 text-xs font-black text-slate-500">التاريخ</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -323,6 +326,14 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
                       <tr 
                         key={i} 
                         onClick={() => { if (item.action === 'بيع' && item.invoice_id) handleOpenReceipt(item.invoice_id); }}
+                        onKeyDown={(event) => {
+                          if (item.action === 'بيع' && item.invoice_id && (event.key === 'Enter' || event.key === ' ')) {
+                            event.preventDefault();
+                            void handleOpenReceipt(item.invoice_id);
+                          }
+                        }}
+                        tabIndex={item.action === 'بيع' && item.invoice_id ? 0 : undefined}
+                        aria-label={item.action === 'بيع' && item.invoice_id ? `عرض فاتورة ${item.trade_name}` : undefined}
                         className={cn(
                           "hover:bg-slate-50 dark:hover:bg-slate-900/30 transition-colors",
                           item.action === 'بيع' && item.invoice_id ? "cursor-pointer" : "cursor-default"
@@ -330,7 +341,7 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
                       >
                          <td className="px-6 py-4 font-bold text-slate-900 dark:text-white">{item.trade_name}</td>
                          <td className="px-6 py-4 font-bold">
-                           <span className={cn("px-3 py-1 rounded-full text-[10px]", item.action === 'مرتجع' ? "bg-rose-100 text-rose-600" : "bg-blue-100 text-blue-600")}>
+                           <span className={cn("px-3 py-1 rounded-full text-xs", item.action === 'مرتجع' ? "bg-rose-100 text-rose-600" : "bg-blue-100 text-blue-600")}>
                              {item.action}
                            </span>
                          </td>
@@ -360,7 +371,9 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
 function TabButton({ active, onClick, icon: Icon, label }: any) {
   return (
     <button
+      type="button"
       onClick={onClick}
+      aria-pressed={active}
       className={cn(
         "flex-1 flex items-center justify-center gap-2 py-3 rounded-2xl font-black text-sm transition-all",
         active ? "bg-blue-600 text-white shadow-lg shadow-blue-600/20" : "text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-900"

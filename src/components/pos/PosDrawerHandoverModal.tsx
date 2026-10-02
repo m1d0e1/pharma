@@ -8,6 +8,7 @@ import { getBanksAction } from '@/app/actions-client/finance';
 import { getStaffAction } from '@/app/actions-client/users';
 import { format } from 'date-fns';
 import toast from 'react-hot-toast';
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap';
 
 interface PosDrawerHandoverModalProps {
   isOpen: boolean;
@@ -35,6 +36,8 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
   const [showCreditModal, setShowCreditModal] = useState(false);
   const [creditSalesList, setCreditSalesList] = useState<any[]>([]);
   const [loadingCredit, setLoadingCredit] = useState(false);
+  const mainDialogRef = useDialogFocusTrap<HTMLDivElement>(isOpen && !showCreditModal);
+  const creditDialogRef = useDialogFocusTrap<HTMLDivElement>(isOpen && showCreditModal);
 
   const [form, setForm] = useState({
     actualCash: 0,
@@ -236,15 +239,17 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
 
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in" dir="rtl">
-      <div className="w-full max-w-lg bg-slate-200 dark:bg-slate-900 text-slate-900 dark:text-white rounded-2xl shadow-2xl border-2 border-slate-400 dark:border-slate-700 overflow-hidden font-sans">
+      <div ref={mainDialogRef} role="dialog" aria-modal="true" aria-labelledby="pos-handover-title" tabIndex={-1} className="w-full max-w-lg bg-slate-200 dark:bg-slate-900 text-slate-900 dark:text-white rounded-2xl shadow-2xl border-2 border-slate-400 dark:border-slate-700 overflow-hidden font-sans">
         
         {/* Title Bar */}
         <div className="bg-gradient-to-r from-blue-900 via-blue-800 to-blue-950 text-white px-4 py-2 flex justify-between items-center select-none">
           <div className="flex items-center gap-2">
             <ArrowLeftRight className="w-4 h-4 text-blue-200" />
-            <span className="font-bold text-sm">تسليم درج</span>
+            <span id="pos-handover-title" className="font-bold text-sm">تسليم درج</span>
           </div>
           <button 
+            type="button"
+            aria-label="إغلاق تسليم الدرج"
             onClick={handleClose}
             disabled={processing}
             className="w-6 h-6 rounded bg-slate-700/50 hover:bg-rose-600 flex items-center justify-center text-xs transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
@@ -255,11 +260,11 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
 
         {/* Form Body */}
         {loading ? (
-          <div className="p-12 text-center font-bold text-slate-600 dark:text-slate-400 animate-pulse">
+          <div role="status" aria-live="polite" className="p-12 text-center font-bold text-slate-600 dark:text-slate-400 animate-pulse">
             جاري تحميل بيانات الوردية والدرج...
           </div>
         ) : loadError ? (
-          <div className="p-12 text-center">
+          <div role="alert" className="p-12 text-center">
             <AlertCircle className="w-10 h-10 text-rose-500 mx-auto mb-4" />
             <p className="font-black text-slate-800 dark:text-slate-100">تعذر تحميل بيانات الوردية والدرج</p>
             <button
@@ -288,8 +293,9 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
               
               <div className="space-y-2 text-xs font-bold">
                 <div className="grid grid-cols-3 items-center gap-2">
-                  <label className="col-span-1 text-slate-700 dark:text-slate-300">المستخدم الحالي</label>
+                  <label htmlFor="handover-current-user" className="col-span-1 text-slate-700 dark:text-slate-300">المستخدم الحالي</label>
                   <input 
+                    id="handover-current-user"
                     type="text" 
                     readOnly 
                     value={activeUserDisplay || details?.user_name || 'المستخدم الحالي'} 
@@ -298,8 +304,9 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
                 </div>
 
                 <div className="grid grid-cols-3 items-center gap-2">
-                  <label className="col-span-1 text-slate-700 dark:text-slate-300">نقدية بداية الوردية بالدرج</label>
+                  <label htmlFor="handover-starting-cash" className="col-span-1 text-slate-700 dark:text-slate-300">نقدية بداية الوردية بالدرج</label>
                   <input 
+                    id="handover-starting-cash"
                     type="text" 
                     readOnly 
                     value={(details?.starting_cash || 0).toFixed(2)} 
@@ -308,8 +315,9 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
                 </div>
 
                 <div className="grid grid-cols-3 items-center gap-2">
-                  <label className="col-span-1 text-slate-700 dark:text-slate-300">بداية الفترة</label>
+                  <label htmlFor="handover-start-time" className="col-span-1 text-slate-700 dark:text-slate-300">بداية الفترة</label>
                   <input 
+                    id="handover-start-time"
                     type="text" 
                     readOnly 
                     value={formattedStartTime} 
@@ -319,11 +327,11 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
 
                 <div className="grid grid-cols-3 items-center gap-2">
                   <div className="col-span-1 flex items-center justify-between">
-                    <label className="text-slate-700 dark:text-slate-300">أجل</label>
+                    <label htmlFor="handover-credit-sales" className="text-slate-700 dark:text-slate-300">آجل</label>
                     <button 
                       type="button"
                       onClick={handleOpenCreditDetails}
-                      className="p-1 rounded bg-blue-100 hover:bg-blue-200 dark:bg-blue-900/40 dark:hover:bg-blue-900/60 text-blue-700 dark:text-blue-300 transition-all flex items-center gap-1 text-[10px] font-bold"
+                      className="p-1 rounded bg-blue-100 hover:bg-blue-200 dark:bg-blue-900/40 dark:hover:bg-blue-900/60 text-blue-700 dark:text-blue-300 transition-colors flex items-center gap-1 text-[11px] font-bold"
                       title="عرض تفاصيل فواتير الآجل والعملاء"
                     >
                       <Eye className="w-3.5 h-3.5" />
@@ -331,6 +339,7 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
                     </button>
                   </div>
                   <input 
+                    id="handover-credit-sales"
                     type="text" 
                     readOnly 
                     value={(details?.credit_sales || 0).toFixed(2)} 
@@ -348,8 +357,9 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
 
               <div className="space-y-2 text-xs font-bold">
                 <div className="grid grid-cols-3 items-center gap-2">
-                  <label className="col-span-1 text-slate-700 dark:text-slate-300">النقدية المعدودة فعليًا في درج الوردية</label>
+                  <label htmlFor="handover-actual-cash" className="col-span-1 text-slate-700 dark:text-slate-300">النقدية المعدودة فعليًا في درج الوردية</label>
                   <input 
+                    id="handover-actual-cash"
                     type="number" 
                     step="0.01" 
                     min="0"
@@ -361,9 +371,10 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
                 </div>
 
                 <div className="grid grid-cols-3 items-center gap-2">
-                  <label className="col-span-1 text-slate-700 dark:text-slate-300">تحويل مبلغ</label>
+                  <label htmlFor="handover-transfer-amount" className="col-span-1 text-slate-700 dark:text-slate-300">تحويل مبلغ</label>
                   <div className="col-span-2 flex items-center gap-2">
                     <input 
+                      id="handover-transfer-amount"
                       type="number" 
                       step="0.01" 
                       value={form.transferAmount} 
@@ -372,6 +383,7 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
                     />
                     <span className="text-slate-600 dark:text-slate-400 font-bold">إلى</span>
                     <select 
+                      aria-label="وجهة تحويل مبلغ التسليم"
                       value={form.transferTargetType === 'bank' ? form.transferTargetId : (form.transferTargetType || 'treasury')}
                       onChange={(e) => {
                         const val = e.target.value;
@@ -395,8 +407,9 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
                 </div>
 
                 <div className="grid grid-cols-3 items-center gap-2">
-                  <label className="col-span-1 text-slate-700 dark:text-slate-300">النقدية المرحلة إلى درج الوردية التالية</label>
+                  <label htmlFor="handover-remaining-cash" className="col-span-1 text-slate-700 dark:text-slate-300">النقدية المرحلة إلى درج الوردية التالية</label>
                   <input 
+                    id="handover-remaining-cash"
                     type="text" 
                     readOnly 
                     value={remainingCash.toFixed(2)} 
@@ -414,8 +427,9 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
 
               <div className="space-y-2 text-xs font-bold">
                 <div className="grid grid-cols-3 items-center gap-2">
-                  <label className="col-span-1 text-slate-700 dark:text-slate-300">إسم المستلم</label>
+                  <label htmlFor="handover-receiver" className="col-span-1 text-slate-700 dark:text-slate-300">اسم المستلم</label>
                   <select 
+                    id="handover-receiver"
                     value={form.receiverUsername}
                     onChange={(e) => setForm({ ...form, receiverUsername: e.target.value })}
                     className="col-span-2 px-3 py-1.5 bg-white dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded font-black text-red-600 dark:text-red-400 text-center uppercase"
@@ -427,8 +441,9 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
                 </div>
 
                 <div className="grid grid-cols-3 items-center gap-2">
-                  <label className="col-span-1 text-slate-700 dark:text-slate-300">كلمة المرور</label>
+                  <label htmlFor="handover-password" className="col-span-1 text-slate-700 dark:text-slate-300">كلمة المرور</label>
                   <input 
+                    id="handover-password"
                     type="password" 
                     value={form.receiverPassword} 
                     onChange={(e) => setForm({ ...form, receiverPassword: e.target.value })}
@@ -441,8 +456,9 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
 
             {/* Section 4: ملاحظات */}
             <div className="grid grid-cols-4 items-center gap-2 text-xs font-bold">
-              <label className="col-span-1 text-slate-700 dark:text-slate-300">ملاحظات</label>
+              <label htmlFor="handover-notes" className="col-span-1 text-slate-700 dark:text-slate-300">ملاحظات</label>
               <input 
+                id="handover-notes"
                 type="text" 
                 value={form.notes} 
                 onChange={(e) => setForm({ ...form, notes: e.target.value })}
@@ -477,13 +493,15 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
       {/* Credit Details Breakdown Sub-Modal */}
       {showCreditModal && (
         <div className="fixed inset-0 z-[210] flex items-center justify-center p-4 bg-slate-950/75 backdrop-blur-sm animate-in fade-in" dir="rtl">
-          <div className="w-full max-w-2xl bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col max-h-[85vh]">
+          <div ref={creditDialogRef} role="dialog" aria-modal="true" aria-labelledby="credit-details-title" tabIndex={-1} className="w-full max-w-2xl bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col max-h-[85vh]">
             <div className="p-4 bg-slate-100 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 flex justify-between items-center shrink-0">
               <div className="flex items-center gap-2 text-slate-800 dark:text-white font-black text-base">
                 <Receipt className="w-5 h-5 text-blue-600" />
-                <span>تفاصيل فواتير الآجل للوردية (#{shiftId ? shiftId.substring(0, 8) : '---'})</span>
+                <span id="credit-details-title">تفاصيل فواتير الآجل للوردية (#{shiftId ? shiftId.substring(0, 8) : '---'})</span>
               </div>
               <button 
+                type="button"
+                aria-label="إغلاق تفاصيل فواتير الآجل"
                 onClick={() => setShowCreditModal(false)}
                 className="w-8 h-8 rounded-full bg-slate-200 dark:bg-slate-700 flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-rose-500 hover:text-white transition-colors"
               >
@@ -518,7 +536,7 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
                           {item.patient_name || item.customer_name || 'عميل غير مسجل'}
                         </span>
                         {(item.patient_phone || item.customer_phone) && (
-                          <span className="text-[10px] text-slate-400 font-mono block">
+                          <span className="text-[11px] text-slate-500 font-mono block">
                             {item.patient_phone || item.customer_phone}
                           </span>
                         )}

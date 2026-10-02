@@ -88,7 +88,7 @@ export default function PurchasesPage() {
 
   if (loading) {
     return (
-      <div className="flex justify-center items-center py-24" dir="rtl">
+      <div role="status" aria-label="جاري تحميل صفحة المشتريات" className="flex justify-center items-center py-24" dir="rtl">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
       </div>
     );
@@ -110,11 +110,11 @@ export default function PurchasesPage() {
   }
 
   return (
-    <div className="space-y-8 animate-in fade-in duration-500" dir="rtl">
+    <div className="space-y-6 animate-in fade-in duration-500" dir="rtl">
       {/* Header */}
-      <div className="bg-white dark:bg-slate-900 p-8 rounded-[40px] shadow-hard border border-slate-100 dark:border-slate-800 flex justify-between items-center relative overflow-hidden">
+      <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl shadow-soft border border-slate-100 dark:border-slate-800 flex justify-between items-center relative overflow-hidden">
         <div className="relative z-10">
-          <h1 className="text-3xl font-black text-slate-900 dark:text-white">إدارة المشتريات</h1>
+          <h1 className="text-2xl font-black text-slate-900 dark:text-white">إدارة المشتريات</h1>
           <p className="text-slate-500 font-bold mt-1">تسجيل الفواتير، المرتجعات، وإدارة حسابات الموردين</p>
         </div>
         <div className="absolute left-[-20px] top-[-20px] w-64 h-64 bg-primary-500/5 rounded-full blur-3xl" />
@@ -126,11 +126,11 @@ export default function PurchasesPage() {
           <Link 
             key={opt.href}
             href={opt.href}
-            className="group relative bg-white dark:bg-slate-900 p-8 rounded-[35px] border border-slate-100 dark:border-slate-800 shadow-soft hover:shadow-hard hover:scale-[1.02] transition-all duration-500 overflow-hidden"
+            className="group relative bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-soft hover:shadow-hard transition-shadow duration-300 overflow-hidden focus-visible:ring-2 focus-visible:ring-primary-500"
           >
             <div className="relative z-10">
               <div className={cn(
-                "w-16 h-16 rounded-2xl flex items-center justify-center text-white mb-6 group-hover:scale-110 transition-transform duration-500",
+                "w-14 h-14 rounded-2xl flex items-center justify-center text-white mb-5 transition-transform duration-300 group-hover:scale-105 group-focus-visible:scale-105",
                 opt.color,
                 opt.shadow
               )}>
@@ -144,7 +144,7 @@ export default function PurchasesPage() {
                 {opt.subtitle}
               </p>
 
-              <div className="mt-8 flex items-center gap-2 text-primary-600 dark:text-primary-400 font-black text-xs uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all transform translate-x-2 group-hover:translate-x-0">
+              <div className="mt-6 flex items-center gap-2 text-primary-600 dark:text-primary-400 font-black text-xs opacity-80 group-hover:opacity-100 group-focus-visible:opacity-100 transition-opacity">
                 فتح القسم
                 <ArrowUpRight className="w-4 h-4" />
               </div>

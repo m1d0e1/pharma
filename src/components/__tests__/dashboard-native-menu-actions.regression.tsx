@@ -1,7 +1,8 @@
 import React from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import DashboardLayout from '@/app/(dashboard)/layout';
-import { logoutLocal } from '@/lib/auth/local';
+import { getClientSession, hasUserPermissionSync, logoutLocal } from '@/lib/auth/local';
+import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'react-hot-toast';
 import { check } from '@tauri-apps/plugin-updater';
 import { ask } from '@tauri-apps/plugin-dialog';
@@ -26,7 +27,7 @@ jest.mock('@/components/HeaderAlerts', () => () => null);
 jest.mock('@/components/ThemeToggle', () => () => null);
 jest.mock('@/components/TopMenuBar', () => () => null);
 jest.mock('@/components/SidebarNav', () => () => null);
-jest.mock('@/lib/auth/roles', () => ({ getRoutePermission: () => null }));
+jest.mock('@/lib/auth/roles', () => jest.requireActual('@/lib/auth/roles'));
 jest.mock('@/lib/db/tauri', () => ({ dbGet: jest.fn().mockResolvedValue(null) }));
 jest.mock('@/lib/auth/local', () => ({
   logoutLocal: jest.fn(),
@@ -35,6 +36,7 @@ jest.mock('@/lib/auth/local', () => ({
     id: 'owner-1', username: 'owner', role: 'owner', permissions: {},
   }),
 }));
+jest.mock('@tauri-apps/api/core', () => ({ invoke: jest.fn() }));
 jest.mock('@tauri-apps/api/window', () => ({
   getCurrentWindow: () => ({ listen: mockListen }),
 }));
@@ -109,6 +111,68 @@ describe('dashboard native menu actions', () => {
     expect(toast.error).toHaveBeenCalledWith('تعذر تسجيل الخروج. حاول مرة أخرى.');
   });
 
+  it('syncs native Administration menu visibility to the authenticated permissions', async () => {
+    (getClientSession as jest.Mock).mockResolvedValueOnce({
+      id: 'pharmacist-1',
+      username: 'pharmacist',
+      role: 'pharmacist',
+      permissions: {
+        can_view_low_stock: true,
+        can_view_shifts: true,
+        rep_can_view_activity: false,
+        can_view_staff_manage: false,
+        can_view_staff_roles: false,
+        can_view_audit: false,
+        can_view_settings: false,
+      },
+    });
+    (hasUserPermissionSync as jest.Mock).mockImplementation((user: any, key: string) =>
+      user.role === 'owner' || user.permissions?.[key] === true
+    );
+
+    render(<DashboardLayout><div>native content</div></DashboardLayout>);
+    expect(await screen.findByText('native content')).toBeInTheDocument();
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('sync_native_admin_menu', {
+      access: {
+        staff: false,
+        staffManage: false,
+        staffRoles: false,
+        audit: false,
+        settings: false,
+        allowedRouteIds: ['dashboard'],
+      },
+    }));
+  });
+
+  it('serializes the final hidden-menu sync behind an in-flight visibility sync on unmount', async () => {
+    let resolveVisibleSync: (() => void) | undefined;
+    (invoke as jest.Mock)
+      .mockImplementationOnce(() => new Promise<void>(resolve => { resolveVisibleSync = resolve; }))
+      .mockResolvedValue(undefined);
+
+    const view = render(<DashboardLayout><div>native content</div></DashboardLayout>);
+    expect(await screen.findByText('native content')).toBeInTheDocument();
+    await waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
+
+    view.unmount();
+    await Promise.resolve();
+    expect(invoke).toHaveBeenCalledTimes(1);
+
+    await act(async () => { resolveVisibleSync?.(); });
+    await waitFor(() => expect(invoke).toHaveBeenCalledTimes(2));
+    expect(invoke).toHaveBeenLastCalledWith('sync_native_admin_menu', {
+      access: {
+        staff: false,
+        staffManage: false,
+        staffRoles: false,
+        audit: false,
+        settings: false,
+        allowedRouteIds: [],
+      },
+    });
+  });
+
   it('owns only one Escape listener when the native shortcuts action is invoked repeatedly', async () => {
     const menuAction = await renderAndGetMenuAction();
 
@@ -122,6 +186,18 @@ describe('dashboard native menu actions', () => {
 
     expect(toast.dismiss).toHaveBeenCalledTimes(1);
     expect(toast.dismiss).toHaveBeenCalledWith('shortcuts-toast');
+  });
+
+  it('forwards the native F10 purchase-draft action even while web focus is transiently lost', async () => {
+    const onDraft = jest.fn();
+    window.addEventListener('pharma:purchase-save-draft', onDraft);
+    jest.mocked(document.hasFocus).mockReturnValue(false);
+    const menuAction = await renderAndGetMenuAction();
+
+    await act(async () => { await menuAction({ payload: 'purchase-save-draft' }); });
+
+    expect(onDraft).toHaveBeenCalledTimes(1);
+    window.removeEventListener('pharma:purchase-save-draft', onDraft);
   });
 
   it('removes the native shortcuts Escape listener when the dashboard layout unmounts', async () => {

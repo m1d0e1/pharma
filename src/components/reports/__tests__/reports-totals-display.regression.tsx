@@ -150,7 +150,7 @@ describe('Sales & Purchases Reports Totals Display', () => {
         {
           id: 'inv-11111111',
           created_at: '2026-09-01T10:00:00Z',
-          total_amount: 1000,
+          total_amount: 900,
           discount_amount: 100,
           payment_method: 'cash',
           patient_name: 'أحمد علي',
@@ -160,7 +160,7 @@ describe('Sales & Purchases Reports Totals Display', () => {
         {
           id: 'inv-22222222',
           created_at: '2026-09-01T11:00:00Z',
-          total_amount: 500,
+          total_amount: 450,
           discount_amount: 50,
           payment_method: 'visa',
           patient_name: 'محمود حسن',
@@ -173,9 +173,10 @@ describe('Sales & Purchases Reports Totals Display', () => {
     render(<SalesReportsClient userRole="owner" />);
 
     await waitFor(() => {
-      // 1000 + 500 = 1500 (Gross)
+      // Persisted totals are net: 900 + 450 = 1350.
+      // Reconstructed gross is (900 + 100) + (450 + 50) = 1500.
       // 100 + 50 = 150 (Discount)
-      // Net = 1350
+      // Net remains 1350 and must not subtract the discount a second time.
       expect(screen.getByText('صافي المبيعات')).toBeInTheDocument();
       expect(screen.getByText('إجمالي قبل الخصم')).toBeInTheDocument();
       expect(screen.getByText('إجمالي الخصومات')).toBeInTheDocument();
@@ -184,8 +185,34 @@ describe('Sales & Purchases Reports Totals Display', () => {
       // Check footer row exists
       expect(screen.getByText('الإجمالي (2 فاتورة)')).toBeInTheDocument();
     });
+    expect(screen.getAllByText('1,350').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('1,500').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('150').length).toBeGreaterThan(0);
     expect(screen.getByRole('button', { name: 'طباعة تقرير المبيعات' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'تصدير تقرير المبيعات إلى CSV' })).toBeInTheDocument();
+  });
+
+  it('reports wallet sales as wallet rather than credit and includes the wallet filter', async () => {
+    (getSalesReportsAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: [{
+        id: 'inv-wallet',
+        created_at: '2026-09-29T10:00:00Z',
+        total_amount: 48,
+        discount_amount: 72,
+        payment_method: 'wallet',
+        patient_name: 'عميل محفظة',
+        staff_name: 'Admin',
+        status: 'completed',
+      }],
+    });
+
+    render(<SalesReportsClient userRole="owner" />);
+    await waitFor(() => expect(getSalesReportsAction).toHaveBeenCalled());
+
+    expect(screen.getAllByText('محفظة').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText(/محفظة: 48 ج\.م/)).toBeInTheDocument();
+    expect(screen.queryByText('آجل', { selector: 'span' })).not.toBeInTheDocument();
   });
 
   it('renders summary total KPI cards and table footer in PurchasesReportsClient', async () => {

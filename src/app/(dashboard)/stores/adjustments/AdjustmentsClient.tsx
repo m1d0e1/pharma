@@ -87,14 +87,14 @@ export default function AdjustmentsClient({ reasons }: { reasons: any[] }) {
   return (
     <div className="max-w-4xl mx-auto space-y-8 animate-in fade-in duration-500" dir="rtl">
       {/* Header */}
-      <div className="bg-white dark:bg-slate-900 p-8 rounded-[40px] shadow-hard border border-slate-100 dark:border-slate-800 flex justify-between items-center relative overflow-hidden">
+      <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl shadow-soft border border-slate-100 dark:border-slate-800 flex justify-between items-center relative overflow-hidden">
         <div className="relative z-10">
           <div className="flex items-center gap-4 mb-2">
             <div className="w-12 h-12 bg-primary-600 rounded-2xl flex items-center justify-center text-white shadow-lg">
               <Activity className="w-6 h-6" />
             </div>
             <div>
-              <h1 className="text-3xl font-black text-slate-900 dark:text-white">تسوية الكميات</h1>
+              <h1 className="text-2xl font-black text-slate-900 dark:text-white">تسوية الكميات</h1>
               <p className="text-slate-500 font-bold">تعديل أرصدة المخزون يدوياً مع ذكر الأسباب</p>
             </div>
           </div>
@@ -102,10 +102,10 @@ export default function AdjustmentsClient({ reasons }: { reasons: any[] }) {
         <div className="absolute left-[-20px] top-[-20px] w-64 h-64 bg-primary-500/5 rounded-full blur-3xl" />
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Step 1: Find Item */}
         <div className="space-y-6">
-          <div className="bg-white dark:bg-slate-900 p-8 rounded-[32px] border border-slate-100 dark:border-slate-800 shadow-soft">
+          <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-soft">
             <h2 className="font-black text-lg mb-6 flex items-center gap-3 text-slate-800 dark:text-white">
               <div className="w-8 h-8 bg-slate-100 dark:bg-slate-800 rounded-lg flex items-center justify-center text-slate-500 font-black text-sm">١</div>
               البحث عن الصنف بالمخزون
@@ -115,6 +115,7 @@ export default function AdjustmentsClient({ reasons }: { reasons: any[] }) {
               <Search className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 w-5 h-5" />
               <input 
                 type="text"
+                aria-label="البحث عن صنف لتسوية المخزون"
                 placeholder="إسم الصنف أو الباركود..."
                 className="w-full pr-12 pl-4 py-4 bg-slate-50 dark:bg-slate-800 border-none rounded-2xl font-bold outline-none ring-2 ring-transparent focus:ring-primary-500/20 transition-all"
                 value={query}
@@ -130,7 +131,7 @@ export default function AdjustmentsClient({ reasons }: { reasons: any[] }) {
                     >
                       <div className="font-black text-slate-900 dark:text-white">{item.trade_name_en || item.trade_name}</div>
                       <div className="flex justify-between items-center mt-1">
-                        <span className="text-[10px] text-slate-400 font-bold uppercase">{item.barcode || 'بدون باركود'}</span>
+                        <span className="text-[11px] text-slate-500 font-bold">{item.barcode || 'بدون باركود'}</span>
                         <span className="text-xs font-black text-primary-600">الرصيد: {item.quantity}</span>
                       </div>
                     </button>
@@ -157,7 +158,7 @@ export default function AdjustmentsClient({ reasons }: { reasons: any[] }) {
 
         {/* Step 2: Adjust */}
         <div className={cn("space-y-6 transition-all duration-500", !selectedItem && "opacity-30 pointer-events-none grayscale")}>
-          <div className="bg-white dark:bg-slate-900 p-8 rounded-[32px] border border-slate-100 dark:border-slate-800 shadow-soft">
+          <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-soft">
             <h2 className="font-black text-lg mb-6 flex items-center gap-3 text-slate-800 dark:text-white">
               <div className="w-8 h-8 bg-slate-100 dark:bg-slate-800 rounded-lg flex items-center justify-center text-slate-500 font-black text-sm">٢</div>
               تعديل الكمية والسبب
@@ -165,8 +166,9 @@ export default function AdjustmentsClient({ reasons }: { reasons: any[] }) {
 
             <div className="space-y-6">
               <div>
-                <label className="block text-xs font-black text-slate-400 uppercase tracking-widest mb-3 mr-2">الكمية الجديدة</label>
+                <label htmlFor="adjustment-new-quantity" className="block text-xs font-black text-slate-500 mb-2 mr-2">الكمية الجديدة</label>
                 <input 
+                  id="adjustment-new-quantity"
                   type="number"
                   step="any"
                   className="w-full p-4 bg-slate-50 dark:bg-slate-800 border-none rounded-2xl font-black text-2xl text-center outline-none ring-2 ring-transparent focus:ring-primary-500/20 transition-all"
@@ -176,8 +178,9 @@ export default function AdjustmentsClient({ reasons }: { reasons: any[] }) {
               </div>
 
               <div>
-                <label className="block text-xs font-black text-slate-400 uppercase tracking-widest mb-3 mr-2">سبب التسوية</label>
+                <label htmlFor="adjustment-reason" className="block text-xs font-black text-slate-500 mb-2 mr-2">سبب التسوية</label>
                 <select 
+                  id="adjustment-reason"
                   className="w-full p-4 bg-slate-50 dark:bg-slate-800 border-none rounded-2xl font-bold outline-none ring-2 ring-transparent focus:ring-primary-500/20 transition-all"
                   value={selectedReason}
                   onChange={(e) => setSelectedReason(parseInt(e.target.value))}
@@ -203,6 +206,7 @@ export default function AdjustmentsClient({ reasons }: { reasons: any[] }) {
               </div>
 
               <button 
+                type="button"
                 onClick={handleSubmit}
                 disabled={isSubmitting}
                 className="w-full bg-primary-600 hover:bg-primary-700 disabled:bg-slate-200 text-white py-5 rounded-[24px] font-black shadow-lg shadow-primary-500/20 transition-all flex items-center justify-center gap-3 active:scale-95"

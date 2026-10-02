@@ -27,7 +27,19 @@ interface ReorderItem {
   official_price?: number
 }
 
-export default function ReorderAlerts() {
+interface ReorderAlertsProps {
+  canViewLowStock?: boolean
+  canViewRestock?: boolean
+  canViewPurchases?: boolean
+  canViewInventory?: boolean
+}
+
+export default function ReorderAlerts({
+  canViewLowStock = true,
+  canViewRestock = true,
+  canViewPurchases = true,
+  canViewInventory = true,
+}: ReorderAlertsProps = {}) {
   const router = useRouter()
   const [items, setItems] = useState<ReorderItem[]>([])
   const [isLoading, setIsLoading] = useState(true)
@@ -371,22 +383,26 @@ export default function ReorderAlerts() {
           </div>
 
           <div className="flex items-center gap-1.5 flex-wrap">
-            <button
-              onClick={() => handleBulkAddToNotebook(true)}
-              disabled={isBulkAdding}
-              className="bg-purple-600 hover:bg-purple-700 text-white px-3 py-1.5 rounded-xl font-black text-xs transition-all flex items-center gap-1 active:scale-95 disabled:opacity-50"
-            >
-              {isBulkAdding ? <Loader2 className="w-3 h-3 animate-spin" /> : <ClipboardList className="w-3 h-3" />}
-              <span>إضافة للكشكول</span>
-            </button>
+            {canViewRestock && (
+              <button
+                onClick={() => handleBulkAddToNotebook(true)}
+                disabled={isBulkAdding}
+                className="bg-purple-600 hover:bg-purple-700 text-white px-3 py-1.5 rounded-xl font-black text-xs transition-all flex items-center gap-1 active:scale-95 disabled:opacity-50"
+              >
+                {isBulkAdding ? <Loader2 className="w-3 h-3 animate-spin" /> : <ClipboardList className="w-3 h-3" />}
+                <span>إضافة للكشكول</span>
+              </button>
+            )}
 
-            <button
-              onClick={handleBulkConvertToPurchase}
-              className="bg-primary-600 hover:bg-primary-700 text-white px-3 py-1.5 rounded-xl font-black text-xs transition-all flex items-center gap-1 active:scale-95"
-            >
-              <ShoppingCart className="w-3 h-3" />
-              <span>تحويل للمشتريات</span>
-            </button>
+            {canViewPurchases && (
+              <button
+                onClick={handleBulkConvertToPurchase}
+                className="bg-primary-600 hover:bg-primary-700 text-white px-3 py-1.5 rounded-xl font-black text-xs transition-all flex items-center gap-1 active:scale-95"
+              >
+                <ShoppingCart className="w-3 h-3" />
+                <span>تحويل للمشتريات</span>
+              </button>
+            )}
 
             <button
               onClick={handleBulkCopyWhatsApp}
@@ -437,14 +453,14 @@ export default function ReorderAlerts() {
                 <div className="flex-1 min-w-0">
                   <p className="font-bold text-sm truncate text-slate-900 dark:text-white">{item.trade_name}</p>
                   <div className="flex items-center gap-2 mt-1 flex-wrap">
-                    <span className="text-[10px] font-black text-red-500 bg-red-50 dark:bg-red-900/20 px-2 py-0.5 rounded">
+                    <span className="text-xs font-black text-red-500 bg-red-50 dark:bg-red-900/20 px-2 py-0.5 rounded">
                       المخزون: {item.current_stock}
                     </span>
-                    <span className="text-[10px] font-bold text-slate-400">
+                    <span className="text-xs font-bold text-slate-500">
                       الحد: {item.reorder_point}
                     </span>
                     {item.suggested_qty > 0 && (
-                      <span className="text-[10px] font-black text-blue-600 bg-blue-50 dark:bg-blue-900/20 px-2 py-0.5 rounded">
+                      <span className="text-xs font-black text-blue-600 bg-blue-50 dark:bg-blue-900/20 px-2 py-0.5 rounded">
                         المقترح: {item.suggested_qty}
                       </span>
                     )}
@@ -453,50 +469,62 @@ export default function ReorderAlerts() {
               </div>
 
               <div className="shrink-0 flex items-center gap-1.5">
-                <Link
-                  href={`/inventory?drugId=${item.drug_id}&search=${encodeURIComponent(item.trade_name)}`}
-                  className="p-2 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"
-                  title="عرض في المخزون"
-                >
-                  <Warehouse className="w-3.5 h-3.5" />
-                </Link>
-                <button
-                  onClick={() => addToNotebook(item)}
-                  disabled={savingDrugId === item.drug_id}
-                  className="flex items-center gap-1 px-2.5 py-1.5 bg-purple-100 dark:bg-purple-900/20 text-purple-700 dark:text-purple-400 rounded-xl text-[10px] font-black hover:bg-purple-200 dark:hover:bg-purple-900/40 transition-colors disabled:opacity-50"
-                  title="إضافة لكشكول النواقص"
-                >
-                  {savingDrugId === item.drug_id ? <Loader2 className="w-3 h-3 animate-spin" /> : <ClipboardList className="w-3 h-3" />}
-                  <span>كشكول</span>
-                </button>
-                <Link
-                  href={`/purchases/new?drugId=${item.drug_id}`}
-                  className="flex items-center gap-1 px-2.5 py-1.5 bg-amber-100 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 rounded-xl text-[10px] font-black hover:bg-amber-200 dark:hover:bg-amber-900/40 transition-colors"
-                >
-                  <ShoppingCart className="w-3 h-3" />
-                  <span>شراء</span>
-                </Link>
+                {canViewInventory && (
+                  <Link
+                    href={`/inventory?drugId=${item.drug_id}&search=${encodeURIComponent(item.trade_name)}`}
+                    aria-label={`عرض ${item.trade_name} في المخزون`}
+                    className="p-2 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"
+                    title="عرض في المخزون"
+                  >
+                    <Warehouse className="w-3.5 h-3.5" />
+                  </Link>
+                )}
+                {canViewRestock && (
+                  <button
+                    type="button"
+                    onClick={() => addToNotebook(item)}
+                    disabled={savingDrugId === item.drug_id}
+                    className="flex items-center gap-1 px-2.5 py-1.5 bg-purple-100 dark:bg-purple-900/20 text-purple-700 dark:text-purple-400 rounded-xl text-xs font-black hover:bg-purple-200 dark:hover:bg-purple-900/40 transition-colors disabled:opacity-50"
+                    title="إضافة لكشكول النواقص"
+                  >
+                    {savingDrugId === item.drug_id ? <Loader2 className="w-3 h-3 animate-spin" /> : <ClipboardList className="w-3 h-3" />}
+                    <span>كشكول</span>
+                  </button>
+                )}
+                {canViewPurchases && (
+                  <Link
+                    href={`/purchases/new?drugId=${item.drug_id}`}
+                    className="flex items-center gap-1 px-2.5 py-1.5 bg-amber-100 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 rounded-xl text-xs font-black hover:bg-amber-200 dark:hover:bg-amber-900/40 transition-colors"
+                  >
+                    <ShoppingCart className="w-3 h-3" />
+                    <span>شراء</span>
+                  </Link>
+                )}
               </div>
             </div>
           )
         })}
       </div>
 
-      <div className="grid grid-cols-2 bg-slate-50 dark:bg-slate-800/50">
-        <Link 
-          href="/inventory/low-stock" 
-          className="flex items-center justify-center gap-2 p-4 text-sm font-black text-slate-500 hover:text-amber-600 transition-colors"
-        >
-          عرض الكل ({items.length} صنف)
-          <ArrowRight className="w-4 h-4 rtl:rotate-180" />
-        </Link>
-        <Link
-          href="/stores/shortages"
-          className="flex items-center justify-center gap-2 p-4 border-r border-slate-200 dark:border-slate-700 text-sm font-black text-slate-500 hover:text-purple-600 transition-colors"
-        >
-          <ClipboardList className="w-4 h-4" />
-          كشكول النواقص
-        </Link>
+      <div className="flex bg-slate-50 dark:bg-slate-800/50">
+        {canViewLowStock && (
+          <Link
+            href="/inventory/low-stock"
+            className="flex-1 flex items-center justify-center gap-2 p-4 text-sm font-black text-slate-500 hover:text-amber-600 transition-colors"
+          >
+            عرض الكل ({items.length} صنف)
+            <ArrowRight className="w-4 h-4 rtl:rotate-180" />
+          </Link>
+        )}
+        {canViewRestock && (
+          <Link
+            href="/stores/shortages"
+            className="flex-1 flex items-center justify-center gap-2 p-4 border-r border-slate-200 dark:border-slate-700 text-sm font-black text-slate-500 hover:text-purple-600 transition-colors"
+          >
+            <ClipboardList className="w-4 h-4" />
+            كشكول النواقص
+          </Link>
+        )}
       </div>
     </div>
   )

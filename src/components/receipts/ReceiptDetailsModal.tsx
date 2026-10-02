@@ -6,6 +6,7 @@ import { getConfigAction } from '@/app/actions-client/config'
 import toast from 'react-hot-toast'
 import { calculateReceiptTotals, generateReceiptHtml, generateWhatsAppMessage, printHtmlContent } from '@/lib/utils/printing'
 import { Printer, X, Phone } from 'lucide-react'
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap'
 
 interface SaleItem {
   quantity_sold: number
@@ -33,6 +34,8 @@ interface Invoice {
   payment_method?: string
   discount_amount?: number
   additional_fees?: number
+  points_redeemed?: number
+  loyalty_discount_amount?: number
 }
 
 interface Props {
@@ -49,6 +52,7 @@ interface PharmacyInfo {
 
 export default function ReceiptDetailsModal({ invoice, onClose, autoPrint = false }: Props) {
   useHotkeys('esc', () => { if(typeof onClose === 'function') onClose(); }, { enableOnFormTags: true });
+  const dialogRef = useDialogFocusTrap<HTMLDivElement>(true)
 
   const [pharmacyInfo, setPharmacyInfo] = useState<PharmacyInfo>({
     name: 'صيدلية فارما تيك',
@@ -141,7 +145,14 @@ export default function ReceiptDetailsModal({ invoice, onClose, autoPrint = fals
 
   return (
     <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-3 z-[200]" dir="rtl">
-      <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-200 dark:border-slate-800 animate-in zoom-in-95 duration-200">
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="receipt-details-title"
+        tabIndex={-1}
+        className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl w-full max-w-md max-h-[calc(100vh-1.5rem)] overflow-y-auto border border-slate-200 dark:border-slate-800 animate-in zoom-in-95 duration-200"
+      >
         
         {/* Header - Compact Design */}
         <div className="bg-slate-950 p-4 text-white relative overflow-hidden">
@@ -149,11 +160,13 @@ export default function ReceiptDetailsModal({ invoice, onClose, autoPrint = fals
             <div className="flex items-center gap-2">
               <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-sm shadow-md shadow-blue-600/20">🏥</div>
               <div>
-                <h2 className="text-sm font-black leading-tight">فاتورة مبيعات</h2>
+                <h2 id="receipt-details-title" className="text-sm font-black leading-tight">فاتورة مبيعات</h2>
                 <p className="text-[9px] text-slate-400 font-mono">REF: {invoice.id.slice(0, 10).toUpperCase()}</p>
               </div>
             </div>
             <button 
+              type="button"
+              aria-label="إغلاق تفاصيل الفاتورة"
               onClick={onClose} 
               className="p-1.5 hover:bg-white/10 rounded-lg transition-all text-slate-400 hover:text-white"
             >
@@ -163,14 +176,14 @@ export default function ReceiptDetailsModal({ invoice, onClose, autoPrint = fals
           
           <div className="grid grid-cols-2 gap-3 mt-3 pt-2 border-t border-slate-800/80 relative z-10 text-xs">
             <div>
-              <p className="text-[9px] uppercase tracking-wider text-slate-500 font-black mb-0.5">العميل / Patient</p>
+              <p className="text-[11px] text-slate-400 font-black mb-0.5">العميل / Patient</p>
               <p className="font-bold text-white text-xs truncate">{invoice.patients?.full_name || 'عميل نقدي (Cash)'}</p>
-              {invoice.patients?.phone && <p className="text-[10px] text-blue-400 font-bold">{invoice.patients.phone}</p>}
+              {invoice.patients?.phone && <p className="text-[11px] text-blue-400 font-bold">{invoice.patients.phone}</p>}
             </div>
             <div className="text-left">
-              <p className="text-[9px] uppercase tracking-wider text-slate-500 font-black mb-0.5">بيانات الإصدار</p>
+              <p className="text-[11px] text-slate-400 font-black mb-0.5">بيانات الإصدار</p>
               <p className="font-bold text-white text-[11px]">{formatDate(invoice.created_at)}</p>
-              <p className="text-[10px] text-slate-400 font-medium truncate">المحاسب: {invoice.profiles?.full_name || 'System User'}</p>
+              <p className="text-[11px] text-slate-400 font-medium truncate">المحاسب: {invoice.profiles?.full_name || 'System User'}</p>
             </div>
           </div>
         </div>
@@ -178,7 +191,7 @@ export default function ReceiptDetailsModal({ invoice, onClose, autoPrint = fals
         {/* Items Section */}
         <div className="p-4 space-y-3">
           <div>
-            <div className="grid grid-cols-12 gap-2 pb-1.5 border-b border-slate-100 dark:border-slate-800 text-[10px] font-black text-slate-400 uppercase tracking-wider">
+            <div className="grid grid-cols-12 gap-2 pb-1.5 border-b border-slate-100 dark:border-slate-800 text-[11px] font-black text-slate-500">
               <div className="col-span-6">الصنف</div>
               <div className="col-span-2 text-center">الكمية</div>
               <div className="col-span-2 text-left">السعر</div>
@@ -229,7 +242,7 @@ export default function ReceiptDetailsModal({ invoice, onClose, autoPrint = fals
                    invoice.payment_method === 'delivery' ? '🛵' : '💸'}
                 </span>
                 <div>
-                  <p className="text-[8px] font-black text-slate-400 uppercase">طريقة الدفع</p>
+                  <p className="text-xs font-black text-slate-400 uppercase">طريقة الدفع</p>
                   <span className="font-bold text-slate-800 dark:text-white text-xs">
                     {invoice.payment_method === 'cash' ? 'نقدي (Cash)' : 
                      invoice.payment_method === 'credit' ? 'حساب أجل (Credit)' :
@@ -244,17 +257,23 @@ export default function ReceiptDetailsModal({ invoice, onClose, autoPrint = fals
 
             <div className="space-y-1 text-xs">
               <div className="flex justify-between items-center px-1 text-slate-500">
-                <span className="font-bold text-[10px]">المجموع الفرعي:</span>
-                <span className="font-bold text-[11px]">{subtotal.toFixed(2)} ج.م</span>
+                <span className="font-bold text-xs">المجموع الفرعي:</span>
+                <span className="font-bold text-xs">{subtotal.toFixed(2)} ج.م</span>
               </div>
               {discount > 0 && (
-                <div className="flex justify-between items-center px-1 text-rose-500 text-[10px]">
+                <div className="flex justify-between items-center px-1 text-rose-500 text-xs">
                   <span className="font-bold">إجمالي الخصم:</span>
                   <span className="font-bold">-{discount.toFixed(2)} ج.م</span>
                 </div>
               )}
+              {Number(invoice.loyalty_discount_amount || 0) > 0 && Number(invoice.points_redeemed || 0) > 0 && (
+                <div className="flex justify-between items-center px-1 text-amber-600 text-xs">
+                  <span className="font-bold">منه خصم نقاط الولاء ({Math.floor(Number(invoice.points_redeemed))} نقطة):</span>
+                  <span className="font-bold">-{Number(invoice.loyalty_discount_amount).toFixed(2)} ج.م</span>
+                </div>
+              )}
               {additionalFees > 0 && (
-                <div className="flex justify-between items-center px-1 text-amber-600 text-[10px]">
+                <div className="flex justify-between items-center px-1 text-amber-600 text-xs">
                   <span className="font-bold">رسوم إضافية:</span>
                   <span className="font-bold">+{additionalFees.toFixed(2)} ج.م</span>
                 </div>
@@ -262,7 +281,7 @@ export default function ReceiptDetailsModal({ invoice, onClose, autoPrint = fals
               <div className="pt-1.5 border-t border-slate-200 dark:border-slate-700 flex justify-between items-baseline">
                 <span className="font-black text-slate-700 dark:text-slate-200 text-xs">المطلبوب:</span>
                 <span className="text-xl font-black text-blue-600 dark:text-blue-400 tracking-tight">
-                  {invoice.total_amount.toLocaleString()} <span className="text-[10px] text-slate-400 font-bold">ج.م</span>
+                  {invoice.total_amount.toLocaleString()} <span className="text-[11px] text-slate-400 font-bold">ج.م</span>
                 </span>
               </div>
             </div>
@@ -271,6 +290,7 @@ export default function ReceiptDetailsModal({ invoice, onClose, autoPrint = fals
           {/* Action Buttons */}
           <div className="grid grid-cols-2 gap-2 pt-1">
              <button 
+               type="button"
                onClick={handlePrint} 
                className="flex items-center justify-center gap-2 bg-slate-900 text-white py-2.5 rounded-xl font-bold text-xs hover:bg-slate-800 transition-all shadow-md active:scale-95"
              >
@@ -278,6 +298,7 @@ export default function ReceiptDetailsModal({ invoice, onClose, autoPrint = fals
                <span>طباعة حرارية</span>
              </button>
              <button 
+               type="button"
                onClick={handleWhatsApp} 
                className="flex items-center justify-center gap-2 bg-emerald-600 text-white py-2.5 rounded-xl font-bold text-xs hover:bg-emerald-700 transition-all shadow-md active:scale-95"
              >

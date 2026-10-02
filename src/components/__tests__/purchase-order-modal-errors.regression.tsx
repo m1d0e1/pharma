@@ -32,6 +32,13 @@ describe('purchase-order modal async recovery', () => {
     (getDrugInventoryQuantityAction as jest.Mock).mockResolvedValue({ success: true, data: 5 });
   });
 
+  it('contains focus in the purchase-order dialog on open', async () => {
+    render(<PurchaseOrderModal initialItems={[]} onClose={jest.fn()} />);
+
+    expect(screen.getByRole('dialog', { name: 'إنشاء أمر شراء جديد' })).toHaveAttribute('tabindex', '-1');
+    await waitFor(() => expect(screen.getByRole('button', { name: 'إغلاق أمر الشراء' })).toHaveFocus());
+  });
+
   it('recovers from a rejected drug search and allows a later retry', async () => {
     (searchMasterDrugsAction as jest.Mock)
       .mockRejectedValueOnce(new Error('catalog bridge unavailable'))

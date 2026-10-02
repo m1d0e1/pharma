@@ -80,6 +80,9 @@ export default function LowStockPage() {
     return <AccessDenied />;
   }
 
+  const canViewRestock = hasUserPermissionSync(user, 'can_view_restock');
+  const canViewPurchases = hasUserPermissionSync(user, 'can_view_purchases');
+
   return (
     <div className="p-8 space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700" dir="rtl">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
@@ -92,15 +95,21 @@ export default function LowStockPage() {
             <p className="text-slate-500 font-bold">الأصناف التي وصل رصيدها للحد الأدنى.</p>
           </div>
         </div>
-        <Link 
-          href="/restock"
-          className="px-8 py-4 bg-slate-900 text-white rounded-[24px] font-black hover:bg-slate-800 transition-all shadow-xl flex items-center gap-3 no-print"
-        >
-          <ShoppingCart className="w-5 h-5" /> طلب نواقص
-        </Link>
+        {canViewRestock && (
+          <Link
+            href="/restock"
+            className="px-8 py-4 bg-slate-900 text-white rounded-[24px] font-black hover:bg-slate-800 transition-all shadow-xl flex items-center gap-3 no-print"
+          >
+            <ShoppingCart className="w-5 h-5" /> طلب نواقص
+          </Link>
+        )}
       </div>
 
-      <LowStockClient initialItems={items} />
+      <LowStockClient
+        initialItems={items}
+        canViewRestock={canViewRestock}
+        canViewPurchases={canViewPurchases}
+      />
     </div>
   );
 }

@@ -261,6 +261,30 @@ describe('wave 2 finance transaction rollback', () => {
       { account_id: 107, type: 'credit', amount: 5 },
       { account_id: 114, type: 'debit', amount: 5 },
     ]);
+    expect(mockDb.prepare("SELECT action, details FROM activity_log WHERE action = 'FINANCIAL_NOTICE'").get()).toEqual({
+      action: 'FINANCIAL_NOTICE',
+      details: 'Financial notice wave2-fin-1: debit 5 for supplier 1',
+    });
+  });
+
+  it('rolls back the whole financial notice when its required audit insert fails', async () => {
+    mockDb.exec(`
+      CREATE TRIGGER fail_financial_notice_audit
+      BEFORE INSERT ON activity_log
+      WHEN NEW.action = 'FINANCIAL_NOTICE'
+      BEGIN SELECT RAISE(ABORT, 'injected financial notice audit failure'); END;
+    `);
+
+    expect(await addFinancialNoticeAction({
+      target_type: 'supplier', target_id: '1', type: 'debit', amount: 5,
+      reason: 'audit must be atomic', date: '2026-09-27',
+    })).toMatchObject({ success: false });
+
+    expect(mockDb.prepare('SELECT COUNT(*) AS count FROM financial_notices').get()).toEqual({ count: 0 });
+    expect(mockDb.prepare('SELECT COUNT(*) AS count FROM daily_journals').get()).toEqual({ count: 0 });
+    expect(mockDb.prepare('SELECT COUNT(*) AS count FROM journal_entries').get()).toEqual({ count: 0 });
+    expect(mockDb.prepare('SELECT balance FROM suppliers WHERE id = 1').get()).toEqual({ balance: 100 });
+    expect(mockDb.prepare("SELECT COUNT(*) AS count FROM activity_log WHERE action = 'FINANCIAL_NOTICE'").get()).toEqual({ count: 0 });
   });
 
   it('posts supplier notices in the same direction as the accounts-payable liability balance', async () => {

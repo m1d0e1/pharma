@@ -16,9 +16,20 @@ jest.mock('next/dynamic', () => {
     return function DynamicStub(props: any) {
       if (componentIndex === 1) return <div data-testid="expiry-widget-stub">expiry</div>;
       if (componentIndex === 2) return <div data-testid="dead-stock-widget-stub">dead-stock</div>;
+      if (componentIndex === 3) return <div
+        data-testid="reorder-alerts-stub"
+        data-low-stock={String(!!props.canViewLowStock)}
+        data-restock={String(!!props.canViewRestock)}
+        data-purchases={String(!!props.canViewPurchases)}
+        data-inventory={String(!!props.canViewInventory)}
+      >reorder</div>;
       if (componentIndex === 5) return <div data-testid="subscription-status-stub">subscription</div>;
       if (props?.invoice?.sales_items) {
-        return <div data-testid="dynamic-receipt-items">{props.invoice.sales_items.map((item: any) => item.trade_name).join(',')}</div>;
+        return <div
+          data-testid="dynamic-receipt-items"
+          data-points-redeemed={props.invoice.points_redeemed ?? ''}
+          data-loyalty-discount={props.invoice.loyalty_discount_amount ?? ''}
+        >{props.invoice.sales_items.map((item: any) => item.trade_name).join(',')}</div>;
       }
       return null;
     };
@@ -143,6 +154,36 @@ describe('dashboard low-stock wiring', () => {
     render(<DashboardPage />);
 
     expect(await screen.findByText('لوحة التحكم الرئيسية (محلي)')).toBeInTheDocument();
+    expect(screen.queryByTestId('expiry-widget-stub')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('dead-stock-widget-stub')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('reorder-alerts-stub')).not.toBeInTheDocument();
+  });
+
+  it('renders low-stock alerts for the default pharmacist without exposing restock, purchase, or full-inventory actions', async () => {
+    (getClientSession as jest.Mock).mockResolvedValueOnce({
+      id: 'default-pharmacist',
+      username: 'pharmacist',
+      role: 'pharmacist',
+      pharmacy_id: 'pharmacy-1',
+      permissions: {
+        rep_can_view_sales: true,
+        can_view_low_stock: true,
+        can_view_restock: false,
+        can_view_purchases: false,
+        can_view_stores: false,
+      },
+    });
+    (hasUserPermissionSync as jest.Mock).mockImplementation((user: any, permission: string) =>
+      user?.permissions?.[permission] === true
+    );
+
+    render(<DashboardPage />);
+
+    const reorder = await screen.findByTestId('reorder-alerts-stub');
+    expect(reorder).toHaveAttribute('data-low-stock', 'true');
+    expect(reorder).toHaveAttribute('data-restock', 'false');
+    expect(reorder).toHaveAttribute('data-purchases', 'false');
+    expect(reorder).toHaveAttribute('data-inventory', 'false');
     expect(screen.queryByTestId('expiry-widget-stub')).not.toBeInTheDocument();
     expect(screen.queryByTestId('dead-stock-widget-stub')).not.toBeInTheDocument();
   });
@@ -359,7 +400,7 @@ describe('dashboard low-stock wiring', () => {
     }
   });
 
-  it('nets returned item cost out of dashboard trend COGS so graph profit matches P&L accounting', async () => {
+  it('nets legacy NULL-unit returned item cost using the original sale unit in dashboard trend COGS', async () => {
     render(<DashboardPage />);
 
     await waitFor(() => expect(dbSelect).toHaveBeenCalled());
@@ -396,9 +437,9 @@ describe('dashboard low-stock wiring', () => {
         INSERT INTO master_drugs VALUES (1, 40, 10, 1, 'strip', 'tablet');
         INSERT INTO inventory VALUES ('inv-1', 1, 40, 10, 1);
         INSERT INTO sales_invoices VALUES ('sale-1', 'pharmacy-1', 100, 'completed', datetime('now'));
-        INSERT INTO sales_items VALUES (1, 'sale-1', 'inv-1', 1, 1, 'large', 40, 10, 1);
-        INSERT INTO returns VALUES ('return-1', 'pharmacy-1', 100, 'approved', datetime('now'));
-        INSERT INTO return_items VALUES ('return-1', 1, 'inv-1', 1, 1, 'large');
+        INSERT INTO sales_items VALUES (1, 'sale-1', 'inv-1', 1, 2, 'medium', 40, 10, 1);
+        INSERT INTO returns VALUES ('return-1', 'pharmacy-1', 100, 'APPROVED', datetime('now'));
+        INSERT INTO return_items VALUES ('return-1', 1, 'inv-1', 1, 1, NULL);
       `);
 
       const rows = sqlite.prepare(String(trendCall![0])).all(...trendCall![1]) as Array<{
@@ -407,7 +448,7 @@ describe('dashboard low-stock wiring', () => {
         cogs: number;
       }>;
       const today = rows[rows.length - 1];
-      expect(today).toMatchObject({ sales: 100, returns: 100, cogs: 0 });
+      expect(today).toMatchObject({ sales: 100, returns: 100, cogs: 4 });
     } finally {
       sqlite.close();
     }
@@ -654,6 +695,37 @@ describe('dashboard low-stock wiring', () => {
 
     fireEvent.click(transaction.closest('[class*="cursor-pointer"]') as HTMLElement);
     await waitFor(() => expect(getInvoiceDetailsAction).toHaveBeenCalledTimes(2));
+  });
+
+  it('passes persisted loyalty redemption snapshots into the dashboard receipt modal', async () => {
+    (dbSelect as jest.Mock).mockImplementation(async (sql: string) => {
+      if (sql.includes('LEFT JOIN patients p')) {
+        return [{
+          id: 'invoice-dashboard-loyalty',
+          total_amount: 110,
+          discount_amount: 10,
+          points_redeemed: 100,
+          loyalty_discount_amount: 10,
+          payment_method: 'cash',
+          patient_name: 'عميل ولاء',
+          created_at: '2026-09-29T17:21:42.000Z',
+        }];
+      }
+      return [];
+    });
+    (getInvoiceDetailsAction as jest.Mock).mockResolvedValueOnce({
+      success: true,
+      data: [{ trade_name: 'تفاصيل ولاء', quantity_sold: 1, unit_price: 120 }],
+    });
+
+    render(<DashboardPage />);
+
+    const transaction = await screen.findByText('عميل ولاء');
+    fireEvent.click(transaction.closest('[class*="cursor-pointer"]') as HTMLElement);
+
+    const receipt = await screen.findByTestId('dynamic-receipt-items');
+    expect(receipt).toHaveAttribute('data-points-redeemed', '100');
+    expect(receipt).toHaveAttribute('data-loyalty-discount', '10');
   });
 
   it('keeps the latest recent-transaction details when an older request resolves afterwards', async () => {

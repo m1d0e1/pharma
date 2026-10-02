@@ -61,7 +61,7 @@ import { loadHandoverDetails } from '@/lib/finance/drawer';
 export async function getHandoverDetailsAction(shiftId: string) {
   try {
     const user = await getLocalSession();
-    if (!user || (!hasUserPermissionSync(user, 'acc_can_view_handover') && !hasUserPermissionSync(user, 'can_view_shifts'))) {
+    if (!user || !hasUserPermissionSync(user, 'acc_can_view_handover')) {
       return { success: false, error: 'غير مصرح' };
     }
     if (!await getShiftForPharmacy(shiftId, user.pharmacy_id)) {
@@ -212,10 +212,16 @@ export async function processHandoverAction(data: {
       let receiverShiftId: string | null = null;
 
       if (data.transferAmount > 0 && data.transferTargetType === 'bank') {
-        const bankUpdate = await db.prepare('UPDATE banks SET current_balance = current_balance + ? WHERE id = ?').run(data.transferAmount, data.transferTargetId);
+        const bankUpdate = await db.prepare(`
+          UPDATE banks SET current_balance = current_balance + ?
+          WHERE id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+        `).run(data.transferAmount, data.transferTargetId, pharmacyId, pharmacyId);
         if (bankUpdate.changes !== 1) throw new Error('الحساب البنكي المحدد غير موجود');
       } else if (data.transferAmount > 0 && data.transferTargetType === 'pos') {
-        const posUpdate = await db.prepare('UPDATE points_of_sale SET current_balance = current_balance + ? WHERE id = ?').run(data.transferAmount, data.transferTargetId);
+        const posUpdate = await db.prepare(`
+          UPDATE points_of_sale SET current_balance = current_balance + ?
+          WHERE id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+        `).run(data.transferAmount, data.transferTargetId, pharmacyId, pharmacyId);
         if (posUpdate.changes !== 1) throw new Error('نقطة البيع المحددة غير موجودة');
       }
 
@@ -364,7 +370,9 @@ export async function processHandoverAction(data: {
 export async function getOpenShiftHandoverAction() {
   try {
     const user = await getLocalSession();
-    if (!user) return { success: false, error: 'غير مصرح', data: null };
+    if (!user || !hasUserPermissionSync(user, 'acc_can_view_handover')) {
+      return { success: false, error: 'غير مصرح', data: null };
+    }
     const shift = await ensurePermanentShiftForUser(user.id);
     return { success: true, data: shift };
   } catch (error) {
@@ -375,7 +383,7 @@ export async function getOpenShiftHandoverAction() {
 export async function getShiftCreditSalesAction(shiftId?: string) {
   try {
     const user = await getLocalSession();
-    if (!user || (!hasUserPermissionSync(user, 'acc_can_view_handover') && !hasUserPermissionSync(user, 'can_view_shifts'))) {
+    if (!user || !hasUserPermissionSync(user, 'acc_can_view_handover')) {
       return { success: false, error: 'غير مصرح', data: [] };
     }
 

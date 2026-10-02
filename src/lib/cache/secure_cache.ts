@@ -1,5 +1,9 @@
 import { dbSelect } from '@/lib/db/tauri';
 import { isTauri } from '@/lib/env';
+import {
+  DRUG_CATALOG_CHANGED_STORAGE_KEY,
+  DRUG_IDENTITY_CHANGED_STORAGE_KEY,
+} from '@/lib/inventory/refresh';
 
 export interface MasterDrug {
   id: number;
@@ -23,6 +27,7 @@ export interface MasterDrug {
   stop_dealing?: number;
   is_medicine?: number;
   is_service?: number;
+  has_expiry?: number;
 }
 
 export interface DrugInteraction {
@@ -40,6 +45,7 @@ class SecureCache {
   private drugsList: MasterDrug[] = [];
   private loaded: boolean = false;
   private loadingPromise: Promise<void> | null = null;
+  private loadGeneration: number = 0;
 
   loadSync() {
     // Deprecated. SQLite is async only.
@@ -49,31 +55,38 @@ class SecureCache {
     if (this.loaded) return;
     if (this.loadingPromise) return this.loadingPromise;
 
+    const generation = this.loadGeneration;
     this.loadingPromise = (async () => {
       try {
         console.log('Loading drugs from SQLite into cache (minimal columns)...');
         
         // Only fetch the columns actually used by enrich() - NOT SELECT *
         // This reduces IPC data from ~50MB to ~5MB for 191K rows
-        this.drugsList = await dbSelect<MasterDrug>(`
+        const drugsList = await dbSelect<MasterDrug>(`
           SELECT id, trade_name, trade_name_en, generic_name, active_ingredient,
                  barcode, manufacturer, is_medicine, is_service, stop_dealing,
-                 official_price,
+                 official_price, has_expiry,
                  large_unit, medium_unit, small_unit, large_to_medium, medium_to_small
           FROM master_drugs
         `);
+
+        if (generation !== this.loadGeneration) return;
         
         // ponytail: skip loading 191K interactions into memory — queried per-drug on demand
         
-        for (const drug of this.drugsList) {
-          this.drugs.set(drug.id, drug);
-        }
+        const drugs = new Map<number, MasterDrug>();
+        for (const drug of drugsList) drugs.set(drug.id, drug);
+
+        if (generation !== this.loadGeneration) return;
+        this.drugsList = drugsList;
+        this.drugs = drugs;
 
         this.loaded = true;
         console.log(`Loaded ${this.drugsList.length} drugs into memory cache.`);
       } catch (error) {
         console.error('Failed to load drugs payload from SQLite:', error);
-        this.loadingPromise = null; // Allow retry on failure
+      } finally {
+        if (generation === this.loadGeneration) this.loadingPromise = null;
       }
     })();
 
@@ -81,6 +94,7 @@ class SecureCache {
   }
 
   async reload() {
+    this.loadGeneration += 1;
     this.loaded = false;
     this.loadingPromise = null;
     this.drugs.clear();
@@ -149,6 +163,7 @@ class SecureCache {
           is_medicine: cached.is_medicine ?? item.is_medicine,
           is_service: cached.is_service ?? item.is_service,
           stop_dealing: cached.stop_dealing ?? item.stop_dealing,
+          has_expiry: cached.has_expiry ?? item.has_expiry,
         };
       }
       return item;
@@ -162,6 +177,22 @@ export const secureCache = new SecureCache();
 // In Tauri (client-side), this fires when the app first loads any action,
 // so the cache is ready before the user clicks any search field.
 if (isTauri) {
+  if (typeof window !== 'undefined') {
+    const listenerKey = '__pharmaSecureCacheIdentityStorageListener';
+    const existing = (window as any)[listenerKey] as ((event: StorageEvent) => void) | undefined;
+    if (existing) window.removeEventListener('storage', existing);
+    const handleIdentityChange = (event: StorageEvent) => {
+      if (
+        event.key !== DRUG_IDENTITY_CHANGED_STORAGE_KEY
+        && event.key !== DRUG_CATALOG_CHANGED_STORAGE_KEY
+      ) return;
+      secureCache.reload().catch(error => {
+        console.warn('Reload catalog after cross-window catalog change', error);
+      });
+    };
+    (window as any)[listenerKey] = handleIdentityChange;
+    window.addEventListener('storage', handleIdentityChange);
+  }
   // Small delay to avoid blocking initial page render
   setTimeout(() => {
     secureCache.load().catch(() => {});

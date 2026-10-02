@@ -75,7 +75,8 @@ describe('addInventoryAction transaction atomicity', () => {
         barcode TEXT,
         large_unit TEXT,
         large_to_medium INTEGER DEFAULT 1,
-        medium_to_small INTEGER DEFAULT 1
+        medium_to_small INTEGER DEFAULT 1,
+        has_expiry INTEGER DEFAULT 1
       );
       CREATE TABLE inventory (
         id TEXT PRIMARY KEY,

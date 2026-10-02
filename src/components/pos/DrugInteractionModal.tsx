@@ -1,9 +1,10 @@
 'use client';
 
 
-import React, { useState, useEffect } from 'react'
+import React from 'react'
 import { useHotkeys } from 'react-hotkeys-hook';
 import { AlertTriangle, Info, X, ShieldAlert, HeartPulse } from 'lucide-react';
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap';
 
 interface Alert {
   type: 'interaction' | 'allergy' | 'condition';
@@ -26,17 +27,18 @@ interface Props {
 }
 
 export default function ClinicalAlertModal({ alerts, onClose, onConfirm }: Props) {
+  const dialogRef = useDialogFocusTrap<HTMLDivElement>(true);
   useHotkeys('esc', () => { if(typeof onClose === 'function') onClose(); }, { enableOnFormTags: true });
 
   return (
     <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-[150]" dir="rtl">
-      <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl w-full max-w-2xl overflow-hidden border border-slate-200 dark:border-slate-800 animate-in zoom-in duration-300">
+      <div ref={dialogRef} role="alertdialog" aria-modal="true" aria-labelledby="clinical-alert-title" tabIndex={-1} className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl w-full max-w-2xl overflow-hidden border border-slate-200 dark:border-slate-800 animate-in zoom-in duration-300">
         <div className="p-6 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center bg-red-50 dark:bg-red-900/20">
           <div className="flex items-center gap-3">
             <AlertTriangle className="text-red-600 w-6 h-6" />
-            <h2 className="text-xl font-black text-red-900 dark:text-red-200">تحذير: سلامة المريض</h2>
+            <h2 id="clinical-alert-title" className="text-xl font-black text-red-900 dark:text-red-200">تحذير: سلامة المريض</h2>
           </div>
-          <button onClick={onClose} className="p-2 hover:bg-red-100 dark:hover:bg-red-900/40 rounded-full transition-colors text-red-900 dark:text-red-200">
+          <button type="button" aria-label="إغلاق تحذير سلامة المريض" onClick={onClose} className="p-2 hover:bg-red-100 dark:hover:bg-red-900/40 rounded-full transition-colors text-red-900 dark:text-red-200">
             <X className="w-6 h-6" />
           </button>
         </div>
@@ -64,7 +66,7 @@ export default function ClinicalAlertModal({ alerts, onClose, onConfirm }: Props
                      </div>
                   )}
                 </div>
-                <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase ${
+                <span className={`px-3 py-1 rounded-full text-[11px] font-black ${
                   alert.severity === 'critical' || alert.severity === 'high' ? 'bg-red-600 text-white' : 'bg-amber-500 text-white'
                 }`}>
                   {alert.severity === 'critical' || alert.severity === 'high' ? 'خطير جداً' : 'تنبيه'}

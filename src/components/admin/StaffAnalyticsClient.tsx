@@ -76,7 +76,7 @@ export default function StaffAnalyticsClient({ metrics }: Props) {
                        </div>
                        <div>
                          <p className="font-bold text-slate-900 dark:text-white">{staff.name}</p>
-                         <p className="text-[10px] text-slate-400 font-bold uppercase">{staff.role === 'admin' || staff.role === 'owner' ? 'مدير' : 'صيدلي'}</p>
+                         <p className="text-[11px] text-slate-500 font-bold">{staff.role === 'admin' || staff.role === 'owner' ? 'مدير' : 'صيدلي'}</p>
                        </div>
                     </div>
                   </td>
@@ -87,7 +87,7 @@ export default function StaffAnalyticsClient({ metrics }: Props) {
                     {staff.avgBasket.toFixed(2)} ج.م
                   </td>
                   <td className="px-8 py-5 text-center">
-                    <span className={`px-2 py-1 rounded-lg text-[10px] font-black ${staff.returnRate > 5 ? 'bg-red-100 text-red-600' : 'bg-slate-100 text-slate-600'}`}>
+                    <span className={`px-2 py-1 rounded-lg text-[11px] font-black ${staff.returnRate > 5 ? 'bg-red-100 text-red-600' : 'bg-slate-100 text-slate-600'}`}>
                       {staff.returnRate.toFixed(1)}%
                     </span>
                   </td>
@@ -95,7 +95,7 @@ export default function StaffAnalyticsClient({ metrics }: Props) {
                     {(staff.totalRevenue ?? 0).toLocaleString()} ج.م
                   </td>
                   <td className="px-8 py-5">
-                     <span className="inline-flex items-center gap-1.5 text-[10px] font-black text-emerald-500 uppercase">
+                     <span className="inline-flex items-center gap-1.5 text-[11px] font-black text-emerald-600">
                        <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
                        متصل
                      </span>

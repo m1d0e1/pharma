@@ -137,7 +137,7 @@ export default function ExpiryWidget() {
                   <div className="w-10 h-10 bg-white dark:bg-slate-800 rounded-xl flex items-center justify-center shadow-sm">💊</div>
                   <div>
                     <p className="font-bold text-slate-900 dark:text-white text-sm">{item.drug_name}</p>
-                    <p className="text-[10px] text-slate-500">{item.expiry_date}</p>
+                    <p className="text-xs text-slate-500">{item.expiry_date}</p>
                   </div>
                 </div>
                 <div className={`px-3 py-1 rounded-lg text-xs font-black ${daysLeft <= 0 ? 'bg-red-100 text-red-700' : daysLeft <= 7 ? 'bg-red-100 text-red-600' : daysLeft <= 14 ? 'bg-amber-100 text-amber-700' : 'bg-yellow-100 text-yellow-700'}`}>

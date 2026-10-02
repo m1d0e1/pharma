@@ -116,7 +116,7 @@ export default function OpeningBalancesPage() {
         </div>
         <table className="w-full text-right">
           <thead className="bg-slate-50 dark:bg-slate-800/50">
-            <tr className="text-slate-400 text-[10px] font-black uppercase tracking-widest">
+            <tr className="text-slate-500 text-[11px] font-black">
               <th className="px-8 py-6">الصنف</th>
               <th className="px-8 py-6">الكمية</th>
               <th className="px-8 py-6">سعر التكلفة</th>
@@ -132,7 +132,7 @@ export default function OpeningBalancesPage() {
                 <td className="px-8 py-6 font-black text-emerald-600">{item.cost_price?.toLocaleString()} ج.م</td>
                 <td className="px-8 py-6 font-bold text-slate-500">{item.created_at}</td>
                 <td className="px-8 py-6">
-                  <span className="bg-emerald-50 text-emerald-600 px-4 py-1.5 rounded-full text-[10px] font-black">مرحل</span>
+                  <span className="bg-emerald-50 text-emerald-600 px-4 py-1.5 rounded-full text-[11px] font-black">مرحل</span>
                 </td>
               </tr>
             ))}

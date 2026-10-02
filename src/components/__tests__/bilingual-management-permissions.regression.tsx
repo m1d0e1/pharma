@@ -93,6 +93,10 @@ describe('shared bilingual master-data permissions', () => {
     expect(screen.queryByText('2 / 2')).not.toBeInTheDocument();
 
     fireEvent.click(addButton);
+    expect(screen.getByRole('dialog', { name: 'إضافة Usage' })).toBeInTheDocument();
+    expect(screen.getByLabelText('الإسم بالعربي *')).toBeInTheDocument();
+    expect(screen.getByLabelText('الإسم بالإنجليزي')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'إغلاق محرر Usage' })).toBeInTheDocument();
     const modalInputs = screen.getAllByRole('textbox');
     fireEvent.change(modalInputs[1], { target: { value: 'وحدة جديدة' } });
     fireEvent.keyDown(window, { key: 'Enter' });

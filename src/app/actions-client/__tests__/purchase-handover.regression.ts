@@ -6,6 +6,8 @@ import { createSqliteTransactionDb as mockCreateSqliteTransactionDb } from '@/te
 
 let mockDb: Database.Database;
 let mockId = 0;
+let beforeTransactionHook: (() => void) | null = null;
+let mockPermissionOverrides: Record<string, boolean> = {};
 
 jest.mock('@/lib/db/tauri', () => ({
   dbSelect: jest.fn(async (sql: string, params: unknown[] = []) => mockDb.prepare(sql).all(...params)),
@@ -16,6 +18,9 @@ jest.mock('@/lib/db/tauri', () => ({
   }),
   dbTransaction: jest.fn(async (callback: any) => {
     if (mockDb.inTransaction) return callback(mockCreateSqliteTransactionDb(mockDb));
+    const hook = beforeTransactionHook;
+    beforeTransactionHook = null;
+    hook?.();
     mockDb.exec('BEGIN IMMEDIATE');
     try { const result=await callback(mockCreateSqliteTransactionDb(mockDb)); mockDb.exec('COMMIT'); return result; }
     catch(error) { mockDb.exec('ROLLBACK'); throw error; }
@@ -27,7 +32,7 @@ let mockSession: any = { id: 'admin', role: 'owner', pharmacy_id: null };
 
 jest.mock('@/lib/auth/local', () => ({
   getLocalSession: jest.fn(async () => mockSession),
-  hasUserPermissionSync: jest.fn(() => true),
+  hasUserPermissionSync: jest.fn((_user: any, key: string) => mockPermissionOverrides[key] ?? true),
   verifyPassword: jest.fn(async () => true),
 }));
 
@@ -53,7 +58,7 @@ import {
   getPurchaseInvoiceDetailsAction,
   getPurchasesReportsAction,
 } from '@/app/actions-client/purchases';
-import { barcodeLookupAction, fetchDraftsAction, processCheckoutAction, searchDrugsAction } from '@/app/actions-client/sales';
+import { barcodeLookupAction, fetchDraftsAction, processCheckoutAction, searchDrugsAction, searchPatientsAction } from '@/app/actions-client/sales';
 import { addOpeningBalanceAction } from '@/app/actions-client/inventory';
 import { getHandoverDetailsAction, getOpenShiftHandoverAction, getShiftCreditSalesAction, processHandoverAction } from '@/app/actions-client/handover';
 import { createCashMovementAction, getTreasuryDashboardAction } from '@/app/actions-client/finance';
@@ -75,6 +80,8 @@ import { deleteUserAction } from '@/app/actions-client/users';
 describe('purchase reports and drawer handover regressions', () => {
   beforeEach(() => {
     mockId = 0;
+    beforeTransactionHook = null;
+    mockPermissionOverrides = {};
     mockSession = { id: 'admin', role: 'owner', pharmacy_id: null };
     mockDb = new Database(':memory:');
     mockDb.exec(readFileSync('src-tauri/migrations/001_initial.sql', 'utf8'));
@@ -84,18 +91,22 @@ describe('purchase reports and drawer handover regressions', () => {
     mockDb.exec(readFileSync('src-tauri/migrations/013_shift_handover_details.sql', 'utf8'));
     mockDb.exec(readFileSync('src-tauri/migrations/018_unit_conversion_snapshots.sql', 'utf8'));
     mockDb.exec(readFileSync('src-tauri/migrations/024_commercial_papers_pharmacy_scope.sql', 'utf8'));
+    mockDb.exec(readFileSync('src-tauri/migrations/026_sales_loyalty_redemption_snapshot.sql', 'utf8'));
+    mockDb.exec(readFileSync('src-tauri/migrations/028_finance_definitions_pharmacy_scope.sql', 'utf8'));
     mockDb.exec(`
       ALTER TABLE inventory ADD COLUMN medium_to_small INTEGER DEFAULT 1;
       ALTER TABLE purchase_invoice_items ADD COLUMN medium_to_small INTEGER DEFAULT 1;
       ALTER TABLE sales_items ADD COLUMN large_to_medium INTEGER DEFAULT 1;
       ALTER TABLE sales_items ADD COLUMN medium_to_small INTEGER DEFAULT 1;
       ALTER TABLE sales_items ADD COLUMN item_discount_percent REAL DEFAULT 0;
+      ALTER TABLE sales_invoices ADD COLUMN points_earned INTEGER DEFAULT 0;
       ALTER TABLE returns ADD COLUMN pharmacy_id TEXT;
       ALTER TABLE shifts ADD COLUMN pharmacy_id TEXT;
       ALTER TABLE cash_movements ADD COLUMN pharmacy_id TEXT;
       ALTER TABLE daily_journals ADD COLUMN pharmacy_id TEXT;
       ALTER TABLE expenses ADD COLUMN pharmacy_id TEXT;
       ALTER TABLE financial_notices ADD COLUMN pharmacy_id TEXT;
+      ALTER TABLE activity_log ADD COLUMN pharmacy_id TEXT;
       ALTER TABLE supplier_transactions ADD COLUMN user_id TEXT;
       ALTER TABLE supplier_transactions ADD COLUMN payment_method TEXT DEFAULT 'cash';
       ALTER TABLE supplier_transactions ADD COLUMN date TEXT;
@@ -278,6 +289,25 @@ describe('purchase reports and drawer handover regressions', () => {
     expect((await getShiftsAction({ status:'all' })).data?.map((shift: any) => shift.id)).toEqual(['shift-ph-2']);
   });
 
+  it('requires the dedicated handover permission for bootstrap and sensitive handover reads', async () => {
+    mockDb.exec(`
+      INSERT INTO users(id,username,password_hash,role,pharmacy_id) VALUES
+        ('shift-viewer','shift-viewer','hash','pharmacist','ph-1');
+      INSERT INTO shifts(id,user_id,pharmacy_id,starting_cash,status) VALUES
+        ('permission-shift','shift-viewer','ph-1',125,'open');
+    `);
+    mockSession = { id:'shift-viewer', role:'pharmacist', pharmacy_id:'ph-1' };
+    mockPermissionOverrides = { can_view_shifts:true, acc_can_view_handover:false };
+
+    expect(await getHandoverDetailsAction('permission-shift')).toMatchObject({ success:false });
+    expect(await getShiftCreditSalesAction('permission-shift')).toMatchObject({ success:false, data:[] });
+
+    mockDb.prepare("DELETE FROM shifts WHERE id = 'permission-shift'").run();
+    mockPermissionOverrides = { can_view_shifts:false, acc_can_view_handover:false };
+    expect(await getOpenShiftHandoverAction()).toMatchObject({ success:false, data:null });
+    expect((mockDb.prepare("SELECT COUNT(*) AS total FROM shifts WHERE pharmacy_id = 'ph-1' AND status = 'open'").get() as any).total).toBe(0);
+  });
+
   it.each(['new-shift','journal'])('rolls back the closure and cash movement when %s recording fails', async failure => {
     mockDb.exec(`INSERT INTO users(id,username,password_hash,role) VALUES('rollback-receiver','rollback-receiver','hash','admin');
       INSERT INTO shifts(id,user_id,starting_cash,status) VALUES('rollback-shift','admin',100,'open');`);
@@ -300,6 +330,41 @@ describe('purchase reports and drawer handover regressions', () => {
     expect(mockDb.prepare("SELECT quantity FROM inventory WHERE id='archive-lot'").get()).toEqual({quantity:2});
     mockDb.exec('UPDATE master_drugs SET stop_dealing=0 WHERE id=9001');
     expect(await barcodeLookupAction('6220000000001')).toMatchObject({success:true,data:{id:9001,quantity:2}});
+  });
+
+  it('does not expose a fake strip unit for Dexatrol-like legacy stock with a bad conversion factor', async () => {
+    mockDb.exec(`
+      UPDATE master_drugs
+      SET trade_name='DEXATROL EYE/EAR DROPS 5 ML', trade_name_en=NULL,
+          large_unit=NULL, medium_unit=NULL, small_unit=NULL,
+          large_to_medium=5, medium_to_small=1
+      WHERE id=9001;
+      INSERT INTO inventory(id,pharmacy_id,drug_id,quantity,local_selling_price,expiry_date,barcode,strips_per_box)
+      VALUES('dexatrol-legacy','local_default',9001,2,27,'2099-12-31','6220000000001',5);
+    `);
+
+    expect(await searchDrugsAction('DEXATROL')).toMatchObject({
+      success: true,
+      data: [expect.objectContaining({
+        id: 9001,
+        large_unit: 'زجاجة',
+        large_to_medium: 1,
+        units: expect.objectContaining({ large: 'زجاجة', large_to_medium: 1 }),
+        batches: [expect.objectContaining({ inventory_id: 'dexatrol-legacy', strips_per_box: 1 })],
+      })],
+    });
+    const search = await searchDrugsAction('DEXATROL');
+    expect(search.data?.[0]?.units?.medium).toBeUndefined();
+
+    const scanned = await barcodeLookupAction('6220000000001');
+    expect(scanned).toMatchObject({
+      success: true,
+      data: expect.objectContaining({
+        units: expect.objectContaining({ large: 'زجاجة', large_to_medium: 1 }),
+        batches: [expect.objectContaining({ inventory_id: 'dexatrol-legacy', strips_per_box: 1 })],
+      }),
+    });
+    expect(scanned.data?.units?.medium).toBeUndefined();
   });
 
   it('barcode POS supports CSV metadata repair and explicitly opted-in selling-price repair', async () => {
@@ -415,6 +480,16 @@ describe('purchase reports and drawer handover regressions', () => {
         expiry_date: '2028-01-31',
       })],
     });
+
+    mockPermissionOverrides = {
+      can_view_purchases: false,
+      rep_can_view_purchases: true,
+    };
+    expect(await (getPurchaseInvoiceDetailsAction as any)(created.id!, { reportScope: true })).toMatchObject({
+      success: true,
+      data: [expect.objectContaining({ drug_id: 9001 })],
+    });
+    expect(await getPurchaseInvoiceDetailsAction(created.id!)).toMatchObject({ success: false, error: 'Unauthorized' });
   });
 
   it('links checkout to the open shift and calculates live drawer cash', async () => {
@@ -542,6 +617,39 @@ describe('purchase reports and drawer handover regressions', () => {
 
     const shift2Credit = await getShiftCreditSalesAction('shift-2');
     expect(shift2Credit).toMatchObject({ success: false, data: [] });
+  });
+
+  it('does not sell stock with unknown expiry for a drug that requires expiry tracking', async () => {
+    mockDb.prepare(`
+      INSERT INTO shifts (id, user_id, start_time, starting_cash, status)
+      VALUES ('expiry-shift', 'admin', '2020-01-01 00:00:00', 100, 'open')
+    `).run();
+    mockDb.prepare(`
+      INSERT INTO inventory (id, drug_id, quantity, local_selling_price, cost_price, expiry_date, strips_per_box)
+      VALUES ('unknown-expiry-return', 9001, 2, 20, 10, NULL, 1)
+    `).run();
+
+    const search = await searchDrugsAction('Test Drug');
+    expect(search).toMatchObject({ success: true });
+    expect(search.data?.find((drug: any) => drug.id === 9001)).toMatchObject({
+      total_stock: 0,
+      batches: [],
+    });
+
+    const result = await processCheckoutAction({
+      items: [{
+        drug_id: 9001,
+        inventory_id: 'unknown-expiry-return',
+        quantity_sold: 1,
+        unit_price: 20,
+        selected_unit: 'large',
+      }],
+      payment_method: 'cash',
+      status: 'completed',
+    });
+
+    expect(result.success).toBe(false);
+    expect(mockDb.prepare("SELECT quantity FROM inventory WHERE id = 'unknown-expiry-return'").get()).toEqual({ quantity: 2 });
   });
 
   it('keeps mixed-lot balances exact and exposes all debit receipts on the shared shift', async () => {
@@ -929,6 +1037,9 @@ describe('purchase reports and drawer handover regressions', () => {
     `);
 
     expect(await updatePatientWalletAction('wallet-patient', 25, 'cash top-up')).toMatchObject({ success: true, balance: 25 });
+    expect(mockDb.prepare(
+      "SELECT action FROM activity_log WHERE action = 'PATIENT_WALLET_TOPUP' ORDER BY rowid DESC LIMIT 1"
+    ).get()).toEqual({ action: 'PATIENT_WALLET_TOPUP' });
     expect(await addSupplierPaymentAction({ supplier_id: 1, amount: 10, payment_method: 'cash' })).toMatchObject({ success: true });
     expect(await addExpenseAction({ category: 'rent', amount: 3, description: 'cash expense', date: '2026-08-22' })).toMatchObject({ success: true });
     const postedExpense = mockDb.prepare('SELECT id FROM expenses WHERE amount = 3').get() as any;
@@ -969,6 +1080,29 @@ describe('purchase reports and drawer handover regressions', () => {
         expected_cash: 34,
       },
     });
+  });
+
+  it('rolls back a wallet top-up when its audit record cannot be written', async () => {
+    mockDb.exec(`
+      INSERT INTO patients (id, full_name, wallet_balance)
+      VALUES ('audit-wallet-patient', 'Audit Wallet Patient', 0);
+      INSERT INTO shifts (id, user_id, start_time, starting_cash, status)
+      VALUES ('audit-wallet-shift', 'admin', '2026-08-22 08:00:00', 0, 'open');
+      CREATE TRIGGER fail_wallet_topup_audit
+      BEFORE INSERT ON activity_log
+      WHEN NEW.action = 'PATIENT_WALLET_TOPUP'
+      BEGIN
+        SELECT RAISE(ABORT, 'wallet audit blocked');
+      END;
+    `);
+    const movementCount = (mockDb.prepare('SELECT COUNT(*) AS count FROM cash_movements').get() as any).count;
+    const journalCount = (mockDb.prepare('SELECT COUNT(*) AS count FROM daily_journals').get() as any).count;
+
+    expect(await updatePatientWalletAction('audit-wallet-patient', 25, 'audit failure')).toMatchObject({ success: false });
+
+    expect(mockDb.prepare("SELECT wallet_balance FROM patients WHERE id = 'audit-wallet-patient'").get()).toEqual({ wallet_balance: 0 });
+    expect((mockDb.prepare('SELECT COUNT(*) AS count FROM cash_movements').get() as any).count).toBe(movementCount);
+    expect((mockDb.prepare('SELECT COUNT(*) AS count FROM daily_journals').get() as any).count).toBe(journalCount);
   });
 
   it('keeps delivered invoices available for customer returns', async () => {
@@ -1082,6 +1216,8 @@ describe('purchase reports and drawer handover regressions', () => {
     mockDb.exec(`
       INSERT INTO inventory(id,pharmacy_id,drug_id,quantity,local_selling_price,cost_price,expiry_date,strips_per_box)
       VALUES('delivery-lot','local_default',9001,2,20,12,'2099-12-31',1);
+      INSERT INTO patients(id,full_name,phone,address,credit_limit,wallet_balance,loyalty_level,points_balance)
+      VALUES('delivery-patient','Delivery Patient','01000000000','Delivery Address',0,0,'bronze',0);
     `);
     expect(await openShiftAction({ starting_cash_amount: 0 })).toMatchObject({ success: true });
 
@@ -1090,6 +1226,7 @@ describe('purchase reports and drawer handover regressions', () => {
         drug_id: 9001, inventory_id: 'delivery-lot', quantity_sold: 1, unit_price: 20,
         item_discount_percent: 0, selected_unit: 'large', is_negative: false,
       }],
+      patient_id: 'delivery-patient',
       payment_method: 'delivery',
       status: 'completed',
     });
@@ -1303,6 +1440,7 @@ describe('purchase reports and drawer handover regressions', () => {
       INSERT INTO inventory (id, pharmacy_id, drug_id, quantity, local_selling_price, cost_price, expiry_date)
       VALUES
         ('last-valid-unit', NULL, 9001, 1, 15, 10, '2099-12-31'),
+        ('quarantined-return', NULL, 9001, 4, 15, 10, NULL),
         ('expired-stock', NULL, 9001, 12, 15, 10, '2020-01-01'),
         ('other-pharmacy-stock', 'other-pharmacy', 9001, 12, 15, 10, '2099-12-31');
     `);
@@ -1335,6 +1473,157 @@ describe('purchase reports and drawer handover regressions', () => {
       FROM shortages
       WHERE drug_id = 9001 AND status IN ('pending', 'ordered')
     `).get() as any).total).toBe(1);
+  });
+
+  it('revalidates wallet balance inside checkout transaction before debiting it', async () => {
+    mockDb.exec(`
+      INSERT INTO shifts (id, user_id, start_time, starting_cash, status)
+      VALUES ('wallet-race-shift', 'admin', CURRENT_TIMESTAMP, 0, 'open');
+      INSERT INTO patients (id, full_name, credit_limit, wallet_balance, loyalty_level, points_balance)
+      VALUES ('wallet-race-patient', 'Wallet Race', 1000, 100, 'bronze', 0);
+      INSERT INTO inventory (id, drug_id, quantity, local_selling_price, cost_price, expiry_date)
+      VALUES ('wallet-race-lot', 9001, 2, 80, 40, '2099-12-31');
+    `);
+    beforeTransactionHook = () => {
+      mockDb.prepare("UPDATE patients SET wallet_balance = 0 WHERE id = 'wallet-race-patient'").run();
+    };
+
+    const result = await processCheckoutAction({
+      items: [{ drug_id: 9001, inventory_id: 'wallet-race-lot', quantity_sold: 1, unit_price: 80, selected_unit: 'large' }],
+      patient_id: 'wallet-race-patient',
+      payment_method: 'wallet',
+      status: 'completed',
+    });
+
+    expect(result).toMatchObject({ success: false });
+    expect(mockDb.prepare("SELECT wallet_balance FROM patients WHERE id = 'wallet-race-patient'").get()).toEqual({ wallet_balance: 0 });
+    expect(mockDb.prepare("SELECT COUNT(*) AS count FROM sales_invoices WHERE patient_id = 'wallet-race-patient'").get()).toEqual({ count: 0 });
+  });
+
+  it('exposes the authoritative loyalty balance in POS patient search results', async () => {
+    mockDb.prepare(`
+      INSERT INTO patients (id, full_name, phone, credit_limit, wallet_balance, loyalty_level, points_balance)
+      VALUES ('search-loyalty-patient', 'Search Loyalty', '01099999999', 500, 25, 'bronze', 175)
+    `).run();
+
+    expect(await searchPatientsAction('Loyalty')).toMatchObject({
+      success: true,
+      data: [expect.objectContaining({
+        id: 'search-loyalty-patient',
+        points_balance: 175,
+      })],
+    });
+  });
+
+  it('rejects completed check checkout with a blank check number before stock or invoice mutation', async () => {
+    mockDb.exec(`
+      INSERT INTO shifts (id, user_id, start_time, starting_cash, status)
+      VALUES ('blank-check-shift', 'admin', CURRENT_TIMESTAMP, 0, 'open');
+      INSERT INTO inventory (id, drug_id, quantity, local_selling_price, cost_price, expiry_date)
+      VALUES ('blank-check-lot', 9001, 2, 20, 10, '2099-12-31');
+    `);
+
+    const result = await processCheckoutAction({
+      items: [{ drug_id: 9001, inventory_id: 'blank-check-lot', quantity_sold: 1, unit_price: 20, selected_unit: 'large' }],
+      payment_method: 'check',
+      check_number: '   ',
+      status: 'completed',
+    });
+
+    expect(result).toEqual({ success: false, error: 'رقم الشيك مطلوب للبيع المكتمل بالشيك' });
+    expect(mockDb.prepare("SELECT quantity FROM inventory WHERE id = 'blank-check-lot'").get()).toEqual({ quantity: 2 });
+    expect(mockDb.prepare("SELECT COUNT(*) AS count FROM sales_invoices WHERE payment_method = 'check'").get()).toEqual({ count: 0 });
+  });
+
+  it('redeems loyalty points atomically inside checkout and snapshots the redemption on the invoice', async () => {
+    mockDb.exec(`
+      INSERT INTO shifts (id, user_id, start_time, starting_cash, status)
+      VALUES ('loyalty-shift', 'admin', CURRENT_TIMESTAMP, 0, 'open');
+      INSERT INTO patients (id, full_name, credit_limit, wallet_balance, loyalty_level, points_balance)
+      VALUES ('loyalty-patient', 'Loyalty Checkout', 1000, 0, 'bronze', 150);
+      INSERT INTO inventory (id, drug_id, quantity, local_selling_price, cost_price, expiry_date)
+      VALUES ('loyalty-lot', 9001, 2, 100, 40, '2099-12-31');
+    `);
+
+    const result = await processCheckoutAction({
+      items: [{ drug_id: 9001, inventory_id: 'loyalty-lot', quantity_sold: 1, unit_price: 100, selected_unit: 'large' }],
+      patient_id: 'loyalty-patient',
+      payment_method: 'cash',
+      status: 'completed',
+      points_to_redeem: 100,
+    });
+
+    expect(result).toMatchObject({
+      success: true,
+      data: { total_amount: 90, points_redeemed: 100, loyalty_discount_amount: 10, points_earned: 90 },
+    });
+    expect(mockDb.prepare(`
+      SELECT total_amount, discount_amount, points_redeemed, loyalty_discount_amount, points_earned
+      FROM sales_invoices WHERE id = ?
+    `).get(result.data!.sale_id)).toEqual({
+      total_amount: 90,
+      discount_amount: 10,
+      points_redeemed: 100,
+      loyalty_discount_amount: 10,
+      points_earned: 90,
+    });
+    expect(mockDb.prepare("SELECT points_balance FROM patients WHERE id = 'loyalty-patient'").get()).toEqual({ points_balance: 140 });
+    expect(mockDb.prepare("SELECT COUNT(*) AS count FROM activity_log WHERE action = 'REDEEM_POINTS'").get()).toEqual({ count: 1 });
+  });
+
+  it('rolls back checkout if loyalty points are spent by a competing transaction before checkout claims them', async () => {
+    mockDb.exec(`
+      INSERT INTO shifts (id, user_id, start_time, starting_cash, status)
+      VALUES ('loyalty-race-shift', 'admin', CURRENT_TIMESTAMP, 0, 'open');
+      INSERT INTO patients (id, full_name, credit_limit, wallet_balance, loyalty_level, points_balance)
+      VALUES ('loyalty-race-patient', 'Loyalty Race', 1000, 0, 'bronze', 150);
+      INSERT INTO inventory (id, drug_id, quantity, local_selling_price, cost_price, expiry_date)
+      VALUES ('loyalty-race-lot', 9001, 2, 100, 40, '2099-12-31');
+    `);
+    beforeTransactionHook = () => {
+      mockDb.prepare("UPDATE patients SET points_balance = 50 WHERE id = 'loyalty-race-patient'").run();
+    };
+
+    const result = await processCheckoutAction({
+      items: [{ drug_id: 9001, inventory_id: 'loyalty-race-lot', quantity_sold: 1, unit_price: 100, selected_unit: 'large' }],
+      patient_id: 'loyalty-race-patient',
+      payment_method: 'cash',
+      status: 'completed',
+      points_to_redeem: 100,
+    });
+
+    expect(result).toMatchObject({ success: false });
+    expect(mockDb.prepare("SELECT points_balance FROM patients WHERE id = 'loyalty-race-patient'").get()).toEqual({ points_balance: 50 });
+    expect(mockDb.prepare("SELECT quantity FROM inventory WHERE id = 'loyalty-race-lot'").get()).toEqual({ quantity: 2 });
+    expect(mockDb.prepare("SELECT COUNT(*) AS count FROM sales_invoices WHERE patient_id = 'loyalty-race-patient'").get()).toEqual({ count: 0 });
+    expect(mockDb.prepare("SELECT COUNT(*) AS count FROM activity_log WHERE action = 'REDEEM_POINTS'").get()).toEqual({ count: 0 });
+  });
+
+  it('revalidates patient credit limit inside checkout transaction after competing debt is posted', async () => {
+    mockDb.exec(`
+      INSERT INTO shifts (id, user_id, start_time, starting_cash, status)
+      VALUES ('credit-race-shift', 'admin', CURRENT_TIMESTAMP, 0, 'open');
+      INSERT INTO patients (id, full_name, credit_limit, wallet_balance, loyalty_level, points_balance)
+      VALUES ('credit-race-patient', 'Credit Race', 100, 0, 'bronze', 0);
+      INSERT INTO inventory (id, drug_id, quantity, local_selling_price, cost_price, expiry_date)
+      VALUES ('credit-race-lot', 9001, 2, 80, 40, '2099-12-31');
+    `);
+    beforeTransactionHook = () => {
+      mockDb.prepare(`
+        INSERT INTO sales_invoices (id, patient_id, total_amount, payment_method, status)
+        VALUES ('competing-credit', 'credit-race-patient', 50, 'credit', 'completed')
+      `).run();
+    };
+
+    const result = await processCheckoutAction({
+      items: [{ drug_id: 9001, inventory_id: 'credit-race-lot', quantity_sold: 1, unit_price: 80, selected_unit: 'large' }],
+      patient_id: 'credit-race-patient',
+      payment_method: 'credit',
+      status: 'completed',
+    });
+
+    expect(result).toMatchObject({ success: false });
+    expect(mockDb.prepare("SELECT COUNT(*) AS count FROM sales_invoices WHERE patient_id = 'credit-race-patient'").get()).toEqual({ count: 1 });
   });
 
   it('keeps purchase lots separate by pharmacy, expiry, and batch and links each invoice line', async () => {
@@ -1708,6 +1997,67 @@ describe('purchase reports and drawer handover regressions', () => {
       { id: 'draft-other', quantity: 20 },
       { id: 'draft-valid', quantity: 2 },
     ]);
+  });
+
+  it('treats unknown-expiry lots as unsellable across POS price, barcode, and draft stock views', async () => {
+    mockPermissionOverrides.can_change_price_sale = false;
+    mockDb.exec(`
+      UPDATE master_drugs
+      SET has_expiry = 1, official_price = 20, barcode = '6220000000001'
+      WHERE id = 9001;
+      INSERT INTO inventory (
+        id, pharmacy_id, drug_id, quantity, local_selling_price, cost_price,
+        expiry_date, barcode, strips_per_box
+      ) VALUES
+        ('mixed-valid', NULL, 9001, 2, 20, 10, '2099-12-31', '6220000000001', 1),
+        ('mixed-unknown-expiry', NULL, 9001, 5, 10, 6, NULL, '6220000000001', 1);
+    `);
+
+    expect(await searchDrugsAction('Test Drug')).toMatchObject({
+      success: true,
+      data: [expect.objectContaining({
+        id: 9001,
+        total_stock: 2,
+        min_price: 20,
+        batches: [expect.objectContaining({ inventory_id: 'mixed-valid', quantity: 2 })],
+      })],
+    });
+
+    expect(await barcodeLookupAction('6220000000001')).toMatchObject({
+      success: true,
+      data: expect.objectContaining({
+        id: 9001,
+        inventory_id: 'mixed-valid',
+        quantity: 2,
+        unit_price: 20,
+        batches: [expect.objectContaining({ inventory_id: 'mixed-valid', quantity: 2 })],
+      }),
+    });
+
+    const draft = await processCheckoutAction({
+      items: [{
+        drug_id: 9001,
+        quantity_sold: 1,
+        unit_price: 20,
+        selected_unit: 'large',
+      }],
+      payment_method: 'cash',
+      status: 'draft',
+    });
+    expect(draft.success).toBe(true);
+
+    const drafts = await fetchDraftsAction();
+    expect(drafts).toMatchObject({
+      success: true,
+      data: [expect.objectContaining({
+        items: [expect.objectContaining({
+          drug_id: 9001,
+          total_stock: 2,
+          batches: [expect.objectContaining({ inventory_id: 'mixed-valid', quantity: 2 })],
+        })],
+      })],
+    });
+    expect(JSON.stringify(drafts)).not.toContain('mixed-unknown-expiry');
   });
 
   it('rehydrates suspended POS payment metadata without losing fees or check reference', async () => {

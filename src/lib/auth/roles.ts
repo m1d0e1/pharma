@@ -155,8 +155,11 @@ export function findUnprotectedRoutes(): string[] {
   return allMenuRoutes.filter(r => !permittedRoutes.has(r as any) && r !== '/');
 }
 
-// ACTION_PERMISSIONS maps each actions-client file to its permission check
-// Verifies that calling an action without the permission returns error
+// ACTION_PERMISSIONS maps each actions-client file to its module-access check.
+// Some legacy keys are named `can_view_*` but intentionally authorize the
+// module's actions as well as its reads for backward compatibility. More
+// specific mutation permissions (for example inventory management or staff
+// management) still take precedence wherever that module defines them.
 export const ACTION_PERMISSIONS: Record<string, string> = {
   inventory: 'can_manage_inventory',
   purchases: 'can_view_purchases',

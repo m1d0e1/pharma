@@ -312,7 +312,8 @@ pub(crate) async fn create_purchase_return_on_connection(
                    CAST(COALESCE(pri.total_price, 0) AS REAL) AS total_price
             FROM purchase_return_items pri
             JOIN purchase_returns pr ON pr.id = pri.purchase_return_id
-            WHERE pr.purchase_invoice_id = ? AND pr.status = 'completed'
+            WHERE pr.purchase_invoice_id = ?
+              AND LOWER(COALESCE(pr.status, '')) IN ('completed', 'approved')
               AND (
                 pri.purchase_invoice_item_id = ?
                 OR (
@@ -1005,6 +1006,57 @@ mod tests {
         .await
         .unwrap_err();
         assert!(error.contains("invoice remainder"));
+    }
+
+    #[tokio::test]
+    async fn approved_purchase_return_counts_toward_finalized_invoice_remainder() {
+        let mut connection = current_schema().await;
+        sqlx::query(r#"INSERT INTO users (id, username, role, pharmacy_id, permissions, is_active) VALUES ('buyer', 'buyer', 'admin', 'ph-1', '{"can_view_purchases":true,"can_modify_unit_conversion":true}', 1)"#)
+            .execute(&mut connection).await.unwrap();
+        sqlx::query("INSERT INTO suppliers (id, name_ar, balance) VALUES (1, 'Supplier', 0)")
+            .execute(&mut connection).await.unwrap();
+        sqlx::query("INSERT INTO master_drugs (id, trade_name, large_to_medium, medium_to_small) VALUES (42, 'Drug', 1, 1)")
+            .execute(&mut connection).await.unwrap();
+        let purchase = PurchasePayload {
+            id: Some("approved-return-purchase".into()), supplier_id: 1,
+            pharmacy_id: Some("ph-1".into()), user_id: "buyer".into(),
+            invoice_number: Some("APPROVED-RETURN".into()), invoice_date: Some("2026-09-01".into()),
+            payment_method: Some("credit".into()), notes: None, check_number: None,
+            expenses: 0.0, discount_value: 0.0, discount_percent: 0.0, tax_percent: 0.0,
+            status: Some("completed".into()), cart: vec![PurchaseItem {
+                purchase_invoice_item_id: None, id: 42, quantity: 1.0, unit_id: Some(1),
+                expiry_date: Some("2030-01-01".into()), cost_price: 100.0,
+                selling_price: Some(150.0), bonus_quantity: 0.0, tax_percent: 0.0,
+                discount_percent: 0.0, strips_per_box: 1, barcode: None,
+            }],
+        };
+        let mut transaction = connection.begin().await.unwrap();
+        save_purchase_invoice_tx(&mut transaction, purchase).await.unwrap();
+        transaction.commit().await.unwrap();
+        let item_id: i64 = sqlx::query_scalar("SELECT id FROM purchase_invoice_items WHERE invoice_id = 'approved-return-purchase'")
+            .fetch_one(&mut connection).await.unwrap();
+        let inventory_id: String = sqlx::query_scalar("SELECT inventory_id FROM purchase_invoice_items WHERE id = ?")
+            .bind(item_id).fetch_one(&mut connection).await.unwrap();
+        sqlx::query("INSERT INTO purchase_returns (id, purchase_invoice_id, supplier_id, user_id, reason, total_amount, refund_method, status) VALUES ('approved-return', 'approved-return-purchase', 1, 'buyer', 'approved', 100, 'credit', 'approved')")
+            .execute(&mut connection).await.unwrap();
+        sqlx::query("INSERT INTO purchase_return_items (purchase_return_id, purchase_invoice_item_id, inventory_id, drug_id, drug_name, quantity_returned, unit_price, total_price, unit) VALUES ('approved-return', ?, ?, 42, 'Drug', 1, 100, 100, 'large')")
+            .bind(item_id).bind(&inventory_id).execute(&mut connection).await.unwrap();
+
+        let stock_before: f64 = sqlx::query_scalar("SELECT CAST(quantity AS REAL) FROM inventory WHERE id = ?")
+            .bind(&inventory_id).fetch_one(&mut connection).await.unwrap();
+        let supplier_before: f64 = sqlx::query_scalar("SELECT CAST(balance AS REAL) FROM suppliers WHERE id = 1")
+            .fetch_one(&mut connection).await.unwrap();
+        let error = run_purchase_return_transaction(&mut connection, PurchaseReturnPayload {
+            purchase_invoice_id: "approved-return-purchase".into(), supplier_id: 1,
+            user_id: "buyer".into(), pharmacy_id: Some("ph-1".into()), reason: None,
+            refund_method: "credit".into(), items: vec![PurchaseReturnItem {
+                purchase_invoice_item_id: item_id, quantity: 1.0, unit: Some("large".into()),
+            }],
+        }).await.unwrap_err();
+        assert!(error.contains("invoice remainder"), "{error}");
+        assert_eq!(sqlx::query_scalar::<_, f64>("SELECT CAST(quantity AS REAL) FROM inventory WHERE id = ?").bind(&inventory_id).fetch_one(&mut connection).await.unwrap(), stock_before);
+        assert_eq!(sqlx::query_scalar::<_, f64>("SELECT CAST(balance AS REAL) FROM suppliers WHERE id = 1").fetch_one(&mut connection).await.unwrap(), supplier_before);
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM purchase_returns WHERE purchase_invoice_id = 'approved-return-purchase'").fetch_one(&mut connection).await.unwrap(), 1);
     }
 
     #[tokio::test]

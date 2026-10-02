@@ -36,6 +36,8 @@ interface ShiftManagementClientProps {
   hasOpenShift: boolean;
   userRole: string;
   suggestedStartingCash?: number;
+  canViewShiftReports?: boolean;
+  canHandover?: boolean;
 }
 
 export default function ShiftManagementClient({
@@ -43,7 +45,9 @@ export default function ShiftManagementClient({
   currentShift,
   hasOpenShift,
   userRole,
-  suggestedStartingCash = 0
+  suggestedStartingCash = 0,
+  canViewShiftReports = false,
+  canHandover = false,
 }: ShiftManagementClientProps) {
   const [shifts, setShifts] = useState<Shift[]>(initialShifts);
   useEffect(() => { setShifts(initialShifts); }, [initialShifts]);
@@ -63,6 +67,8 @@ export default function ShiftManagementClient({
   const reloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isOwnerOrAdmin = userRole === 'owner' || userRole === 'admin';
+  const canForceCloseAllShifts = userRole === 'owner';
+  const canViewShiftReport = userRole === 'owner' || canViewShiftReports;
 
   useEffect(() => {
     if (!startingCash && suggestedStartingCash > 0 && !hasOpenShift) {
@@ -230,7 +236,7 @@ export default function ShiftManagementClient({
               <div className="space-y-4">
                 <div>
                   <div className="flex items-center justify-between mb-2">
-                    <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
+                    <label htmlFor="shift-starting-cash" className="block text-sm font-medium text-slate-700 dark:text-slate-300">
                       الرصيد الافتتاحي (ج.م)
                     </label>
                     {suggestedStartingCash > 0 && (
@@ -240,6 +246,7 @@ export default function ShiftManagementClient({
                     )}
                   </div>
                   <input
+                    id="shift-starting-cash"
                     type="number"
                     step="0.01"
                     min="0"
@@ -260,10 +267,11 @@ export default function ShiftManagementClient({
                 </div>
                 
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+                  <label htmlFor="shift-opening-notes" className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
                     ملاحظات الافتتاح (اختياري)
                   </label>
                   <textarea
+                    id="shift-opening-notes"
                     value={openingNotes}
                     onChange={(e) => setOpeningNotes(e.target.value)}
                     className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-2xl text-slate-800 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
@@ -312,13 +320,15 @@ export default function ShiftManagementClient({
                     أدخل النقدية الفعلية وحدد ما سيسلم. يسجل النظام العجز أو الزيادة ويغلق الوردية ويفتح وردية مشتركة جديدة تلقائياً مع ترحيل النقدية المتبقية.
                   </p>
                 </div>
-                <Link
-                  href="/finance/handover"
-                  className="block w-full px-4 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow-sm transition-all text-center flex items-center justify-center gap-2"
-                >
-                  <span>🤝</span>
-                  <span>فتح شاشة تسليم الدرج والمناوبة</span>
-                </Link>
+                {canHandover && (
+                  <Link
+                    href="/finance/handover"
+                    className="block w-full px-4 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow-sm transition-all text-center flex items-center justify-center gap-2"
+                  >
+                    <span>🤝</span>
+                    <span>فتح شاشة تسليم الدرج والمناوبة</span>
+                  </Link>
+                )}
               </div>
             </>
           ) : null}
@@ -356,7 +366,7 @@ export default function ShiftManagementClient({
             </p>
           </div>
           <div className="flex items-center gap-3">
-            {isOwnerOrAdmin && (
+            {canForceCloseAllShifts && (
               <Button
                 onClick={handleForceCloseAll}
                 disabled={isForceClosing}
@@ -367,6 +377,7 @@ export default function ShiftManagementClient({
               </Button>
             )}
             <select
+              aria-label="تصفية سجل الشفتات حسب الحالة"
               value={statusFilter}
               onChange={handleFilterChange}
               className="px-4 py-2 bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-2xl text-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-blue-500 font-bold text-sm"
@@ -412,7 +423,7 @@ export default function ShiftManagementClient({
                     <td className="py-3.5 px-4">
                       <div className="font-bold text-slate-800 dark:text-white flex items-center gap-2">
                         <span>{shift.status === 'open' ? 'الوردية المشتركة' : (shift.profiles?.full_name || 'غير معروف')}</span>
-                        <span className="text-[10px] font-mono font-normal px-1.5 py-0.5 bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 rounded">
+                        <span className="text-xs font-mono font-normal px-1.5 py-0.5 bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 rounded">
                           #{shift.id.slice(0, 8)}
                         </span>
                       </div>
@@ -501,14 +512,16 @@ export default function ShiftManagementClient({
                           <Receipt className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
                           <span>فواتير الوردية</span>
                         </Button>
-                        <Button 
-                          variant="outline" 
-                          size="sm"
-                          onClick={() => window.location.href = `/shifts/report?id=${shift.id}`}
-                          className="rounded-xl border-slate-200 hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800 text-xs font-bold"
-                        >
-                          تقرير الإغلاق
-                        </Button>
+                        {canViewShiftReport && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => window.location.href = `/shifts/report?id=${shift.id}`}
+                            className="rounded-xl border-slate-200 hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800 text-xs font-bold"
+                          >
+                            تقرير الإغلاق
+                          </Button>
+                        )}
                       </div>
                     </td>
                   </tr>

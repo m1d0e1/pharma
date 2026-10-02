@@ -80,27 +80,27 @@ export default function HandoverPage() {
 
   if (!currentShift) {
     return (
-      <div className="container mx-auto py-20" dir="rtl">
-        <div className="max-w-2xl mx-auto bg-white dark:bg-slate-900 p-12 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-xl text-center space-y-8">
-          <div className="w-24 h-24 bg-rose-50 dark:bg-rose-900/20 rounded-full flex items-center justify-center mx-auto">
-            <AlertCircle className="w-12 h-12 text-rose-600" />
+      <div className="container mx-auto px-3 sm:px-6 py-10 sm:py-16" dir="rtl">
+        <div className="max-w-2xl mx-auto bg-white dark:bg-slate-900 p-6 sm:p-8 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm text-center space-y-6">
+          <div className="w-16 h-16 bg-rose-50 dark:bg-rose-900/20 rounded-2xl flex items-center justify-center mx-auto">
+            <AlertCircle className="w-8 h-8 text-rose-600" />
           </div>
           <div className="space-y-4">
-            <h1 className="text-3xl font-black text-slate-800 dark:text-white">لا توجد وردية مفتوحة حالياً</h1>
+            <h1 className="text-2xl font-black text-slate-800 dark:text-white">لا توجد وردية مفتوحة حالياً</h1>
             <p className="text-slate-500 font-bold max-w-md mx-auto">
               يجب أن تكون الوردية المشتركة مفتوحة لتتمكن من إجراء عملية التسليم.
             </p>
           </div>
-          <div className="flex gap-4 justify-center">
+          <div className="flex flex-col sm:flex-row gap-3 justify-center">
             <Link 
               href="/shifts"
-              className="px-10 py-5 bg-slate-900 text-white rounded-[24px] font-black hover:bg-slate-800 transition-all shadow-xl"
+              className="px-6 py-3.5 bg-slate-900 text-white rounded-xl font-black hover:bg-slate-800 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
             >
               الذهاب إلى الورديات
             </Link>
             <Link 
               href="/"
-              className="px-10 py-5 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 rounded-[24px] font-black hover:bg-slate-200 transition-all"
+              className="px-6 py-3.5 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-xl font-black hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500"
             >
               الرئيسية
             </Link>
@@ -111,7 +111,7 @@ export default function HandoverPage() {
   }
 
   return (
-    <div className="container mx-auto py-8" dir="rtl">
+    <div className="container mx-auto px-3 sm:px-6 py-6" dir="rtl">
       <DrawerHandoverClient shiftId={currentShift.id} />
     </div>
   );

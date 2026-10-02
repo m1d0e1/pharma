@@ -4,6 +4,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react'
 import * as LucideIcons from 'lucide-react'
 import { Plus, Trash2, Search, Save, X, Activity, Edit } from 'lucide-react'
 import { toast, Toaster } from 'react-hot-toast'
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap'
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local'
 
 interface Item {
@@ -44,6 +45,7 @@ export default function BilingualManagementClient({
   const [deletingIds, setDeletingIds] = useState<Set<number>>(() => new Set());
   const deletingIdsRef = useRef<Set<number>>(new Set());
   const [canManage, setCanManage] = useState(false);
+  const dialogRef = useDialogFocusTrap<HTMLDivElement>(canManage && isModalOpen);
 
   const ITEMS_PER_PAGE = 50;
   const [currentPage, setCurrentPage] = useState(1);
@@ -171,6 +173,7 @@ export default function BilingualManagementClient({
           <Search className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
           <input 
             type="text"
+            aria-label={`بحث في ${title}`}
             placeholder={`بحث في ${title}...`}
             className="w-full pr-12 pl-4 py-4 bg-slate-50 dark:bg-slate-800 rounded-2xl border-none outline-none focus:ring-4 focus:ring-primary-500/10 font-bold dark:text-white"
             value={searchTerm}
@@ -203,10 +206,11 @@ export default function BilingualManagementClient({
             </div>
             
             {canManage && (
-            <div className="mt-6 pt-6 border-t border-slate-50 dark:border-slate-800 flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-all">
+            <div className="mt-6 pt-6 border-t border-slate-50 dark:border-slate-800 flex justify-end gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 transition-opacity">
                <button 
                  onClick={() => handleOpenEdit(item)}
-                 className="p-3 text-slate-400 hover:text-primary-500 rounded-xl hover:bg-primary-50 dark:hover:bg-primary-900/20 transition-all"
+                 aria-label={`تعديل ${item.name_ar}`}
+                 className="p-3 text-slate-400 hover:text-primary-500 focus-visible:text-primary-500 rounded-xl hover:bg-primary-50 focus-visible:bg-primary-50 dark:hover:bg-primary-900/20 dark:focus-visible:bg-primary-900/20 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
                >
                  <Edit className="w-5 h-5" />
                </button>
@@ -256,26 +260,29 @@ export default function BilingualManagementClient({
 
       {canManage && isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-          <div className="bg-white dark:bg-slate-900 w-full max-w-md rounded-[32px] shadow-hard border border-slate-100 dark:border-slate-800 overflow-hidden animate-in zoom-in-95">
+          <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="bilingual-editor-title" tabIndex={-1} className="bg-white dark:bg-slate-900 w-full max-w-md rounded-3xl shadow-hard border border-slate-100 dark:border-slate-800 overflow-hidden animate-in zoom-in-95">
              <div className="p-8 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center">
-                <h3 className="text-2xl font-black text-slate-900 dark:text-white">
+                <h3 id="bilingual-editor-title" className="text-2xl font-black text-slate-900 dark:text-white">
                   {editingItem ? `تعديل ${title}` : `إضافة ${title}`}
                 </h3>
-                <button onClick={handleCloseEditor} disabled={isSaving} className="disabled:opacity-50 disabled:cursor-not-allowed"><X className="w-8 h-8 text-slate-400" /></button>
+                <button type="button" aria-label={`إغلاق محرر ${title}`} onClick={handleCloseEditor} disabled={isSaving} className="disabled:opacity-50 disabled:cursor-not-allowed"><X className="w-8 h-8 text-slate-400" /></button>
              </div>
              <div className="p-8 space-y-6">
                 <div className="space-y-2">
-                   <label className="text-sm font-black text-slate-700 dark:text-slate-300 mr-2">الإسم بالعربي *</label>
+                   <label htmlFor="bilingual-name-ar" className="text-sm font-black text-slate-700 dark:text-slate-300 mr-2">الإسم بالعربي *</label>
                    <input 
+                      id="bilingual-name-ar"
                       type="text" 
                       className="w-full px-6 py-4 bg-slate-50 dark:bg-slate-800 rounded-2xl border-none outline-none focus:ring-4 focus:ring-primary-500/10 font-black dark:text-white border-2 border-transparent focus:border-primary-500"
                       value={formData.name_ar}
                       onChange={(e) => setFormData({ ...formData, name_ar: e.target.value })}
+                      autoFocus
                    />
                 </div>
                 <div className="space-y-2">
-                   <label className="text-sm font-black text-slate-700 dark:text-slate-300 mr-2">الإسم بالإنجليزي</label>
+                   <label htmlFor="bilingual-name-en" className="text-sm font-black text-slate-700 dark:text-slate-300 mr-2">الإسم بالإنجليزي</label>
                    <input 
+                      id="bilingual-name-en"
                       type="text" 
                       className="w-full px-6 py-4 bg-slate-50 dark:bg-slate-800 rounded-2xl border-none outline-none focus:ring-4 focus:ring-primary-500/10 font-black dark:text-white border-2 border-transparent focus:border-primary-500"
                       dir="ltr"

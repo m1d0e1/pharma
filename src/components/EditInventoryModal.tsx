@@ -4,6 +4,7 @@ import { useHotkeys } from 'react-hotkeys-hook';
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { updateInventoryAction } from '@/app/actions-client/inventory'
 import { toast } from 'react-hot-toast'
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap'
 
 interface InventoryItem {
   id: string
@@ -24,9 +25,10 @@ interface EditInventoryModalProps {
 }
 
 export default function EditInventoryModal({ item, onClose, onSuccess }: EditInventoryModalProps) {
+  const initialExpiryDate = item.expiry_date ? item.expiry_date.split('T')[0] : ''
   const [quantity, setQuantity] = useState(item.quantity.toString())
   const [localPrice, setLocalPrice] = useState(item.local_selling_price.toString())
-  const [expiryDate, setExpiryDate] = useState(item.expiry_date ? item.expiry_date.split('T')[0] : '')
+  const [expiryDate, setExpiryDate] = useState(initialExpiryDate)
   const initialConversion = Number(item.strips_per_box) > 0 ? Number(item.strips_per_box) : (item.master_drugs?.large_to_medium || 1)
   const [largeToMedium, setLargeToMedium] = useState(initialConversion.toString())
   const [reasonId, setReasonId] = useState<string>('')
@@ -36,6 +38,7 @@ export default function EditInventoryModal({ item, onClose, onSuccess }: EditInv
   const [isSubmitting, setIsSubmitting] = useState(false)
   const reasonsRequestRef = useRef(0)
   const submissionRef = useRef(false)
+  const dialogRef = useDialogFocusTrap<HTMLDivElement>(true)
 
   const handleClose = () => {
     if (submissionRef.current) return
@@ -94,7 +97,7 @@ export default function EditInventoryModal({ item, onClose, onSuccess }: EditInv
       id: item.id,
       quantity: parseFloat(quantity),
       local_selling_price: parseFloat(localPrice),
-      expiry_date: expiryDate || undefined,
+      expiry_date: expiryDate !== initialExpiryDate ? (expiryDate || null) : undefined,
       large_to_medium: Number(largeToMedium) !== initialConversion ? Number(largeToMedium) : undefined,
       reason_id: reasonId ? parseInt(reasonId) : undefined
     }
@@ -122,21 +125,22 @@ export default function EditInventoryModal({ item, onClose, onSuccess }: EditInv
 
   return (
     <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-[110]" dir="rtl">
-      <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-200 dark:border-slate-800 animate-in zoom-in duration-300">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="edit-inventory-title" tabIndex={-1} className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl w-full max-w-md max-h-[90vh] overflow-y-auto border border-slate-200 dark:border-slate-800 animate-in zoom-in duration-300">
         
         <div className="bg-gradient-to-r from-blue-600 to-indigo-600 p-6 flex justify-between items-center text-white">
           <div>
-            <h2 className="text-xl font-black">تعديل الصنف</h2>
+            <h2 id="edit-inventory-title" className="text-xl font-black">تعديل الصنف</h2>
             <p className="text-blue-100 text-xs">{item.master_drugs.trade_name}</p>
           </div>
-          <button onClick={handleClose} disabled={isSubmitting} className="text-2xl disabled:opacity-50 disabled:cursor-not-allowed">&times;</button>
+          <button type="button" aria-label="إغلاق تعديل المخزون" onClick={handleClose} disabled={isSubmitting} className="text-2xl disabled:opacity-50 disabled:cursor-not-allowed">&times;</button>
         </div>
 
-        <form onSubmit={handleUpdate} className="p-8 space-y-6">
-          <div className="grid grid-cols-2 gap-4">
+        <form onSubmit={handleUpdate} className="p-6 space-y-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-1.5">
-              <label className="text-xs font-black text-slate-500 mr-2">الكمية المتوفرة</label>
+              <label htmlFor="edit-inventory-quantity" className="text-xs font-black text-slate-500 mr-2">الكمية المتوفرة</label>
               <input
+                id="edit-inventory-quantity"
                 type="number"
                 required
                 min="0"
@@ -148,8 +152,9 @@ export default function EditInventoryModal({ item, onClose, onSuccess }: EditInv
             </div>
 
             <div className="space-y-1.5">
-              <label className="text-xs font-black text-slate-500 mr-2">سعر البيع للعلبة (ج.م)</label>
+              <label htmlFor="edit-inventory-price" className="text-xs font-black text-slate-500 mr-2">سعر البيع للعلبة (ج.م)</label>
               <input
+                id="edit-inventory-price"
                 type="number"
                 required
                 step="0.01"
@@ -160,8 +165,9 @@ export default function EditInventoryModal({ item, onClose, onSuccess }: EditInv
             </div>
             
             <div className="space-y-1.5">
-              <label className="text-xs font-black text-slate-500 mr-2">تاريخ الصلاحية</label>
+              <label htmlFor="edit-inventory-expiry" className="text-xs font-black text-slate-500 mr-2">تاريخ الصلاحية</label>
               <input
+                id="edit-inventory-expiry"
                 type="date"
                 value={expiryDate}
                 onChange={(e) => setExpiryDate(e.target.value)}
@@ -170,8 +176,9 @@ export default function EditInventoryModal({ item, onClose, onSuccess }: EditInv
             </div>
             
             <div className="space-y-1.5">
-              <label className="text-xs font-black text-slate-500 mr-2">عدد الشرائط بالعلبة</label>
+              <label htmlFor="edit-inventory-conversion" className="text-xs font-black text-slate-500 mr-2">عدد الشرائط بالعلبة</label>
               <input
+                id="edit-inventory-conversion"
                 type="number"
                 min="1"
                 value={largeToMedium}
@@ -182,10 +189,11 @@ export default function EditInventoryModal({ item, onClose, onSuccess }: EditInv
           </div>
 
           <div className="space-y-1.5">
-            <label className="text-xs font-black text-slate-500 mr-2">
+            <label htmlFor="edit-inventory-reason" className="text-xs font-black text-slate-500 mr-2">
               {quantityChanged ? 'سبب التعديل (مطلوب عند تغيير الكمية)' : 'سبب التعديل (اختياري)'}
             </label>
             <select
+              id="edit-inventory-reason"
               value={reasonId}
               onChange={(e) => setReasonId(e.target.value)}
               required={quantityChanged}

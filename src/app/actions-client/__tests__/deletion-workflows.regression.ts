@@ -6,6 +6,7 @@ import { createSqliteTransactionDb as mockCreateSqliteTransactionDb } from '@/te
 let mockDb: Database.Database;
 let mockSession: any = { id: 'admin', role: 'owner', pharmacy_id: null };
 let mockPermission = true;
+let mockConversionPermission = true;
 let mockGeneratedId = 0;
 
 jest.mock('@/lib/db/tauri', () => ({
@@ -31,7 +32,8 @@ jest.mock('@/lib/db/tauri', () => ({
 
 jest.mock('@/lib/auth/local', () => ({
   getLocalSession: jest.fn(async () => mockSession),
-  hasUserPermissionSync: jest.fn(() => mockPermission),
+  hasUserPermissionSync: jest.fn((_user: any, permission: string) =>
+    permission === 'can_modify_unit_conversion' ? mockConversionPermission : mockPermission),
 }));
 
 jest.mock('@/lib/cache/secure_cache', () => ({
@@ -45,6 +47,11 @@ jest.mock('@/lib/cache/secure_cache', () => ({
   },
 }));
 
+jest.mock('@/lib/inventory/refresh', () => ({
+  notifyInventoryChanged: jest.fn(),
+  notifyDrugCatalogChanged: jest.fn(),
+}));
+
 jest.unmock('@/app/actions-client/inventory');
 jest.unmock('@/app/actions-client/master-drugs');
 
@@ -54,12 +61,20 @@ import {
   getUnusedDrugsAction,
 } from '@/app/actions-client/inventory';
 import {
+  addProductCategoryAction,
   addMasterDrugAction,
+  applyMasterDrugCatalogUpdateAction,
   archiveMasterDrugAction,
+  deleteProductCategoryAction,
   deleteMasterDrugAction,
   getUnusedItemsAction,
+  importMasterDrugWorkbookAction,
+  previewMasterDrugCatalogUpdateAction,
+  updateProductCategoryAction,
   updateMasterDrugAction,
 } from '@/app/actions-client/master-drugs';
+import { secureCache } from '@/lib/cache/secure_cache';
+import { notifyDrugCatalogChanged } from '@/lib/inventory/refresh';
 
 function applyCurrentMigrations(db: Database.Database, includeInitial = true) {
   const files = readdirSync('src-tauri/migrations')
@@ -124,6 +139,12 @@ function upgradeV214ThroughCompatibility(db: Database.Database) {
   for (const [table, column, definition] of compatibilityColumns) {
     addColumnIfMissing(db, table, column, definition);
   }
+
+  // The current app runs Tauri SQL migrations after the legacy compatibility
+  // repair. Keep this deliberately narrow so the fixture retains its old
+  // inventory/history shape while gaining the catalog reconciliation metadata
+  // required by the current master-drug actions.
+  db.exec(readFileSync('src-tauri/migrations/027_drug_catalog_reconciliation.sql', 'utf8'));
 }
 
 function insertUserAndDrug(drugId = 1000) {
@@ -239,8 +260,11 @@ const databaseVariants = [
 
 describe.each(databaseVariants)('$name deletion invariants', ({ initialize }) => {
   beforeEach(() => {
+    (secureCache.reload as jest.Mock).mockClear();
+    (notifyDrugCatalogChanged as jest.Mock).mockClear();
     mockGeneratedId = 0;
     mockPermission = true;
+    mockConversionPermission = true;
     mockSession = { id: 'admin', role: 'owner', pharmacy_id: null };
     mockDb = new Database(':memory:');
     initialize(mockDb);
@@ -331,11 +355,210 @@ describe.each(databaseVariants)('$name deletion invariants', ({ initialize }) =>
     const missing = await deleteDrugAction(999999);
     expect(missing).toMatchObject({ success: false, error: expect.stringContaining('not found') });
 
+    mockDb.prepare(`
+      INSERT INTO drug_catalog_links (catalog_drug_id, master_drug_id, linked_by)
+      VALUES (2001, 2001, 'admin')
+    `).run();
     expect(await deleteDrugAction(2001)).toEqual({ success: true });
     expect(mockDb.prepare('SELECT COUNT(*) AS count FROM master_drugs WHERE id = 2001').get()).toEqual({ count: 0 });
     expect(mockDb.prepare('SELECT COUNT(*) AS count FROM master_drugs_fts WHERE rowid = 2001').get()).toEqual({ count: 0 });
+    expect(mockDb.prepare(`
+      SELECT catalog_drug_id, reason FROM drug_catalog_suppressions WHERE catalog_drug_id = 2001
+    `).get()).toEqual({ catalog_drug_id: 2001, reason: 'deleted_locally' });
+    expect(mockDb.prepare('SELECT COUNT(*) AS count FROM drug_catalog_links WHERE catalog_drug_id = 2001').get()).toEqual({ count: 0 });
     expect(mockDb.prepare(`SELECT COUNT(*) AS count FROM activity_log WHERE action = 'DELETE_MASTER_DRUG'`).get()).toEqual({ count: 1 });
     expect(mockDb.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+  });
+
+  it('turns the legacy master-drug workbook action into a review-only dry run', async () => {
+    insertUserAndDrug(2050);
+    mockDb.prepare(`UPDATE master_drugs SET trade_name = 'LOCAL DRUG', official_price = 11 WHERE id = 2050`).run();
+
+    const result = await importMasterDrugWorkbookAction([
+      { id: 2050, trade_name: 'LOCAL DRUG', official_price: 99 },
+    ]);
+
+    expect(result).toMatchObject({
+      success: false,
+      code: 'CATALOG_REVIEW_REQUIRED',
+      data: expect.objectContaining({
+        summary: expect.objectContaining({ changedDrugCount: 1, inventoryRowsAffected: 0, historyRowsAffected: 0 }),
+      }),
+    });
+    expect(mockDb.prepare(`SELECT official_price FROM master_drugs WHERE id = 2050`).get()).toEqual({ official_price: 11 });
+    expect(mockDb.prepare(`SELECT COUNT(*) AS count FROM drug_catalog_update_runs`).get()).toEqual({ count: 0 });
+  });
+
+  it('requires manage permission to preview and the current owner/admin session to apply a catalog review', async () => {
+    insertUserAndDrug(2051);
+    const rows = [{ id: 2051, trade_name: 'Drug 2051', official_price: 10 }];
+
+    mockPermission = false;
+    expect(await previewMasterDrugCatalogUpdateAction(rows)).toMatchObject({ success: false, error: 'غير مصرح' });
+
+    mockPermission = true;
+    mockSession = { id: 'admin', role: 'pharmacist', pharmacy_id: null };
+    const pharmacistPreview = await previewMasterDrugCatalogUpdateAction(rows);
+    expect(pharmacistPreview).toMatchObject({ success: true, data: expect.objectContaining({ signature: expect.any(String) }) });
+    expect(await applyMasterDrugCatalogUpdateAction({
+      rows,
+      previewSignature: pharmacistPreview.data!.signature,
+      fieldDecisions: [],
+      newDrugDecisions: [],
+      identityConflictDecisions: [],
+      adminPassword: 'irrelevant-in-role-preflight',
+    })).toMatchObject({ success: false, error: expect.stringContaining('مالك أو مدير') });
+
+    mockSession = { id: 'admin', role: 'owner', pharmacy_id: null };
+    const ownerPreview = await previewMasterDrugCatalogUpdateAction(rows);
+    const applied = await applyMasterDrugCatalogUpdateAction({
+      rows,
+      previewSignature: ownerPreview.data!.signature,
+      fieldDecisions: [],
+      newDrugDecisions: [],
+      identityConflictDecisions: [],
+      adminPassword: 'test-owner-password',
+    });
+    expect(applied).toMatchObject({
+      success: true,
+      data: expect.objectContaining({ inventoryRowsAffected: 0, historyRowsAffected: 0 }),
+    });
+    expect(secureCache.reload).toHaveBeenCalledTimes(1);
+    expect(notifyDrugCatalogChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it('deletes an unreferenced product category on the current schema and protects text-linked categories', async () => {
+    insertUserAndDrug(2101);
+    mockDb.prepare(`UPDATE master_drugs SET category = 'Linked Category' WHERE id = 2101`).run();
+    const linked = mockDb.prepare(`
+      INSERT INTO product_categories (name_ar, name_en) VALUES ('Linked Category', 'Linked Category EN')
+    `).run();
+    const disposable = mockDb.prepare(`
+      INSERT INTO product_categories (name_ar, name_en) VALUES ('Disposable GUI Category', 'Disposable GUI Category EN')
+    `).run();
+
+    const linkedResult = await deleteProductCategoryAction(Number(linked.lastInsertRowid));
+    expect(linkedResult).toMatchObject({ success: false, error: expect.stringContaining('أصناف') });
+    expect(mockDb.prepare('SELECT COUNT(*) AS count FROM product_categories WHERE id = ?').get(linked.lastInsertRowid)).toEqual({ count: 1 });
+
+    expect(await deleteProductCategoryAction(Number(disposable.lastInsertRowid))).toEqual({ success: true });
+    expect(mockDb.prepare('SELECT COUNT(*) AS count FROM product_categories WHERE id = ?').get(disposable.lastInsertRowid)).toEqual({ count: 0 });
+  });
+
+  it('keeps text-linked drugs attached when a product category is renamed', async () => {
+    insertUserAndDrug(2102);
+    insertDrug(2103);
+    mockDb.prepare(`UPDATE master_drugs SET category = 'Linked Category' WHERE id = 2102`).run();
+    mockDb.prepare(`UPDATE master_drugs SET category = 'Linked Category EN' WHERE id = 2103`).run();
+    const linked = mockDb.prepare(`
+      INSERT INTO product_categories (name_ar, name_en) VALUES ('Linked Category', 'Linked Category EN')
+    `).run();
+    const categoryId = Number(linked.lastInsertRowid);
+
+    expect(await updateProductCategoryAction(categoryId, {
+      name_ar: 'Renamed Category',
+      name_en: 'Renamed Category EN',
+    })).toEqual({ success: true });
+
+    expect(mockDb.prepare('SELECT category FROM master_drugs WHERE id = 2102').get()).toEqual({
+      category: 'Renamed Category',
+    });
+    expect(mockDb.prepare('SELECT category FROM master_drugs WHERE id = 2103').get()).toEqual({
+      category: 'Renamed Category EN',
+    });
+    expect(await deleteProductCategoryAction(categoryId)).toMatchObject({
+      success: false,
+      error: expect.stringContaining('أصناف'),
+    });
+  });
+
+  it('renames Arabic- and English-linked category rows from their original names without double-matching', async () => {
+    insertUserAndDrug(2104);
+    insertDrug(2105);
+    mockDb.prepare(`UPDATE master_drugs SET category = 'Old Arabic' WHERE id = 2104`).run();
+    mockDb.prepare(`UPDATE master_drugs SET category = 'Old English' WHERE id = 2105`).run();
+    const linked = mockDb.prepare(`
+      INSERT INTO product_categories (name_ar, name_en) VALUES ('Old Arabic', 'Old English')
+    `).run();
+
+    expect(await updateProductCategoryAction(Number(linked.lastInsertRowid), {
+      name_ar: 'Old English',
+      name_en: 'New English',
+    })).toEqual({ success: true });
+
+    expect(mockDb.prepare('SELECT id, category FROM master_drugs WHERE id IN (2104,2105) ORDER BY id').all()).toEqual([
+      { id: 2104, category: 'Old English' },
+      { id: 2105, category: 'New English' },
+    ]);
+  });
+
+  it('rejects category labels that collide with another category bilingual alias', async () => {
+    mockDb.prepare(`
+      INSERT INTO product_categories (name_ar, name_en) VALUES ('Primary Arabic', 'Shared Alias')
+    `).run();
+
+    expect(await addProductCategoryAction({
+      name_ar: ' shared alias ',
+      name_en: 'Other English',
+    })).toMatchObject({ success: false, error: expect.stringContaining('مستخدم') });
+
+    expect(mockDb.prepare(`
+      SELECT COUNT(*) AS count FROM product_categories
+      WHERE LOWER(TRIM(name_ar)) = LOWER('shared alias')
+    `).get()).toEqual({ count: 0 });
+  });
+
+  it('refuses to rename a legacy ambiguous category instead of reclassifying another category drugs', async () => {
+    insertUserAndDrug(2107);
+    mockDb.prepare(`UPDATE master_drugs SET category = 'Shared Legacy Alias' WHERE id = 2107`).run();
+    const first = mockDb.prepare(`
+      INSERT INTO product_categories (name_ar, name_en) VALUES ('First Category', 'Shared Legacy Alias')
+    `).run();
+    mockDb.prepare(`
+      INSERT INTO product_categories (name_ar, name_en) VALUES ('Shared Legacy Alias', 'Second Category')
+    `).run();
+
+    expect(await updateProductCategoryAction(Number(first.lastInsertRowid), {
+      name_ar: 'Renamed First Category',
+      name_en: 'Renamed First Category EN',
+    })).toMatchObject({ success: false, error: expect.stringContaining('مستخدم') });
+
+    expect(mockDb.prepare('SELECT category FROM master_drugs WHERE id = 2107').get()).toEqual({
+      category: 'Shared Legacy Alias',
+    });
+    expect(mockDb.prepare('SELECT name_ar, name_en FROM product_categories WHERE id = ?').get(first.lastInsertRowid)).toEqual({
+      name_ar: 'First Category',
+      name_en: 'Shared Legacy Alias',
+    });
+  });
+
+  it('rechecks category references inside the delete transaction before removing the category', async () => {
+    insertUserAndDrug(2106);
+    const category = mockDb.prepare(`
+      INSERT INTO product_categories (name_ar, name_en) VALUES ('Race Category', 'Race Category EN')
+    `).run();
+    const categoryId = Number(category.lastInsertRowid);
+    const { dbTransaction } = jest.requireMock('@/lib/db/tauri') as { dbTransaction: jest.Mock };
+    dbTransaction.mockImplementationOnce(async (callback: any) => {
+      // Simulate another writer linking a drug immediately before this action
+      // acquires its write transaction.
+      mockDb.prepare(`UPDATE master_drugs SET category = 'Race Category' WHERE id = 2106`).run();
+      mockDb.exec('BEGIN IMMEDIATE');
+      try {
+        const result = await callback(mockCreateSqliteTransactionDb(mockDb));
+        mockDb.exec('COMMIT');
+        return result;
+      } catch (error) {
+        mockDb.exec('ROLLBACK');
+        throw error;
+      }
+    });
+
+    expect(await deleteProductCategoryAction(categoryId)).toMatchObject({
+      success: false,
+      error: expect.stringContaining('أصناف'),
+    });
+    expect(mockDb.prepare('SELECT COUNT(*) AS count FROM product_categories WHERE id = ?').get(categoryId)).toEqual({ count: 1 });
   });
 
   it('archives used drugs only after permission and confirmation, without changing stock or history', async () => {
@@ -402,6 +625,131 @@ describe.each(databaseVariants)('$name deletion invariants', ({ initialize }) =>
     expect(nameUpdated.trade_name).toBe('Panadol Extra Pure EN');
     expect(nameUpdated.trade_name_en).toBe('Panadol Extra Pure EN');
     expect(nameUpdated.official_price).toBe(30);
+  });
+
+  it('rejects nonpositive conversion factors on add and update', async () => {
+    insertUserAndDrug(3050);
+
+    for (const invalid of [0, -1]) {
+      const add = await addMasterDrugAction({
+        trade_name: `Invalid conversion ${invalid}`,
+        official_price: 10,
+        large_to_medium: invalid,
+        medium_to_small: 2,
+      });
+      expect(add).toMatchObject({ success: false, error: expect.stringContaining('تحويل') });
+    }
+
+    const before = mockDb.prepare('SELECT large_to_medium, medium_to_small FROM master_drugs WHERE id = 3050').get();
+    const update = await updateMasterDrugAction(3050, {
+      trade_name: 'Drug 3050',
+      official_price: 10,
+      large_to_medium: 2,
+      medium_to_small: -5,
+    });
+    expect(update).toMatchObject({ success: false, error: expect.stringContaining('تحويل') });
+    expect(mockDb.prepare('SELECT large_to_medium, medium_to_small FROM master_drugs WHERE id = 3050').get()).toEqual(before);
+  });
+
+  it('requires conversion permission to rename an existing unit hierarchy', async () => {
+    insertUserAndDrug(3051);
+    mockDb.prepare(`
+      UPDATE master_drugs
+      SET large_unit='Box', medium_unit='Strip', small_unit='Tablet', large_to_medium=3, medium_to_small=10
+      WHERE id=3051
+    `).run();
+    mockConversionPermission = false;
+
+    const result = await updateMasterDrugAction(3051, {
+      trade_name: 'Drug 3051',
+      official_price: 10,
+      large_unit: 'Bottle',
+      medium_unit: 'Strip',
+      small_unit: 'Tablet',
+      large_to_medium: 3,
+      medium_to_small: 10,
+    });
+
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining('تحويل') });
+    expect(mockDb.prepare('SELECT large_unit, medium_unit, small_unit FROM master_drugs WHERE id=3051').get()).toEqual({
+      large_unit: 'Box', medium_unit: 'Strip', small_unit: 'Tablet',
+    });
+  });
+
+  it('rechecks conversion permission against the transactional row before a stale save can overwrite it', async () => {
+    insertUserAndDrug(3052);
+    mockDb.prepare(`
+      UPDATE master_drugs
+      SET large_unit='Box', medium_unit='Strip', small_unit='Tablet', large_to_medium=3, medium_to_small=10
+      WHERE id=3052
+    `).run();
+    mockConversionPermission = false;
+
+    const { dbTransaction } = jest.requireMock('@/lib/db/tauri') as { dbTransaction: jest.Mock };
+    dbTransaction.mockImplementationOnce(async (callback: any) => {
+      // Simulate an authorized concurrent conversion edit after the action's
+      // initial read but before its write transaction begins.
+      mockDb.prepare(`
+        UPDATE master_drugs
+        SET large_unit='Bottle', large_to_medium=4
+        WHERE id=3052
+      `).run();
+      mockDb.exec('BEGIN IMMEDIATE');
+      try {
+        const result = await callback(mockCreateSqliteTransactionDb(mockDb));
+        mockDb.exec('COMMIT');
+        return result;
+      } catch (error) {
+        mockDb.exec('ROLLBACK');
+        throw error;
+      }
+    });
+
+    const result = await updateMasterDrugAction(3052, {
+      trade_name: 'Drug 3052 renamed',
+      official_price: 10,
+      large_unit: 'Box',
+      medium_unit: 'Strip',
+      small_unit: 'Tablet',
+      large_to_medium: 3,
+      medium_to_small: 10,
+    });
+
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining('تحويل') });
+    expect(mockDb.prepare(`
+      SELECT trade_name, large_unit, large_to_medium
+      FROM master_drugs WHERE id=3052
+    `).get()).toEqual({ trade_name: 'Drug 3052', large_unit: 'Bottle', large_to_medium: 4 });
+  });
+
+  it('preserves an existing conversion hierarchy on partial edits without conversion permission', async () => {
+    insertUserAndDrug(3053);
+    mockDb.prepare(`
+      UPDATE master_drugs
+      SET has_expiry=0, large_unit='Box', medium_unit='Strip', small_unit='Tablet', large_to_medium=3, medium_to_small=10
+      WHERE id=3053
+    `).run();
+    mockConversionPermission = false;
+
+    const result = await updateMasterDrugAction(3053, {
+      trade_name: 'Drug 3053 renamed',
+      official_price: 12,
+    });
+
+    expect(result).toEqual({ success: true });
+    expect(mockDb.prepare(`
+      SELECT trade_name, official_price, has_expiry, large_unit, medium_unit, small_unit, large_to_medium, medium_to_small
+      FROM master_drugs WHERE id=3053
+    `).get()).toEqual({
+      trade_name: 'Drug 3053 renamed',
+      official_price: 12,
+      has_expiry: 0,
+      large_unit: 'Box',
+      medium_unit: 'Strip',
+      small_unit: 'Tablet',
+      large_to_medium: 3,
+      medium_to_small: 10,
+    });
   });
 
   it.each(['add','update'])('allows catalog %s past an exhausted batch alias without changing the old drug', async operation => {

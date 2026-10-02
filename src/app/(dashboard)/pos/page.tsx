@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, forwardRef, useImperativeHandle, useMemo, 
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useBarcodeScanner } from '@/hooks/useBarcodeScanner';
 import { toast, Toaster } from 'react-hot-toast';
-import { ShoppingCart, Search, User, X, Loader2, FileText, Clock, Plus, Printer, Trash2, Maximize2, Minimize2, Calculator, BarChart3, RotateCcw, PlusCircle, Settings, Save, Info, ArrowLeftRight } from 'lucide-react';
+import { ShoppingCart, Search, User, X, Loader2, FileText, Clock, Plus, Trash2, Maximize2, Minimize2, Calculator, BarChart3, RotateCcw, PlusCircle, Settings, Save, Info, ArrowLeftRight } from 'lucide-react';
 import nextDynamic from 'next/dynamic';
 import { useHotkeys } from 'react-hotkeys-hook';
 
@@ -15,6 +15,7 @@ const ReturnsClient = nextDynamic(() => import('@/components/returns/ReturnsClie
 const DraftsModal = nextDynamic(() => import('@/components/pos/DraftsModal'), { ssr: false });
 const StockWarningModal = nextDynamic(() => import('@/components/pos/StockWarningModal'), { ssr: false });
 const PosDrawerHandoverModal = nextDynamic(() => import('@/components/pos/PosDrawerHandoverModal'), { ssr: false });
+const AddPatientModal = nextDynamic(() => import('@/components/AddPatientModal'), { ssr: false });
 import { getCurrentUserAction } from '@/app/actions-client/auth';
 import { addToShortagesAction } from '@/app/actions-client/shortages';
 import { 
@@ -29,7 +30,9 @@ import { checkDrugInteractions } from '@/app/actions-client/interactions';
 import AccessDenied from '@/components/AccessDenied';
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { usePOSStore } from '@/store/usePOSStore';
-import { subscribeInventoryChanges } from '@/lib/inventory/refresh';
+import { subscribeDrugIdentityChanges, subscribeInventoryChanges } from '@/lib/inventory/refresh';
+import { EGP_PER_REDEEMED_POINT, MIN_REDEEM_POINTS, maxRedeemablePoints } from '@/lib/loyalty/policy';
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap';
 
 
 
@@ -98,8 +101,18 @@ interface Patient {
   wallet_balance?: number;
   opening_balance?: number;
   outstanding_balance?: number;
+  points_balance?: number;
   payment_method?: 'cash' | 'credit' | 'visa' | 'wallet';
 }
+
+const PAYMENT_METHODS = [
+  { id: 'cash', label: 'كاش', icon: '💵', selectedClass: 'bg-emerald-500 text-white border-emerald-600 shadow-lg' },
+  { id: 'credit', label: 'آجل', icon: '💳', selectedClass: 'bg-blue-500 text-white border-blue-600 shadow-lg' },
+  { id: 'wallet', label: 'محفظة', icon: '👛', selectedClass: 'bg-purple-500 text-white border-purple-600 shadow-lg' },
+  { id: 'visa', label: 'فيزا', icon: '🏧', selectedClass: 'bg-indigo-500 text-white border-indigo-600 shadow-lg' },
+  { id: 'check', label: 'شيك', icon: '🧾', selectedClass: 'bg-amber-500 text-white border-amber-600 shadow-lg' },
+  { id: 'delivery', label: 'توصيل', icon: '🛵', selectedClass: 'bg-rose-500 text-white border-rose-600 shadow-lg' },
+] as const;
 
 export interface POSSearchSidebarRef {
   clear: () => void;
@@ -294,11 +307,11 @@ const POSSearchSidebar = memo(forwardRef<POSSearchSidebarRef, POSSearchSidebarPr
               <div className="min-w-0 flex-1">
                 <p className="font-bold text-xs truncate text-slate-900 dark:text-white">{drug.trade_name}</p>
                 {searchByActive && drug.active_ingredient && (
-                  <p className="text-[9px] text-blue-600 dark:text-blue-400 font-semibold truncate">{drug.active_ingredient}</p>
+                  <p className="text-[11px] text-blue-600 dark:text-blue-400 font-semibold truncate">{drug.active_ingredient}</p>
                 )}
                 <div className="flex items-center gap-2 mt-0.5">
-                  <p className="text-[9px] text-slate-400 font-black">{showStock ? `${drug.total_stock} متاح | ` : ''}{drug.min_price} ج.م</p>
-                  {drug.category && <span className="text-[8px] bg-slate-100 dark:bg-slate-700 px-1 rounded text-slate-500">{drug.category}</span>}
+                  <p className="text-[11px] text-slate-500 font-black">{showStock ? `${drug.total_stock} متاح | ` : ''}{drug.min_price} ج.م</p>
+                  {drug.category && <span className="text-[10px] bg-slate-100 dark:bg-slate-700 px-1 rounded text-slate-500">{drug.category}</span>}
                 </div>
               </div>
               {drug.is_expired ? <X className="w-4 h-4 text-red-500" /> : <Plus className="w-4 h-4 text-emerald-500" />}
@@ -336,9 +349,9 @@ export default function POSPage() {
   const [patientSearchError, setPatientSearchError] = useState(false);
   const [patientSearchRetry, setPatientSearchRetry] = useState(0);
   const patientSearchRequestRef = useRef(0);
+  const [pointsToRedeem, setPointsToRedeem] = useState(0);
 
   const [completedInvoice, setCompletedInvoice] = useState<any>(null);
-  const [autoPrintReceipt, setAutoPrintReceipt] = useState(false);
   const [currentUserName, setCurrentUserName] = useState('صيدلي');
   const [currentUser, setCurrentUser] = useState<{ id: string; pharmacy_id: string } | null>(null);
   const [isAllowed, setIsAllowed] = useState(false);
@@ -353,6 +366,7 @@ export default function POSPage() {
   const [canHandover, setCanHandover] = useState(false);
   const [canViewReturns, setCanViewReturns] = useState(false);
   const [canViewRestock, setCanViewRestock] = useState(false);
+  const [canViewPatients, setCanViewPatients] = useState(false);
   const [maxInvoiceDiscountPercent, setMaxInvoiceDiscountPercent] = useState(0);
   const [isUserLoading, setIsUserLoading] = useState(true);
   const [userLoadError, setUserLoadError] = useState(false);
@@ -360,10 +374,26 @@ export default function POSPage() {
   const [showInteractionModal, setShowInteractionModal] = useState(false);
   const [isCheckingInteractions, setIsCheckingInteractions] = useState(false);
 
+  useEffect(() => subscribeDrugIdentityChanges(({ sourceIds }) => {
+    if (!sourceIds.length) return;
+    const staleIds = new Set(sourceIds.map(id => String(id)));
+    const currentCart = usePOSStore.getState().cart;
+    const removedCount = currentCart.filter(item => staleIds.has(String(item.drug_id))).length;
+    if (!removedCount) return;
+
+    setCart(previous => previous.filter(item => !staleIds.has(String(item.drug_id))));
+    toast.error(
+      removedCount === 1
+        ? 'تم دمج صنف موجود في السلة. أعد إضافته لاستخدام بيانات الصنف المحدثة.'
+        : `تم دمج ${removedCount} أصناف موجودة في السلة. أعد إضافتها لاستخدام البيانات المحدثة.`,
+    );
+  }), [setCart]);
+
   // Drafts State
   const [drafts, setDrafts] = useState<any[]>([]);
   const [showDraftsModal, setShowDraftsModal] = useState(false);
   const [isLoadingDrafts, setIsLoadingDrafts] = useState(false);
+  const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
 
   // Selected Row for deletion
   const [selectedRowCartId, setSelectedRowCartId] = useState<string | null>(null);
@@ -372,8 +402,10 @@ export default function POSPage() {
   const [showStockWarning, setShowStockWarning] = useState<DrugItem | null>(null);
   const [showReturnModal, setShowReturnModal] = useState(false);
   const [showHandoverModal, setShowHandoverModal] = useState(false);
+  const [showAddPatientModal, setShowAddPatientModal] = useState(false);
   const [showDrugDetails, setShowDrugDetails] = useState<string | number | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number, drugId: string | number, cartItemId: string } | null>(null);
+  const returnDialogRef = useDialogFocusTrap<HTMLDivElement>(showReturnModal);
 
   // Dynamic Units
   const [unitsList, setUnitsList] = useState<{name_ar: string}[]>([]);
@@ -401,11 +433,13 @@ export default function POSPage() {
       const qtyInput = document.querySelector(`[data-nav="qty-input-${index}"]`) as HTMLElement;
       const priceInput = document.querySelector(`[data-nav="price-input-${index}"]`) as HTMLElement;
       const discountInput = document.querySelector(`[data-nav="discount-input-${index}"]`) as HTMLElement;
+      const removeButton = document.querySelector(`[data-nav="remove-item-${index}"]`) as HTMLElement;
       
       if (unitSelect) elements.push(unitSelect);
       if (qtyInput) elements.push(qtyInput);
       if (priceInput) elements.push(priceInput);
       if (discountInput) elements.push(discountInput);
+      if (removeButton) elements.push(removeButton);
     });
     
     // 3. Billing inputs
@@ -504,6 +538,7 @@ export default function POSPage() {
       setCanHandover(hasUserPermissionSync(userObj, 'acc_can_view_handover'));
       setCanViewReturns(hasUserPermissionSync(userObj, 'can_view_returns'));
       setCanViewRestock(hasUserPermissionSync(userObj, 'can_view_restock'));
+      setCanViewPatients(hasUserPermissionSync(userObj, 'can_view_patients'));
       setMaxInvoiceDiscountPercent(permissionNumber(userObj, 'max_invoice_discount_percent'));
 
       const res = await getCurrentUserAction();
@@ -582,17 +617,48 @@ export default function POSPage() {
     };
   }, [patientSearch, patientSearchRetry]);
 
-  // Fetch full patient info when selectedPatient changes and has missing fields (like credit_limit)
-  useEffect(() => {
-    if (selectedPatient && selectedPatient.credit_limit === undefined) {
-      import('@/app/actions-client/patients').then(async (mod) => {
-        const res = await mod.getPatientProfileAction(selectedPatient.id);
-        if (res.success && res.data) {
-          setSelectedPatient(prev => prev && prev.id === res.data.id ? { ...prev, ...res.data } : prev);
-        }
-      });
+  const loadAllPatients = useCallback(async () => {
+    const requestId = ++patientSearchRequestRef.current;
+    setPatientSearchError(false);
+    try {
+      const { searchPatientsAction } = await import('@/app/actions-client/patients');
+      const res = await searchPatientsAction('', true);
+      if (requestId !== patientSearchRequestRef.current) return;
+      if (res.success) {
+        setPatientResults(res.data || []);
+      } else {
+        setPatientResults([]);
+        setPatientSearchError(true);
+      }
+    } catch (error) {
+      if (requestId !== patientSearchRequestRef.current) return;
+      console.error('Load all patients error:', error);
+      setPatientResults([]);
+      setPatientSearchError(true);
     }
-  }, [selectedPatient, setSelectedPatient]);
+  }, []);
+
+  // Refresh checkout-safe patient values whenever a persisted/draft selection is restored.
+  // Loyalty, wallet and receivable balances can change while the POS draft remains persisted,
+  // so a present (including zero) field is not proof that the snapshot is current.
+  useEffect(() => {
+    let active = true;
+    const patientId = selectedPatient?.id;
+    if (!patientId) return () => { active = false; };
+
+    void import('@/app/actions-client/patients').then(async (mod) => {
+      const res = await mod.getPatientForPosAction(patientId);
+      if (active && res.success && res.data) {
+        setSelectedPatient(prev => prev && prev.id === res.data.id ? { ...prev, ...res.data } : prev);
+      }
+    });
+
+    return () => { active = false; };
+  }, [selectedPatient?.id, setSelectedPatient]);
+
+  useEffect(() => {
+    setPointsToRedeem(0);
+  }, [selectedPatient?.id]);
 
   const addToCart = useCallback((drug: DrugItem) => {
     if (drug.is_expired) {
@@ -746,6 +812,7 @@ export default function POSPage() {
   const resetCart = useCallback(() => {
     if (cart.length > 0 && !confirm('هل أنت متأكد من مسح السلة وبدء فاتورة جديدة؟')) return;
     resetPOS();
+    setActiveDraftId(null);
   }, [cart, resetPOS]);
 
   const hasInvalidStockQuantity = (() => {
@@ -823,6 +890,10 @@ export default function POSPage() {
 
   const handleCheckout = async (status: 'completed' | 'draft' = 'completed', force = false) => {
     if (cart.length === 0 || checkoutLockRef.current) return;
+    if (status === 'completed' && paymentMethod === 'check' && !checkNumber.trim()) {
+      toast.error('يرجى إدخال رقم الشيك');
+      return;
+    }
     checkoutLockRef.current = true;
     setIsProcessing(true);
 
@@ -835,7 +906,6 @@ export default function POSPage() {
         
         const safetyRes = await checkDrugInteractions(ingredients, selectedPatient?.id);
         if (!safetyRes.success) {
-          setAutoPrintReceipt(false);
           toast.error(safetyRes.error || 'فشل فحص التفاعلات الدوائية');
           return;
         }
@@ -871,10 +941,12 @@ export default function POSPage() {
         items: formattedCart,
         patient_id: selectedPatient?.id,
         payment_method: paymentMethod,
-        check_number: paymentMethod === 'check' ? checkNumber : undefined,
+        check_number: paymentMethod === 'check' ? checkNumber.trim() : undefined,
         status,
         total_discount: totalDiscount + percentDiscountValue,
         additional_fees: additionalFees,
+        points_to_redeem: status === 'completed' ? pointsToRedeem : 0,
+        source_draft_id: activeDraftId,
       });
 
       if (result.success) {
@@ -883,8 +955,10 @@ export default function POSPage() {
         if (status === 'completed' && result.data) {
           const invoice = {
             id: result.data.sale_id,
-            total_amount: total,
-            discount_amount: totalDiscount + percentDiscountValue,
+            total_amount: result.data.total_amount,
+            discount_amount: totalDiscount + percentDiscountValue + Number(result.data.loyalty_discount_amount || 0),
+            points_redeemed: Number(result.data.points_redeemed || 0),
+            loyalty_discount_amount: Number(result.data.loyalty_discount_amount || 0),
             additional_fees: additionalFees,
             created_at: result.data.created_at,
             payment_method: paymentMethod,
@@ -905,13 +979,12 @@ export default function POSPage() {
         }
         
         resetPOS();
+        setActiveDraftId(null);
       } else {
-        setAutoPrintReceipt(false);
         const checkoutError = result.error || 'فشلت العملية';
         toast.error(checkoutError);
       }
     } catch (error) {
-      setAutoPrintReceipt(false);
       console.error('Checkout error:', error);
       toast.error('فشلت العملية');
     } finally {
@@ -923,7 +996,6 @@ export default function POSPage() {
   useHotkeys('ctrl+s', event => {
     event.preventDefault();
     if (cart.length === 0 || isProcessing) return;
-    setAutoPrintReceipt(true);
     handleCheckout('completed');
   }, { enableOnFormTags: true }, [cart.length, isProcessing, handleCheckout]);
 
@@ -982,6 +1054,7 @@ export default function POSPage() {
     setTotalDiscount(draft.discount_amount || 0);
     setDiscountPercent(0);
     setAdditionalFees(draft.additional_fees || 0);
+    setActiveDraftId(String(draft.id));
     setShowDraftsModal(false);
     toast.success('تم تحميل المسودة');
   };
@@ -1019,9 +1092,32 @@ export default function POSPage() {
     return (subtotal * discountPercent) / 100;
   }, [subtotal, discountPercent]);
 
+  const eligibleMerchandiseAfterManualDiscount = useMemo(() => {
+    return Math.max(0, subtotal - totalDiscount - percentDiscountValue);
+  }, [subtotal, totalDiscount, percentDiscountValue]);
+
+  const maximumRedeemablePoints = useMemo(() => {
+    return selectedPatient
+      ? maxRedeemablePoints(Number(selectedPatient.points_balance || 0), eligibleMerchandiseAfterManualDiscount)
+      : 0;
+  }, [selectedPatient, eligibleMerchandiseAfterManualDiscount]);
+
+  useEffect(() => {
+    setPointsToRedeem((current) => {
+      if (current <= 0) return 0;
+      if (maximumRedeemablePoints < MIN_REDEEM_POINTS) return 0;
+      const clamped = Math.min(current, maximumRedeemablePoints);
+      return clamped < MIN_REDEEM_POINTS ? 0 : clamped;
+    });
+  }, [maximumRedeemablePoints]);
+
+  const loyaltyDiscountValue = useMemo(() => {
+    return pointsToRedeem * EGP_PER_REDEEMED_POINT;
+  }, [pointsToRedeem]);
+
   const total = useMemo(() => {
-    return subtotal - totalDiscount - percentDiscountValue + additionalFees;
-  }, [subtotal, totalDiscount, percentDiscountValue, additionalFees]);
+    return Math.max(0, subtotal - totalDiscount - percentDiscountValue - loyaltyDiscountValue + additionalFees);
+  }, [subtotal, totalDiscount, percentDiscountValue, loyaltyDiscountValue, additionalFees]);
 
   const handleContextMenu = (e: React.MouseEvent, drugId: string | number, cartItemId: string) => {
     e.preventDefault();
@@ -1098,14 +1194,14 @@ export default function POSPage() {
   }
 
   return (
-    <div className="flex flex-1 min-h-0 gap-3 font-sans" dir="rtl">
+    <div className="flex flex-1 min-h-0 gap-2 xl:gap-3 font-sans" dir="rtl">
       <Toaster position="top-center" />
 
       {/* LEFT SIDEBAR ACTIONS */}
       <div className="w-20 flex flex-col gap-2 bg-white dark:bg-slate-900 p-2 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xl overflow-y-auto shrink-0">
         <SidebarButton icon={Plus} label="جديد" color="bg-emerald-500" onClick={resetCart} />
         {canSaveDraft && <SidebarButton icon={Save} label="حفظ" color="bg-blue-500" onClick={() => handleCheckout('draft')} />}
-        <SidebarButton icon={Printer} label="طباعة" color="bg-indigo-500" onClick={() => { setAutoPrintReceipt(true); handleCheckout('completed'); }} />
+        <SidebarButton icon={ShoppingCart} label="بيع" color="bg-indigo-500" onClick={() => handleCheckout('completed')} />
         <SidebarButton 
           icon={ShieldAlert} 
           label="فحص التداخلات" 
@@ -1150,12 +1246,14 @@ export default function POSPage() {
         {canViewReturns && <SidebarButton icon={RotateCcw} label="استرجاع" color="bg-rose-500" onClick={() => setShowReturnModal(true)} />}
         {canHandover && <SidebarButton icon={ArrowLeftRight} label="تسليم الدرج" color="bg-blue-600" onClick={() => setShowHandoverModal(true)} />}
         <div className="h-px bg-slate-100 dark:bg-slate-800 my-1" />
-        <SidebarButton icon={User} label="عميل جديد" color="bg-purple-500" onClick={() => setPatientSearch('')} />
+        {canViewPatients && (
+          <SidebarButton icon={User} label="عميل جديد" color="bg-purple-500" onClick={() => setShowAddPatientModal(true)} />
+        )}
         <SidebarButton icon={PlusCircle} label="إضافة صنف" color="bg-slate-700" onClick={() => { searchSidebarRef.current?.clear(); searchSidebarRef.current?.focus(); }} />
         <div className="mt-auto pt-3 border-t border-slate-100 dark:border-slate-800">
           <SidebarButton icon={Calculator} label="آلة حاسبة" color="bg-slate-600" onClick={() => window.open('https://www.google.com/search?q=calculator', '_blank')} />
           <SidebarButton icon={BarChart3} label="تقارير" color="bg-slate-600" onClick={() => router.push('/reports')} />
-          <SidebarButton icon={Settings} label="خيارات" color="bg-slate-600" />
+          <SidebarButton icon={Settings} label="خيارات" color="bg-slate-600" onClick={() => router.push('/settings')} />
         </div>
       </div>
       
@@ -1163,17 +1261,17 @@ export default function POSPage() {
       <div className="flex-1 flex flex-col gap-3 min-w-0 min-h-0">
         
         {/* Top Invoice Info Header */}
-        <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-lg grid grid-cols-4 gap-4">
+        <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-lg grid grid-cols-2 xl:grid-cols-4 gap-3 xl:gap-4">
           <div className="col-span-1 space-y-1">
-            <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider">بيانات العميل</label>
+            <div className="text-xs font-black text-slate-500">بيانات العميل</div>
             {selectedPatient ? (
               <div className="space-y-1">
                 <div className="flex items-center justify-between bg-purple-50 dark:bg-purple-900/20 p-2 rounded-xl border border-purple-100 dark:border-purple-800">
                   <span className="font-bold text-xs text-purple-700 dark:text-purple-300 break-words leading-relaxed" title={selectedPatient.full_name}>👤 {selectedPatient.full_name}</span>
-                  <button onClick={() => { setSelectedPatient(null); if (paymentMethod === 'credit' || paymentMethod === 'wallet') setPaymentMethod('cash'); }} className="text-purple-400 hover:text-purple-900 font-bold px-1 text-sm shrink-0">×</button>
+                  <button type="button" aria-label={`إلغاء اختيار العميل ${selectedPatient.full_name}`} onClick={() => { setSelectedPatient(null); if (paymentMethod === 'credit' || paymentMethod === 'wallet') setPaymentMethod('cash'); }} className="text-purple-400 hover:text-purple-900 font-bold px-1 text-sm shrink-0">×</button>
                 </div>
                 {paymentMethod === 'credit' && (
-                  <div className="text-[10px] font-black px-1 flex justify-between">
+                  <div className="text-[11px] font-black px-1 flex justify-between">
                     <span className="text-slate-400">الائتمان المتبقي:</span>
                     <span className={((selectedPatient.credit_limit || 0) - (selectedPatient.outstanding_balance || 0)) < total ? "text-rose-500 font-bold" : "text-emerald-600 font-bold"}>
                       {((selectedPatient.credit_limit || 0) - (selectedPatient.outstanding_balance || 0)).toFixed(2)} ج.م
@@ -1181,11 +1279,45 @@ export default function POSPage() {
                   </div>
                 )}
                 {paymentMethod === 'wallet' && (
-                  <div className="text-[10px] font-black px-1 flex justify-between">
+                  <div className="text-[11px] font-black px-1 flex justify-between">
                     <span className="text-slate-400">رصيد المحفظة:</span>
                     <span className={(selectedPatient.wallet_balance || 0) < total ? "text-rose-500 font-bold" : "text-emerald-600 font-bold"}>
                       {Number(selectedPatient.wallet_balance || 0).toFixed(2)} ج.م
                     </span>
+                  </div>
+                )}
+                <div className="text-[11px] font-black px-1 flex items-center justify-between gap-2">
+                  <span className="text-slate-400">نقاط الولاء:</span>
+                  <span className="text-amber-600 dark:text-amber-400">{Math.floor(Number(selectedPatient.points_balance || 0))}</span>
+                </div>
+                {Number(selectedPatient.points_balance || 0) >= MIN_REDEEM_POINTS && maximumRedeemablePoints >= MIN_REDEEM_POINTS && (
+                  <div className="grid grid-cols-[1fr_auto] items-end gap-2 rounded-lg bg-amber-50/70 dark:bg-amber-900/10 p-2 border border-amber-100 dark:border-amber-900/30">
+                    <label className="text-[11px] font-black text-amber-700 dark:text-amber-300">
+                      نقاط مستخدمة
+                      <input
+                        aria-label="نقاط الولاء المستخدمة"
+                        type="number"
+                        min={0}
+                        max={maximumRedeemablePoints}
+                        step={1}
+                        value={pointsToRedeem}
+                        onChange={(event) => {
+                          const requested = Math.max(0, Math.floor(Number(event.target.value) || 0));
+                          setPointsToRedeem(Math.min(maximumRedeemablePoints, requested));
+                        }}
+                        className="mt-1 w-full rounded-md border border-amber-200 bg-white dark:bg-slate-800 dark:border-amber-900/40 px-2 py-1 text-center text-xs font-black text-slate-800 dark:text-white"
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setPointsToRedeem(pointsToRedeem > 0 ? 0 : maximumRedeemablePoints)}
+                      className="rounded-md bg-amber-500 px-2 py-1.5 text-[11px] font-black text-white hover:bg-amber-600"
+                    >
+                      {pointsToRedeem > 0 ? 'إلغاء' : 'استخدام الحد الأقصى'}
+                    </button>
+                    <p className="col-span-2 text-[11px] font-bold text-amber-700/90 dark:text-amber-300/90">
+                      الحد الأدنى {MIN_REDEEM_POINTS} نقطة · الخصم الحالي {loyaltyDiscountValue.toFixed(2)} ج.م
+                    </p>
                   </div>
                 )}
               </div>
@@ -1193,21 +1325,22 @@ export default function POSPage() {
               <div className="relative">
                 <input 
                   type="text" 
-                  placeholder="بحث عن عميل (نقرتين لعرض الكل)..."
+                  aria-label="البحث عن عميل"
+                  placeholder="بحث باسم أو هاتف العميل..."
                   value={patientSearch}
                   onChange={(e) => setPatientSearch(e.target.value)}
-                  onDoubleClick={async () => {
-                    const requestId = ++patientSearchRequestRef.current;
-                    const { searchPatientsAction } = await import('@/app/actions-client/patients');
-                    const res = await searchPatientsAction('', true);
-                    if (requestId === patientSearchRequestRef.current && res.success && res.data) {
-                      setPatientResults(res.data);
-                    }
-                  }}
+                  onDoubleClick={() => void loadAllPatients()}
                   data-nav="patient-input"
                   onKeyDown={handleInputKeyDown}
-                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-100 dark:border-slate-700 dark:text-white rounded-xl px-3 py-2 text-xs font-bold outline-none focus:ring-2 focus:ring-purple-500"
+                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-100 dark:border-slate-700 dark:text-white rounded-xl pr-3 pl-20 py-2 text-xs font-bold outline-none focus:ring-2 focus:ring-purple-500"
                 />
+                <button
+                  type="button"
+                  onClick={() => void loadAllPatients()}
+                  className="absolute left-2 top-1/2 -translate-y-1/2 rounded-lg px-2 py-1 text-[11px] font-black text-purple-700 dark:text-purple-300 hover:bg-purple-100 dark:hover:bg-purple-900/30"
+                >
+                  عرض الكل
+                </button>
                 {(patientResults.length > 0 || (patientSearch.length >= 2)) && (
                   <div className="absolute top-full left-0 right-0 max-h-64 overflow-y-auto bg-white dark:bg-slate-800 shadow-2xl rounded-2xl mt-2 z-50 border border-slate-100 dark:border-slate-700 p-2">
                     {patientSearchError ? (
@@ -1238,7 +1371,7 @@ export default function POSPage() {
                           <span className="font-bold text-slate-800 dark:text-white break-words" title={p.full_name}>
                             👤 {p.full_name} {p.phone ? `(${p.phone})` : ''}
                           </span>
-                          <span className={`shrink-0 text-[10px] ${Number(p.outstanding_balance || 0) > 0 ? 'text-rose-600 dark:text-rose-400 font-black' : 'text-emerald-600 dark:text-emerald-400 font-bold'}`}>
+                          <span className={`shrink-0 text-[11px] ${Number(p.outstanding_balance || 0) > 0 ? 'text-rose-600 dark:text-rose-400 font-black' : 'text-emerald-600 dark:text-emerald-400 font-bold'}`}>
                             مديونية: {Math.max(0, Number(p.outstanding_balance || 0)).toFixed(2)} ج.م
                           </span>
                         </span>
@@ -1251,21 +1384,17 @@ export default function POSPage() {
           </div>
 
           <div className="col-span-2 space-y-1">
-             <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider">نوع الفاتورة (طريقة الدفع)</label>
-             <div className="flex gap-2">
-                {[
-                  { id: 'cash', label: 'كاش', icon: '💵', color: 'emerald' },
-                  { id: 'credit', label: 'آجل', icon: '💳', color: 'blue' },
-                  { id: 'wallet', label: 'محفظة', icon: '👛', color: 'purple' },
-                  { id: 'visa', label: 'فيزا', icon: '🏧', color: 'indigo' },
-                  { id: 'delivery', label: 'توصيل', icon: '🛵', color: 'rose' }
-                ].filter(method => method.id !== 'credit' || canSellCredit).map(method => (
+             <div id="pos-payment-method-label" className="text-xs font-black text-slate-500">نوع الفاتورة (طريقة الدفع)</div>
+             <div role="group" aria-labelledby="pos-payment-method-label" className="flex gap-2">
+                {PAYMENT_METHODS.filter(method => method.id !== 'credit' || canSellCredit).map(method => (
                   <button 
+                    type="button"
                     key={method.id}
                     onClick={() => setPaymentMethod(method.id as any)}
+                    aria-pressed={paymentMethod === method.id}
                     className={`flex-1 py-2 rounded-xl font-black text-xs transition-all border ${
                       paymentMethod === method.id 
-                        ? `bg-${method.color}-500 text-white border-${method.color}-600 shadow-lg` 
+                        ? method.selectedClass
                         : 'bg-white dark:bg-slate-800 text-slate-600 border-slate-100 dark:border-slate-800'
                     }`}
                   >
@@ -1273,12 +1402,25 @@ export default function POSPage() {
                   </button>
                 ))}
              </div>
+             {paymentMethod === 'check' && (
+               <label className="block space-y-1">
+                 <span className="text-xs font-black text-slate-500">رقم الشيك</span>
+                 <input
+                   type="text"
+                   aria-label="رقم الشيك"
+                   value={checkNumber}
+                   onChange={(e) => setCheckNumber(e.target.value)}
+                   className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-100 dark:border-slate-700 p-2 rounded-xl text-xs font-black"
+                 />
+               </label>
+             )}
           </div>
 
           <div className="col-span-1 grid grid-cols-2 gap-3">
              <div className="space-y-1">
-                <label className="text-[10px] font-black text-slate-400">م. إضافية</label>
+                <label htmlFor="pos-additional-fees" className="text-[11px] font-black text-slate-500">م. إضافية</label>
                 <input 
+                  id="pos-additional-fees"
                   type="number"
                   value={additionalFees}
                   onChange={(e) => setAdditionalFees(Number(e.target.value))}
@@ -1288,8 +1430,9 @@ export default function POSPage() {
                 />
              </div>
              <div className="space-y-1">
-                <label className="text-[10px] font-black text-slate-400">خصم %</label>
+                <label htmlFor="pos-discount-percent" className="text-[11px] font-black text-slate-500">خصم %</label>
                 <input 
+                  id="pos-discount-percent"
                   type="number"
                   value={discountPercent}
                   min={0}
@@ -1310,16 +1453,16 @@ export default function POSPage() {
             <table className="w-full text-right border-collapse min-w-full">
               <thead className="border-b border-slate-200 dark:border-slate-700">
                 <tr>
-                  <th className="sticky top-0 bg-slate-50 dark:bg-slate-800 z-10 px-1 py-2 text-[9px] font-black text-slate-500 uppercase w-10 text-center">ك. الصنف</th>
-                  <th className="sticky top-0 bg-slate-50 dark:bg-slate-800 z-10 px-1.5 py-2 text-[9px] font-black text-slate-500 uppercase text-right">أسم الصنف</th>
-                  <th className="sticky top-0 bg-slate-50 dark:bg-slate-800 z-10 px-1 py-2 text-[9px] font-black text-slate-500 uppercase w-12 text-center">الوحدة</th>
-                  <th className="sticky top-0 bg-slate-50 dark:bg-slate-800 z-10 px-1 py-2 text-[9px] font-black text-slate-500 uppercase w-16 text-center">ت. الصلاحية</th>
-                  <th className="sticky top-0 bg-slate-50 dark:bg-slate-800 z-10 px-1 py-2 text-[9px] font-black text-slate-500 uppercase w-20 text-center">الكمية</th>
-                  <th className="sticky top-0 bg-slate-50 dark:bg-slate-800 z-10 px-1 py-2 text-[9px] font-black text-slate-500 uppercase w-12 text-center">س. البيع</th>
-                  <th className="sticky top-0 bg-slate-50 dark:bg-slate-800 z-10 px-1 py-2 text-[9px] font-black text-slate-500 uppercase w-10 text-center">الرصيد</th>
-                  <th className="sticky top-0 bg-slate-50 dark:bg-slate-800 z-10 px-1 py-2 text-[9px] font-black text-slate-500 uppercase w-10 text-center">حد الطلب</th>
-                  <th className="sticky top-0 bg-slate-50 dark:bg-slate-800 z-10 px-1 py-2 text-[9px] font-black text-slate-500 uppercase w-12 text-center">خصم</th>
-                  <th className="sticky top-0 bg-slate-50 dark:bg-slate-800 z-10 px-1 py-2 text-[9px] font-black text-slate-500 uppercase text-left w-16">الإجمالي</th>
+                  <th className="sticky top-0 bg-slate-50 dark:bg-slate-800 z-10 px-1 py-2 text-[11px] font-black text-slate-600 w-10 text-center">ك. الصنف</th>
+                  <th className="sticky top-0 bg-slate-50 dark:bg-slate-800 z-10 px-1.5 py-2 text-[11px] font-black text-slate-600 text-right">اسم الصنف</th>
+                  <th className="sticky top-0 bg-slate-50 dark:bg-slate-800 z-10 px-1 py-2 text-[11px] font-black text-slate-600 w-12 text-center">الوحدة</th>
+                  <th className="sticky top-0 bg-slate-50 dark:bg-slate-800 z-10 px-1 py-2 text-[11px] font-black text-slate-600 w-16 text-center">الصلاحية</th>
+                  <th className="sticky top-0 bg-slate-50 dark:bg-slate-800 z-10 px-1 py-2 text-[11px] font-black text-slate-600 w-20 text-center">الكمية</th>
+                  <th className="sticky top-0 bg-slate-50 dark:bg-slate-800 z-10 px-1 py-2 text-[11px] font-black text-slate-600 w-12 text-center">س. البيع</th>
+                  <th className="sticky top-0 bg-slate-50 dark:bg-slate-800 z-10 px-1 py-2 text-[11px] font-black text-slate-600 w-10 text-center">الرصيد</th>
+                  <th className="sticky top-0 bg-slate-50 dark:bg-slate-800 z-10 px-1 py-2 text-[11px] font-black text-slate-600 w-10 text-center">حد الطلب</th>
+                  <th className="sticky top-0 bg-slate-50 dark:bg-slate-800 z-10 px-1 py-2 text-[11px] font-black text-slate-600 w-12 text-center">خصم</th>
+                  <th className="sticky top-0 bg-slate-50 dark:bg-slate-800 z-10 px-1 py-2 text-[11px] font-black text-slate-600 text-left w-16">الإجمالي</th>
                   <th className="sticky top-0 bg-slate-50 dark:bg-slate-800 z-10 px-1 py-2 w-8"></th>
                 </tr>
               </thead>
@@ -1331,10 +1474,10 @@ export default function POSPage() {
                     onContextMenu={(e) => handleContextMenu(e, item.drug_id, item.id)}
                     className={`group hover:bg-slate-50/50 dark:hover:bg-slate-800/50 transition-colors cursor-pointer ${selectedRowCartId === item.id ? 'bg-blue-50/50 dark:bg-blue-900/20 ring-1 ring-inset ring-blue-500/20' : ''}`}
                   >
-                    <td className="px-1 py-2 text-[9px] font-bold text-slate-400 text-center w-10">#{item.drug_id}</td>
+                    <td className="px-1 py-2 text-[10px] font-bold text-slate-500 text-center w-10">#{item.drug_id}</td>
                     <td className="px-1.5 py-2 text-right">
                       <p className="font-bold text-xs line-clamp-1">{item.trade_name_en || item.trade_name}</p>
-                      <p className="text-[9px] text-slate-400 font-medium truncate max-w-[150px]">{item.active_ingredient}</p>
+                      <p className="text-[11px] text-slate-500 font-medium truncate max-w-[150px]">{item.active_ingredient}</p>
                     </td>
                     <td className="px-1 py-2 text-center w-12">
                       <select 
@@ -1342,7 +1485,7 @@ export default function POSPage() {
                         onChange={(e) => handleUnitChange(item.id, e.target.value)}
                         data-nav={`unit-select-${index}`}
                         onKeyDown={handleInputKeyDown}
-                        className="bg-transparent border-none text-[9px] font-black outline-none cursor-pointer text-blue-600 focus:ring-1 focus:ring-blue-500 rounded px-0.5"
+                        className="bg-transparent border-none text-[11px] font-black outline-none cursor-pointer text-blue-600 focus:ring-1 focus:ring-blue-500 rounded px-0.5"
                       >
                         <option value="large">{item.units.large || 'علبة'}</option>
                         {item.units.medium && <option value="medium">{item.units.medium}</option>}
@@ -1354,7 +1497,7 @@ export default function POSPage() {
                         <select
                           value={item.inventory_id || 'auto'}
                           onChange={(e) => handleBatchChange(item.id, e.target.value)}
-                          className="w-full bg-slate-50 dark:bg-slate-800 border-none p-1 rounded text-[9px] font-bold focus:ring-1 focus:ring-blue-500"
+                        className="w-full bg-slate-50 dark:bg-slate-800 border-none p-1 rounded text-[11px] font-bold focus:ring-1 focus:ring-blue-500"
                         >
                           <option value="auto">تلقائي ({item.nearest_expiry || '---'})</option>
                           {item.batches.map((b: any) => (
@@ -1364,7 +1507,7 @@ export default function POSPage() {
                           ))}
                         </select>
                       ) : (
-                        <span className={`text-[8px] font-bold px-1 py-0.5 rounded-full ${
+                        <span className={`text-[11px] font-bold px-1 py-0.5 rounded-full ${
                           item.nearest_expiry && new Date(item.nearest_expiry) < new Date() ? 'bg-red-100 text-red-600' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'
                         }`}>
                           {item.nearest_expiry || '---'}
@@ -1387,7 +1530,7 @@ export default function POSPage() {
                             setCart(p => p.map(i => i.id === item.id ? {...i, qty: isNaN(newQty) ? 1 : Math.min(maxQty, Math.max(1, newQty))} : i))
                           }}
                           onKeyDown={handleInputKeyDown}
-                          className="w-8 bg-transparent text-center font-bold text-xs outline-none focus:ring-1 focus:ring-blue-500 rounded p-0 text-[10px]"
+                          className="w-8 bg-transparent text-center font-bold text-xs outline-none focus:ring-1 focus:ring-blue-500 rounded p-0"
                         />
                         <button
                           tabIndex={-1}
@@ -1420,11 +1563,11 @@ export default function POSPage() {
                       )}
                     </td>
                     <td className="px-1 py-2 text-center w-10">
-                       <span className={`text-[9px] font-black ${item.total_stock <= (item.reorder_point || 0) ? 'text-red-500' : 'text-slate-400'}`}>
+                       <span className={`text-[11px] font-black ${item.total_stock <= (item.reorder_point || 0) ? 'text-red-500' : 'text-slate-500'}`}>
                         {canViewStock ? Number(stockInSelectedUnit(item).toFixed(2)) : '—'}
                        </span>
                     </td>
-                    <td className="px-1 py-2 text-center text-[9px] font-bold text-slate-400 w-10">{item.reorder_point || 0}</td>
+                    <td className="px-1 py-2 text-center text-[11px] font-bold text-slate-500 w-10">{item.reorder_point || 0}</td>
                     <td className="px-1 py-2 text-center w-12">
                       {canDiscountSaleItem ? (
                         <input
@@ -1436,18 +1579,25 @@ export default function POSPage() {
                           data-nav={`discount-input-${index}`}
                           onKeyDown={handleInputKeyDown}
                           aria-label={`خصم الصنف ${item.trade_name_en || item.trade_name}`}
-                          className="w-12 bg-slate-50 dark:bg-slate-800 border-none p-0.5 rounded text-[9px] font-black text-center text-rose-500 focus:ring-2 focus:ring-rose-500"
+                          className="w-12 bg-slate-50 dark:bg-slate-800 border-none p-0.5 rounded text-[11px] font-black text-center text-rose-500 focus:ring-2 focus:ring-rose-500"
                           placeholder="%"
                         />
                       ) : (
-                        <span className="text-[9px] font-black text-slate-400" title="تعديل خصم الصنف يتطلب صلاحية">0%</span>
+                        <span className="text-[11px] font-black text-slate-500" title="تعديل خصم الصنف يتطلب صلاحية">0%</span>
                       )}
                     </td>
                     <td className="px-1 py-2 text-left font-black text-blue-600 text-[11px] w-16">
                       {(item.price * item.qty * (1 - (item.itemDiscountPercent || 0) / 100)).toFixed(2)}
                     </td>
                     <td className="px-1 py-2 text-left w-8">
-                      <button tabIndex={-1} onClick={() => setCart(p => p.filter(i => i.id !== item.id))} className="p-1 text-red-300 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-all opacity-0 group-hover:opacity-100">
+                      <button
+                        type="button"
+                        data-nav={`remove-item-${index}`}
+                        aria-label={`حذف ${item.trade_name_en || item.trade_name} من الفاتورة`}
+                        onKeyDown={handleInputKeyDown}
+                        onClick={() => setCart(p => p.filter(i => i.id !== item.id))}
+                        className="p-1 text-red-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-colors opacity-60 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 focus:opacity-100"
+                      >
                         <Trash2 className="w-3 h-3" />
                       </button>
                     </td>
@@ -1466,21 +1616,18 @@ export default function POSPage() {
             </div>
             <div className="flex items-center gap-4">
                <div className="text-right">
-                  <p className="text-[10px] font-black text-slate-400">المبلغ الإجمالي</p>
+                  <p className="text-[11px] font-black text-slate-500">المبلغ الإجمالي</p>
                   <p className="text-2xl font-black text-emerald-500">{total.toLocaleString('en-US')} ج.م</p>
                </div>
                <button 
-                 onClick={() => {
-                   setAutoPrintReceipt(true);
-                   handleCheckout('completed');
-                 }}
+                 onClick={() => handleCheckout('completed')}
                  disabled={isProcessing || cart.length === 0 || hasInvalidStockQuantity}
                  data-nav="checkout-button"
                  onKeyDown={handleInputKeyDown}
                  className="px-10 py-4 bg-emerald-500 text-white rounded-2xl font-black text-lg hover:bg-emerald-400 transition-all shadow-xl shadow-emerald-500/20 flex items-center gap-2"
                >
-                 {isProcessing ? <Loader2 className="w-5 h-5 animate-spin" /> : <Printer className="w-5 h-5" />}
-                 إتمام وطباعة
+                 {isProcessing ? <Loader2 className="w-5 h-5 animate-spin" /> : <ShoppingCart className="w-5 h-5" />}
+                 إتمام البيع
                </button>
             </div>
           </div>
@@ -1488,15 +1635,15 @@ export default function POSPage() {
       </div>
 
       {/* Right Search Area */}
-      <div className="w-[300px] flex flex-col gap-4 shrink-0">
+      <div className="w-[260px] xl:w-[300px] flex flex-col gap-4 shrink-0">
          <POSSearchSidebar ref={searchSidebarRef} addToCart={addToCart} onKeyDown={handleInputKeyDown} showStock={canViewStock} />
 
          {alternatives.length > 0 && (
             <div className="bg-indigo-50 dark:bg-indigo-900/20 p-5 rounded-3xl border border-indigo-100 dark:border-indigo-900/40">
-              <h4 className="font-black text-indigo-900 dark:text-indigo-200 text-[10px] mb-3 flex items-center gap-2 uppercase tracking-widest">🧬 بدائل مقترحة</h4>
+              <h4 className="font-black text-indigo-900 dark:text-indigo-200 text-xs mb-3 flex items-center gap-2">🧬 بدائل مقترحة</h4>
               <div className="space-y-2 max-h-[200px] overflow-auto">
                 {[...alternatives].sort((a, b) => (b.total_stock || 0) - (a.total_stock || 0)).map(a => (
-                  <button key={a.id} onClick={() => addToCart(a)} className="w-full flex justify-between items-center bg-white dark:bg-slate-800 p-2 rounded-xl text-[10px] font-black shadow-sm">
+                  <button key={a.id} onClick={() => addToCart(a)} className="w-full flex justify-between items-center bg-white dark:bg-slate-800 p-2 rounded-xl text-[11px] font-black shadow-sm">
                     <div className="flex flex-col text-right">
                       <span className="dark:text-white truncate max-w-[150px]">{a.trade_name_en || a.trade_name}</span>
                       <span className="text-slate-400">{a.total_stock} in stock</span>
@@ -1512,14 +1659,13 @@ export default function POSPage() {
       {completedInvoice && (
         <ReceiptDetailsModal 
           invoice={completedInvoice} 
-          autoPrint={autoPrintReceipt}
-          onClose={() => { setCompletedInvoice(null); setAutoPrintReceipt(false); }}
+          onClose={() => setCompletedInvoice(null)}
         />
       )}
       {showInteractionModal && (
         <DrugInteractionModal 
           alerts={pendingInteractions}
-          onClose={() => { setShowInteractionModal(false); setAutoPrintReceipt(false); }}
+          onClose={() => setShowInteractionModal(false)}
           onConfirm={() => {
             setShowInteractionModal(false);
             handleCheckout('completed', true);
@@ -1579,17 +1725,19 @@ export default function POSPage() {
 
       {showReturnModal && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[150] flex items-center justify-center p-4">
-          <div className="bg-slate-50 dark:bg-slate-950 rounded-[40px] w-full max-w-[95vw] h-[90vh] shadow-2xl border border-slate-100 dark:border-slate-800 flex flex-col overflow-hidden">
+          <div ref={returnDialogRef} role="dialog" aria-modal="true" aria-labelledby="pos-return-title" tabIndex={-1} onKeyDown={(event) => { if (event.key === 'Escape') setShowReturnModal(false); }} className="bg-slate-50 dark:bg-slate-950 rounded-3xl w-full max-w-[95vw] h-[90vh] shadow-2xl border border-slate-100 dark:border-slate-800 flex flex-col overflow-hidden">
             <div className="p-6 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center bg-white dark:bg-slate-900">
               <div>
-                <h3 className="text-2xl font-black flex items-center gap-3">
+                <h3 id="pos-return-title" className="text-2xl font-black flex items-center gap-3">
                   <RotateCcw className="w-7 h-7 text-rose-500" /> اختصار المرتجع السريع
                 </h3>
                 <p className="text-slate-500 font-bold text-sm">ابحث عن الفاتورة أو امسح الباركود للبدء</p>
               </div>
               <button 
+                type="button"
+                aria-label="إغلاق المرتجع السريع"
                 onClick={() => setShowReturnModal(false)} 
-                className="p-3 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-2xl transition-all"
+                className="p-3 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-2xl transition-colors"
               >
                 <X className="w-6 h-6" />
               </button>
@@ -1601,6 +1749,7 @@ export default function POSPage() {
 
             <div className="p-6 bg-white dark:bg-slate-900 border-t border-slate-100 dark:border-slate-800 text-center">
               <button 
+                type="button"
                 onClick={() => setShowReturnModal(false)}
                 className="px-10 py-4 bg-slate-800 text-white rounded-2xl font-black hover:bg-slate-700 transition-all"
               >
@@ -1615,6 +1764,24 @@ export default function POSPage() {
         isOpen={showHandoverModal} 
         onClose={() => setShowHandoverModal(false)} 
       />
+
+      {showAddPatientModal && currentUser && (
+        <AddPatientModal
+          pharmacyId={currentUser.pharmacy_id}
+          onClose={() => setShowAddPatientModal(false)}
+          onSuccess={(patient) => {
+            if (patient) {
+              setSelectedPatient(patient);
+              if (patient.payment_method && ['cash', 'credit', 'visa', 'wallet'].includes(patient.payment_method)) {
+                setPaymentMethod(patient.payment_method);
+              }
+            }
+            setPatientResults([]);
+            setPatientSearch('');
+            setShowAddPatientModal(false);
+          }}
+        />
+      )}
 
       {/* Item Context Menu */}
       {contextMenu && (
@@ -1711,7 +1878,7 @@ function SidebarButton({ icon: Icon, label, color, onClick }: any) {
       <div className={`p-2 rounded-lg ${color} text-white shadow-sm group-hover:scale-110 transition-transform`}>
         <Icon className="w-4 h-4" />
       </div>
-      <span className="text-[8px] font-black text-slate-500 dark:text-slate-400 text-center leading-tight truncate w-full">{label}</span>
+      <span className="text-[11px] font-black text-slate-600 dark:text-slate-300 text-center leading-tight truncate w-full">{label}</span>
     </button>
   );
 }
@@ -1719,7 +1886,7 @@ function SidebarButton({ icon: Icon, label, color, onClick }: any) {
 function TotalLabel({ label, value, color = "text-slate-600 dark:text-slate-300" }: any) {
   return (
     <div className="flex flex-col">
-      <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{label}</span>
+      <span className="text-[11px] font-black text-slate-500">{label}</span>
       <span className={`text-sm font-black ${color}`}>{value}</span>
     </div>
   );

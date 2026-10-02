@@ -148,6 +148,7 @@ export default function InteractionsClient({ initialInteractions, totalCount, us
         <div className="flex gap-3">
           <input
             type="text"
+            aria-label="المواد الفعالة للفحص السريع"
             value={checkerInput}
             onChange={e => setCheckerInput(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && handleCheck()}
@@ -204,6 +205,7 @@ export default function InteractionsClient({ initialInteractions, totalCount, us
           <Search className="absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
           <input
             type="text"
+            aria-label="بحث في التفاعلات الدوائية"
             value={search}
             onChange={e => setSearch(e.target.value)}
             placeholder="بحث عن مادة فعالة (مثال: warfarin)..."
@@ -223,17 +225,21 @@ export default function InteractionsClient({ initialInteractions, totalCount, us
 
       {/* Add Form */}
       {showAddForm && (
-        <form onSubmit={handleAdd} className="bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-xl space-y-4 animate-in slide-in-from-top-4 duration-300">
-          <h3 className="text-lg font-bold flex items-center gap-2">
+        <form aria-labelledby="add-interaction-title" onSubmit={handleAdd} className="bg-white dark:bg-slate-900 p-5 sm:p-8 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-xl space-y-4 animate-in slide-in-from-top-4 duration-300">
+          <h3 id="add-interaction-title" className="text-lg font-bold flex items-center gap-2">
             <Plus className="w-5 h-5 text-emerald-500" /> إضافة تفاعل دوائي جديد
           </h3>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <input type="text" required value={form.ingredient_a} onChange={e => setForm({...form, ingredient_a: e.target.value})} placeholder="المادة الفعالة الأولى" className="bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-4 py-3 rounded-xl font-bold" />
-            <input type="text" required value={form.ingredient_b} onChange={e => setForm({...form, ingredient_b: e.target.value})} placeholder="المادة الفعالة الثانية" className="bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-4 py-3 rounded-xl font-bold" />
+            <label className="sr-only" htmlFor="interaction-ingredient-a">المادة الفعالة الأولى</label>
+            <input id="interaction-ingredient-a" type="text" required value={form.ingredient_a} onChange={e => setForm({...form, ingredient_a: e.target.value})} placeholder="المادة الفعالة الأولى" className="bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-4 py-3 rounded-xl font-bold" />
+            <label className="sr-only" htmlFor="interaction-ingredient-b">المادة الفعالة الثانية</label>
+            <input id="interaction-ingredient-b" type="text" required value={form.ingredient_b} onChange={e => setForm({...form, ingredient_b: e.target.value})} placeholder="المادة الفعالة الثانية" className="bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-4 py-3 rounded-xl font-bold" />
 
-            <input type="text" value={form.recommendation} onChange={e => setForm({...form, recommendation: e.target.value})} placeholder="التوصية (اختياري)" className="bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-4 py-3 rounded-xl font-bold" />
+            <label className="sr-only" htmlFor="interaction-recommendation">التوصية</label>
+            <input id="interaction-recommendation" type="text" value={form.recommendation} onChange={e => setForm({...form, recommendation: e.target.value})} placeholder="التوصية (اختياري)" className="bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-4 py-3 rounded-xl font-bold" />
           </div>
-          <textarea required value={form.description_ar} onChange={e => setForm({...form, description_ar: e.target.value})} placeholder="وصف التفاعل بالتفصيل..." className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-4 py-3 rounded-xl font-bold" rows={2} />
+          <label className="sr-only" htmlFor="interaction-description">وصف التفاعل بالتفصيل</label>
+          <textarea id="interaction-description" required value={form.description_ar} onChange={e => setForm({...form, description_ar: e.target.value})} placeholder="وصف التفاعل بالتفصيل..." className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-4 py-3 rounded-xl font-bold" rows={2} />
           <div className="flex gap-3 pt-2">
             <button type="submit" className="bg-emerald-600 text-white px-10 py-3 rounded-xl font-bold hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-200 dark:shadow-none">حفظ</button>
             <button type="button" onClick={handleToggleAddForm} className="bg-slate-200 dark:bg-slate-800 px-8 py-3 rounded-xl font-bold hover:bg-slate-300 dark:hover:bg-slate-700 transition-all">إلغاء</button>
@@ -291,6 +297,8 @@ export default function InteractionsClient({ initialInteractions, totalCount, us
             </div>
             <div className="flex items-center gap-2">
               <button
+                type="button"
+                aria-label="الصفحة السابقة"
                 onClick={() => setPage(p => Math.max(1, p - 1))}
                 disabled={page === 1 || loading}
                 className="p-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-30 transition-all shadow-sm"
@@ -303,6 +311,8 @@ export default function InteractionsClient({ initialInteractions, totalCount, us
                 <span className="text-sm font-bold text-slate-500">{totalPages}</span>
               </div>
               <button
+                type="button"
+                aria-label="الصفحة التالية"
                 onClick={() => setPage(p => Math.min(totalPages, p + 1))}
                 disabled={page === totalPages || loading}
                 className="p-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-30 transition-all shadow-sm"

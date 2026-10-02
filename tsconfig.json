@@ -38,6 +38,9 @@
     "scratch",
     "actions_temp",
     "api_temp",
-    "src-tauri/target"
+    "src-tauri/target",
+    "e2e_tmp",
+    ".worker4-e2e",
+    "src-tauri/target-e2e"
   ]
 }

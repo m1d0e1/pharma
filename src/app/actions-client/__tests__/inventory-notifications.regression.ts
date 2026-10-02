@@ -5,7 +5,12 @@ jest.mock('@tauri-apps/api/core', () => ({
 }));
 jest.mock('@/lib/db/tauri', () => ({
   dbSelect: jest.fn(async () => [{ name: 'barcode' }]),
-  dbGet: jest.fn(async () => ({ id: 'purchase-1' })),
+  dbGet: jest.fn(async (sql: string) => {
+    if (/SELECT id, pharmacy_id, status FROM sales_invoices WHERE id = \?/i.test(sql)) {
+      return { id: 'source-draft-1', pharmacy_id: 'pharmacy-1', status: 'draft' };
+    }
+    return { id: 'purchase-1' };
+  }),
   dbExecute: jest.fn(async () => ({ rowsAffected: 1 })),
   dbTransaction: jest.fn(),
   generateId: jest.fn(() => 'test-id'),
@@ -60,6 +65,24 @@ it('notifies after completed POS writes only', async () => {
   const failed = await countInventoryChanges(() => processCheckoutAction({ items: [item], status: 'completed' }));
   expect(failed.result).toMatchObject({ success: false });
   expect(failed.listener).not.toHaveBeenCalled();
+});
+
+it('forwards a loaded source draft id to the native checkout transaction', async () => {
+  const result = await processCheckoutAction({
+    items: [{ drug_id: 1, quantity_sold: 1, unit_price: 10 }],
+    status: 'completed',
+    source_draft_id: 'source-draft-1',
+  });
+
+  expect(result).toMatchObject({ success: true });
+  expect(mockInvoke).toHaveBeenCalledWith('process_checkout_critical', {
+    payload: expect.objectContaining({
+      pharmacy_id: 'pharmacy-1',
+      user_id: 'user-1',
+      source_draft_id: 'source-draft-1',
+      status: 'completed',
+    }),
+  });
 });
 
 it('notifies after successful inventory imports but not failed imports', async () => {

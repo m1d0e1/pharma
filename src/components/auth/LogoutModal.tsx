@@ -5,6 +5,7 @@ import { useState } from 'react';
 import { LogOut, X } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { logoutLocalAction } from '@/app/actions-client/auth';
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap';
 
 interface LogoutModalProps {
   isOpen: boolean;
@@ -14,6 +15,7 @@ interface LogoutModalProps {
 export default function LogoutModal({ isOpen, onClose }: LogoutModalProps) {
   useHotkeys('esc', () => { if(typeof onClose === 'function') onClose(); }, { enableOnFormTags: true });
   const [loading, setLoading] = useState(false);
+  const dialogRef = useDialogFocusTrap<HTMLDivElement>(isOpen);
 
   const handleQuickLogout = async () => {
     setLoading(true);
@@ -35,7 +37,7 @@ export default function LogoutModal({ isOpen, onClose }: LogoutModalProps) {
 
   return (
     <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-[200] p-4 animate-in fade-in duration-200" dir="rtl">
-      <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl max-w-md w-full overflow-hidden border border-slate-200 dark:border-slate-800 animate-in zoom-in slide-in-from-bottom-4 duration-300">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="logout-dialog-title" tabIndex={-1} className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl max-w-md w-full overflow-hidden border border-slate-200 dark:border-slate-800 animate-in zoom-in slide-in-from-bottom-4 duration-300">
         
         {/* Header */}
         <div className="p-6 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
@@ -44,15 +46,17 @@ export default function LogoutModal({ isOpen, onClose }: LogoutModalProps) {
               <LogOut className="w-6 h-6 text-red-600 dark:text-red-400" />
             </div>
             <div>
-              <h2 className="text-xl font-black text-slate-900 dark:text-white">
+              <h2 id="logout-dialog-title" className="text-xl font-black text-slate-900 dark:text-white">
                 تسجيل الخروج
               </h2>
-              <p className="text-xs text-slate-500 dark:text-slate-400 font-bold mt-0.5">
+              <p className="text-sm text-slate-500 dark:text-slate-400 font-bold mt-0.5">
                 يمكنك الدخول بمستخدم آخر ومتابعة العمل فوراً
               </p>
             </div>
           </div>
           <button
+            type="button"
+            aria-label="إغلاق نافذة تسجيل الخروج"
             onClick={onClose}
             className="w-10 h-10 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center transition-colors"
           >

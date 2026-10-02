@@ -1,9 +1,10 @@
 'use client'
 
 import React, { useState } from 'react'
-import { Plus, Trash2, Save, X, FlaskConical, Tags, Stethoscope, FileText, Activity, ClipboardList } from 'lucide-react'
+import { Plus, Save, X, FlaskConical, Tags, Stethoscope, FileText, Activity, ClipboardList } from 'lucide-react'
 import { toast, Toaster } from 'react-hot-toast'
 import { cn } from '@/lib/utils'
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap'
 
 const Icons = {
   FlaskConical,
@@ -24,6 +25,7 @@ export default function GenericManagementClient({ initialData, title, icon }: Pr
   const [data, setData] = useState<string[]>(initialData);
   const [newItem, setNewItem] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const dialogRef = useDialogFocusTrap<HTMLDivElement>(isModalOpen);
 
   const Icon = Icons[icon];
 
@@ -62,9 +64,6 @@ export default function GenericManagementClient({ initialData, title, icon }: Pr
               </div>
               <span className="font-black text-lg text-slate-800 dark:text-white">{item}</span>
             </div>
-            <button className="p-2 text-slate-300 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100">
-              <Trash2 className="w-5 h-5" />
-            </button>
           </div>
         ))}
         {data.length === 0 && (
@@ -77,15 +76,16 @@ export default function GenericManagementClient({ initialData, title, icon }: Pr
 
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-          <div className="bg-white dark:bg-slate-900 w-full max-w-md rounded-[32px] shadow-hard border border-slate-100 dark:border-slate-800 overflow-hidden animate-in zoom-in-95">
+          <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="generic-management-title" tabIndex={-1} className="bg-white dark:bg-slate-900 w-full max-w-md rounded-3xl shadow-hard border border-slate-100 dark:border-slate-800 overflow-hidden animate-in zoom-in-95">
              <div className="p-6 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center">
-                <h3 className="text-xl font-black text-slate-900 dark:text-white">إضافة {title} جديدة</h3>
-                <button onClick={() => setIsModalOpen(false)}><X className="w-6 h-6 text-slate-400" /></button>
+                <h3 id="generic-management-title" className="text-xl font-black text-slate-900 dark:text-white">إضافة {title} جديدة</h3>
+                <button type="button" aria-label={`إغلاق إضافة ${title}`} onClick={() => setIsModalOpen(false)}><X className="w-6 h-6 text-slate-400" /></button>
              </div>
              <div className="p-8 space-y-4">
                 <div className="space-y-2">
-                   <label className="text-sm font-black text-slate-700 dark:text-slate-300">الاسم</label>
+                   <label htmlFor="generic-management-name" className="text-sm font-black text-slate-700 dark:text-slate-300">الاسم</label>
                    <input 
+                      id="generic-management-name"
                       type="text" 
                       className="w-full px-5 py-4 bg-slate-50 dark:bg-slate-800 rounded-2xl border-none outline-none focus:ring-2 focus:ring-primary-500 font-bold dark:text-white"
                       value={newItem}

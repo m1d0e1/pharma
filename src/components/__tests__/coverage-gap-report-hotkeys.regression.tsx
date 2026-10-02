@@ -79,6 +79,27 @@ describe('report search keyboard shortcuts', () => {
     await waitFor(() => expect(getInvoiceDetailsAction).toHaveBeenCalledWith('SALE-KEYBOARD'));
   });
 
+  it('opens a sales invoice from a focused table row with Space without scrolling the page', async () => {
+    (getSalesReportsAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: [{
+        id: 'SALE-SPACE',
+        payment_method: 'cash',
+        created_at: '2026-09-22T08:00:00Z',
+        patient_name: 'Space Sales Customer',
+        staff_name: 'Staff',
+        total_amount: 10,
+        discount_amount: 0,
+        status: 'completed',
+      }],
+    });
+
+    render(<SalesReportsClient userRole="owner" />);
+    const row = (await screen.findByText('Space Sales Customer')).closest('tr') as HTMLTableRowElement;
+    expect(fireEvent.keyDown(row, { key: ' ' })).toBe(false);
+    await waitFor(() => expect(getInvoiceDetailsAction).toHaveBeenCalledWith('SALE-SPACE'));
+  });
+
   it('opens a purchase invoice from a focused table row with Enter', async () => {
     (getPurchasesReportsAction as jest.Mock).mockResolvedValue({
       success: true,
@@ -102,6 +123,40 @@ describe('report search keyboard shortcuts', () => {
     const row = (await screen.findByText('Keyboard Supplier')).closest('tr') as HTMLTableRowElement;
     expect(row).toHaveAttribute('tabindex', '0');
     fireEvent.keyDown(row, { key: 'Enter' });
-    await waitFor(() => expect(getPurchaseInvoiceDetailsAction).toHaveBeenCalledWith('PURCHASE-KEYBOARD'));
+    await waitFor(() => expect(getPurchaseInvoiceDetailsAction).toHaveBeenCalledWith(
+      'PURCHASE-KEYBOARD',
+      { reportScope: true },
+    ));
+  });
+
+  it('keeps purchase invoice details horizontally scrollable in compact windows', async () => {
+    (getPurchasesReportsAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: [{
+        id: 'PURCHASE-COMPACT',
+        invoice_number: 'PURCHASE-COMPACT',
+        invoice_date: '2026-09-22',
+        created_at: '2026-09-22T08:00:00Z',
+        supplier_name: 'Compact Supplier',
+        staff_name: 'Staff',
+        payment_method: 'cash',
+        gross_amount: 10,
+        total_amount: 10,
+        discount_amount: 0,
+        total_selling_amount: 12,
+        status: 'completed',
+      }],
+    });
+
+    render(<PurchasesReportsClient userRole="owner" />);
+    const row = (await screen.findByText('Compact Supplier')).closest('tr') as HTMLTableRowElement;
+    fireEvent.keyDown(row, { key: ' ' });
+    const dialog = await screen.findByRole('dialog', { name: /أصناف الفاتورة/ });
+    const table = dialog.querySelector('table');
+    expect(table?.parentElement).toHaveClass('overflow-auto');
+    await waitFor(() => expect(getPurchaseInvoiceDetailsAction).toHaveBeenCalledWith(
+      'PURCHASE-COMPACT',
+      { reportScope: true },
+    ));
   });
 });

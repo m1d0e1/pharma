@@ -159,6 +159,20 @@ it('opens the real POS-management tab from its dedicated route', async () => {
   expect(screen.getByRole('button', { name: /إضافة نقطة بيع/ })).toBeEnabled();
 });
 
+it('opens bank maintenance as a named, labelled finance dialog', async () => {
+  (finance.getBanksAction as jest.Mock).mockResolvedValue({ success: true, data: [] });
+  render(<AccountsManagementClient initialTab="banks" />);
+
+  fireEvent.click(await screen.findByRole('button', { name: /إضافة حساب بنكي/ }));
+
+  expect(screen.getByRole('dialog', { name: 'إضافة حساب بنكي جديد' })).toBeInTheDocument();
+  expect(screen.getByLabelText('اسم البنك (عربي) *')).toBeRequired();
+  expect(screen.getByLabelText('اسم البنك (إنجليزي)')).toBeInTheDocument();
+  expect(screen.getByLabelText('رقم الحساب / IBAN')).toBeInTheDocument();
+  expect(screen.getByLabelText('الرصيد الافتتاحي (عند الإنشاء فقط)')).toHaveAttribute('type', 'number');
+  expect(screen.getByRole('button', { name: 'إغلاق بيانات الحساب البنكي' })).toBeInTheDocument();
+});
+
 it('keeps the newest finance tab loading while an older tab request finishes first', async () => {
   const olderBanks = deferred<any>();
   const newerBanks = deferred<any>();
@@ -522,6 +536,10 @@ it('allows editing and deleting accounts from the Chart of Accounts table and tr
   const { fireEvent } = await import('@testing-library/react');
   render(<AccountsManagementClient initialTab="chart_of_accounts" />);
 
+  const treeEdit = await screen.findByLabelText('تعديل الحساب الأصول');
+  expect(treeEdit.parentElement).toHaveClass('sm:group-focus-within:opacity-100');
+  expect(screen.getByLabelText('إضافة حساب فرعي تحت الأصول')).toBeInTheDocument();
+
   // Switch to table mode
   const tableBtn = await screen.findByRole('button', { name: 'جدول' });
   fireEvent.click(tableBtn);
@@ -533,8 +551,9 @@ it('allows editing and deleting accounts from the Chart of Accounts table and tr
   expect(editButtons.length).toBeGreaterThan(0);
   fireEvent.click(editButtons[editButtons.length - 1]); // click sub drawer edit
 
-  expect(await screen.findByText('تعديل بيانات الحساب')).toBeInTheDocument();
-  const nameInput = screen.getByDisplayValue('الصندوق الفرعي');
+  expect(await screen.findByRole('dialog', { name: 'تعديل بيانات الحساب' })).toBeInTheDocument();
+  const nameInput = screen.getByLabelText('اسم الحساب (بالعربي)');
+  expect(nameInput).toHaveValue('الصندوق الفرعي');
   fireEvent.change(nameInput, { target: { value: 'صندوق الكاشير 1' } });
 
   const saveBtn = screen.getByRole('button', { name: 'حفظ التعديلات' });

@@ -212,7 +212,7 @@ export async function closeShiftAction(data: { shift_id?: string; ending_cash_am
         SELECT CAST(COALESCE(SUM(total_refund), 0) AS REAL) as total
         FROM returns 
         WHERE shift_id = ?
-          AND (status IS NULL OR status = '' OR status IN ('approved', 'completed'))
+          AND (status IS NULL OR status = '' OR LOWER(status) IN ('approved', 'completed'))
           AND refund_method = 'cash'
       `).get(shiftId) as any;
 
@@ -335,7 +335,7 @@ export async function getShiftsAction(filter: { status: string }) {
         SELECT shift_id, SUM(total_refund) as total_refunds
         FROM returns
         WHERE refund_method = 'cash'
-          AND (status IS NULL OR status = '' OR status IN ('approved', 'completed'))
+          AND (status IS NULL OR status = '' OR LOWER(status) IN ('approved', 'completed'))
         GROUP BY shift_id
       ) rets ON s.id = rets.shift_id
       LEFT JOIN (
@@ -498,7 +498,7 @@ export async function getCurrentShiftStatsAction() {
       SELECT COALESCE(SUM(total_refund), 0) as total_refunds
       FROM returns
       WHERE shift_id = ?
-        AND (status IS NULL OR status = '' OR status IN ('approved', 'completed'))
+        AND (status IS NULL OR status = '' OR LOWER(status) IN ('approved', 'completed'))
         AND refund_method = 'cash'
     `).get(shift.id) as any;
 

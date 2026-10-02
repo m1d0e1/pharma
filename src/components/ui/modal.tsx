@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useEffect } from 'react'
+import React, { useEffect, useId, useRef } from 'react'
 import { cn } from '@/lib/utils'
 import { X } from 'lucide-react'
 
@@ -27,21 +27,78 @@ const Modal: React.FC<ModalProps> = ({
   overlayClassName,
   contentClassName,
 }) => {
+  const contentRef = useRef<HTMLDivElement>(null)
+  const titleId = useId()
+  const descriptionId = useId()
+
   useEffect(() => {
+    if (!isOpen) return
+    const previousActiveElement = document.activeElement as HTMLElement | null
+    const previousOverflow = document.body.style.overflow
+    const focusableSelector = [
+      'a[href]',
+      'button:not([disabled])',
+      'input:not([disabled])',
+      'select:not([disabled])',
+      'textarea:not([disabled])',
+      '[tabindex]:not([tabindex="-1"])',
+    ].join(',')
+    const isVisible = (element: HTMLElement) => {
+      const style = window.getComputedStyle(element)
+      return !element.hidden
+        && element.getAttribute('aria-hidden') !== 'true'
+        && style.display !== 'none'
+        && style.visibility !== 'hidden'
+    }
+
     const handleEscape = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        e.preventDefault()
         onClose()
       }
     }
 
-    if (isOpen) {
-      document.addEventListener('keydown', handleEscape)
-      document.body.style.overflow = 'hidden'
+    const handleTab = (e: KeyboardEvent) => {
+      if (e.key !== 'Tab') return
+      const content = contentRef.current
+      if (!content) return
+      const focusable = Array.from(content.querySelectorAll<HTMLElement>(focusableSelector))
+        .filter(isVisible)
+      if (focusable.length === 0) {
+        e.preventDefault()
+        content.focus()
+        return
+      }
+
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      const active = document.activeElement
+      if (e.shiftKey && (active === first || active === content)) {
+        e.preventDefault()
+        last.focus()
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault()
+        first.focus()
+      }
     }
 
+    document.addEventListener('keydown', handleEscape)
+    document.addEventListener('keydown', handleTab)
+    document.body.style.overflow = 'hidden'
+
+    const frame = window.requestAnimationFrame(() => {
+      const content = contentRef.current
+      if (!content) return
+      const firstFocusable = Array.from(content.querySelectorAll<HTMLElement>(focusableSelector)).find(isVisible)
+      ;(firstFocusable || content).focus()
+    })
+
     return () => {
+      window.cancelAnimationFrame(frame)
       document.removeEventListener('keydown', handleEscape)
-      document.body.style.overflow = 'unset'
+      document.removeEventListener('keydown', handleTab)
+      document.body.style.overflow = previousOverflow
+      previousActiveElement?.focus?.()
     }
   }, [isOpen, onClose])
 
@@ -71,6 +128,13 @@ const Modal: React.FC<ModalProps> = ({
         <div className="flex min-h-full items-center justify-center p-4">
           {/* Modal Content */}
           <div 
+            ref={contentRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={title ? titleId : undefined}
+            aria-describedby={description ? descriptionId : undefined}
+            aria-label={!title ? 'نافذة حوار' : undefined}
+            tabIndex={-1}
             className={cn(
               "relative w-full transform overflow-hidden rounded-2xl bg-white dark:bg-slate-900 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in zoom-in slide-in-from-bottom-8 duration-500",
               sizeClasses[size],
@@ -84,12 +148,12 @@ const Modal: React.FC<ModalProps> = ({
                 <div className="flex items-start justify-between">
                   <div className="flex-1">
                     {title && (
-                      <h2 className="text-2xl font-bold text-slate-900 dark:text-white">
+                      <h2 id={titleId} className="text-2xl font-bold text-slate-900 dark:text-white">
                         {title}
                       </h2>
                     )}
                     {description && (
-                      <p className="mt-2 text-slate-600 dark:text-slate-400">
+                      <p id={descriptionId} className="mt-2 text-slate-600 dark:text-slate-400">
                         {description}
                       </p>
                     )}
@@ -97,9 +161,10 @@ const Modal: React.FC<ModalProps> = ({
                   
                   {showCloseButton && (
                     <button
+                      type="button"
                       onClick={onClose}
                       className="ml-4 flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700 hover:text-slate-700 dark:hover:text-slate-300 transition-colors"
-                      aria-label="Close"
+                      aria-label="إغلاق النافذة"
                     >
                       <X className="h-5 w-5" />
                     </button>

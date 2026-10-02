@@ -188,6 +188,46 @@ describe('Patient Statement, Inventory Amount Editing, and Credit Returns', () =
     expect((mockDb.prepare('SELECT expiry_date FROM inventory WHERE id = ?').get('inv-1') as any).expiry_date).toBe(before);
   });
 
+  it('persists an explicit null expiry only for a non-expiring master drug', async () => {
+    mockDb.prepare('UPDATE master_drugs SET has_expiry = 0 WHERE id = ?').run(101);
+
+    const updateRes = await updateInventoryAction({
+      id: 'inv-1',
+      quantity: 50,
+      local_selling_price: 20,
+      expiry_date: null,
+    });
+
+    expect(updateRes).toEqual({ success: true });
+    expect(mockDb.prepare('SELECT expiry_date FROM inventory WHERE id = ?').get('inv-1')).toEqual({ expiry_date: null });
+  });
+
+  it('rejects clearing expiry for an expiring master drug and preserves the lot expiry', async () => {
+    mockDb.prepare('UPDATE master_drugs SET has_expiry = 1 WHERE id = ?').run(101);
+
+    const updateRes = await updateInventoryAction({
+      id: 'inv-1',
+      quantity: 50,
+      local_selling_price: 20,
+      expiry_date: null,
+    });
+
+    expect(updateRes.success).toBe(false);
+    expect(updateRes.error).toContain('تاريخ الصلاحية');
+    expect(mockDb.prepare('SELECT expiry_date FROM inventory WHERE id = ?').get('inv-1')).toEqual({ expiry_date: '2028-12-31' });
+  });
+
+  it('leaves the existing expiry unchanged when expiry is omitted from an inventory edit', async () => {
+    const updateRes = await updateInventoryAction({
+      id: 'inv-1',
+      quantity: 50,
+      local_selling_price: 21,
+    });
+
+    expect(updateRes).toEqual({ success: true });
+    expect(mockDb.prepare('SELECT expiry_date FROM inventory WHERE id = ?').get('inv-1')).toEqual({ expiry_date: '2028-12-31' });
+  });
+
   it('preserves a historical lot conversion on price-only edits and exposes it to the editor', async () => {
     mockDb.prepare('UPDATE inventory SET strips_per_box = 2 WHERE id = ?').run('inv-1');
     mockDb.prepare('UPDATE master_drugs SET large_to_medium = 3 WHERE id = ?').run(101);
@@ -295,6 +335,25 @@ describe('Patient Statement, Inventory Amount Editing, and Credit Returns', () =
       expect.objectContaining({ type: 'توريد نقدية', notes: 'دفعة من الفرع الرئيسي' }),
       expect.objectContaining({ type: 'إشعار مدين (إضافة)', balance_effect: 20 }),
     ]));
+  });
+
+  it('deduplicates only one mirrored notice when an identical imported notice also exists', async () => {
+    mockDb.exec(`
+      INSERT INTO patient_transactions (id, patient_id, type, amount, notes, date, user_id)
+      VALUES ('pt-mirrored', 'pat-1', 'adjustment', 10, 'same reason', '2026-08-10', 'admin');
+      INSERT INTO financial_notices (id, target_type, target_id, type, amount, reason, date, user_id)
+      VALUES
+        ('fn-mirrored', 'customer', 'pat-1', 'debit', 10, 'same reason', '2026-08-10', 'admin'),
+        ('fn-imported-same', 'customer', 'pat-1', 'debit', 10, 'same reason', '2026-08-10', 'admin');
+    `);
+
+    const balance = mockDb.prepare(patientOutstandingBalanceQuery()).get('pat-1') as any;
+    expect(balance.outstanding_balance).toBe(120);
+
+    const statement = await getPatientStatementAction('pat-1');
+    expect(statement.success).toBe(true);
+    expect(statement.data?.currentBalance).toBe(120);
+    expect(statement.data?.movements.filter((row: any) => row.payment_method === 'notice')).toHaveLength(1);
   });
 
   it('keeps the patient ledger chain-wide while hiding foreign-branch statement documents and items', async () => {

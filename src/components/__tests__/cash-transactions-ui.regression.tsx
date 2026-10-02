@@ -1,4 +1,4 @@
-﻿import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import CashTransactionsClient from '@/components/finance/CashTransactionsClient';
 import { getCashMovementsAction, createCashMovementAction } from '@/app/actions-client/finance';
 import { addExpenseAction } from '@/app/actions-client/expenses';
@@ -157,7 +157,10 @@ describe('CashTransactionsClient Regression', () => {
     });
 
     const searchInput = screen.getByPlaceholderText(/بحث في البيان، المستلم، الملاحظات، أو المستخدم/i);
+    expect(searchInput).toHaveAccessibleName('بحث في الحركات النقدية');
     fireEvent.change(searchInput, { target: { value: 'سارة' } });
+
+    expect(screen.getByRole('button', { name: 'مسح البحث' })).toBeInTheDocument();
 
     expect(screen.queryByText(/شراء ورق طباعة/)).not.toBeInTheDocument();
     expect(screen.queryByText(/سداد حساب آجل/)).not.toBeInTheDocument();
@@ -174,12 +177,15 @@ describe('CashTransactionsClient Regression', () => {
     const addDisbursementBtn = screen.getByRole('button', { name: /صرف نقدية/i });
     fireEvent.click(addDisbursementBtn);
 
-    expect(screen.getByText('صرف نقدية جديدة')).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'صرف نقدية جديدة' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'إغلاق نموذج الحركة النقدية' })).toBeInTheDocument();
 
-    const amountInput = screen.getByPlaceholderText('0.00');
+    const amountInput = screen.getByLabelText('القيمة المالية');
+    expect(amountInput).toBe(screen.getByPlaceholderText('0.00'));
     fireEvent.change(amountInput, { target: { value: '80' } });
 
-    const notesInput = screen.getByPlaceholderText('اكتب أي ملاحظات هنا...');
+    const notesInput = screen.getByLabelText('ملاحظات إضافية');
+    expect(notesInput).toBe(screen.getByPlaceholderText('اكتب أي ملاحظات هنا...'));
     fireEvent.change(notesInput, { target: { value: 'شاي وسكر' } });
 
     const submitBtn = screen.getByRole('button', { name: /حفظ العملية/i });

@@ -7,6 +7,8 @@ import { searchMasterDrugsAction, getUnitsAction } from '@/app/actions-client/ma
 import { toast } from 'react-hot-toast'
 import { Plus, Search, Sparkles } from 'lucide-react'
 import QuickAddDrugModal from './master-drugs/QuickAddDrugModal'
+import { isSinglePackageUnitName, resolveDrugUnitProfile } from '@/lib/inventory/unit-profile'
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap'
 
 interface MasterDrug {
   id: number
@@ -16,6 +18,7 @@ interface MasterDrug {
   official_price: number
   large_unit?: string
   large_to_medium?: number
+  has_expiry?: number
 }
 
 interface AddInventoryModalProps {
@@ -46,6 +49,7 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
   const barcodeRef = useRef<HTMLInputElement>(null)
   const searchRequestRef = useRef(0)
   const submissionRef = useRef(false)
+  const dialogRef = useDialogFocusTrap<HTMLDivElement>(!isQuickAddOpen)
 
   const handleClose = () => {
     if (submissionRef.current) return
@@ -108,44 +112,30 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
 
   // ponytail: default strips per box to 1 for single-unit dosage forms
   const getDefaultStripsPerBox = (largeUnit?: string, largeToMediumValue?: number) => {
-    const u = (largeUnit || '').trim().toLowerCase();
-    const singleUnits = [
-      'زجاج', 'زجاجة', 'كريم', 'مرهم', 'شراب', 'امبول', 'أمبول', 'حقنة', 'حقن', 
-      'قطرة', 'بخاخ', 'دش', 'جيل', 'جل', 'بودرة', 'بودر', 'معجون', 'شامبو', 
-      'صابون', 'لوشن', 'كيس', 'أكياس', 'لبوس', 'فيال', 'سيروم'
-    ];
-    const isSingle = singleUnits.some(su => u.includes(su));
-    if (isSingle) return '1';
+    if (isSinglePackageUnitName(largeUnit)) return '1';
     return largeToMediumValue ? largeToMediumValue.toString() : '';
   };
 
   const handleSelectDrug = (drug: MasterDrug) => {
+    const unitProfile = resolveDrugUnitProfile(drug)
     setSelectedDrug(drug)
-    setSelectedUnit(drug.large_unit || 'علبة')
+    setSelectedUnit(unitProfile.largeUnit)
     setLocalPrice(drug.official_price > 0 ? drug.official_price.toString() : '')
-    setLargeToMedium(getDefaultStripsPerBox(drug.large_unit, drug.large_to_medium))
+    setLargeToMedium(getDefaultStripsPerBox(unitProfile.largeUnit, unitProfile.largeToMedium))
     setStep(2)
   }
 
   const showStripsFields = useMemo(() => {
-    const u = (selectedUnit || '').trim().toLowerCase();
-    const singleUnits = [
-      'زجاج', 'زجاجة', 'كريم', 'مرهم', 'شراب', 'امبول', 'أمبول', 'حقنة', 'حقن', 
-      'قطرة', 'بخاخ', 'دش', 'جيل', 'جل', 'بودرة', 'بودر', 'معجون', 'شامبو', 
-      'صابون', 'لوشن', 'كيس', 'أكياس', 'لبوس', 'فيال', 'سيروم'
-    ];
-    return !singleUnits.some(su => u.includes(su));
-  }, [selectedUnit]);
+    if (!selectedUnit) return true;
+    if (!selectedDrug) return !isSinglePackageUnitName(selectedUnit);
+    return !resolveDrugUnitProfile({ ...selectedDrug, large_unit: selectedUnit }).isSingleContainer;
+  }, [selectedUnit, selectedDrug]);
 
   useEffect(() => {
     if (selectedUnit) {
-      const u = selectedUnit.trim().toLowerCase();
-      const singleUnits = [
-        'زجاج', 'زجاجة', 'كريم', 'مرهم', 'شراب', 'امبول', 'أمبول', 'حقنة', 'حقن', 
-        'قطرة', 'بخاخ', 'دش', 'جيل', 'جل', 'بودرة', 'بودر', 'معجون', 'شامبو', 
-        'صابون', 'لوشن', 'كيس', 'أكياس', 'لبوس', 'فيال', 'سيروم'
-      ];
-      const isSingle = singleUnits.some(su => u.includes(su));
+      const isSingle = selectedDrug
+        ? resolveDrugUnitProfile({ ...selectedDrug, large_unit: selectedUnit }).isSingleContainer
+        : isSinglePackageUnitName(selectedUnit);
       if (isSingle) {
         setLargeToMedium('1');
         setStripsQuantity('');
@@ -182,7 +172,8 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
     if (isNaN(price) || price < 0) {
       validationErrors.localPrice = true
     }
-    if (!expiryDate || !/^\d{4}-\d{2}-\d{2}$/.test(expiryDate)) {
+    const requiresExpiry = Number(selectedDrug.has_expiry ?? 1) !== 0
+    if ((requiresExpiry && !expiryDate) || (expiryDate && !/^\d{4}-\d{2}-\d{2}$/.test(expiryDate))) {
       validationErrors.expiryDate = true
     }
     if (showStripsFields && (strips > 0 || qty > 0) && (!largeToMedium || isNaN(parseInt(largeToMedium)) || parseInt(largeToMedium) <= 0)) {
@@ -214,7 +205,7 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
       drug_id: selectedDrug.id,
       quantity: qty,
       local_selling_price: price,
-      expiry_date: expiryDate,
+      expiry_date: expiryDate || null,
       barcode: barcode || null,
       unit: selectedUnit,
       large_to_medium: largeToMedium ? parseInt(largeToMedium) : null
@@ -248,7 +239,7 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
   return (
     <>
     <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-[100] animate-in fade-in duration-300" dir="rtl">
-      <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl w-full max-w-lg overflow-y-auto max-h-[90vh] border border-slate-200 dark:border-slate-800 transform animate-in zoom-in slide-in-from-bottom-8 duration-500">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-hidden={isQuickAddOpen ? true : undefined} aria-labelledby="add-inventory-title" tabIndex={-1} className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl w-full max-w-lg overflow-y-auto max-h-[90vh] border border-slate-200 dark:border-slate-800 transform animate-in zoom-in slide-in-from-bottom-8 duration-500">
         
         {/* Header */}
         <div className="bg-gradient-to-r from-blue-600 to-indigo-600 p-6 flex justify-between items-center text-white relative overflow-hidden">
@@ -256,7 +247,7 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
              <div className="absolute -top-10 -left-10 w-40 h-40 bg-white rounded-full blur-3xl"></div>
           </div>
           <div className="relative z-10">
-            <h2 className="text-xl font-black">
+            <h2 id="add-inventory-title" className="text-xl font-black">
               {step === 1 ? 'البحث عن صنف' : 'إضافة للمخزون'}
             </h2>
             <p className="text-blue-100 text-xs mt-0.5">
@@ -264,6 +255,8 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
             </p>
           </div>
           <button 
+            type="button"
+            aria-label="إغلاق إضافة المخزون"
             onClick={handleClose}
             disabled={isSubmitting}
             className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center hover:bg-white/30 transition-colors text-2xl font-bold disabled:opacity-50 disabled:cursor-not-allowed"
@@ -274,11 +267,12 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
 
         {/* Step 1: Search */}
         {step === 1 && (
-          <div className="p-8 space-y-6">
+          <div className="p-6 space-y-6">
             <div className="relative">
               <span className="absolute inset-y-0 right-4 flex items-center text-slate-400">🔍</span>
               <input
                 type="text"
+                aria-label="البحث عن صنف لإضافته للمخزون"
                 placeholder="ابحث باسم الدواء (مثلاً: Panadol)..."
                 className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 pr-12 pl-4 py-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all font-bold"
                 value={searchTerm}
@@ -320,8 +314,8 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
                     <span className="text-xs text-slate-500 dark:text-slate-400 mt-1">{drug.active_ingredient || 'بدون مادة فعالة'}</span>
                   </div>
                   <div className="flex flex-col items-end">
-                    <span className="text-lg font-black text-emerald-600">{drug.official_price} <span className="text-[10px]">ج.م</span></span>
-                    <span className="text-[10px] text-slate-400 font-bold">السعر الرسمي</span>
+                    <span className="text-lg font-black text-emerald-600">{drug.official_price} <span className="text-[11px]">ج.م</span></span>
+                    <span className="text-[11px] text-slate-500 font-bold">السعر الرسمي</span>
                   </div>
                 </button>
               ))}
@@ -336,7 +330,7 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
                   </div>
                   <div className="text-right">
                     <p className="font-black text-slate-900 dark:text-white">أضف صنف مخصص</p>
-                    <p className="text-[10px] font-bold text-slate-400">إذا لم تجد الدواء في القاعدة العامة</p>
+                    <p className="text-[11px] font-bold text-slate-500">إذا لم تجد الدواء في القاعدة العامة</p>
                   </div>
                 </button>
               )}
@@ -346,7 +340,7 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
 
         {/* Step 2: Data Entry Form */}
         {step === 2 && selectedDrug && (
-          <form onSubmit={handleSaveToInventory} className="p-8 space-y-6">
+          <form onSubmit={handleSaveToInventory} className="p-6 space-y-6">
             
             <div className="bg-slate-50 dark:bg-slate-800/50 p-6 rounded-3xl border border-blue-100 dark:border-blue-900/30 flex items-center justify-between gap-4">
                <div className="flex items-center gap-4">
@@ -358,6 +352,7 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
                </div>
                <div className="flex flex-col items-end bg-white dark:bg-slate-900 px-4 py-2 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm">
                   <select
+                    aria-label="الوحدة الأساسية للمخزون"
                     value={selectedUnit}
                     onChange={(e) => setSelectedUnit(e.target.value)}
                     className="text-lg font-black text-blue-600 dark:text-blue-400 bg-slate-50 dark:bg-slate-800 outline-none hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg px-3 py-1 text-right w-full border border-blue-200 dark:border-blue-800 focus:ring-2 focus:ring-blue-500 appearance-none"
@@ -370,14 +365,15 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
                       <option value={selectedDrug.large_unit}>{selectedDrug.large_unit}</option>
                     )}
                   </select>
-                  <span className="text-[10px] text-slate-400 font-bold px-2 mt-1">الوحدة الأساسية</span>
+                  <span className="text-[11px] text-slate-500 font-bold px-2 mt-1">الوحدة الأساسية</span>
                </div>
             </div>
 
-            <div className={showStripsFields ? "grid grid-cols-3 gap-4" : "grid grid-cols-2 gap-4"}>
+            <div className={showStripsFields ? "grid grid-cols-1 sm:grid-cols-3 gap-4" : "grid grid-cols-1 sm:grid-cols-2 gap-4"}>
               <div className="space-y-1.5">
-                <label className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">الكمية ({selectedUnit || 'علبة'})</label>
+                <label htmlFor="inventory-large-quantity" className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">الكمية ({selectedUnit || 'علبة'})</label>
                 <input
+                  id="inventory-large-quantity"
                   type="number"
                   min="0"
                   value={quantity}
@@ -390,8 +386,9 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
               </div>
               {showStripsFields && (
                 <div className="space-y-1.5">
-                  <label className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">الكمية (شريط)</label>
+                  <label htmlFor="inventory-strip-quantity" className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">الكمية (شريط)</label>
                   <input
+                    id="inventory-strip-quantity"
                     type="number"
                     min="0"
                     value={stripsQuantity}
@@ -404,10 +401,11 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
                 </div>
               )}
               <div className="space-y-1.5">
-                <label className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">تاريخ الصلاحية</label>
+                <label htmlFor="inventory-expiry-date" className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">تاريخ الصلاحية</label>
                 <input
+                  id="inventory-expiry-date"
                   type="date"
-                  required
+                  required={Number(selectedDrug.has_expiry ?? 1) !== 0}
                   value={expiryDate}
                   onChange={(e) => setExpiryDate(e.target.value)}
                   className={`w-full bg-slate-50 dark:bg-slate-800 border p-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all font-bold ${
@@ -417,10 +415,11 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-1.5">
-                <label className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">سعر البيع المحلي (ج.م)</label>
+                <label htmlFor="inventory-local-price" className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">سعر البيع المحلي (ج.م)</label>
                 <input
+                  id="inventory-local-price"
                   type="number"
                   required
                   step="0.01"
@@ -432,8 +431,9 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
                 />
               </div>
               <div className="space-y-1.5">
-                <label className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">الباركود</label>
+                <label htmlFor="inventory-barcode" className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">الباركود</label>
                 <input
+                  id="inventory-barcode"
                   ref={barcodeRef}
                   type="text"
                   value={barcode}
@@ -448,10 +448,11 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
             </div>
 
             {showStripsFields && (
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-1.5">
-                  <label className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">عدد الشرائط بالعلبة (Strips per Box) *</label>
+                  <label htmlFor="inventory-large-to-medium" className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">عدد الشرائط بالعلبة (Strips per Box) *</label>
                   <input
+                    id="inventory-large-to-medium"
                     type="number"
                     min="1"
                     required

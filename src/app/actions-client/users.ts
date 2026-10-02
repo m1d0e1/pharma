@@ -53,6 +53,7 @@ const db = {
 import { isStaffOwner } from '@/lib/auth/staff-policy';
 import { sanitizeStaffPermissions } from '@/lib/auth/permission-catalog';
 import { getLocalSession } from '@/lib/auth/local';
+import { ROLE_PERMISSIONS } from '@/lib/auth/roles';
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 
 const defaultOwnerPerms = {
@@ -325,7 +326,9 @@ export async function addUserAction(formData: {
       can_view_expenses: true,
       can_view_staff_manage: true,
       can_view_staff_roles: true
-    } : (role === 'owner' || role === 'admin') ? { ...defaultOwnerPerms } : {};
+    } : role === 'cashier' ? Object.fromEntries(
+      ROLE_PERMISSIONS.cashier.permissions.map(permission => [permission, true])
+    ) : (role === 'owner' || role === 'admin') ? { ...defaultOwnerPerms } : {};
     if (role !== 'owner') delete defaultPerms.can_view_cogs;
 
     await db.prepare(`

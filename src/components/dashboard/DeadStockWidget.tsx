@@ -141,12 +141,12 @@ export default function DeadStockWidget() {
                 <div className="w-10 h-10 bg-white dark:bg-slate-800 rounded-xl flex items-center justify-center shadow-sm">📦</div>
                 <div>
                   <p className="font-bold text-slate-900 dark:text-white text-sm">{item.drug_name}</p>
-                  <p className="text-[10px] text-slate-400">المتاح: {item.quantity}</p>
+                  <p className="text-xs text-slate-500">المتاح: {item.quantity}</p>
                 </div>
               </div>
               <div className="text-left">
                 <p className="text-indigo-600 font-black text-sm">{Math.floor(item.months_idle)} شهر</p>
-                <p className="text-[10px] text-slate-400 font-bold uppercase">بدون مبيعات</p>
+                <p className="text-xs text-slate-500 font-bold">بدون مبيعات</p>
               </div>
             </div>
           ))

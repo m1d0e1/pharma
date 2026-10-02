@@ -153,6 +153,22 @@ describe('patient payment action', () => {
     expect(mockDb.prepare('SELECT COUNT(*) AS count FROM daily_journals').get()).toEqual({ count: 0 });
   });
 
+  it('treats uppercase finalized patient-account returns as settled receivables', async () => {
+    mockDb.prepare("UPDATE patients SET opening_balance = 0 WHERE id = 'patient-1'").run();
+    mockDb.prepare(`
+      INSERT INTO returns (id, invoice_id, total_refund, refund_method, status)
+      VALUES ('uppercase-return', 'credit-sale', 50, 'patient_account', 'APPROVED')
+    `).run();
+
+    expect(await addPatientPaymentAction({
+      patient_id: 'patient-1', shift_id: 'shift-1', amount: 1,
+      payment_method: 'cash', date: '2026-09-21',
+    })).toMatchObject({ success: false });
+
+    expect(mockDb.prepare('SELECT COUNT(*) AS count FROM patient_transactions').get()).toEqual({ count: 0 });
+    expect(mockDb.prepare('SELECT COUNT(*) AS count FROM cash_movements').get()).toEqual({ count: 0 });
+  });
+
   it('rolls back the ledger and cash receipt if journal posting fails', async () => {
     mockDb.exec(`
       CREATE TRIGGER fail_patient_payment_journal

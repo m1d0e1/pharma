@@ -5,6 +5,7 @@ import { Database, ShieldAlert, Sparkles, RefreshCw } from 'lucide-react';
 import { runDatabaseMaintenanceClient } from '@/lib/settings/client';
 import { toast } from 'react-hot-toast';
 import { getClientSession, isOwnerOrAdmin } from '@/lib/auth/local';
+import { isStaffOwner } from '@/lib/auth/staff-policy';
 import { isTauri } from '@/lib/env';
 import { invoke } from '@tauri-apps/api/core';
 import { dbGet } from '@/lib/db/tauri';
@@ -14,9 +15,11 @@ export default function DbMaintenance() {
   const [backupRunning, setBackupRunning] = useState(false);
   const [backupPath, setBackupPath] = useState('');
   const [backupAllowed, setBackupAllowed] = useState(false);
+  const [maintenanceAllowed, setMaintenanceAllowed] = useState(false);
   const [backupPassword, setBackupPassword] = useState('');
   const [repairNote, setRepairNote] = useState('');
   const [repairBackupPath, setRepairBackupPath] = useState('');
+  const [walletReviewNote, setWalletReviewNote] = useState('');
   const operationLockRef = useRef(false);
 
   useEffect(() => {
@@ -24,11 +27,13 @@ export default function DbMaintenance() {
     if (isTauri) {
       void getClientSession().then(async user => {
         if (mounted) setBackupAllowed(isOwnerOrAdmin(user));
+        if (mounted) setMaintenanceAllowed(isStaffOwner(user));
         if (isOwnerOrAdmin(user)) {
-          const row = await dbGet<{ value: string | null; backup_path: string | null }>("SELECT (SELECT value FROM config WHERE key='catalog_csv_repair_status') AS value, (SELECT value FROM config WHERE key='catalog_csv_repair_backup_path') AS backup_path");
+          const row = await dbGet<{ value: string | null; backup_path: string | null; wallet_review: string | null }>("SELECT (SELECT value FROM config WHERE key='catalog_csv_repair_status') AS value, (SELECT value FROM config WHERE key='catalog_csv_repair_backup_path') AS backup_path, (SELECT value FROM config WHERE key='legacy_patient_wallet_review_status') AS wallet_review");
           if (mounted) {
             setRepairNote(row?.value || '');
             setRepairBackupPath(row?.backup_path || '');
+            setWalletReviewNote(row?.wallet_review || '');
           }
         }
       }).catch(() => { /* Keep backup unavailable without a verified user. */ });
@@ -78,16 +83,14 @@ export default function DbMaintenance() {
   };
 
   return (
-    <div className="bg-gradient-to-br from-slate-900 to-slate-950 p-8 rounded-[2rem] text-white shadow-2xl relative overflow-hidden group">
-      <div className="absolute -top-10 -right-10 w-40 h-40 bg-blue-500/10 blur-3xl rounded-full"></div>
-      
+    <div className="bg-slate-950 p-6 sm:p-8 rounded-3xl text-white shadow-xl border border-slate-800">
       <div className="flex items-center gap-4 mb-6">
         <div className="w-12 h-12 bg-white/10 rounded-2xl flex items-center justify-center text-2xl">
           <Database className="w-6 h-6 text-blue-400" />
         </div>
         <div>
           <h4 className="text-xl font-bold">النسخ الاحتياطي وصيانة قاعدة البيانات</h4>
-          <p className="text-slate-400 text-xs">حفظ نسخة كاملة من بيانات النظام وتحسين التخزين المحلي</p>
+          <p className="text-slate-400 text-sm">حفظ نسخة كاملة من بيانات النظام وتحسين التخزين المحلي</p>
         </div>
       </div>
 
@@ -96,6 +99,11 @@ export default function DbMaintenance() {
           <div role="note" aria-label="حالة التصحيح المحلي" className="p-4 rounded-xl bg-white/10 text-sm space-y-2">
             <p>{repairNote}</p>
             {repairBackupPath && <><p>نسخة ما قبل التصحيح:</p><p dir="ltr" className="break-all select-all text-xs">{repairBackupPath}</p></>}
+          </div>
+        )}
+        {walletReviewNote && (
+          <div role="note" aria-label="مراجعة محافظ العملاء القديمة" className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 text-sm text-amber-100">
+            <p>{walletReviewNote}</p>
           </div>
         )}
         {backupAllowed && (
@@ -121,7 +129,7 @@ export default function DbMaintenance() {
             )}
           </div>
         )}
-        <div className="bg-white/5 border border-white/10 p-6 rounded-2xl space-y-4">
+        {maintenanceAllowed && <div className="bg-white/5 border border-white/10 p-6 rounded-2xl space-y-4">
           <p className="text-sm text-slate-300 leading-relaxed">
             يقوم هذا الإجراء بإعادة بناء ملف قاعدة البيانات بالكامل لاستعادة المساحة المهدرة الناتجة عن حذف الفواتير والأصناف السابقة (`VACUUM`)، ويقوم بتحديث إحصائيات الفهارس لتسريع محرك بحث SQLite (`ANALYZE`).
           </p>
@@ -134,6 +142,7 @@ export default function DbMaintenance() {
           </div>
           
           <button 
+            type="button"
             onClick={handleMaintenance}
             disabled={running || backupRunning}
             className="w-full py-4 bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700 text-white rounded-2xl font-black shadow-xl transition-all disabled:opacity-50 flex items-center justify-center gap-2 border border-blue-400/20"
@@ -150,7 +159,7 @@ export default function DbMaintenance() {
               </>
             )}
           </button>
-        </div>
+        </div>}
       </div>
     </div>
   );

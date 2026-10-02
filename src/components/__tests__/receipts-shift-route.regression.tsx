@@ -94,6 +94,20 @@ describe('receipts shift route', () => {
     ));
   });
 
+  it('loads persisted loyalty redemption snapshots into receipt history', async () => {
+    currentShiftId = null;
+    (dbSelect as jest.Mock).mockImplementation(async (sql: string) => (
+      sql.includes('FROM sales_invoices si') ? [] : []
+    ));
+    render(<ReceiptsPage />);
+
+    await waitFor(() => expect(dbSelect).toHaveBeenCalledWith(
+      expect.stringContaining('si.loyalty_discount_amount'),
+      ['local_default', 'local_default'],
+    ));
+    expect((dbSelect as jest.Mock).mock.calls[0][0]).toContain('si.points_redeemed');
+  });
+
   it('distinguishes a receipt query failure from an empty history and retries', async () => {
     (dbSelect as jest.Mock)
       .mockRejectedValueOnce(new Error('bridge unavailable'))

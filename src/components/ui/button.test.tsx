@@ -17,7 +17,8 @@ describe('Button Component', () => {
   it('applies size classes correctly', () => {
     const { container } = render(<Button size="lg">Large Button</Button>);
     const button = container.firstChild;
-    expect(button).toHaveClass('h-15');
+    expect(button).toHaveClass('h-14');
+    expect(button).not.toHaveClass('h-15');
   });
 
   it('handles click events', () => {

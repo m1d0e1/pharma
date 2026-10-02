@@ -33,13 +33,16 @@ describe('purchase report display regressions', () => {
     tax_percent: 10,
     unit_id: 1,
     unit: 'Box',
+    large_unit: 'زجاجة',
   };
 
-  it('uses the seeded unit mapping: unit 1 is Box and unit 2 is Strip', () => {
-    expect(purchaseReportUnitLabel(currentDetailPayload)).toBe('علبة');
-    expect(purchaseInvoiceUnitLabel(currentDetailPayload)).toBe('علبة');
-    expect(purchaseReportUnitLabel({ unit_id: 2, unit: 'Strip' })).toBe('شريط');
-    expect(purchaseInvoiceUnitLabel({ unit_id: 2, unit: 'Strip' })).toBe('شريط');
+  it('shows the master large-unit name for canonical purchase quantities with an Arabic fallback', () => {
+    expect(purchaseReportUnitLabel(currentDetailPayload)).toBe('زجاجة');
+    expect(purchaseInvoiceUnitLabel(currentDetailPayload)).toBe('زجاجة');
+    expect(purchaseReportUnitLabel({ unit_id: 2, unit: 'Strip', large_unit: 'كرتونة' })).toBe('كرتونة');
+    expect(purchaseInvoiceUnitLabel({ unit_id: 2, unit: 'Strip', large_unit: 'كرتونة' })).toBe('كرتونة');
+    expect(purchaseReportUnitLabel({ large_unit: '   ' })).toBe('علبة');
+    expect(purchaseInvoiceUnitLabel({ large_unit: '' })).toBe('علبة');
   });
 
   it('calculates a safe gross/net fallback from the current detail payload', () => {

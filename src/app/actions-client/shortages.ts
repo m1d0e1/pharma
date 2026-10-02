@@ -53,7 +53,7 @@ const db = {
 
 import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { getLowStockAction } from './inventory';
-import { getSalesConversionSql, hasRecoveredStock } from '@/lib/inventory/reorder-state';
+import { getSalesConversionSql, getSalesQuantityInLargeSql, hasRecoveredStock } from '@/lib/inventory/reorder-state';
 
 const DEFAULT_REORDER_LIMIT = 10;
 
@@ -184,23 +184,20 @@ export async function getShortagesAction() {
     if (!user || !hasUserPermissionSync(user, 'can_view_restock')) return { success: false, error: 'غير مصرح' };
     const pharmacyId = user.pharmacy_id || 'local_default';
     const conversion = await getSalesConversionSql(db);
+    const quantityInLarge = getSalesQuantityInLargeSql({
+      quantity: 'si.quantity_sold',
+      unit: 'si.unit',
+      mediumUnit: 'sales_drug.medium_unit',
+      smallUnit: 'sales_drug.small_unit',
+      largeFactor: conversion.largeFactor,
+      smallFactor: conversion.smallFactor,
+    });
 
     const items = await db.prepare(`
       WITH MonthlySales AS (
         SELECT
           si.drug_id,
-          SUM(
-            CASE
-              WHEN si.unit IN ('medium', 'strip', 'شريط') OR si.unit = sales_drug.medium_unit
-                THEN si.quantity_sold / ${conversion.largeFactor}
-              WHEN si.unit = 'small' OR si.unit = sales_drug.small_unit
-                THEN si.quantity_sold / (
-                  ${conversion.largeFactor}
-                  * ${conversion.smallFactor}
-                )
-              ELSE si.quantity_sold
-            END
-          ) AS avg_monthly_usage
+          SUM(${quantityInLarge}) AS avg_monthly_usage
         FROM sales_items si
         JOIN sales_invoices inv ON inv.id = si.invoice_id
         JOIN master_drugs sales_drug ON sales_drug.id = si.drug_id
@@ -223,6 +220,7 @@ export async function getShortagesAction() {
         m.generic_name,
         COALESCE(m.official_price, 0) AS official_price,
         COALESCE(m.large_to_medium, 1) AS large_to_medium,
+        COALESCE(m.has_expiry, 1) AS has_expiry,
         COALESCE(NULLIF(m.barcode, ''), '') AS barcode,
         (
           SELECT sup.name_ar 
@@ -274,8 +272,17 @@ export async function getShortagesAction() {
       JOIN master_drugs m ON m.id = s.drug_id
       LEFT JOIN MonthlySales ms ON ms.drug_id = s.drug_id
       LEFT JOIN (
-        SELECT i.drug_id, SUM(COALESCE(i.quantity, 0)) AS current_stock
+        SELECT
+          i.drug_id,
+          SUM(
+            CASE
+              WHEN COALESCE(stock_md.has_expiry, 1) = 0 OR i.expiry_date IS NOT NULL
+                THEN COALESCE(i.quantity, 0)
+              ELSE 0
+            END
+          ) AS current_stock
         FROM inventory i
+        JOIN master_drugs stock_md ON stock_md.id = i.drug_id
         WHERE (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
           AND (i.expiry_date IS NULL OR i.expiry_date >= date('now', 'localtime'))
         GROUP BY i.drug_id

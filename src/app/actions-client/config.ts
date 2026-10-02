@@ -1,6 +1,7 @@
 
 import { dbSelect, dbExecute, dbGet, dbTransaction } from '@/lib/db/tauri';
 import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
+import { isPharmacyIdentityConfigKey, pharmacyIdentityConfigKey } from '@/lib/settings/pharmacy-identity';
 const logActivity = async (userId, action, details) => {
   try {
     await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [userId, action, details]);
@@ -58,7 +59,11 @@ const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, 
  */
 export async function getConfigAction(key: string) {
   try {
-    const row = await db.prepare('SELECT value FROM config WHERE key = ?').get(key) as { value: string };
+    const localUser = isPharmacyIdentityConfigKey(key) ? await getLocalSession() : null;
+    const scopedKey = isPharmacyIdentityConfigKey(key)
+      ? pharmacyIdentityConfigKey(key, localUser?.pharmacy_id)
+      : key;
+    const row = await db.prepare('SELECT value FROM config WHERE key = ?').get(scopedKey) as { value: string };
     return { success: true, value: row?.value || null };
   } catch (error) {
     return { success: false, error: 'Failed to fetch config' };
@@ -74,12 +79,15 @@ export async function updateConfigAction(key: string, value: string) {
     if (!localUser || !hasUserPermissionSync(localUser, 'can_view_settings')) {
       return { success: false, error: 'غير مصرح' };
     }
+    const scopedKey = isPharmacyIdentityConfigKey(key)
+      ? pharmacyIdentityConfigKey(key, localUser.pharmacy_id)
+      : key;
 
     await db.prepare(`
       INSERT INTO config (key, value) 
       VALUES (?, ?) 
       ON CONFLICT(key) DO UPDATE SET value = excluded.value
-    `).run(key, value);
+    `).run(scopedKey, value);
     
     revalidatePath('/');
     return { success: true };

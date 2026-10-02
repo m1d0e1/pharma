@@ -7,6 +7,7 @@ import { Plus, X, Pill, BadgeDollarSign, Factory, Beaker, Box, ChevronDown } fro
 import { useHotkeys } from 'react-hotkeys-hook'
 import { findDrugBarcodeConflict, getReplacementDrug } from '@/app/actions-client/drug-replacement';
 import DrugReplacementDialog from './DrugReplacementDialog';
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap';
 
 interface Props {
   onClose: () => void
@@ -17,6 +18,7 @@ export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const submissionRef = useRef(false)
   const [replacement, setReplacement] = useState<any>(null);
+  const dialogRef = useDialogFocusTrap<HTMLDivElement>(!replacement);
   const [unitsList, setUnitsList] = useState<{ name_ar: string }[]>([])
   const [formData, setFormData] = useState({
     trade_name: '',
@@ -118,8 +120,7 @@ export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
       {/* Backdrop */}
       <div className="absolute inset-0 bg-slate-900/70 backdrop-blur-md" />
 
-      {/* Modal — no maxHeight, everything visible at once */}
-      <div className="relative bg-white dark:bg-slate-900 rounded-3xl shadow-2xl w-full max-w-lg border border-slate-200/60 dark:border-slate-700/60 animate-in zoom-in-95 fade-in duration-200 overflow-hidden">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-hidden={replacement ? true : undefined} aria-labelledby="quick-add-drug-title" tabIndex={-1} className="relative bg-white dark:bg-slate-900 rounded-3xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto border border-slate-200/60 dark:border-slate-700/60 animate-in zoom-in-95 fade-in duration-200">
 
         {/* ── Header ── */}
         <div className="relative bg-gradient-to-br from-indigo-600 via-blue-600 to-blue-500 px-6 py-5 overflow-hidden">
@@ -131,12 +132,13 @@ export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
                 <Pill className="w-4.5 h-4.5 text-white" />
               </div>
               <div>
-                <h2 className="text-lg font-black text-white tracking-tight leading-tight">إضافة صنف جديد للقاعدة</h2>
+                <h2 id="quick-add-drug-title" className="text-lg font-black text-white tracking-tight leading-tight">إضافة صنف جديد للقاعدة</h2>
                 <p className="text-blue-100/75 text-[11px] font-medium mt-0.5">أدخل البيانات الأساسية لتعريف الدواء</p>
               </div>
             </div>
             <button
               type="button"
+              aria-label="إغلاق إضافة الصنف"
               disabled={isSubmitting}
               onClick={handleClose}
               className="w-8 h-8 bg-white/15 hover:bg-white/30 rounded-xl flex items-center justify-center transition-all hover:scale-110 active:scale-95 text-white shrink-0 disabled:opacity-50"
@@ -151,13 +153,14 @@ export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
           <div className="px-6 py-5 space-y-4">
 
             {/* Row 1: Arabic + English names */}
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
-                <label className={labelClass}>
+                <label htmlFor="quick-drug-name-ar" className={labelClass}>
                   <Pill className="w-3 h-3 text-blue-500" />
                   الاسم التجاري (عربي) <span className="text-red-500 normal-case">*</span>
                 </label>
                 <input
+                  id="quick-drug-name-ar"
                   type="text"
                   required
                   autoFocus
@@ -168,11 +171,12 @@ export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
                 />
               </div>
               <div>
-                <label className={labelClass}>
+                <label htmlFor="quick-drug-name-en" className={labelClass}>
                   <Pill className="w-3 h-3 text-blue-500" />
                   الاسم التجاري (EN)
                 </label>
                 <input
+                  id="quick-drug-name-en"
                   type="text"
                   value={formData.trade_name_en}
                   onChange={(e) => setFormData({ ...formData, trade_name_en: e.target.value })}
@@ -185,11 +189,12 @@ export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
 
             {/* Row 2: Active ingredient */}
             <div>
-              <label className={labelClass}>
+              <label htmlFor="quick-drug-active" className={labelClass}>
                 <Beaker className="w-3 h-3 text-emerald-500" />
                 المادة الفعالة
               </label>
               <input
+                id="quick-drug-active"
                 type="text"
                 value={formData.active_ingredient}
                 onChange={(e) => setFormData({ ...formData, active_ingredient: e.target.value })}
@@ -199,14 +204,15 @@ export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
             </div>
 
             {/* Row 3: Unit + Price + Manufacturer */}
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div>
-                <label className={labelClass}>
+                <label htmlFor="quick-drug-unit" className={labelClass}>
                   <Box className="w-3 h-3 text-violet-500" />
                   الوحدة (Unit)
                 </label>
                 <div className="relative">
                   <input
+                    id="quick-drug-unit"
                     list="units-list"
                     value={formData.unit}
                     onChange={(e) => setFormData({ ...formData, unit: e.target.value })}
@@ -222,12 +228,13 @@ export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
               </div>
 
               <div>
-                <label className={labelClass}>
+                <label htmlFor="quick-drug-price" className={labelClass}>
                   <BadgeDollarSign className="w-3 h-3 text-amber-500" />
                   السعر الرسمي <span className="text-red-500 normal-case">*</span>
                 </label>
                 <div className="relative">
                   <input
+                    id="quick-drug-price"
                     type="number"
                     step="0.01"
                     min="0"
@@ -242,11 +249,12 @@ export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
               </div>
 
               <div>
-                <label className={labelClass}>
+                <label htmlFor="quick-drug-manufacturer" className={labelClass}>
                   <Factory className="w-3 h-3 text-orange-500" />
                   الشركة المصنعة
                 </label>
                 <input
+                  id="quick-drug-manufacturer"
                   type="text"
                   value={formData.manufacturer}
                   onChange={(e) => setFormData({ ...formData, manufacturer: e.target.value })}
@@ -257,13 +265,14 @@ export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
             </div>
 
             {/* Row 4: Barcode + Strips per Box */}
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
-                <label className={labelClass}>
+                <label htmlFor="quick-drug-barcode" className={labelClass}>
                   <Box className="w-3 h-3 text-slate-500" />
                   الباركود (Barcode)
                 </label>
                 <input
+                  id="quick-drug-barcode"
                   type="text"
                   value={formData.barcode}
                   onChange={(e) => setFormData({ ...formData, barcode: e.target.value })}
@@ -281,11 +290,12 @@ export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
                 />
               </div>
               <div>
-                <label className={labelClass}>
+                <label htmlFor="quick-drug-conversion" className={labelClass}>
                   <Pill className="w-3 h-3 text-indigo-500" />
                   عدد الشرائط بالعلبة *
                 </label>
                 <input
+                  id="quick-drug-conversion"
                   type="number"
                   min="1"
                   required

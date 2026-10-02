@@ -2,13 +2,21 @@ import React from 'react';
 import { render, screen, waitFor, act, fireEvent } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import ItemsManagementClient from '../inventory/ItemsManagementClient';
-import { addMasterDrugAction, searchMasterDrugsAction, deleteMasterDrugAction, archiveMasterDrugAction, importMasterDrugWorkbookAction } from '@/app/actions-client/master-drugs';
+import {
+  addMasterDrugAction,
+  searchMasterDrugsAction,
+  deleteMasterDrugAction,
+  archiveMasterDrugAction,
+  previewMasterDrugCatalogUpdateAction,
+  applyMasterDrugCatalogUpdateAction,
+} from '@/app/actions-client/master-drugs';
 import { getReplacementDrug, replaceDrugAction } from '@/app/actions-client/drug-replacement';
 import { dbSelect } from '@/lib/db/tauri';
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { save } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
 import { secureCache } from '@/lib/cache/secure_cache';
+import { toast } from 'react-hot-toast';
 
 jest.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(),
@@ -28,7 +36,8 @@ jest.mock('@/app/actions-client/master-drugs', () => ({
   addMasterDrugAction: jest.fn(),
   deleteMasterDrugAction: jest.fn(),
   archiveMasterDrugAction: jest.fn(),
-  importMasterDrugWorkbookAction: jest.fn(),
+  previewMasterDrugCatalogUpdateAction: jest.fn(),
+  applyMasterDrugCatalogUpdateAction: jest.fn(),
   updateMasterDrugAction: jest.fn(),
   searchMasterDrugsAction: jest.fn(),
 }));
@@ -43,7 +52,7 @@ jest.mock('xlsx', () => ({
     json_to_sheet: jest.fn(() => ({ kind: 'export-sheet' })),
     book_new: jest.fn(() => ({})),
     book_append_sheet: jest.fn(),
-    sheet_to_json: jest.fn(() => [{ trade_name: 'Imported Drug', official_price: 12 }]),
+    sheet_to_json: jest.fn(() => [{ id: 500, trade_name: 'Imported Drug', official_price: 12 }]),
   },
 }));
 
@@ -75,6 +84,34 @@ describe('ItemsManagementClient auto-refresh and total count regression', () => 
     },
   ];
 
+  const safeCatalogPreview: any = {
+    signature: 'catalog-preview-test-signature',
+    summary: {
+      incomingCount: 1,
+      changedDrugCount: 0,
+      changedFieldCount: 0,
+      protectedFieldCount: 0,
+      newDrugCount: 1,
+      suppressedDrugCount: 0,
+      identityConflictCount: 0,
+      currentOnlyCount: 2,
+      unchangedCount: 0,
+      inventoryRowsAffected: 0,
+      historyRowsAffected: 0,
+    },
+    changedDrugs: [],
+    newDrugs: [{
+      catalogDrugId: 500,
+      name: 'Imported Drug',
+      suppressed: false,
+      incoming: { trade_name: 'Imported Drug', official_price: 12, notes: 'Catalog protected note' },
+      protectedIncomingFields: ['notes'],
+    }],
+    identityConflicts: [],
+    matchedLinks: [],
+    currentOnlySample: sampleItems.map(item => ({ masterDrugId: item.id, name: item.trade_name_en })),
+  };
+
   beforeEach(() => {
     jest.clearAllMocks();
     (getClientSession as jest.Mock).mockResolvedValue({ id: 'user-1', role: 'owner', pharmacy_id: 'ph-1' });
@@ -83,6 +120,14 @@ describe('ItemsManagementClient auto-refresh and total count regression', () => 
       success: true,
       data: sampleItems,
     });
+  });
+
+  it('contains focus in the item editor when it opens', async () => {
+    render(<ItemsManagementClient initialItems={sampleItems} totalCount={2} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'إضافة صنف جديد' }));
+    expect(screen.getByRole('dialog', { name: 'إضافة صنف جديد لقاعدة البيانات' })).toHaveAttribute('tabindex', '-1');
+    await waitFor(() => expect(screen.getByRole('button', { name: 'إغلاق محرر الصنف' })).toHaveFocus());
   });
 
   it('keeps catalog data visible but hides mutation controls from can_view_stores-only users', async () => {
@@ -107,6 +152,21 @@ describe('ItemsManagementClient auto-refresh and total count regression', () => 
     expect(screen.getByText('معلومات الصنف')).toBeInTheDocument();
     expect(screen.queryByText('تعديل بيانات الصنف')).not.toBeInTheDocument();
     expect(screen.queryByText('حذف الصنف نهائياً')).not.toBeInTheDocument();
+  });
+
+  it('keeps ordinary inventory management available but hides catalog reconciliation from non-admin staff', async () => {
+    (getClientSession as jest.Mock).mockResolvedValue({
+      id: 'pharmacist-1',
+      role: 'pharmacist',
+      pharmacy_id: 'ph-1',
+      permissions: { can_manage_inventory: true },
+    });
+    (hasUserPermissionSync as jest.Mock).mockReturnValue(true);
+
+    render(<ItemsManagementClient initialItems={sampleItems} totalCount={2} />);
+
+    expect(await screen.findByRole('button', { name: 'إضافة صنف جديد' })).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByLabelText('اختيار ملف تحديث دليل الأدوية للمراجعة')).not.toBeInTheDocument());
   });
 
   it('offers safe archive for the legacy deletion error, preserves cancellation, then archives with explicit confirmation', async () => {
@@ -193,6 +253,43 @@ describe('ItemsManagementClient auto-refresh and total count regression', () => 
     expect(screen.queryByText('Stale Replacement Refresh')).not.toBeInTheDocument();
     expect(screen.getByText('Newest After Replacement')).toBeInTheDocument();
     confirm.mockRestore();
+  });
+
+  it('warns when replacement commits but the catalog refresh action returns a failure result', async () => {
+    const confirm = jest.spyOn(window, 'confirm').mockReturnValue(true);
+    const toastError = jest.spyOn(toast, 'error');
+    const candidate = { ...sampleItems[1], id: 20, trade_name_en: 'Replacement Candidate', barcode: 'ABC' };
+    let replacementCommitted = false;
+    (deleteMasterDrugAction as jest.Mock).mockResolvedValue({ success: false, code: 'DRUG_IN_USE', error: 'linked history' });
+    (replaceDrugAction as jest.Mock).mockImplementation(async () => {
+      replacementCommitted = true;
+      return { success: true, id: 20, backupPath: 'backups/replaced.db' };
+    });
+    (getReplacementDrug as jest.Mock).mockImplementation(async (id: number) => Number(id) === 1 ? sampleItems[0] : candidate);
+    (searchMasterDrugsAction as jest.Mock).mockImplementation(({ query }: { query?: string }) => {
+      if (query === 'Candidate') return Promise.resolve({ success: true, data: [candidate] });
+      if (!query && replacementCommitted) return Promise.resolve({ success: false, error: 'refresh failed' });
+      return Promise.resolve({ success: true, data: sampleItems });
+    });
+
+    render(<ItemsManagementClient initialItems={sampleItems} totalCount={2} />);
+    await screen.findByRole('button', { name: 'إضافة صنف جديد' });
+    fireEvent.contextMenu(screen.getByText('Concor 5mg').closest('tr')!);
+    fireEvent.click(screen.getByRole('button', { name: /حذف الصنف نهائياً/ }));
+
+    const replacementSearch = await screen.findByLabelText('ابحث عن الصنف البديل');
+    fireEvent.change(replacementSearch, { target: { value: 'Candidate' } });
+    fireEvent.click(await screen.findByText(/Replacement Candidate/));
+    await screen.findByLabelText('البيانات النهائية: الاسم التجاري');
+    fireEvent.click(screen.getByRole('checkbox', { name: /أؤكد أنه نفس الدواء/ }));
+    fireEvent.change(screen.getByLabelText('كلمة مرور المدير الحالي'), { target: { value: 'pw' } });
+    fireEvent.click(screen.getByRole('button', { name: 'نقل الروابط وحذف القديم' }));
+
+    await waitFor(() => expect(replaceDrugAction).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith('تم الاستبدال لكن تعذر تحديث القائمة'));
+    expect(screen.getByText('Concor 5mg')).toBeInTheDocument();
+    confirm.mockRestore();
+    toastError.mockRestore();
   });
 
   it('preserves initialItems on initial render and after debounce without wiping to 0', async () => {
@@ -411,8 +508,7 @@ describe('ItemsManagementClient auto-refresh and total count regression', () => 
     fireEvent.click(editButtons[editButtons.length - 1]);
     expect(await screen.findByDisplayValue('First Edit Drug')).toBeInTheDocument();
 
-    editButtons = screen.getAllByRole('button', { name: 'تعديل بيانات الصنف' });
-    fireEvent.click(editButtons[1]);
+    fireEvent.click(screen.getByRole('button', { name: 'تعديل Panadol Blue' }));
     expect(await screen.findByDisplayValue('Second Edit Drug')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /البيانات المالية/ }));
@@ -605,7 +701,7 @@ describe('ItemsManagementClient auto-refresh and total count regression', () => 
     })));
   });
 
-  it('imports the rendered master-drug workbook through the secured action, refreshes cache, and reloads visible results', async () => {
+  it('previews the rendered master-drug workbook without writing or refreshing cache', async () => {
     const originalFileReader = global.FileReader;
     class MockFileReader {
       onload: ((event: any) => void) | null = null;
@@ -614,8 +710,7 @@ describe('ItemsManagementClient auto-refresh and total count regression', () => 
       }
     }
     Object.defineProperty(global, 'FileReader', { configurable: true, value: MockFileReader });
-    (importMasterDrugWorkbookAction as jest.Mock).mockResolvedValue({ success: true, data: { masterDrugCount: 1 } });
-    (searchMasterDrugsAction as jest.Mock).mockResolvedValue({ success: true, data: [{ ...sampleItems[0], trade_name_en: 'Imported Drug' }] });
+    (previewMasterDrugCatalogUpdateAction as jest.Mock).mockResolvedValue({ success: true, data: safeCatalogPreview });
 
     const view = render(<ItemsManagementClient initialItems={sampleItems} totalCount={2} />);
     await screen.findByRole('button', { name: 'إضافة صنف جديد' });
@@ -626,16 +721,22 @@ describe('ItemsManagementClient auto-refresh and total count regression', () => 
       target: { files: [new File(['xlsx'], 'master.xlsx', { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })] },
     });
 
-    await waitFor(() => expect(importMasterDrugWorkbookAction).toHaveBeenCalledWith([
-      { trade_name: 'Imported Drug', official_price: 12 },
+    await waitFor(() => expect(previewMasterDrugCatalogUpdateAction).toHaveBeenCalledWith([
+      { id: 500, trade_name: 'Imported Drug', official_price: 12 },
     ]));
-    expect(secureCache.reload).toHaveBeenCalledTimes(1);
-    await waitFor(() => expect(searchMasterDrugsAction).toHaveBeenCalledWith({ query: '', searchByActiveIngredient: false }));
-    expect(await screen.findByText('Imported Drug')).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'مراجعة تحديث دليل الأدوية' })).toBeInTheDocument();
+    expect(screen.getAllByText('Imported Drug').length).toBeGreaterThan(0);
+    expect(screen.getByText(/المخزون المتأثر: 0/)).toBeInTheDocument();
+    expect(screen.getByText(/السجل التاريخي المتأثر: 0/)).toBeInTheDocument();
+    fireEvent.click(screen.getByText('عرض كل الحقول التي ستُستخدم أو تُتجاهل قبل الإضافة'));
+    expect(screen.getByText('Catalog protected note')).toBeInTheDocument();
+    expect(screen.getByText('محمي محلياً — لن يُنسخ من الدليل')).toBeInTheDocument();
+    expect(applyMasterDrugCatalogUpdateAction).not.toHaveBeenCalled();
+    expect(secureCache.reload).not.toHaveBeenCalled();
     Object.defineProperty(global, 'FileReader', { configurable: true, value: originalFileReader });
   });
 
-  it('does not let a delayed import refresh overwrite a newer catalog search', async () => {
+  it('applies only after explicit review, new-drug choice and backup password, then refreshes visible results', async () => {
     const originalFileReader = global.FileReader;
     class MockFileReader {
       onload: ((event: any) => void) | null = null;
@@ -644,24 +745,14 @@ describe('ItemsManagementClient auto-refresh and total count regression', () => 
       }
     }
     Object.defineProperty(global, 'FileReader', { configurable: true, value: MockFileReader });
-
-    let resolveCacheReload: () => void = () => {};
-    (secureCache.reload as jest.Mock).mockImplementationOnce(() => new Promise<void>(resolve => { resolveCacheReload = resolve; }));
-    (importMasterDrugWorkbookAction as jest.Mock).mockResolvedValue({ success: true, data: { masterDrugCount: 1 } });
-    (searchMasterDrugsAction as jest.Mock).mockImplementation(({ query }: { query?: string }) => {
-      if (query === 'Newest Filter') {
-        return Promise.resolve({
-          success: true,
-          data: [{ ...sampleItems[1], id: 303, trade_name_en: 'Newest During Import' }],
-          total: 1,
-          page: 1,
-          pageSize: 100,
-        });
-      }
-      return Promise.resolve({
-        success: true,
-        data: [{ ...sampleItems[0], id: 403, trade_name_en: 'Stale Import Refresh' }],
-      });
+    (previewMasterDrugCatalogUpdateAction as jest.Mock).mockResolvedValue({ success: true, data: safeCatalogPreview });
+    (applyMasterDrugCatalogUpdateAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: { updatedDrugs: 0, updatedFields: 0, addedDrugs: 1, inventoryRowsAffected: 0, historyRowsAffected: 0 },
+    });
+    (searchMasterDrugsAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: [{ ...sampleItems[0], id: 500, trade_name_en: 'Imported Drug' }],
     });
 
     const view = render(<ItemsManagementClient initialItems={sampleItems} totalCount={2} />);
@@ -670,16 +761,149 @@ describe('ItemsManagementClient auto-refresh and total count regression', () => 
     fireEvent.change(fileInput, {
       target: { files: [new File(['xlsx'], 'master.xlsx', { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })] },
     });
-    await waitFor(() => expect(importMasterDrugWorkbookAction).toHaveBeenCalled());
+    await screen.findByRole('heading', { name: 'مراجعة تحديث دليل الأدوية' });
 
-    const searchInput = screen.getByPlaceholderText(/Search by English Trade Name/i);
-    fireEvent.change(searchInput, { target: { value: 'Newest Filter' } });
-    expect(await screen.findByText('Newest During Import')).toBeInTheDocument();
+    const addNewDrug = screen.getByRole('checkbox', { name: /Imported Drug.*إضافة/ });
+    expect(addNewDrug).not.toBeChecked();
+    fireEvent.click(addNewDrug);
+    expect(addNewDrug).toBeChecked();
 
-    await act(async () => resolveCacheReload());
-    expect(searchMasterDrugsAction).not.toHaveBeenCalledWith({ query: '', searchByActiveIngredient: false });
-    expect(screen.queryByText('Stale Import Refresh')).not.toBeInTheDocument();
-    expect(screen.getByText('Newest During Import')).toBeInTheDocument();
+    const applyButton = screen.getByRole('button', { name: 'إنشاء نسخة احتياطية ثم تطبيق القرارات' });
+    expect(applyButton).toBeDisabled();
+    fireEvent.change(screen.getByPlaceholderText('كلمة مرور المالك أو المدير'), { target: { value: 'verified-password' } });
+    expect(applyButton).toBeEnabled();
+    fireEvent.click(applyButton);
+
+    await waitFor(() => expect(applyMasterDrugCatalogUpdateAction).toHaveBeenCalledWith(expect.objectContaining({
+      rows: [{ id: 500, trade_name: 'Imported Drug', official_price: 12 }],
+      previewSignature: 'catalog-preview-test-signature',
+      newDrugDecisions: [{ catalogDrugId: 500, action: 'add' }],
+      adminPassword: 'verified-password',
+    })));
+    expect(secureCache.reload).not.toHaveBeenCalled();
+    await waitFor(() => expect(searchMasterDrugsAction).toHaveBeenCalledWith({ query: '', searchByActiveIngredient: false }));
+    expect(await screen.findByText('Imported Drug')).toBeInTheDocument();
+    Object.defineProperty(global, 'FileReader', { configurable: true, value: originalFileReader });
+  });
+
+  it('shows a prior catalog policy only as context and still submits keep-local until the user explicitly changes it', async () => {
+    const originalFileReader = global.FileReader;
+    class MockFileReader {
+      onload: ((event: any) => void) | null = null;
+      readAsBinaryString() {
+        this.onload?.({ target: { result: 'mock-master-workbook' } });
+      }
+    }
+    Object.defineProperty(global, 'FileReader', { configurable: true, value: MockFileReader });
+    const rememberedPolicyPreview = {
+      ...safeCatalogPreview,
+      signature: 'remembered-policy-signature',
+      summary: {
+        ...safeCatalogPreview.summary,
+        changedDrugCount: 1,
+        changedFieldCount: 1,
+        newDrugCount: 0,
+      },
+      changedDrugs: [{
+        catalogDrugId: 1,
+        masterDrugId: 1,
+        name: 'Concor 5mg',
+        matchMethod: 'same_id_name',
+        changes: [{
+          field: 'official_price',
+          label: 'السعر الرسمي',
+          currentValue: 35,
+          incomingValue: 40,
+          policy: 'catalog',
+          defaultDecision: 'keep_local',
+        }],
+        protectedChanges: [],
+      }],
+      newDrugs: [],
+    };
+    (previewMasterDrugCatalogUpdateAction as jest.Mock).mockResolvedValue({ success: true, data: rememberedPolicyPreview });
+    (applyMasterDrugCatalogUpdateAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: { updatedDrugs: 0, updatedFields: 0, addedDrugs: 0, inventoryRowsAffected: 0, historyRowsAffected: 0 },
+    });
+
+    const view = render(<ItemsManagementClient initialItems={sampleItems} totalCount={2} />);
+    await screen.findByRole('button', { name: 'إضافة صنف جديد' });
+    fireEvent.change(view.container.querySelector('input[type="file"]') as HTMLInputElement, {
+      target: { files: [new File(['xlsx'], 'master.xlsx')] },
+    });
+    await screen.findByRole('heading', { name: 'مراجعة تحديث دليل الأدوية' });
+    const changedDrugSummary = screen.getAllByText(/Concor 5mg/).find(element => element.tagName === 'SUMMARY');
+    expect(changedDrugSummary).toBeDefined();
+    fireEvent.click(changedDrugSummary!);
+    expect(screen.getByText('الاختيار السابق: استخدام الدليل')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText('كلمة مرور المالك أو المدير'), { target: { value: 'verified-password' } });
+    fireEvent.click(screen.getByRole('button', { name: 'إنشاء نسخة احتياطية ثم تطبيق القرارات' }));
+
+    await waitFor(() => expect(applyMasterDrugCatalogUpdateAction).toHaveBeenCalledWith(expect.objectContaining({
+      previewSignature: 'remembered-policy-signature',
+      fieldDecisions: [expect.objectContaining({
+        catalogDrugId: 1,
+        masterDrugId: 1,
+        field: 'official_price',
+        action: 'keep_local',
+        expectedCurrentValue: 35,
+        expectedIncomingValue: 40,
+      })],
+    })));
+    Object.defineProperty(global, 'FileReader', { configurable: true, value: originalFileReader });
+  });
+
+  it('bulk use-catalog requires an explicit click and is reflected in the reviewed field decisions', async () => {
+    const originalFileReader = global.FileReader;
+    class MockFileReader {
+      onload: ((event: any) => void) | null = null;
+      readAsBinaryString() {
+        this.onload?.({ target: { result: 'mock-master-workbook' } });
+      }
+    }
+    Object.defineProperty(global, 'FileReader', { configurable: true, value: MockFileReader });
+    const changedPreview = {
+      ...safeCatalogPreview,
+      signature: 'bulk-catalog-signature',
+      summary: { ...safeCatalogPreview.summary, changedDrugCount: 1, changedFieldCount: 1, newDrugCount: 0 },
+      changedDrugs: [{
+        catalogDrugId: 1,
+        masterDrugId: 1,
+        name: 'Concor 5mg',
+        matchMethod: 'same_id_name',
+        changes: [{
+          field: 'manufacturer',
+          label: 'الشركة المصنعة',
+          currentValue: 'LOCAL',
+          incomingValue: 'CATALOG',
+          policy: null,
+          defaultDecision: 'keep_local',
+        }],
+        protectedChanges: [],
+      }],
+      newDrugs: [],
+    };
+    (previewMasterDrugCatalogUpdateAction as jest.Mock).mockResolvedValue({ success: true, data: changedPreview });
+    (applyMasterDrugCatalogUpdateAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: { updatedDrugs: 1, updatedFields: 1, addedDrugs: 0, inventoryRowsAffected: 0, historyRowsAffected: 0 },
+    });
+
+    const view = render(<ItemsManagementClient initialItems={sampleItems} totalCount={2} />);
+    await screen.findByRole('button', { name: 'إضافة صنف جديد' });
+    fireEvent.change(view.container.querySelector('input[type="file"]') as HTMLInputElement, {
+      target: { files: [new File(['xlsx'], 'master.xlsx')] },
+    });
+    await screen.findByRole('heading', { name: 'مراجعة تحديث دليل الأدوية' });
+    fireEvent.click(screen.getByRole('button', { name: 'استخدام الدليل لكل الحقول القابلة للمراجعة' }));
+    fireEvent.change(screen.getByPlaceholderText('كلمة مرور المالك أو المدير'), { target: { value: 'verified-password' } });
+    fireEvent.click(screen.getByRole('button', { name: 'إنشاء نسخة احتياطية ثم تطبيق القرارات' }));
+
+    await waitFor(() => expect(applyMasterDrugCatalogUpdateAction).toHaveBeenCalledWith(expect.objectContaining({
+      fieldDecisions: [expect.objectContaining({ field: 'manufacturer', action: 'use_catalog' })],
+    })));
     Object.defineProperty(global, 'FileReader', { configurable: true, value: originalFileReader });
   });
 

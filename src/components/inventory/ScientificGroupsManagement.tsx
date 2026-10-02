@@ -1,9 +1,10 @@
 'use client'
 
 import React, { useState } from 'react'
-import { Plus, Trash2, Save, X, Search, FlaskConical } from 'lucide-react'
+import { Plus, Save, X, Search, FlaskConical } from 'lucide-react'
 import { toast, Toaster } from 'react-hot-toast'
 import { addScientificGroupAction } from '@/app/actions-client/master-drugs'
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap'
 
 interface ScientificGroup {
   id: number;
@@ -21,6 +22,7 @@ export default function ScientificGroupsManagement({ initialData }: Props) {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [newItem, setNewItem] = useState({ name_ar: '', name_en: '' });
   const [isSaving, setIsSaving] = useState(false);
+  const dialogRef = useDialogFocusTrap<HTMLDivElement>(isModalOpen);
 
   const filteredItems = items.filter(item => 
     item.name_ar.includes(searchTerm) || 
@@ -78,7 +80,6 @@ export default function ScientificGroupsManagement({ initialData }: Props) {
               <th className="px-6 py-4 font-black text-slate-600 dark:text-slate-400">الكود</th>
               <th className="px-6 py-4 font-black text-slate-600 dark:text-slate-400">الإسم (ع)</th>
               <th className="px-6 py-4 font-black text-slate-600 dark:text-slate-400">الإسم (En)</th>
-              <th className="px-6 py-4 font-black text-slate-600 dark:text-slate-400 text-center">الإجراءات</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-bold">
@@ -87,13 +88,6 @@ export default function ScientificGroupsManagement({ initialData }: Props) {
                 <td className="px-6 py-4 text-slate-400">#{item.id}</td>
                 <td className="px-6 py-4 text-slate-900 dark:text-white">{item.name_ar}</td>
                 <td className="px-6 py-4 text-slate-500" dir="ltr">{item.name_en || '---'}</td>
-                <td className="px-6 py-4">
-                  <div className="flex justify-center gap-2">
-                    <button className="p-2 text-slate-300 hover:text-red-500 transition-colors">
-                      <Trash2 className="w-5 h-5" />
-                    </button>
-                  </div>
-                </td>
               </tr>
             ))}
           </tbody>
@@ -102,24 +96,27 @@ export default function ScientificGroupsManagement({ initialData }: Props) {
 
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-          <div className="bg-white dark:bg-slate-900 w-full max-w-md rounded-[32px] shadow-hard border border-slate-100 dark:border-slate-800 overflow-hidden animate-in zoom-in-95">
+          <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="scientific-group-title" tabIndex={-1} className="bg-white dark:bg-slate-900 w-full max-w-md rounded-3xl shadow-hard border border-slate-100 dark:border-slate-800 overflow-hidden animate-in zoom-in-95">
              <div className="p-6 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center">
-                <h3 className="text-xl font-black text-slate-900 dark:text-white">إضافة مجموعة علمية</h3>
-                <button onClick={() => setIsModalOpen(false)}><X className="w-6 h-6 text-slate-400" /></button>
+                <h3 id="scientific-group-title" className="text-xl font-black text-slate-900 dark:text-white">إضافة مجموعة علمية</h3>
+                <button type="button" aria-label="إغلاق إضافة مجموعة علمية" onClick={() => setIsModalOpen(false)}><X className="w-6 h-6 text-slate-400" /></button>
              </div>
              <div className="p-8 space-y-4">
                 <div className="space-y-2">
-                   <label className="text-sm font-black text-slate-700 dark:text-slate-300">الإسم بالعربي *</label>
+                   <label htmlFor="scientific-group-name-ar" className="text-sm font-black text-slate-700 dark:text-slate-300">الإسم بالعربي *</label>
                    <input 
+                      id="scientific-group-name-ar"
                       type="text" 
                       className="w-full px-5 py-4 bg-slate-50 dark:bg-slate-800 rounded-2xl border-none outline-none focus:ring-2 focus:ring-primary-500 font-bold dark:text-white"
                       value={newItem.name_ar}
                       onChange={(e) => setNewItem({ ...newItem, name_ar: e.target.value })}
+                      autoFocus
                    />
                 </div>
                 <div className="space-y-2">
-                   <label className="text-sm font-black text-slate-700 dark:text-slate-300">الإسم بالإنجليزي</label>
+                   <label htmlFor="scientific-group-name-en" className="text-sm font-black text-slate-700 dark:text-slate-300">الإسم بالإنجليزي</label>
                    <input 
+                      id="scientific-group-name-en"
                       type="text" 
                       className="w-full px-5 py-4 bg-slate-50 dark:bg-slate-800 rounded-2xl border-none outline-none focus:ring-2 focus:ring-primary-500 font-bold dark:text-white"
                       dir="ltr"

@@ -152,13 +152,13 @@ export default function TrialBalanceReport({ userRole, user }: { userRole?: stri
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <button onClick={() => void fetchData(startDate, endDate)} title="تحديث" className="p-3 bg-slate-100 dark:bg-slate-800 rounded-xl hover:bg-slate-200 transition-all">
+          <button type="button" onClick={() => void fetchData(startDate, endDate)} aria-label="تحديث ميزان المراجعة" title="تحديث" className="p-3 bg-slate-100 dark:bg-slate-800 rounded-xl hover:bg-slate-200 transition-all">
             <RefreshCw className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`} />
           </button>
-          <button onClick={handleExport} className="flex items-center gap-2 px-4 py-3 bg-slate-100 dark:bg-slate-800 rounded-xl font-bold hover:bg-slate-200 transition-all border border-slate-200 dark:border-slate-700 text-sm">
+          <button type="button" onClick={handleExport} className="flex items-center gap-2 px-4 py-3 bg-slate-100 dark:bg-slate-800 rounded-xl font-bold hover:bg-slate-200 transition-all border border-slate-200 dark:border-slate-700 text-sm">
             <Download className="w-4 h-4" /> تصدير CSV
           </button>
-          <button onClick={() => window.print()} className="flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 shadow-lg shadow-blue-500/20 transition-all text-sm">
+          <button type="button" onClick={() => window.print()} className="flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 shadow-lg shadow-blue-500/20 transition-all text-sm">
             <Printer className="w-5 h-5" /> طباعة
           </button>
         </div>
@@ -193,23 +193,23 @@ export default function TrialBalanceReport({ userRole, user }: { userRole?: stri
             <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-800 px-3 py-2 rounded-2xl border border-slate-200 dark:border-slate-700">
               <Calendar className="w-4 h-4 text-slate-400" />
               <span className="text-xs font-bold text-slate-500">من:</span>
-              <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)}
+              <input type="date" aria-label="من تاريخ" value={startDate} onChange={e => setStartDate(e.target.value)}
                 className="bg-transparent text-xs font-bold outline-none text-slate-800 dark:text-white" />
             </div>
             <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-800 px-3 py-2 rounded-2xl border border-slate-200 dark:border-slate-700">
               <Calendar className="w-4 h-4 text-slate-400" />
               <span className="text-xs font-bold text-slate-500">إلى:</span>
-              <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)}
+              <input type="date" aria-label="إلى تاريخ" value={endDate} onChange={e => setEndDate(e.target.value)}
                 className="bg-transparent text-xs font-bold outline-none text-slate-800 dark:text-white" />
             </div>
-            <button onClick={() => void fetchData(startDate, endDate)} className="px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-bold transition-all">
+            <button type="button" onClick={() => void fetchData(startDate, endDate)} className="px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-bold transition-all">
               تطبيق
             </button>
           </div>
 
           <div className="flex items-center gap-1 bg-slate-50 dark:bg-slate-800/60 p-1 rounded-2xl border border-slate-100 dark:border-slate-700">
             {PRESETS.map(p => (
-              <button key={p.key} onClick={() => applyPreset(p.key)}
+              <button type="button" key={p.key} onClick={() => applyPreset(p.key)}
                 className="px-3 py-1.5 rounded-xl text-xs font-bold text-slate-600 dark:text-slate-300 hover:bg-white dark:hover:bg-slate-700 hover:shadow-sm transition-all">
                 {p.label}
               </button>
@@ -220,25 +220,28 @@ export default function TrialBalanceReport({ userRole, user }: { userRole?: stri
         <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-100 dark:border-slate-800">
           <div className="relative min-w-[260px]">
             <Search className="w-4 h-4 absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-            <input type="text" value={searchTerm} onChange={e => setSearchTerm(e.target.value)}
+            <input type="text" aria-label="بحث في حسابات ميزان المراجعة" value={searchTerm} onChange={e => setSearchTerm(e.target.value)}
               placeholder="بحث باسم الحساب أو الكود..."
               className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl pr-10 pl-4 py-2 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500" />
           </div>
 
           <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-2xl">
             <button
+              type="button"
               onClick={() => setMode('cumulative')}
               className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${mode === 'cumulative' ? 'bg-white dark:bg-slate-700 shadow-sm text-blue-600 dark:text-blue-400 font-black' : 'text-slate-600 dark:text-slate-400'}`}
             >
               الأرصدة التراكمية
             </button>
             <button
+              type="button"
               onClick={() => setMode('net')}
               className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${mode === 'net' ? 'bg-white dark:bg-slate-700 shadow-sm text-blue-600 dark:text-blue-400 font-black' : 'text-slate-600 dark:text-slate-400'}`}
             >
               الأرصدة الصافية
             </button>
             <button
+              type="button"
               onClick={() => setMode('period')}
               className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${mode === 'period' ? 'bg-white dark:bg-slate-700 shadow-sm text-blue-600 dark:text-blue-400 font-black' : 'text-slate-600 dark:text-slate-400'}`}
             >
@@ -250,7 +253,7 @@ export default function TrialBalanceReport({ userRole, user }: { userRole?: stri
 
       {!loading && !loadError && !isBalanced && (
         <div className="flex items-center gap-3 p-4 rounded-2xl border font-bold text-sm bg-rose-50 dark:bg-rose-900/20 border-rose-200 dark:border-rose-800/40 text-rose-700 dark:text-rose-300">
-          <AlertCircle className="w-5 h-5 shrink-0 animate-pulse" /> تنبيه مالي: ميزان المراجعة غير متزن — الفارق {fmt(Math.abs(totals.debit - totals.credit))} ج.م (يُرجى مراجعة القيود)
+          <AlertCircle className="w-5 h-5 shrink-0" /> تنبيه مالي: ميزان المراجعة غير متزن — الفارق {fmt(Math.abs(totals.debit - totals.credit))} ج.م (يُرجى مراجعة القيود)
         </div>
       )}
 
@@ -282,7 +285,7 @@ export default function TrialBalanceReport({ userRole, user }: { userRole?: stri
                 {mode === 'cumulative' && (
                   <TableHead className="text-center py-5 px-4 font-black text-slate-600 bg-slate-100/50 dark:bg-slate-800/80 w-52">
                     الرصيد التراكمي
-                    <span className="block text-[10px] text-slate-400 font-normal">حتى نهاية الفترة</span>
+                    <span className="block text-xs text-slate-500 font-normal">حتى نهاية الفترة</span>
                   </TableHead>
                 )}
 
@@ -347,7 +350,7 @@ export default function TrialBalanceReport({ userRole, user }: { userRole?: stri
                       <TableCell className="py-4 px-6 font-mono text-xs font-bold text-slate-500">{acc.code}</TableCell>
                       <TableCell className="py-4 px-6 font-black text-slate-800 dark:text-white">{acc.name_ar}</TableCell>
                       <TableCell className="py-4 px-4 text-center">
-                        <span className="inline-block px-2.5 py-1 rounded-xl text-[11px] font-black bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+                        <span className="inline-block px-2.5 py-1 rounded-xl text-xs font-black bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
                           {ACCOUNT_TYPE_LABEL[acc.type] || acc.type || '—'}
                         </span>
                       </TableCell>
@@ -437,7 +440,7 @@ function SummaryCard({ label, sublabel, value, color }: { label: string; sublabe
   return (
     <Card className="rounded-3xl border border-slate-100 dark:border-slate-800 shadow-sm bg-white dark:bg-slate-900 p-5">
       <p className="text-xs font-bold text-slate-400">{label}</p>
-      {sublabel && <p className="text-[10px] text-slate-400 mt-0.5">{sublabel}</p>}
+      {sublabel && <p className="text-xs text-slate-500 mt-0.5">{sublabel}</p>}
       <p className={`text-xl font-black font-mono mt-2 ${color}`}>{value} <span className="text-xs font-normal">ج.م</span></p>
     </Card>
   );

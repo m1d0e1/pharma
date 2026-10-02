@@ -25,8 +25,10 @@ export default function ThemeToggle() {
 
   return (
     <button
+      type="button"
       onClick={toggleTheme}
       className="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700 transition-all flex items-center gap-2 group"
+      aria-label={theme === 'light' ? 'التبديل للوضع الليلي' : 'التبديل للوضع النهاري'}
       title={theme === 'light' ? 'التبديل للوضع الليلي' : 'التبديل للوضع النهاري'}
     >
       <span className="text-xl group-hover:rotate-12 transition-transform">

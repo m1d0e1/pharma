@@ -9,7 +9,7 @@ export const metadata = {
 export default function TrialBalanceSettingsPage() {
   return (
     <PermissionGuard permissionKey="acc_can_view_general">
-      <div className="p-8">
+      <div className="p-3 sm:p-6">
         <TrialBalanceSettingsClient />
       </div>
     </PermissionGuard>

@@ -256,6 +256,80 @@ describe('rendered customer-return flow', () => {
     })));
   });
 
+  it('preserves the prepared base quantity when return units round-trip small to medium to large', async () => {
+    (searchRecentReturnInvoicesAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: [{ id: 'unit-roundtrip', total_amount: 11, payment_method: 'visa', created_at: '2026-10-01T08:17:57.000Z' }],
+    });
+    (getInvoiceForReturnAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: {
+        id: 'unit-roundtrip',
+        patient_id: null,
+        total_amount: 11,
+        discount_amount: 0,
+        payment_method: 'visa',
+        status: 'completed',
+        already_refunded: 0,
+        items: [{
+          id: 'unit-roundtrip-item',
+          inventory_id: 'unit-roundtrip-batch',
+          drug_name: 'Unit Roundtrip Drug',
+          quantity_sold: 1,
+          returned_quantity: 0,
+          unit_price: 11,
+          unit: 'small',
+          large_to_medium: 3,
+          medium_to_small: 4,
+          large_unit: 'كرتونة',
+          medium_unit: 'شريط مخصص',
+          small_unit: 'قرص مخصص',
+        }],
+      },
+    });
+
+    render(<SalesReturnClient />);
+    fireEvent.change(screen.getByPlaceholderText('امسح الباركود، أو اكتب اسم الدواء، أو رقم الفاتورة...'), {
+      target: { value: 'roundtrip' },
+    });
+    expect(await screen.findByText('Unit Roundtrip Drug')).toBeInTheDocument();
+
+    const quantity = screen.getByRole('spinbutton');
+    const unit = screen.getAllByRole('combobox')[0];
+    fireEvent.change(quantity, { target: { value: '1' } });
+    expect(quantity).toHaveValue(1);
+
+    expect(screen.getByRole('option', { name: 'كرتونة' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'شريط مخصص' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'قرص مخصص' })).toBeInTheDocument();
+
+    fireEvent.change(unit, { target: { value: 'large' } });
+    expect(quantity).toHaveValue(1 / 12);
+    fireEvent.change(unit, { target: { value: 'medium' } });
+    expect(quantity).toHaveValue(0.25);
+    fireEvent.change(unit, { target: { value: 'small' } });
+    expect(quantity).toHaveValue(1);
+    fireEvent.change(unit, { target: { value: 'medium' } });
+    expect(quantity).toHaveValue(0.25);
+    fireEvent.change(unit, { target: { value: 'large' } });
+    expect(quantity).toHaveValue(1 / 12);
+    fireEvent.change(unit, { target: { value: 'small' } });
+    expect(quantity).toHaveValue(1);
+    expect(screen.getAllByText('11.00 ج.م').length).toBeGreaterThanOrEqual(2);
+
+    fireEvent.click(screen.getByRole('button', { name: 'تنفيذ المرتجع' }));
+    await waitFor(() => expect(createReturnAction).toHaveBeenCalledWith(expect.objectContaining({
+      invoice_id: 'unit-roundtrip',
+      refund_method: 'bank',
+      items: [expect.objectContaining({
+        sale_item_id: 'unit-roundtrip-item',
+        quantity: 1,
+        unit: 'small',
+        unit_price: 11,
+      })],
+    })));
+  });
+
   it('scans barcode and presses Enter to select receipt and return item', async () => {
     render(<SalesReturnClient />);
     const searchInput = screen.getByPlaceholderText('امسح الباركود، أو اكتب اسم الدواء، أو رقم الفاتورة...');
@@ -354,6 +428,20 @@ describe('rendered customer-return flow', () => {
 
     expect(await screen.findByText('Second Receipt Drug')).toBeInTheDocument();
     expect(screen.queryByText('Wrong First Receipt Drug')).not.toBeInTheDocument();
+  });
+
+  it('cannot submit the previously prepared return after the invoice search source changes', async () => {
+    render(<SalesReturnClient />);
+    const searchInput = screen.getByPlaceholderText('امسح الباركود، أو اكتب اسم الدواء، أو رقم الفاتورة...');
+    fireEvent.change(searchInput, { target: { value: 'Return Drug' } });
+    expect(await screen.findByText('Return Drug')).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '1' } });
+    expect(screen.getByRole('button', { name: 'تنفيذ المرتجع' })).toBeEnabled();
+
+    fireEvent.change(searchInput, { target: { value: 'different invoice' } });
+
+    expect(screen.queryByRole('button', { name: 'تنفيذ المرتجع' })).not.toBeInTheDocument();
+    expect(createReturnAction).not.toHaveBeenCalled();
   });
 
   it('preserves the prepared sales return and restores submit controls when creation throws', async () => {

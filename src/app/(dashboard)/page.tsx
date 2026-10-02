@@ -59,6 +59,9 @@ export default function DashboardPage() {
   const canViewShifts = hasUserPermissionSync(user, 'can_view_shifts');
   const canViewAudit = hasUserPermissionSync(user, 'can_view_audit');
   const canViewInventory = hasUserPermissionSync(user, 'can_view_stores');
+  const canViewLowStock = hasUserPermissionSync(user, 'can_view_low_stock');
+  const canViewRestock = hasUserPermissionSync(user, 'can_view_restock');
+  const canViewPurchases = hasUserPermissionSync(user, 'can_view_purchases');
   const canViewPatients = hasUserPermissionSync(user, 'can_view_patients');
   const canViewReports = hasUserPermissionSync(user, 'rep_can_view_sales');
 
@@ -280,7 +283,7 @@ export default function DashboardPage() {
           SELECT 
             d.date,
             (SELECT COALESCE(SUM(total_amount), 0) FROM sales_invoices WHERE date(created_at, 'localtime') = d.date AND (status IS NULL OR status = '' OR status IN ('completed', 'approved', 'delivered')) AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))) as sales,
-            (SELECT COALESCE(SUM(total_refund), 0) FROM returns r WHERE date(r.created_at, 'localtime') = d.date AND status IN ('approved', 'completed') AND (r.pharmacy_id = ? OR (r.pharmacy_id IS NULL AND ? = 'local_default'))) as returns,
+            (SELECT COALESCE(SUM(total_refund), 0) FROM returns r WHERE date(r.created_at, 'localtime') = d.date AND LOWER(COALESCE(status, '')) IN ('approved', 'completed') AND (r.pharmacy_id = ? OR (r.pharmacy_id IS NULL AND ? = 'local_default'))) as returns,
             (SELECT COALESCE(SUM(
                CASE
                  WHEN (si.unit IN ('medium', 'strip', 'شريط') OR si.unit = m.medium_unit) AND COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(m.large_to_medium, 0), 1) > 0
@@ -308,9 +311,11 @@ export default function DashboardPage() {
               SELECT COALESCE(SUM(
                 COALESCE(NULLIF(si.cost_price, 0), i.cost_price, m.base_price, 0) *
                 CASE
-                  WHEN ri.unit IN ('medium', 'strip', 'شريط') OR ri.unit = m.medium_unit
+                  WHEN COALESCE(NULLIF(TRIM(ri.unit), ''), NULLIF(TRIM(si.unit), ''), 'large') IN ('medium', 'strip', 'شريط')
+                    OR COALESCE(NULLIF(TRIM(ri.unit), ''), NULLIF(TRIM(si.unit), ''), 'large') = m.medium_unit
                     THEN ri.quantity_returned / COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(i.strips_per_box, 0), NULLIF(m.large_to_medium, 0), 1)
-                  WHEN ri.unit = 'small' OR ri.unit = m.small_unit
+                  WHEN COALESCE(NULLIF(TRIM(ri.unit), ''), NULLIF(TRIM(si.unit), ''), 'large') = 'small'
+                    OR COALESCE(NULLIF(TRIM(ri.unit), ''), NULLIF(TRIM(si.unit), ''), 'large') = m.small_unit
                     THEN ri.quantity_returned / (
                       COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(i.strips_per_box, 0), NULLIF(m.large_to_medium, 0), 1)
                       * COALESCE(NULLIF(si.medium_to_small, 0), NULLIF(i.medium_to_small, 0), NULLIF(m.medium_to_small, 0), 1)
@@ -324,7 +329,7 @@ export default function DashboardPage() {
               LEFT JOIN inventory i ON i.id = COALESCE(ri.inventory_id, si.inventory_id)
               LEFT JOIN master_drugs m ON m.id = COALESCE(ri.drug_id, si.drug_id, i.drug_id)
               WHERE date(rr.created_at, 'localtime') = d.date
-                AND rr.status IN ('approved', 'completed')
+                AND LOWER(COALESCE(rr.status, '')) IN ('approved', 'completed')
                 AND (rr.pharmacy_id = ? OR (rr.pharmacy_id IS NULL AND ? = 'local_default'))
             ) as cogs
           FROM dates d
@@ -466,6 +471,7 @@ export default function DashboardPage() {
         <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 w-full md:w-auto">
           {isTauri && (
             <button 
+              type="button"
               onClick={async () => {
                 try {
                   const { getCurrentWindow } = await import('@tauri-apps/api/window');
@@ -490,7 +496,9 @@ export default function DashboardPage() {
           {user?.role === 'owner' && <DrugSyncButton />}
           {user?.role === 'owner' && <InteractionsSyncButton />}
           <button
+            type="button"
             onClick={toggleNewsBar}
+            aria-pressed={newsBarEnabled}
             className={`
               flex items-center gap-2 px-4 py-2.5 rounded-xl font-bold shadow-md transition-all active:scale-95 border text-sm
               ${newsBarEnabled 
@@ -585,7 +593,14 @@ export default function DashboardPage() {
       )}
 
       {/* Auto-Reorder Alerts */}
-      <ReorderAlerts />
+      {(canViewLowStock || canViewRestock) && (
+        <ReorderAlerts
+          canViewLowStock={canViewLowStock}
+          canViewRestock={canViewRestock}
+          canViewPurchases={canViewPurchases}
+          canViewInventory={canViewInventory}
+        />
+      )}
 
       {/* Management Row */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-7">
@@ -601,7 +616,7 @@ export default function DashboardPage() {
           </div>
           <div>
             <p className="font-black text-slate-900 dark:text-white">نقطة البيع</p>
-            <p className="text-[10px] text-slate-500">بيع سريع</p>
+            <p className="text-xs text-slate-500">بيع سريع</p>
           </div>
         </Link>}
 
@@ -611,7 +626,7 @@ export default function DashboardPage() {
           </div>
           <div>
             <p className="font-black text-slate-900 dark:text-white">المخزون</p>
-            <p className="text-[10px] text-slate-500">إدارة الأصناف</p>
+            <p className="text-xs text-slate-500">إدارة الأصناف</p>
           </div>
         </Link>}
 
@@ -621,7 +636,7 @@ export default function DashboardPage() {
           </div>
           <div>
             <p className="font-black text-slate-900 dark:text-white">المرضى</p>
-            <p className="text-[10px] text-slate-500">سجل العملاء</p>
+            <p className="text-xs text-slate-500">سجل العملاء</p>
           </div>
         </Link>}
 
@@ -631,7 +646,7 @@ export default function DashboardPage() {
           </div>
           <div>
             <p className="font-black text-slate-900 dark:text-white">التقارير</p>
-            <p className="text-[10px] text-slate-500">تحليل الأداء</p>
+            <p className="text-xs text-slate-500">تحليل الأداء</p>
           </div>
         </Link>}
       </div>
@@ -714,6 +729,10 @@ export default function DashboardPage() {
             total_amount: recentTransactions.find(t => t.id === selectedInvoiceId)?.total_amount || 0,
             created_at: recentTransactions.find(t => t.id === selectedInvoiceId)?.created_at || new Date().toISOString(),
             payment_method: recentTransactions.find(t => t.id === selectedInvoiceId)?.payment_method || 'cash',
+            discount_amount: recentTransactions.find(t => t.id === selectedInvoiceId)?.discount_amount || 0,
+            additional_fees: recentTransactions.find(t => t.id === selectedInvoiceId)?.additional_fees || 0,
+            points_redeemed: recentTransactions.find(t => t.id === selectedInvoiceId)?.points_redeemed || 0,
+            loyalty_discount_amount: recentTransactions.find(t => t.id === selectedInvoiceId)?.loyalty_discount_amount || 0,
             profiles: { full_name: 'Cashier' }, // Adjust if you have actual staff names
             patients: recentTransactions.find(t => t.id === selectedInvoiceId)?.patient_name 
               ? { full_name: recentTransactions.find(t => t.id === selectedInvoiceId)?.patient_name, phone: '' } 

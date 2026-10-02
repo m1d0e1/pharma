@@ -13,6 +13,7 @@ import {
   getSupplierTransactionsAction 
 } from '@/app/actions-client/purchases';
 import { isBusinessDate, localDate, parseBusinessDate } from '@/lib/time';
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap';
 
 export interface SupplierItem {
   id: number;
@@ -73,6 +74,9 @@ export default function SuppliersManagementClient({
   const [isLoadingStatement, setIsLoadingStatement] = useState(false);
   const [statementLoadError, setStatementLoadError] = useState('');
   const statementRequestRef = React.useRef(0);
+  const addEditDialogRef = useDialogFocusTrap<HTMLDivElement>(canMutate && isAddEditOpen);
+  const paymentDialogRef = useDialogFocusTrap<HTMLDivElement>(canPay && Boolean(paymentSupplier));
+  const statementDialogRef = useDialogFocusTrap<HTMLDivElement>(Boolean(statementSupplier));
 
   React.useEffect(() => {
     setSuppliers(initialData);
@@ -375,7 +379,7 @@ export default function SuppliersManagementClient({
           return (
             <div
               key={supplier.id}
-              className={`bg-white dark:bg-slate-900 rounded-[32px] p-6 border transition-all duration-300 hover:shadow-xl flex flex-col justify-between relative overflow-hidden group ${
+              className={`bg-white dark:bg-slate-900 rounded-3xl p-6 border transition-shadow duration-300 hover:shadow-xl flex flex-col justify-between relative overflow-hidden group ${
                 hasDebit 
                   ? 'border-slate-100 dark:border-slate-800 border-t-8 border-t-rose-500' 
                   : 'border-slate-100 dark:border-slate-800 border-t-8 border-t-emerald-500'
@@ -406,15 +410,19 @@ export default function SuppliersManagementClient({
                   {canMutate && (
                     <div className="flex items-center gap-1">
                       <button
+                        type="button"
+                        aria-label={`تعديل المورد ${supplier.name_ar}`}
                         onClick={() => handleOpenEdit(supplier)}
-                        className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-xl transition-all"
+                        className="p-2 text-slate-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-xl transition-colors"
                         title="تعديل"
                       >
                         <Edit className="w-4 h-4" />
                       </button>
                       <button
+                        type="button"
+                        aria-label={`حذف المورد ${supplier.name_ar}`}
                         onClick={() => handleDeleteSupplier(supplier.id)}
-                        className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/20 rounded-xl transition-all"
+                        className="p-2 text-slate-500 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/20 rounded-xl transition-colors"
                         title="حذف"
                       >
                         <Trash2 className="w-4 h-4" />
@@ -492,12 +500,14 @@ export default function SuppliersManagementClient({
       {/* Add / Edit Supplier Modal */}
       {canMutate && isAddEditOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in">
-          <div className="bg-white dark:bg-slate-900 rounded-[32px] max-w-lg w-full p-8 border border-slate-100 dark:border-slate-800 shadow-2xl space-y-6">
+          <div ref={addEditDialogRef} role="dialog" aria-modal="true" aria-labelledby="supplier-edit-title" tabIndex={-1} onKeyDown={(event) => { if (event.key === 'Escape' && !isSavingSupplier) setIsAddEditOpen(false); }} className="bg-white dark:bg-slate-900 rounded-3xl max-w-lg w-full p-6 border border-slate-100 dark:border-slate-800 shadow-2xl space-y-6">
             <div className="flex justify-between items-center pb-4 border-b border-slate-100 dark:border-slate-800">
-              <h3 className="text-xl font-black text-slate-900 dark:text-white">
+              <h3 id="supplier-edit-title" className="text-xl font-black text-slate-900 dark:text-white">
                 {editingSupplier ? 'تعديل بيانات المورد' : 'إضافة مورد جديد'}
               </h3>
               <button
+                type="button"
+                aria-label="إغلاق بيانات المورد"
                 onClick={() => setIsAddEditOpen(false)}
                 className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-white rounded-xl"
               >
@@ -507,8 +517,9 @@ export default function SuppliersManagementClient({
 
             <div className="space-y-4">
               <div>
-                <label className="block text-xs font-black text-slate-400 mb-1">اسم المورد (بالعربي) *</label>
+                <label htmlFor="supplier-name-ar" className="block text-xs font-black text-slate-500 mb-1">اسم المورد (بالعربي) *</label>
                 <input
+                  id="supplier-name-ar"
                   type="text"
                   value={formData.name_ar}
                   onChange={(e) => setFormData({ ...formData, name_ar: e.target.value })}
@@ -518,8 +529,9 @@ export default function SuppliersManagementClient({
               </div>
 
               <div>
-                <label className="block text-xs font-black text-slate-400 mb-1">اسم المورد (بالإنجليزي)</label>
+                <label htmlFor="supplier-name-en" className="block text-xs font-black text-slate-500 mb-1">اسم المورد (بالإنجليزي)</label>
                 <input
+                  id="supplier-name-en"
                   type="text"
                   dir="ltr"
                   value={formData.name_en}
@@ -530,8 +542,9 @@ export default function SuppliersManagementClient({
               </div>
 
               <div>
-                <label className="block text-xs font-black text-slate-400 mb-1">رقم الهاتف</label>
+                <label htmlFor="supplier-phone" className="block text-xs font-black text-slate-500 mb-1">رقم الهاتف</label>
                 <input
+                  id="supplier-phone"
                   type="text"
                   dir="ltr"
                   value={formData.phone}
@@ -542,8 +555,9 @@ export default function SuppliersManagementClient({
               </div>
 
               <div>
-                <label className="block text-xs font-black text-slate-400 mb-1">العنوان</label>
+                <label htmlFor="supplier-address" className="block text-xs font-black text-slate-500 mb-1">العنوان</label>
                 <input
+                  id="supplier-address"
                   type="text"
                   value={formData.address}
                   onChange={(e) => setFormData({ ...formData, address: e.target.value })}
@@ -575,13 +589,15 @@ export default function SuppliersManagementClient({
       {/* Supplier Payment Modal */}
       {canPay && paymentSupplier && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in">
-          <div className="bg-white dark:bg-slate-900 rounded-[32px] max-w-lg w-full p-8 border border-slate-100 dark:border-slate-800 shadow-2xl space-y-6">
+          <div ref={paymentDialogRef} role="dialog" aria-modal="true" aria-labelledby="supplier-payment-title" tabIndex={-1} onKeyDown={(event) => { if (event.key === 'Escape' && !isProcessingPayment) setPaymentSupplier(null); }} className="bg-white dark:bg-slate-900 rounded-3xl max-w-lg w-full p-6 border border-slate-100 dark:border-slate-800 shadow-2xl space-y-6">
             <div className="flex justify-between items-center pb-4 border-b border-slate-100 dark:border-slate-800">
               <div>
-                <h3 className="text-xl font-black text-slate-900 dark:text-white">سداد دفعة للمورد</h3>
+                <h3 id="supplier-payment-title" className="text-xl font-black text-slate-900 dark:text-white">سداد دفعة للمورد</h3>
                 <p className="text-xs font-bold text-slate-400 mt-0.5">{paymentSupplier.name_ar}</p>
               </div>
               <button
+                type="button"
+                aria-label="إغلاق سداد المورد"
                 onClick={() => setPaymentSupplier(null)}
                 className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-white rounded-xl"
               >
@@ -602,8 +618,9 @@ export default function SuppliersManagementClient({
 
             <form onSubmit={handleSubmitPayment} className="space-y-4">
               <div>
-                <label className="block text-xs font-black text-slate-400 mb-1">مبلغ السداد (ج.م) *</label>
+                <label htmlFor="supplier-payment-amount" className="block text-xs font-black text-slate-500 mb-1">مبلغ السداد (ج.م) *</label>
                 <input
+                  id="supplier-payment-amount"
                   type="number"
                   step="0.01"
                   min="0.01"
@@ -644,8 +661,9 @@ export default function SuppliersManagementClient({
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-black text-slate-400 mb-1">طريقة الدفع</label>
+                  <label htmlFor="supplier-payment-method" className="block text-xs font-black text-slate-500 mb-1">طريقة الدفع</label>
                   <select
+                    id="supplier-payment-method"
                     value={paymentMethod}
                     onChange={(e) => setPaymentMethod(e.target.value as any)}
                     className="w-full p-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl text-sm font-bold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
@@ -657,8 +675,9 @@ export default function SuppliersManagementClient({
                 </div>
 
                 <div>
-                  <label className="block text-xs font-black text-slate-400 mb-1">تاريخ السداد</label>
+                  <label htmlFor="supplier-payment-date" className="block text-xs font-black text-slate-500 mb-1">تاريخ السداد</label>
                   <input
+                    id="supplier-payment-date"
                     type="date"
                     value={paymentDate}
                     onChange={(e) => setPaymentDate(e.target.value)}
@@ -669,8 +688,9 @@ export default function SuppliersManagementClient({
 
               {paymentMethod === 'check' && (
                 <div>
-                  <label className="block text-xs font-black text-slate-400 mb-1">رقم الشيك *</label>
+                  <label htmlFor="supplier-check-number" className="block text-xs font-black text-slate-500 mb-1">رقم الشيك *</label>
                   <input
+                    id="supplier-check-number"
                     type="text"
                     required
                     value={checkNumber}
@@ -682,8 +702,9 @@ export default function SuppliersManagementClient({
               )}
 
               <div>
-                <label className="block text-xs font-black text-slate-400 mb-1">ملاحظات / البيان</label>
+                <label htmlFor="supplier-payment-notes" className="block text-xs font-black text-slate-500 mb-1">ملاحظات / البيان</label>
                 <input
+                  id="supplier-payment-notes"
                   type="text"
                   value={paymentNotes}
                   onChange={(e) => setPaymentNotes(e.target.value)}
@@ -726,13 +747,15 @@ export default function SuppliersManagementClient({
       {/* Supplier Statement Modal */}
       {statementSupplier && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in">
-          <div className="bg-white dark:bg-slate-900 rounded-[32px] max-w-3xl w-full p-8 border border-slate-100 dark:border-slate-800 shadow-2xl space-y-6 max-h-[85vh] flex flex-col overflow-hidden">
+          <div ref={statementDialogRef} role="dialog" aria-modal="true" aria-labelledby="supplier-statement-title" tabIndex={-1} onKeyDown={(event) => { if (event.key === 'Escape') setStatementSupplier(null); }} className="bg-white dark:bg-slate-900 rounded-3xl max-w-3xl w-full p-6 border border-slate-100 dark:border-slate-800 shadow-2xl space-y-6 max-h-[85vh] flex flex-col overflow-hidden">
             <div className="flex justify-between items-center pb-4 border-b border-slate-100 dark:border-slate-800 shrink-0">
               <div>
-                <h3 className="text-xl font-black text-slate-900 dark:text-white">كشف حساب المورد</h3>
+                <h3 id="supplier-statement-title" className="text-xl font-black text-slate-900 dark:text-white">كشف حساب المورد</h3>
                 <p className="text-xs font-bold text-slate-400 mt-0.5">{statementSupplier.name_ar} (الرصيد: {Number(statementSupplier.balance || 0).toLocaleString()} ج.م)</p>
               </div>
               <button
+                type="button"
+                aria-label="إغلاق كشف حساب المورد"
                 onClick={() => setStatementSupplier(null)}
                 className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-white rounded-xl"
               >
@@ -776,7 +799,7 @@ export default function SuppliersManagementClient({
                             : tx.created_at ? new Date(tx.created_at).toLocaleDateString('ar-EG') : '-'
                         }</td>
                         <td className="p-3">
-                          <span className={`px-2.5 py-1 rounded-lg text-[10px] font-black ${
+                          <span className={`px-2.5 py-1 rounded-lg text-[11px] font-black ${
                             tx.type === 'payment' ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/30' :
                             tx.type === 'invoice' ? 'bg-rose-50 text-rose-600 dark:bg-rose-950/30' :
                             tx.type === 'return' ? 'bg-blue-50 text-blue-600 dark:bg-blue-950/30' :

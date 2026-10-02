@@ -39,6 +39,8 @@ export const generateReceiptHtml = (invoice: any, pharmacyInfo: any) => {
   const safePharmacyAddress = escapeHtml(pharmacyInfo.address)
 
   const { subtotal, discount, additionalFees } = calculateReceiptTotals(invoice);
+  const loyaltyDiscount = Math.max(0, Number(invoice.loyalty_discount_amount) || 0);
+  const pointsRedeemed = Math.max(0, Math.floor(Number(invoice.points_redeemed) || 0));
 
   const paymentLabels: Record<string, string> = {
     cash: '💵 Cash', 
@@ -158,6 +160,12 @@ export const generateReceiptHtml = (invoice: any, pharmacyInfo: any) => {
             <span>- ${discount.toFixed(2)} EGP</span>
           </div>
           ` : ''}
+          ${loyaltyDiscount > 0 && pointsRedeemed > 0 ? `
+          <div class="total-row" style="font-size: 10px;">
+            <span style="font-weight: bold;">Loyalty (${pointsRedeemed} pts, included above):</span>
+            <span>- ${loyaltyDiscount.toFixed(2)} EGP</span>
+          </div>
+          ` : ''}
           ${additionalFees > 0 ? `
           <div class="total-row">
             <span style="font-weight: bold;">Additional Fees:</span>
@@ -174,15 +182,15 @@ export const generateReceiptHtml = (invoice: any, pharmacyInfo: any) => {
            <div class="payment-badge">${paymentLabel}</div>
         </div>
 
-        <div class="footer">
-          <p style="font-weight: 900; font-size: 14px;">Thank you for your visit!</p>
-          <p>We wish you a speedy recovery</p>
+        <div class="footer" dir="rtl">
+          <p style="font-weight: 900; font-size: 14px;">شكرًا لزيارتكم!</p>
+          <p>نتمنى لكم الشفاء العاجل</p>
           <div class="disclaimer">
-            * No returns without original invoice<br>
-            * Returns allowed within 14 days of purchase<br>
-            * Refrigerated drugs and milk products cannot be returned
+            * لا استرجاع بدون أصل الفاتورة<br>
+            * يُسمح بالاسترجاع خلال 14 يومًا من تاريخ الشراء<br>
+            * لا يمكن استرجاع الأدوية المحفوظة بالثلاجة ومنتجات الألبان
           </div>
-          <p style="margin-top: 12px; font-weight: bold;">--- Powered by PharmaTech ---</p>
+          <p style="margin-top: 12px; font-weight: bold;">--- مدعوم بواسطة PharmaTech ---</p>
         </div>
         
       </body>

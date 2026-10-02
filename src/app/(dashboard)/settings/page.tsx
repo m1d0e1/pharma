@@ -88,7 +88,7 @@ export default function SettingsPage() {
   const isOwner = user.role === 'owner';
 
   return (
-    <div className="max-w-6xl mx-auto space-y-12 p-4 animate-in fade-in slide-in-from-bottom-6 duration-700" dir="rtl">
+    <div className="max-w-6xl mx-auto space-y-10 p-4" dir="rtl">
       {/* Header Section */}
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-6">
         <div>
@@ -96,7 +96,7 @@ export default function SettingsPage() {
             <span className="w-8 h-[2px] bg-blue-500"></span>
             Local Enforcer
           </div>
-          <h1 className="text-4xl md:text-5xl font-black text-slate-900 dark:text-white tracking-tight">إعدادات النظام المحلي</h1>
+          <h1 className="text-3xl md:text-4xl font-black text-slate-900 dark:text-white tracking-tight">إعدادات النظام المحلي</h1>
           <p className="text-slate-500 dark:text-slate-400 mt-3 text-lg">تحكم في هوية صيدليتك، تحديث البيانات المرجعية العامة، وإدارة المستخدمين المحليين.</p>
         </div>
       </div>
@@ -105,18 +105,17 @@ export default function SettingsPage() {
       <PharmacySettingsForm pharmacy={pharmacySettings} />
       
       {/* Enforcer Control Center */}
-      {isOwner && <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        <SyncSettings />
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        {isOwner && <SyncSettings />}
         <DbMaintenance />
-        <div className="lg:col-span-2">
+        {isOwner && <div className="lg:col-span-2">
           <LocalUserManagement />
-        </div>
-      </div>}
+        </div>}
+      </div>
 
       {/* Footer Info Card */}
-      <div className="bg-slate-900 p-10 rounded-[3rem] shadow-2xl relative overflow-hidden">
-         <div className="absolute top-0 right-0 w-64 h-64 bg-blue-500/10 blur-[100px] rounded-full"></div>
-         <div className="relative z-10 flex flex-col md:flex-row items-center justify-between gap-8">
+      <div className="bg-slate-900 p-6 sm:p-8 rounded-3xl shadow-xl border border-slate-800">
+         <div className="flex flex-col md:flex-row items-center justify-between gap-8">
             <div className="max-w-xl">
                <h4 className="text-2xl font-bold text-white mb-4">الوضع المحلي أولاً</h4>
                <p className="text-slate-400 leading-relaxed">

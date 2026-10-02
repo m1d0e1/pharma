@@ -49,7 +49,7 @@ export default function NegativeStockSettlementClient() {
   return (
     <div className="space-y-8 pb-20" dir="rtl">
       {/* Header */}
-      <div className="bg-white dark:bg-slate-900 p-8 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-sm flex justify-between items-center">
+      <div className="bg-white dark:bg-slate-900 p-5 sm:p-8 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-sm flex flex-col gap-4 sm:flex-row sm:justify-between sm:items-center">
         <div>
           <h1 className="text-3xl font-black text-slate-800 dark:text-white flex items-center gap-4">
             <PackageSearch className="w-10 h-10 text-rose-500" />
@@ -58,6 +58,8 @@ export default function NegativeStockSettlementClient() {
           <p className="text-slate-500 font-bold">معالجة الأصناف التي تم بيعها قبل إضافتها للمخزون بشكل رسمي</p>
         </div>
         <button 
+          type="button"
+          aria-label="تحديث أصناف التسوية"
           onClick={loadItems}
           className="p-4 bg-slate-50 dark:bg-slate-800 text-slate-500 rounded-2xl hover:bg-slate-100 transition-all"
         >
@@ -75,9 +77,10 @@ export default function NegativeStockSettlementClient() {
         </div>
       ) : (
         <div className="bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 overflow-hidden shadow-sm">
-          <table className="w-full text-right">
+          <div className="overflow-x-auto">
+          <table className="w-full min-w-[900px] text-right">
             <thead className="bg-slate-50 dark:bg-slate-800/50">
-              <tr className="text-slate-400 text-[10px] font-black uppercase tracking-widest">
+              <tr className="text-slate-500 text-xs font-black">
                 <th className="px-8 py-6">رقم الفاتورة</th>
                 <th className="px-8 py-6">التاريخ</th>
                 <th className="px-8 py-6">الصنف</th>
@@ -100,7 +103,7 @@ export default function NegativeStockSettlementClient() {
                   </td>
                   <td className="px-8 py-6">
                     <p className="font-black text-slate-800 dark:text-white">{item.trade_name}</p>
-                    <p className="text-[10px] text-slate-400 font-mono">{item.barcode}</p>
+                    <p className="text-[11px] text-slate-500 font-mono">{item.barcode}</p>
                   </td>
                   <td className="px-8 py-6 font-black text-rose-600 text-lg">{item.quantity_sold}</td>
                   <td className="px-8 py-6 font-bold">{item.unit_price.toLocaleString()}</td>
@@ -109,6 +112,7 @@ export default function NegativeStockSettlementClient() {
                       <DollarSign className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                       <input 
                         type="number" 
+                        aria-label={`سعر التكلفة الحالي لـ ${item.trade_name}`}
                         step="0.01"
                         placeholder="أدخل التكلفة..."
                         className="w-full pr-10 pl-3 py-3 bg-slate-50 dark:bg-slate-800 border border-slate-100 dark:border-slate-700 rounded-xl font-black outline-none focus:ring-2 ring-blue-500"
@@ -133,6 +137,7 @@ export default function NegativeStockSettlementClient() {
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       )}
     </div>

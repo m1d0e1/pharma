@@ -80,6 +80,12 @@ describe('today shift UI wiring', () => {
     const onClose = jest.fn();
     render(<DrawerHandoverClient shiftId="shift-1" onClose={onClose} />);
 
+    expect(await screen.findByLabelText('النقدية المعدودة فعليًا في درج الوردية')).toHaveAttribute('type', 'number');
+    expect(screen.getByLabelText('المبلغ المراد تحويله')).toHaveAttribute('type', 'number');
+    expect(screen.getByLabelText('الجهة المحول إليها')).toHaveValue('treasury');
+    expect(screen.getByLabelText('المستلم')).toHaveValue('receiver');
+    expect(screen.getByLabelText('كلمة مرور المستلم')).toHaveAttribute('type', 'password');
+
     fireEvent.click(await screen.findByRole('button', { name: /إتمام تسليم الدرج/ }));
 
     await waitFor(() => expect(processHandoverAction).toHaveBeenCalledWith(expect.objectContaining({

@@ -15,6 +15,7 @@ import { format } from 'date-fns';
 import { toast } from 'react-hot-toast';
 import { hasUserPermissionSync } from '@/lib/auth/local';
 import { useHotkeys } from 'react-hotkeys-hook';
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap';
 
 function optionalNumber(...values: unknown[]): number | undefined {
   for (const value of values) {
@@ -33,10 +34,8 @@ export function purchaseReportPaymentLabel(method: unknown): string {
 }
 
 export function purchaseReportUnitLabel(item: Record<string, unknown>): string {
-  const unitId = Number(item.unit_id);
-  if (unitId === 1) return 'علبة';
-  if (unitId === 2) return 'شريط';
-  return String(item.unit || '-');
+  const largeUnit = String(item.large_unit ?? '').trim();
+  return largeUnit || 'علبة';
 }
 
 export function purchaseReportDate(value: unknown, includeTime = false): string {
@@ -87,6 +86,7 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
   const [suppliers, setSuppliers] = useState<any[]>([]);
   const searchRequestRef = useRef(0);
   const invoiceDetailsRequestRef = useRef(0);
+  const invoiceDialogRef = useDialogFocusTrap<HTMLDivElement>(Boolean(selectedInvoice));
 
   const [filters, setFilters] = useState({
     startDate: format(new Date(), 'yyyy-MM-dd'),
@@ -102,7 +102,7 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
     async function loadData() {
       const [staffResult, supplierResult] = await Promise.allSettled([
         getStaffAction(),
-        getSuppliersAction(),
+        getSuppliersAction({ reportScope: true }),
       ]);
       let metadataFailed = false;
 
@@ -165,7 +165,7 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
     setInvoiceItems([]);
     setLoadingItems(true);
     try {
-      const res = await getPurchaseInvoiceDetailsAction(invoiceId);
+      const res = await getPurchaseInvoiceDetailsAction(invoiceId, { reportScope: true });
       if (requestId !== invoiceDetailsRequestRef.current) return;
       if (res.success) setInvoiceItems(res.data || []);
       else {
@@ -229,7 +229,7 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
     <div className="space-y-8 pb-20" dir="rtl">
       {/* Header */}
       <div className="bg-white dark:bg-slate-900 p-8 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-sm">
-        <div className="flex justify-between items-center mb-8">
+        <div className="flex flex-col gap-4 sm:flex-row sm:justify-between sm:items-center mb-8">
           <div>
             <h1 className="text-3xl font-black text-slate-800 dark:text-white">تقرير فواتير المشتريات</h1>
             <p className="text-slate-500 font-bold">عرض وتحليل تفصيلي لعمليات البيع والمرتجعات والأسعار</p>
@@ -261,12 +261,13 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
           
           {/* Top Main Search Bar for Drug Name */}
           <div className="space-y-2">
-            <label className="text-xs font-black text-blue-600 dark:text-blue-400 uppercase tracking-wide flex items-center gap-2">
+            <label htmlFor="purchase-report-drug" className="text-xs font-black text-blue-600 dark:text-blue-400 flex items-center gap-2">
               <Search className="w-4 h-4" /> البحث باسم الصنف / الدواء في كافة فواتير المشتريات
             </label>
             <div className="relative">
               <Search className="absolute right-4 top-1/2 -translate-y-1/2 w-6 h-6 text-slate-400" />
               <input 
+                id="purchase-report-drug"
                 type="text" 
                 placeholder="ادخل اسم الصنف أو المادة الفعالة للبحث في الفواتير..."
                 className="w-full pr-14 pl-4 py-4 bg-white dark:bg-slate-900 rounded-2xl border-2 border-blue-200 dark:border-blue-900 font-black text-lg text-slate-900 dark:text-white outline-none focus:border-blue-600 shadow-sm"
@@ -279,10 +280,11 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
           {/* Secondary Filters */}
           <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4">
             <div className="space-y-2">
-              <label className="text-[10px] font-black text-slate-400 uppercase mr-2">من تاريخ</label>
+              <label htmlFor="purchase-report-start-date" className="text-xs font-black text-slate-500 mr-2">من تاريخ</label>
               <div className="relative">
                 <Calendar className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                 <input 
+                  id="purchase-report-start-date"
                   type="date" 
                   className="w-full pr-10 pl-3 py-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 font-bold text-xs outline-none focus:border-blue-500"
                   value={filters.startDate}
@@ -292,10 +294,11 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
             </div>
 
             <div className="space-y-2">
-              <label className="text-[10px] font-black text-slate-400 uppercase mr-2">إلى تاريخ</label>
+              <label htmlFor="purchase-report-end-date" className="text-xs font-black text-slate-500 mr-2">إلى تاريخ</label>
               <div className="relative">
                 <Calendar className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                 <input 
+                  id="purchase-report-end-date"
                   type="date" 
                   className="w-full pr-10 pl-3 py-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 font-bold text-xs outline-none focus:border-blue-500"
                   value={filters.endDate}
@@ -305,8 +308,9 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
             </div>
 
             <div className="space-y-2">
-              <label className="text-[10px] font-black text-slate-400 uppercase mr-2">رقم الفاتورة</label>
+              <label htmlFor="purchase-report-invoice" className="text-xs font-black text-slate-500 mr-2">رقم الفاتورة</label>
               <input 
+                id="purchase-report-invoice"
                 type="text" 
                 placeholder="رقم الفاتورة..."
                 className="w-full px-4 py-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 font-bold text-xs outline-none"
@@ -316,8 +320,9 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
             </div>
 
             <div className="space-y-2">
-              <label className="text-[10px] font-black text-slate-400 uppercase mr-2">المورد</label>
+              <label htmlFor="purchase-report-supplier" className="text-xs font-black text-slate-500 mr-2">المورد</label>
               <select 
+                id="purchase-report-supplier"
                 className="w-full px-3 py-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 font-bold text-xs outline-none"
                 value={filters.supplierId}
                 onChange={(e) => setFilters({...filters, supplierId: e.target.value})}
@@ -328,8 +333,9 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
             </div>
 
             <div className="space-y-2">
-              <label className="text-[10px] font-black text-slate-400 uppercase mr-2">الموظف / الصيدلي</label>
+              <label htmlFor="purchase-report-staff" className="text-xs font-black text-slate-500 mr-2">الموظف / الصيدلي</label>
               <select 
+                id="purchase-report-staff"
                 className="w-full px-3 py-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 font-bold text-xs outline-none"
                 value={filters.userId}
                 onChange={(e) => setFilters({...filters, userId: e.target.value})}
@@ -340,8 +346,9 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
             </div>
 
             <div className="space-y-2">
-              <label className="text-[10px] font-black text-slate-400 uppercase mr-2">طريقة الدفع</label>
+              <label htmlFor="purchase-report-payment" className="text-xs font-black text-slate-500 mr-2">طريقة الدفع</label>
               <select 
+                id="purchase-report-payment"
                 className="w-full px-3 py-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 font-bold text-xs outline-none"
                 value={filters.paymentMethod}
                 onChange={(e) => setFilters({...filters, paymentMethod: e.target.value})}
@@ -356,6 +363,7 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
 
           <div className="pt-2 flex justify-end">
             <button 
+              type="button"
               onClick={handleSearch}
               className="px-10 py-4 bg-slate-900 text-white rounded-2xl font-black flex items-center justify-center gap-3 hover:bg-slate-800 transition-all shadow-xl text-base"
             >
@@ -412,7 +420,7 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
             <p className="text-2xl font-black text-slate-900 dark:text-white">
               {totalNetAmount.toLocaleString()} <span className="text-xs text-slate-400">ج.م</span>
             </p>
-            <p className="text-[10px] text-slate-400 font-bold mt-0.5">{invoices.length} فاتورة</p>
+            <p className="text-xs text-slate-500 font-bold mt-0.5">{invoices.length} فاتورة</p>
           </div>
         </div>
 
@@ -449,7 +457,7 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
             <p className="text-xl font-black text-emerald-600">
               {totalSellingAmount.toLocaleString()} <span className="text-xs text-slate-400">ج.م</span>
             </p>
-            <p className="text-[10px] text-slate-400 font-bold mt-0.5">
+            <p className="text-xs text-slate-500 font-bold mt-0.5">
               نقدي: {cashPurchasesTotal.toLocaleString()} | آجل: {creditPurchasesTotal.toLocaleString()}
             </p>
           </div>
@@ -460,9 +468,9 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
       <div className="grid grid-cols-1 gap-8">
         <div className="bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 overflow-hidden shadow-sm">
           <TableScrollContainer>
-            <table className="w-full text-right">
+            <table className="w-full min-w-[1180px] text-right">
               <thead className="bg-slate-50 dark:bg-slate-800/50">
-                <tr className="text-slate-400 text-[10px] font-black uppercase tracking-widest">
+                <tr className="text-slate-500 text-xs font-black">
                   <th className="px-6 py-6">الرقم</th>
                   <th className="px-6 py-6">النوع</th>
                   <th className="px-6 py-6">التاريخ</th>
@@ -486,19 +494,20 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
                     tabIndex={0}
                     onClick={() => handleInvoiceClick(inv.id)}
                     onKeyDown={(event) => {
-                      if (event.target === event.currentTarget && event.key === 'Enter') {
+                      if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) {
+                        event.preventDefault();
                         void handleInvoiceClick(inv.id);
                       }
                     }}
                     className={cn(
-                      "hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors cursor-pointer group",
+                      "hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors cursor-pointer group focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500",
                       selectedInvoice === inv.id ? "bg-blue-50/50 dark:bg-blue-900/10" : ""
                     )}
                   >
                     <td className="px-6 py-6 font-mono font-black text-blue-600 group-hover:underline">#{inv.id.slice(0, 8)}</td>
                     <td className="px-6 py-6">
                       <span className={cn(
-                        "px-4 py-1.5 rounded-full text-[10px] font-black",
+                        "px-4 py-1.5 rounded-full text-xs font-black",
                         inv.payment_method === 'cash' ? "bg-emerald-50 text-emerald-600" :
                         inv.payment_method === 'check' ? "bg-amber-50 text-amber-600" : "bg-purple-50 text-purple-600"
                       )}>
@@ -514,7 +523,7 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
                     <td className="px-6 py-6 font-black text-lg text-slate-900 dark:text-white">{Number(inv.total_amount || 0).toLocaleString()}</td>
                     <td className="px-6 py-6">
                       <span className={cn(
-                        "px-3 py-1 rounded-lg text-[10px] font-black uppercase",
+                        "px-3 py-1 rounded-lg text-xs font-black",
                         inv.status === 'completed' ? "bg-emerald-50 text-emerald-600 dark:bg-emerald-950/20 dark:text-emerald-400" :
                         inv.status === 'delivered' ? "bg-blue-50 text-blue-600 dark:bg-blue-950/20 dark:text-blue-400" :
                         inv.status === 'draft' ? "bg-amber-50 text-amber-600 dark:bg-amber-950/20 dark:text-amber-400" :
@@ -557,23 +566,32 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
         {/* Invoice Items Modal */}
         {selectedInvoice && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-slate-900/50 backdrop-blur-sm animate-in fade-in">
-            <div className="w-full max-w-5xl bg-white dark:bg-slate-900 text-slate-900 dark:text-white rounded-[40px] shadow-2xl animate-in zoom-in-95 border border-slate-100 dark:border-slate-800 flex flex-col max-h-[90vh] overflow-hidden">
+            <div
+              ref={invoiceDialogRef}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="purchase-items-dialog-title"
+              tabIndex={-1}
+              className="w-full max-w-5xl bg-white dark:bg-slate-900 text-slate-900 dark:text-white rounded-[40px] shadow-2xl animate-in zoom-in-95 border border-slate-100 dark:border-slate-800 flex flex-col max-h-[90vh] overflow-hidden"
+            >
               <div className="p-8 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center shrink-0">
                 <div>
-                  <h4 className="text-xl font-black">أصناف الفاتورة #{selectedInvoice.slice(0, 8)}</h4>
+                  <h4 id="purchase-items-dialog-title" className="text-xl font-black">أصناف الفاتورة #{selectedInvoice.slice(0, 8)}</h4>
                   <p className="text-slate-500 dark:text-slate-400 text-xs font-bold">تفاصيل المشتريات والكميات والأسعار</p>
                 </div>
                 <button 
+                  type="button"
+                  aria-label="إغلاق تفاصيل أصناف فاتورة المشتريات"
                   onClick={() => setSelectedInvoice(null)}
                   className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-2xl transition-all"
                 >
                   <ArrowRight className="w-5 h-5 rotate-180" />
                 </button>
               </div>
-              <div className="overflow-y-auto flex-1 p-2">
-                <table className="w-full text-right border-separate border-spacing-y-2 px-6">
+              <div className="overflow-auto flex-1 p-2">
+                <table className="w-full min-w-[1100px] text-right border-separate border-spacing-y-2 px-6">
                   <thead className="bg-slate-50 dark:bg-slate-800/50 sticky top-0 z-10">
-                    <tr className="text-slate-400 text-[10px] font-black uppercase tracking-widest">
+                    <tr className="text-slate-500 text-xs font-black">
                       <th className="px-4 py-5 rounded-r-2xl">كود الصنف</th>
                       <th className="px-4 py-5">إسم الصنف</th>
                       <th className="px-4 py-5">ت. الصلاحية</th>

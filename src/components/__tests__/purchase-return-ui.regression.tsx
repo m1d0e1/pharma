@@ -117,6 +117,81 @@ describe('rendered purchase-return flow', () => {
     expect(mockPush).toHaveBeenCalledWith('/purchases/returns');
   });
 
+  it('shows custom master unit names while submitting the canonical return unit', async () => {
+    (getPurchaseInvoiceDetailsAction as jest.Mock).mockResolvedValueOnce({
+      success: true,
+      data: [{
+        id: 'item-custom-units',
+        drug_id: 101,
+        trade_name: 'Custom Unit Drug',
+        barcode: 'CUSTOM-UNIT-1',
+        quantity: 10,
+        refundable_large_unit_price: 50,
+        remaining_large_quantity: 10,
+        returned_large_quantity: 0,
+        large_to_medium: 2,
+        medium_to_small: 10,
+        large_unit: 'زجاجة',
+        medium_unit: 'باكيت',
+        small_unit: 'مل',
+        expiry_date: '2027-12-31',
+      }],
+    });
+
+    render(<PurchaseReturnClient />);
+    fireEvent.change(screen.getByPlaceholderText(/امسح الباركود، أو اكتب اسم الدواء/), {
+      target: { value: 'CUSTOM-UNIT-1' },
+    });
+
+    expect(await screen.findByText('10 زجاجة')).toBeInTheDocument();
+    const mediumOption = screen.getByRole('option', { name: 'باكيت' });
+    expect(screen.getByRole('option', { name: 'زجاجة' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'مل' })).toBeInTheDocument();
+
+    const unit = mediumOption.parentElement as HTMLSelectElement;
+    fireEvent.change(unit, { target: { value: 'medium' } });
+    expect(screen.getByText(/20\.00 باكيت/)).toBeInTheDocument();
+    fireEvent.change(screen.getByDisplayValue('0'), { target: { value: '2' } });
+    fireEvent.click(screen.getByRole('button', { name: /تنفيذ المرتجع/ }));
+
+    await waitFor(() => expect(createPurchaseReturnAction).toHaveBeenCalledWith(expect.objectContaining({
+      items: [expect.objectContaining({
+        quantity: 2,
+        unit: 'medium',
+      })],
+    })));
+  });
+
+  it('preserves the prepared purchase quantity when return units round-trip large to small to medium', async () => {
+    render(<PurchaseReturnClient />);
+    fireEvent.change(screen.getByPlaceholderText(/امسح الباركود، أو اكتب اسم الدواء/), {
+      target: { value: '6221000999' },
+    });
+    expect(await screen.findByText('Panadol Extra')).toBeInTheDocument();
+
+    const quantity = screen.getByDisplayValue('0');
+    const unit = screen.getByRole('option', { name: 'وحدة' }).parentElement as HTMLSelectElement;
+    fireEvent.change(quantity, { target: { value: '1' } });
+    expect(quantity).toHaveValue(1);
+
+    fireEvent.change(unit, { target: { value: 'small' } });
+    expect(quantity).toHaveValue(20);
+    fireEvent.change(unit, { target: { value: 'medium' } });
+    expect(quantity).toHaveValue(2);
+    fireEvent.change(unit, { target: { value: 'large' } });
+    expect(quantity).toHaveValue(1);
+
+    fireEvent.click(screen.getByRole('button', { name: /تنفيذ المرتجع/ }));
+    await waitFor(() => expect(createPurchaseReturnAction).toHaveBeenCalledWith(expect.objectContaining({
+      purchase_invoice_id: 'purch-inv-1',
+      items: [expect.objectContaining({
+        quantity: 1,
+        unit: 'large',
+        unit_price: 50,
+      })],
+    })));
+  });
+
   it('keeps the chosen purchase receipt when supplier/list refreshes and older details finish late', async () => {
     const receipts = [
       { id: 'purchase-first', invoice_number: 'PINV-FIRST', supplier_id: 1, total_amount: 10, status: 'completed' },
@@ -167,6 +242,20 @@ describe('rendered purchase-return flow', () => {
 
     expect(await screen.findByText('Second Purchase Receipt Drug')).toBeInTheDocument();
     expect(screen.queryByText('Wrong First Purchase Receipt Drug')).not.toBeInTheDocument();
+  });
+
+  it('cannot submit the previously prepared purchase return after the invoice search source changes', async () => {
+    render(<PurchaseReturnClient />);
+    const searchInput = screen.getByPlaceholderText(/امسح الباركود، أو اكتب اسم الدواء/);
+    fireEvent.change(searchInput, { target: { value: '6221000999' } });
+    expect(await screen.findByText('Panadol Extra')).toBeInTheDocument();
+    fireEvent.change(screen.getByDisplayValue('0'), { target: { value: '2' } });
+    expect(screen.getByRole('button', { name: 'تنفيذ المرتجع' })).toBeEnabled();
+
+    fireEvent.change(searchInput, { target: { value: 'different invoice' } });
+
+    expect(screen.queryByRole('button', { name: 'تنفيذ المرتجع' })).not.toBeInTheDocument();
+    expect(createPurchaseReturnAction).not.toHaveBeenCalled();
   });
 
   it('preserves the prepared purchase return and restores submit controls when creation throws', async () => {

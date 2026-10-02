@@ -9,6 +9,7 @@ import { Search, Receipt, FileText, ArrowUpRight, CheckCircle2, Clock, Printer, 
 import { toast } from 'react-hot-toast';
 import Link from 'next/link';
 import BarcodePrinter from '@/components/purchases/BarcodePrinter';
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap';
 
 function optionalNumber(...values: unknown[]): number | undefined {
   for (const value of values) {
@@ -27,10 +28,8 @@ export function purchaseInvoicePaymentLabel(method: unknown): string {
 }
 
 export function purchaseInvoiceUnitLabel(item: Record<string, unknown>): string {
-  const unitId = Number(item.unit_id);
-  if (unitId === 1) return 'علبة';
-  if (unitId === 2) return 'شريط';
-  return String(item.unit || '-');
+  const largeUnit = String(item.large_unit ?? '').trim();
+  return largeUnit || 'علبة';
 }
 
 export function purchaseInvoiceDate(value: unknown): string {
@@ -86,6 +85,9 @@ export default function PurchaseReportsClient() {
   const detailsRequestRef = useRef(0);
   const barcodeRequestRef = useRef(0);
   const deletingRef = useRef(false);
+  const invoiceDialogRef = useDialogFocusTrap<HTMLDivElement>(
+    Boolean(selectedInvoice) && !selectedInvoiceForBarcode
+  );
 
   const loadInvoices = React.useCallback(async () => {
     const requestId = ++loadRequestRef.current;
@@ -245,15 +247,24 @@ export default function PurchaseReportsClient() {
       )}
       {selectedInvoice && (
         <div className="fixed inset-0 z-[210] flex items-center justify-center bg-slate-950/60 p-4" onClick={() => setSelectedInvoice(null)}>
-          <div className="max-h-[90vh] w-full max-w-5xl overflow-y-auto rounded-3xl bg-white p-6 shadow-2xl dark:bg-slate-900" dir="rtl" onClick={e => e.stopPropagation()}>
+          <div
+            ref={invoiceDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="purchase-invoice-dialog-title"
+            tabIndex={-1}
+            className="max-h-[90vh] w-full max-w-5xl overflow-y-auto rounded-3xl bg-white p-4 sm:p-6 shadow-2xl dark:bg-slate-900"
+            dir="rtl"
+            onClick={e => e.stopPropagation()}
+          >
             <div className="mb-6 flex items-start justify-between gap-4">
               <div>
-                <h3 className="text-2xl font-black">فاتورة شراء {selectedInvoice.invoice_number || selectedInvoice.id.slice(0, 8)}</h3>
+                <h3 id="purchase-invoice-dialog-title" className="text-2xl font-black">فاتورة شراء {selectedInvoice.invoice_number || selectedInvoice.id.slice(0, 8)}</h3>
                 <p className="mt-1 text-sm text-slate-500">{selectedInvoice.supplier_name} {selectedInvoice.supplier_phone ? `- ${selectedInvoice.supplier_phone}` : ''}</p>
               </div>
-              <button onClick={() => setSelectedInvoice(null)} className="rounded-xl p-2 hover:bg-slate-100 dark:hover:bg-slate-800" aria-label="إغلاق"><X /></button>
+              <button type="button" onClick={() => setSelectedInvoice(null)} className="rounded-xl p-2 hover:bg-slate-100 dark:hover:bg-slate-800" aria-label="إغلاق تفاصيل فاتورة الشراء"><X /></button>
             </div>
-            <div className="mb-6 grid grid-cols-2 gap-3 rounded-2xl bg-slate-50 p-4 text-sm dark:bg-slate-800 md:grid-cols-4">
+            <div className="mb-6 grid grid-cols-1 gap-3 rounded-2xl bg-slate-50 p-4 text-sm dark:bg-slate-800 sm:grid-cols-2 md:grid-cols-4">
               <div><span className="text-slate-500">تاريخ الفاتورة</span><p className="font-bold">{purchaseInvoiceDate(selectedInvoice.invoice_date || selectedInvoice.created_at)}</p></div>
               <div><span className="text-slate-500">المستخدم</span><p className="font-bold">{selectedInvoice.user_name || '---'}</p></div>
               <div><span className="text-slate-500">الدفع</span><p className="font-bold">{purchaseInvoicePaymentLabel(selectedInvoice.payment_method)}</p></div>
@@ -269,7 +280,7 @@ export default function PurchaseReportsClient() {
             </div>
             {detailsLoading ? <p className="py-10 text-center text-slate-500">جاري التحميل...</p> : (
               <div className="overflow-x-auto rounded-2xl border border-slate-200 dark:border-slate-700">
-                <table className="w-full text-right text-sm">
+                <table className="w-full min-w-[1000px] text-right text-sm">
                   <thead className="bg-slate-50 dark:bg-slate-800"><tr><th className="p-3">الصنف</th><th className="p-3">الباركود</th><th className="p-3">الكمية</th><th className="p-3">المجاني</th><th className="p-3">الصلاحية</th><th className="p-3">سعر الشراء</th><th className="p-3">سعر البيع</th><th className="p-3">الضريبة</th><th className="p-3">إجمالي قبل الخصم</th><th className="p-3">صافي السطر</th></tr></thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800">{selectedItems.map(item => {
                     const amounts = purchaseInvoiceLineAmounts(item);
@@ -286,10 +297,10 @@ export default function PurchaseReportsClient() {
               </div>
             )}
             <div className="mt-6 flex flex-wrap gap-3 border-t border-slate-200 pt-5 dark:border-slate-700">
-              <button disabled={deleting} onClick={() => deleteInvoice(false)} className="inline-flex items-center gap-2 rounded-xl bg-amber-100 px-4 py-2.5 font-bold text-amber-800 disabled:opacity-50">
+              <button type="button" disabled={deleting} onClick={() => deleteInvoice(false)} className="inline-flex items-center gap-2 rounded-xl bg-amber-100 px-4 py-2.5 font-bold text-amber-800 disabled:opacity-50">
                 <Trash2 className="h-4 w-4" /> حذف السجل فقط (إبقاء المخزون والحسابات)
               </button>
-              <button disabled={deleting} onClick={() => deleteInvoice(true)} className="inline-flex items-center gap-2 rounded-xl bg-rose-600 px-4 py-2.5 font-bold text-white disabled:opacity-50">
+              <button type="button" disabled={deleting} onClick={() => deleteInvoice(true)} className="inline-flex items-center gap-2 rounded-xl bg-rose-600 px-4 py-2.5 font-bold text-white disabled:opacity-50">
                 <PackageMinus className="h-4 w-4" /> حذف وعكس المخزون والحسابات
               </button>
             </div>
@@ -342,6 +353,7 @@ export default function PurchaseReportsClient() {
               <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 text-blue-600 dark:text-blue-400" />
               <input 
                 type="text"
+                aria-label="بحث باسم الصنف أو الدواء"
                 placeholder="بحث باسم الصنف / الدواء..."
                 value={drugSearchTerm}
                 onChange={e => setDrugSearchTerm(e.target.value)}
@@ -352,6 +364,7 @@ export default function PurchaseReportsClient() {
               <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
               <input 
                 type="text"
+                aria-label="بحث برقم الفاتورة أو المورد"
                 placeholder="بحث برقم الفاتورة أو المورد..."
                 value={searchTerm}
                 onChange={e => setSearchTerm(e.target.value)}
@@ -359,6 +372,7 @@ export default function PurchaseReportsClient() {
               />
             </div>
             <select
+              aria-label="تصفية فواتير المشتريات حسب الحالة"
               value={statusFilter}
               onChange={e => setStatusFilter(e.target.value)}
               className="px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-primary-500 font-bold text-sm outline-none"
@@ -371,7 +385,7 @@ export default function PurchaseReportsClient() {
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-right">
+          <table className="w-full min-w-[900px] text-right">
             <thead>
               <tr className="bg-slate-50 dark:bg-slate-800/50 text-slate-500">
                 <th className="p-4 font-bold">رقم الفاتورة</th>
@@ -385,7 +399,7 @@ export default function PurchaseReportsClient() {
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {filteredInvoices.map((inv) => (
-                <tr key={inv.id} tabIndex={0} onClick={() => showInvoice(inv)} onKeyDown={e => { if (e.key === 'Enter') showInvoice(inv); }} className="cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+                <tr key={inv.id} tabIndex={0} onClick={() => showInvoice(inv)} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); showInvoice(inv); } }} className="cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-500">
                   <td className="p-4 font-bold text-primary-600">{inv.invoice_number || inv.id.substring(0, 8)}</td>
                   <td className="p-4">{inv.supplier_name || 'غير محدد'}</td>
                   <td className="p-4 text-slate-500">
@@ -415,6 +429,7 @@ export default function PurchaseReportsClient() {
                       <Link
                         href={`/purchases/new?supplier_id=${inv.supplier_id}`}
                         onClick={e => e.stopPropagation()}
+                        aria-label={`استكمال الفاتورة ${inv.invoice_number || inv.id.substring(0, 8)}`}
                         className="p-2 text-slate-400 hover:text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/30 rounded-xl transition-all"
                         title="استكمال الفاتورة"
                       >
@@ -425,6 +440,7 @@ export default function PurchaseReportsClient() {
                       <Link
                         href={`/purchases/new?edit_invoice_id=${inv.id}`}
                         onClick={e => e.stopPropagation()}
+                        aria-label={`تعديل الفاتورة ${inv.invoice_number || inv.id.substring(0, 8)}`}
                         className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded-xl transition-all"
                         title="تعديل الفاتورة المكتملة"
                       >
@@ -432,6 +448,8 @@ export default function PurchaseReportsClient() {
                       </Link>
                     )}
                     <button
+                      type="button"
+                      aria-label={`طباعة ملصقات باركود الفاتورة ${inv.invoice_number || inv.id.substring(0, 8)}`}
                       onClick={(e) => { e.stopPropagation(); handlePrintBarcode(inv.id); }}
                       className="p-2 text-slate-400 hover:text-primary-600 hover:bg-primary-50 dark:hover:bg-primary-900/30 rounded-xl transition-all"
                       title="طباعة ملصقات الباركود"

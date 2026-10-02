@@ -31,8 +31,11 @@ jest.mock('@/components/inventory/PurchaseOrdersClient', () => function MockPurc
 jest.mock('@/components/patients/PatientListClient', () => function MockPatientListClient({ initialPatients }: any) {
   return <div>patients:{initialPatients.map((patient: any) => patient.full_name).join(',')}</div>;
 });
-jest.mock('@/components/shifts/ShiftManagementClient', () => function MockShiftManagementClient({ initialShifts }: any) {
-  return <div>shifts:{initialShifts.map((shift: any) => shift.id).join(',')}</div>;
+jest.mock('@/components/shifts/ShiftManagementClient', () => function MockShiftManagementClient({ initialShifts, canHandover }: any) {
+  return <>
+    <div>shifts:{initialShifts.map((shift: any) => shift.id).join(',')}</div>
+    <div>handover-prop:{String(canHandover)}</div>
+  </>;
 });
 jest.mock('@/components/settings/PharmacySettingsForm', () => function MockPharmacySettingsForm({ pharmacy }: any) {
   return <div>pharmacy:{pharmacy?.name || 'empty'}</div>;
@@ -125,6 +128,28 @@ it('keeps the newest shift refresh when an older focus load resolves later', asy
 
   expect(screen.getByText('shifts:shift-newest')).toBeInTheDocument();
   expect(screen.queryByText('shifts:shift-stale')).not.toBeInTheDocument();
+});
+
+it('hides shift handover entry points without the dedicated handover permission', async () => {
+  (getClientSession as jest.Mock).mockResolvedValue({
+    ...owner,
+    role: 'pharmacist',
+    permissions: { can_view_shifts: true, acc_can_view_handover: false },
+  });
+  (getCurrentShiftAction as jest.Mock).mockResolvedValue({
+    success: true,
+    data: {
+      id: 'shift-open',
+      shift_start: '2026-10-01T08:00:00Z',
+      starting_cash_amount: 100,
+    },
+  });
+  (getShiftsAction as jest.Mock).mockResolvedValue({ success: true, data: [] });
+
+  render(<ShiftsPage />);
+
+  expect(await screen.findByText('handover-prop:false')).toBeInTheDocument();
+  expect(screen.queryAllByRole('link', { name: /تسليم الدرج/ })).toHaveLength(0);
 });
 
 it('distinguishes failed settings data from an empty pharmacy settings form and retries', async () => {

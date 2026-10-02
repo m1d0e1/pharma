@@ -75,7 +75,7 @@ export default function DeliveryManagementClient() {
   return (
     <div className="space-y-8 pb-20" dir="rtl">
       {/* Header */}
-      <div className="bg-white dark:bg-slate-900 p-8 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-sm flex justify-between items-center">
+      <div className="bg-white dark:bg-slate-900 p-5 sm:p-8 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-sm flex flex-col gap-4 sm:flex-row sm:justify-between sm:items-center">
         <div>
           <h1 className="text-3xl font-black text-slate-800 dark:text-white flex items-center gap-4">
             <Bike className="w-10 h-10 text-rose-500" />
@@ -85,10 +85,12 @@ export default function DeliveryManagementClient() {
         </div>
         <div className="flex items-center gap-6">
           <div className="text-left">
-            <p className="text-[10px] font-black text-slate-400 uppercase">قيد التوصيل</p>
+            <p className="text-xs font-black text-slate-500">قيد التوصيل</p>
             <p className="text-2xl font-black text-rose-600">{invoices.length}</p>
           </div>
           <button 
+            type="button"
+            aria-label="تحديث طلبات التوصيل"
             onClick={loadDeliveries}
             className="p-4 bg-slate-50 dark:bg-slate-800 text-slate-500 rounded-2xl hover:bg-slate-100 transition-all"
           >
@@ -150,15 +152,16 @@ export default function DeliveryManagementClient() {
                 </div>
 
                 <div className="p-6 bg-slate-50 dark:bg-slate-800/50 rounded-3xl space-y-3">
-                  <div className="flex justify-between items-center text-[10px] font-black text-slate-400 uppercase">
+                  <div className="flex justify-between items-center text-xs font-black text-slate-500">
                     <span>قيمة الفاتورة</span>
                     <span className="text-lg text-slate-800 dark:text-white">{inv.total_amount.toLocaleString()} ج.م</span>
                   </div>
                   <div className="flex justify-between items-center">
-                    <span className="text-[10px] font-black text-slate-400 uppercase">خدمة التوصيل</span>
+                    <span className="text-xs font-black text-slate-500">خدمة التوصيل</span>
                     <div className="relative w-24">
                       <input 
                         type="number" 
+                        aria-label={`رسوم التوصيل للفاتورة ${inv.id.slice(0, 8)}`}
                         className="w-full pl-3 pr-8 py-2 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 font-black text-xs outline-none focus:ring-2 ring-rose-500"
                         value={deliveryFees[inv.id] || ''}
                         onChange={(e) => setDeliveryFees({...deliveryFees, [inv.id]: parseFloat(e.target.value) || 0})}

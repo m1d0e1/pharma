@@ -1,4 +1,5 @@
 import { getDatabase } from './client';
+import { ensureCanonicalLocalSchema } from './canonical-local-schema';
 import { applyIndexes } from './indexes';
 
 // Lazy Proxy to avoid module-load circular dependency and TDZ ReferenceError
@@ -328,6 +329,8 @@ export function initLocalDb() {
       patient_id TEXT,
       total_amount REAL,
       payment_method TEXT,
+      points_redeemed INTEGER DEFAULT 0,
+      loyalty_discount_amount REAL DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -734,6 +737,7 @@ export function initLocalDb() {
       initial_credit REAL DEFAULT 0,
       initial_debit REAL DEFAULT 0,
       status TEXT DEFAULT 'active',
+      pharmacy_id TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -754,6 +758,7 @@ export function initLocalDb() {
       account_number TEXT,
       branch TEXT,
       current_balance REAL DEFAULT 0,
+      pharmacy_id TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -782,6 +787,7 @@ export function initLocalDb() {
       bank_id INTEGER,
       commission_pct REAL DEFAULT 0,
       current_balance REAL DEFAULT 0,
+      pharmacy_id TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (bank_id) REFERENCES banks (id)
     );
@@ -920,6 +926,14 @@ export function initLocalDb() {
     }
   };
 
+  for (const table of ['banks', 'credit_cards', 'points_of_sale']) {
+    addColumnSafely(table, 'pharmacy_id', 'TEXT');
+    db.exec(`UPDATE ${table} SET pharmacy_id = 'local_default' WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = ''`);
+  }
+  db.exec('CREATE INDEX IF NOT EXISTS idx_banks_pharmacy_name ON banks(pharmacy_id, name_ar)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_credit_cards_pharmacy_name ON credit_cards(pharmacy_id, name_ar)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_points_of_sale_pharmacy_name ON points_of_sale(pharmacy_id, name_ar)');
+
   addColumnSafely('supplier_transactions', 'user_id', 'TEXT');
   addColumnSafely('supplier_transactions', 'payment_method', "TEXT DEFAULT 'cash'");
   addColumnSafely('supplier_transactions', 'date', 'TEXT');
@@ -998,6 +1012,12 @@ export function initLocalDb() {
   }
   if (!salesColumns.some(c => c.name === 'remaining_amount')) {
     addColumnSafely('sales_invoices', 'remaining_amount', "REAL DEFAULT 0");
+  }
+  if (!salesColumns.some(c => c.name === 'points_redeemed')) {
+    addColumnSafely('sales_invoices', 'points_redeemed', 'INTEGER DEFAULT 0');
+  }
+  if (!salesColumns.some(c => c.name === 'loyalty_discount_amount')) {
+    addColumnSafely('sales_invoices', 'loyalty_discount_amount', 'REAL DEFAULT 0');
   }
   db.exec(`
     UPDATE sales_invoices
@@ -1162,6 +1182,72 @@ export function initLocalDb() {
   }
 
   db.exec(`
+    CREATE TABLE IF NOT EXISTS drug_catalog_links (
+      catalog_drug_id INTEGER PRIMARY KEY,
+      master_drug_id INTEGER NOT NULL UNIQUE,
+      linked_by TEXT,
+      linked_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (master_drug_id) REFERENCES master_drugs(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS drug_catalog_suppressions (
+      catalog_drug_id INTEGER PRIMARY KEY,
+      reason TEXT NOT NULL DEFAULT 'kept_absent_by_user',
+      created_by TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS drug_catalog_field_policies (
+      master_drug_id INTEGER NOT NULL,
+      field_name TEXT NOT NULL,
+      policy TEXT NOT NULL CHECK (policy IN ('local', 'catalog', 'ask')),
+      updated_by TEXT,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (master_drug_id, field_name),
+      FOREIGN KEY (master_drug_id) REFERENCES master_drugs(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS drug_catalog_update_runs (
+      id TEXT PRIMARY KEY,
+      user_id TEXT,
+      source_name TEXT,
+      preview_signature TEXT NOT NULL,
+      backup_path TEXT NOT NULL,
+      summary_json TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_drug_catalog_links_master
+      ON drug_catalog_links(master_drug_id);
+    CREATE INDEX IF NOT EXISTS idx_drug_catalog_field_policies_drug
+      ON drug_catalog_field_policies(master_drug_id);
+
+    CREATE TRIGGER IF NOT EXISTS trg_master_drugs_catalog_suppress_before_delete
+    BEFORE DELETE ON master_drugs
+    WHEN EXISTS (
+      SELECT 1 FROM drug_catalog_links WHERE master_drug_id = OLD.id
+    )
+    BEGIN
+      INSERT INTO drug_catalog_suppressions (
+        catalog_drug_id, reason, created_by, created_at, updated_at
+      )
+      SELECT catalog_drug_id, 'deleted_locally', NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      FROM drug_catalog_links
+      WHERE master_drug_id = OLD.id
+      ON CONFLICT(catalog_drug_id) DO UPDATE SET
+        reason = 'deleted_locally',
+        updated_at = CURRENT_TIMESTAMP;
+    END;
+  `);
+
+  // Keep the standalone/better-sqlite fallback on the same canonical table
+  // constraints as the numbered Tauri migrations before branch-scope triggers
+  // are installed. The repair is transactional and refuses orphaned legacy
+  // data rather than deleting or guessing rows.
+  ensureCanonicalLocalSchema(db);
+
+  db.exec(`
     UPDATE shifts AS legacy_shift
     SET pharmacy_id = (
       SELECT MIN(NULLIF(TRIM(invoice.pharmacy_id), ''))
@@ -1280,7 +1366,7 @@ export function initLocalDb() {
          AND COALESCE(NULLIF(TRIM(existing_shift.pharmacy_id), ''), 'local_default') =
              COALESCE(
                NULLIF(TRIM(NEW.pharmacy_id), ''),
-               (SELECT COALESCE(NULLIF(TRIM(new_owner.pharmacy_id), ''), 'local_default')
+               (SELECT NULLIF(TRIM(new_owner.pharmacy_id), '')
                 FROM users new_owner
                 WHERE CAST(new_owner.id AS TEXT) = CAST(NEW.user_id AS TEXT)
                    OR LOWER(new_owner.username) = LOWER(CAST(NEW.user_id AS TEXT))
@@ -1304,7 +1390,7 @@ export function initLocalDb() {
          AND COALESCE(NULLIF(TRIM(existing_shift.pharmacy_id), ''), 'local_default') =
              COALESCE(
                NULLIF(TRIM(NEW.pharmacy_id), ''),
-               (SELECT COALESCE(NULLIF(TRIM(new_owner.pharmacy_id), ''), 'local_default')
+               (SELECT NULLIF(TRIM(new_owner.pharmacy_id), '')
                 FROM users new_owner
                 WHERE CAST(new_owner.id AS TEXT) = CAST(NEW.user_id AS TEXT)
                    OR LOWER(new_owner.username) = LOWER(CAST(NEW.user_id AS TEXT))
@@ -1778,7 +1864,7 @@ function seedDrugInteractions(database: any) {
   ];
 
   const stmt = database.prepare(`
-    INSERT INTO drug_interactions (ingredient_a, ingredient_b, severity, description_ar, description_en, recommendation) 
+    INSERT OR IGNORE INTO drug_interactions (ingredient_a, ingredient_b, severity, description_ar, description_en, recommendation)
     VALUES (?, ?, ?, ?, ?, ?)
   `);
 

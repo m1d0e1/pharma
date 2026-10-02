@@ -203,6 +203,11 @@ export async function addFinancialNoticeAction(rawData: z.infer<typeof noticeSch
         .run(journalId, targetAccountId, targetEntryType, data.amount);
       await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
         .run(journalId, adjustmentAccountId, adjustmentEntryType, data.amount);
+      await db.prepare("INSERT INTO activity_log (user_id, action, details) VALUES (?, 'FINANCIAL_NOTICE', ?)")
+        .run(
+          user.id,
+          `Financial notice ${id}: ${data.type} ${data.amount} for ${data.target_type}${data.target_id ? ` ${data.target_id}` : ''}`,
+        );
     });
 
     revalidatePath('/patients');
@@ -623,7 +628,12 @@ export async function getPointsOfSaleAction() {
   try {
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_view_pos', 'acc_can_view_general', 'can_select_pos_financial')) return { success: false, error: 'غير مصرح' };
-    const results = await db.prepare(`SELECT * FROM points_of_sale ORDER BY id ASC`).all();
+    const pharmacyId = user.pharmacy_id || 'local_default';
+    const results = await db.prepare(`
+      SELECT * FROM points_of_sale
+      WHERE (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+      ORDER BY id ASC
+    `).all(pharmacyId, pharmacyId);
     return { success: true, data: results };
   } catch (error) {
     console.error('Get POS error:', error);
@@ -786,7 +796,12 @@ export async function getBanksAction() {
   try {
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_view_bank_accounts', 'acc_can_view_handover', 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
-    const results = await db.prepare(`SELECT * FROM banks ORDER BY name_ar ASC`).all();
+    const pharmacyId = user.pharmacy_id || 'local_default';
+    const results = await db.prepare(`
+      SELECT * FROM banks
+      WHERE (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+      ORDER BY name_ar ASC
+    `).all(pharmacyId, pharmacyId);
     return { success: true, data: results };
   } catch (error) {
     console.error('Get banks error:', error);
@@ -815,7 +830,12 @@ export async function getCardsAction() {
   try {
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_collect_credit_cards')) return { success: false, error: 'غير مصرح' };
-    const results = await db.prepare(`SELECT * FROM credit_cards ORDER BY name_ar ASC`).all();
+    const pharmacyId = user.pharmacy_id || 'local_default';
+    const results = await db.prepare(`
+      SELECT * FROM credit_cards
+      WHERE (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+      ORDER BY name_ar ASC
+    `).all(pharmacyId, pharmacyId);
     return { success: true, data: results };
   } catch (error) {
     console.error('Get cards error:', error);
@@ -1444,6 +1464,7 @@ export async function addBankAction(data: { name_ar: string; name_en?: string; a
   try {
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_view_bank_accounts')) return { success: false, error: 'غير مصرح' };
+    const pharmacyId = user.pharmacy_id || 'local_default';
     if (!data.name_ar?.trim()) return { success: false, error: 'اسم البنك بالعربي مطلوب' };
     const openingBalance = data.current_balance == null ? 0 : Number(data.current_balance);
     if (!Number.isFinite(openingBalance)) return { success: false, error: 'الرصيد الافتتاحي غير صالح' };
@@ -1451,14 +1472,15 @@ export async function addBankAction(data: { name_ar: string; name_en?: string; a
     let bankId: number | undefined;
     await dbTransaction(async (db) => {
       const res = await db.prepare(`
-        INSERT INTO banks (name_ar, name_en, account_number, branch, current_balance)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO banks (name_ar, name_en, account_number, branch, current_balance, pharmacy_id)
+        VALUES (?, ?, ?, ?, ?, ?)
       `).run(
         data.name_ar.trim(),
         data.name_en?.trim() || null,
         data.account_number?.trim() || null,
         data.branch?.trim() || null,
-        openingBalance
+        openingBalance,
+        pharmacyId
       );
       bankId = Number(res.lastInsertId);
       await postOpeningBalanceJournal(user, openingBalance, `رصيد افتتاحي للبنك: ${data.name_ar.trim()}`, db);
@@ -1476,19 +1498,23 @@ export async function updateBankAction(id: number, data: { name_ar: string; name
   try {
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_view_bank_accounts')) return { success: false, error: 'غير مصرح' };
+    const pharmacyId = user.pharmacy_id || 'local_default';
     if (!data.name_ar?.trim()) return { success: false, error: 'اسم البنك بالعربي مطلوب' };
 
-    await db.prepare(`
+    const updated = await db.prepare(`
       UPDATE banks 
       SET name_ar = ?, name_en = ?, account_number = ?, branch = ?
-      WHERE id = ?
+      WHERE id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
     `).run(
       data.name_ar.trim(),
       data.name_en?.trim() || null,
       data.account_number?.trim() || null,
       data.branch?.trim() || null,
-      id
+      id,
+      pharmacyId,
+      pharmacyId
     );
+    if (updated.changes !== 1) return { success: false, error: 'الحساب البنكي غير موجود' };
 
     await logActivity(user?.id, 'UPDATE_BANK', `تعديل حساب بنكي #${id}: ${data.name_ar}`);
     return { success: true };
@@ -1502,25 +1528,39 @@ export async function deleteBankAction(id: number) {
   try {
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_view_bank_accounts')) return { success: false, error: 'غير مصرح' };
-    const bank = await db.prepare('SELECT current_balance FROM banks WHERE id = ?').get(id) as any;
+    const pharmacyId = user.pharmacy_id || 'local_default';
+    const bank = await db.prepare(`
+      SELECT current_balance FROM banks
+      WHERE id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+    `).get(id, pharmacyId, pharmacyId) as any;
     if (!bank) return { success: false, error: 'الحساب البنكي غير موجود' };
     if (Math.abs(Number(bank.current_balance || 0)) > 0.005) {
       return { success: false, error: 'لا يمكن حذف حساب بنكي له رصيد. صفّر الرصيد بقيد موثق أولاً' };
     }
 
-    const cardUsage = await db.prepare('SELECT COUNT(*) as count FROM credit_cards WHERE bank_id = ?').get(id) as any;
+    const cardUsage = await db.prepare(`
+      SELECT COUNT(*) as count FROM credit_cards
+      WHERE bank_id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+    `).get(id, pharmacyId, pharmacyId) as any;
     if (cardUsage && cardUsage.count > 0) {
       return { success: false, error: 'لا يمكن حذف هذا البنك لوجود بطاقات ائتمان مرتبطة به' };
     }
 
-    const paperUsage = await db.prepare('SELECT COUNT(*) as count FROM commercial_papers WHERE bank_id = ?').get(id) as any;
+    const paperUsage = await db.prepare(`
+      SELECT COUNT(*) as count FROM commercial_papers
+      WHERE bank_id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+    `).get(id, pharmacyId, pharmacyId) as any;
     if (paperUsage && paperUsage.count > 0) {
       return { success: false, error: 'لا يمكن حذف هذا البنك لوجود أوراق مالية مرتبطة به' };
     }
 
     await dbTransaction(async (db) => {
       await db.prepare('DELETE FROM trial_balance_settings WHERE category = ?').run(`bank:${id}`);
-      await db.prepare('DELETE FROM banks WHERE id = ?').run(id);
+      const deleted = await db.prepare(`
+        DELETE FROM banks
+        WHERE id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+      `).run(id, pharmacyId, pharmacyId);
+      if (deleted.changes !== 1) throw new Error('الحساب البنكي غير موجود');
     });
     await logActivity(user?.id, 'DELETE_BANK', `حذف حساب بنكي #${id}`);
     return { success: true };
@@ -1537,6 +1577,7 @@ export async function addCardAction(data: { name_ar: string; name_en?: string; b
   try {
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_collect_credit_cards')) return { success: false, error: 'غير مصرح' };
+    const pharmacyId = user.pharmacy_id || 'local_default';
     if (!data.name_ar?.trim()) return { success: false, error: 'اسم الماكينة / البطاقة مطلوب' };
     const openingBalance = data.current_balance == null ? 0 : Number(data.current_balance);
     if (!Number.isFinite(openingBalance)) return { success: false, error: 'الرصيد الافتتاحي غير صالح' };
@@ -1544,18 +1585,26 @@ export async function addCardAction(data: { name_ar: string; name_en?: string; b
     if (!Number.isFinite(commissionPct) || commissionPct < 0 || commissionPct > 100) {
       return { success: false, error: 'نسبة العمولة يجب أن تكون بين 0 و100' };
     }
+    if (data.bank_id) {
+      const bank = await db.prepare(`
+        SELECT id FROM banks
+        WHERE id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+      `).get(data.bank_id, pharmacyId, pharmacyId) as any;
+      if (!bank) return { success: false, error: 'الحساب البنكي غير موجود أو يتبع صيدلية أخرى' };
+    }
 
     let cardId: number | undefined;
     await dbTransaction(async (db) => {
       const res = await db.prepare(`
-        INSERT INTO credit_cards (name_ar, name_en, bank_id, commission_pct, current_balance)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO credit_cards (name_ar, name_en, bank_id, commission_pct, current_balance, pharmacy_id)
+        VALUES (?, ?, ?, ?, ?, ?)
       `).run(
         data.name_ar.trim(),
         data.name_en?.trim() || null,
         data.bank_id || null,
         commissionPct,
-        openingBalance
+        openingBalance,
+        pharmacyId
       );
       cardId = Number(res.lastInsertId);
       await postOpeningBalanceJournal(user, openingBalance, `رصيد افتتاحي لماكينة الدفع: ${data.name_ar.trim()}`, db);
@@ -1573,23 +1622,34 @@ export async function updateCardAction(id: number, data: { name_ar: string; name
   try {
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_collect_credit_cards')) return { success: false, error: 'غير مصرح' };
+    const pharmacyId = user.pharmacy_id || 'local_default';
     if (!data.name_ar?.trim()) return { success: false, error: 'اسم الماكينة / البطاقة مطلوب' };
     const commissionPct = data.commission_pct == null ? 0 : Number(data.commission_pct);
     if (!Number.isFinite(commissionPct) || commissionPct < 0 || commissionPct > 100) {
       return { success: false, error: 'نسبة العمولة يجب أن تكون بين 0 و100' };
     }
+    if (data.bank_id) {
+      const bank = await db.prepare(`
+        SELECT id FROM banks
+        WHERE id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+      `).get(data.bank_id, pharmacyId, pharmacyId) as any;
+      if (!bank) return { success: false, error: 'الحساب البنكي غير موجود أو يتبع صيدلية أخرى' };
+    }
 
-    await db.prepare(`
+    const updated = await db.prepare(`
       UPDATE credit_cards 
       SET name_ar = ?, name_en = ?, bank_id = ?, commission_pct = ?
-      WHERE id = ?
+      WHERE id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
     `).run(
       data.name_ar.trim(),
       data.name_en?.trim() || null,
       data.bank_id || null,
       commissionPct,
-      id
+      id,
+      pharmacyId,
+      pharmacyId
     );
+    if (updated.changes !== 1) return { success: false, error: 'ماكينة الدفع غير موجودة' };
 
     await logActivity(user?.id, 'UPDATE_CARD', `تعديل ماكينة دفع #${id}: ${data.name_ar}`);
     return { success: true };
@@ -1603,13 +1663,21 @@ export async function deleteCardAction(id: number) {
   try {
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_collect_credit_cards')) return { success: false, error: 'غير مصرح' };
-    const card = await db.prepare('SELECT current_balance FROM credit_cards WHERE id = ?').get(id) as any;
+    const pharmacyId = user.pharmacy_id || 'local_default';
+    const card = await db.prepare(`
+      SELECT current_balance FROM credit_cards
+      WHERE id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+    `).get(id, pharmacyId, pharmacyId) as any;
     if (!card) return { success: false, error: 'ماكينة الدفع غير موجودة' };
     if (Math.abs(Number(card.current_balance || 0)) > 0.005) {
       return { success: false, error: 'لا يمكن حذف ماكينة دفع لها رصيد معلق' };
     }
 
-    await db.prepare('DELETE FROM credit_cards WHERE id = ?').run(id);
+    const deleted = await db.prepare(`
+      DELETE FROM credit_cards
+      WHERE id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+    `).run(id, pharmacyId, pharmacyId);
+    if (deleted.changes !== 1) return { success: false, error: 'ماكينة الدفع غير موجودة' };
     await logActivity(user?.id, 'DELETE_CARD', `حذف ماكينة دفع #${id}`);
     return { success: true };
   } catch (error: any) {
@@ -1625,16 +1693,18 @@ export async function addPointOfSaleAction(data: { name_ar: string; name_en?: st
   try {
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_view_pos')) return { success: false, error: 'غير مصرح' };
+    const pharmacyId = user.pharmacy_id || 'local_default';
     if (!data.name_ar?.trim()) return { success: false, error: 'اسم نقطة البيع بالعربي مطلوب' };
 
     const res = await db.prepare(`
-      INSERT INTO points_of_sale (name_ar, name_en, location, computer_name, current_balance, status)
-      VALUES (?, ?, ?, ?, 0, 'active')
+      INSERT INTO points_of_sale (name_ar, name_en, location, computer_name, current_balance, status, pharmacy_id)
+      VALUES (?, ?, ?, ?, 0, 'active', ?)
     `).run(
       data.name_ar.trim(),
       data.name_en?.trim() || null,
       data.location?.trim() || null,
-      data.computer_name?.trim() || null
+      data.computer_name?.trim() || null,
+      pharmacyId
     );
 
     await logActivity(user?.id, 'ADD_POS', `إضافة نقطة بيع: ${data.name_ar}`);
@@ -1649,20 +1719,24 @@ export async function updatePointOfSaleAction(id: number, data: { name_ar: strin
   try {
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_view_pos')) return { success: false, error: 'غير مصرح' };
+    const pharmacyId = user.pharmacy_id || 'local_default';
     if (!data.name_ar?.trim()) return { success: false, error: 'اسم نقطة البيع بالعربي مطلوب' };
 
-    await db.prepare(`
+    const updated = await db.prepare(`
       UPDATE points_of_sale 
       SET name_ar = ?, name_en = ?, location = ?, computer_name = ?, status = COALESCE(?, status)
-      WHERE id = ?
+      WHERE id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
     `).run(
       data.name_ar.trim(),
       data.name_en?.trim() || null,
       data.location?.trim() || null,
       data.computer_name?.trim() || null,
       data.status || 'active',
-      id
+      id,
+      pharmacyId,
+      pharmacyId
     );
+    if (updated.changes !== 1) return { success: false, error: 'نقطة البيع غير موجودة' };
 
     await logActivity(user?.id, 'UPDATE_POS', `تعديل نقطة بيع #${id}: ${data.name_ar}`);
     return { success: true };
@@ -1676,14 +1750,22 @@ export async function deletePointOfSaleAction(id: number) {
   try {
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_view_pos')) return { success: false, error: 'غير مصرح' };
-    const point = await db.prepare('SELECT current_balance FROM points_of_sale WHERE id = ?').get(id) as any;
+    const pharmacyId = user.pharmacy_id || 'local_default';
+    const point = await db.prepare(`
+      SELECT current_balance FROM points_of_sale
+      WHERE id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+    `).get(id, pharmacyId, pharmacyId) as any;
     if (!point) return { success: false, error: 'نقطة البيع غير موجودة' };
     if (Math.abs(Number(point.current_balance || 0)) > 0.005) {
       return { success: false, error: 'لا يمكن حذف نقطة بيع لها رصيد. حوّل الرصيد أولاً' };
     }
     await dbTransaction(async (db) => {
       await db.prepare('DELETE FROM trial_balance_settings WHERE category = ?').run(`cash:${id}`);
-      await db.prepare('DELETE FROM points_of_sale WHERE id = ?').run(id);
+      const deleted = await db.prepare(`
+        DELETE FROM points_of_sale
+        WHERE id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+      `).run(id, pharmacyId, pharmacyId);
+      if (deleted.changes !== 1) throw new Error('نقطة البيع غير موجودة');
     });
     await logActivity(user?.id, 'DELETE_POS', `حذف نقطة بيع #${id}`);
     return { success: true };
@@ -1716,6 +1798,13 @@ export async function addPaperAction(data: {
 
     const id = generateId();
     const pharmacyId = user.pharmacy_id || 'local_default';
+    if (data.bank_id) {
+      const bank = await db.prepare(`
+        SELECT id FROM banks
+        WHERE id = ? AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
+      `).get(data.bank_id, pharmacyId, pharmacyId) as any;
+      if (!bank) return { success: false, error: 'الحساب البنكي غير موجود أو يتبع صيدلية أخرى' };
+    }
     await db.prepare(`
       INSERT INTO commercial_papers (id, type, direction, paper_number, bank_id, amount, due_date, status, target_name, notes, pharmacy_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)

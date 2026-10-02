@@ -84,4 +84,15 @@ describe('SettingsPage loader ownership', () => {
     await waitFor(() => expect(screen.getByText('access-denied')).toBeInTheDocument());
     expect(screen.queryByText('pharmacy-settings-form')).not.toBeInTheDocument();
   });
+
+  it('keeps the admin backup surface reachable while owner-only local-user controls stay hidden', async () => {
+    (getClientSession as jest.Mock).mockResolvedValue({ id: 'admin-1', role: 'admin', permissions: { can_view_settings: true } });
+    (hasUserPermissionSync as jest.Mock).mockImplementation((_user: any, permission: string) => permission === 'can_view_settings');
+    (getLocalPharmacySettingsClient as jest.Mock).mockResolvedValue({ name: 'Admin Pharmacy' });
+
+    render(<SettingsPage />);
+
+    expect(await screen.findByText('db-maintenance')).toBeInTheDocument();
+    expect(screen.queryByText('local-users')).not.toBeInTheDocument();
+  });
 });

@@ -1,7 +1,7 @@
 'use client'
 import { useHotkeys } from 'react-hotkeys-hook';
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef } from 'react'
 import { 
   User, Phone, MapPin, Calendar, CreditCard, HeartPulse, Save, X, Activity, 
   History, Award, ShieldCheck, Trash2, PlusCircle, AlertCircle, FileText
@@ -21,6 +21,7 @@ import { CustomerStatementContent, FinancialNoticeForm } from '../finance/Financ
 import { Plus } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local'
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap'
 
 interface Props {
   patientId: string
@@ -46,10 +47,12 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
   const [isSubmitting, setIsSubmitting] = useState(false)
   const profileSubmissionRef = useRef(false)
   const profileRequestRef = useRef(0)
+  const activePatientIdRef = useRef(patientId)
   const [showStatement, setShowStatement] = useState(false)
   const [selectedReceipt, setSelectedReceipt] = useState<any>(null)
   const [loadingReceipt, setLoadingReceipt] = useState(false)
   const receiptRequestRef = useRef(0)
+  const dialogRef = useDialogFocusTrap<HTMLDivElement>(!loading)
 
   const handleOpenReceipt = async (invoiceId: string) => {
     const requestId = ++receiptRequestRef.current
@@ -120,6 +123,10 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
     notes: ''
   })
 
+  useLayoutEffect(() => {
+    activePatientIdRef.current = patientId
+  }, [patientId])
+
   useEffect(() => {
     void fetchProfile()
     return () => {
@@ -141,12 +148,13 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
   }, [])
 
   const fetchProfile = async (preserveOnFailure = false) => {
+    const requestedPatientId = patientId
     const requestId = ++profileRequestRef.current
     if (!preserveOnFailure) setLoading(true)
     setRefreshError(false)
     try {
-      const res = await getPatientProfileAction(patientId)
-      if (requestId !== profileRequestRef.current) return
+      const res = await getPatientProfileAction(requestedPatientId)
+      if (requestId !== profileRequestRef.current || requestedPatientId !== activePatientIdRef.current) return
       if (res.success) {
         setData(res.data)
         setFormData({
@@ -177,7 +185,7 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
         }
       }
     } catch {
-      if (requestId !== profileRequestRef.current) return
+      if (requestId !== profileRequestRef.current || requestedPatientId !== activePatientIdRef.current) return
       if (preserveOnFailure) {
         setRefreshError(true)
       } else {
@@ -185,7 +193,7 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
         onClose()
       }
     } finally {
-      if (requestId === profileRequestRef.current && !preserveOnFailure) setLoading(false)
+      if (requestId === profileRequestRef.current && requestedPatientId === activePatientIdRef.current && !preserveOnFailure) setLoading(false)
     }
   }
 
@@ -360,7 +368,7 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
   if (loading) {
     return (
       <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-[300]">
-        <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl flex flex-col items-center shadow-2xl">
+        <div role="status" aria-live="polite" className="bg-white dark:bg-slate-900 p-8 rounded-3xl flex flex-col items-center shadow-2xl">
            <Activity className="w-12 h-12 text-purple-600 animate-spin mb-4" />
            <p className="font-black text-slate-500">جاري تحميل ملف العميل...</p>
         </div>
@@ -369,35 +377,42 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
   }
 
   return (
-    <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4 z-[300]" dir="rtl">
-      <div className="bg-white dark:bg-slate-900 rounded-[40px] shadow-2xl w-full max-w-5xl max-h-[95vh] overflow-hidden border border-white/20 animate-in zoom-in duration-300 flex flex-col">
+    <div className="fixed inset-0 bg-slate-900/60 flex items-center justify-center p-2 sm:p-4 z-[300]" dir="rtl">
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="patient-profile-title"
+        tabIndex={-1}
+        className="bg-white dark:bg-slate-900 rounded-2xl sm:rounded-3xl shadow-2xl w-full max-w-5xl max-h-[calc(100vh-1rem)] sm:max-h-[95vh] overflow-hidden border border-slate-200 dark:border-slate-800 animate-in zoom-in duration-200 flex flex-col focus:outline-none"
+      >
         
         {/* Header */}
-        <div className="bg-gradient-to-r from-slate-800 via-slate-900 to-black p-8 flex justify-between items-center text-white relative shrink-0">
-          <div className="relative z-10 flex items-center gap-6">
-            <div className="w-24 h-24 bg-gradient-to-br from-purple-500 to-indigo-600 rounded-[32px] flex items-center justify-center text-4xl shadow-xl border-4 border-white/10">
+        <div className="bg-slate-900 p-4 sm:p-6 flex justify-between items-center text-white relative shrink-0 gap-4">
+          <div className="relative z-10 flex items-center gap-4 min-w-0">
+            <div className="w-14 h-14 sm:w-16 sm:h-16 bg-purple-600 rounded-2xl flex items-center justify-center text-2xl sm:text-3xl border border-white/10 shrink-0">
                👤
             </div>
-            <div>
-              <h2 className="text-4xl font-black text-white flex items-center gap-3">
+            <div className="min-w-0">
+              <h2 id="patient-profile-title" className="text-2xl sm:text-3xl font-black text-white truncate">
                 {formData.full_name}
               </h2>
-              <div className="flex gap-4 mt-2 opacity-70 font-bold text-sm uppercase tracking-widest">
+              <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-slate-300 font-bold text-sm">
                  <span className="flex items-center gap-1"><Phone className="w-4 h-4" /> {formData.phone || 'بدون هاتف'}</span>
                  <span className="flex items-center gap-1"><Award className="w-4 h-4" /> {formData.points_balance} نقطة</span>
                  <span className="bg-white/10 px-3 py-1 rounded-full">{formData.customer_type}</span>
               </div>
             </div>
           </div>
-          <div className="flex gap-4">
+          <div className="flex gap-2 sm:gap-4 shrink-0">
              <button 
                onClick={() => setShowStatement(true)}
-               className="px-6 py-4 bg-blue-600 text-white rounded-2xl font-black hover:bg-blue-500 transition-all flex items-center gap-2 shadow-lg shadow-blue-600/20"
+               className="px-4 sm:px-6 py-3 bg-blue-600 text-white rounded-xl font-black hover:bg-blue-500 transition-colors flex items-center gap-2"
              >
                 <FileText className="w-5 h-5" /> كشف الحساب
              </button>
-             <button onClick={onClose} className="p-4 bg-white/10 hover:bg-white/20 rounded-2xl transition-colors relative z-10">
-               <X className="w-8 h-8" />
+             <button type="button" aria-label="إغلاق ملف العميل" onClick={onClose} className="p-3 bg-white/10 hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white rounded-xl transition-colors relative z-10">
+               <X className="w-6 h-6" />
              </button>
           </div>
         </div>
@@ -427,8 +442,10 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
              { id: 'history', label: 'سجل المشتريات', icon: Activity }
            ].map(tab => (
              <button
+               type="button"
                key={tab.id}
                onClick={() => setActiveTab(tab.id as any)}
+               aria-pressed={activeTab === tab.id}
                className={`flex-1 min-w-[120px] flex items-center justify-center gap-3 py-4 rounded-2xl font-black text-sm transition-all ${activeTab === tab.id ? 'bg-white dark:bg-slate-900 text-purple-600 shadow-lg' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}
              >
                <tab.icon className="w-5 h-5" />
@@ -437,13 +454,14 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
            ))}
         </div>
 
-        <div className="p-10 overflow-y-auto flex-1 custom-scrollbar bg-slate-50/30 dark:bg-slate-950/30">
+        <div className="p-4 sm:p-6 overflow-y-auto flex-1 custom-scrollbar bg-slate-50/30 dark:bg-slate-950/30">
           {activeTab === 'profile' && (
             <form onSubmit={handleUpdate} className="space-y-10">
                <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
                   <div className="space-y-2">
-                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-2">الاسم بالكامل (عربي)</label>
+                    <label htmlFor="patient-profile-full-name" className="text-xs font-black text-slate-500 mr-2">الاسم بالكامل (عربي)</label>
                     <input
+                      id="patient-profile-full-name"
                       type="text"
                       value={formData.full_name}
                       onChange={(e) => setFormData({...formData, full_name: e.target.value})}
@@ -451,8 +469,9 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                     />
                   </div>
                   <div className="space-y-2">
-                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-2">Name (English)</label>
+                    <label htmlFor="patient-profile-name-en" className="text-xs font-black text-slate-500 mr-2">Name (English)</label>
                     <input
+                      id="patient-profile-name-en"
                       type="text"
                       value={formData.name_en}
                       onChange={(e) => setFormData({...formData, name_en: e.target.value})}
@@ -461,8 +480,9 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                     />
                   </div>
                   <div className="space-y-2">
-                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-2">رقم الهاتف (اختياري)</label>
+                    <label htmlFor="patient-profile-phone" className="text-xs font-black text-slate-500 mr-2">رقم الهاتف (اختياري)</label>
                     <input
+                      id="patient-profile-phone"
                       type="text"
                       value={formData.phone}
                       onChange={(e) => setFormData({...formData, phone: e.target.value})}
@@ -473,8 +493,9 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                
                <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
                   <div className="space-y-2">
-                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-2">رقم الموبايل</label>
+                    <label htmlFor="patient-profile-mobile" className="text-xs font-black text-slate-500 mr-2">رقم الموبايل</label>
                     <input
+                      id="patient-profile-mobile"
                       type="text"
                       value={formData.mobile}
                       onChange={(e) => setFormData({...formData, mobile: e.target.value})}
@@ -482,8 +503,9 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                     />
                   </div>
                   <div className="space-y-2">
-                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-2">المنطقة</label>
+                    <label htmlFor="patient-profile-area" className="text-xs font-black text-slate-500 mr-2">المنطقة</label>
                     <input
+                      id="patient-profile-area"
                       type="text"
                       value={formData.area}
                       onChange={(e) => setFormData({...formData, area: e.target.value})}
@@ -491,8 +513,9 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                     />
                   </div>
                   <div className="space-y-2">
-                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-2">تاريخ الميلاد</label>
+                    <label htmlFor="patient-profile-birth-date" className="text-xs font-black text-slate-500 mr-2">تاريخ الميلاد</label>
                     <input
+                      id="patient-profile-birth-date"
                       type="date"
                       value={formData.birth_date}
                       onChange={(e) => setFormData({...formData, birth_date: e.target.value})}
@@ -502,8 +525,9 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                </div>
 
                <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-2">العنوان بالتفصيل</label>
+                  <label htmlFor="patient-profile-address" className="text-xs font-black text-slate-500 mr-2">العنوان بالتفصيل</label>
                   <input
+                    id="patient-profile-address"
                     type="text"
                     value={formData.address}
                     onChange={(e) => setFormData({...formData, address: e.target.value})}
@@ -512,8 +536,9 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                </div>
 
                <div className="bg-amber-50 dark:bg-amber-900/10 p-6 rounded-3xl border border-amber-100 dark:border-amber-900/20">
-                  <label className="text-[10px] font-black text-amber-600 uppercase tracking-widest mb-2 block">ملاحظات إدارية</label>
+                  <label htmlFor="patient-profile-notes" className="text-xs font-black text-amber-700 mb-2 block">ملاحظات إدارية</label>
                   <textarea
+                    id="patient-profile-notes"
                     value={formData.notes}
                     onChange={(e) => setFormData({...formData, notes: e.target.value})}
                     rows={3}
@@ -527,7 +552,7 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                  disabled={isSubmitting}
                  className="bg-purple-600 text-white px-12 py-5 rounded-3xl font-black hover:bg-purple-700 transition-all flex items-center gap-3 shadow-xl shadow-purple-500/20"
                >
-                 <Save className="w-6 h-6" /> {isSubmitting ? 'جاري الحفظ...' : 'حفظ جميع التعديلات (S)'}
+                 <Save className="w-6 h-6" /> {isSubmitting ? 'جاري الحفظ...' : 'حفظ جميع التعديلات'}
                </button>
             </form>
           )}
@@ -548,13 +573,13 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                </div>
 
                {canProcessPatientPayments && (
-                 <div className="bg-white dark:bg-slate-900 p-10 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-sm space-y-8">
+                 <div className="bg-white dark:bg-slate-900 p-5 sm:p-8 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-6">
                     <h3 className="text-xl font-black text-slate-800 dark:text-white flex items-center gap-3">
                        <PlusCircle className="w-8 h-8 text-purple-500" /> شحن محفظة العميل
                     </h3>
                     <div className="flex gap-6 items-end">
                        <div className="flex-1 space-y-2">
-                          <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider">المبلغ المراد شحنه</label>
+                          <label htmlFor="topup-amount" className="text-xs font-black text-slate-500">المبلغ المراد شحنه</label>
                           <input
                              id="topup-amount"
                              type="number"
@@ -573,14 +598,15 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                  </div>
                )}
 
-               <form onSubmit={handleUpdate} className="bg-white dark:bg-slate-900 p-10 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-sm space-y-8">
+               <form onSubmit={handleUpdate} className="bg-white dark:bg-slate-900 p-5 sm:p-8 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-8">
                   <h3 className="text-xl font-black text-slate-800 dark:text-white flex items-center gap-3">
                      <ShieldCheck className="w-8 h-8 text-blue-500" /> إعدادات التعاقد والتحصيل
                   </h3>
                   <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
                      <div className="space-y-2">
-                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-2">طريقة الدفع الافتراضية</label>
+                        <label htmlFor="patient-profile-payment-method" className="text-xs font-black text-slate-500 mr-2">طريقة الدفع الافتراضية</label>
                         <select
+                          id="patient-profile-payment-method"
                           value={formData.payment_method}
                           onChange={(e) => setFormData({...formData, payment_method: e.target.value})}
                           className="w-full bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-blue-500 p-4 rounded-2xl outline-none font-bold transition-all appearance-none"
@@ -588,11 +614,13 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                            <option value="cash">نقدي (Cash)</option>
                            <option value="credit">آجل (Credit)</option>
                            <option value="visa">فيزا (Visa)</option>
+                           <option value="wallet">محفظة (Wallet)</option>
                         </select>
                      </div>
                      <div className="space-y-2">
-                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-2">الحد الأقصى للرصيد (الحد الائتماني)</label>
+                        <label htmlFor="patient-profile-credit-limit" className="text-xs font-black text-slate-500 mr-2">الحد الأقصى للرصيد (الحد الائتماني)</label>
                         <input
+                          id="patient-profile-credit-limit"
                           type="number"
                           min="0"
                           step="0.01"
@@ -602,8 +630,9 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                         />
                      </div>
                      <div className="space-y-2">
-                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-2">رقم التأمين الصحي</label>
+                        <label htmlFor="patient-profile-insurance" className="text-xs font-black text-slate-500 mr-2">رقم التأمين الصحي</label>
                         <input
+                          id="patient-profile-insurance"
                           type="text"
                           value={formData.insurance_number}
                           onChange={(e) => setFormData({...formData, insurance_number: e.target.value})}
@@ -611,8 +640,9 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                         />
                      </div>
                      <div className="space-y-2">
-                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-2">رقم السيارة</label>
+                        <label htmlFor="patient-profile-car-number" className="text-xs font-black text-slate-500 mr-2">رقم السيارة</label>
                         <input
+                          id="patient-profile-car-number"
                           type="text"
                           value={formData.car_number}
                           onChange={(e) => setFormData({...formData, car_number: e.target.value})}
@@ -644,13 +674,13 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                        <div key={a.id} className="bg-rose-50 dark:bg-rose-900/20 p-5 rounded-3xl border border-rose-100 dark:border-rose-900/30 flex justify-between items-center group">
                           <div>
                             <p className="font-black text-rose-900 dark:text-rose-200 text-lg">{a.allergen}</p>
-                            <p className="text-[10px] font-bold text-rose-500 uppercase tracking-widest">{a.severity}</p>
+                            <p className="text-xs font-bold text-rose-600">{a.severity}</p>
                           </div>
                           <button
                             disabled={deletingAllergyIds.has(a.id)}
                             aria-label={deletingAllergyIds.has(a.id) ? `جاري حذف حساسية ${a.allergen}` : `حذف حساسية ${a.allergen}`}
                             onClick={() => handleDeleteAllergy(a.id)}
-                            className="p-3 hover:bg-rose-100 dark:hover:bg-rose-800 rounded-2xl transition-colors opacity-0 group-hover:opacity-100"
+                            className="p-3 hover:bg-rose-100 dark:hover:bg-rose-800 rounded-2xl transition-colors opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500"
                           >
                              <Trash2 className="w-5 h-5 text-rose-600" />
                           </button>
@@ -660,11 +690,12 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                         <form onSubmit={handleAddAllergy} className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-rose-200 space-y-4 animate-in slide-in-from-top-2 duration-200">
                           <div className="flex justify-between items-center">
                             <h4 className="font-black text-rose-600">إضافة حساسية جديدة</h4>
-                            <button type="button" onClick={() => setShowAllergyForm(false)} className="text-slate-400 hover:text-slate-600"><X className="w-4 h-4" /></button>
+                            <button type="button" aria-label="إغلاق نموذج الحساسية" onClick={() => setShowAllergyForm(false)} className="text-slate-400 hover:text-slate-600"><X className="w-4 h-4" /></button>
                           </div>
                           <div className="space-y-2">
-                            <label className="text-[10px] font-black text-slate-400">مسبب الحساسية</label>
+                            <label htmlFor="patient-allergen-name" className="text-xs font-black text-slate-500">مسبب الحساسية</label>
                             <input 
+                              id="patient-allergen-name"
                               type="text" 
                               value={allergenName} 
                               onChange={(e) => setAllergenName(e.target.value)} 
@@ -675,8 +706,9 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                           </div>
                           <div className="grid grid-cols-2 gap-4">
                             <div className="space-y-2">
-                              <label className="text-[10px] font-black text-slate-400">شدة الحساسية</label>
+                              <label htmlFor="patient-allergy-severity" className="text-xs font-black text-slate-500">شدة الحساسية</label>
                               <select 
+                                id="patient-allergy-severity"
                                 value={allergySeverity} 
                                 onChange={(e) => setAllgySeverity(e.target.value)} 
                                 className="w-full bg-slate-50 dark:bg-slate-800 p-3 rounded-xl outline-none font-bold"
@@ -687,8 +719,9 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                               </select>
                             </div>
                             <div className="space-y-2">
-                              <label className="text-[10px] font-black text-slate-400">ملاحظات</label>
+                              <label htmlFor="patient-allergy-notes" className="text-xs font-black text-slate-500">ملاحظات</label>
                               <input 
+                                id="patient-allergy-notes"
                                 type="text" 
                                 value={allergyNotes} 
                                 onChange={(e) => setAllergyNotes(e.target.value)} 
@@ -722,18 +755,19 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                      {data.conditions.map((c: any) => (
                        <div key={c.id} className="bg-blue-50 dark:bg-blue-900/20 p-5 rounded-3xl border border-blue-100 dark:border-blue-900/30">
                           <p className="font-black text-blue-900 dark:text-blue-200 text-lg">{c.condition_name}</p>
-                          {c.medications && <p className="text-[10px] font-bold text-blue-500 mt-1 uppercase tracking-widest">الأدوية المستخدمة: {c.medications}</p>}
+                          {c.medications && <p className="text-xs font-bold text-blue-600 mt-1">الأدوية المستخدمة: {c.medications}</p>}
                        </div>
                      ))}
                      {showConditionForm ? (
                         <form onSubmit={handleAddCondition} className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-blue-200 space-y-4 animate-in slide-in-from-top-2 duration-200">
                           <div className="flex justify-between items-center">
                             <h4 className="font-black text-blue-600">إضافة حالة صحية جديدة</h4>
-                            <button type="button" onClick={() => setShowConditionForm(false)} className="text-slate-400 hover:text-slate-600"><X className="w-4 h-4" /></button>
+                            <button type="button" aria-label="إغلاق نموذج الحالة الصحية" onClick={() => setShowConditionForm(false)} className="text-slate-400 hover:text-slate-600"><X className="w-4 h-4" /></button>
                           </div>
                           <div className="space-y-2">
-                            <label className="text-[10px] font-black text-slate-400">اسم الحالة المرضية</label>
+                            <label htmlFor="patient-condition-name" className="text-xs font-black text-slate-500">اسم الحالة المرضية</label>
                             <input 
+                              id="patient-condition-name"
                               type="text" 
                               value={conditionName} 
                               onChange={(e) => setConditionName(e.target.value)} 
@@ -744,8 +778,9 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                           </div>
                           <div className="grid grid-cols-2 gap-4">
                             <div className="space-y-2">
-                              <label className="text-[10px] font-black text-slate-400">الأدوية المنتظمة</label>
+                              <label htmlFor="patient-condition-medications" className="text-xs font-black text-slate-500">الأدوية المنتظمة</label>
                               <input 
+                                id="patient-condition-medications"
                                 type="text" 
                                 value={conditionMedications} 
                                 onChange={(e) => setConditionMedications(e.target.value)} 
@@ -754,8 +789,9 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                               />
                             </div>
                             <div className="space-y-2">
-                              <label className="text-[10px] font-black text-slate-400">ملاحظات</label>
+                              <label htmlFor="patient-condition-notes" className="text-xs font-black text-slate-500">ملاحظات</label>
                               <input 
+                                id="patient-condition-notes"
                                 type="text" 
                                 value={conditionNotes} 
                                 onChange={(e) => setConditionNotes(e.target.value)} 
@@ -813,6 +849,7 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                           </h4>
                           <button 
                              type="button" 
+                             aria-label="إغلاق نموذج الدفعة"
                              onClick={() => setShowPaymentForm(false)}
                              className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
                           >
@@ -822,8 +859,9 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                        
                        <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
                           <div className="space-y-2">
-                             <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider">مبلغ الدفعة</label>
+                             <label htmlFor="patient-payment-amount" className="text-xs font-black text-slate-500">مبلغ الدفعة</label>
                              <input 
+                                id="patient-payment-amount"
                                 type="number" 
                                 step="any"
                                 value={paymentAmount}
@@ -835,8 +873,9 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                           </div>
                           
                           <div className="space-y-2">
-                             <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider">طريقة الدفع</label>
+                             <label htmlFor="patient-payment-method" className="text-xs font-black text-slate-500">طريقة الدفع</label>
                              <select
+                                id="patient-payment-method"
                                 value={paymentMethod}
                                 onChange={(e) => setPaymentMethod(e.target.value as 'cash' | 'bank')}
                                 className="w-full bg-slate-50 dark:bg-slate-800 p-4 rounded-2xl border-none outline-none font-bold"
@@ -847,8 +886,9 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                           </div>
 
                           <div className="space-y-2">
-                             <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider">تاريخ الدفعة</label>
+                             <label htmlFor="patient-payment-date" className="text-xs font-black text-slate-500">تاريخ الدفعة</label>
                              <input 
+                                id="patient-payment-date"
                                 type="date" 
                                 value={paymentDate}
                                 onChange={(e) => setPaymentDate(e.target.value)}
@@ -858,8 +898,9 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                           </div>
 
                           <div className="space-y-2">
-                             <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider">البيان / ملاحظات</label>
+                             <label htmlFor="patient-payment-notes" className="text-xs font-black text-slate-500">البيان / ملاحظات</label>
                              <input 
+                                id="patient-payment-notes"
                                 type="text"
                                 value={paymentNotes}
                                 onChange={(e) => setPaymentNotes(e.target.value)}
@@ -917,7 +958,11 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
 
           {activeTab === 'notices' && canManageFinancialNotices && (
              <div className="h-full animate-in fade-in slide-in-from-bottom-4">
-                <FinancialNoticeForm targetId={patientId} targetType="customer" />
+                <FinancialNoticeForm
+                  targetId={patientId}
+                  targetType="customer"
+                  onSuccess={() => { void fetchProfile(true) }}
+                />
              </div>
           )}
 
@@ -957,7 +1002,7 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                           </div>
                           <div className="text-left">
                              <p className="font-black text-purple-600 text-3xl">{Number(inv.total_amount || 0).toFixed(2)} <span className="text-sm">ج.م</span></p>
-                             <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-2">{inv.created_at ? format(new Date(inv.created_at), 'PPP', { locale: ar }) : ''}</p>
+                             <p className="text-xs font-black text-slate-500 mt-2">{inv.created_at ? format(new Date(inv.created_at), 'PPP', { locale: ar }) : ''}</p>
                           </div>
                        </div>
                      ))

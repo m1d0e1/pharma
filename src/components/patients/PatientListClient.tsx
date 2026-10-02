@@ -6,6 +6,7 @@ import AddPatientModal from '../AddPatientModal'
 import PatientProfileModal from './PatientProfileModal'
 import { toast } from 'react-hot-toast'
 import { User, Phone, MapPin, CreditCard, ChevronLeft, Trash2, Pencil } from 'lucide-react'
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap'
 
 interface Patient {
   id: string
@@ -65,6 +66,7 @@ export default function PatientListClient({ initialPatients, pharmacyId, canDele
   const [deletingPatient, setDeletingPatient] = useState<Patient | null>(null)
   const [isDeleting, setIsDeleting] = useState(false)
   const deletingPatientRef = useRef(false)
+  const deleteDialogRef = useDialogFocusTrap<HTMLDivElement>(Boolean(deletingPatient))
 
   const handleDeletePatient = (patient: Patient) => {
     setDeletingPatient(patient);
@@ -109,6 +111,7 @@ export default function PatientListClient({ initialPatients, pharmacyId, canDele
           <span className="absolute inset-y-0 right-4 flex items-center text-slate-400">🔍</span>
           <input
             type="text"
+            aria-label="بحث في المرضى بالاسم أو رقم الهاتف"
             placeholder="ابحث عن مريض بالاسم أو رقم الهاتف..."
             className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 pr-12 pl-4 py-4 rounded-3xl focus:ring-2 focus:ring-purple-500 outline-none transition-all font-bold shadow-sm"
             value={searchTerm}
@@ -136,7 +139,7 @@ export default function PatientListClient({ initialPatients, pharmacyId, canDele
               <div className="w-14 h-14 bg-purple-100 dark:bg-purple-900/30 rounded-2xl flex items-center justify-center text-3xl shadow-inner group-hover:scale-110 transition-transform">
                 👤
               </div>
-              <div className="bg-slate-50 dark:bg-slate-800 px-4 py-2 rounded-xl text-[10px] font-black text-slate-500 flex items-center gap-2">
+              <div className="bg-slate-50 dark:bg-slate-800 px-4 py-2 rounded-xl text-xs font-black text-slate-500 flex items-center gap-2">
                  <CreditCard className="w-3 h-3" /> {patient.points_balance || 0} نقطة
               </div>
             </div>
@@ -149,7 +152,7 @@ export default function PatientListClient({ initialPatients, pharmacyId, canDele
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-2">
                 <div className={`rounded-xl px-3 py-2 ${Number(patient.outstanding_balance || 0) < 0 ? 'bg-cyan-50 dark:bg-cyan-950/20' : 'bg-rose-50 dark:bg-rose-950/20'}`}>
-                  <p className={`text-[9px] font-black ${Number(patient.outstanding_balance || 0) < 0 ? 'text-cyan-500' : 'text-rose-400'}`}>
+                  <p className={`text-xs font-black ${Number(patient.outstanding_balance || 0) < 0 ? 'text-cyan-600' : 'text-rose-500'}`}>
                     {Number(patient.outstanding_balance || 0) < 0 ? 'رصيد دائن' : 'المديونية'}
                   </p>
                   <p className={`font-black ${Number(patient.outstanding_balance || 0) < 0 ? 'text-cyan-600' : 'text-rose-600'}`}>
@@ -157,7 +160,7 @@ export default function PatientListClient({ initialPatients, pharmacyId, canDele
                   </p>
                 </div>
                 <div className="rounded-xl bg-purple-50 dark:bg-purple-950/20 px-3 py-2">
-                  <p className="text-[9px] font-black text-purple-400">رصيد المحفظة</p>
+                  <p className="text-xs font-black text-purple-500">رصيد المحفظة</p>
                   <p className="font-black text-purple-600">{Number(patient.wallet_balance || 0).toFixed(2)} ج.م</p>
                 </div>
               </div>
@@ -177,6 +180,7 @@ export default function PatientListClient({ initialPatients, pharmacyId, canDele
                      <button
                        type="button"
                        onClick={(e) => { e.stopPropagation(); handleDeletePatient(patient); }}
+                       aria-label={`حذف المريض ${patient.full_name}`}
                        className="p-2 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-xl transition-all"
                        title="حذف المريض"
                      >
@@ -186,12 +190,13 @@ export default function PatientListClient({ initialPatients, pharmacyId, canDele
                    <button
                      type="button"
                      onClick={(e) => { e.stopPropagation(); setSelectedPatientId(patient.id); }}
+                     aria-label={`تعديل بيانات المريض ${patient.full_name}`}
                      className="p-2 text-purple-600 hover:bg-purple-50 dark:hover:bg-purple-950/30 rounded-xl transition-all"
                      title="تعديل بيانات المريض"
                    >
                      <Pencil className="w-4 h-4" />
                    </button>
-                   <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest mr-2">{patient.customer_type === 'individual' ? 'فردي' : 'متعاقد'}</span>
+                   <span className="text-xs font-black text-slate-500 mr-2">{patient.customer_type === 'individual' ? 'فردي' : 'متعاقد'}</span>
                  </div>
                  <div className="flex items-center gap-1 text-purple-600 font-black text-sm hover:translate-x-[-4px] transition-transform">
                     عرض وتعديل الملف <ChevronLeft className="w-4 h-4" />
@@ -227,22 +232,31 @@ export default function PatientListClient({ initialPatients, pharmacyId, canDele
 
       {deletingPatient && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4 z-[350]" dir="rtl">
-          <div className="bg-white dark:bg-slate-900 rounded-3xl p-8 max-w-md w-full border border-slate-200 dark:border-slate-800 shadow-2xl space-y-6 animate-in zoom-in duration-200">
+          <div
+            ref={deleteDialogRef}
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="delete-patient-title"
+            aria-describedby="delete-patient-description"
+            tabIndex={-1}
+            className="bg-white dark:bg-slate-900 rounded-3xl p-6 sm:p-8 max-w-md w-full border border-slate-200 dark:border-slate-800 shadow-2xl space-y-6 animate-in zoom-in duration-200"
+          >
             <div className="flex items-center gap-4 text-rose-600">
               <div className="w-12 h-12 bg-rose-100 dark:bg-rose-950/40 rounded-2xl flex items-center justify-center text-2xl">
                 ⚠️
               </div>
               <div>
-                <h3 className="text-xl font-black text-slate-900 dark:text-white">تأكيد حذف المريض</h3>
+                <h3 id="delete-patient-title" className="text-xl font-black text-slate-900 dark:text-white">تأكيد حذف المريض</h3>
                 <p className="text-xs font-bold text-slate-400 mt-1">إجراء غير قابل للتراجع</p>
               </div>
             </div>
-            <p className="font-bold text-slate-700 dark:text-slate-300">
+            <p id="delete-patient-description" className="font-bold text-slate-700 dark:text-slate-300">
               هل أنت متأكد من حذف المريض <span className="font-black text-rose-600">&quot;{deletingPatient.full_name}&quot;</span>؟
             </p>
             <div className="flex justify-end gap-3 pt-4 border-t border-slate-100 dark:border-slate-800">
               <button
                 type="button"
+                autoFocus
                 onClick={() => setDeletingPatient(null)}
                 className="px-6 py-3 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 rounded-xl font-bold transition-all text-slate-600 dark:text-slate-200"
               >

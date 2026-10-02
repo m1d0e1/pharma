@@ -19,6 +19,7 @@ import {
 import { cn } from '@/lib/utils'
 import { logoutLocal } from '@/lib/auth/local'
 import packageInfo from '../../package.json'
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -190,6 +191,7 @@ function cleanItems(items: MenuItem[], canSee: (i: MenuItem) => boolean): MenuIt
 // ─── Modals ───────────────────────────────────────────────────────────────────
 
 function ShortcutsModal({ onClose }: { onClose: () => void }) {
+  const dialogRef = useDialogFocusTrap<HTMLDivElement>(true)
   useEffect(() => {
     const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
     window.addEventListener('keydown', h)
@@ -197,10 +199,18 @@ function ShortcutsModal({ onClose }: { onClose: () => void }) {
   }, [onClose])
   return (
     <div className="fixed inset-0 z-[999] flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={onClose}>
-      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 p-8 w-full max-w-lg mx-4" onClick={e => e.stopPropagation()}>
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="shortcuts-dialog-title"
+        tabIndex={-1}
+        className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 p-4 sm:p-8 w-full max-w-lg mx-4 max-h-[calc(100vh-2rem)] overflow-y-auto"
+        onClick={e => e.stopPropagation()}
+      >
         <div className="flex items-center justify-between mb-6">
-          <h2 className="text-xl font-bold text-slate-900 dark:text-white">اختصارات لوحة المفاتيح</h2>
-          <button onClick={onClose} className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg"><X className="w-4 h-4" /></button>
+          <h2 id="shortcuts-dialog-title" className="text-xl font-bold text-slate-900 dark:text-white">اختصارات لوحة المفاتيح</h2>
+          <button type="button" aria-label="إغلاق اختصارات لوحة المفاتيح" onClick={onClose} className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"><X className="w-4 h-4" /></button>
         </div>
         <div className="space-y-1">
           {([['Insert','تمييز البحث (الكاشير) / إضافة صنف (المخزون)'],['Esc','إغلاق القوائم'],['Enter','تأكيد / حفظ'],['Ctrl+D','لوحة التحكم'],['Alt+P','فتح الكاشير']] as const).map(([key, desc]) => (
@@ -216,6 +226,7 @@ function ShortcutsModal({ onClose }: { onClose: () => void }) {
 }
 
 function AboutModal({ onClose }: { onClose: () => void }) {
+  const dialogRef = useDialogFocusTrap<HTMLDivElement>(true)
   useEffect(() => {
     const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
     window.addEventListener('keydown', h)
@@ -223,12 +234,20 @@ function AboutModal({ onClose }: { onClose: () => void }) {
   }, [onClose])
   return (
     <div className="fixed inset-0 z-[999] flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={onClose}>
-      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 p-8 w-full max-w-sm mx-4 text-center" onClick={e => e.stopPropagation()}>
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="about-dialog-title"
+        tabIndex={-1}
+        className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 p-6 sm:p-8 w-full max-w-sm mx-4 text-center max-h-[calc(100vh-2rem)] overflow-y-auto"
+        onClick={e => e.stopPropagation()}
+      >
         <div className="text-5xl mb-3">💊</div>
-        <h2 className="text-lg font-bold text-slate-900 dark:text-white">نظام إدارة الصيدليات</h2>
+        <h2 id="about-dialog-title" className="text-lg font-bold text-slate-900 dark:text-white">نظام إدارة الصيدليات</h2>
         <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">الإصدار {packageInfo.version}</p>
         <p className="text-xs font-bold text-slate-600 dark:text-slate-300 mt-2 mb-4">تم انشاؤه بواسطة محمد عصام لمجتمع الصيادلة</p>
-        <button onClick={onClose} className="px-6 py-2 bg-blue-600 text-white rounded-lg font-bold text-sm hover:bg-blue-700 transition-colors">إغلاق</button>
+        <button type="button" onClick={onClose} className="px-6 py-2 bg-blue-600 text-white rounded-lg font-bold text-sm hover:bg-blue-700 transition-colors">إغلاق</button>
       </div>
     </div>
   )

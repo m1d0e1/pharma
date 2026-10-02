@@ -45,6 +45,9 @@ describe('coverage gap: staff-management direct controls', () => {
     renderStaff({ onAddUser });
 
     await user.click(screen.getByRole('button', { name: 'إضافة موظف جديد' }));
+    const addDialog = screen.getByRole('dialog', { name: 'إضافة موظف' });
+    expect(addDialog).toHaveAttribute('tabindex', '-1');
+    await waitFor(() => expect(addDialog).toContainElement(document.activeElement as HTMLElement));
     await user.click(screen.getByRole('button', { name: 'حفظ الموظف' }));
     expect(onAddUser).not.toHaveBeenCalled();
     expect(toast.error).toHaveBeenCalledWith('يرجى ملء جميع البيانات الأساسية');
@@ -81,6 +84,18 @@ describe('coverage gap: staff-management direct controls', () => {
     expect(onAddUser).not.toHaveBeenCalled();
   });
 
+  it('offers cashier as a role in both add and edit staff flows', async () => {
+    const user = userEvent.setup();
+    renderStaff();
+
+    await user.click(screen.getByRole('button', { name: 'إضافة موظف جديد' }));
+    expect(screen.getByRole('option', { name: 'كاشير (Cashier)' })).toHaveValue('cashier');
+    await user.click(screen.getByRole('button', { name: 'إلغاء' }));
+
+    await user.click(screen.getByRole('button', { name: 'تعديل' }));
+    expect(screen.getByRole('option', { name: 'كاشير (Cashier)' })).toHaveValue('cashier');
+  });
+
   it('enforces reset-password minimum length, preserves failure state, and closes after success', async () => {
     const onResetPassword = jest.fn()
       .mockResolvedValueOnce({ success: false, error: 'reset rejected' })
@@ -89,6 +104,9 @@ describe('coverage gap: staff-management direct controls', () => {
     renderStaff({ onResetPassword });
 
     await user.click(screen.getByTitle('إعادة تعيين كلمة المرور'));
+    const resetDialog = screen.getByRole('dialog', { name: 'إعادة تعيين المرور' });
+    expect(resetDialog).toHaveAttribute('tabindex', '-1');
+    await waitFor(() => expect(resetDialog).toContainElement(document.activeElement as HTMLElement));
     const password = screen.getByPlaceholderText('أدخل كلمة المرور الجديدة');
     const confirm = screen.getByRole('button', { name: 'تأكيد التغيير' });
 
@@ -225,6 +243,9 @@ describe('coverage gap: staff-management direct controls', () => {
     renderStaff({ onUpdateUser, onUpdatePermissions });
 
     await user.click(screen.getByRole('button', { name: 'تعديل' }));
+    const editDialog = screen.getByRole('dialog', { name: 'إدارة الموظف' });
+    expect(editDialog).toHaveAttribute('tabindex', '-1');
+    await waitFor(() => expect(editDialog).toContainElement(document.activeElement as HTMLElement));
     const save = screen.getByRole('button', { name: 'حفظ التغييرات' });
 
     act(() => {

@@ -187,6 +187,105 @@ async fn table_exists_in_transaction(
     .await
 }
 
+async fn surface_legacy_patient_wallet_review(
+    transaction: &mut Transaction<'_, Sqlite>,
+) -> Result<u64, sqlx::Error> {
+    for table in [
+        "_sqlx_migrations",
+        "config",
+        "patients",
+        "sales_invoices",
+        "returns",
+        "activity_log",
+    ] {
+        if !table_exists_in_transaction(transaction, table).await? {
+            return Ok(0);
+        }
+    }
+
+    let migration_8_installed_on: Option<String> = sqlx::query_scalar(
+        "SELECT CAST(installed_on AS TEXT) FROM _sqlx_migrations WHERE version = 8 AND success = 1 LIMIT 1",
+    )
+    .fetch_optional(&mut **transaction)
+    .await?;
+
+    let rows = sqlx::query(
+        r#"
+        SELECT
+          p.id AS patient_id,
+          COALESCE(NULLIF(TRIM(p.full_name), ''), p.id) AS patient_name,
+          CAST(COALESCE(p.wallet_balance, 0) AS REAL) AS wallet_balance,
+          CAST(SUM(COALESCE(r.total_refund, 0)) AS REAL) AS suspect_amount
+        FROM returns r
+        JOIN sales_invoices si ON si.id = r.invoice_id
+        JOIN patients p ON p.id = si.patient_id
+        WHERE r.refund_method = 'patient_account'
+          AND LOWER(COALESCE(r.status, '')) IN ('approved', 'completed')
+          AND (
+            ? IS NULL
+            OR datetime(r.created_at) < datetime(?)
+          )
+        GROUP BY p.id, p.full_name, p.wallet_balance
+        HAVING ABS(SUM(COALESCE(r.total_refund, 0))) > 0.000001
+        ORDER BY p.id
+        "#,
+    )
+    .bind(migration_8_installed_on.as_deref())
+    .bind(migration_8_installed_on.as_deref())
+    .fetch_all(&mut **transaction)
+    .await?;
+
+    if rows.is_empty() {
+        sqlx::query("DELETE FROM config WHERE key = 'legacy_patient_wallet_review_status'")
+            .execute(&mut **transaction)
+            .await?;
+        return Ok(0);
+    }
+
+    let mut affected = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let patient_id = row.get::<String, _>("patient_id");
+        let patient_name = row.get::<String, _>("patient_name");
+        let wallet_balance = row.get::<f64, _>("wallet_balance");
+        let suspect_amount = row.get::<f64, _>("suspect_amount");
+        affected.push(format!(
+            "{patient_name} (#{patient_id}): {suspect_amount:.2} ج.م"
+        ));
+
+        let details = format!(
+            "patient_id={patient_id}; suspect_patient_account_returns={suspect_amount:.2}; current_wallet_balance={wallet_balance:.2}; automatic_balance_change=none"
+        );
+        sqlx::query(
+            r#"
+            INSERT INTO activity_log (user_id, action, details)
+            SELECT NULL, 'LEGACY_PATIENT_WALLET_REVIEW_REQUIRED', ?
+            WHERE NOT EXISTS (
+              SELECT 1 FROM activity_log
+              WHERE action = 'LEGACY_PATIENT_WALLET_REVIEW_REQUIRED' AND details = ?
+            )
+            "#,
+        )
+        .bind(&details)
+        .bind(&details)
+        .execute(&mut **transaction)
+        .await?;
+    }
+
+    let status = format!(
+        "تم اكتشاف {} عميل لديهم مرتجعات على الحساب من إصدار قديم قد تكون أضافت قيمة مكررة إلى المحفظة. لم يغيّر النظام أي رصيد تلقائياً لأن الإصدارات القديمة سمحت بتعديلات مشروعة على المحفظة دون سجل كافٍ لإعادة بنائها بأمان. يحتاج مراجعة: {}",
+        rows.len(),
+        affected.join("، ")
+    );
+    sqlx::query(
+        "INSERT INTO config(key, value) VALUES ('legacy_patient_wallet_review_status', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(status)
+    .execute(&mut **transaction)
+    .await?;
+
+    Ok(rows.len() as u64)
+}
+
 async fn add_column(
     transaction: &mut Transaction<'_, Sqlite>,
     table: &str,
@@ -1063,6 +1162,16 @@ pub(crate) async fn ensure_compatibility(
             "points_earned",
             "points_earned INTEGER DEFAULT 0",
         ),
+        (
+            "sales_invoices",
+            "points_redeemed",
+            "points_redeemed INTEGER DEFAULT 0",
+        ),
+        (
+            "sales_invoices",
+            "loyalty_discount_amount",
+            "loyalty_discount_amount REAL DEFAULT 0",
+        ),
         ("returns", "approved_by", "approved_by TEXT"),
         ("return_items", "drug_id", "drug_id INTEGER"),
         ("return_items", "total_price", "total_price REAL"),
@@ -1799,6 +1908,8 @@ pub(crate) async fn ensure_compatibility(
     .execute(&mut **transaction)
     .await?;
 
+    surface_legacy_patient_wallet_review(transaction).await?;
+
     Ok(())
 }
 
@@ -1841,6 +1952,8 @@ async fn prepare_connection(connection: &mut SqliteConnection) -> Result<(), Str
     let migration_13_applied = applied.iter().any(|row| row.get::<i64, _>("version") == 13);
     let migration_20_applied = applied.iter().any(|row| row.get::<i64, _>("version") == 20);
     let migration_25_applied = applied.iter().any(|row| row.get::<i64, _>("version") == 25);
+    let migration_26_applied = applied.iter().any(|row| row.get::<i64, _>("version") == 26);
+    let migration_28_applied = applied.iter().any(|row| row.get::<i64, _>("version") == 28);
     let (scoped_snapshot_without_migration_20, scoped_snapshot_needs_rebuild) =
         if migration_20_applied
             || !table_exists(connection, "daily_financial_snapshots")
@@ -1908,6 +2021,36 @@ async fn prepare_connection(connection: &mut SqliteConnection) -> Result<(), Str
     ensure_compatibility(&mut transaction)
         .await
         .map_err(|e| e.to_string())?;
+    let finance_definitions_scope_preapplied = if migration_28_applied {
+        false
+    } else {
+        let mut columns_present = true;
+        for table in ["banks", "credit_cards", "points_of_sale"] {
+            if !has_column(&mut transaction, table, "pharmacy_id")
+                .await
+                .map_err(|e| e.to_string())?
+            {
+                columns_present = false;
+                break;
+            }
+        }
+        let indexes_present: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM sqlite_master
+            WHERE type = 'index'
+              AND name IN (
+                'idx_banks_pharmacy_name',
+                'idx_credit_cards_pharmacy_name',
+                'idx_points_of_sale_pharmacy_name'
+              )
+            "#,
+        )
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|e| e.to_string())?;
+        columns_present && indexes_present == 3
+    };
     if scoped_snapshot_needs_rebuild {
         sqlx::raw_sql(
             r#"
@@ -1988,6 +2131,12 @@ async fn prepare_connection(connection: &mut SqliteConnection) -> Result<(), Str
             include_str!("../migrations/025_sales_item_discount_snapshot.sql"),
             migration_25_applied,
         ),
+        (
+            26_i64,
+            "sales_loyalty_redemption_snapshot",
+            include_str!("../migrations/026_sales_loyalty_redemption_snapshot.sql"),
+            migration_26_applied,
+        ),
     ] {
         if already_applied {
             continue;
@@ -1998,6 +2147,19 @@ async fn prepare_connection(connection: &mut SqliteConnection) -> Result<(), Str
         ))
         .bind(version)
         .bind(description)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+    if finance_definitions_scope_preapplied {
+        let checksum = embedded_migration_checksum_hex(
+            28,
+            "finance_definitions_pharmacy_scope",
+            include_str!("../migrations/028_finance_definitions_pharmacy_scope.sql"),
+        );
+        sqlx::query(&format!(
+            "INSERT OR IGNORE INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (28, 'finance_definitions_pharmacy_scope', 1, X'{checksum}', 0)"
+        ))
         .execute(&mut *transaction)
         .await
         .map_err(|e| e.to_string())?;
@@ -2696,6 +2858,244 @@ pub fn ensure_schema_compatibility(app: tauri::AppHandle) -> Result<(), String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn application_schema_objects(connection: &mut SqliteConnection) -> Vec<(String, String)> {
+        sqlx::query_as::<_, (String, String)>(
+            r#"
+            SELECT type, name
+            FROM sqlite_master
+            WHERE type IN ('table', 'index', 'trigger')
+              AND name NOT LIKE 'sqlite_%'
+              AND name != '_sqlx_migrations'
+              AND name != 'catalog_csv_reference'
+            ORDER BY type, name
+            "#,
+        )
+        .fetch_all(connection)
+        .await
+        .unwrap()
+    }
+
+    async fn application_schema_signature(connection: &mut SqliteConnection) -> Vec<String> {
+        let tables: Vec<String> = sqlx::query_scalar(
+            r#"
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table'
+              AND name NOT LIKE 'sqlite_%'
+              AND name != '_sqlx_migrations'
+              AND name != 'catalog_csv_reference'
+            ORDER BY name
+            "#,
+        )
+        .fetch_all(&mut *connection)
+        .await
+        .unwrap();
+        let mut signature = Vec::new();
+        for table in tables {
+            let columns = sqlx::query(&format!("PRAGMA table_info({table})"))
+                .fetch_all(&mut *connection)
+                .await
+                .unwrap();
+            for row in columns {
+                signature.push(format!(
+                    "column|{table}|{}|{}|{}|{}|{}",
+                    row.get::<String, _>("name"),
+                    row.get::<String, _>("type"),
+                    row.get::<i64, _>("notnull"),
+                    row.get::<Option<String>, _>("dflt_value").unwrap_or_default(),
+                    row.get::<i64, _>("pk")
+                ));
+            }
+
+            let foreign_keys = sqlx::query(&format!("PRAGMA foreign_key_list({table})"))
+                .fetch_all(&mut *connection)
+                .await
+                .unwrap();
+            for row in foreign_keys {
+                signature.push(format!(
+                    "fk|{table}|{}|{}|{}|{}|{}|{}|{}",
+                    row.get::<i64, _>("id"),
+                    row.get::<i64, _>("seq"),
+                    row.get::<String, _>("table"),
+                    row.get::<String, _>("from"),
+                    row.get::<Option<String>, _>("to").unwrap_or_default(),
+                    row.get::<String, _>("on_update"),
+                    row.get::<String, _>("on_delete")
+                ));
+            }
+
+            let indexes = sqlx::query(&format!("PRAGMA index_list({table})"))
+                .fetch_all(&mut *connection)
+                .await
+                .unwrap();
+            for row in indexes {
+                let index_name = row.get::<String, _>("name");
+                signature.push(format!(
+                    "index|{table}|{index_name}|{}|{}|{}",
+                    row.get::<i64, _>("unique"),
+                    row.get::<String, _>("origin"),
+                    row.get::<i64, _>("partial")
+                ));
+                let index_columns = sqlx::query(&format!("PRAGMA index_info({index_name})"))
+                    .fetch_all(&mut *connection)
+                    .await
+                    .unwrap();
+                for index_row in index_columns {
+                    signature.push(format!(
+                        "index-column|{table}|{index_name}|{}|{}|{}",
+                        index_row.get::<i64, _>("seqno"),
+                        index_row.get::<i64, _>("cid"),
+                        index_row
+                            .get::<Option<String>, _>("name")
+                            .unwrap_or_default()
+                    ));
+                }
+            }
+        }
+
+        let triggers: Vec<(String, String)> = sqlx::query_as(
+            r#"
+            SELECT name, COALESCE(sql, '')
+            FROM sqlite_master
+            WHERE type = 'trigger'
+            ORDER BY name
+            "#,
+        )
+        .fetch_all(&mut *connection)
+        .await
+        .unwrap();
+        signature.extend(triggers.into_iter().map(|(name, sql)| {
+            format!(
+                "trigger|{name}|{}",
+                sql.split_whitespace().collect::<Vec<_>>().join(" ")
+            )
+        }));
+        signature.sort();
+        signature
+    }
+
+    async fn assert_current_migration_ledger(connection: &mut SqliteConnection) {
+        let versions: Vec<i64> = sqlx::query_scalar(
+            "SELECT version FROM _sqlx_migrations WHERE success = 1 ORDER BY version",
+        )
+        .fetch_all(connection)
+        .await
+        .unwrap();
+        assert_eq!(versions, (1_i64..=28_i64).collect::<Vec<_>>());
+    }
+
+    async fn assert_catalog_delete_tombstone(connection: &mut SqliteConnection, id: i64) {
+        sqlx::query("INSERT INTO master_drugs(id, trade_name) VALUES (?, ?)")
+            .bind(id)
+            .bind(format!("Schema parity sentinel {id}"))
+            .execute(&mut *connection)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO drug_catalog_links(catalog_drug_id, master_drug_id, linked_by) VALUES (?, ?, 'schema-test')",
+        )
+        .bind(id)
+        .bind(id)
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+        sqlx::query("DELETE FROM master_drugs WHERE id = ?")
+            .bind(id)
+            .execute(&mut *connection)
+            .await
+            .unwrap();
+        let reason: String = sqlx::query_scalar(
+            "SELECT reason FROM drug_catalog_suppressions WHERE catalog_drug_id = ?",
+        )
+        .bind(id)
+        .fetch_one(connection)
+        .await
+        .unwrap();
+        assert_eq!(reason, "deleted_locally");
+    }
+
+    #[tokio::test]
+    async fn surfaces_only_pre_patient_accounting_wallet_risk_without_mutating_balances() {
+        let mut connection = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        sqlx::raw_sql(
+            r#"
+            CREATE TABLE _sqlx_migrations (
+              version BIGINT PRIMARY KEY,
+              description TEXT NOT NULL,
+              installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              success BOOLEAN NOT NULL,
+              checksum BLOB NOT NULL,
+              execution_time BIGINT NOT NULL
+            );
+            INSERT INTO _sqlx_migrations
+              (version, description, installed_on, success, checksum, execution_time)
+            VALUES (8, 'patient_accounting', '2026-02-01 00:00:00', 1, X'00', 0);
+            CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT);
+            CREATE TABLE patients (id TEXT PRIMARY KEY, full_name TEXT, wallet_balance REAL DEFAULT 0);
+            CREATE TABLE sales_invoices (id TEXT PRIMARY KEY, patient_id TEXT);
+            CREATE TABLE returns (
+              id TEXT PRIMARY KEY, invoice_id TEXT, total_refund REAL,
+              refund_method TEXT, status TEXT, created_at TEXT
+            );
+            CREATE TABLE activity_log (
+              id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, action TEXT, details TEXT,
+              created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT INTO patients VALUES
+              ('legacy-patient', 'Legacy Patient', 40),
+              ('post-fix-patient', 'Post Fix Patient', 20);
+            INSERT INTO sales_invoices VALUES
+              ('legacy-sale', 'legacy-patient'),
+              ('post-fix-sale', 'post-fix-patient');
+            INSERT INTO returns VALUES
+              ('legacy-return', 'legacy-sale', 40, 'patient_account', 'approved', '2026-01-15 00:00:00'),
+              ('post-fix-return', 'post-fix-sale', 20, 'patient_account', 'approved', '2026-03-01 00:00:00');
+            "#,
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+
+        let mut transaction = connection.begin().await.unwrap();
+        assert_eq!(surface_legacy_patient_wallet_review(&mut transaction).await.unwrap(), 1);
+        transaction.commit().await.unwrap();
+
+        let balances: Vec<(String, f64)> = sqlx::query_as(
+            "SELECT id, CAST(wallet_balance AS REAL) FROM patients ORDER BY id",
+        )
+        .fetch_all(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(balances, vec![("legacy-patient".into(), 40.0), ("post-fix-patient".into(), 20.0)]);
+        let status: String = sqlx::query_scalar(
+            "SELECT value FROM config WHERE key = 'legacy_patient_wallet_review_status'",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        assert!(status.contains("Legacy Patient"));
+        assert!(status.contains("40.00"));
+        assert!(!status.contains("Post Fix Patient"));
+        let audit_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM activity_log WHERE action = 'LEGACY_PATIENT_WALLET_REVIEW_REQUIRED'",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(audit_count, 1);
+
+        let mut transaction = connection.begin().await.unwrap();
+        assert_eq!(surface_legacy_patient_wallet_review(&mut transaction).await.unwrap(), 1);
+        transaction.commit().await.unwrap();
+        let audit_count_after_repeat: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM activity_log WHERE action = 'LEGACY_PATIENT_WALLET_REVIEW_REQUIRED'",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(audit_count_after_repeat, 1);
+    }
 
     #[tokio::test]
     async fn reads_checkpointed_read_only_resource_without_creating_sidecars() {
@@ -4652,6 +5052,9 @@ mod tests {
             include_str!("../migrations/023_shift_immutable_scope.sql"),
             include_str!("../migrations/024_commercial_papers_pharmacy_scope.sql"),
             include_str!("../migrations/025_sales_item_discount_snapshot.sql"),
+            include_str!("../migrations/026_sales_loyalty_redemption_snapshot.sql"),
+            include_str!("../migrations/027_drug_catalog_reconciliation.sql"),
+            include_str!("../migrations/028_finance_definitions_pharmacy_scope.sql"),
         ];
         let migrator = sqlx::migrate::Migrator {
             migrations: std::borrow::Cow::Owned(
@@ -4698,6 +5101,11 @@ mod tests {
             ("activity_log", "pharmacy_id"),
             ("purchase_orders", "pharmacy_id"),
             ("sales_items", "item_discount_percent"),
+            ("sales_invoices", "points_redeemed"),
+            ("sales_invoices", "loyalty_discount_amount"),
+            ("banks", "pharmacy_id"),
+            ("credit_cards", "pharmacy_id"),
+            ("points_of_sale", "pharmacy_id"),
         ] {
             assert!(has_column(&mut transaction, table, column).await.unwrap(), "{table}.{column}");
         }
@@ -4713,12 +5121,32 @@ mod tests {
             .fetch_one(&mut connection)
             .await
             .unwrap();
-        assert_eq!(migration_max, 25);
+        assert_eq!(migration_max, 28);
+        assert_current_migration_ledger(&mut connection).await;
         let foreign_key_violations = sqlx::query("PRAGMA foreign_key_check")
             .fetch_all(&mut connection)
             .await
             .unwrap();
         assert!(foreign_key_violations.is_empty());
+
+        // A first-run install starts from the bundled seed, while tests and some
+        // recovery paths can start from a blank database. After the complete
+        // migration chain both paths must expose the same application schema
+        // objects; otherwise fresh installs can behave differently from updates.
+        let mut blank_current = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        migrator.run(&mut blank_current).await.unwrap();
+        prepare_connection(&mut blank_current).await.unwrap();
+        assert_current_migration_ledger(&mut blank_current).await;
+        assert_eq!(
+            application_schema_objects(&mut connection).await,
+            application_schema_objects(&mut blank_current).await,
+            "bundled-seed fresh install drifted from a blank current-schema install"
+        );
+        assert_eq!(
+            application_schema_signature(&mut connection).await,
+            application_schema_signature(&mut blank_current).await,
+            "bundled-seed fresh install has structurally different columns/indexes/FKs/triggers"
+        );
 
         prepare_connection(&mut connection).await.unwrap();
         let user_count_after_restart: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
@@ -4731,6 +5159,34 @@ mod tests {
             .unwrap();
         assert_eq!(user_count_after_restart, user_count_before);
         assert_eq!(drug_count_after_restart, drug_count_before);
+        connection.close().await.unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn preapplied_finance_scope_seed_records_migration_28_before_plugin_migrations() {
+        let source = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("pharma_local.db");
+        let path = std::env::temp_dir().join(format!(
+            "pharma-preapplied-finance-scope-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::copy(&source, &path).unwrap();
+
+        let mut connection = connect(&path).await.unwrap();
+        sqlx::raw_sql(include_str!("../migrations/028_finance_definitions_pharmacy_scope.sql"))
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        prepare_connection(&mut connection).await.unwrap();
+
+        let recorded: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM _sqlx_migrations WHERE version = 28 AND success = 1",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(recorded, 1);
+
         connection.close().await.unwrap();
         std::fs::remove_file(path).unwrap();
     }
@@ -4763,6 +5219,9 @@ mod tests {
             include_str!("../migrations/023_shift_immutable_scope.sql"),
             include_str!("../migrations/024_commercial_papers_pharmacy_scope.sql"),
             include_str!("../migrations/025_sales_item_discount_snapshot.sql"),
+            include_str!("../migrations/026_sales_loyalty_redemption_snapshot.sql"),
+            include_str!("../migrations/027_drug_catalog_reconciliation.sql"),
+            include_str!("../migrations/028_finance_definitions_pharmacy_scope.sql"),
         ];
         let migrator = |count: usize| sqlx::migrate::Migrator {
             migrations: std::borrow::Cow::Owned(sources.iter().take(count).enumerate().map(|(index, sql)| {
@@ -4794,12 +5253,12 @@ mod tests {
         // Once snapshotted, a staff move cannot move the original open drawer.
         sqlx::query("UPDATE users SET pharmacy_id = 'B' WHERE id = 'moved'")
             .execute(&mut connection).await.unwrap();
-        migrator(25).run(&mut connection).await.unwrap();
+        migrator(28).run(&mut connection).await.unwrap();
 
         for restart in [false, true] {
             if restart {
                 prepare_connection(&mut connection).await.unwrap();
-                migrator(25).run(&mut connection).await.unwrap();
+                migrator(28).run(&mut connection).await.unwrap();
             }
             // The second pharmacy can open a drawer; the first cannot open another.
             sqlx::query("INSERT INTO shifts(id,user_id,pharmacy_id,status) VALUES('new-b','b','B','open')")
@@ -4839,6 +5298,42 @@ mod tests {
         let integrity: String = sqlx::query_scalar("PRAGMA integrity_check")
             .fetch_one(&mut connection).await.unwrap();
         assert_eq!(integrity, "ok");
+
+        let source = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("pharma_local.db");
+        let fresh_path = std::env::temp_dir().join(format!(
+            "pharma-schema-parity-fresh-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::copy(&source, &fresh_path).unwrap();
+        let mut fresh = connect(&fresh_path).await.unwrap();
+        prepare_connection(&mut fresh).await.unwrap();
+        migrator(28).run(&mut fresh).await.unwrap();
+        assert_current_migration_ledger(&mut connection).await;
+        assert_current_migration_ledger(&mut fresh).await;
+        assert_eq!(
+            application_schema_objects(&mut connection).await,
+            application_schema_objects(&mut fresh).await,
+            "upgraded v0.2.91 schema drifted from the current bundled-seed fresh-install schema"
+        );
+        assert_eq!(
+            application_schema_signature(&mut connection).await,
+            application_schema_signature(&mut fresh).await,
+            "upgraded v0.2.91 schema is structurally different from a fresh install"
+        );
+        let fresh_integrity: String = sqlx::query_scalar("PRAGMA integrity_check")
+            .fetch_one(&mut fresh)
+            .await
+            .unwrap();
+        assert_eq!(fresh_integrity, "ok");
+        assert!(sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(&mut fresh)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_catalog_delete_tombstone(&mut connection, 2_000_000_001).await;
+        assert_catalog_delete_tombstone(&mut fresh, 2_000_000_002).await;
+        fresh.close().await.unwrap();
+        std::fs::remove_file(fresh_path).unwrap();
     }
 
     #[tokio::test]

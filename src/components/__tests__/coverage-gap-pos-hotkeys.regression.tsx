@@ -6,7 +6,7 @@ import { searchPatientsAction } from '@/app/actions-client/patients';
 import { checkDrugInteractions } from '@/app/actions-client/interactions';
 import { addToShortagesAction } from '@/app/actions-client/shortages';
 import { usePOSStore } from '@/store/usePOSStore';
-import { getClientSession } from '@/lib/auth/local';
+import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { getCurrentUserAction } from '@/app/actions-client/auth';
 import { fetchDraftsAction } from '@/app/actions-client/sales';
 import { toast } from 'react-hot-toast';
@@ -41,7 +41,14 @@ jest.mock('@/app/actions-client/sales', () => ({
 }));
 jest.mock('@/app/actions-client/patients', () => ({
   searchPatientsAction: jest.fn(),
-  getPatientProfileAction: jest.fn(),
+  getPatientForPosAction: jest.fn(async (id: string) => ({
+    success: true,
+    data: { id, points_balance: 0, credit_limit: 500, outstanding_balance: 0 },
+  })),
+  getPatientProfileAction: jest.fn(async (id: string) => ({
+    success: true,
+    data: { id, points_balance: 0, credit_limit: 500 },
+  })),
 }));
 jest.mock('@/app/actions-client/interactions', () => ({ checkDrugInteractions: jest.fn() }));
 jest.mock('@/app/actions-client/shortages', () => ({ addToShortagesAction: jest.fn() }));
@@ -61,6 +68,27 @@ jest.mock('@/components/pos/DraftsModal', () => function MockDraftsModal({ isOpe
 jest.mock('@/components/pos/StockWarningModal', () => () => null);
 jest.mock('@/components/pos/PosDrawerHandoverModal', () => () => null);
 jest.mock('@/components/pos/DrugInteractionModal', () => () => null);
+jest.mock('@/components/AddPatientModal', () => function MockAddPatientModal({ pharmacyId, onClose, onSuccess }: any) {
+  return (
+    <div data-testid="pos-add-patient-modal" data-pharmacy-id={pharmacyId}>
+      <button
+        onClick={() => onSuccess({
+          id: 'pos-new-patient',
+          full_name: 'New POS Patient',
+          phone: null,
+          credit_limit: 500,
+          wallet_balance: 0,
+          opening_balance: 0,
+          outstanding_balance: 0,
+          payment_method: 'cash',
+        })}
+      >
+        SAVE NEW POS PATIENT
+      </button>
+      <button onClick={onClose}>CLOSE POS PATIENT MODAL</button>
+    </div>
+  );
+});
 jest.mock('react-hot-toast', () => ({
   __esModule: true,
   default: { error: jest.fn(), success: jest.fn() },
@@ -101,6 +129,7 @@ describe('coverage-gap: POS keyboard shortcuts', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockPush.mockReset();
+    (hasUserPermissionSync as jest.Mock).mockReturnValue(true);
     usePOSStore.getState().resetPOS();
     (checkDrugInteractions as jest.Mock).mockResolvedValue({
       success: true,
@@ -112,6 +141,32 @@ describe('coverage-gap: POS keyboard shortcuts', () => {
 
   afterEach(() => {
     act(() => usePOSStore.getState().resetPOS());
+  });
+
+  it('opens patient creation from عميل جديد and selects the newly created patient', async () => {
+    render(<POSPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'عميل جديد' }));
+    const modal = await screen.findByTestId('pos-add-patient-modal');
+    expect(modal).toHaveAttribute('data-pharmacy-id', 'pharmacy-1');
+
+    fireEvent.click(screen.getByRole('button', { name: 'SAVE NEW POS PATIENT' }));
+
+    await waitFor(() => expect(usePOSStore.getState().selectedPatient).toMatchObject({
+      id: 'pos-new-patient',
+      full_name: 'New POS Patient',
+    }));
+    expect(screen.getByText(/New POS Patient/)).toBeInTheDocument();
+    expect(screen.queryByTestId('pos-add-patient-modal')).not.toBeInTheDocument();
+  });
+
+  it('hides patient creation in POS when can_view_patients is denied', async () => {
+    (hasUserPermissionSync as jest.Mock).mockImplementation((_user: any, key: string) => key !== 'can_view_patients');
+
+    render(<POSPage />);
+
+    await waitFor(() => expect(hasUserPermissionSync).toHaveBeenCalledWith(expect.anything(), 'can_view_patients'));
+    expect(screen.queryByRole('button', { name: 'عميل جديد' })).not.toBeInTheDocument();
   });
 
   it('Insert focuses and selects the actual POS search field', async () => {
@@ -196,7 +251,7 @@ describe('coverage-gap: POS keyboard shortcuts', () => {
   it('Ctrl+S executes the real completed-checkout path for a populated cart', async () => {
     usePOSStore.getState().setCart([cartItem]);
     render(<POSPage />);
-    await screen.findByRole('button', { name: /إتمام وطباعة/ });
+    await screen.findByRole('button', { name: /إتمام البيع/ });
 
     const preventDefault = jest.fn();
     await act(async () => {
@@ -218,7 +273,7 @@ describe('coverage-gap: POS keyboard shortcuts', () => {
       resolveCheckout = resolve;
     }));
     render(<POSPage />);
-    await screen.findByRole('button', { name: /إتمام وطباعة/ });
+    await screen.findByRole('button', { name: /إتمام البيع/ });
 
     const handler = lastHotkeyHandler('ctrl+s');
     await act(async () => {
@@ -419,7 +474,7 @@ describe('coverage-gap: POS keyboard shortcuts', () => {
     });
 
     render(<POSPage />);
-    const patientSearch = await screen.findByPlaceholderText('بحث عن عميل (نقرتين لعرض الكل)...');
+    const patientSearch = await screen.findByPlaceholderText('بحث باسم أو هاتف العميل...');
     fireEvent.change(patientSearch, { target: { value: 'old' } });
     await waitFor(() => expect(searchPatientsAction).toHaveBeenCalledWith('old'));
     fireEvent.change(patientSearch, { target: { value: 'new' } });
@@ -469,7 +524,7 @@ describe('coverage-gap: POS keyboard shortcuts', () => {
       });
 
     render(<POSPage />);
-    const patientSearch = await screen.findByPlaceholderText('بحث عن عميل (نقرتين لعرض الكل)...');
+    const patientSearch = await screen.findByPlaceholderText('بحث باسم أو هاتف العميل...');
     fireEvent.change(patientSearch, { target: { value: 'retry-patient' } });
 
     expect(await screen.findByText('تعذر البحث عن العملاء')).toBeInTheDocument();
@@ -479,5 +534,21 @@ describe('coverage-gap: POS keyboard shortcuts', () => {
     expect(await screen.findByText(/Recovered POS Patient/)).toBeInTheDocument();
     expect(patientSearch).toHaveValue('retry-patient');
     expect(searchPatientsAction).toHaveBeenCalledTimes(2);
+  });
+
+  it('offers an explicit keyboard-accessible way to list all patients', async () => {
+    (searchPatientsAction as jest.Mock).mockResolvedValueOnce({
+      success: true,
+      data: [{ id: 'p-all', full_name: 'All Patients Result', outstanding_balance: 0 }],
+    });
+
+    render(<POSPage />);
+    const showAll = await screen.findByRole('button', { name: 'عرض الكل' });
+    showAll.focus();
+    expect(showAll).toHaveFocus();
+    fireEvent.click(showAll);
+
+    await waitFor(() => expect(searchPatientsAction).toHaveBeenCalledWith('', true));
+    expect(await screen.findByText(/All Patients Result/)).toBeInTheDocument();
   });
 });

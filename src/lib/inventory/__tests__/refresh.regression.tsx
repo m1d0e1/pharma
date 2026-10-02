@@ -2,8 +2,10 @@ import { act, render, screen, waitFor } from '@testing-library/react'
 import InventoryPage from '@/app/(dashboard)/inventory/page'
 import { getInventoryListAction } from '@/app/actions-client/inventory'
 import {
+  DRUG_CATALOG_CHANGED_STORAGE_KEY,
   INVENTORY_CHANGED_EVENT,
   INVENTORY_CHANGED_STORAGE_KEY,
+  notifyDrugCatalogChanged,
   notifyInventoryChanged,
   subscribeInventoryChanges,
 } from '@/lib/inventory/refresh'
@@ -68,6 +70,18 @@ describe('inventory change refresh wiring', () => {
     expect(callback).toHaveBeenCalledTimes(1)
 
     unsubscribe()
+    setItem.mockRestore()
+  })
+
+  it('stores a dedicated cross-window token after catalog metadata changes', () => {
+    const setItem = jest.spyOn(Storage.prototype, 'setItem')
+
+    notifyDrugCatalogChanged()
+
+    expect(setItem).toHaveBeenCalledWith(
+      DRUG_CATALOG_CHANGED_STORAGE_KEY,
+      expect.stringMatching(/^\d+-[a-z0-9]+$/),
+    )
     setItem.mockRestore()
   })
 

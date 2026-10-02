@@ -122,20 +122,18 @@ describe('thin route shell wiring', () => {
   it('keeps legacy and setup navigation redirects pointed at their supported destinations', () => {
     EditReturnsPage();
     GeneralReturnsPage();
+    NewGeneralReturnPage();
     SetupPage();
 
     expect(mockRedirect.mock.calls).toEqual([
       ['/purchases/returns'],
       ['/purchases/returns'],
+      ['/purchases/returns/new'],
       ['/login'],
     ]);
   });
 
-  it('renders the direct placeholder, unauthorized state, and 404 recovery navigation', () => {
-    const placeholder = render(<NewGeneralReturnPage />);
-    expect(screen.getByText('جاري العمل على هذه الصفحة')).toBeInTheDocument();
-    placeholder.unmount();
-
+  it('renders the unauthorized state and 404 recovery navigation', () => {
     const unauthorized = render(<UnauthorizedPage />);
     expect(screen.getByText('access-denied')).toBeInTheDocument();
     unauthorized.unmount();

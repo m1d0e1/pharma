@@ -99,7 +99,7 @@ const TableSkeleton = ({ rows = 5, columns = 4 }) => (
       {/* Header */}
       <div className="flex gap-4">
         {Array.from({ length: columns }).map((_, i) => (
-          <Skeleton key={`header-${i}`} variant="text" width={`${Math.random() * 30 + 20}%`} height={20} />
+          <Skeleton key={`header-${i}`} variant="text" width={`${28 + ((i * 11) % 24)}%`} height={20} />
         ))}
       </div>
       
@@ -111,7 +111,7 @@ const TableSkeleton = ({ rows = 5, columns = 4 }) => (
               <Skeleton 
                 key={`cell-${rowIndex}-${colIndex}`} 
                 variant="text" 
-                width={`${Math.random() * 40 + 20}%`} 
+                width={`${24 + ((rowIndex * 13 + colIndex * 17) % 36)}%`}
                 height={16} 
               />
             ))}

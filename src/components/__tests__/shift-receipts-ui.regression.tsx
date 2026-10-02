@@ -115,7 +115,9 @@ describe('shift receipts ui wiring', () => {
 
     fireEvent.click(receiptsBtn);
 
-    expect(await screen.findByText('فواتير وإيصالات الوردية')).toBeInTheDocument();
+    expect(await screen.findByRole('dialog', { name: 'فواتير وإيصالات الوردية' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'إغلاق فواتير الوردية' })).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'بحث في فواتير الوردية' })).toBeInTheDocument();
     expect(getShiftReceiptsAction).toHaveBeenCalledWith('shift-99');
     expect(await screen.findByText('علي حسن')).toBeInTheDocument();
 
@@ -138,6 +140,16 @@ describe('shift receipts ui wiring', () => {
     expect(await screen.findByText('فواتير وإيصالات الوردية')).toBeInTheDocument();
     expect(getShiftReceiptsAction).toHaveBeenCalledWith('shift-99');
     expect(await screen.findByText('علي حسن')).toBeInTheDocument();
+  });
+
+  it('opens shift receipts from the invoice KPI with keyboard activation', async () => {
+    render(<ShiftReportClient shiftId="shift-99" />);
+
+    const invoiceKpi = await screen.findByRole('button', { name: /عدد الفواتير: 1.*اضغط لعرض الفواتير/ });
+    fireEvent.keyDown(invoiceKpi, { key: 'Enter' });
+
+    expect(await screen.findByRole('dialog', { name: 'فواتير وإيصالات الوردية' })).toBeInTheDocument();
+    expect(getShiftReceiptsAction).toHaveBeenCalledWith('shift-99');
   });
 
   it('distinguishes a returned shift-receipts failure from a legitimate empty shift and retries', async () => {

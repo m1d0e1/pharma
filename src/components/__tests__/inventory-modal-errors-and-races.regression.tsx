@@ -32,6 +32,7 @@ const drug = (id: number, name: string) => ({
   official_price: 20,
   large_unit: 'علبة',
   large_to_medium: 2,
+  has_expiry: 1,
 });
 
 describe('inventory modal async/error behavior', () => {
@@ -91,6 +92,79 @@ describe('inventory modal async/error behavior', () => {
     fireEvent.change(input, { target: { value: 'recovered' } });
     await act(async () => { jest.advanceTimersByTime(300); });
     expect(screen.getByText('Recovered Drug')).toBeInTheDocument();
+  });
+
+  it('submits a non-expiring drug without an expiry date', async () => {
+    (searchMasterDrugsAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: [{ ...drug(30, 'No Expiry Drug'), has_expiry: 0 }],
+    });
+    (addInventoryAction as jest.Mock).mockResolvedValue({ success: true });
+
+    render(<AddInventoryModal pharmacyId="ph-1" onClose={jest.fn()} onSuccess={jest.fn()} />);
+    fireEvent.change(screen.getByPlaceholderText('ابحث باسم الدواء (مثلاً: Panadol)...'), { target: { value: 'No Expiry Drug' } });
+    fireEvent.click(await screen.findByText('No Expiry Drug'));
+    fireEvent.change(screen.getByPlaceholderText('مثلاً: 20'), { target: { value: '5' } });
+
+    const expiry = document.querySelector('input[type="date"]') as HTMLInputElement;
+    expect(expiry).not.toBeRequired();
+    fireEvent.submit(screen.getByRole('button', { name: /حفظ في المخزون/ }).closest('form') as HTMLFormElement);
+
+    await waitFor(() => expect(addInventoryAction).toHaveBeenCalledWith(expect.objectContaining({
+      drug_id: 30,
+      expiry_date: null,
+    })));
+  });
+
+  it('keeps expiry required for expiring drugs', async () => {
+    (searchMasterDrugsAction as jest.Mock).mockResolvedValue({ success: true, data: [drug(31, 'Expiring Drug')] });
+
+    render(<AddInventoryModal pharmacyId="ph-1" onClose={jest.fn()} onSuccess={jest.fn()} />);
+    fireEvent.change(screen.getByPlaceholderText('ابحث باسم الدواء (مثلاً: Panadol)...'), { target: { value: 'Expiring Drug' } });
+    fireEvent.click(await screen.findByText('Expiring Drug'));
+    fireEvent.change(screen.getByPlaceholderText('مثلاً: 20'), { target: { value: '5' } });
+
+    const expiry = document.querySelector('input[type="date"]') as HTMLInputElement;
+    expect(expiry).toBeRequired();
+    fireEvent.submit(screen.getByRole('button', { name: /حفظ في المخزون/ }).closest('form') as HTMLFormElement);
+
+    expect(addInventoryAction).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledWith('يجب إدخال تاريخ صلاحية صحيح (YYYY-MM-DD)');
+  });
+
+  it('adds Dexatrol drops with missing catalog units as bottles without strip conversion', async () => {
+    (searchMasterDrugsAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: [{
+        id: 5954,
+        trade_name: 'DEXATROL EYE/EAR DROPS 5 ML',
+        active_ingredient: 'DEXAMETHASONE',
+        official_price: 27,
+        large_unit: null,
+        large_to_medium: null,
+        has_expiry: 1,
+      }],
+    });
+    (addInventoryAction as jest.Mock).mockResolvedValue({ success: true });
+
+    render(<AddInventoryModal pharmacyId="ph-1" onClose={jest.fn()} onSuccess={jest.fn()} />);
+    fireEvent.change(screen.getByPlaceholderText('ابحث باسم الدواء (مثلاً: Panadol)...'), { target: { value: 'DEXATROL' } });
+    fireEvent.click(await screen.findByText('DEXATROL EYE/EAR DROPS 5 ML'));
+
+    expect(screen.getByText('الكمية (زجاجة)')).toBeInTheDocument();
+    expect(screen.queryByText('الكمية (شريط)')).not.toBeInTheDocument();
+    expect(screen.queryByText(/عدد الشرائط بالعلبة/)).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText('مثلاً: 20'), { target: { value: '2' } });
+    fireEvent.change(document.querySelector('input[type="date"]') as HTMLInputElement, { target: { value: '2029-12-31' } });
+    fireEvent.submit(screen.getByRole('button', { name: /حفظ في المخزون/ }).closest('form') as HTMLFormElement);
+
+    await waitFor(() => expect(addInventoryAction).toHaveBeenCalledWith(expect.objectContaining({
+      drug_id: 5954,
+      quantity: 2,
+      unit: 'زجاجة',
+      large_to_medium: 1,
+    })));
   });
 
   it('blocks repeated add-inventory submissions while the first write is pending', async () => {
@@ -194,6 +268,23 @@ describe('inventory modal async/error behavior', () => {
     expect(await screen.findByText('تعذر تحميل أسباب التعديل')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'إعادة تحميل الأسباب' }));
     expect(await screen.findByRole('option', { name: 'تالف' })).toBeInTheDocument();
+  });
+
+  it('submits an explicit null when the inventory expiry is cleared', async () => {
+    (updateInventoryAction as jest.Mock).mockResolvedValueOnce({ success: false, error: 'policy checked by action' });
+
+    render(<EditInventoryModal item={{
+      id: 'lot-clear-expiry', quantity: 10, local_selling_price: 20, expiry_date: '2027-12-31', strips_per_box: 2,
+      master_drugs: { trade_name: 'No Expiry Drug', large_to_medium: 2 },
+    }} onClose={jest.fn()} onSuccess={jest.fn()} />);
+
+    fireEvent.change(screen.getByLabelText('تاريخ الصلاحية'), { target: { value: '' } });
+    fireEvent.submit(screen.getByRole('button', { name: 'حفظ التغييرات' }).closest('form') as HTMLFormElement);
+
+    await waitFor(() => expect(updateInventoryAction).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'lot-clear-expiry',
+      expiry_date: null,
+    })));
   });
 
   it('blocks repeated edit-inventory submissions and preserves the modal after a rejected write', async () => {

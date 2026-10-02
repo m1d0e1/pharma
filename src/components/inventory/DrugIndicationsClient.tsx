@@ -177,7 +177,7 @@ export default function DrugIndicationsClient({ indications }: Props) {
                    <div className="flex flex-col">
                       <span>{ind.name_ar}</span>
                       {ind.name_en && (
-                        <span className={`text-[10px] uppercase opacity-60 ${selectedIndicationId === ind.id ? 'text-white' : ''}`}>{ind.name_en}</span>
+                        <span className={`text-xs opacity-70 ${selectedIndicationId === ind.id ? 'text-white' : ''}`}>{ind.name_en}</span>
                       )}
                    </div>
                 <ChevronLeft className={`w-4 h-4 transition-transform ${selectedIndicationId === ind.id ? '-translate-x-1' : 'opacity-0 group-hover:opacity-100'}`} />
@@ -257,14 +257,14 @@ export default function DrugIndicationsClient({ indications }: Props) {
                            <td className="py-5">
                               <div className="flex flex-col">
                                  <span className="font-black text-slate-900 dark:text-white">{drug.trade_name}</span>
-                                 <span className="text-[10px] uppercase text-slate-400">{drug.trade_name_en || '---'}</span>
+                                 <span className="text-xs text-slate-500">{drug.trade_name_en || '---'}</span>
                               </div>
                            </td>
                            <td className="py-5">
                               <span className="text-sm font-bold text-slate-600 dark:text-slate-400">{drug.manufacturer}</span>
                            </td>
                            <td className="py-5 text-center">
-                              <span className="font-black text-primary-600">{drug.official_price} <span className="text-[10px]">ج.م</span></span>
+                              <span className="font-black text-primary-600">{drug.official_price} <span className="text-xs">ج.م</span></span>
                            </td>
                            {canManage && <td className="py-5">
                               <button 

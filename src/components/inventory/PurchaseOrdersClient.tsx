@@ -116,10 +116,10 @@ export default function PurchaseOrdersClient({ initialOrders }: Props) {
                       {order.item_count}
                     </td>
                     <td className="px-6 py-4 text-center font-black">
-                      {(order.total_amount || 0).toLocaleString()} <span className="text-[10px]">ج.م</span>
+                      {(order.total_amount || 0).toLocaleString()} <span className="text-xs">ج.م</span>
                     </td>
                     <td className="px-6 py-4 text-center">
-                      <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-black ${config.bg} ${config.color}`}>
+                      <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-black ${config.bg} ${config.color}`}>
                         <Icon className="w-3 h-3" />
                         {config.label}
                       </div>

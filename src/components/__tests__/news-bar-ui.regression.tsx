@@ -23,9 +23,10 @@ describe('dashboard NewsBar', () => {
     render(<NewsBar />);
 
     expect(await screen.findByText('تحديث مرجعي جديد')).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'أخبار النظام' })).toBeInTheDocument();
     await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
 
-    fireEvent.click(screen.getByRole('button', { name: 'إخفاء' }));
+    fireEvent.click(screen.getByRole('button', { name: 'إخفاء شريط الأخبار' }));
     expect(screen.queryByText('تحديث مرجعي جديد')).not.toBeInTheDocument();
     expect(localStorage.getItem('news_dismissed_id')).toBe('news-1');
     expect(localStorage.getItem('news_bar_enabled')).toBe('false');

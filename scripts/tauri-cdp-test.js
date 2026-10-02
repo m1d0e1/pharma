@@ -199,7 +199,7 @@ async function runPackagedBusinessFlow(client) {
       }
     });
     const [inventory] = await select(
-      'SELECT id, quantity FROM inventory WHERE batch_number = ? AND pharmacy_id = ?',
+      'SELECT id, quantity FROM inventory WHERE barcode = ? AND pharmacy_id = ?',
       ['CODEX-' + stamp, pharmacyId]
     );
     if (!inventory) throw new Error('Completed purchase did not create inventory');
@@ -295,6 +295,7 @@ async function main() {
   const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
   const target = targets.find((item) => item.type === 'page');
   assert(target, 'No WebView2 page target was exposed');
+  const appOrigin = new URL(target.url).origin;
 
   const client = new CdpClient(target.webSocketDebuggerUrl);
   await client.connect();
@@ -302,7 +303,7 @@ async function main() {
   await client.send('Page.enable');
   await client.send('Log.enable');
 
-  await client.send('Page.navigate', { url: 'http://tauri.localhost/login' });
+  await client.send('Page.navigate', { url: `${appOrigin}/login` });
   await waitFor(client, `location.pathname === '/login' && document.readyState === 'complete'`);
   await client.evaluate(`localStorage.removeItem('pharma_session_user')`);
   await client.send('Page.reload');
@@ -325,22 +326,27 @@ async function main() {
 
   if (!businessOnly) {
     await submitLogin(client, 'missing-user', 'invalid-password');
-    await sleep(1000);
+    let missingUserObserved = false;
+    try {
+      await waitFor(client, `document.body.innerText.includes('المستخدم غير موجود محلياً')`, 15000);
+      missingUserObserved = true;
+    } catch {}
     const missingUserState = await client.evaluate(`({ values: [...document.querySelectorAll('input')].map((input) => input.value), disabled: [...document.querySelectorAll('button')].map((button) => button.disabled), body: document.body.innerText })`);
     const missingUserEvents = client.events.slice(-20).map((event) => ({
       method: event.method,
       text: event.params?.entry?.text || event.params?.exceptionDetails?.exception?.description,
       args: event.params?.args?.map((arg) => arg.value || arg.description),
     }));
-    if (missingUserState.body.includes('المستخدم غير موجود محلياً')) {
+    if (missingUserObserved || missingUserState.body.includes('المستخدم غير موجود محلياً')) {
       console.log('PASS missing-user-error');
     } else {
       failures.push('Missing-user login returned an unexpected error because the audit insert violated a foreign key');
       console.log(`FAIL missing-user-error ${JSON.stringify({ state: missingUserState, events: missingUserEvents })}`);
     }
 
+    await waitFor(client, `[...document.querySelectorAll('button')].every((button) => !button.disabled)`, 15000);
     await submitLogin(client, 'admin', 'incorrect-password');
-    await waitFor(client, `document.body.innerText.includes('كلمة المرور غير صحيحة')`);
+    await waitFor(client, `document.body.innerText.includes('كلمة المرور غير صحيحة')`, 15000);
     console.log('PASS wrong-password-error');
   }
 
@@ -418,7 +424,7 @@ async function main() {
   const routeResults = [];
   for (const route of exportedRoutes()) {
     const eventStart = client.events.length;
-    await client.send('Page.navigate', { url: `http://tauri.localhost${route}` });
+    await client.send('Page.navigate', { url: `${appOrigin}${route}` });
     await waitFor(client, `location.pathname === ${JSON.stringify(route)} && document.readyState === 'complete'`, 15000);
     await sleep(900);
     const readRouteState = () => client.evaluate(`({

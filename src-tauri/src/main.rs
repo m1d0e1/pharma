@@ -9,9 +9,11 @@ use std::io::{self, Read, Seek, SeekFrom};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::menu::{IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{Emitter, Manager};
 use tauri_plugin_sql::{Migration, MigrationKind};
+
+const PURCHASE_DRAFT_ACCELERATOR: &str = "F10";
 
 // ponytail: Windows exposes readonly as a single flag; Unix needs only owner-write restored.
 #[allow(clippy::permissions_set_readonly_false)]
@@ -26,6 +28,83 @@ fn make_writable(path: &Path, mut permissions: fs::Permissions) -> io::Result<()
 #[tauri::command]
 fn log_frontend_error(message: String) {
     println!("FE: {}", message);
+}
+
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeAdminMenuAccess {
+    staff: bool,
+    staff_manage: bool,
+    staff_roles: bool,
+    audit: bool,
+    settings: bool,
+    #[serde(default)]
+    allowed_route_ids: Vec<String>,
+}
+
+impl NativeAdminMenuAccess {
+    fn allows_route(&self, id: &str) -> bool {
+        self.allowed_route_ids.iter().any(|allowed| allowed == id)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct NativeRouteMenuItem {
+    id: &'static str,
+    label: &'static str,
+    accelerator: Option<&'static str>,
+}
+
+fn create_route_submenu<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    title: &str,
+    access: &NativeAdminMenuAccess,
+    items: &[NativeRouteMenuItem],
+) -> Result<Option<Submenu<R>>, tauri::Error> {
+    let visible_items: Vec<_> = items
+        .iter()
+        .filter(|item| access.allows_route(item.id))
+        .collect();
+    if visible_items.is_empty() {
+        return Ok(None);
+    }
+
+    let submenu = Submenu::new(app, title, true)?;
+    for item in visible_items {
+        let menu_item = MenuItem::with_id(app, item.id, item.label, true, item.accelerator)?;
+        submenu.append(&menu_item)?;
+    }
+    Ok(Some(submenu))
+}
+
+fn create_admin_menu<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    access: NativeAdminMenuAccess,
+) -> Result<Option<Submenu<R>>, tauri::Error> {
+    if !access.staff
+        && !access.staff_manage
+        && !access.staff_roles
+        && !access.audit
+        && !access.settings
+    {
+        return Ok(None);
+    }
+
+    let admin_menu = Submenu::new(app, "الإدارة", true)?;
+    for (visible, id, label) in [
+        (access.staff, "staff", "أداء الموظفين"),
+        (access.staff_manage, "staff_manage", "إدارة الموظفين"),
+        (access.staff_roles, "staff_roles", "الوظائف والرواتب"),
+        (access.audit, "audit", "سجل المراقبة"),
+        (access.settings, "settings", "الإعدادات"),
+    ] {
+        if visible {
+            let item = MenuItem::with_id(app, id, label, true, None::<&str>)?;
+            admin_menu.append(&item)?;
+        }
+    }
+
+    Ok(Some(admin_menu))
 }
 
 #[tauri::command]
@@ -43,7 +122,7 @@ fn open_new_window_for_app<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Resu
         .build()
         .map_err(|e| e.to_string())?;
 
-    if let Ok(menu) = create_app_menu(app) {
+    if let Ok(menu) = create_app_menu(app, NativeAdminMenuAccess::default()) {
         let _ = w.set_menu(menu);
     }
 
@@ -58,256 +137,181 @@ fn new_window_label() -> String {
     format!("window_{}", uuid::Uuid::new_v4().simple())
 }
 
-fn create_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Menu<R>, tauri::Error> {
+fn create_app_menu<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    admin_access: NativeAdminMenuAccess,
+) -> Result<Menu<R>, tauri::Error> {
     // 1. ملف (File)
-    let file_menu = Submenu::with_items(
+    let file_menu = Submenu::new(app, "ملف", true)?;
+    let mut has_file_route = false;
+    for item in [
+        NativeRouteMenuItem {
+            id: "pos",
+            label: "فاتورة مبيعات جديدة",
+            accelerator: Some("CmdOrCtrl+P"),
+        },
+        NativeRouteMenuItem {
+            id: "purchases_new",
+            label: "فاتورة مشتريات جديدة",
+            accelerator: None,
+        },
+    ] {
+        if admin_access.allows_route(item.id) {
+            let menu_item =
+                MenuItem::with_id(app, item.id, item.label, true, item.accelerator)?;
+            file_menu.append(&menu_item)?;
+            has_file_route = true;
+        }
+    }
+    if admin_access.allows_route("purchases_new") {
+        file_menu.append(&MenuItem::with_id(
+            app,
+            "purchase_save_draft",
+            "حفظ فاتورة الشراء كمسودة",
+            true,
+            Some(PURCHASE_DRAFT_ACCELERATOR),
+        )?)?;
+        has_file_route = true;
+    }
+    if has_file_route {
+        file_menu.append(&PredefinedMenuItem::separator(app)?)?;
+    }
+    file_menu.append(&MenuItem::with_id(
         app,
-        "ملف",
+        "new_window",
+        "نافذة جديدة",
         true,
-        &[
-            &MenuItem::with_id(app, "pos", "فاتورة مبيعات جديدة", true, Some("CmdOrCtrl+P"))?,
-            &MenuItem::with_id(
-                app,
-                "purchases_new",
-                "فاتورة مشتريات جديدة",
-                true,
-                None::<&str>,
-            )?,
-            &PredefinedMenuItem::separator(app)?,
-            &MenuItem::with_id(app, "new_window", "نافذة جديدة", true, Some("CmdOrCtrl+N"))?,
-            &PredefinedMenuItem::separator(app)?,
-            &MenuItem::with_id(app, "print", "طباعة", true, Some("CmdOrCtrl+Shift+P"))?,
-            &PredefinedMenuItem::separator(app)?,
-            &MenuItem::with_id(app, "logout", "تسجيل الخروج", true, None::<&str>)?,
-            &PredefinedMenuItem::separator(app)?,
-            &PredefinedMenuItem::quit(app, None)?,
-        ],
-    )?;
+        Some("CmdOrCtrl+N"),
+    )?)?;
+    file_menu.append(&PredefinedMenuItem::separator(app)?)?;
+    file_menu.append(&MenuItem::with_id(
+        app,
+        "print",
+        "طباعة",
+        true,
+        Some("CmdOrCtrl+Shift+P"),
+    )?)?;
+    file_menu.append(&PredefinedMenuItem::separator(app)?)?;
+    file_menu.append(&MenuItem::with_id(
+        app,
+        "logout",
+        "تسجيل الخروج",
+        true,
+        None::<&str>,
+    )?)?;
+    file_menu.append(&PredefinedMenuItem::separator(app)?)?;
+    file_menu.append(&PredefinedMenuItem::quit(app, None)?)?;
 
     // 2. البيانات الأساسية (Master Data)
-    let master_data_menu = Submenu::with_items(
+    let master_data_menu = create_route_submenu(
         app,
         "البيانات الأساسية",
-        true,
+        &admin_access,
         &[
-            &MenuItem::with_id(
-                app,
-                "dashboard",
-                "لوحة التحكم (الرئيسية)",
-                true,
-                Some("CmdOrCtrl+D"),
-            )?,
-            &PredefinedMenuItem::separator(app)?,
-            &MenuItem::with_id(app, "stores_items", "الأصناف", true, None::<&str>)?,
-            &MenuItem::with_id(app, "stores_alternatives", "البدائل", true, None::<&str>)?,
-            &MenuItem::with_id(app, "stores_nature", "النوع", true, None::<&str>)?,
-            &MenuItem::with_id(app, "stores_usage", "الاستخدام", true, None::<&str>)?,
-            &MenuItem::with_id(app, "stores_units", "الوحدات", true, None::<&str>)?,
-            &MenuItem::with_id(
-                app,
-                "stores_indications",
-                "دواعي الاستعمال",
-                true,
-                None::<&str>,
-            )?,
-            &MenuItem::with_id(
-                app,
-                "stores_drug_indications",
-                "الاصناف ودواعي الاستخدام",
-                true,
-                None::<&str>,
-            )?,
-            &MenuItem::with_id(
-                app,
-                "stores_manufacturers",
-                "الشركات المنتجة",
-                true,
-                None::<&str>,
-            )?,
-            &MenuItem::with_id(
-                app,
-                "stores_scientific_groups",
-                "المجموعات العلمية",
-                true,
-                None::<&str>,
-            )?,
-            &MenuItem::with_id(app, "stores_categories", "التصنيفات", true, None::<&str>)?,
+            NativeRouteMenuItem { id: "dashboard", label: "لوحة التحكم (الرئيسية)", accelerator: Some("CmdOrCtrl+D") },
+            NativeRouteMenuItem { id: "stores_items", label: "الأصناف", accelerator: None },
+            NativeRouteMenuItem { id: "stores_alternatives", label: "البدائل", accelerator: None },
+            NativeRouteMenuItem { id: "stores_nature", label: "النوع", accelerator: None },
+            NativeRouteMenuItem { id: "stores_usage", label: "الاستخدام", accelerator: None },
+            NativeRouteMenuItem { id: "stores_units", label: "الوحدات", accelerator: None },
+            NativeRouteMenuItem { id: "stores_indications", label: "دواعي الاستعمال", accelerator: None },
+            NativeRouteMenuItem { id: "stores_drug_indications", label: "الاصناف ودواعي الاستخدام", accelerator: None },
+            NativeRouteMenuItem { id: "stores_manufacturers", label: "الشركات المنتجة", accelerator: None },
+            NativeRouteMenuItem { id: "stores_scientific_groups", label: "المجموعات العلمية", accelerator: None },
+            NativeRouteMenuItem { id: "stores_categories", label: "التصنيفات", accelerator: None },
         ],
     )?;
 
     // 3. العمليات المخزنية (Inventory Ops)
-    let inventory_ops_menu = Submenu::with_items(
+    let inventory_ops_menu = create_route_submenu(
         app,
         "العمليات المخزنية",
-        true,
+        &admin_access,
         &[
-            &MenuItem::with_id(app, "inventory", "المخزون", true, Some("CmdOrCtrl+I"))?,
-            &MenuItem::with_id(app, "stores_shortages", "كشكول النواقص", true, None::<&str>)?,
-            &MenuItem::with_id(
-                app,
-                "inventory_item_movements",
-                "حركات الأصناف",
-                true,
-                None::<&str>,
-            )?,
-            &MenuItem::with_id(app, "restock", "إعادة التموين", true, None::<&str>)?,
-            &MenuItem::with_id(
-                app,
-                "inventory_opening_balances",
-                "الأرصدة الإفتتاحية",
-                true,
-                None::<&str>,
-            )?,
-            &MenuItem::with_id(app, "stores_adjustments", "التعديلات", true, None::<&str>)?,
-            &MenuItem::with_id(
-                app,
-                "stores_adjustment_reasons",
-                "أسباب التعديل",
-                true,
-                None::<&str>,
-            )?,
-            &MenuItem::with_id(
-                app,
-                "inventory_settlement",
-                "تسوية المخزون",
-                true,
-                None::<&str>,
-            )?,
-            &MenuItem::with_id(app, "stores_delete_items", "حذف الأصناف", true, None::<&str>)?,
+            NativeRouteMenuItem { id: "inventory", label: "المخزون", accelerator: Some("CmdOrCtrl+I") },
+            NativeRouteMenuItem { id: "stores_shortages", label: "كشكول النواقص", accelerator: None },
+            NativeRouteMenuItem { id: "inventory_item_movements", label: "حركات الأصناف", accelerator: None },
+            NativeRouteMenuItem { id: "restock", label: "إعادة التموين", accelerator: None },
+            NativeRouteMenuItem { id: "inventory_opening_balances", label: "الأرصدة الإفتتاحية", accelerator: None },
+            NativeRouteMenuItem { id: "stores_adjustments", label: "التعديلات", accelerator: None },
+            NativeRouteMenuItem { id: "stores_adjustment_reasons", label: "أسباب التعديل", accelerator: None },
+            NativeRouteMenuItem { id: "inventory_settlement", label: "تسوية المخزون", accelerator: None },
+            NativeRouteMenuItem { id: "stores_delete_items", label: "حذف الأصناف", accelerator: None },
         ],
     )?;
 
     // 4. المبيعات (Sales)
-    let sales_menu = Submenu::with_items(
+    let sales_menu = create_route_submenu(
         app,
         "المبيعات",
-        true,
+        &admin_access,
         &[
-            &MenuItem::with_id(app, "pos", "فاتورة مبيعات جديدة", true, None::<&str>)?,
-            &MenuItem::with_id(app, "receipts", "الفواتير", true, None::<&str>)?,
-            &MenuItem::with_id(app, "sales", "المبيعات والتحصيل", true, None::<&str>)?,
-            &MenuItem::with_id(app, "sales_delivery", "توصيل منزلي", true, None::<&str>)?,
-            &MenuItem::with_id(app, "sales_cogs", "تعديل التكلفة", true, None::<&str>)?,
-            &MenuItem::with_id(
-                app,
-                "sales_settlement",
-                "تسوية المبيعات",
-                true,
-                None::<&str>,
-            )?,
-            &MenuItem::with_id(app, "returns", "مرتجعات العملاء", true, None::<&str>)?,
+            NativeRouteMenuItem { id: "pos", label: "فاتورة مبيعات جديدة", accelerator: None },
+            NativeRouteMenuItem { id: "receipts", label: "الفواتير", accelerator: None },
+            NativeRouteMenuItem { id: "sales", label: "المبيعات والتحصيل", accelerator: None },
+            NativeRouteMenuItem { id: "sales_delivery", label: "توصيل منزلي", accelerator: None },
+            NativeRouteMenuItem { id: "sales_cogs", label: "تعديل التكلفة", accelerator: None },
+            NativeRouteMenuItem { id: "sales_settlement", label: "تسوية المبيعات", accelerator: None },
+            NativeRouteMenuItem { id: "returns", label: "مرتجعات العملاء", accelerator: None },
         ],
     )?;
 
     // 5. المشتريات (Purchases)
-    let purchases_menu = Submenu::with_items(
+    let purchases_menu = create_route_submenu(
         app,
         "المشتريات",
-        true,
+        &admin_access,
         &[
-            &MenuItem::with_id(app, "purchases", "المشتريات", true, Some("CmdOrCtrl+O"))?,
-            &MenuItem::with_id(app, "purchase_orders", "أوامر الشراء", true, None::<&str>)?,
-            &MenuItem::with_id(app, "purchases_suppliers", "الموردون", true, None::<&str>)?,
-            &MenuItem::with_id(
-                app,
-                "purchases_returns",
-                "مرتجعات للموردين",
-                true,
-                None::<&str>,
-            )?,
+            NativeRouteMenuItem { id: "purchases", label: "المشتريات", accelerator: Some("CmdOrCtrl+O") },
+            NativeRouteMenuItem { id: "purchase_orders", label: "أوامر الشراء", accelerator: None },
+            NativeRouteMenuItem { id: "purchases_suppliers", label: "الموردون", accelerator: None },
+            NativeRouteMenuItem { id: "purchases_returns", label: "مرتجعات للموردين", accelerator: None },
         ],
     )?;
 
     // 6. المالية (Finance)
-    let finance_menu = Submenu::with_items(
+    let finance_menu = create_route_submenu(
         app,
         "المالية",
-        true,
+        &admin_access,
         &[
-            &MenuItem::with_id(app, "accounts", "الحسابات والمالية", true, None::<&str>)?,
-            &MenuItem::with_id(
-                app,
-                "accounts_cash_transactions",
-                "حركة النقدية",
-                true,
-                None::<&str>,
-            )?,
-            &MenuItem::with_id(app, "finance_banks", "البنوك", true, None::<&str>)?,
-            &MenuItem::with_id(
-                app,
-                "finance_cards",
-                "البطاقات والماكينات",
-                true,
-                None::<&str>,
-            )?,
-            &MenuItem::with_id(
-                app,
-                "finance_pos_management",
-                "إدارة نقاط البيع",
-                true,
-                None::<&str>,
-            )?,
-            &MenuItem::with_id(app, "finance_accounts", "شجرة الحسابات", true, None::<&str>)?,
-            &MenuItem::with_id(
-                app,
-                "accounts_settings_trial_balance",
-                "إعدادات ميزان المراجعة",
-                true,
-                None::<&str>,
-            )?,
+            NativeRouteMenuItem { id: "accounts", label: "الحسابات والمالية", accelerator: None },
+            NativeRouteMenuItem { id: "accounts_cash_transactions", label: "حركة النقدية", accelerator: None },
+            NativeRouteMenuItem { id: "finance_banks", label: "البنوك", accelerator: None },
+            NativeRouteMenuItem { id: "finance_cards", label: "البطاقات والماكينات", accelerator: None },
+            NativeRouteMenuItem { id: "finance_pos_management", label: "إدارة نقاط البيع", accelerator: None },
+            NativeRouteMenuItem { id: "finance_accounts", label: "شجرة الحسابات", accelerator: None },
+            NativeRouteMenuItem { id: "accounts_settings_trial_balance", label: "إعدادات ميزان المراجعة", accelerator: None },
         ],
     )?;
 
     // 7. التقارير (Reports)
-    let reports_menu = Submenu::with_items(
+    let reports_menu = create_route_submenu(
         app,
         "التقارير",
-        true,
+        &admin_access,
         &[
-            &MenuItem::with_id(app, "reports", "لوحة التقارير", true, None::<&str>)?,
-            &MenuItem::with_id(app, "reports_sales2", "تقارير المبيعات", true, None::<&str>)?,
-            &MenuItem::with_id(
-                app,
-                "reports_purchases",
-                "تقارير المشتريات",
-                true,
-                None::<&str>,
-            )?,
-            &MenuItem::with_id(
-                app,
-                "reports_trial_balance",
-                "ميزان المراجعة",
-                true,
-                None::<&str>,
-            )?,
-            &MenuItem::with_id(app, "expenses", "المصروفات", true, None::<&str>)?,
+            NativeRouteMenuItem { id: "reports", label: "لوحة التقارير", accelerator: None },
+            NativeRouteMenuItem { id: "reports_sales2", label: "تقارير المبيعات", accelerator: None },
+            NativeRouteMenuItem { id: "reports_purchases", label: "تقارير المشتريات", accelerator: None },
+            NativeRouteMenuItem { id: "reports_trial_balance", label: "ميزان المراجعة", accelerator: None },
+            NativeRouteMenuItem { id: "expenses", label: "المصروفات", accelerator: None },
         ],
     )?;
 
     // 8. المرضى والطبية (Patients)
-    let patients_menu = Submenu::with_items(
+    let patients_menu = create_route_submenu(
         app,
         "المرضى والطبية",
-        true,
+        &admin_access,
         &[
-            &MenuItem::with_id(app, "patients", "المرضى", true, None::<&str>)?,
-            &MenuItem::with_id(app, "interactions", "التفاعلات الدوائية", true, None::<&str>)?,
+            NativeRouteMenuItem { id: "patients", label: "المرضى", accelerator: None },
+            NativeRouteMenuItem { id: "interactions", label: "التفاعلات الدوائية", accelerator: None },
         ],
     )?;
 
     // 9. الإدارة (Administration)
-    let admin_menu = Submenu::with_items(
-        app,
-        "الإدارة",
-        true,
-        &[
-            &MenuItem::with_id(app, "staff", "أداء الموظفين", true, None::<&str>)?,
-            &MenuItem::with_id(app, "staff_manage", "إدارة الموظفين", true, None::<&str>)?,
-            &MenuItem::with_id(app, "staff_roles", "الوظائف والرواتب", true, None::<&str>)?,
-            &MenuItem::with_id(app, "audit", "سجل المراقبة", true, None::<&str>)?,
-            &MenuItem::with_id(app, "settings", "الإعدادات", true, None::<&str>)?,
-        ],
-    )?;
+    let admin_menu = create_admin_menu(app, admin_access.clone())?;
 
     // 10. مساعدة (Help)
     let help_menu = Submenu::with_items(
@@ -328,21 +332,46 @@ fn create_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Menu<
         ],
     )?;
 
-    Menu::with_items(
-        app,
-        &[
-            &help_menu,
-            &reports_menu,
-            &admin_menu,
-            &patients_menu,
-            &finance_menu,
-            &purchases_menu,
-            &sales_menu,
-            &inventory_ops_menu,
-            &master_data_menu,
-            &file_menu,
-        ],
-    )
+    let mut menu_items: Vec<&dyn IsMenuItem<R>> = vec![&help_menu];
+    if let Some(ref reports_menu) = reports_menu {
+        menu_items.push(reports_menu);
+    }
+    if let Some(ref admin_menu) = admin_menu {
+        menu_items.push(admin_menu);
+    }
+    if let Some(ref patients_menu) = patients_menu {
+        menu_items.push(patients_menu);
+    }
+    if let Some(ref finance_menu) = finance_menu {
+        menu_items.push(finance_menu);
+    }
+    if let Some(ref purchases_menu) = purchases_menu {
+        menu_items.push(purchases_menu);
+    }
+    if let Some(ref sales_menu) = sales_menu {
+        menu_items.push(sales_menu);
+    }
+    if let Some(ref inventory_ops_menu) = inventory_ops_menu {
+        menu_items.push(inventory_ops_menu);
+    }
+    if let Some(ref master_data_menu) = master_data_menu {
+        menu_items.push(master_data_menu);
+    }
+    menu_items.push(&file_menu);
+
+    Menu::with_items(app, &menu_items)
+}
+
+#[tauri::command]
+fn sync_native_admin_menu<R: tauri::Runtime>(
+    window: tauri::Window<R>,
+    access: NativeAdminMenuAccess,
+) -> Result<(), String> {
+    let menu = create_app_menu(window.app_handle(), access).map_err(|error| error.to_string())?;
+    window
+        .set_menu(menu)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 fn new_window_url<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::WebviewUrl {
@@ -612,6 +641,24 @@ fn main() {
             sql: include_str!("../migrations/025_sales_item_discount_snapshot.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 26,
+            description: "sales_loyalty_redemption_snapshot",
+            sql: include_str!("../migrations/026_sales_loyalty_redemption_snapshot.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 27,
+            description: "drug_catalog_reconciliation",
+            sql: include_str!("../migrations/027_drug_catalog_reconciliation.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 28,
+            description: "finance_definitions_pharmacy_scope",
+            sql: include_str!("../migrations/028_finance_definitions_pharmacy_scope.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()
@@ -625,7 +672,7 @@ fn main() {
             }
         })
         .setup(|app| {
-            let menu = create_app_menu(app.handle())?;
+            let menu = create_app_menu(app.handle(), NativeAdminMenuAccess::default())?;
             app.set_menu(menu)?;
 
             // Extract the seeded database from resources on first run
@@ -729,12 +776,15 @@ fn main() {
             commands::critical::process_checkout_critical,
             commands::critical::save_purchase_invoice_critical,
             commands::drug_replacement::replace_master_drug,
+            commands::drug_replacement::reconcile_master_drug_group,
+            commands::drug_replacement::correct_drug_barcode_conflict,
             commands::critical::delete_purchase_invoice_critical,
             commands::critical::create_return_critical,
             commands::critical::settle_negative_sale_item_critical,
             commands::purchase_returns::create_purchase_return_critical,
             schema::ensure_schema_compatibility,
             open_new_window,
+            sync_native_admin_menu,
             log_frontend_error,
             write_binary_file,
         ])
@@ -742,30 +792,29 @@ fn main() {
         .expect("error while running tauri application");
 }
 
+fn native_menu_action(id: &str) -> Option<&'static str> {
+    match id {
+        "print" => Some("print"),
+        "logout" => Some("logout"),
+        "update_program" => Some("update"),
+        "help_shortcuts" => Some("shortcuts"),
+        "help_about" => Some("about"),
+        "purchase_save_draft" => Some("purchase-save-draft"),
+        _ => None,
+    }
+}
+
 fn handle_menu_event<R: tauri::Runtime>(window: &tauri::Window<R>, id: &str) {
+    if id == "new_window" {
+        return;
+    }
+    if let Some(action) = native_menu_action(id) {
+        let _ = window.emit_to(window.label(), "menu-action", action);
+        return;
+    }
+
     let route = match id {
-        // Actions
-        "new_window" => return,
-        "print" => {
-            let _ = window.emit_to(window.label(), "menu-action", "print");
-            return;
-        }
-        "logout" => {
-            let _ = window.emit_to(window.label(), "menu-action", "logout");
-            return;
-        }
-        "update_program" => {
-            let _ = window.emit_to(window.label(), "menu-action", "update");
-            return;
-        }
-        "help_shortcuts" => {
-            let _ = window.emit_to(window.label(), "menu-action", "shortcuts");
-            return;
-        }
-        "help_about" => {
-            let _ = window.emit_to(window.label(), "menu-action", "about");
-            return;
-        }
+        // Routes
 
         // Routes
         "pos" => "/pos",
@@ -830,8 +879,32 @@ fn handle_menu_event<R: tauri::Runtime>(window: &tauri::Window<R>, id: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{install_seed_database, new_window_label, validate_export_file};
+    use super::{
+        install_seed_database, native_menu_action, new_window_label, validate_export_file,
+        NativeAdminMenuAccess, PURCHASE_DRAFT_ACCELERATOR,
+    };
     use std::fs;
+
+    #[test]
+    fn native_route_allowlist_defaults_hidden_and_matches_explicit_ids() {
+        let mut access = NativeAdminMenuAccess::default();
+        assert!(!access.allows_route("purchases"));
+        assert!(!access.allows_route("inventory"));
+
+        access.allowed_route_ids = vec!["dashboard".into(), "pos".into()];
+        assert!(access.allows_route("dashboard"));
+        assert!(access.allows_route("pos"));
+        assert!(!access.allows_route("purchases"));
+    }
+
+    #[test]
+    fn purchase_draft_native_hotkey_maps_to_frontend_action() {
+        assert_eq!(PURCHASE_DRAFT_ACCELERATOR, "F10");
+        assert_eq!(
+            native_menu_action("purchase_save_draft"),
+            Some("purchase-save-draft")
+        );
+    }
 
     #[test]
     fn validates_xlsx_exports_only() {

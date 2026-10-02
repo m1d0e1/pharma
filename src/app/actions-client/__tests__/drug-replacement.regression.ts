@@ -9,12 +9,13 @@ jest.mock('@/lib/auth/local', () => ({ getLocalSession: jest.fn(async () => ({ i
 jest.mock('@/lib/env', () => ({ isTauri: true }));
 jest.mock('@/lib/cache/secure_cache', () => ({ secureCache: { reload: jest.fn(async () => {}) } }));
 jest.mock('@tauri-apps/api/core', () => ({ invoke: jest.fn() }));
-import { findDrugBarcodeConflict, getReplacementDrug, replaceDrugAction } from '../drug-replacement';
+import { correctDrugBarcodeConflictAction, findDrugBarcodeConflict, findDrugBarcodeOwners, getDuplicateDrugBarcodeGroupsAction, getReplacementDrug, reconcileDrugBarcodeOwnersAction, replaceDrugAction } from '../drug-replacement';
 import { invoke } from '@tauri-apps/api/core';
 import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 
 beforeEach(() => {
   jest.clearAllMocks();
+  localStorage.clear();
   mockDb = new Database(':memory:');
   mockDb.exec(`CREATE TABLE master_drugs(id INTEGER PRIMARY KEY,trade_name TEXT,trade_name_en TEXT,barcode TEXT,large_to_medium INTEGER,official_price REAL);
     CREATE TABLE inventory(drug_id INTEGER,barcode TEXT,quantity REAL);
@@ -25,14 +26,14 @@ afterEach(() => mockDb.close());
 
 it('detects a barcode remaining on old batches and returns complete comparison evidence', async () => {
   expect(await findDrugBarcodeConflict('123',20)).toMatchObject({ id: 10, barcode: null });
-  expect(await getReplacementDrug(10)).toMatchObject({ id: 10, stock_quantity: 2, inventory_barcodes: '123,456' });
+  expect(await getReplacementDrug(10)).toMatchObject({ id: 10, stock_quantity: 2, inventory_barcodes: '123,456', active_inventory_barcodes: '123,456' });
   expect(await getReplacementDrug(20)).toMatchObject({ id: 20, stock_quantity: 0, barcode: '123' });
 });
 
 it('ignores only exhausted batch aliases without deleting historical evidence', async () => {
   mockDb.exec("UPDATE inventory SET quantity=0 WHERE barcode='123'");
   expect(await findDrugBarcodeConflict('123',20)).toBeFalsy();
-  expect(await getReplacementDrug(10)).toMatchObject({ inventory_barcodes:'123,456', stock_quantity:0.5 });
+  expect(await getReplacementDrug(10)).toMatchObject({ inventory_barcodes:'123,456', active_inventory_barcodes:'456', stock_quantity:0.5 });
   mockDb.exec("UPDATE master_drugs SET barcode='123' WHERE id=10");
   expect(await findDrugBarcodeConflict('123',20)).toMatchObject({id:10});
 });
@@ -53,10 +54,57 @@ it.each([0,0.001,-1,null])('uses the same zero-balance rule in the native purcha
   expect(mockDb.prepare(sql!).get(20,'123',20,'123')).toEqual({id:10});
 });
 
+it('returns every active owner of a conflicting barcode and ignores exhausted inventory-only aliases', async () => {
+  mockDb.exec(`
+    INSERT INTO master_drugs VALUES(30,'Third',NULL,'123',2,30);
+    INSERT INTO master_drugs VALUES(40,'Exhausted alias',NULL,NULL,2,30);
+    INSERT INTO inventory VALUES(40,'123',0);
+  `);
+  expect((await findDrugBarcodeOwners('123')).map((drug: any) => drug.id)).toEqual([10,20,30]);
+});
+
+it('lists every duplicate-barcode group with the same active-owner rule used by purchase validation', async () => {
+  mockDb.exec(`
+    INSERT INTO master_drugs VALUES(30,'Third',NULL,'123',2,30);
+    INSERT INTO master_drugs VALUES(40,'Other A',NULL,'999',2,30);
+    INSERT INTO master_drugs VALUES(50,'Other B',NULL,'999',2,30);
+    INSERT INTO master_drugs VALUES(60,'Historical only',NULL,NULL,2,30);
+    INSERT INTO inventory VALUES(60,'123',0);
+  `);
+  const groups = await getDuplicateDrugBarcodeGroupsAction();
+  expect(groups).toEqual(expect.arrayContaining([
+    expect.objectContaining({ barcode: '123', owner_count: 3, owner_ids: [10,20,30] }),
+    expect.objectContaining({ barcode: '999', owner_count: 2, owner_ids: [40,50] }),
+  ]));
+  expect(groups.find((group: any) => group.barcode === '123')?.owner_ids).not.toContain(60);
+});
+
 it('sends corrections in the same native replacement command, not separate catalog updates', async () => {
   (invoke as jest.Mock).mockResolvedValue({ id:20, backup_path:'backup.db' });
   expect(await replaceDrugAction(10,20,null,'password',{ official_price:45, notes:'' })).toMatchObject({ success:true, id:20 });
   expect(invoke).toHaveBeenCalledWith('replace_master_drug', { userId:'admin',password:'password',payload:{ source_id:10,target_id:20,new_drug:null,edits:{ official_price:45,notes:'' },confirmed_same_product:true } });
+});
+
+it('sends all explicitly confirmed duplicate owners in one native group reconciliation', async () => {
+  (invoke as jest.Mock).mockResolvedValue({ id:20, backup_path:'group-backup.db' });
+  expect(await reconcileDrugBarcodeOwnersAction([10,30],20,'password',{ trade_name:'Canonical' })).toMatchObject({ success:true, id:20 });
+  expect(invoke).toHaveBeenCalledWith('reconcile_master_drug_group', {
+    userId:'admin',
+    password:'password',
+    payload:{ source_ids:[10,30],target_id:20,edits:{ trade_name:'Canonical' },confirmed_same_product:true },
+  });
+  const identityChange = JSON.parse(localStorage.getItem('pharma:drug-identity-updated') || '{}');
+  expect(identityChange).toMatchObject({ sourceIds:[10,30], targetId:20 });
+});
+
+it('sends an explicit different-product barcode correction through the protected native command', async () => {
+  (invoke as jest.Mock).mockResolvedValue({ id:10, backup_path:'barcode-backup.db' });
+  expect(await correctDrugBarcodeConflictAction(10,'123','456','password')).toMatchObject({ success:true, id:10 });
+  expect(invoke).toHaveBeenCalledWith('correct_drug_barcode_conflict', {
+    userId:'admin',
+    password:'password',
+    payload:{ drug_id:10, conflicting_barcode:'123', replacement_barcode:'456' },
+  });
 });
 
 it('does not send a destructive command for an unauthorized user', async () => {

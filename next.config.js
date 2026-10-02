@@ -8,6 +8,9 @@ const nextConfig = {
   output: isTauri ? 'export' : 'standalone',
 
   serverExternalPackages: ['better-sqlite3', 'bcryptjs'],
+  outputFileTracingIncludes: {
+    '/*': ['./src-tauri/migrations/*.sql'],
+  },
 
   experimental: {
     optimizePackageImports: ['lucide-react', 'date-fns'],

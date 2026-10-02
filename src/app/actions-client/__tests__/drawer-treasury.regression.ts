@@ -37,7 +37,7 @@ import { createReturnAction } from '@/app/actions-client/returns';
 import { processHandoverAction } from '@/app/actions-client/handover';
 import { closeShiftAction } from '@/app/actions-client/shifts';
 
-const migrations = ['001_initial.sql', '008_patient_accounting.sql', '011_shift_cash_difference_account.sql', '013_shift_handover_details.sql', '024_commercial_papers_pharmacy_scope.sql', '025_sales_item_discount_snapshot.sql'];
+const migrations = ['001_initial.sql', '008_patient_accounting.sql', '011_shift_cash_difference_account.sql', '013_shift_handover_details.sql', '024_commercial_papers_pharmacy_scope.sql', '025_sales_item_discount_snapshot.sql', '026_sales_loyalty_redemption_snapshot.sql', '028_finance_definitions_pharmacy_scope.sql'];
 
 function dashboard() {
   return getTreasuryDashboardAction('treasury');
@@ -100,6 +100,7 @@ describe('current drawer treasury balance', () => {
       invoice_id: sale.invoice_id, shift_id: next.newShiftId!, refund_method: 'cash', reason: 'refund',
       items: [{ sale_item_id: sale.id, inventory_id: 'stock', drug_name: 'Drawer Drug', quantity: 1, unit_price: 100, unit: 'large' }],
     })).toMatchObject({ success: true, totalRefund: 100 });
+    sqlite.prepare("UPDATE returns SET status = 'APPROVED'").run();
     expect((await dashboard()).data?.treasuryBalance).toBe(50);
     expect(await createCashMovementAction({ type: 'receipt', category: 'pharmacy', amount: 20, date: '2026-09-25' })).toMatchObject({ success: true });
     expect(await createCashMovementAction({ type: 'disbursement', category: 'operating_expenses', amount: 7, date: '2026-09-25' })).toMatchObject({ success: true });

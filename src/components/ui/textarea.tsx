@@ -23,9 +23,16 @@ const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
     inputSize = 'md',
     id,
     disabled,
+    'aria-describedby': ariaDescribedBy,
+    'aria-invalid': ariaInvalid,
     ...props 
   }, ref) => {
-    const textareaId = id || `textarea-${Math.random().toString(36).substr(2, 9)}`;
+    const reactId = React.useId();
+    const textareaId = id || `textarea-${reactId.replace(/:/g, '')}`;
+    const messageId = `${textareaId}-message`;
+    const describedBy = [ariaDescribedBy, (error || success || helperText) ? messageId : undefined]
+      .filter(Boolean)
+      .join(' ') || undefined;
     
     const variantClasses = {
       default: 'input-primary',
@@ -65,11 +72,13 @@ const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
           )}
           ref={ref}
           disabled={disabled}
+          aria-invalid={error ? true : ariaInvalid}
+          aria-describedby={describedBy}
           {...props}
         />
         
         {(error || success || helperText) && (
-          <p className={cn(
+          <p id={messageId} className={cn(
             'text-sm flex items-center gap-1.5',
             error && 'text-danger-600 dark:text-danger-400',
             success && 'text-success-600 dark:text-success-400',

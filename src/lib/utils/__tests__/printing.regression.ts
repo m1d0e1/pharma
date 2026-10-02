@@ -45,6 +45,17 @@ describe('receipt printing contracts', () => {
     expect(html).toContain('95 EGP');
   });
 
+  it('prints the receipt footer and return policy in Arabic', () => {
+    const html = generateReceiptHtml(invoice, { name: 'Pharma', phone: '', address: '' });
+
+    expect(html).toContain('شكرًا لزيارتكم!');
+    expect(html).toContain('نتمنى لكم الشفاء العاجل');
+    expect(html).toContain('لا استرجاع بدون أصل الفاتورة');
+    expect(html).toContain('يُسمح بالاسترجاع خلال 14 يومًا من تاريخ الشراء');
+    expect(html).toContain('لا يمكن استرجاع الأدوية المحفوظة بالثلاجة ومنتجات الألبان');
+    expect(html).not.toContain('No returns without original invoice');
+  });
+
   it('creates a plain-text share message with the invoice identity, lines, and total', () => {
     const message = generateWhatsAppMessage(invoice, { name: 'Pharma', phone: '0100' });
     expect(message).toContain('#invoice-');

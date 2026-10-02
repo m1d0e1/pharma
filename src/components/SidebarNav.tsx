@@ -237,20 +237,22 @@ export default function SidebarNav({ userRole, userPermissions }: Props) {
                   )}>
                     <Icon className="w-5 h-5" />
                   </div>
-                  <span className="text-[10px] mt-1.5 font-bold">{item.label}</span>
+                  <span className="text-xs mt-1.5 font-bold">{item.label}</span>
                 </Link>
               )
             })}
           {mobileMoreItems.length > 0 && (
             <button
+              type="button"
               onClick={() => setShowMobileMore(v => !v)}
               className="flex flex-col items-center p-3 rounded-2xl text-slate-600 dark:text-slate-400"
               aria-label="المزيد من الخيارات"
+              aria-expanded={showMobileMore}
             >
               <div className="w-10 h-10 rounded-xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center">
                 <span className="text-xs font-black">+{mobileMoreItems.length}</span>
               </div>
-              <span className="text-[10px] mt-1.5 font-bold">المزيد</span>
+              <span className="text-xs mt-1.5 font-bold">المزيد</span>
             </button>
           )}
         </div>

@@ -9,7 +9,7 @@ import {
   updatePatientAction,
   updatePatientWalletAction,
 } from '@/app/actions-client/patients';
-import { addPatientPaymentAction } from '@/app/actions-client/finance';
+import { addFinancialNoticeAction, addPatientPaymentAction } from '@/app/actions-client/finance';
 import { toast } from 'react-hot-toast';
 
 let mockSession: any = {
@@ -30,6 +30,7 @@ jest.mock('@/app/actions-client/patients', () => ({
 
 jest.mock('@/app/actions-client/finance', () => ({
   addPatientPaymentAction: jest.fn(),
+  addFinancialNoticeAction: jest.fn(),
 }));
 
 jest.mock('react-hot-toast', () => ({
@@ -65,6 +66,41 @@ const profileData = {
   purchaseHistory: [],
   payments: [],
 };
+
+test('keeps wallet as a valid default payment method in the patient profile editor', async () => {
+  (getPatientProfileAction as jest.Mock).mockResolvedValue({
+    success: true,
+    data: { ...profileData, payment_method: 'wallet' },
+  });
+
+  render(<PatientProfileModal patientId="p1" onClose={jest.fn()} onSuccess={jest.fn()} />);
+  await screen.findByDisplayValue('محمد أحمد');
+  fireEvent.click(screen.getByRole('button', { name: 'المالية والتأمين' }));
+
+  const paymentMethod = screen.getByLabelText('طريقة الدفع الافتراضية');
+  expect(paymentMethod).toHaveValue('wallet');
+  expect(screen.getByRole('option', { name: 'محفظة (Wallet)' })).toBeInTheDocument();
+});
+
+test('contains focus in the loaded patient profile dialog', async () => {
+  (getPatientProfileAction as jest.Mock).mockResolvedValue({ success: true, data: profileData });
+
+  render(<PatientProfileModal patientId="p1" onClose={jest.fn()} onSuccess={jest.fn()} />);
+
+  await screen.findByDisplayValue('محمد أحمد');
+  expect(screen.getByRole('dialog', { name: 'محمد أحمد' })).toHaveAttribute('tabindex', '-1');
+  await waitFor(() => expect(screen.getAllByRole('button', { name: 'كشف الحساب' })[0]).toHaveFocus());
+});
+
+test('does not advertise an unregistered single-letter profile-save shortcut', async () => {
+  (getPatientProfileAction as jest.Mock).mockResolvedValue({ success: true, data: profileData });
+
+  render(<PatientProfileModal patientId="p1" onClose={jest.fn()} onSuccess={jest.fn()} />);
+
+  await screen.findByDisplayValue('محمد أحمد');
+  expect(screen.getByRole('button', { name: 'حفظ جميع التعديلات' })).toBeInTheDocument();
+  expect(screen.queryByText(/\(S\)/)).not.toBeInTheDocument();
+});
 
 test('renders customer profile payments tab with payments and refund indicators', async () => {
   (getPatientProfileAction as jest.Mock).mockResolvedValue({
@@ -467,4 +503,86 @@ test('keeps the latest purchase-history receipt when an older detail request res
     resolveOld({ success: true, data: { id: 'receipt-old' } });
   });
   expect(screen.getByTestId('patient-receipt-modal')).toHaveTextContent('receipt-receipt-new');
+});
+
+test('refreshes the patient profile after a financial notice commits', async () => {
+  mockSession = {
+    id: 'admin-1',
+    role: 'admin',
+    permissions: {
+      can_view_patients: true,
+      acc_can_process_cash_flow: true,
+      acc_can_view_notifications: true,
+    },
+  };
+  (getPatientProfileAction as jest.Mock)
+    .mockResolvedValueOnce({ success: true, data: { ...profileData, outstandingBalance: 100 } })
+    .mockResolvedValueOnce({ success: true, data: { ...profileData, outstandingBalance: 125 } });
+  (addFinancialNoticeAction as jest.Mock).mockResolvedValue({ success: true, id: 'notice-1' });
+
+  render(<PatientProfileModal patientId="p1" onClose={jest.fn()} onSuccess={jest.fn()} />);
+  await screen.findByDisplayValue('محمد أحمد');
+  fireEvent.click(screen.getByRole('button', { name: 'إشعارات' }));
+  fireEvent.click(screen.getByRole('button', { name: /إضافة \(Debit\)/i }));
+  fireEvent.change(screen.getByPlaceholderText('0.00'), { target: { value: '25' } });
+  fireEvent.click(screen.getByRole('button', { name: /حفظ الإشعار/i }));
+
+  await waitFor(() => expect(addFinancialNoticeAction).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(getPatientProfileAction).toHaveBeenCalledTimes(2));
+  fireEvent.click(screen.getByRole('button', { name: 'المالية والتأمين' }));
+  expect(await screen.findByText('125')).toBeInTheDocument();
+});
+
+test('does not let an old financial-notice refresh reclaim the profile after patientId changes', async () => {
+  mockSession = {
+    id: 'admin-1',
+    role: 'admin',
+    permissions: {
+      can_view_patients: true,
+      acc_can_process_cash_flow: true,
+      acc_can_view_notifications: true,
+    },
+  };
+
+  let resolveNotice!: (value: { success: boolean; id?: string }) => void;
+  let resolveOldRefresh!: (value: any) => void;
+  let oldProfileCalls = 0;
+  (addFinancialNoticeAction as jest.Mock).mockImplementationOnce(() => new Promise(resolve => {
+    resolveNotice = resolve;
+  }));
+  (getPatientProfileAction as jest.Mock).mockImplementation((id: string) => {
+    if (id === 'p-old') {
+      oldProfileCalls += 1;
+      if (oldProfileCalls === 1) {
+        return Promise.resolve({ success: true, data: { ...profileData, id: 'p-old', full_name: 'Old Patient' } });
+      }
+      return new Promise(resolve => { resolveOldRefresh = resolve; });
+    }
+    if (id === 'p-new') {
+      return Promise.resolve({ success: true, data: { ...profileData, id: 'p-new', full_name: 'Newest Patient' } });
+    }
+    return Promise.resolve({ success: false });
+  });
+
+  const view = render(<PatientProfileModal patientId="p-old" onClose={jest.fn()} onSuccess={jest.fn()} />);
+  await screen.findByDisplayValue('Old Patient');
+  fireEvent.click(screen.getByRole('button', { name: 'إشعارات' }));
+  fireEvent.change(screen.getByPlaceholderText('0.00'), { target: { value: '25' } });
+  fireEvent.click(screen.getByRole('button', { name: /حفظ الإشعار/i }));
+  await waitFor(() => expect(addFinancialNoticeAction).toHaveBeenCalledTimes(1));
+
+  view.rerender(<PatientProfileModal patientId="p-new" onClose={jest.fn()} onSuccess={jest.fn()} />);
+  expect(await screen.findByRole('heading', { name: 'Newest Patient' })).toBeInTheDocument();
+
+  await act(async () => resolveNotice({ success: true, id: 'notice-old' }));
+  await waitFor(() => expect(getPatientProfileAction).toHaveBeenCalledWith('p-old'));
+  expect(oldProfileCalls).toBe(2);
+
+  await act(async () => resolveOldRefresh({
+    success: true,
+    data: { ...profileData, id: 'p-old', full_name: 'Stale Old Patient' },
+  }));
+
+  expect(screen.queryByRole('heading', { name: 'Stale Old Patient' })).not.toBeInTheDocument();
+  expect(screen.getByRole('heading', { name: 'Newest Patient' })).toBeInTheDocument();
 });

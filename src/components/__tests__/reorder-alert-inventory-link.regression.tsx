@@ -31,6 +31,31 @@ describe('reorder alert inventory link', () => {
     expect(links[1]).toHaveAttribute('href', '/inventory?drugId=429&search=Duplicate%20drug');
   });
 
+  it('keeps low-stock-only dashboard alerts read-only without exposing guarded restock, purchase, or inventory actions', async () => {
+    (getLowStockAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: [
+        { drug_id: 417, trade_name_en: 'Low-only drug', current_stock: 1, reorder_point: 10, deficit: 9 },
+      ],
+    });
+
+    render(
+      <ReorderAlerts
+        canViewLowStock
+        canViewRestock={false}
+        canViewPurchases={false}
+        canViewInventory={false}
+      />
+    );
+
+    expect(await screen.findByText('Low-only drug')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /عرض الكل/ })).toHaveAttribute('href', '/inventory/low-stock');
+    expect(screen.queryByTitle('عرض في المخزون')).not.toBeInTheDocument();
+    expect(screen.queryByTitle('إضافة لكشكول النواقص')).not.toBeInTheDocument();
+    expect(screen.queryByText('شراء')).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'كشكول النواقص' })).not.toBeInTheDocument();
+  });
+
   it('uses the canonical stock field and refreshes after inventory changes', async () => {
     (getLowStockAction as jest.Mock)
       .mockResolvedValueOnce({

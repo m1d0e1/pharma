@@ -22,6 +22,8 @@ interface Invoice {
   total_amount: number
   discount_amount?: number
   additional_fees?: number
+  points_redeemed?: number
+  loyalty_discount_amount?: number
   created_at: string
   profiles: { full_name: string }
   patients: { full_name: string, phone: string } | null
@@ -108,6 +110,7 @@ export default function ReceiptListClient({ initialInvoices }: Props) {
           <span className="absolute inset-y-0 right-4 flex items-center text-slate-400">🔍</span>
           <input
             type="text"
+            aria-label="بحث في الفواتير"
             placeholder="بحث برقم الفاتورة أو اسم العميل..."
             className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 pr-12 pl-4 py-3 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all font-medium"
             value={searchTerm}
@@ -118,7 +121,7 @@ export default function ReceiptListClient({ initialInvoices }: Props) {
 
       <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-xl overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-right border-collapse">
+          <table className="w-full min-w-[860px] text-right border-collapse">
             <thead>
               <tr className="bg-slate-50/50 dark:bg-slate-800/50 border-b border-slate-100 dark:border-slate-800">
                 <th className="px-8 py-5 text-sm font-bold text-slate-500">رقم الفاتورة</th>
@@ -134,10 +137,11 @@ export default function ReceiptListClient({ initialInvoices }: Props) {
                 <tr
                   key={inv.id}
                   tabIndex={0}
-                  className="group hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors cursor-pointer"
+                  className="group hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500"
                   onClick={() => setSelectedInvoice(inv)}
                   onKeyDown={(event) => {
-                    if (event.target === event.currentTarget && event.key === 'Enter') {
+                    if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) {
+                      event.preventDefault();
                       setSelectedInvoice(inv);
                     }
                   }}
@@ -161,8 +165,8 @@ export default function ReceiptListClient({ initialInvoices }: Props) {
                   </td>
                   <td className="px-8 py-5">
                     <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
-                       <button onClick={() => handleDirectPrint(inv)} className="p-2 hover:bg-blue-50 text-blue-600 rounded-lg transition-all" title="طباعة">🖨️</button>
-                       <button onClick={() => handleDirectWhatsApp(inv)} className="p-2 hover:bg-emerald-50 text-emerald-600 rounded-lg transition-all" title="واتساب">📱</button>
+                       <button type="button" aria-label={`طباعة الفاتورة ${inv.id.substring(0, 8)}`} onClick={() => handleDirectPrint(inv)} className="p-2 hover:bg-blue-50 text-blue-600 rounded-lg transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500" title="طباعة">🖨️</button>
+                       <button type="button" aria-label={`إرسال الفاتورة ${inv.id.substring(0, 8)} عبر واتساب`} onClick={() => handleDirectWhatsApp(inv)} className="p-2 hover:bg-emerald-50 text-emerald-600 rounded-lg transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500" title="واتساب">📱</button>
                     </div>
                   </td>
                 </tr>

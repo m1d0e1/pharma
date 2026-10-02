@@ -126,6 +126,8 @@ describe('cash-transaction error and keyboard behavior', () => {
     const escCall = hotkeyCalls.find(call => call[0] === 'esc');
     expect(enterCall).toBeDefined();
     expect(escCall).toBeDefined();
+    expect(screen.getByRole('button', { name: 'إلغاء' })).toBeInTheDocument();
+    expect(screen.queryByText(/\(C\)/)).not.toBeInTheDocument();
 
     const preventDefault = jest.fn();
     await act(async () => {

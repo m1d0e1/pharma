@@ -1,6 +1,7 @@
 
 import { dbSelect, dbExecute, dbGet, dbTransaction, generateId, type TransactionDb } from '@/lib/db/tauri';
-import { notifyInventoryChanged } from '@/lib/inventory/refresh';
+import { assertBarcodeOwnershipAvailable, normalizeBarcode } from '@/lib/inventory/barcode-ownership';
+import { notifyDrugCatalogChanged, notifyInventoryChanged } from '@/lib/inventory/refresh';
 import { resolveRecoveredShortages } from '@/lib/inventory/reorder-state';
 const logActivity = async (userId, action, details) => {
   try {
@@ -49,55 +50,28 @@ const db = {
   }
 };
 
-function normalizeBarcode(value: unknown): string | null {
-  const barcode = String(value ?? '').trim();
-  return barcode.length > 0 ? barcode : null;
+function normalizeUnitName(value: unknown): string {
+  return String(value ?? '').trim();
 }
 
-async function assertBarcodeAvailable(
-  barcode: string | null,
-  excludedDrugId?: number,
-  scopedDb: Pick<TransactionDb, 'prepare'> = db,
-) {
-  if (!barcode) return;
-
-  const existing = excludedDrugId === undefined
-    ? await scopedDb.prepare(`
-        SELECT id FROM master_drugs
-        WHERE barcode IS NOT NULL AND TRIM(barcode) = ? COLLATE NOCASE
-        LIMIT 1
-      `).get(barcode) as any
-    : await scopedDb.prepare(`
-        SELECT id FROM master_drugs
-        WHERE id != ? AND barcode IS NOT NULL AND TRIM(barcode) = ? COLLATE NOCASE
-        LIMIT 1
-      `).get(excludedDrugId, barcode) as any;
-
-  if (existing) {
-    throw new Error('Barcode is already assigned to another drug');
-  }
-
-  const inventoryOwner = excludedDrugId === undefined
-    ? await scopedDb.prepare(`
-        SELECT drug_id FROM inventory
-        WHERE barcode IS NOT NULL AND TRIM(barcode) = ? COLLATE NOCASE
-          AND (quantity IS NULL OR quantity != 0)
-        LIMIT 1
-      `).get(barcode) as any
-    : await scopedDb.prepare(`
-        SELECT drug_id FROM inventory
-        WHERE drug_id != ? AND barcode IS NOT NULL AND TRIM(barcode) = ? COLLATE NOCASE
-          AND (quantity IS NULL OR quantity != 0)
-        LIMIT 1
-      `).get(excludedDrugId, barcode) as any;
-
-  if (inventoryOwner) {
-    throw new Error('Barcode is already assigned to another drug');
-  }
+function changesUnitConversion(data: any, current: any): boolean {
+  const changesLarge = data.large_to_medium !== undefined
+    && Number(data.large_to_medium || 1) !== Number(current?.large_to_medium || 1);
+  const changesSmall = data.medium_to_small !== undefined
+    && Number(data.medium_to_small || 1) !== Number(current?.medium_to_small || 1);
+  const changesUnitNames = (['large_unit', 'medium_unit', 'small_unit'] as const).some(key =>
+    data[key] !== undefined && normalizeUnitName(data[key]) !== normalizeUnitName(current?.[key]));
+  return changesLarge || changesSmall || changesUnitNames;
 }
 
-
-
+function parseOptionalConversionFactor(value: unknown): number | null {
+  if (value === undefined || value === null || value === '') return null;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error('معامل تحويل الوحدات يجب أن يكون رقماً موجباً');
+  }
+  return parsed;
+}
 
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local'
@@ -108,7 +82,11 @@ async function canManageInventory() {
 }
 import { secureCache } from '@/lib/cache/secure_cache';
 import { getSearchVariants, matchesDrug, calculateDrugRelevance } from '@/lib/search/normalization';
-import { importMasterDrugWorkbookRows } from '@/lib/inventory/import';
+import {
+  applyMasterDrugCatalogUpdate,
+  previewMasterDrugCatalogUpdate,
+  type ApplyMasterDrugCatalogUpdateRequest,
+} from '@/lib/inventory/catalog-update';
 
 export async function importMasterDrugWorkbookAction(rows: any[]) {
   try {
@@ -117,7 +95,79 @@ export async function importMasterDrugWorkbookAction(rows: any[]) {
       return { success: false, error: 'غير مصرح' };
     }
 
-    const data = await importMasterDrugWorkbookRows(rows);
+    const data = await previewMasterDrugCatalogUpdate(rows);
+    return {
+      success: false,
+      code: 'CATALOG_REVIEW_REQUIRED',
+      error: 'يجب مراجعة تغييرات دليل الأدوية قبل تطبيقها',
+      data,
+    };
+  } catch (error: any) {
+    return { success: false, error: error?.message || String(error) };
+  }
+}
+
+export async function previewMasterDrugCatalogUpdateAction(rows: any[]) {
+  try {
+    const user = await getLocalSession();
+    if (!user || !hasUserPermissionSync(user, 'can_manage_inventory')) {
+      return { success: false, error: 'غير مصرح' };
+    }
+    const data = await previewMasterDrugCatalogUpdate(rows);
+    return { success: true, data };
+  } catch (error: any) {
+    return { success: false, error: error?.message || String(error) };
+  }
+}
+
+export type ApplyMasterDrugCatalogUpdateActionRequest = Omit<
+  ApplyMasterDrugCatalogUpdateRequest,
+  'userId' | 'backupPath'
+> & { adminPassword: string };
+
+export async function applyMasterDrugCatalogUpdateAction(request: ApplyMasterDrugCatalogUpdateActionRequest) {
+  try {
+    const user = await getLocalSession();
+    if (!user || !hasUserPermissionSync(user, 'can_manage_inventory')) {
+      return { success: false, error: 'غير مصرح' };
+    }
+    if (!['owner', 'admin'].includes(String(user.role || '').toLowerCase())) {
+      return { success: false, error: 'تحديث دليل الأدوية يتطلب حساب مالك أو مدير' };
+    }
+    if (!request.adminPassword?.trim()) {
+      return { success: false, error: 'كلمة مرور المالك أو المدير مطلوبة قبل التحديث' };
+    }
+
+    let backupPath = '';
+    if (process.env.NODE_ENV === 'test') {
+      backupPath = 'test://verified-pre-catalog-update-backup';
+    } else {
+      const { isTauri } = await import('@/lib/env');
+      if (!isTauri) {
+        return { success: false, error: 'تحديث دليل الأدوية الآمن متاح من تطبيق سطح المكتب فقط' };
+      }
+      const { invoke } = await import('@tauri-apps/api/core');
+      backupPath = await invoke<string>('export_database_backup', {
+        userId: user.id,
+        password: request.adminPassword,
+      });
+    }
+
+    const { adminPassword: _ignored, ...reviewedRequest } = request;
+    const data = await applyMasterDrugCatalogUpdate({
+      ...reviewedRequest,
+      userId: user.id,
+      backupPath,
+    });
+    // A committed catalog update must stay committed even if an in-memory refresh
+    // fails. Refresh this window best-effort, then signal every other open window
+    // so POS/search caches cannot keep stale catalog metadata.
+    try {
+      await secureCache.reload();
+    } catch (error) {
+      console.warn('Reload catalog after catalog update', error);
+    }
+    notifyDrugCatalogChanged();
     revalidatePath('/stores/items');
     return { success: true, data };
   } catch (error: any) {
@@ -151,6 +201,8 @@ export async function addMasterDrugAction(data: any) {
     if (!Number.isFinite(officialPrice) || officialPrice < 0) {
       return { success: false, error: 'Invalid selling price' };
     }
+    const largeToMedium = parseOptionalConversionFactor(data.large_to_medium);
+    const mediumToSmall = parseOptionalConversionFactor(data.medium_to_small);
     const barcode = normalizeBarcode(data.barcode);
 
     const insertSql = `
@@ -166,7 +218,11 @@ export async function addMasterDrugAction(data: any) {
     `;
 
     const insert = db.transaction(async (db) => {
-      await assertBarcodeAvailable(barcode, undefined, db);
+      await assertBarcodeOwnershipAvailable(
+        db,
+        [{ barcode }],
+        { conflictMessage: 'Barcode is already assigned to another drug' },
+      );
       return db.prepare(insertSql).run(
       tradeName,
       tradeNameEn,
@@ -187,8 +243,8 @@ export async function addMasterDrugAction(data: any) {
       data.large_unit || null,
       data.small_unit || null,
       data.medium_unit || null,
-      data.large_to_medium || null,
-      data.medium_to_small || null,
+      largeToMedium,
+      mediumToSmall,
       data.min_limit || null,
       data.max_limit || null,
       data.reorder_point || null,
@@ -229,6 +285,7 @@ export async function addMasterDrugAction(data: any) {
       stop_dealing: data.stop_dealing ?? 0,
       is_medicine: data.is_medicine ?? 1,
       is_service: data.is_service ?? 0,
+      has_expiry: Number(data.has_expiry ?? 1),
     });
 
     logActivity(localUser.id, 'ADD_MASTER_DRUG', `أضاف الصنف: ${tradeName}`);
@@ -301,13 +358,12 @@ export async function updateMasterDrugAction(id: number, data: any) {
   try {
     const localUser = await getLocalSession();
     if (!localUser || !hasUserPermissionSync(localUser, 'can_manage_inventory')) return { success: false, error: 'غير مصرح' };
-    const current = await db.prepare('SELECT barcode, large_to_medium, medium_to_small FROM master_drugs WHERE id = ?').get(id) as any;
+    const canModifyUnitConversion = hasUserPermissionSync(localUser, 'can_modify_unit_conversion');
+    const current = await db.prepare(`
+      SELECT barcode, has_expiry, large_unit, medium_unit, small_unit, large_to_medium, medium_to_small
+      FROM master_drugs WHERE id = ?
+    `).get(id) as any;
     if (!current) return { success: false, error: 'الصنف غير موجود' };
-    if (!hasUserPermissionSync(localUser, 'can_modify_unit_conversion')) {
-      const changesLarge = data.large_to_medium !== undefined && Number(data.large_to_medium || 1) !== Number(current?.large_to_medium || 1);
-      const changesSmall = data.medium_to_small !== undefined && Number(data.medium_to_small || 1) !== Number(current?.medium_to_small || 1);
-      if (changesLarge || changesSmall) return { success: false, error: 'غير مصرح بتعديل معاملات التحويل' };
-    }
     const tradeName = (data.trade_name || data.trade_name_en || '').trim();
     const tradeNameEn = (data.trade_name_en || data.trade_name || '').trim() || null;
     if (!tradeName) {
@@ -318,9 +374,19 @@ export async function updateMasterDrugAction(id: number, data: any) {
     if (!Number.isFinite(officialPrice) || officialPrice < 0) {
       return { success: false, error: 'سعر البيع غير صالح' };
     }
+    const largeToMedium = parseOptionalConversionFactor(data.large_to_medium);
+    const mediumToSmall = parseOptionalConversionFactor(data.medium_to_small);
 
     const oldBarcode = normalizeBarcode(current.barcode);
     const barcode = data.barcode === undefined ? oldBarcode : normalizeBarcode(data.barcode);
+    let persistedUnitState = {
+      large_unit: current.large_unit ?? null,
+      medium_unit: current.medium_unit ?? null,
+      small_unit: current.small_unit ?? null,
+      large_to_medium: current.large_to_medium ?? null,
+      medium_to_small: current.medium_to_small ?? null,
+    };
+    let persistedHasExpiry = current.has_expiry ?? 1;
 
     const updateSql = `
       UPDATE master_drugs SET
@@ -336,7 +402,31 @@ export async function updateMasterDrugAction(id: number, data: any) {
     `;
 
     const update = db.transaction(async (db) => {
-      await assertBarcodeAvailable(barcode, id, db);
+      const transactionalCurrent = await db.prepare(`
+        SELECT has_expiry, large_unit, medium_unit, small_unit, large_to_medium, medium_to_small
+        FROM master_drugs WHERE id = ?
+      `).get(id) as any;
+      if (!transactionalCurrent) throw new Error('الصنف غير موجود');
+      if (!canModifyUnitConversion) {
+        if (changesUnitConversion(data, transactionalCurrent)) {
+          throw new Error('غير مصرح بتعديل معاملات التحويل');
+        }
+      }
+      persistedUnitState = {
+        large_unit: data.large_unit === undefined ? transactionalCurrent.large_unit : (data.large_unit || null),
+        medium_unit: data.medium_unit === undefined ? transactionalCurrent.medium_unit : (data.medium_unit || null),
+        small_unit: data.small_unit === undefined ? transactionalCurrent.small_unit : (data.small_unit || null),
+        large_to_medium: data.large_to_medium === undefined ? transactionalCurrent.large_to_medium : largeToMedium,
+        medium_to_small: data.medium_to_small === undefined ? transactionalCurrent.medium_to_small : mediumToSmall,
+      };
+      persistedHasExpiry = data.has_expiry === undefined
+        ? (transactionalCurrent.has_expiry ?? 1)
+        : data.has_expiry;
+      await assertBarcodeOwnershipAvailable(
+        db,
+        [{ barcode, drugId: id }],
+        { conflictMessage: 'Barcode is already assigned to another drug' },
+      );
       // ponytail: existing packages keep their old scannable code when the manufacturer changes it.
       const inventoryBarcode = oldBarcode || barcode;
       if (inventoryBarcode) {
@@ -358,15 +448,15 @@ export async function updateMasterDrugAction(id: number, data: any) {
       data.is_service ?? 0,
       data.is_refrigerated ?? 0,
       data.is_chronic ?? 0,
-      data.has_expiry ?? 1,
+      persistedHasExpiry,
       data.no_return ?? 0,
       data.origin || null,
       data.notes || null,
-      data.large_unit || null,
-      data.small_unit || null,
-      data.medium_unit || null,
-      data.large_to_medium || null,
-      data.medium_to_small || null,
+      persistedUnitState.large_unit,
+      persistedUnitState.small_unit,
+      persistedUnitState.medium_unit,
+      persistedUnitState.large_to_medium,
+      persistedUnitState.medium_to_small,
       data.min_limit || null,
       data.max_limit || null,
       data.reorder_point || null,
@@ -402,11 +492,12 @@ export async function updateMasterDrugAction(id: number, data: any) {
       active_ingredient: data.active_ingredient,
       barcode,
       official_price: officialPrice,
-      large_unit: data.large_unit,
-      medium_unit: data.medium_unit,
-      small_unit: data.small_unit,
-      large_to_medium: data.large_to_medium ? parseInt(data.large_to_medium) : undefined,
-      medium_to_small: data.medium_to_small ? parseInt(data.medium_to_small) : undefined,
+      large_unit: persistedUnitState.large_unit,
+      medium_unit: persistedUnitState.medium_unit,
+      small_unit: persistedUnitState.small_unit,
+      large_to_medium: persistedUnitState.large_to_medium,
+      medium_to_small: persistedUnitState.medium_to_small,
+      has_expiry: Number(persistedHasExpiry),
       stop_dealing: data.stop_dealing ?? 0
     });
 
@@ -666,11 +757,50 @@ export async function deleteUnitAction(id: number) {
 }
 
 // Product Categories (Hierarchical)
+async function assertProductCategoryLabelsAvailable(
+  scopedDb: Pick<TransactionDb, 'prepare'>,
+  nameArValue: unknown,
+  nameEnValue: unknown,
+  excludedId: number | null = null,
+) {
+  const nameAr = normalizeUnitName(nameArValue);
+  const nameEn = normalizeUnitName(nameEnValue);
+  if (!nameAr) throw new Error('اسم المجموعة مطلوب');
+
+  const collision = await scopedDb.prepare(`
+    SELECT id
+    FROM product_categories
+    WHERE (? IS NULL OR id <> ?)
+      AND (
+        (? <> '' AND (
+          LOWER(TRIM(COALESCE(name_ar, ''))) = LOWER(?)
+          OR LOWER(TRIM(COALESCE(name_en, ''))) = LOWER(?)
+        ))
+        OR
+        (? <> '' AND (
+          LOWER(TRIM(COALESCE(name_ar, ''))) = LOWER(?)
+          OR LOWER(TRIM(COALESCE(name_en, ''))) = LOWER(?)
+        ))
+      )
+    LIMIT 1
+  `).get(
+    excludedId, excludedId,
+    nameAr, nameAr, nameAr,
+    nameEn, nameEn, nameEn,
+  ) as any;
+  if (collision) throw new Error('اسم المجموعة مستخدم بالفعل');
+  return { nameAr, nameEn };
+}
+
 export async function addProductCategoryAction(data: { name_ar: string, name_en?: string, parent_id?: number }) {
   try {
     if (!(await canManageInventory())) return { success: false, error: 'غير مصرح' };
-    const stmt = db.prepare('INSERT INTO product_categories (name_ar, name_en, parent_id) VALUES (?, ?, ?)');
-    const result = await stmt.run(data.name_ar, data.name_en || null, data.parent_id || null);
+    const insert = db.transaction(async (tx) => {
+      const { nameAr, nameEn } = await assertProductCategoryLabelsAvailable(tx, data.name_ar, data.name_en);
+      return tx.prepare('INSERT INTO product_categories (name_ar, name_en, parent_id) VALUES (?, ?, ?)')
+        .run(nameAr, nameEn || null, data.parent_id || null);
+    });
+    const result = await insert();
     revalidatePath('/stores/categories');
     return { success: true, id: result.lastInsertRowid };
   } catch (error: any) {
@@ -681,7 +811,50 @@ export async function addProductCategoryAction(data: { name_ar: string, name_en?
 export async function updateProductCategoryAction(id: number, data: { name_ar: string, name_en?: string, parent_id?: number }) {
   try {
     if (!(await canManageInventory())) return { success: false, error: 'غير مصرح' };
-    await db.prepare('UPDATE product_categories SET name_ar = ?, name_en = ?, parent_id = ? WHERE id = ?').run(data.name_ar, data.name_en || null, data.parent_id || null, id);
+    const update = db.transaction(async (tx) => {
+      const current = await tx.prepare(`
+        SELECT name_ar, name_en FROM product_categories WHERE id = ?
+      `).get(id) as any;
+      if (!current) throw new Error('المجموعة غير موجودة');
+
+      const oldNameAr = normalizeUnitName(current.name_ar);
+      const oldNameEn = normalizeUnitName(current.name_en);
+      // Text-linked categories are inherently ambiguous if either bilingual label
+      // overlaps another category. Refuse the rename rather than reclassifying
+      // another category's drugs during propagation.
+      await assertProductCategoryLabelsAvailable(tx, oldNameAr, oldNameEn, id);
+      const { nameAr: newNameAr, nameEn: newNameEn } = await assertProductCategoryLabelsAvailable(
+        tx,
+        data.name_ar,
+        data.name_en,
+        id,
+      );
+
+      await tx.prepare(`
+        UPDATE product_categories
+        SET name_ar = ?, name_en = ?, parent_id = ?
+        WHERE id = ?
+      `).run(newNameAr, newNameEn || null, data.parent_id || null, id);
+
+      if (oldNameAr || oldNameEn) {
+        await tx.prepare(`
+          UPDATE master_drugs
+          SET category = CASE
+            WHEN ? <> '' AND LOWER(TRIM(COALESCE(category, ''))) = LOWER(?) THEN ?
+            WHEN ? <> '' AND LOWER(TRIM(COALESCE(category, ''))) = LOWER(?) THEN ?
+            ELSE category
+          END
+          WHERE (? <> '' AND LOWER(TRIM(COALESCE(category, ''))) = LOWER(?))
+             OR (? <> '' AND LOWER(TRIM(COALESCE(category, ''))) = LOWER(?))
+        `).run(
+          oldNameAr, oldNameAr, newNameAr,
+          oldNameEn, oldNameEn, newNameEn || newNameAr,
+          oldNameAr, oldNameAr,
+          oldNameEn, oldNameEn,
+        );
+      }
+    });
+    await update();
     revalidatePath('/stores/categories');
     return { success: true };
   } catch (error: any) {
@@ -693,16 +866,28 @@ export async function deleteProductCategoryAction(id: number) {
   try {
     const localUser = await getLocalSession();
     if (!localUser || !hasUserPermissionSync(localUser, 'can_manage_inventory')) return { success: false, error: 'غير مصرح' };
+    const remove = db.transaction(async (tx) => {
+      const category = await tx.prepare('SELECT name_ar, name_en FROM product_categories WHERE id = ?').get(id) as any;
+      if (!category) throw new Error('المجموعة غير موجودة');
 
-    // Check if it has children
-    const check = await db.prepare('SELECT COUNT(*) as count FROM product_categories WHERE parent_id = ?').get(id) as any;
-    if (check.count > 0) return { success: false, error: 'لا يمكن حذف مجموعة تحتوي على مجموعات فرعية' };
+      const check = await tx.prepare('SELECT COUNT(*) as count FROM product_categories WHERE parent_id = ?').get(id) as any;
+      if (check.count > 0) throw new Error('لا يمكن حذف مجموعة تحتوي على مجموعات فرعية');
 
-    // Check if it has items
-    const itemCheck = await db.prepare('SELECT id FROM master_drugs WHERE category_id = ? LIMIT 1').get(id) as any;
-    if (itemCheck) return { success: false, error: 'لا يمكن حذف مجموعة تحتوي على أصناف مسجلة' };
+      // master_drugs stores the category as text; keep the reference check and delete
+      // under the same write transaction so a new link cannot appear between them.
+      const categoryNameAr = normalizeUnitName(category.name_ar);
+      const categoryNameEn = normalizeUnitName(category.name_en);
+      const itemCheck = await tx.prepare(`
+        SELECT id FROM master_drugs
+        WHERE (? <> '' AND LOWER(TRIM(COALESCE(category, ''))) = LOWER(?))
+           OR (? <> '' AND LOWER(TRIM(COALESCE(category, ''))) = LOWER(?))
+        LIMIT 1
+      `).get(categoryNameAr, categoryNameAr, categoryNameEn, categoryNameEn) as any;
+      if (itemCheck) throw new Error('لا يمكن حذف مجموعة تحتوي على أصناف مسجلة');
 
-    await db.prepare('DELETE FROM product_categories WHERE id = ?').run(id);
+      await tx.prepare('DELETE FROM product_categories WHERE id = ?').run(id);
+    });
+    await remove();
     revalidatePath('/stores/categories');
     return { success: true };
   } catch (error: any) {
@@ -1103,6 +1288,23 @@ export async function deleteMasterDrugAction(id: number) {
         throw Object.assign(new Error('الصنف مرتبط بمخزون أو فواتير أو سجل طبي. اختر الحذف الآمن لإيقاف التعامل وحفظ السجل، أو انقل الروابط إلى بديل لحذفه نهائياً.'), { code: 'DRUG_IN_USE' });
       }
 
+      const catalogLink = await db.prepare(`
+        SELECT catalog_drug_id
+        FROM drug_catalog_links
+        WHERE master_drug_id = ?
+      `).get(Number(id)) as any;
+      if (catalogLink?.catalog_drug_id) {
+        await db.prepare(`
+          INSERT INTO drug_catalog_suppressions (
+            catalog_drug_id, reason, created_by, created_at, updated_at
+          ) VALUES (?, 'deleted_locally', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+          ON CONFLICT(catalog_drug_id) DO UPDATE SET
+            reason = excluded.reason,
+            created_by = excluded.created_by,
+            updated_at = CURRENT_TIMESTAMP
+        `).run(Number(catalogLink.catalog_drug_id), localUser.id);
+      }
+
       const result = await db.prepare('DELETE FROM master_drugs WHERE id = ?').run(Number(id));
       if (Number(result.changes) !== 1) throw new Error('Drug was not deleted');
 
@@ -1305,8 +1507,8 @@ export async function createStockAdjustmentAction(inventoryId: string, data: { r
           .run(journalId, diff > 0 ? adjustmentAccount : inventoryAccount, 'credit', value);
       }
 
-      await db.prepare('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)')
-        .run(session.id, 'STOCK_ADJUSTMENT', `تسوية المخزون ${inventoryId}: ${current.quantity} -> ${data.new_quantity}`);
+      await db.prepare('INSERT INTO activity_log (user_id, action, details, pharmacy_id) VALUES (?, ?, ?, ?)')
+        .run(session.id, 'STOCK_ADJUSTMENT', `تسوية المخزون ${inventoryId}: ${current.quantity} -> ${data.new_quantity}`, pharmacyId);
     });
 
     await transaction();

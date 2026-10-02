@@ -7,6 +7,7 @@ import { searchMasterDrugsAction } from '@/app/actions-client/master-drugs';
 import { getSuppliersAction } from '@/app/actions-client/purchases';
 import { toast } from 'react-hot-toast';
 import { X, Save, ShoppingCart, Plus, Trash2, Search, Loader2 } from 'lucide-react';
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap';
 
 interface Props {
   initialItems: any[];
@@ -60,6 +61,7 @@ export default function PurchaseOrderModal({ initialItems, onClose, onSuccess }:
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [searching, setSearching] = useState(false);
   const [suppliers, setSuppliers] = useState<any[]>([]);
+  const dialogRef = useDialogFocusTrap<HTMLDivElement>(true);
 
   useEffect(() => {
     getSuppliersAction().then(res => {
@@ -174,38 +176,40 @@ export default function PurchaseOrderModal({ initialItems, onClose, onSuccess }:
   const totalAmount = items.reduce((sum, item) => sum + (item.quantity * item.expected_price), 0);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-300" dir="rtl">
-      <div className="bg-white dark:bg-slate-900 w-full max-w-5xl max-h-[90vh] rounded-[2.5rem] shadow-2xl flex flex-col overflow-hidden border border-slate-100 dark:border-slate-800">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/60 animate-in fade-in duration-200" dir="rtl">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="purchase-order-title" tabIndex={-1} className="bg-white dark:bg-slate-900 w-full max-w-5xl max-h-[calc(100vh-1rem)] sm:max-h-[90vh] rounded-2xl sm:rounded-3xl shadow-2xl flex flex-col overflow-hidden border border-slate-100 dark:border-slate-800">
         
         {/* Header */}
-        <div className="p-8 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-slate-50/50 dark:bg-slate-800/50">
+        <div className="p-4 sm:p-6 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-slate-50/50 dark:bg-slate-800/50 gap-4">
           <div className="flex items-center gap-4">
             <div className="w-12 h-12 bg-blue-600 rounded-2xl flex items-center justify-center text-white shadow-lg shadow-blue-500/20">
               <ShoppingCart className="w-6 h-6" />
             </div>
             <div>
-              <h2 className="text-2xl font-black text-slate-900 dark:text-white tracking-tight">إنشاء أمر شراء جديد</h2>
+              <h2 id="purchase-order-title" className="text-2xl font-black text-slate-900 dark:text-white tracking-tight">إنشاء أمر شراء جديد</h2>
               <p className="text-sm text-slate-500 font-bold">تجهيز طلبية المورد للأصناف الناقصة أو الجديدة</p>
             </div>
           </div>
-          <button disabled={loading} onClick={handleClose} className="p-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl text-slate-400 hover:text-red-500 transition-colors disabled:opacity-50">
+          <button type="button" aria-label="إغلاق أمر الشراء" disabled={loading} onClick={handleClose} className="p-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-500 hover:text-red-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 transition-colors disabled:opacity-50">
             <X className="w-6 h-6" />
           </button>
         </div>
 
         <form onSubmit={handleSubmit} className="flex-1 flex flex-col overflow-hidden">
-          <div className="p-8 flex-1 overflow-y-auto space-y-8">
+          <div className="p-4 sm:p-6 flex-1 overflow-y-auto space-y-6">
             {/* Supplier & Search */}
             <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
               <div className="md:col-span-4 space-y-2">
-                <label className="text-xs font-black text-slate-400 uppercase tracking-widest mr-2">المورد / الشركة</label>
+                <label htmlFor="purchase-order-supplier" className="text-xs font-black text-slate-500 mr-2">المورد / الشركة</label>
                 <input 
+                  id="purchase-order-supplier"
                   type="text"
                   required
                   list="suppliers-datalist"
                   value={supplier}
                   onChange={e => setSupplier(e.target.value)}
                   placeholder="اختر أو اكتب اسم المورد..."
+                  autoFocus
                   className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-6 py-4 rounded-2xl font-bold outline-none focus:ring-2 focus:ring-blue-500 transition-all"
                 />
                 <datalist id="suppliers-datalist">
@@ -216,10 +220,11 @@ export default function PurchaseOrderModal({ initialItems, onClose, onSuccess }:
               </div>
               
               <div className="md:col-span-8 space-y-2 relative">
-                <label className="text-xs font-black text-slate-400 uppercase tracking-widest mr-2">إضافة صنف جديد للطلب</label>
+                <label htmlFor="purchase-order-search" className="text-xs font-black text-slate-500 mr-2">إضافة صنف جديد للطلب</label>
                 <div className="relative mb-2">
                   <Search className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
                   <input 
+                    id="purchase-order-search"
                     type="text" 
                     value={searchQuery}
                     onChange={e => setSearchQuery(e.target.value)}
@@ -254,12 +259,12 @@ export default function PurchaseOrderModal({ initialItems, onClose, onSuccess }:
                         <div>
                           <p className="font-bold text-slate-900 dark:text-white">{drug.trade_name_en || drug.trade_name}</p>
                           {drug.trade_name_en && (
-                            <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">{drug.trade_name}</p>
+                            <p className="text-xs text-slate-500 font-bold">{drug.trade_name}</p>
                           )}
                         </div>
                         <div className="text-left">
                           <p className="text-sm font-black text-blue-600">{Number(drug.base_price || 0).toFixed(2)} ج.م</p>
-                          <span className="text-[8px] bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full uppercase font-black">أضف للطلب</span>
+                          <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-black">أضف للطلب</span>
                         </div>
                       </button>
                     ))}
@@ -269,8 +274,9 @@ export default function PurchaseOrderModal({ initialItems, onClose, onSuccess }:
             </div>
 
             <div className="space-y-2">
-              <label className="text-xs font-black text-slate-400 uppercase tracking-widest mr-2">ملاحظات إضافية</label>
+              <label htmlFor="purchase-order-notes" className="text-xs font-black text-slate-500 mr-2">ملاحظات إضافية</label>
               <textarea 
+                id="purchase-order-notes"
                 value={notes}
                 onChange={e => setNotes(e.target.value)}
                 placeholder="مواعيد التوصيل، شروط الدفع، أو أي ملاحظات أخرى..."
@@ -321,7 +327,7 @@ export default function PurchaseOrderModal({ initialItems, onClose, onSuccess }:
                         {(item.quantity * item.expected_price).toLocaleString()}
                       </td>
                       <td className="px-6 py-4 text-center">
-                        <button type="button" onClick={() => removeItem(idx)} className="text-red-400 hover:text-red-600 p-2">
+                        <button type="button" aria-label={`إزالة ${item.trade_name} من أمر الشراء`} onClick={() => removeItem(idx)} className="text-red-500 hover:text-red-700 p-2 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500">
                           <Trash2 className="w-4 h-4" />
                         </button>
                       </td>

@@ -126,6 +126,9 @@ function applyAllMigrations(db: Database.Database) {
     '023_shift_immutable_scope.sql',
     '024_commercial_papers_pharmacy_scope.sql',
     '025_sales_item_discount_snapshot.sql',
+    '026_sales_loyalty_redemption_snapshot.sql',
+    '027_drug_catalog_reconciliation.sql',
+    '028_finance_definitions_pharmacy_scope.sql',
   ];
   for (const file of files) {
     const sql = readFileSync(`src-tauri/migrations/${file}`, 'utf8');
@@ -195,6 +198,7 @@ function applyLocalSchemaRepairs(db: Database.Database) {
   addCol('expenses', 'pharmacy_id', 'TEXT');
   addCol('financial_notices', 'pharmacy_id', 'TEXT');
   addCol('commercial_papers', 'pharmacy_id', 'TEXT');
+  addCol('sales_invoices', 'points_earned', 'INTEGER DEFAULT 0');
   addCol('sales_invoices', 'user_id', 'TEXT');
   addCol('sales_invoices', 'pharmacy_id', 'TEXT');
   addCol('returns', 'pharmacy_id', 'TEXT');
@@ -694,6 +698,9 @@ describe('Cross-computer consistency across fresh install and update', () => {
       '023_shift_immutable_scope.sql',
       '024_commercial_papers_pharmacy_scope.sql',
       '025_sales_item_discount_snapshot.sql',
+      '026_sales_loyalty_redemption_snapshot.sql',
+      '027_drug_catalog_reconciliation.sql',
+      '028_finance_definitions_pharmacy_scope.sql',
     ]) {
       mockDb.exec(readFileSync(`src-tauri/migrations/${file}`, 'utf8'));
     }
@@ -1515,6 +1522,7 @@ describe('Cross-computer consistency across fresh install and update', () => {
       seedBaselineEntities(mockDb);
       mockDb.exec(`
         UPDATE users SET pharmacy_id = 'ph-restart' WHERE id = 'admin';
+        UPDATE banks SET pharmacy_id = 'ph-restart' WHERE id = 1;
         INSERT INTO users (id, username, password_hash, role, full_name, pharmacy_id, is_active)
         VALUES ('foreign-owner', 'foreign-owner', 'hash', 'owner', 'Foreign Owner', 'ph-foreign', 1);
       `);
@@ -1682,10 +1690,10 @@ describe('Cross-computer consistency across fresh install and update', () => {
       mockSession = { id: 'foreign-owner', role: 'owner', pharmacy_id: 'ph-foreign' };
       expect((await getJournalsAction()).data).toEqual([]);
 
-      // These financial master/subledger tables currently have no pharmacy key.
-      // Keep the observed cross-pharmacy exposure explicit until a safe migration
-      // can define legacy ownership for them.
-      expect((await getBanksAction()).data?.find((bank: any) => Number(bank.id) === 1)?.current_balance).toBe(5100);
+      // Branch-owned finance definitions are pharmacy-scoped as of migration 028.
+      expect((await getBanksAction()).data?.find((bank: any) => Number(bank.id) === 1)).toBeUndefined();
+      // Supplier and patient master/subledger ownership remains intentionally global
+      // in the current architecture; only their branch-owned operational rows are scoped.
       expect((await getSuppliersAction()).data?.find((supplier: any) => Number(supplier.id) === 1)?.balance).toBe(270);
       const foreignPatientProfile = await getPatientProfileAction('patient-1');
       expect(foreignPatientProfile).toMatchObject({

@@ -95,7 +95,7 @@ const fixtureDrugs = [
 const fixtureInventory = [
   { id: 'lot-moxen', drug_id: '14598', pharmacy_id: 'placeholder-id', quantity: '1', strips_per_box: '6.223E+12' },
   { id: 'lot-elonda', drug_id: '6525', pharmacy_id: 'local_default', quantity: '1', strips_per_box: '6.22401E+12' },
-  { id: 'lot-conventin', drug_id: '100013', pharmacy_id: 'local_default', quantity: '1', barcode: '3', strips_per_box: '6.223E+12' },
+  { id: 'lot-conventin', drug_id: '100013', pharmacy_id: 'local_default', quantity: '1', barcode: '3', strips_per_box: '6.225E+12' },
 ];
 
 describe.each(variants)('%s inventory workbook import', (_name, initialize) => {
@@ -124,11 +124,11 @@ describe.each(variants)('%s inventory workbook import', (_name, initialize) => {
       pharmacy_id: 'active-pharmacy',
     });
     expect(db.prepare('SELECT barcode, strips_per_box, pharmacy_id FROM inventory WHERE id = ?').get('lot-conventin')).toEqual({
-      barcode: '6223000000000',
+      barcode: '6225000000000',
       strips_per_box: 3,
       pharmacy_id: 'active-pharmacy',
     });
-    expect(db.prepare('SELECT barcode FROM master_drugs WHERE id = 100013').get()).toEqual({ barcode: '6223000000000' });
+    expect(db.prepare('SELECT barcode FROM master_drugs WHERE id = 100013').get()).toEqual({ barcode: '6225000000000' });
     expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
   });
 
@@ -248,7 +248,7 @@ describe('inventory workbook drug identity preflight', () => {
     expect(db.prepare('SELECT COUNT(*) AS count FROM inventory').get()).toEqual({ count: 0 });
   });
 
-  it('keeps a same-ID canonical drug when multiple non-name fields prove the shifted workbook row identity', async () => {
+  it('rejects a same-ID name mismatch even when generic metadata overlaps', async () => {
     db.exec(`
       INSERT INTO master_drugs (
         id, trade_name, trade_name_en, active_ingredient, category, manufacturer
@@ -263,7 +263,7 @@ describe('inventory workbook drug identity preflight', () => {
         );
     `);
 
-    await importInventoryWorkbookRows(
+    await expect(importInventoryWorkbookRows(
       [
         { id: 'legacy-zero-lot', drug_id: 417, quantity: 0, strips_per_box: 4 },
         { id: 'canonical-aig-lot', drug_id: 429, quantity: 0.5, strips_per_box: 2 },
@@ -288,7 +288,7 @@ describe('inventory workbook drug identity preflight', () => {
       ],
       'active-pharmacy',
       adapter(db),
-    );
+    )).rejects.toThrow(/Drug identity conflict for source drug 417/i);
 
     expect(db.prepare(`
       SELECT id, trade_name, trade_name_en, active_ingredient, category, manufacturer
@@ -311,10 +311,7 @@ describe('inventory workbook drug identity preflight', () => {
         manufacturer: 'PLANET CURE',
       },
     ]);
-    expect(db.prepare('SELECT id, drug_id, quantity, strips_per_box FROM inventory ORDER BY id').all()).toEqual([
-      { id: 'canonical-aig-lot', drug_id: 429, quantity: 0.5, strips_per_box: 2 },
-      { id: 'legacy-zero-lot', drug_id: 417, quantity: 0, strips_per_box: 4 },
-    ]);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM inventory').get()).toEqual({ count: 0 });
   });
 
   it('keeps legitimate new IDs and partial existing-ID rows without name-based balance merging', async () => {
@@ -355,6 +352,112 @@ describe('inventory workbook drug identity preflight', () => {
       { id: 'new-lot', drug_id: 9001, pharmacy_id: 'active-pharmacy' },
       { id: 'partial-lot', drug_id: 429, pharmacy_id: 'active-pharmacy' },
     ]);
+  });
+
+  it('imports stock without using the inventory workbook as a catalog updater for an existing drug', async () => {
+    db.exec(`
+      INSERT INTO master_drugs (
+        id, trade_name, trade_name_en, active_ingredient, manufacturer,
+        official_price, notes, large_unit, large_to_medium, reorder_point, stop_dealing
+      ) VALUES (
+        7000, 'LOCAL NAME', 'LOCAL ENGLISH', 'LOCAL INGREDIENT', 'LOCAL MAKER',
+        45, 'LOCAL NOTE', 'LOCAL BOX', 6, 4, 1
+      );
+    `);
+
+    await importInventoryWorkbookRows(
+      [{ id: 'safe-stock-lot', drug_id: 7000, quantity: 3, strips_per_box: 6 }],
+      [{
+        id: 7000,
+        trade_name: 'LOCAL NAME',
+        trade_name_en: 'CATALOG ENGLISH',
+        active_ingredient: 'CATALOG INGREDIENT',
+        manufacturer: 'CATALOG MAKER',
+        official_price: 99,
+        notes: 'CATALOG NOTE',
+        large_unit: 'CATALOG BOX',
+        large_to_medium: 12,
+        reorder_point: 99,
+        stop_dealing: 0,
+      }],
+      'active-pharmacy',
+      adapter(db),
+    );
+
+    expect(db.prepare(`
+      SELECT trade_name, trade_name_en, active_ingredient, manufacturer,
+             official_price, notes, large_unit, large_to_medium, reorder_point, stop_dealing
+      FROM master_drugs WHERE id = 7000
+    `).get()).toEqual({
+      trade_name: 'LOCAL NAME',
+      trade_name_en: 'LOCAL ENGLISH',
+      active_ingredient: 'LOCAL INGREDIENT',
+      manufacturer: 'LOCAL MAKER',
+      official_price: 45,
+      notes: 'LOCAL NOTE',
+      large_unit: 'LOCAL BOX',
+      large_to_medium: 6,
+      reorder_point: 4,
+      stop_dealing: 1,
+    });
+    expect(db.prepare(`
+      SELECT drug_id, pharmacy_id, quantity, strips_per_box
+      FROM inventory WHERE id = 'safe-stock-lot'
+    `).get()).toEqual({
+      drug_id: 7000,
+      pharmacy_id: 'active-pharmacy',
+      quantity: 3,
+      strips_per_box: 6,
+    });
+  });
+
+  it('rejects an imported inventory barcode that belongs to another drug before backfilling the master row', async () => {
+    db.exec(`
+      INSERT INTO master_drugs (id, trade_name, barcode)
+      VALUES
+        (7001, 'BARCODE TARGET', NULL),
+        (7002, 'BARCODE OWNER', 'DUP-CODE');
+    `);
+
+    await expect(importInventoryWorkbookRows(
+      [{ id: 'duplicate-barcode-lot', drug_id: 7001, quantity: 2, barcode: 'DUP-CODE' }],
+      [{ id: 7001, trade_name: 'BARCODE TARGET' }],
+      'active-pharmacy',
+      adapter(db),
+    )).rejects.toThrow(/barcode.*another drug/i);
+
+    expect(db.prepare('SELECT barcode FROM master_drugs WHERE id = 7001').get()).toEqual({ barcode: null });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM inventory WHERE id = ?').get('duplicate-barcode-lot')).toEqual({ count: 0 });
+  });
+
+  it('rejects reusing an existing same-pharmacy inventory id for a different drug', async () => {
+    db.exec(`
+      INSERT INTO master_drugs (id, trade_name) VALUES
+        (7003, 'ORIGINAL LOT DRUG'),
+        (7004, 'DIFFERENT IMPORT DRUG');
+      INSERT INTO inventory (id, drug_id, pharmacy_id, quantity)
+      VALUES ('stable-lot-id', 7003, 'active-pharmacy', 4);
+      INSERT INTO sales_invoices (id, pharmacy_id, total_amount, payment_method, status)
+      VALUES ('stable-sale', 'active-pharmacy', 10, 'cash', 'completed');
+      INSERT INTO sales_items (invoice_id, inventory_id, drug_id, quantity_sold, unit_price)
+      VALUES ('stable-sale', 'stable-lot-id', 7003, 1, 10);
+    `);
+
+    await expect(importInventoryWorkbookRows(
+      [{ id: 'stable-lot-id', drug_id: 7004, quantity: 7 }],
+      [{ id: 7004, trade_name: 'DIFFERENT IMPORT DRUG' }],
+      'active-pharmacy',
+      adapter(db),
+    )).rejects.toThrow(/inventory id.*another drug/i);
+
+    expect(db.prepare('SELECT drug_id, quantity FROM inventory WHERE id = ?').get('stable-lot-id')).toEqual({
+      drug_id: 7003,
+      quantity: 4,
+    });
+    expect(db.prepare('SELECT inventory_id, drug_id FROM sales_items WHERE invoice_id = ?').get('stable-sale')).toEqual({
+      inventory_id: 'stable-lot-id',
+      drug_id: 7003,
+    });
   });
 
   it('remaps an unnamed duplicate to the one named drug with the same barcode', async () => {
@@ -458,7 +561,7 @@ describe('inventory workbook drug identity preflight', () => {
     `);
 
     await importInventoryWorkbookRows(
-      [{ id: 'recovery-lot', drug_id: 9906, quantity: 6 }],
+      [{ id: 'recovery-lot', drug_id: 9906, quantity: 6, expiry_date: '2099-12-31' }],
       [],
       'active-pharmacy',
       adapter(db),
@@ -500,28 +603,25 @@ describe('inventory workbook drug identity preflight', () => {
     expect(db.prepare('SELECT COUNT(*) AS count FROM inventory WHERE id = ?').get('remapped-lot')).toEqual({ count: 0 });
   });
 
-  it('runs master conversion validation before the master upsert', async () => {
+  it('does not validate discarded existing-master conversion metadata that will not be written', async () => {
     db.exec(`
       INSERT INTO master_drugs (id, trade_name, large_to_medium, medium_to_small)
       VALUES (3001, 'EXISTING DRUG', 1, 1);
     `);
 
-    await expect(importInventoryWorkbookRows(
+    await importInventoryWorkbookRows(
       [],
       [{ id: 3001, trade_name: 'EXISTING DRUG', large_to_medium: 2, medium_to_small: 1 }],
       'active-pharmacy',
       adapter(db),
       async (_rows, masterRows, transaction) => {
-        if (masterRows.length === 0) return;
-        const current = await transaction.select<any>(
+        expect(masterRows).toEqual([]);
+        expect(await transaction.select<any>(
           'SELECT large_to_medium FROM master_drugs WHERE id = ?',
           [3001],
-        );
-        if (Number(masterRows[0].large_to_medium) !== Number(current[0].large_to_medium)) {
-          throw new Error('غير مصرح بتعديل معاملات التحويل');
-        }
+        )).toEqual([expect.objectContaining({ large_to_medium: 1 })]);
       },
-    )).rejects.toThrow('غير مصرح بتعديل معاملات التحويل');
+    );
 
     expect(db.prepare('SELECT large_to_medium FROM master_drugs WHERE id = ?').get(3001)).toEqual({ large_to_medium: 1 });
   });

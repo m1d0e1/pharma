@@ -121,25 +121,25 @@ export function CustomerStatementContent({ patientId }: { patientId: string }) {
   return (
     <div className="space-y-8" dir="rtl">
        {/* Filters */}
-       <div className="bg-white dark:bg-slate-900 p-8 rounded-[32px] border border-slate-100 dark:border-slate-800 shadow-sm grid grid-cols-1 md:grid-cols-4 gap-6 items-end">
+       <div className="bg-white dark:bg-slate-900 p-4 sm:p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm grid grid-cols-1 md:grid-cols-4 gap-4 sm:gap-6 items-end">
           <div className="space-y-2">
-             <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-2">من تاريخ</label>
-             <input type="date" value={dateFilter.from} onChange={e => setDateFilter({...dateFilter, from: e.target.value})} className="w-full bg-slate-50 dark:bg-slate-800 p-4 rounded-2xl border-none outline-none font-bold" />
+             <label htmlFor="statement-date-from" className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">من تاريخ</label>
+             <input id="statement-date-from" type="date" value={dateFilter.from} onChange={e => setDateFilter({...dateFilter, from: e.target.value})} className="w-full bg-slate-50 dark:bg-slate-800 p-3.5 rounded-xl border border-transparent outline-none font-bold focus:border-blue-500" />
           </div>
           <div className="space-y-2">
-             <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-2">إلى تاريخ</label>
-             <input type="date" value={dateFilter.to} onChange={e => setDateFilter({...dateFilter, to: e.target.value})} className="w-full bg-slate-50 dark:bg-slate-800 p-4 rounded-2xl border-none outline-none font-bold" />
+             <label htmlFor="statement-date-to" className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">إلى تاريخ</label>
+             <input id="statement-date-to" type="date" value={dateFilter.to} onChange={e => setDateFilter({...dateFilter, to: e.target.value})} className="w-full bg-slate-50 dark:bg-slate-800 p-3.5 rounded-xl border border-transparent outline-none font-bold focus:border-blue-500" />
           </div>
           <div className="flex gap-4">
-             <button onClick={handleSearch} className="flex-1 py-4 bg-blue-600 text-white rounded-2xl font-black shadow-lg shadow-blue-500/20 hover:bg-blue-700 transition-all">بحث</button>
+             <button type="button" onClick={handleSearch} className="flex-1 py-3.5 bg-blue-600 text-white rounded-xl font-black hover:bg-blue-700 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2">بحث</button>
              {hasFilter && (
-                <button onClick={handleReset} className="px-4 py-4 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-2xl font-bold transition-all">إعادة تعيين</button>
+                <button type="button" onClick={handleReset} className="px-4 py-3.5 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-xl font-bold hover:bg-slate-300 dark:hover:bg-slate-600 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500">إعادة تعيين</button>
              )}
-              <button onClick={() => window.print()} className="p-4 bg-slate-100 dark:bg-slate-800 rounded-2xl text-slate-500 hover:bg-slate-200 transition-all"><Printer className="w-6 h-6" /></button>
+              <button type="button" aria-label="طباعة كشف الحساب" onClick={() => window.print()} className="p-3.5 bg-slate-100 dark:bg-slate-800 rounded-xl text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500"><Printer className="w-6 h-6" /></button>
           </div>
           <div className="text-left">
-             <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">
-                {hasFilter ? 'رصيد نهاية الفترة' : 'الرصيد الحالي'}
+             <p className="text-xs font-black text-slate-500 dark:text-slate-400 mb-1">
+                {hasFilter ? 'رصيد نهاية الفترة للحركات المعروضة' : 'الرصيد الحالي'}
              </p>
              <p className="text-3xl font-black text-blue-600">
                 {(hasFilter ? periodEndingBalance : currentBalance).toLocaleString('en-US')} <span className="text-xs">ج.م</span>
@@ -148,15 +148,15 @@ export function CustomerStatementContent({ patientId }: { patientId: string }) {
        </div>
 
        {/* Ledger Table */}
-       <div className="bg-white dark:bg-slate-900 rounded-[32px] border border-slate-100 dark:border-slate-800 overflow-hidden shadow-sm">
-          <table className="w-full text-right border-collapse">
+       <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-x-auto shadow-sm">
+          <table className="w-full min-w-[760px] text-right border-collapse">
              <thead className="bg-slate-50 dark:bg-slate-800/50">
                 <tr>
                    <th className="px-6 py-5 text-xs font-black text-slate-400 uppercase border-l border-slate-100 dark:border-slate-800">التاريخ</th>
                    <th className="px-6 py-5 text-xs font-black text-slate-400 uppercase border-l border-slate-100 dark:border-slate-800">البيان</th>
                    <th className="px-6 py-5 text-xs font-black text-slate-400 uppercase border-l border-slate-100 dark:border-slate-800">مدين</th>
                    <th className="px-6 py-5 text-xs font-black text-slate-400 uppercase border-l border-slate-100 dark:border-slate-800">دائن</th>
-                   <th className="px-6 py-5 text-xs font-black text-slate-400 uppercase">الرصيد المتراكم</th>
+                   <th className="px-6 py-5 text-xs font-black text-slate-400 uppercase">الرصيد المتراكم للحركات المعروضة</th>
                 </tr>
              </thead>
              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -181,7 +181,7 @@ export function CustomerStatementContent({ patientId }: { patientId: string }) {
                             <div className="min-w-0">
                                <div className="flex items-center gap-2">
                                   <span className="font-black text-slate-800 dark:text-white">{mov.type}</span>
-                                  <span className="text-[10px] font-bold text-slate-400">#{mov.doc_no.slice(0, 6)}</span>
+                                  <span className="text-xs font-bold text-slate-400">#{mov.doc_no.slice(0, 6)}</span>
                                 </div>
                                {mov.notes && <p className="mt-1 text-xs font-bold text-slate-500 break-words">{mov.notes}</p>}
                             </div>
@@ -310,8 +310,8 @@ export function FinancialNoticeForm({
   };
 
   return (
-    <div className="bg-white dark:bg-slate-900 p-8 md:p-10 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-sm space-y-8" dir="rtl">
-       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-100 dark:border-slate-800 pb-6">
+    <div className="bg-white dark:bg-slate-900 p-4 sm:p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-6" dir="rtl">
+       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-100 dark:border-slate-800 pb-4">
           <div className="flex items-center gap-4">
              <div className="w-14 h-14 bg-amber-100 dark:bg-amber-900/30 rounded-2xl flex items-center justify-center text-amber-600">
                 <AlertCircle className="w-8 h-8" />
@@ -326,9 +326,10 @@ export function FinancialNoticeForm({
             <div className="flex items-center p-1.5 bg-slate-100 dark:bg-slate-800 rounded-2xl gap-1">
               <button
                 type="button"
+                aria-pressed={formData.target_type === 'customer'}
                 onClick={() => handleTargetTypeChange('customer')}
                 className={cn(
-                  "px-5 py-2.5 rounded-xl font-black text-xs transition-all",
+                  "px-4 py-2.5 rounded-xl font-black text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500",
                   formData.target_type === 'customer' ? "bg-white dark:bg-slate-900 text-blue-600 shadow-sm" : "text-slate-500 hover:text-slate-800 dark:hover:text-white"
                 )}
               >
@@ -336,9 +337,10 @@ export function FinancialNoticeForm({
               </button>
               <button
                 type="button"
+                aria-pressed={formData.target_type === 'supplier'}
                 onClick={() => handleTargetTypeChange('supplier')}
                 className={cn(
-                  "px-5 py-2.5 rounded-xl font-black text-xs transition-all",
+                  "px-4 py-2.5 rounded-xl font-black text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500",
                   formData.target_type === 'supplier' ? "bg-white dark:bg-slate-900 text-blue-600 shadow-sm" : "text-slate-500 hover:text-slate-800 dark:hover:text-white"
                 )}
               >
@@ -346,9 +348,10 @@ export function FinancialNoticeForm({
               </button>
               <button
                 type="button"
+                aria-pressed={formData.target_type === 'pharmacy'}
                 onClick={() => handleTargetTypeChange('pharmacy')}
                 className={cn(
-                  "px-5 py-2.5 rounded-xl font-black text-xs transition-all",
+                  "px-4 py-2.5 rounded-xl font-black text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500",
                   formData.target_type === 'pharmacy' ? "bg-white dark:bg-slate-900 text-blue-600 shadow-sm" : "text-slate-500 hover:text-slate-800 dark:hover:text-white"
                 )}
               >
@@ -371,15 +374,16 @@ export function FinancialNoticeForm({
          </div>
        )}
 
-       <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-8">
+       <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-5 md:gap-8">
           <div className="space-y-4">
              {!targetId && formData.target_type !== 'pharmacy' && (
                <div className="space-y-2">
-                 <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-2">
+                 <label htmlFor="notice-target" className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">
                    {formData.target_type === 'customer' ? 'العميل / المريض المستهدف *' : 'المورد المستهدف *'}
                  </label>
                  {formData.target_type === 'customer' ? (
                    <select
+                     id="notice-target"
                      value={formData.target_id}
                      onChange={e => setFormData({ ...formData, target_id: e.target.value })}
                      className="w-full bg-slate-50 dark:bg-slate-800 p-4 rounded-2xl outline-none font-bold text-sm border-2 border-transparent focus:border-blue-500 text-slate-900 dark:text-white transition-all"
@@ -387,12 +391,13 @@ export function FinancialNoticeForm({
                      <option value="">-- اختر العميل --</option>
                      {patients.map(p => (
                        <option key={`pat-opt-${p.id}`} value={p.id}>
-                         {p.name} {p.phone ? `(${p.phone})` : ''} {p.current_balance ? ` - رصيد: ${p.current_balance} ج.م` : ''}
+                         {p.full_name || p.name || `#${p.id}`} {p.phone ? `(${p.phone})` : ''} - رصيد: {Number(p.outstanding_balance ?? p.current_balance ?? 0)} ج.م
                        </option>
                      ))}
                    </select>
                  ) : (
                    <select
+                     id="notice-target"
                      value={formData.target_id}
                      onChange={e => setFormData({ ...formData, target_id: e.target.value })}
                      className="w-full bg-slate-50 dark:bg-slate-800 p-4 rounded-2xl outline-none font-bold text-sm border-2 border-transparent focus:border-blue-500 text-slate-900 dark:text-white transition-all"
@@ -411,31 +416,34 @@ export function FinancialNoticeForm({
              <div className="grid grid-cols-2 gap-4">
                 <button 
                   type="button"
+                  aria-pressed={formData.type === 'credit'}
                   onClick={() => setFormData({...formData, type: 'credit'})}
                   className={cn(
-                    "py-5 rounded-2xl font-black text-lg transition-all border-2 flex flex-col items-center justify-center gap-1",
+                    "py-4 rounded-xl font-black text-base transition-colors border-2 flex flex-col items-center justify-center gap-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500",
                     formData.type === 'credit' ? "bg-rose-50 dark:bg-rose-950/30 border-rose-500 text-rose-600 shadow-lg" : "bg-slate-50 dark:bg-slate-800 border-transparent text-slate-400"
                   )}
                 >
                    <span>خصم (Credit)</span>
-                   <span className="text-[10px] font-bold opacity-75">تخفيض المديونية / دائن</span>
+                   <span className="text-xs font-bold opacity-80">تخفيض المديونية / دائن</span>
                 </button>
                 <button 
                   type="button"
+                  aria-pressed={formData.type === 'debit'}
                   onClick={() => setFormData({...formData, type: 'debit'})}
                   className={cn(
-                    "py-5 rounded-2xl font-black text-lg transition-all border-2 flex flex-col items-center justify-center gap-1",
+                    "py-4 rounded-xl font-black text-base transition-colors border-2 flex flex-col items-center justify-center gap-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500",
                     formData.type === 'debit' ? "bg-emerald-50 dark:bg-emerald-950/30 border-emerald-500 text-emerald-600 shadow-lg" : "bg-slate-50 dark:bg-slate-800 border-transparent text-slate-400"
                   )}
                 >
                    <span>إضافة (Debit)</span>
-                   <span className="text-[10px] font-bold opacity-75">زيادة المديونية / مدين</span>
+                   <span className="text-xs font-bold opacity-80">زيادة المديونية / مدين</span>
                 </button>
              </div>
 
              <div className="space-y-2">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-2">المبلغ المستحق *</label>
+                <label htmlFor="notice-amount" className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">المبلغ المستحق *</label>
                 <input 
+                  id="notice-amount"
                   type="number" 
                   step="any"
                   min="0.01"
@@ -447,8 +455,9 @@ export function FinancialNoticeForm({
              </div>
 
              <div className="space-y-2">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-2">تاريخ العملية</label>
+                <label htmlFor="notice-date" className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">تاريخ العملية</label>
                 <input 
+                  id="notice-date"
                   type="date" 
                   value={formData.date}
                   onChange={e => setFormData({...formData, date: e.target.value})}
@@ -459,8 +468,9 @@ export function FinancialNoticeForm({
 
           <div className="space-y-6">
              <div className="space-y-2">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-2">سبب الإشعار *</label>
+                <label htmlFor="notice-reason" className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">سبب الإشعار *</label>
                 <select 
+                  id="notice-reason"
                   value={formData.reason}
                   onChange={e => setFormData({...formData, reason: e.target.value})}
                   className="w-full bg-slate-50 dark:bg-slate-800 p-5 rounded-2xl outline-none font-black border-2 border-transparent focus:border-amber-500 text-slate-900 dark:text-white transition-all"
@@ -494,8 +504,9 @@ export function FinancialNoticeForm({
              </div>
 
              <div className="space-y-2">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-2">ملاحظات إضافية</label>
+                <label htmlFor="notice-notes" className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">ملاحظات إضافية</label>
                 <textarea 
+                  id="notice-notes"
                   value={formData.notes}
                   onChange={e => setFormData({...formData, notes: e.target.value})}
                   rows={4}
@@ -507,9 +518,9 @@ export function FinancialNoticeForm({
              <button 
                 type="submit"
                 disabled={isSubmitting || !formData.amount}
-                className="w-full py-5 bg-slate-800 hover:bg-slate-700 text-white rounded-3xl font-black text-xl transition-all shadow-xl flex items-center justify-center gap-3 disabled:opacity-50 disabled:cursor-not-allowed active:scale-95"
+                className="w-full py-4 bg-slate-800 hover:bg-slate-700 text-white rounded-xl font-black text-base transition-colors flex items-center justify-center gap-3 disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500 focus-visible:ring-offset-2"
              >
-                {isSubmitting ? 'جاري الحفظ...' : <><Save className="w-6 h-6" /> حفظ الإشعار (S)</>}
+                {isSubmitting ? 'جاري الحفظ...' : <><Save className="w-6 h-6" /> حفظ الإشعار</>}
              </button>
           </div>
        </form>

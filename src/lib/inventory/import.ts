@@ -1,4 +1,5 @@
 import { dbExecute, dbSelect, dbTransaction, generateId, type TransactionDb } from '@/lib/db/tauri';
+import { assertBarcodeOwnershipAvailable } from '@/lib/inventory/barcode-ownership';
 import { resolveRecoveredShortages } from '@/lib/inventory/reorder-state';
 
 type ExcelRow = Record<string, unknown>;
@@ -62,13 +63,6 @@ const identityNames = (row: ExcelRow, id: number) => new Set(
     .map(normalizedDrugName)
     .filter((name): name is string => Boolean(name)),
 );
-
-const matchingIdentityMetadata = (incoming: ExcelRow, existing: ExcelRow) =>
-  ['active_ingredient', 'category', 'manufacturer'].filter(field => {
-    const incomingValue = normalizedDrugName(incoming[field]);
-    const existingValue = normalizedDrugName(existing[field]);
-    return Boolean(incomingValue && existingValue && incomingValue === existingValue);
-  }).length;
 
 const drugName = (row: ExcelRow, id: number) => {
   for (const value of [row.trade_name, row.trade_name_en]) {
@@ -207,7 +201,6 @@ export async function importInventoryWorkbookRows(
       }
     }
 
-    const preserveExistingNames = new Set<number>();
     const idRemapping = new Map<number, number>();
 
     for (const [sourceId, row] of importedDrugs) {
@@ -219,59 +212,55 @@ export async function importInventoryWorkbookRows(
       const sameIdentity = [...incomingNames].some(name => existingNames.has(name));
 
       if (existingAtSource && existingNames.size > 0 && !sameIdentity) {
-        // Case 1: Multiple stable metadata fields prove that the workbook row still belongs to this
-        // numeric ID, keep the ID and discard only its shifted name fields.
-        if (matchingIdentityMetadata(row, existingAtSource) >= 2) {
-          preserveExistingNames.add(sourceId);
-        } else {
-          // Case 2: sourceId belongs to a different drug in this database.
-          // Safely resolve the incoming drug's true ID in the target database by barcode or exact name.
-          const incomingName = drugName(row, sourceId);
-          let targetMatch: ExcelRow | null = null;
+        // A numeric ID plus generic metadata is not enough to prove identity.
+        // Resolve only through one unambiguous exact barcode/name match.
+        const incomingName = drugName(row, sourceId);
+        let targetMatch: ExcelRow | null = null;
 
-          if (incomingName && !isPlaceholderDrugName(incomingName, sourceId)) {
-            const barcode = text(row.barcode);
-            if (barcode) {
-              const byBarcode = await transaction.select<ExcelRow>(
-                'SELECT id, trade_name, trade_name_en, active_ingredient FROM master_drugs WHERE barcode = ? LIMIT 1',
-                [barcode],
-              );
-              if (byBarcode.length > 0) {
-                targetMatch = byBarcode[0];
-              }
-            }
-
-            if (!targetMatch) {
-              const byName = await transaction.select<ExcelRow>(
-                'SELECT id, trade_name, trade_name_en, active_ingredient FROM master_drugs WHERE LOWER(TRIM(trade_name)) = LOWER(TRIM(?)) OR LOWER(TRIM(trade_name_en)) = LOWER(TRIM(?)) LIMIT 1',
-                [incomingName, incomingName],
-              );
-              if (byName.length > 0) {
-                targetMatch = byName[0];
-              }
-            }
-          }
-
-          // Safety check: ensure active_ingredient does not contradict
-          if (targetMatch) {
-            const incomingIng = normalizedDrugName(row.active_ingredient);
-            const targetIng = normalizedDrugName(targetMatch.active_ingredient);
-            if (incomingIng && targetIng && incomingIng !== targetIng) {
+        if (incomingName && !isPlaceholderDrugName(incomingName, sourceId)) {
+          const barcode = text(row.barcode);
+          if (barcode) {
+            const byBarcode = await transaction.select<ExcelRow>(
+              'SELECT id, trade_name, trade_name_en, active_ingredient FROM master_drugs WHERE TRIM(barcode) = ? COLLATE NOCASE LIMIT 2',
+              [barcode],
+            );
+            if (byBarcode.length === 1) {
+              targetMatch = byBarcode[0];
+            } else if (byBarcode.length > 1) {
               targetMatch = null;
             }
           }
 
-          if (targetMatch && drugId(targetMatch.id)) {
-            const resolvedTargetId = drugId(targetMatch.id)!;
-            idRemapping.set(sourceId, resolvedTargetId);
-          } else {
-            const existingName = drugName(existingAtSource, sourceId) || `drug ${sourceId}`;
-            throw new Error(
-              `Drug identity conflict for source drug ${sourceId}: ` +
-              `workbook name "${incomingName || `drug ${sourceId}`}" does not match existing "${existingName}"; ` +
-              'the import was rolled back',
+          if (!targetMatch) {
+            const byName = await transaction.select<ExcelRow>(
+              'SELECT id, trade_name, trade_name_en, active_ingredient FROM master_drugs WHERE LOWER(TRIM(trade_name)) = LOWER(TRIM(?)) OR LOWER(TRIM(trade_name_en)) = LOWER(TRIM(?)) LIMIT 2',
+              [incomingName, incomingName],
             );
+            if (byName.length === 1) {
+              targetMatch = byName[0];
+            }
           }
+        }
+
+        // Safety check: ensure active_ingredient does not contradict.
+        if (targetMatch) {
+          const incomingIng = normalizedDrugName(row.active_ingredient);
+          const targetIng = normalizedDrugName(targetMatch.active_ingredient);
+          if (incomingIng && targetIng && incomingIng !== targetIng) {
+            targetMatch = null;
+          }
+        }
+
+        if (targetMatch && drugId(targetMatch.id)) {
+          const resolvedTargetId = drugId(targetMatch.id)!;
+          idRemapping.set(sourceId, resolvedTargetId);
+        } else {
+          const existingName = drugName(existingAtSource, sourceId) || `drug ${sourceId}`;
+          throw new Error(
+            `Drug identity conflict for source drug ${sourceId}: ` +
+            `workbook name "${incomingName || `drug ${sourceId}`}" does not match existing "${existingName}"; ` +
+            'the import was rolled back',
+          );
         }
       }
     }
@@ -318,22 +307,38 @@ export async function importInventoryWorkbookRows(
       }
     }
 
-    // Preserve the canonical names at a proven same-ID conflict while allowing
-    // all other partial, remapped, and legitimate-new-ID imports to behave safely.
-    const masterRowsToUpsert = [
-      ...[...importedDrugs.entries()]
-        .filter(([sourceId]) => !idRemapping.has(sourceId))
-        .map(([sourceId, row]) => {
-          if (!preserveExistingNames.has(sourceId)) return row;
-          const existing = existingById.get(sourceId)!;
-          return {
-            ...row,
-            trade_name: existing.trade_name,
-            trade_name_en: existing.trade_name_en,
-          };
-        }),
-    ];
+    const masterRowsForValidation = [...importedDrugs.entries()]
+      .filter(([sourceId]) => !idRemapping.has(sourceId))
+      .map(([, row]) => row);
+    // Inventory workbook import is allowed to create a missing master record so
+    // its stock rows have a valid FK, but it must never act as an alternate
+    // drug-directory updater for an already-existing drug. Existing users may
+    // have intentionally edited catalog metadata, units, conversions, limits,
+    // notes, or operational flags. Preserve the entire existing master row and
+    // import only the inventory/lots. Catalog metadata changes go through the
+    // dedicated review/backup/reconciliation workflow.
+    const masterRowsToUpsert = masterRowsForValidation.filter(row => {
+      const id = drugId(row.id);
+      if (!id) return true;
+      const existing = existingById.get(id);
+      // A legacy placeholder such as "Drug 14598" is not a meaningful local
+      // catalog choice; allow the workbook to repair that placeholder. Once an
+      // existing row has a real name, inventory import must preserve it whole.
+      return !(existing && drugName(existing, id));
+    });
+    // Validate only master rows that can actually be written. Existing real
+    // master records are deliberately preserved, so stale workbook conversion
+    // metadata for those rows must not block an otherwise compatible stock
+    // import. Lot-level conversion validation still runs below.
     await validateInventoryRows?.([], masterRowsToUpsert, transaction);
+    await assertBarcodeOwnershipAvailable(
+      transaction,
+      [
+        ...masterRowsToUpsert.map(row => ({ barcode: row.barcode, drugId: row.id as number | string | null | undefined })),
+        ...inventory.map(row => ({ barcode: row.barcode, drugId: row.drug_id as number | string | null | undefined })),
+      ],
+      { conflictMessage: 'Barcode is already assigned to another drug' },
+    );
     await upsertRows(transaction, 'master_drugs', masterRowsToUpsert, masterColumns);
 
     const plannedMasterIds = new Set(masterRowsToUpsert.map(row => Number(row.id)));
@@ -373,17 +378,34 @@ export async function importInventoryWorkbookRows(
     }
 
     const incomingInventoryIds = [...new Set(inventory.map(row => text(row.id)).filter((id): id is string => Boolean(id)))];
+    const incomingDrugByInventoryId = new Map<string, number>();
+    for (const row of inventory) {
+      const inventoryId = text(row.id);
+      const ownerDrugId = drugId(row.drug_id);
+      if (!inventoryId || !ownerDrugId) continue;
+      const previousDrugId = incomingDrugByInventoryId.get(inventoryId);
+      if (previousDrugId !== undefined && previousDrugId !== ownerDrugId) {
+        throw new Error(`Imported inventory id ${inventoryId} refers to more than one drug`);
+      }
+      incomingDrugByInventoryId.set(inventoryId, ownerDrugId);
+    }
     for (let offset = 0; offset < incomingInventoryIds.length; offset += 500) {
       const ids = incomingInventoryIds.slice(offset, offset + 500);
       const rows = await transaction.select<ExcelRow>(`
-        SELECT id, pharmacy_id
+        SELECT id, pharmacy_id, drug_id
         FROM inventory
         WHERE id IN (${ids.map(() => '?').join(',')})
       `, ids);
       for (const row of rows) {
-        const owner = text(row.pharmacy_id) || 'local_default';
-        if (owner !== pharmacyId) {
+        const inventoryId = text(row.id) || '';
+        const ownerPharmacy = text(row.pharmacy_id) || 'local_default';
+        if (ownerPharmacy !== pharmacyId) {
           throw new Error(`Imported inventory id ${text(row.id) || ''} belongs to another pharmacy`);
+        }
+        const currentDrugId = drugId(row.drug_id);
+        const importedDrugId = incomingDrugByInventoryId.get(inventoryId);
+        if (currentDrugId && importedDrugId && currentDrugId !== importedDrugId) {
+          throw new Error(`Imported inventory id ${inventoryId} belongs to another drug`);
         }
       }
     }

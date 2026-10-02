@@ -69,7 +69,12 @@ describe('coverage gap: trial balance load errors', () => {
     render(<TrialBalanceReport userRole="owner" />);
     await waitFor(() => expect(getTrialBalanceAction).toHaveBeenCalledTimes(1));
 
-    const dateInputs = screen.getAllByDisplayValue('') as HTMLInputElement[];
+    expect(screen.getByRole('button', { name: 'تحديث ميزان المراجعة' })).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'بحث في حسابات ميزان المراجعة' })).toBeInTheDocument();
+    const dateInputs = [
+      screen.getByLabelText('من تاريخ'),
+      screen.getByLabelText('إلى تاريخ'),
+    ] as HTMLInputElement[];
     fireEvent.change(dateInputs[0], { target: { value: '2026-09-01' } });
     fireEvent.change(dateInputs[1], { target: { value: '2026-09-22' } });
 

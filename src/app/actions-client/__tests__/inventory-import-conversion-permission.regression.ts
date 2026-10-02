@@ -166,4 +166,43 @@ describe('inventory workbook conversion permission', () => {
       db.close();
     }
   });
+
+  it('allows compatible stock when stale existing-master conversion metadata is preserved instead of written', async () => {
+    const db = new Database(':memory:');
+    db.exec(`
+      CREATE TABLE master_drugs (
+        id INTEGER PRIMARY KEY, trade_name TEXT, trade_name_en TEXT, active_ingredient TEXT,
+        category TEXT, manufacturer TEXT, barcode TEXT, large_to_medium INTEGER, medium_to_small INTEGER
+      );
+      CREATE TABLE inventory (
+        id TEXT PRIMARY KEY, drug_id INTEGER, pharmacy_id TEXT, quantity REAL,
+        strips_per_box INTEGER, medium_to_small INTEGER, barcode TEXT
+      );
+      INSERT INTO master_drugs (id, trade_name, large_to_medium, medium_to_small)
+      VALUES (101, 'Conversion Drug', 1, 1);
+    `);
+    const actualImporter = jest.requireActual<typeof import('@/lib/inventory/import')>('@/lib/inventory/import');
+    (importInventoryWorkbookRows as jest.Mock).mockImplementationOnce(
+      (inventoryRows, drugRows, pharmacyId, _database, validate) => actualImporter.importInventoryWorkbookRows(
+        inventoryRows, drugRows, pharmacyId, importDatabase(db) as any, validate,
+      ),
+    );
+
+    try {
+      const result = await importInventoryWorkbookAction(
+        [{ id: 'compatible-lot', drug_id: 101, quantity: 2, strips_per_box: 1 }],
+        [{ id: 101, trade_name: 'Conversion Drug', large_to_medium: 4, medium_to_small: 1 }],
+      );
+
+      expect(result).toMatchObject({ success: true });
+      expect(db.prepare('SELECT large_to_medium FROM master_drugs WHERE id = 101').get()).toEqual({ large_to_medium: 1 });
+      expect(db.prepare('SELECT drug_id, quantity, strips_per_box FROM inventory WHERE id = ?').get('compatible-lot')).toEqual({
+        drug_id: 101,
+        quantity: 2,
+        strips_per_box: 1,
+      });
+    } finally {
+      db.close();
+    }
+  });
 });

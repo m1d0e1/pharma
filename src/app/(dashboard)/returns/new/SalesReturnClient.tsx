@@ -47,6 +47,7 @@ export default function SalesReturnClient() {
   const [selectedDate, setSelectedDate] = useState(getLocalTodayDate);
   const [searchTerm, setSearchTerm] = useState('');
   const [invoicesByDate, setInvoicesByDate] = useState<any[]>([]);
+  const [listRevision, setListRevision] = useState(0);
   const [invoiceId, setInvoiceId] = useState('');
   const [invoice, setInvoice] = useState<any>(null);
   const [itemsToReturn, setItemsToReturn] = useState<any[]>([]);
@@ -59,6 +60,13 @@ export default function SalesReturnClient() {
 
   const [selectedIndex, setSelectedIndex] = useState<number>(-1);
 
+  const invalidatePreparedReturn = () => {
+    detailRequestRef.current += 1;
+    setInvoiceId('');
+    setInvoice(null);
+    setItemsToReturn([]);
+  };
+
   const unitKind = (item: any, unit?: string) => {
     const value = String(unit || 'large').trim().toLowerCase();
     const mediumUnit = String(item.medium_unit || '').trim().toLowerCase();
@@ -66,6 +74,13 @@ export default function SalesReturnClient() {
     if (value === 'medium' || value === 'strip' || value === 'شريط' || (mediumUnit && value === mediumUnit)) return 'medium';
     if (value === 'small' || value === 'unit' || value === 'pill' || (smallUnit && value === smallUnit)) return 'small';
     return 'large';
+  };
+
+  const unitLabel = (item: any, unit?: string) => {
+    const kind = unitKind(item, unit);
+    if (kind === 'medium') return String(item.medium_unit || '').trim() || 'شريط';
+    if (kind === 'small') return String(item.small_unit || '').trim() || 'وحدة';
+    return String(item.large_unit || '').trim() || 'علبة';
   };
 
   // Fetch invoices by date or search term (all receipts)
@@ -84,6 +99,7 @@ export default function SalesReturnClient() {
             selectedInvoiceIdRef.current = nextIndex >= 0 ? list[nextIndex].id : '';
             setInvoicesByDate(list);
             setSelectedIndex(nextIndex);
+            setListRevision(value => value + 1);
           } else {
             toast.error(res.error || 'فشل تحميل فواتير المبيعات');
           }
@@ -97,6 +113,7 @@ export default function SalesReturnClient() {
             selectedInvoiceIdRef.current = nextIndex >= 0 ? list[nextIndex].id : '';
             setInvoicesByDate(list);
             setSelectedIndex(nextIndex);
+            setListRevision(value => value + 1);
           } else {
             toast.error(res.error || 'فشل تحميل فواتير المبيعات');
           }
@@ -125,7 +142,7 @@ export default function SalesReturnClient() {
       setItemsToReturn([]);
       setIsSearching(false);
     }
-  }, [selectedIndex, invoicesByDate]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selectedIndex, invoicesByDate, listRevision]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Scroll selected button into view
   React.useEffect(() => {
@@ -338,16 +355,20 @@ export default function SalesReturnClient() {
         <div className="lg:col-span-1 space-y-4">
           <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-4 space-y-3">
             <div>
-              <label className="block text-xs font-bold text-slate-500 mb-1.5">البحث بالباركود أو اسم الصنف أو رقم الفاتورة (جميع الفواتير)</label>
+              <label htmlFor="sales-return-search" className="block text-xs font-bold text-slate-500 mb-1.5">البحث بالباركود أو اسم الصنف أو رقم الفاتورة (جميع الفواتير)</label>
               <div className="relative">
                 <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                 <input
+                  id="sales-return-search"
                   type="text"
                   autoFocus
                   placeholder="امسح الباركود، أو اكتب اسم الدواء، أو رقم الفاتورة..."
                   className="w-full pl-4 pr-9 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold text-xs text-slate-900 dark:text-white"
                   value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
+                  onChange={(e) => {
+                    invalidatePreparedReturn();
+                    setSearchTerm(e.target.value);
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
                       e.preventDefault();
@@ -361,14 +382,16 @@ export default function SalesReturnClient() {
               </div>
             </div>
             <div>
-              <label className="block text-xs font-bold text-slate-500 mb-1.5">أو اختر تاريخ الفاتورة</label>
+              <label htmlFor="sales-return-date" className="block text-xs font-bold text-slate-500 mb-1.5">أو اختر تاريخ الفاتورة</label>
               <div className="relative">
                 <Calendar className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                 <input
+                  id="sales-return-date"
                   type="date"
                   className="w-full pl-4 pr-9 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold text-xs text-slate-900 dark:text-white"
                   value={selectedDate}
                   onChange={(e) => {
+                    invalidatePreparedReturn();
                     setSelectedDate(e.target.value);
                     setSearchTerm('');
                   }}
@@ -391,6 +414,8 @@ export default function SalesReturnClient() {
               ) : (
                 invoicesByDate.map((inv, idx) => (
                   <button
+                    type="button"
+                    aria-pressed={selectedIndex === idx}
                     key={inv.id}
                     onClick={() => {
                       selectedInvoiceIdRef.current = inv.id;
@@ -404,26 +429,26 @@ export default function SalesReturnClient() {
                   >
                     <div className="flex justify-between items-center w-full">
                       <span className="font-black text-xs text-slate-800 dark:text-slate-100">رقم الفاتورة: {inv.id.slice(0, 8)}</span>
-                      <span dir="ltr" className="text-[10px] text-slate-500 font-bold bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded">
+                      <span dir="ltr" className="text-[11px] text-slate-500 font-bold bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded">
                         {formatInvoiceDateTime(inv.created_at)}
                       </span>
                     </div>
                     <div className="flex justify-between items-center w-full mt-1">
                       <span className="text-sm font-black text-blue-600 dark:text-blue-400">{inv.total_amount.toFixed(2)} ج.م</span>
-                      <span className="text-[9px] bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded font-black text-slate-500">
+                      <span className="text-[11px] bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded font-black text-slate-500">
                         {inv.payment_method === 'cash' ? 'نقدي' : inv.payment_method === 'credit' ? 'آجل' : inv.payment_method === 'visa' ? 'فيزا' : inv.payment_method}
                       </span>
                     </div>
                     {inv.patient_name && (
-                      <div className="text-[10px] text-purple-600 dark:text-purple-400 font-bold mt-1">👤 المريض: {inv.patient_name}</div>
+                      <div className="text-[11px] text-purple-600 dark:text-purple-400 font-bold mt-1">👤 المريض: {inv.patient_name}</div>
                     )}
-                    <div className="text-[9px] text-slate-400 font-bold">البائع: {inv.user_name || 'غير محدد'}</div>
+                    <div className="text-[11px] text-slate-500 font-bold">البائع: {inv.user_name || 'غير محدد'}</div>
                   </button>
                 ))
               )}
             </div>
             {invoicesByDate.length > 0 && (
-              <div className="mt-3 text-[10px] text-slate-400 font-bold text-center border-t border-slate-100 dark:border-slate-700/50 pt-2">
+              <div className="mt-3 text-[11px] text-slate-500 font-bold text-center border-t border-slate-100 dark:border-slate-700/50 pt-2">
                 💡 استخدم الأسهم <span className="font-black text-slate-600 dark:text-slate-300">↑</span> و <span className="font-black text-slate-600 dark:text-slate-300">↓</span> للتنقل السريع
               </div>
             )}
@@ -465,27 +490,29 @@ export default function SalesReturnClient() {
                         <tr key={idx} className="group">
                           <td className="p-3 font-medium text-slate-800 dark:text-slate-200">{item.drug_name}</td>
                           <td className="p-3 text-center text-slate-600 dark:text-slate-400">
-                            {item.quantity_sold} {item.original_unit === 'large' ? 'علبة' : item.original_unit === 'medium' ? 'شريط' : 'وحدة'}
+                            {item.quantity_sold} {unitLabel(item, item.original_unit)}
                           </td>
                           <td className="p-3 text-center text-amber-600 dark:text-amber-500 font-bold">
-                            {item.returned_quantity || 0} {item.original_unit === 'large' ? 'علبة' : item.original_unit === 'medium' ? 'شريط' : 'وحدة'}
+                            {item.returned_quantity || 0} {unitLabel(item, item.original_unit)}
                           </td>
                           <td className="p-3 text-center text-emerald-600 dark:text-emerald-500 font-bold">
-                            {remainingInSelectedUnit(item).toFixed(2)} {item.unit === 'large' ? '\u0639\u0644\u0628\u0629' : item.unit === 'medium' ? '\u0634\u0631\u064a\u0637' : '\u0648\u062d\u062f\u0629'}
+                            {remainingInSelectedUnit(item).toFixed(2)} {unitLabel(item, item.unit)}
                           </td>
                           <td className="hidden">
-                            {item.quantity_sold - (item.returned_quantity || 0)} {item.original_unit === 'large' ? 'علبة' : item.original_unit === 'medium' ? 'شريط' : 'وحدة'}
+                            {item.quantity_sold - (item.returned_quantity || 0)} {unitLabel(item, item.original_unit)}
                           </td>
                           <td className="p-3 text-center text-slate-600 dark:text-slate-400">{item.unit_price.toFixed(2)} ج.م</td>
                           <td className="p-3 text-center flex items-center justify-center gap-2">
                             <input
                               type="number"
+                              aria-label={`كمية مرتجع ${item.drug_name}`}
                               min="0"
                               className="w-20 p-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-white text-center focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                               value={item.return_quantity || ''}
                               onChange={(e) => updateQuantity(idx, Number(e.target.value))}
                             />
                             <select
+                              aria-label={`وحدة مرتجع ${item.drug_name}`}
                               className="w-24 p-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-white text-sm"
                               value={item.unit}
                               onChange={(e) => {
@@ -494,6 +521,11 @@ export default function SalesReturnClient() {
                                 const newUnit = e.target.value;
                                 const l2m = newItems[idx].large_to_medium || 1;
                                 const m2s = newItems[idx].medium_to_small || 1;
+                                const requestedLargeQty = toLargeQty(
+                                  newItems[idx],
+                                  newItems[idx].return_quantity || 0,
+                                  oldUnit,
+                                );
                                 
                                 // Convert old unit price to base price (large)
                                 let basePrice = newItems[idx].unit_price;
@@ -507,13 +539,16 @@ export default function SalesReturnClient() {
 
                                 newItems[idx].unit = newUnit;
                                 newItems[idx].unit_price = newPrice;
-                                newItems[idx].return_quantity = Math.min(newItems[idx].return_quantity || 0, remainingInSelectedUnit(newItems[idx]));
+                                newItems[idx].return_quantity = Math.min(
+                                  fromLargeQty(newItems[idx], requestedLargeQty, newUnit),
+                                  remainingInSelectedUnit(newItems[idx]),
+                                );
                                 setItemsToReturn(newItems);
                               }}
                             >
-                              <option value="large">علبة</option>
-                              <option value="medium">شريط</option>
-                              <option value="small">وحدة</option>
+                              <option value="large">{unitLabel(item, 'large')}</option>
+                              <option value="medium">{unitLabel(item, 'medium')}</option>
+                              <option value="small">{unitLabel(item, 'small')}</option>
                             </select>
                           </td>
                           <td className="p-3 font-semibold text-center text-slate-800 dark:text-slate-200">
@@ -547,11 +582,12 @@ export default function SalesReturnClient() {
 
                 {/* Settings panel */}
                 <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6 space-y-4">
-                  <h3 className="font-bold text-slate-850 dark:text-white">خيارات الاسترداد</h3>
+                  <h3 className="font-bold text-slate-800 dark:text-white">خيارات الاسترداد</h3>
                   
                   <div>
-                    <label className="block text-xs font-bold text-slate-500 mb-1">طريقة الاسترداد *</label>
+                    <label htmlFor="sales-return-refund-method" className="block text-xs font-bold text-slate-500 mb-1">طريقة الاسترداد *</label>
                     <select
+                      id="sales-return-refund-method"
                       className="w-full p-2.5 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-blue-500 font-bold"
                       value={refundMethod}
                       onChange={(e) => setRefundMethod(e.target.value as any)}
@@ -570,8 +606,9 @@ export default function SalesReturnClient() {
                   )}
 
                   <div>
-                    <label className="block text-xs font-bold text-slate-500 mb-1">سبب المرتجع / ملاحظات</label>
+                    <label htmlFor="sales-return-reason" className="block text-xs font-bold text-slate-500 mb-1">سبب المرتجع / ملاحظات</label>
                     <textarea
+                      id="sales-return-reason"
                       className="w-full p-2.5 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-blue-500 font-bold"
                       rows={2}
                       value={reason}

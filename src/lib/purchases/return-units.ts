@@ -1,5 +1,14 @@
 export type PurchaseReturnUnit = 'large' | 'medium' | 'small';
 
+export function normalizePurchaseReturnUnit(unit: string | undefined): PurchaseReturnUnit | null {
+  switch ((unit || 'large').trim().toLowerCase()) {
+    case 'large': case 'box': return 'large';
+    case 'medium': case 'strip': return 'medium';
+    case 'small': case 'unit': case 'pill': return 'small';
+    default: return null;
+  }
+}
+
 export function purchaseReturnMatchesSearch(
   item: { drug_name?: string; drug_name_en?: string; barcode?: string },
   search: string
@@ -17,6 +26,15 @@ export function purchaseReturnUnitFactor(
   const medium = Math.max(1, Number(largeToMedium) || 1);
   const small = Math.max(1, Number(mediumToSmall) || 1);
   return unit === 'medium' ? medium : unit === 'small' ? medium * small : 1;
+}
+
+export function purchaseReturnQuantityInLargeUnits(
+  quantity: number,
+  unit: PurchaseReturnUnit,
+  largeToMedium: number,
+  mediumToSmall: number
+) {
+  return Number(quantity) / purchaseReturnUnitFactor(unit, largeToMedium, mediumToSmall);
 }
 
 export function purchaseReturnQuantityForUnit(

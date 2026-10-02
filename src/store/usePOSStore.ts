@@ -36,6 +36,7 @@ export interface Patient {
   wallet_balance?: number;
   opening_balance?: number;
   outstanding_balance?: number;
+  points_balance?: number;
   payment_method?: 'cash' | 'credit' | 'visa' | 'wallet';
 }
 

@@ -79,7 +79,9 @@ const patientSchema = z.object({
   car_number: z.string().optional().nullable(),
   credit_limit: z.number().nonnegative().default(0),
   opening_balance: z.number().default(0),
-  points_balance: z.number().nonnegative().default(0),
+  // System-owned loyalty debt can make this negative after returning a sale
+  // whose earned points were already spent. Add/update actions never write it.
+  points_balance: z.number().default(0),
   point_value: z.number().default(1),
   customer_type: z.string().default('individual'),
   payment_method: z.string().default('cash'),
@@ -140,7 +142,7 @@ export async function addPatientAction(formData: AddPatientInput) {
         id, data.full_name, data.name_en || null, data.phone || null, data.mobile || null,
         data.address || null, data.area || null, data.birth_date || null,
         data.gender || null, data.insurance_number || null, data.car_number || null,
-        data.credit_limit, data.opening_balance, data.points_balance,
+        data.credit_limit, data.opening_balance, 0,
         data.point_value, data.customer_type, data.payment_method, data.notes || null
       );
 
@@ -195,6 +197,7 @@ export async function searchPatientsAction(query: string, fetchAll: boolean = fa
     if (fetchAll || !query || query.trim() === '') {
       const patients = await db.prepare(`
         SELECT p.id, p.full_name, p.phone, p.credit_limit, p.wallet_balance, p.opening_balance, p.payment_method,
+               CAST(COALESCE(p.points_balance, 0) AS REAL) AS points_balance,
                CAST(${patientOutstandingBalanceExpression('p')} AS REAL) AS outstanding_balance
         FROM patients p
         ORDER BY p.full_name ASC
@@ -206,6 +209,7 @@ export async function searchPatientsAction(query: string, fetchAll: boolean = fa
     const searchPattern = `%${query}%`;
     const patients = await db.prepare(`
       SELECT p.id, p.full_name, p.phone, p.credit_limit, p.wallet_balance, p.opening_balance, p.payment_method,
+             CAST(COALESCE(p.points_balance, 0) AS REAL) AS points_balance,
              CAST(${patientOutstandingBalanceExpression('p')} AS REAL) AS outstanding_balance
       FROM patients p
       WHERE (full_name LIKE ? OR phone LIKE ?)
@@ -217,6 +221,35 @@ export async function searchPatientsAction(query: string, fetchAll: boolean = fa
   } catch (error) {
     console.error('Patient search error:', error);
     return { success: false, error: 'فشل البحث في قاعدة البيانات المحلية' };
+  }
+}
+
+/**
+ * Read the checkout-safe patient fields needed by POS.
+ *
+ * POS access is intentionally sufficient here even when the user cannot open
+ * the full patient profile. This keeps persisted/draft POS selections fresh
+ * without exposing medical history or branch-scoped patient documents.
+ */
+export async function getPatientForPosAction(patientId: string) {
+  try {
+    const localUser = await getLocalSession();
+    if (!canSearchPatientsForPos(localUser)) return { success: false, error: 'Unauthorized' };
+
+    const patient = await db.prepare(`
+      SELECT p.id, p.full_name, p.phone, p.credit_limit, p.wallet_balance, p.opening_balance, p.payment_method,
+             CAST(COALESCE(p.points_balance, 0) AS REAL) AS points_balance,
+             CAST(${patientOutstandingBalanceExpression('p')} AS REAL) AS outstanding_balance
+      FROM patients p
+      WHERE p.id = ?
+      LIMIT 1
+    `).get(patientId) as any;
+
+    if (!patient) return { success: false, error: 'المريض غير موجود' };
+    return { success: true, data: patient };
+  } catch (error) {
+    console.error('Patient POS lookup error:', error);
+    return { success: false, error: 'فشل تحميل بيانات المريض' };
   }
 }
 
@@ -465,7 +498,7 @@ export async function getPatientStatementAction(patientId: string) {
              reason as notes,
              (SELECT full_name FROM users WHERE id = user_id) as user_name
       FROM returns r
-      WHERE r.status IN ('approved', 'completed')
+      WHERE LOWER(COALESCE(r.status, '')) IN ('approved', 'completed')
         AND (r.pharmacy_id = ? OR (r.pharmacy_id IS NULL AND ? = 'local_default'))
         AND r.invoice_id IN (
           SELECT id FROM sales_invoices
@@ -544,8 +577,19 @@ export async function getPatientStatementAction(patientId: string) {
       WHERE fn.target_type = 'customer'
         AND fn.target_id = ?
         AND (fn.pharmacy_id = ? OR (fn.pharmacy_id IS NULL AND ? = 'local_default'))
-        AND NOT EXISTS (
-          SELECT 1
+        AND (
+          SELECT COUNT(*)
+          FROM financial_notices ranked_notice
+          WHERE ranked_notice.target_type = 'customer'
+            AND ranked_notice.target_id = fn.target_id
+            AND ranked_notice.type = fn.type
+            AND ABS(CAST(ranked_notice.amount AS REAL) - CAST(fn.amount AS REAL)) < 0.000001
+            AND COALESCE(ranked_notice.date, '') = COALESCE(fn.date, '')
+            AND COALESCE(ranked_notice.user_id, '') = COALESCE(fn.user_id, '')
+            AND COALESCE(ranked_notice.reason, '') = COALESCE(fn.reason, '')
+            AND ranked_notice.rowid <= fn.rowid
+        ) > (
+          SELECT COUNT(*)
           FROM patient_transactions mirrored
           WHERE mirrored.patient_id = fn.target_id
             AND mirrored.type = 'adjustment'
@@ -573,21 +617,25 @@ export async function getPatientStatementAction(patientId: string) {
 
     // 3. Get Items purchased by this patient
     const rawItems = await db.prepare(`
-      SELECT si.invoice_id, si.created_at as occurred_at, si.drug_id, NULL as fallback_name, si.quantity_sold, si.unit, si.unit_price,
-             'بيع' as action
+      SELECT si.invoice_id, si.created_at as occurred_at, si.drug_id,
+             COALESCE(NULLIF(md.trade_name_en, ''), NULLIF(md.trade_name, ''), 'صنف #' || si.drug_id) as trade_name,
+             si.quantity_sold, si.unit, si.unit_price, 'بيع' as action
       FROM sales_items si
       JOIN sales_invoices sinv ON si.invoice_id = sinv.id
+      LEFT JOIN master_drugs md ON md.id = si.drug_id
       WHERE sinv.patient_id = ? AND (sinv.status IS NULL OR sinv.status = '' OR LOWER(sinv.status) IN ('completed', 'approved', 'delivered'))
         AND (sinv.pharmacy_id = ? OR (sinv.pharmacy_id IS NULL AND ? = 'local_default'))
       
       UNION ALL
       
-      SELECT r.id as invoice_id, r.created_at as occurred_at, ri.drug_id, ri.drug_name as fallback_name, -ri.quantity_returned as quantity_sold,
-             COALESCE(ri.unit, 'large') as unit, ri.unit_price, 'مرتجع' as action
+      SELECT r.id as invoice_id, r.created_at as occurred_at, ri.drug_id,
+             COALESCE(NULLIF(md.trade_name_en, ''), NULLIF(md.trade_name, ''), NULLIF(ri.drug_name, ''), 'صنف #' || ri.drug_id, 'صنف غير معروف') as trade_name,
+             -ri.quantity_returned as quantity_sold, COALESCE(ri.unit, 'large') as unit, ri.unit_price, 'مرتجع' as action
       FROM return_items ri
       JOIN returns r ON ri.return_id = r.id
       JOIN sales_invoices sinv ON r.invoice_id = sinv.id
-      WHERE sinv.patient_id = ? AND r.status IN ('approved', 'completed')
+      LEFT JOIN master_drugs md ON md.id = ri.drug_id
+      WHERE sinv.patient_id = ? AND LOWER(COALESCE(r.status, '')) IN ('approved', 'completed')
         AND (r.pharmacy_id = ? OR (r.pharmacy_id IS NULL AND ? = 'local_default'))
         AND (sinv.pharmacy_id = ? OR (sinv.pharmacy_id IS NULL AND ? = 'local_default'))
       
@@ -597,40 +645,15 @@ export async function getPatientStatementAction(patientId: string) {
       patientId, pharmacyId, pharmacyId, pharmacyId, pharmacyId,
     ) as any[];
 
-    // Use direct SQL JOIN to get drug names instead of loading full 191K cache
-    const drugIdList = rawItems.filter((item: any) => item.drug_id).map((item: any) => item.drug_id);
-    const drugNameMap = new Map<number, string>();
-    if (drugIdList.length > 0) {
-      const uniqueIds = [...new Set(drugIdList)];
-      const drugRows = await db.prepare(
-        `SELECT id, trade_name, trade_name_en FROM master_drugs WHERE id IN (${uniqueIds.map(() => '?').join(',')})`
-      ).all(...uniqueIds) as any[];
-      drugRows.forEach((r: any) => drugNameMap.set(r.id, r.trade_name_en || r.trade_name || `صنف #${r.id}`));
-    }
-
-    const items = rawItems.map((item: any) => {
-      if (item.drug_id) {
-        return {
-          invoice_id: item.invoice_id,
-          date: item.occurred_at,
-          trade_name: drugNameMap.get(item.drug_id) || `صنف #${item.drug_id}`,
-          quantity_sold: item.quantity_sold,
-          unit: item.unit,
-          unit_price: item.unit_price,
-          action: item.action
-        };
-      } else {
-        return {
-          invoice_id: item.invoice_id,
-          date: item.occurred_at,
-          trade_name: item.fallback_name || 'صنف غير معروف',
-          quantity_sold: item.quantity_sold,
-          unit: item.unit,
-          unit_price: item.unit_price,
-          action: item.action
-        };
-      }
-    });
+    const items = rawItems.map((item: any) => ({
+      invoice_id: item.invoice_id,
+      date: item.occurred_at,
+      trade_name: item.trade_name || (item.drug_id ? `صنف #${item.drug_id}` : 'صنف غير معروف'),
+      quantity_sold: item.quantity_sold,
+      unit: item.unit,
+      unit_price: item.unit_price,
+      action: item.action,
+    }));
 
     // 4. Get Financial Notices for this patient
     let notices: any[] = [];
@@ -711,6 +734,13 @@ export async function updatePatientWalletAction(patientId: string, amount: numbe
       await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
         .run(journalId, walletAccountId, 'credit', amount);
 
+      await db.prepare('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)')
+        .run(
+          user.id,
+          'PATIENT_WALLET_TOPUP',
+          JSON.stringify({ patient_id: patientId, amount, notes: notes || null })
+        );
+
       newBalance = Number(patient.wallet_balance || 0) + amount;
     });
 
@@ -722,9 +752,27 @@ export async function updatePatientWalletAction(patientId: string, amount: numbe
   }
 }
 
-export async function getPatientsAction() {
+export async function getPatientsAction(options: { reportScope?: boolean } = {}) {
   try {
     const localUser = await getLocalSession();
+    if (options.reportScope) {
+      if (!localUser || (
+        !hasUserPermissionSync(localUser, 'rep_can_view_sales')
+        && !canManagePatients(localUser)
+      )) {
+        return { success: false, error: 'غير مصرح' };
+      }
+      const pharmacyId = localUser.pharmacy_id || 'local_default';
+      const patients = await db.prepare(`
+        SELECT DISTINCT p.id, p.full_name, p.name_en
+        FROM patients p
+        JOIN sales_invoices si ON si.patient_id = p.id
+        WHERE (si.pharmacy_id = ? OR (si.pharmacy_id IS NULL AND ? = 'local_default'))
+          AND (si.status IS NULL OR si.status = '' OR si.status IN ('completed', 'approved', 'delivered'))
+        ORDER BY p.full_name ASC
+      `).all(pharmacyId, pharmacyId) as any[];
+      return { success: true, data: patients };
+    }
     if (!canManagePatients(localUser)) return { success: false, error: 'غير مصرح' };
 
     const patients = await db.prepare(`

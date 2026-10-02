@@ -33,6 +33,9 @@ it('warns about an open shift and reconciles it before deactivating the user', a
 
   await user.click(screen.getByTitle('حذف الموظف'));
   expect(await screen.findByRole('heading', { name: 'لدى الموظف وردية مفتوحة' })).toBeInTheDocument();
+  const dialog = screen.getByRole('dialog', { name: 'لدى الموظف وردية مفتوحة' });
+  expect(dialog).toHaveAttribute('tabindex', '-1');
+  await waitFor(() => expect(dialog).toContainElement(document.activeElement as HTMLElement));
   expect(screen.getByText('125.00 ج.م')).toBeInTheDocument();
 
   await user.clear(screen.getByLabelText('النقدية الفعلية في الدرج'));

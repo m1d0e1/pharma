@@ -18,10 +18,11 @@ jest.mock('@/lib/auth/local', () => ({
   hasUserPermissionSync: jest.fn((user: any, key: string) => user?.role === 'owner' || user?.permissions?.[key] === true),
 }));
 
-import { dbExecute, dbTransaction } from '@/lib/db/tauri';
-import { runDatabaseMaintenanceClient, updatePharmacyClient } from '@/lib/settings/client';
+import { dbExecute, dbSelect, dbTransaction } from '@/lib/db/tauri';
+import { getLocalUsersClient, runDatabaseMaintenanceClient, updatePharmacyClient } from '@/lib/settings/client';
 
 const mockDbExecute = jest.mocked(dbExecute);
+const mockDbSelect = jest.mocked(dbSelect);
 const mockDbTransaction = jest.mocked(dbTransaction);
 
 describe('settings local-first persistence', () => {
@@ -62,5 +63,15 @@ describe('settings local-first persistence', () => {
     expect((await runDatabaseMaintenanceClient()).success).toBe(true);
     expect(mockDbExecute).toHaveBeenCalledWith('VACUUM');
     expect(mockDbExecute).toHaveBeenCalledWith('ANALYZE');
+  });
+
+  it('scopes the settings local-user list to the signed-in pharmacy', async () => {
+    mockUser = { id: 'owner-ph1', role: 'owner', pharmacy_id: 'ph-1', permissions: {} };
+
+    expect((await getLocalUsersClient()).success).toBe(true);
+    expect(mockDbSelect).toHaveBeenCalledWith(
+      expect.stringMatching(/is_active = 1[\s\S]*pharmacy_id = \? OR \(pharmacy_id IS NULL AND \? = 'local_default'\)/),
+      ['ph-1', 'ph-1']
+    );
   });
 });

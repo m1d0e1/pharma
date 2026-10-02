@@ -36,6 +36,20 @@ it('shows the persisted local automatic-repair result in Settings', async () => 
   expect(screen.getByRole('note')).toHaveTextContent('C:/data/backups/before-repair.db');
 });
 
+it('surfaces ambiguous legacy patient-wallet history without claiming an automatic balance repair', async () => {
+  (dbGet as jest.Mock).mockResolvedValue({
+    value: null,
+    backup_path: null,
+    wallet_review: 'تم اكتشاف رصيد محفظة تاريخي يحتاج مراجعة للعميل Legacy Patient (#legacy-patient): 40.00 ج.م',
+  });
+  render(<DbMaintenance />);
+
+  const note = await screen.findByRole('note', { name: 'مراجعة محافظ العملاء القديمة' });
+  expect(note).toHaveTextContent('Legacy Patient');
+  expect(note).toHaveTextContent('40.00');
+  expect(note).toHaveTextContent('يحتاج مراجعة');
+});
+
 it('exports a complete database through Tauri and shows the resulting path', async () => {
   (invoke as jest.Mock).mockResolvedValue('C:/data/backups/snapshot/pharma_local.db');
   render(<DbMaintenance />);
@@ -45,6 +59,13 @@ it('exports a complete database through Tauri and shows the resulting path', asy
   fireEvent.click(button);
   expect(await screen.findByRole('status')).toHaveTextContent('C:/data/backups/snapshot/pharma_local.db');
   expect(invoke).toHaveBeenCalledWith('export_database_backup', { userId: 'admin-id', password: 'test-password' });
+});
+
+it('keeps owner-only database maintenance hidden from admins while retaining admin backup access', async () => {
+  render(<DbMaintenance />);
+
+  expect(await screen.findByRole('button', { name: 'حفظ نسخة احتياطية كاملة' })).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'تحسين وضغط قاعدة البيانات الآن' })).toBeNull();
 });
 
 it('does not claim success or display a backup path when SQLite refuses the snapshot', async () => {
@@ -70,13 +91,14 @@ it('rechecks the user when exporting, even if the session changed after renderin
 });
 
 it('prevents duplicate maintenance runs while the first write-sensitive operation is pending', async () => {
+  (getClientSession as jest.Mock).mockResolvedValue({ id: 'owner-id', role: 'owner' });
   let resolveMaintenance!: (value: { success: boolean; message?: string }) => void;
   (runDatabaseMaintenanceClient as jest.Mock).mockImplementationOnce(() => new Promise(resolve => {
     resolveMaintenance = resolve;
   }));
   render(<DbMaintenance />);
 
-  const button = screen.getByRole('button', { name: 'تحسين وضغط قاعدة البيانات الآن' });
+  const button = await screen.findByRole('button', { name: 'تحسين وضغط قاعدة البيانات الآن' });
   act(() => {
     button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -91,12 +113,13 @@ it('prevents duplicate maintenance runs while the first write-sensitive operatio
 });
 
 it('restores the maintenance control after returned and thrown failures', async () => {
+  (getClientSession as jest.Mock).mockResolvedValue({ id: 'owner-id', role: 'owner' });
   (runDatabaseMaintenanceClient as jest.Mock)
     .mockResolvedValueOnce({ success: false, error: 'تعذر تنفيذ VACUUM' })
     .mockRejectedValueOnce(new Error('maintenance bridge unavailable'));
   render(<DbMaintenance />);
 
-  const button = screen.getByRole('button', { name: 'تحسين وضغط قاعدة البيانات الآن' });
+  const button = await screen.findByRole('button', { name: 'تحسين وضغط قاعدة البيانات الآن' });
   fireEvent.click(button);
   await waitFor(() => expect(toast.error).toHaveBeenCalledWith('تعذر تنفيذ VACUUM', { id: 'maintenance-toast' }));
   expect(button).toBeEnabled();

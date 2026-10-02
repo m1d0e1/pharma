@@ -43,12 +43,13 @@ it('searches patients and completes the permitted delete confirmation flow', asy
 
   render(<PatientListClient initialPatients={patients} pharmacyId="local_default" canDeletePatients />);
 
-  await user.type(screen.getByPlaceholderText('ابحث عن مريض بالاسم أو رقم الهاتف...'), '010111');
+  await user.type(screen.getByRole('textbox', { name: 'بحث في المرضى بالاسم أو رقم الهاتف' }), '010111');
   expect(screen.getByText('أحمد علي')).toBeInTheDocument();
   expect(screen.queryByText('سارة حسن')).not.toBeInTheDocument();
   await user.clear(screen.getByPlaceholderText('ابحث عن مريض بالاسم أو رقم الهاتف...'));
 
   await user.click(screen.getAllByTitle('حذف المريض')[0]);
+  expect(screen.getByRole('alertdialog', { name: 'تأكيد حذف المريض' })).toBeInTheDocument();
   expect(screen.getByRole('heading', { name: 'تأكيد حذف المريض' })).toBeInTheDocument();
   await user.click(screen.getByRole('button', { name: 'نعم، تأكيد الحذف' }));
 

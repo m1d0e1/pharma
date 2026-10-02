@@ -200,7 +200,7 @@ export async function getExpenseSummaryAction(month?: string) {
       SELECT COALESCE(SUM(total_refund), 0) as refunds
       FROM returns
       WHERE strftime('%Y-%m', created_at, 'localtime') = ?
-        AND status IN ('approved', 'completed')
+        AND LOWER(COALESCE(status, '')) IN ('approved', 'completed')
         AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
     `).get(targetMonth, pharmacyId, pharmacyId) as any;
 
@@ -232,9 +232,11 @@ export async function getExpenseSummaryAction(month?: string) {
       SELECT COALESCE(SUM(
         COALESCE(si.cost_price, 0) *
         CASE
-          WHEN ri.unit IN ('medium', 'strip', 'شريط') OR ri.unit = md.medium_unit
+          WHEN COALESCE(NULLIF(TRIM(ri.unit), ''), NULLIF(TRIM(si.unit), ''), 'large') IN ('medium', 'strip', 'شريط')
+            OR COALESCE(NULLIF(TRIM(ri.unit), ''), NULLIF(TRIM(si.unit), ''), 'large') = md.medium_unit
             THEN ri.quantity_returned / COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(i.strips_per_box, 0), NULLIF(md.large_to_medium, 0), 1)
-          WHEN ri.unit = 'small' OR ri.unit = md.small_unit
+          WHEN COALESCE(NULLIF(TRIM(ri.unit), ''), NULLIF(TRIM(si.unit), ''), 'large') = 'small'
+            OR COALESCE(NULLIF(TRIM(ri.unit), ''), NULLIF(TRIM(si.unit), ''), 'large') = md.small_unit
             THEN ri.quantity_returned / (
               COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(i.strips_per_box, 0), NULLIF(md.large_to_medium, 0), 1) *
               COALESCE(NULLIF(si.medium_to_small, 0), NULLIF(i.medium_to_small, 0), NULLIF(md.medium_to_small, 0), 1)
@@ -248,7 +250,7 @@ export async function getExpenseSummaryAction(month?: string) {
       LEFT JOIN inventory i ON i.id = COALESCE(ri.inventory_id, si.inventory_id)
       LEFT JOIN master_drugs md ON md.id = COALESCE(ri.drug_id, si.drug_id)
       WHERE strftime('%Y-%m', r.created_at, 'localtime') = ?
-        AND r.status IN ('approved', 'completed')
+        AND LOWER(COALESCE(r.status, '')) IN ('approved', 'completed')
         AND (r.pharmacy_id = ? OR (r.pharmacy_id IS NULL AND ? = 'local_default'))
     `).get(targetMonth, pharmacyId, pharmacyId) as any;
 

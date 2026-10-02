@@ -31,6 +31,7 @@ const catalogDrug = {
   trade_name_en: 'Panadol',
   purchase_price: 12.5,
   official_price: 20,
+  has_expiry: 1,
 };
 
 async function selectCatalogDrug() {
@@ -88,6 +89,37 @@ describe('coverage gap: opening-balance creation route', () => {
     });
     expect(toast.error).toHaveBeenCalledWith('حدث خطأ أثناء حفظ الرصيد الإفتتاحي');
     expect(mockPush).not.toHaveBeenCalled();
+  });
+
+  it('submits null expiry for a non-expiring master drug', async () => {
+    (searchMasterDrugsAction as jest.Mock).mockResolvedValueOnce({
+      success: true,
+      data: [{ ...catalogDrug, id: 78, trade_name: 'بدون صلاحية', trade_name_en: 'No Expiry', has_expiry: 0 }],
+    });
+    (addOpeningBalanceAction as jest.Mock).mockResolvedValueOnce({ success: true });
+
+    render(<NewOpeningBalanceClient />);
+    fireEvent.change(screen.getByPlaceholderText('ادخل اسم الدواء بالعربية أو الإنجليزية...'), { target: { value: 'No Expiry' } });
+    fireEvent.click(await screen.findByText('No Expiry'));
+
+    expect(screen.getByLabelText('تاريخ الصلاحية')).not.toBeRequired();
+    fireEvent.click(screen.getByRole('button', { name: 'حفظ الرصيد الإفتتاحي' }));
+
+    await waitFor(() => expect(addOpeningBalanceAction).toHaveBeenCalledWith(expect.objectContaining({
+      drug_id: 78,
+      expiry_date: null,
+    })));
+  });
+
+  it('keeps expiry required for an expiring master drug', async () => {
+    render(<NewOpeningBalanceClient />);
+    await selectCatalogDrug();
+
+    expect(screen.getByLabelText('تاريخ الصلاحية')).toBeRequired();
+    fireEvent.click(screen.getByRole('button', { name: 'حفظ الرصيد الإفتتاحي' }));
+
+    expect(addOpeningBalanceAction).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledWith('يرجى تحديد تاريخ الصلاحية');
   });
 
   it('keeps a committed opening balance acknowledged and locked when post-save navigation throws', async () => {

@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { cn } from '@/lib/utils';
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap';
 
 interface PermissionSet {
   // Personal Data
@@ -321,6 +322,16 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
   const [actualCash, setActualCash] = useState('');
   const [authorizerPassword, setAuthorizerPassword] = useState('');
   const [closingNotes, setClosingNotes] = useState('');
+  const editDialogRef = useDialogFocusTrap<HTMLDivElement>(
+    Boolean(selectedUser) && !showAddModal && !showResetModal && !openShiftDeletion
+  );
+  const addDialogRef = useDialogFocusTrap<HTMLDivElement>(
+    showAddModal && !showResetModal && !openShiftDeletion
+  );
+  const openShiftDeleteDialogRef = useDialogFocusTrap<HTMLDivElement>(Boolean(openShiftDeletion));
+  const resetPasswordDialogRef = useDialogFocusTrap<HTMLDivElement>(
+    Boolean(showResetModal) && !openShiftDeletion
+  );
 
   const handleEdit = (user: User) => {
     setSelectedUser(user);
@@ -624,10 +635,10 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
               
               <h3 className="font-black text-xl text-slate-900 dark:text-white mb-1">{user.full_name || user.username}</h3>
               <div className="flex items-center gap-2 mb-6">
-                <span className="text-[10px] px-3 py-1 bg-slate-100 dark:bg-slate-800 rounded-full font-black text-slate-500 uppercase tracking-widest border border-slate-200 dark:border-slate-700">
+                <span className="text-xs px-3 py-1 bg-slate-100 dark:bg-slate-800 rounded-full font-black text-slate-500 border border-slate-200 dark:border-slate-700">
                   {user.role}
                 </span>
-                <span className="text-[10px] px-3 py-1 bg-primary-50 dark:bg-primary-900/20 rounded-full font-black text-primary-600 dark:text-primary-400 border border-primary-100 dark:border-primary-800/30">
+                <span className="text-xs px-3 py-1 bg-primary-50 dark:bg-primary-900/20 rounded-full font-black text-primary-600 dark:text-primary-400 border border-primary-100 dark:border-primary-800/30">
                   @{user.username}
                 </span>
               </div>
@@ -641,6 +652,8 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
                   تعديل
                 </button>
                 <button 
+                  type="button"
+                  aria-label={`حذف الموظف ${user.full_name || user.username}`}
                   onClick={() => handleDelete(user.id, user.full_name || user.username)}
                   className="p-4 bg-rose-50 dark:bg-rose-900/10 text-rose-600 dark:text-rose-400 rounded-[20px] hover:bg-rose-600 hover:text-white dark:hover:bg-rose-500 dark:hover:text-white transition-all active:scale-95 group/del"
                   title="حذف الموظف"
@@ -648,6 +661,8 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
                   <Trash2 className="w-5 h-5 group-hover/del:scale-110 transition-transform" />
                 </button>
                 <button 
+                  type="button"
+                  aria-label={`إعادة تعيين كلمة مرور ${user.full_name || user.username}`}
                   onClick={() => setShowResetModal(user)}
                   className="p-4 bg-amber-50 dark:bg-amber-900/10 text-amber-600 dark:text-amber-400 rounded-[20px] hover:bg-amber-600 hover:text-white dark:hover:bg-amber-500 dark:hover:text-white transition-all active:scale-95 group/key"
                   title="إعادة تعيين كلمة المرور"
@@ -663,7 +678,7 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
       {/* Edit User/Permissions Modal */}
       {selectedUser && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-[100] p-4 animate-in fade-in duration-300">
-          <div className="bg-white dark:bg-slate-900 w-full max-w-5xl h-[85vh] rounded-[50px] shadow-hard border border-slate-100 dark:border-slate-800 flex flex-col overflow-hidden animate-in zoom-in duration-500">
+          <div ref={editDialogRef} role="dialog" aria-modal="true" aria-labelledby="edit-staff-dialog-title" tabIndex={-1} className="bg-white dark:bg-slate-900 w-full max-w-5xl h-[85vh] rounded-[50px] shadow-hard border border-slate-100 dark:border-slate-800 flex flex-col overflow-hidden animate-in zoom-in duration-500">
             {/* Modal Header */}
             <div className="p-8 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center bg-slate-50/50 dark:bg-slate-800/30">
               <div className="flex items-center gap-5">
@@ -671,7 +686,7 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
                   <Lock className="w-7 h-7" />
                 </div>
                 <div>
-                  <h2 className="text-3xl font-black text-slate-900 dark:text-white tracking-tight">إدارة الموظف</h2>
+                  <h2 id="edit-staff-dialog-title" className="text-3xl font-black text-slate-900 dark:text-white tracking-tight">إدارة الموظف</h2>
                   <p className="text-slate-500 font-bold flex items-center gap-2">
                     <span className="w-2 h-2 rounded-full bg-emerald-500" />
                     {selectedUser.full_name || selectedUser.username}
@@ -679,6 +694,8 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
                 </div>
               </div>
               <button 
+                type="button"
+                aria-label="إغلاق إدارة الموظف"
                 onClick={() => setSelectedUser(null)} 
                 className="p-4 bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 rounded-2xl hover:bg-rose-50 dark:hover:bg-rose-900/20 text-slate-400 hover:text-rose-500 transition-all"
               >
@@ -740,8 +757,9 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                       <div className="space-y-2">
-                        <label className="text-xs font-black text-slate-400 mr-4 uppercase tracking-widest">الاسم الكامل</label>
+                        <label htmlFor="edit-staff-full-name" className="text-xs font-black text-slate-500 mr-4">الاسم الكامل</label>
                         <input 
+                          id="edit-staff-full-name"
                           type="text" 
                           value={editUser.full_name}
                           onChange={(e) => setEditUser(p => ({ ...p, full_name: e.target.value }))}
@@ -749,8 +767,9 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
                         />
                       </div>
                       <div className="space-y-2">
-                        <label className="text-xs font-black text-slate-400 mr-4 uppercase tracking-widest">اسم المستخدم</label>
+                        <label htmlFor="edit-staff-username" className="text-xs font-black text-slate-500 mr-4">اسم المستخدم</label>
                         <input 
+                          id="edit-staff-username"
                           type="text" 
                           value={editUser.username}
                           onChange={(e) => setEditUser(p => ({ ...p, username: e.target.value }))}
@@ -758,10 +777,11 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
                         />
                       </div>
                       <div className="space-y-2">
-                        <label className="text-xs font-black text-slate-400 mr-4 uppercase tracking-widest">كلمة المرور الجديدة</label>
+                        <label htmlFor="edit-staff-password" className="text-xs font-black text-slate-500 mr-4">كلمة المرور الجديدة</label>
                         <div className="relative">
                           <Key className="absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-300" />
                           <input 
+                            id="edit-staff-password"
                             type="password" 
                             placeholder="اتركها فارغة لعدم التغيير"
                             value={editUser.password}
@@ -771,8 +791,9 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
                         </div>
                       </div>
                       <div className="space-y-2">
-                        <label className="text-xs font-black text-slate-400 mr-4 uppercase tracking-widest">الدور الوظيفي</label>
+                        <label htmlFor="edit-staff-role" className="text-xs font-black text-slate-500 mr-4">الدور الوظيفي</label>
                         <select 
+                          id="edit-staff-role"
                           value={editUser.role}
                           onChange={(e) => {
                             const newRole = e.target.value;
@@ -784,13 +805,15 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
                           className="w-full px-6 py-4 bg-slate-50 dark:bg-slate-800/50 border-2 border-transparent focus:border-primary-500 rounded-2xl font-bold dark:text-white transition-all outline-none appearance-none"
                         >
                           <option value="pharmacist">صيدلي (Pharmacist)</option>
+                          <option value="cashier">كاشير (Cashier)</option>
                           <option value="admin">مدير نظام (Admin)</option>
                           <option value="owner">مالك (Owner)</option>
                         </select>
                       </div>
                       <div className="space-y-2">
-                        <label className="text-xs font-black text-slate-400 mr-4 uppercase tracking-widest">الوظيفة</label>
+                        <label htmlFor="edit-staff-job" className="text-xs font-black text-slate-500 mr-4">الوظيفة</label>
                         <select 
+                          id="edit-staff-job"
                           value={editUser.job_id || ''}
                           onChange={(e) => setEditUser(p => ({ ...p, job_id: parseInt(e.target.value) || undefined }))}
                           className="w-full px-6 py-4 bg-slate-50 dark:bg-slate-800/50 border-2 border-transparent focus:border-primary-500 rounded-2xl font-bold dark:text-white transition-all outline-none appearance-none"
@@ -802,8 +825,9 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
                         </select>
                       </div>
                       <div className="space-y-2">
-                        <label className="text-xs font-black text-slate-400 mr-4 uppercase tracking-widest">كود الموظف</label>
+                        <label htmlFor="edit-staff-code" className="text-xs font-black text-slate-500 mr-4">كود الموظف</label>
                         <input 
+                          id="edit-staff-code"
                           type="text" 
                           value={editUser.code}
                           onChange={(e) => setEditUser(p => ({ ...p, code: e.target.value }))}
@@ -828,8 +852,9 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
 
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
                       <div className="space-y-2">
-                        <label className="text-xs font-black text-slate-400 mr-4 uppercase tracking-widest">الرقم القومي</label>
+                        <label htmlFor="edit-staff-national-id" className="text-xs font-black text-slate-500 mr-4">الرقم القومي</label>
                         <input 
+                          id="edit-staff-national-id"
                           type="text" 
                           value={editPermissions.national_id}
                           onChange={(e) => setEditPermissions(p => ({ ...p, national_id: e.target.value }))}
@@ -837,8 +862,9 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
                         />
                       </div>
                       <div className="space-y-2">
-                        <label className="text-xs font-black text-slate-400 mr-4 uppercase tracking-widest">تاريخ الميلاد</label>
+                        <label htmlFor="edit-staff-birth-date" className="text-xs font-black text-slate-500 mr-4">تاريخ الميلاد</label>
                         <input 
+                          id="edit-staff-birth-date"
                           type="date" 
                           value={editPermissions.birth_date}
                           onChange={(e) => setEditPermissions(p => ({ ...p, birth_date: e.target.value }))}
@@ -846,8 +872,9 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
                         />
                       </div>
                       <div className="space-y-2">
-                        <label className="text-xs font-black text-slate-400 mr-4 uppercase tracking-widest">المؤهل الدراسي</label>
+                        <label htmlFor="edit-staff-qualification" className="text-xs font-black text-slate-500 mr-4">المؤهل الدراسي</label>
                         <input 
+                          id="edit-staff-qualification"
                           type="text" 
                           value={editUser.qualification}
                           onChange={(e) => setEditUser(p => ({ ...p, qualification: e.target.value }))}
@@ -855,8 +882,9 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
                         />
                       </div>
                       <div className="space-y-2">
-                        <label className="text-xs font-black text-slate-400 mr-4 uppercase tracking-widest">تاريخ التعيين</label>
+                        <label htmlFor="edit-staff-hire-date" className="text-xs font-black text-slate-500 mr-4">تاريخ التعيين</label>
                         <input 
+                          id="edit-staff-hire-date"
                           type="date" 
                           value={editUser.hire_date}
                           onChange={(e) => setEditUser(p => ({ ...p, hire_date: e.target.value }))}
@@ -864,8 +892,9 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
                         />
                       </div>
                       <div className="space-y-2">
-                        <label className="text-xs font-black text-slate-400 mr-4 uppercase tracking-widest">الوردية (Shift)</label>
+                        <label htmlFor="edit-staff-shift" className="text-xs font-black text-slate-500 mr-4">الوردية (Shift)</label>
                         <input 
+                          id="edit-staff-shift"
                           type="text" 
                           value={editUser.shift}
                           onChange={(e) => setEditUser(p => ({ ...p, shift: e.target.value }))}
@@ -874,8 +903,9 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
                         />
                       </div>
                       <div className="space-y-2 lg:col-span-2">
-                        <label className="text-xs font-black text-slate-400 mr-4 uppercase tracking-widest">العنوان الحالي</label>
+                        <label htmlFor="edit-staff-address" className="text-xs font-black text-slate-500 mr-4">العنوان الحالي</label>
                         <input 
+                          id="edit-staff-address"
                           type="text" 
                           value={editPermissions.address}
                           onChange={(e) => setEditPermissions(p => ({ ...p, address: e.target.value }))}
@@ -883,8 +913,9 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
                         />
                       </div>
                       <div className="space-y-2">
-                        <label className="text-xs font-black text-slate-400 mr-4 uppercase tracking-widest">الموبايل</label>
+                        <label htmlFor="edit-staff-mobile" className="text-xs font-black text-slate-500 mr-4">الموبايل</label>
                         <input 
+                          id="edit-staff-mobile"
                           type="text" 
                           value={editPermissions.mobile}
                           onChange={(e) => setEditPermissions(p => ({ ...p, mobile: e.target.value }))}
@@ -892,8 +923,9 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
                         />
                       </div>
                       <div className="space-y-2">
-                        <label className="text-xs font-black text-slate-400 mr-4 uppercase tracking-widest">النوع</label>
+                        <label htmlFor="edit-staff-gender" className="text-xs font-black text-slate-500 mr-4">النوع</label>
                         <select 
+                          id="edit-staff-gender"
                           value={editPermissions.gender}
                           onChange={(e) => setEditPermissions(p => ({ ...p, gender: e.target.value }))}
                           className="w-full px-6 py-4 bg-slate-50 dark:bg-slate-800/50 border-2 border-transparent focus:border-primary-500 rounded-2xl font-bold dark:text-white transition-all outline-none"
@@ -903,8 +935,9 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
                         </select>
                       </div>
                       <div className="space-y-2">
-                        <label className="text-xs font-black text-slate-400 mr-4 uppercase tracking-widest">الحالة الاجتماعية</label>
+                        <label htmlFor="edit-staff-social-status" className="text-xs font-black text-slate-500 mr-4">الحالة الاجتماعية</label>
                         <select 
+                          id="edit-staff-social-status"
                           value={editPermissions.social_status}
                           onChange={(e) => setEditPermissions(p => ({ ...p, social_status: e.target.value }))}
                           className="w-full px-6 py-4 bg-slate-50 dark:bg-slate-800/50 border-2 border-transparent focus:border-primary-500 rounded-2xl font-bold dark:text-white transition-all outline-none"
@@ -965,23 +998,24 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
       {/* Add User Modal - Updated with Premium Styling */}
       {showAddModal && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-[100] p-4 animate-in fade-in duration-300">
-          <div className="bg-white dark:bg-slate-900 w-full max-w-md rounded-[50px] shadow-hard border border-slate-100 dark:border-slate-800 flex flex-col overflow-hidden animate-in zoom-in duration-500">
+          <div ref={addDialogRef} role="dialog" aria-modal="true" aria-labelledby="add-staff-dialog-title" tabIndex={-1} className="bg-white dark:bg-slate-900 w-full max-w-md max-h-[calc(100vh-2rem)] rounded-[50px] shadow-hard border border-slate-100 dark:border-slate-800 flex flex-col overflow-y-auto animate-in zoom-in duration-500">
             <div className="p-10 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/30 flex justify-between items-center">
               <div className="flex items-center gap-4">
                 <div className="p-4 bg-primary-600 rounded-2xl text-white">
                   <UserPlus className="w-6 h-6" />
                 </div>
-                <h2 className="text-2xl font-black text-slate-900 dark:text-white tracking-tight">إضافة موظف</h2>
+                <h2 id="add-staff-dialog-title" className="text-2xl font-black text-slate-900 dark:text-white tracking-tight">إضافة موظف</h2>
               </div>
-              <button onClick={() => setShowAddModal(false)} className="p-2 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-xl transition-all">
+              <button type="button" aria-label="إغلاق إضافة موظف" onClick={() => setShowAddModal(false)} className="p-2 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-xl transition-all">
                 <X className="w-6 h-6 text-slate-400" />
               </button>
             </div>
             <div className="p-10 space-y-6">
               <div className="space-y-2">
-                <label className="text-xs font-black text-slate-400 mr-2 uppercase tracking-widest">الاسم الكامل</label>
+                <label htmlFor="new-staff-full-name" className="text-sm font-black text-slate-500 mr-2">الاسم الكامل</label>
                 <input 
                   type="text" 
+                  id="new-staff-full-name"
                   value={newUser.full_name}
                   onChange={(e) => setNewUser(p => ({ ...p, full_name: e.target.value }))}
                   className="w-full px-6 py-4 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500 rounded-[20px] font-bold outline-none transition-all dark:text-white"
@@ -989,9 +1023,10 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-xs font-black text-slate-400 mr-2 uppercase tracking-widest">اسم المستخدم</label>
+                <label htmlFor="new-staff-username" className="text-sm font-black text-slate-500 mr-2">اسم المستخدم</label>
                 <input 
                   type="text" 
+                  id="new-staff-username"
                   value={newUser.username}
                   onChange={(e) => setNewUser(p => ({ ...p, username: e.target.value }))}
                   className="w-full px-6 py-4 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500 rounded-[20px] font-bold outline-none transition-all dark:text-white"
@@ -999,9 +1034,10 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-xs font-black text-slate-400 mr-2 uppercase tracking-widest">كلمة المرور</label>
+                <label htmlFor="new-staff-password" className="text-sm font-black text-slate-500 mr-2">كلمة المرور</label>
                 <input 
                   type="password" 
+                  id="new-staff-password"
                   value={newUser.password}
                   onChange={(e) => setNewUser(p => ({ ...p, password: e.target.value }))}
                   className="w-full px-6 py-4 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500 rounded-[20px] font-bold outline-none transition-all dark:text-white"
@@ -1009,13 +1045,15 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-xs font-black text-slate-400 mr-2 uppercase tracking-widest">الدور الوظيفي</label>
+                <label htmlFor="new-staff-role" className="text-sm font-black text-slate-500 mr-2">الدور الوظيفي</label>
                 <select 
+                  id="new-staff-role"
                   value={newUser.role}
                   onChange={(e) => setNewUser(p => ({ ...p, role: e.target.value }))}
                   className="w-full px-6 py-4 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500 rounded-[20px] font-bold outline-none transition-all dark:text-white appearance-none"
                 >
                   <option value="pharmacist">صيدلي (Pharmacist)</option>
+                  <option value="cashier">كاشير (Cashier)</option>
                   <option value="admin">مدير نظام (Admin)</option>
                   <option value="owner">مالك (Owner)</option>
                 </select>
@@ -1042,13 +1080,13 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
       {/* Open shift must be reconciled before the account is deactivated. */}
       {openShiftDeletion && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-[120] p-4">
-          <div className="bg-white dark:bg-slate-900 w-full max-w-lg rounded-[40px] shadow-hard border border-rose-100 dark:border-rose-900/30 overflow-hidden">
+          <div ref={openShiftDeleteDialogRef} role="dialog" aria-modal="true" aria-labelledby="open-shift-delete-dialog-title" tabIndex={-1} className="bg-white dark:bg-slate-900 w-full max-w-lg rounded-[40px] shadow-hard border border-rose-100 dark:border-rose-900/30 overflow-hidden">
             <div className="p-8 bg-rose-50 dark:bg-rose-900/10 flex items-center gap-4">
               <div className="w-12 h-12 bg-rose-100 dark:bg-rose-900/30 rounded-2xl flex items-center justify-center text-rose-600">
                 <AlertTriangle className="w-6 h-6" />
               </div>
               <div>
-                <h3 className="font-black text-xl text-slate-900 dark:text-white">لدى الموظف وردية مفتوحة</h3>
+                <h3 id="open-shift-delete-dialog-title" className="font-black text-xl text-slate-900 dark:text-white">لدى الموظف وردية مفتوحة</h3>
                 <p className="text-rose-600 text-sm font-bold">{openShiftDeletion.name}</p>
               </div>
             </div>
@@ -1083,34 +1121,35 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
       {/* Reset Password Modal */}
       {showResetModal && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-[110] p-4 animate-in fade-in duration-300">
-          <div className="bg-white dark:bg-slate-900 w-full max-w-md rounded-[40px] shadow-hard border border-slate-100 dark:border-slate-800 overflow-hidden animate-in zoom-in duration-500">
+          <div ref={resetPasswordDialogRef} role="dialog" aria-modal="true" aria-labelledby="reset-password-dialog-title" tabIndex={-1} className="bg-white dark:bg-slate-900 w-full max-w-md rounded-[40px] shadow-hard border border-slate-100 dark:border-slate-800 overflow-hidden animate-in zoom-in duration-500">
             <div className="p-8 border-b border-slate-100 dark:border-slate-800 bg-amber-50/50 dark:bg-amber-900/10 flex justify-between items-center">
               <div className="flex items-center gap-4">
                 <div className="w-12 h-12 bg-amber-100 dark:bg-amber-900/30 rounded-2xl flex items-center justify-center text-amber-600">
                   <Key className="w-6 h-6" />
                 </div>
                 <div>
-                  <h3 className="font-black text-xl text-slate-900 dark:text-white">إعادة تعيين المرور</h3>
+                  <h3 id="reset-password-dialog-title" className="font-black text-xl text-slate-900 dark:text-white">إعادة تعيين المرور</h3>
                   <p className="text-amber-600 text-xs font-bold">{showResetModal.full_name || showResetModal.username}</p>
                 </div>
               </div>
-              <button onClick={() => setShowResetModal(null)} className="text-slate-400 hover:text-rose-500 transition-colors">
+              <button type="button" aria-label="إغلاق إعادة تعيين كلمة المرور" onClick={() => setShowResetModal(null)} className="text-slate-400 hover:text-rose-500 transition-colors">
                 <X className="w-6 h-6" />
               </button>
             </div>
             
             <div className="p-8 space-y-6">
               <div className="space-y-2">
-                <label className="text-xs font-black text-slate-400 mr-4 uppercase tracking-widest">كلمة المرور الجديدة</label>
+                <label htmlFor="reset-staff-password" className="text-sm font-black text-slate-500 mr-4">كلمة المرور الجديدة</label>
                 <input 
                   type="text" 
+                  id="reset-staff-password"
                   value={newTempPassword}
                   onChange={(e) => setNewTempPassword(e.target.value)}
                   placeholder="أدخل كلمة المرور الجديدة"
                   className="w-full px-6 py-4 bg-slate-50 dark:bg-slate-800/50 border-2 border-transparent focus:border-amber-500 rounded-2xl font-bold dark:text-white transition-all outline-none"
                   autoFocus
                 />
-                <p className="text-[10px] text-slate-400 font-bold px-4 mt-2">يجب أن تكون كلمة المرور 6 أحرف على الأقل وتكون قوية.</p>
+                <p className="text-xs text-slate-500 font-bold px-4 mt-2">يجب أن تكون كلمة المرور 6 أحرف على الأقل وتكون قوية.</p>
               </div>
 
               <div className="flex gap-4">

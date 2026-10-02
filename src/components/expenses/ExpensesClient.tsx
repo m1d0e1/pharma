@@ -216,6 +216,7 @@ export default function ExpensesClient({ canManage = false }: { canManage?: bool
         <div className="flex items-center gap-3">
           <Filter className="w-4 h-4 text-slate-400" />
           <select
+            aria-label="تصفية المصروفات حسب الفئة"
             value={filterCategory}
             onChange={(e) => setFilterCategory(e.target.value)}
             className="bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-4 py-2 rounded-xl text-sm font-bold"
@@ -243,8 +244,9 @@ export default function ExpensesClient({ canManage = false }: { canManage?: bool
           <h3 className="text-lg font-bold">إضافة مصروف جديد</h3>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="text-sm font-bold text-slate-600 dark:text-slate-400 mb-1 block">الفئة</label>
+              <label htmlFor="expense-category" className="text-sm font-bold text-slate-600 dark:text-slate-400 mb-1 block">الفئة</label>
               <select
+                id="expense-category"
                 value={form.category}
                 onChange={e => setForm({...form, category: e.target.value})}
                 className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-4 py-3 rounded-xl font-bold"
@@ -255,8 +257,9 @@ export default function ExpensesClient({ canManage = false }: { canManage?: bool
               </select>
             </div>
             <div>
-              <label className="text-sm font-bold text-slate-600 dark:text-slate-400 mb-1 block">المبلغ (ج.م)</label>
+              <label htmlFor="expense-amount" className="text-sm font-bold text-slate-600 dark:text-slate-400 mb-1 block">المبلغ (ج.م)</label>
               <input
+                id="expense-amount"
                 type="number"
                 step="0.01"
                 min="0"
@@ -268,8 +271,9 @@ export default function ExpensesClient({ canManage = false }: { canManage?: bool
               />
             </div>
             <div>
-              <label className="text-sm font-bold text-slate-600 dark:text-slate-400 mb-1 block">التاريخ</label>
+              <label htmlFor="expense-date" className="text-sm font-bold text-slate-600 dark:text-slate-400 mb-1 block">التاريخ</label>
               <input
+                id="expense-date"
                 type="date"
                 value={form.date}
                 onChange={e => setForm({...form, date: e.target.value})}
@@ -278,8 +282,9 @@ export default function ExpensesClient({ canManage = false }: { canManage?: bool
               />
             </div>
             <div>
-              <label className="text-sm font-bold text-slate-600 dark:text-slate-400 mb-1 block">الوصف</label>
+              <label htmlFor="expense-description" className="text-sm font-bold text-slate-600 dark:text-slate-400 mb-1 block">الوصف</label>
               <input
+                id="expense-description"
                 type="text"
                 value={form.description}
                 onChange={e => setForm({...form, description: e.target.value})}

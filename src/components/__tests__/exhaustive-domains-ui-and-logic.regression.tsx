@@ -607,7 +607,7 @@ describe('Exhaustive Frontend UI & Business Logic Test Suite (All Domains & Feat
 
       render(<POSPage />);
 
-      const checkoutBtn = await screen.findByRole('button', { name: /إتمام وطباعة/ });
+      const checkoutBtn = await screen.findByRole('button', { name: /إتمام البيع/ });
       fireEvent.click(checkoutBtn);
 
       await waitFor(() => {
@@ -644,6 +644,7 @@ describe('Exhaustive Frontend UI & Business Logic Test Suite (All Domains & Feat
 
       expect(screen.getByText('نفد المخزون!')).toBeInTheDocument();
       expect(screen.getByText(/لا يوجد كميات متوفرة من "كونتراست شراب"/i)).toBeInTheDocument();
+      expect(screen.getByRole('alertdialog', { name: 'نفد المخزون!' })).toHaveAttribute('aria-modal', 'true');
 
       const poBtn = screen.getByRole('button', { name: /فاتورة شراء جديدة/i });
       fireEvent.click(poBtn);
@@ -679,6 +680,9 @@ describe('Exhaustive Frontend UI & Business Logic Test Suite (All Domains & Feat
           onConfirm={onConfirm}
         />
       );
+
+      expect(screen.getByRole('alertdialog', { name: 'تحذير: سلامة المريض' })).toHaveAttribute('aria-modal', 'true');
+      expect(screen.getByRole('button', { name: 'إغلاق تحذير سلامة المريض' })).toBeInTheDocument();
 
       expect(screen.getByText('تحذير: سلامة المريض')).toBeInTheDocument();
       expect(screen.getByText('وارفارين')).toBeInTheDocument();

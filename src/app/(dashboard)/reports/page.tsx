@@ -158,14 +158,14 @@ export default function ReportsPage() {
           <p className="text-slate-500 dark:text-slate-400">نظرة عميقة على أداء المبيعات وحركة المخزون.</p>
         </div>
         <div className="flex gap-3">
-           <button onClick={exportReport} className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-6 py-3 rounded-2xl font-bold text-sm shadow-sm hover:bg-slate-50 transition-all flex items-center gap-2">
+           <button type="button" onClick={exportReport} className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-6 py-3 rounded-2xl font-bold text-sm shadow-sm hover:bg-slate-50 transition-all flex items-center gap-2">
              <span>📥</span> تصدير التقرير
            </button>
         </div>
       </div>
 
       {/* Reports Unified Navigation Tab Bar */}
-      <div className="flex border-b border-slate-200 dark:border-slate-800 gap-6 text-sm">
+      <div className="flex border-b border-slate-200 dark:border-slate-800 gap-6 text-sm overflow-x-auto pb-1">
         <Link 
           href="/reports" 
           className="pb-4 border-b-2 border-blue-600 font-black text-blue-600 dark:text-blue-400 flex items-center gap-2"

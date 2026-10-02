@@ -144,7 +144,7 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
     <th className={`px-8 py-5 text-sm font-bold text-slate-500 dark:text-slate-400 ${className}`}>
       <button type="button" onClick={() => sortBy(sortKey)} className="inline-flex items-center gap-1 hover:text-blue-600">
         {children}
-        <span className="text-[10px]">{sort?.key === sortKey ? (sort.dir === 'asc' ? '▲' : '▼') : '↕'}</span>
+        <span className="text-xs" aria-hidden="true">{sort?.key === sortKey ? (sort.dir === 'asc' ? '▲' : '▼') : '↕'}</span>
       </button>
     </th>
   );
@@ -425,7 +425,7 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
                             {item.master_drugs.trade_name_en || item.master_drugs.trade_name}
                           </span>
                           {(item.barcode || item.master_drugs.barcode) && (
-                            <span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 font-mono text-[10px] font-bold">
+                            <span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 font-mono text-xs font-bold">
                               {item.barcode || item.master_drugs.barcode}
                             </span>
                           )}
@@ -454,8 +454,8 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
                         'text-slate-600 dark:text-slate-300'
                       }`}>
                         {item.expiry_date ? new Date(item.expiry_date).toLocaleDateString('ar-EG', { year: 'numeric', month: 'long', day: 'numeric' }) : 'لا يوجد'}
-                        {isExpired && <span className="mr-2 text-[10px] bg-red-100 text-red-600 px-1.5 py-0.5 rounded uppercase font-black">منتهي الصلاحية</span>}
-                        {isExpiringSoon && <span className="mr-2 text-[10px] bg-amber-100 text-amber-600 px-1.5 py-0.5 rounded">قريب الانتهاء</span>}
+                        {isExpired && <span className="mr-2 text-xs bg-red-100 text-red-600 px-1.5 py-0.5 rounded font-black">منتهي الصلاحية</span>}
+                        {isExpiringSoon && <span className="mr-2 text-xs bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">قريب الانتهاء</span>}
                       </span>
                     </td>
                     <td className="px-8 py-5">

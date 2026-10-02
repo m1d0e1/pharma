@@ -84,6 +84,7 @@ describe('inventory-linked reorder and shortage notebook regression', () => {
       ALTER TABLE sales_items ADD COLUMN large_to_medium INTEGER DEFAULT 1;
       ALTER TABLE sales_items ADD COLUMN medium_to_small INTEGER DEFAULT 1;
       ALTER TABLE purchase_orders ADD COLUMN pharmacy_id TEXT;
+      ALTER TABLE activity_log ADD COLUMN pharmacy_id TEXT;
     `);
     mockDb.pragma('foreign_keys = ON');
     mockDb.exec(`
@@ -100,6 +101,7 @@ describe('inventory-linked reorder and shortage notebook regression', () => {
 
       INSERT INTO inventory (id, pharmacy_id, drug_id, quantity, strips_per_box, expiry_date) VALUES
         ('low-stock', NULL, 9101, 2, 10, '2099-12-31'),
+        ('unknown-expiry-stock', NULL, 9101, 50, 10, NULL),
         ('expired-stock', NULL, 9101, 50, 10, '2020-01-01'),
         ('other-pharmacy-stock', 'ph-2', 9101, 50, 10, '2099-12-31'),
         ('zero-stock', NULL, 9102, 0, 1, '2099-12-31'),
@@ -239,6 +241,64 @@ describe('inventory-linked reorder and shortage notebook regression', () => {
     const received = await updateShortageStatusAction(replenishedItem.id, 'received');
     expect(received.success).toBe(true);
     expect((await getShortagesAction()).data?.some((item: any) => item.drug_id === 9101)).toBe(false);
+  });
+
+  it('normalizes legacy unit/pill small-unit aliases in reorder demand instead of treating them as whole large packs', async () => {
+    mockDb.prepare("DELETE FROM sales_items WHERE invoice_id = 'recent-sale'").run();
+    mockDb.prepare(`
+      INSERT INTO sales_items (
+        invoice_id, drug_id, quantity_sold, unit, is_negative,
+        large_to_medium, medium_to_small
+      ) VALUES
+        ('recent-sale', 9101, 1500, 'unit', 0, 10, 10),
+        ('recent-sale', 9101, 1500, 'pill', 0, 10, 10)
+    `).run();
+
+    const lowStock = await getLowStockAction(10);
+    expect(lowStock.success).toBe(true);
+    expect(lowStock.data?.find((item: any) => item.drug_id === 9101)).toMatchObject({
+      avg_monthly_usage: 30,
+      reorder_point: 30,
+    });
+
+    await addToShortagesAction({ drug_id: 9101, qty: 8 });
+    const shortages = await getShortagesAction();
+    expect(shortages.success).toBe(true);
+    expect(shortages.data?.find((item: any) => item.drug_id === 9101)).toMatchObject({
+      reorder_point: 30,
+      deficit: 28,
+    });
+  });
+
+  it('keeps historical tablet/capsule sale aliases small after the current master unit name changes', async () => {
+    mockDb.prepare("UPDATE master_drugs SET small_unit = 'جرعة مخصصة' WHERE id = 9101").run();
+    mockDb.prepare("DELETE FROM sales_items WHERE invoice_id = 'recent-sale'").run();
+    mockDb.prepare(`
+      INSERT INTO sales_items (
+        invoice_id, drug_id, quantity_sold, unit, is_negative,
+        large_to_medium, medium_to_small
+      ) VALUES
+        ('recent-sale', 9101, 1000, 'Tablet', 0, 10, 10),
+        ('recent-sale', 9101, 1000, 'Capsule', 0, 10, 10),
+        ('recent-sale', 9101, 1000, 'قرص', 0, 10, 10),
+        ('recent-sale', 9101, 1000, 'كبسولة', 0, 10, 10),
+        ('recent-sale', 9101, 1000, 'جرعة مخصصة', 0, 10, 10)
+    `).run();
+
+    const lowStock = await getLowStockAction(10);
+    expect(lowStock.success).toBe(true);
+    expect(lowStock.data?.find((item: any) => item.drug_id === 9101)).toMatchObject({
+      avg_monthly_usage: 50,
+      reorder_point: 50,
+    });
+
+    await addToShortagesAction({ drug_id: 9101, qty: 8 });
+    const shortages = await getShortagesAction();
+    expect(shortages.success).toBe(true);
+    expect(shortages.data?.find((item: any) => item.drug_id === 9101)).toMatchObject({
+      reorder_point: 50,
+      deficit: 48,
+    });
   });
 
   it('keeps the UI low-stock query bounded while synchronizing every low-stock item to shortages', async () => {
@@ -732,10 +792,17 @@ describe('inventory-linked reorder and shortage notebook regression', () => {
     expect(result.success).toBe(true);
 
     expect((mockDb.prepare(`
-      SELECT SUM(quantity) AS quantity FROM inventory
-      WHERE drug_id = 9101
-        AND (pharmacy_id IS NULL OR pharmacy_id = 'local_default')
-        AND (expiry_date IS NULL OR expiry_date >= date('now', 'localtime'))
+      SELECT SUM(
+        CASE
+          WHEN COALESCE(md.has_expiry, 1) = 0 OR i.expiry_date IS NOT NULL THEN i.quantity
+          ELSE 0
+        END
+      ) AS quantity
+      FROM inventory i
+      JOIN master_drugs md ON md.id = i.drug_id
+      WHERE i.drug_id = 9101
+        AND (i.pharmacy_id IS NULL OR i.pharmacy_id = 'local_default')
+        AND (i.expiry_date IS NULL OR i.expiry_date >= date('now', 'localtime'))
     `).get() as any).quantity).toBe(3);
     const shortage = mockDb.prepare('SELECT status FROM shortages WHERE drug_id = 9101').get() as any;
     expect(shortage.status).not.toBe('received');

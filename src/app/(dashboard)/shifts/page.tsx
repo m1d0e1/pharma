@@ -98,6 +98,8 @@ export default function ShiftsPage() {
     return <AccessDenied />;
   }
 
+  const canHandover = hasUserPermissionSync(user, 'acc_can_view_handover');
+
   return (
     <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700" dir="rtl">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
@@ -105,15 +107,17 @@ export default function ShiftsPage() {
           <h1 className="text-3xl font-bold text-slate-900 dark:text-white">إدارة الشفتات النقدية</h1>
           <p className="text-slate-500 mt-1">إدارة الوردية المشتركة وتتبع المستخدمين والتسليمات والفروقات</p>
         </div>
-        <div className="flex gap-3">
-          <Link 
-            href="/finance/handover" 
-            className="px-6 py-3 bg-slate-900 dark:bg-slate-800 hover:bg-slate-800 text-white rounded-2xl font-bold text-sm shadow-lg transition-all flex items-center gap-2"
-          >
-            <span>🤝</span>
-            <span>تسليم الدرج والمناوبة</span>
-          </Link>
-        </div>
+        {canHandover && (
+          <div className="flex gap-3">
+            <Link
+              href="/finance/handover"
+              className="px-6 py-3 bg-slate-900 dark:bg-slate-800 hover:bg-slate-800 text-white rounded-2xl font-bold text-sm shadow-lg transition-all flex items-center gap-2"
+            >
+              <span>🤝</span>
+              <span>تسليم الدرج والمناوبة</span>
+            </Link>
+          </div>
+        )}
       </div>
 
       {/* Current Shift Status */}
@@ -130,13 +134,15 @@ export default function ShiftsPage() {
               </p>
             </div>
             <div className="flex items-center gap-4">
-              <Link 
-                href="/finance/handover" 
-                className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm rounded-2xl shadow-md transition-all flex items-center gap-2 whitespace-nowrap"
-              >
-                <span>🤝</span>
-                <span>تسليم الدرج</span>
-              </Link>
+              {canHandover && (
+                <Link
+                  href="/finance/handover"
+                  className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm rounded-2xl shadow-md transition-all flex items-center gap-2 whitespace-nowrap"
+                >
+                  <span>🤝</span>
+                  <span>تسليم الدرج</span>
+                </Link>
+              )}
               <div className="text-right">
                 <p className="text-xs text-green-600 dark:text-green-400">معرف الشفت</p>
                 <p className="font-mono text-green-800 dark:text-green-300 font-bold">{currentShift.id.substring(0, 8)}...</p>
@@ -153,6 +159,8 @@ export default function ShiftsPage() {
         hasOpenShift={hasOpenShift}
         userRole={userRole}
         suggestedStartingCash={suggestedStartingCash}
+        canViewShiftReports={hasUserPermissionSync(user, 'rep_can_view_shifts')}
+        canHandover={canHandover}
       />
 
       {/* Information Box */}

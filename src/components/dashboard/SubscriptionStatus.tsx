@@ -103,7 +103,7 @@ export default function SubscriptionStatus() {
       <div className="space-y-6">
         {status === 'activated' ? (
           <div className="flex items-center gap-3 p-4 bg-emerald-50 dark:bg-emerald-900/10 rounded-2xl border border-emerald-100 dark:border-emerald-800/30">
-            <Zap className="w-5 h-5 text-emerald-600 fill-current animate-pulse" />
+            <Zap className="w-5 h-5 text-emerald-600 fill-current" />
             <span className="text-sm font-black text-emerald-800 dark:text-emerald-200">وضع العمل بدون اتصال مفعل (المنفذ)</span>
           </div>
         ) : (
@@ -112,6 +112,7 @@ export default function SubscriptionStatus() {
               يمكنك تفعيل وضع العمل المحلي دون ادعاء وجود ترخيص تم التحقق منه عبر الخادم.
             </p>
             <button
+              type="button"
               onClick={handleManualActivate}
               disabled={isActivating}
               className="w-full bg-gradient-to-r from-amber-500 to-orange-600 text-white py-4 rounded-2xl font-black text-lg transition-all shadow-lg shadow-amber-500/20 flex items-center justify-center gap-2 hover:opacity-90 transform active:scale-95 disabled:opacity-50"

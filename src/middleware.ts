@@ -7,23 +7,24 @@ export async function middleware(request: NextRequest) {
 
   const token = request.cookies.get('token')?.value;
   const path = request.nextUrl.pathname;
+  const isTauriDev = process.env.NEXT_PUBLIC_TAURI === '1';
 
   // Public routes
   const publicRoutes = ['/login', '/setup', '/subscription'];
   const isPublicRoute = publicRoutes.some(route => path.startsWith(route));
 
   // If no token and trying to access protected route
-  if (!token && !isPublicRoute) {
+  if (!isTauriDev && !token && !isPublicRoute) {
     return NextResponse.redirect(new URL('/login', request.url));
   }
 
   // If has token and trying to access login page
-  if (token && path === '/login') {
+  if (!isTauriDev && token && path === '/login') {
     return NextResponse.redirect(new URL('/', request.url));
   }
 
   // Check subscription activation for admin
-  if (token && path === '/') {
+  if (!isTauriDev && token && path === '/') {
     const subscriptionActivated = request.cookies.get('subscriptionActivated')?.value;
     const userRole = request.cookies.get('userRole')?.value;
 
@@ -38,7 +39,7 @@ export async function middleware(request: NextRequest) {
   // hard-coding roles here would override permissions granted by the owner.
   const isStaffRoute = isOwnerOnlyStaffRoute(path);
 
-  if (token && isStaffRoute) {
+  if (!isTauriDev && token && isStaffRoute) {
     const userRole = request.cookies.get('userRole')?.value;
     if (userRole !== 'owner') {
       return NextResponse.redirect(new URL('/unauthorized', request.url));
@@ -60,7 +61,9 @@ export async function middleware(request: NextRequest) {
   // CSP header (Content Security Policy)
   const csp = [
     "default-src 'self'",
-    "script-src 'self' 'unsafe-inline'",
+    isTauriDev
+      ? "script-src 'self' 'unsafe-inline' 'unsafe-eval'"
+      : "script-src 'self' 'unsafe-inline'",
     "style-src 'self' 'unsafe-inline'",
     "font-src 'self'",
     "img-src 'self' data: https:",

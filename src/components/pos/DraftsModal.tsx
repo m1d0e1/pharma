@@ -1,8 +1,9 @@
 'use client';
 import { useHotkeys } from 'react-hotkeys-hook';;
 
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { X, Loader2, FileText, Clock } from 'lucide-react';
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap';
 
 interface DraftsModalProps {
   isOpen: boolean;
@@ -19,19 +20,20 @@ export default function DraftsModal({
   isLoadingDrafts,
   onLoadDraft
 }: DraftsModalProps) {
+  const dialogRef = useDialogFocusTrap<HTMLDivElement>(isOpen);
   
   useHotkeys('esc', () => { if(typeof onClose === 'function') onClose(); }, { enableOnFormTags: true });
 if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
-      <div className="bg-white dark:bg-slate-900 rounded-[40px] w-full max-w-2xl shadow-2xl border border-slate-100 dark:border-slate-800 flex flex-col max-h-[80vh]">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="drafts-modal-title" tabIndex={-1} className="bg-white dark:bg-slate-900 rounded-3xl w-full max-w-2xl shadow-2xl border border-slate-100 dark:border-slate-800 flex flex-col max-h-[80vh]">
         <div className="p-8 border-b border-slate-50 dark:border-slate-800 flex justify-between items-center">
           <div>
-            <h3 className="text-2xl font-black text-slate-950 dark:text-white">📁 المسودات المحفوظة</h3>
+            <h3 id="drafts-modal-title" className="text-2xl font-black text-slate-950 dark:text-white">📁 المسودات المحفوظة</h3>
             <p className="text-slate-500 font-bold text-sm">اختر مسودة لاستكمال عملية البيع</p>
           </div>
-          <button onClick={onClose} className="p-3 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-2xl transition-all">
+          <button type="button" aria-label="إغلاق المسودات" onClick={onClose} className="p-3 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-2xl transition-all">
             <X className="w-6 h-6 text-slate-700 dark:text-slate-300" />
           </button>
         </div>
@@ -49,9 +51,10 @@ if (!isOpen) return null;
             </div>
           ) : (
             drafts.map(draft => (
-              <div 
+              <button
+                type="button"
                 key={draft.id}
-                className="group bg-slate-50 dark:bg-slate-800/50 p-6 rounded-3xl border border-slate-100 dark:border-slate-800 hover:border-blue-500 transition-all cursor-pointer"
+                className="group w-full text-right bg-slate-50 dark:bg-slate-800/50 p-6 rounded-2xl border border-slate-100 dark:border-slate-800 hover:border-blue-500 transition-colors"
                 onClick={() => onLoadDraft(draft)}
               >
                 <div className="flex justify-between items-start mb-4">
@@ -66,23 +69,23 @@ if (!isOpen) return null;
                   </div>
                   <div className="text-left">
                     <p className="text-xl font-black text-blue-600">{draft.total_amount} ج.م</p>
-                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{draft.payment_method}</p>
+                    <p className="text-[11px] font-black text-slate-500">{draft.payment_method}</p>
                   </div>
                 </div>
                 
                 <div className="flex flex-wrap gap-2">
                   {draft.items.map((item: any, idx: number) => (
-                    <span key={idx} className="bg-white dark:bg-slate-700 px-3 py-1 rounded-full text-[10px] font-bold border border-slate-100 dark:border-slate-600 text-slate-900 dark:text-slate-200">
+                    <span key={idx} className="bg-white dark:bg-slate-700 px-3 py-1 rounded-full text-[11px] font-bold border border-slate-100 dark:border-slate-600 text-slate-900 dark:text-slate-200">
                       {item.qty} x {item.trade_name_en || item.trade_name}
                     </span>
                   ))}
                 </div>
-              </div>
+              </button>
             ))
           )}
         </div>
 
-        <div className="p-8 bg-slate-50 dark:bg-slate-800/50 rounded-b-[40px] text-center">
+        <div className="p-6 bg-slate-50 dark:bg-slate-800/50 rounded-b-3xl text-center">
           <button 
             onClick={onClose}
             className="px-10 py-4 bg-slate-800 text-white rounded-2xl font-black hover:bg-slate-700 transition-all"

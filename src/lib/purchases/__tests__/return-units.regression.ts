@@ -1,4 +1,6 @@
 import {
+  normalizePurchaseReturnUnit,
+  purchaseReturnQuantityInLargeUnits,
   purchaseReturnMatchesSearch,
   purchaseReturnPriceForUnit,
   purchaseReturnQuantityForUnit,
@@ -6,6 +8,15 @@ import {
 } from '@/lib/purchases/return-units';
 
 describe('purchase return unit limits', () => {
+  it('normalizes UI unit aliases and converts them back to large units', () => {
+    expect(normalizePurchaseReturnUnit('box')).toBe('large');
+    expect(normalizePurchaseReturnUnit('strip')).toBe('medium');
+    expect(normalizePurchaseReturnUnit('pill')).toBe('small');
+    expect(normalizePurchaseReturnUnit('invalid')).toBeNull();
+    expect(purchaseReturnQuantityInLargeUnits(12, 'medium', 12, 10)).toBe(1);
+    expect(purchaseReturnQuantityInLargeUnits(120, 'small', 12, 10)).toBe(1);
+  });
+
   it('converts the remaining paid boxes, not the original box count', () => {
     const remainingBoxes = purchaseReturnRemainingLargeQuantity(
       2,

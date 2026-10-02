@@ -57,7 +57,7 @@ import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { isBusinessDate, localDate } from '@/lib/time';
 import { importInventoryWorkbookRows } from '@/lib/inventory/import';
 import { notifyInventoryChanged } from '@/lib/inventory/refresh';
-import { resolveRecoveredShortages } from '@/lib/inventory/reorder-state';
+import { getSalesQuantityInLargeSql, resolveRecoveredShortages } from '@/lib/inventory/reorder-state';
 
 function normalizePharmacyId(value: unknown): string {
   const pharmacyId = String(value ?? '').trim();
@@ -188,7 +188,10 @@ const addInventorySchema = z.object({
   drug_id: z.coerce.number().int().positive('معرف الدواء يجب أن يكون رقم موجب'),
   quantity: z.coerce.number().positive('الكمية يجب أن تكون رقم موجب'),
   local_selling_price: z.coerce.number().nonnegative('السعر لا يمكن أن يكون سالباً'),
-  expiry_date: z.string().refine(isBusinessDate, 'تاريخ الصلاحية غير صالح'),
+  expiry_date: z.preprocess(
+    val => (typeof val === 'string' && val.trim() === '' ? null : val),
+    z.string().refine(isBusinessDate, 'تاريخ الصلاحية غير صالح').optional().nullable()
+  ),
   barcode: z.string().optional().nullable(),
   unit: z.string().optional().nullable(),
   large_to_medium: z.coerce.number().int().positive().optional().nullable(),
@@ -202,7 +205,7 @@ const updateInventorySchema = z.object({
   reason_id: z.coerce.number().optional().nullable(),
   large_to_medium: z.coerce.number().int().positive().optional().nullable(),
   expiry_date: z.preprocess(
-    val => (typeof val === 'string' && val.trim() === '' ? null : val),
+    val => (typeof val === 'string' && val.trim() === '' ? undefined : val),
     z.string().refine(isBusinessDate, 'تاريخ الصلاحية غير صالح').optional().nullable()
   ),
 });
@@ -242,12 +245,17 @@ export async function addInventoryAction(formData: AddInventoryInput) {
     const normalizedBarcode = normalizeInventoryBarcode(barcode);
     const pharmacyId = normalizePharmacyId(localUser.pharmacy_id);
     const catalogUnits = await db.prepare(`
-      SELECT large_unit, COALESCE(NULLIF(large_to_medium, 0), 1) AS large_to_medium
+      SELECT large_unit,
+             COALESCE(NULLIF(large_to_medium, 0), 1) AS large_to_medium,
+             COALESCE(has_expiry, 1) AS has_expiry
       FROM master_drugs
       WHERE id = ?
     `).get(drug_id) as any;
     if (!catalogUnits) {
       return { success: false, error: 'الصنف غير موجود بكتالوج الأدوية' };
+    }
+    if (Number(catalogUnits.has_expiry ?? 1) !== 0 && !expiry_date) {
+      return { success: false, error: 'بيانات الإدخال غير صالحة: تاريخ الصلاحية غير صالح' };
     }
     const canModifyUnitConversion = hasUserPermissionSync(localUser, 'can_modify_unit_conversion');
     const requestedUnit = String(unit || '').trim();
@@ -280,7 +288,7 @@ export async function addInventoryAction(formData: AddInventoryInput) {
       await transactionDb.prepare(`
         INSERT INTO inventory (id, pharmacy_id, drug_id, quantity, local_selling_price, expiry_date, barcode, strips_per_box, medium_to_small)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(id, pharmacyId, drug_id, quantity, local_selling_price, expiry_date, normalizedBarcode, large_to_medium || 1, mediumToSmall);
+      `).run(id, pharmacyId, drug_id, quantity, local_selling_price, expiry_date ?? null, normalizedBarcode, large_to_medium || 1, mediumToSmall);
 
       if (unit) {
         await transactionDb.prepare('UPDATE master_drugs SET large_unit = ? WHERE id = ?').run(unit, drug_id);
@@ -354,17 +362,21 @@ export async function updateInventoryAction(formData: UpdateInventoryInput) {
 
     const result = await dbTransaction(async (db) => {
     const current = await db.prepare(`
-      SELECT i.quantity, i.drug_id, i.strips_per_box, m.large_to_medium
+      SELECT i.quantity, i.drug_id, i.strips_per_box, m.large_to_medium, COALESCE(m.has_expiry, 1) AS has_expiry
       FROM inventory i 
       JOIN master_drugs m ON m.id = i.drug_id
       WHERE i.id = ?
         AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
-    `).get(id, pharmacyId, pharmacyId) as { quantity: number, drug_id: number, strips_per_box?: number, large_to_medium?: number };
+    `).get(id, pharmacyId, pharmacyId) as { quantity: number, drug_id: number, strips_per_box?: number, large_to_medium?: number, has_expiry?: number };
 
     if (!current) return { success: false, error: 'الصنف غير موجود بالمخزون' };
 
     if (Math.abs(Number(quantity) - Number(current.quantity)) > 0.000001 && !reason_id) {
       return { success: false, error: 'يجب اختيار سبب عند تعديل كمية المخزون' };
+    }
+
+    if (expiry_date === null && Number(current.has_expiry ?? 1) !== 0) {
+      return { success: false, error: 'بيانات التحديث غير صالحة: تاريخ الصلاحية مطلوب لهذا الصنف' };
     }
 
     const canModifyUnitConversion = hasUserPermissionSync(localUser, 'can_modify_unit_conversion');
@@ -381,7 +393,7 @@ export async function updateInventoryAction(formData: UpdateInventoryInput) {
     `;
     const invParams: any[] = [quantity, local_selling_price];
 
-    if (expiry_date) {
+    if (expiry_date !== undefined) {
       updateInvQuery += `, expiry_date = ?`;
       invParams.push(expiry_date);
     }
@@ -770,19 +782,61 @@ export async function getLowStockAction(threshold?: number, maxRows: number | nu
     const defaultLimit = Number(threshold) > 0 ? Number(threshold) : 10;
     const pharmacyId = user.pharmacy_id || 'local_default';
     const resultLimit = maxRows === null ? null : Math.max(1, Math.floor(Number(maxRows) || 250));
+    const quantityInLarge = getSalesQuantityInLargeSql({
+      quantity: 'si.quantity_sold',
+      unit: 'si.unit',
+      mediumUnit: 'm.medium_unit',
+      smallUnit: 'm.small_unit',
+      largeFactor: 'COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(m.large_to_medium, 0), 1)',
+      smallFactor: 'COALESCE(NULLIF(si.medium_to_small, 0), NULLIF(m.medium_to_small, 0), 1)',
+    });
 
     const items = await db.prepare(`
       WITH Params AS (
         SELECT ? AS pharmacy_id, ? AS default_limit
       ),
+      ScopedEligibleDrugs AS (
+        SELECT DISTINCT i.drug_id
+        FROM inventory i
+        CROSS JOIN Params p
+        WHERE (i.pharmacy_id = p.pharmacy_id OR (i.pharmacy_id IS NULL AND p.pharmacy_id = 'local_default'))
+          AND (i.expiry_date IS NULL OR i.expiry_date >= date('now', 'localtime'))
+      ),
+      AnyInventoryDrugs AS (
+        SELECT DISTINCT drug_id
+        FROM inventory
+      ),
       DrugStock AS (
         SELECT 
           i.drug_id,
-          SUM(COALESCE(i.quantity, 0)) AS current_stock,
-          MIN(i.local_selling_price) AS local_selling_price,
-          MIN(CASE WHEN i.quantity > 0 THEN i.expiry_date END) AS nearest_expiry,
-          MAX(i.barcode) AS lot_barcode
+          SUM(
+            CASE
+              WHEN COALESCE(stock_md.has_expiry, 1) = 0 OR i.expiry_date IS NOT NULL
+                THEN COALESCE(i.quantity, 0)
+              ELSE 0
+            END
+          ) AS current_stock,
+          MIN(
+            CASE
+              WHEN COALESCE(stock_md.has_expiry, 1) = 0 OR i.expiry_date IS NOT NULL
+                THEN i.local_selling_price
+            END
+          ) AS local_selling_price,
+          MIN(
+            CASE
+              WHEN i.quantity > 0
+                AND (COALESCE(stock_md.has_expiry, 1) = 0 OR i.expiry_date IS NOT NULL)
+                THEN i.expiry_date
+            END
+          ) AS nearest_expiry,
+          MAX(
+            CASE
+              WHEN COALESCE(stock_md.has_expiry, 1) = 0 OR i.expiry_date IS NOT NULL
+                THEN i.barcode
+            END
+          ) AS lot_barcode
         FROM inventory i
+        JOIN master_drugs stock_md ON stock_md.id = i.drug_id
         CROSS JOIN Params p
         WHERE (i.pharmacy_id = p.pharmacy_id OR (i.pharmacy_id IS NULL AND p.pharmacy_id = 'local_default'))
           AND i.quantity > 0
@@ -792,18 +846,7 @@ export async function getLowStockAction(threshold?: number, maxRows: number | nu
       MonthlySales AS (
         SELECT 
           si.drug_id,
-          SUM(
-            CASE
-              WHEN si.unit IN ('medium', 'strip', 'شريط') OR si.unit = m.medium_unit
-                THEN si.quantity_sold / COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(m.large_to_medium, 0), 1)
-              WHEN si.unit = 'small' OR si.unit = m.small_unit
-                THEN si.quantity_sold / (
-                  COALESCE(NULLIF(si.large_to_medium, 0), NULLIF(m.large_to_medium, 0), 1)
-                  * COALESCE(NULLIF(si.medium_to_small, 0), NULLIF(m.medium_to_small, 0), 1)
-                )
-              ELSE si.quantity_sold
-            END
-          ) AS avg_monthly_usage
+          SUM(${quantityInLarge}) AS avg_monthly_usage
         FROM sales_items si
         JOIN sales_invoices inv ON si.invoice_id = inv.id
         JOIN master_drugs m ON m.id = si.drug_id
@@ -855,9 +898,12 @@ export async function getLowStockAction(threshold?: number, maxRows: number | nu
         END AS status
       FROM master_drugs m
       CROSS JOIN Params p
+      LEFT JOIN ScopedEligibleDrugs sed ON m.id = sed.drug_id
+      LEFT JOIN AnyInventoryDrugs aid ON m.id = aid.drug_id
       LEFT JOIN DrugStock ds ON m.id = ds.drug_id
       LEFT JOIN MonthlySales ms ON m.id = ms.drug_id
       WHERE COALESCE(m.stop_dealing, 0) = 0
+        AND (sed.drug_id IS NOT NULL OR aid.drug_id IS NULL OR COALESCE(ms.avg_monthly_usage, 0) > 0)
         AND (
         (ds.current_stock IS NOT NULL AND ds.current_stock <= MAX(
           COALESCE(NULLIF(m.reorder_point, 0), NULLIF(m.min_limit, 0), p.default_limit),
@@ -883,7 +929,9 @@ export async function getLowStockAction(threshold?: number, maxRows: number | nu
 
 // Pre-compiled prepared statements for alerts (cached at module level)
 const _lowStockStmt = db.prepare(`
-  SELECT m.id as id, m.id as drug_id, SUM(i.quantity) as quantity, 'low_stock' as alert_type,
+  SELECT m.id as id, m.id as drug_id,
+         SUM(CASE WHEN COALESCE(m.has_expiry, 1) = 0 OR i.expiry_date IS NOT NULL THEN i.quantity ELSE 0 END) as quantity,
+         'low_stock' as alert_type,
          m.trade_name, m.active_ingredient, m.manufacturer, m.trade_name_en
   FROM master_drugs m
   JOIN inventory i ON m.id = i.drug_id
@@ -891,7 +939,8 @@ const _lowStockStmt = db.prepare(`
     AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
     AND (i.expiry_date IS NULL OR i.expiry_date >= date('now', 'localtime'))
   GROUP BY m.id
-  HAVING SUM(i.quantity) <= COALESCE(NULLIF(m.reorder_point, 0), NULLIF(m.min_limit, 0), 10)
+  HAVING SUM(CASE WHEN COALESCE(m.has_expiry, 1) = 0 OR i.expiry_date IS NOT NULL THEN i.quantity ELSE 0 END)
+    <= COALESCE(NULLIF(m.reorder_point, 0), NULLIF(m.min_limit, 0), 10)
   LIMIT 10
 `);
 const _expiringStmt = db.prepare(`
@@ -1328,7 +1377,7 @@ export async function addOpeningBalanceAction(data: {
   quantity: number;
   cost_price: number;
   unit_price: number;
-  expiry_date: string;
+  expiry_date?: string | null;
 }) {
   try {
     const session = await getLocalSession();
@@ -1337,8 +1386,7 @@ export async function addOpeningBalanceAction(data: {
     }
     if (!Number.isFinite(data.quantity) || data.quantity <= 0
         || !Number.isFinite(data.cost_price) || data.cost_price < 0
-        || !Number.isFinite(data.unit_price) || data.unit_price < 0
-        || !isBusinessDate(data.expiry_date)) {
+        || !Number.isFinite(data.unit_price) || data.unit_price < 0) {
       return { success: false, error: 'بيانات الرصيد الافتتاحي غير صالحة' };
     }
 
@@ -1346,18 +1394,24 @@ export async function addOpeningBalanceAction(data: {
     const drug = await db.prepare(`
       SELECT COALESCE(NULLIF(large_to_medium, 0), 1) AS large_to_medium,
              COALESCE(NULLIF(medium_to_small, 0), 1) AS medium_to_small,
+             COALESCE(has_expiry, 1) AS has_expiry,
              COALESCE(trade_name_en, trade_name, active_ingredient) AS trade_name
       FROM master_drugs
       WHERE id = ?
     `).get(data.drug_id) as any;
     if (!drug) return { success: false, error: 'الصنف غير موجود' };
+    const expiryDate = typeof data.expiry_date === 'string' && data.expiry_date.trim() ? data.expiry_date : null;
+    const requiresExpiry = Number(drug.has_expiry ?? 1) !== 0;
+    if ((requiresExpiry && !expiryDate) || (expiryDate && !isBusinessDate(expiryDate))) {
+      return { success: false, error: 'بيانات الرصيد الافتتاحي غير صالحة' };
+    }
 
     await dbTransaction(async (db) => {
       await db.prepare(`
         INSERT INTO inventory (id, pharmacy_id, drug_id, batch_number, expiry_date, quantity, local_selling_price, cost_price, strips_per_box, medium_to_small)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
-        generateId(), session.pharmacy_id || 'local_default', data.drug_id, batchNumber, data.expiry_date,
+        generateId(), session.pharmacy_id || 'local_default', data.drug_id, batchNumber, expiryDate,
         data.quantity, data.unit_price, data.cost_price, Number(drug.large_to_medium) || 1, Number(drug.medium_to_small) || 1
       );
 
@@ -1376,10 +1430,11 @@ export async function addOpeningBalanceAction(data: {
           .run(journalId, Number(equitySetting?.account_id || 21), 'credit', amount);
       }
 
-      await db.prepare('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)').run(
+      await db.prepare('INSERT INTO activity_log (user_id, action, details, pharmacy_id) VALUES (?, ?, ?, ?)').run(
         session.id,
         'OPENING_BALANCE',
-        `رصيد افتتاحي ${data.quantity} من ${drug.trade_name || `صنف #${data.drug_id}`} (${batchNumber})`
+        `رصيد افتتاحي ${data.quantity} من ${drug.trade_name || `صنف #${data.drug_id}`} (${batchNumber})`,
+        session.pharmacy_id || 'local_default'
       );
 
       await resolveRecoveredShortages(db, data.drug_id, session.pharmacy_id || 'local_default');

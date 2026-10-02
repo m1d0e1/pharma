@@ -40,14 +40,12 @@ export default function SyncSettings() {
   };
 
   return (
-    <div className="bg-gradient-to-br from-indigo-800 to-slate-900 p-8 rounded-[2rem] text-white shadow-2xl relative overflow-hidden group">
-      <div className="absolute -top-10 -right-10 w-40 h-40 bg-blue-500/10 blur-3xl rounded-full"></div>
-      
+    <div className="bg-indigo-950 p-6 sm:p-8 rounded-3xl text-white shadow-xl border border-indigo-900">
       <div className="flex items-center gap-4 mb-6">
         <div className="w-12 h-12 bg-white/10 rounded-2xl flex items-center justify-center text-2xl">🧠</div>
         <div>
           <h4 className="text-xl font-bold">تحديث البيانات المرجعية</h4>
-          <p className="text-indigo-200 text-xs">تحميل قائمة الأدوية والتفاعلات العامة</p>
+          <p className="text-indigo-200 text-sm">تحميل قائمة الأدوية والتفاعلات العامة</p>
         </div>
       </div>
 
@@ -58,6 +56,7 @@ export default function SyncSettings() {
           </p>
           
           <button 
+            type="button"
             onClick={handleSync}
             disabled={syncing}
             className="w-full py-4 bg-white text-indigo-900 rounded-2xl font-black shadow-xl hover:bg-indigo-50 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
@@ -67,7 +66,7 @@ export default function SyncSettings() {
           </button>
         </div>
         
-        <p className="text-[10px] text-center text-indigo-300 font-bold uppercase tracking-wider">
+        <p className="text-xs text-center text-indigo-300 font-bold">
           آخر مزامنة: {lastSync || 'لم يتم المزامنة بعد'}
         </p>
       </div>

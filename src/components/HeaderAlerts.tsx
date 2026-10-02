@@ -84,7 +84,10 @@ export default function HeaderAlerts() {
   return (
     <div className="relative" ref={dropdownRef}>
       <button 
+        type="button"
         onClick={() => setIsOpen(!isOpen)}
+        aria-label={isOpen ? 'إغلاق التنبيهات' : `فتح التنبيهات (${totalCount})`}
+        aria-expanded={isOpen}
         className={cn(
           "relative p-3 rounded-2xl transition-all duration-300 hover:shadow-md group",
           isOpen ? "bg-primary-50 dark:bg-primary-900/20 text-primary-600" : "hover:bg-slate-100/80 dark:hover:bg-slate-800/80 text-slate-700 dark:text-slate-300"
@@ -102,7 +105,11 @@ export default function HeaderAlerts() {
       </button>
 
       {isOpen && (
-        <div className="absolute left-0 mt-4 w-[380px] bg-white dark:bg-slate-900 rounded-[32px] shadow-2xl border border-slate-100 dark:border-slate-800 overflow-hidden z-50 animate-in fade-in slide-in-from-top-4 duration-300">
+        <div
+          role="region"
+          aria-label="التنبيهات"
+          className="absolute left-0 mt-4 w-[min(380px,calc(100vw-2rem))] bg-white dark:bg-slate-900 rounded-[32px] shadow-2xl border border-slate-100 dark:border-slate-800 overflow-hidden z-50 animate-in fade-in slide-in-from-top-4 duration-300"
+        >
           {/* Header */}
           <div className="p-6 border-b border-slate-50 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/20">
             <div className="flex items-center justify-between">
@@ -113,8 +120,9 @@ export default function HeaderAlerts() {
                 </span>
               </h3>
               <button 
+                type="button"
                 onClick={fetchAlerts}
-                className="text-[10px] font-black text-primary-600 hover:underline uppercase tracking-widest"
+                className="text-sm font-black text-primary-600 hover:underline"
               >
                 تحديث الآن
               </button>
@@ -193,11 +201,13 @@ export default function HeaderAlerts() {
                       </Link>
                       
                       {/* Mark as read button (for quick dismiss without navigating) */}
-                      <div className="absolute left-5 top-1/2 -translate-y-1/2 flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="absolute left-5 top-1/2 -translate-y-1/2 flex items-center gap-2 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
                         <button 
+                          type="button"
                           onClick={(e) => dismissAlert(alertKey, e)}
                           title="تحديد كمقروء وإخفاء"
-                          className="w-8 h-8 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-400 hover:bg-emerald-500 hover:text-white transition-colors flex items-center justify-center shadow-sm"
+                          aria-label={`تحديد تنبيه ${alert.trade_name_en || alert.trade_name} كمقروء وإخفاؤه`}
+                          className="w-8 h-8 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500 hover:bg-emerald-500 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 transition-colors flex items-center justify-center shadow-sm"
                         >
                           <Check className="w-4 h-4" />
                         </button>
@@ -213,7 +223,7 @@ export default function HeaderAlerts() {
           <Link 
             href="/inventory"
             onClick={() => setIsOpen(false)}
-            className="block p-5 bg-slate-50 dark:bg-slate-800/40 text-center text-xs font-black text-slate-600 dark:text-slate-400 hover:text-primary-600 transition-colors border-t border-slate-100 dark:border-slate-800"
+            className="block p-5 bg-slate-50 dark:bg-slate-800/40 text-center text-sm font-black text-slate-600 dark:text-slate-400 hover:text-primary-600 transition-colors border-t border-slate-100 dark:border-slate-800"
           >
             مشاهدة جميع تنبيهات المخزون
           </Link>

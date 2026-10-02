@@ -6,6 +6,7 @@ import { clearAuditLogsAction } from '@/app/actions-client/audit';
 import { toast } from 'react-hot-toast';
 import { useRouter } from 'next/navigation';
 import { localDate } from '@/lib/time';
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap';
 
 interface AuditLog {
   id: number;
@@ -42,6 +43,7 @@ export default function AuditLogClient({ initialLogs, onRefresh, canClearLogs = 
   const [isClearing, setIsClearing] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const clearSubmissionRef = useRef(false);
+  const clearDialogRef = useDialogFocusTrap<HTMLDivElement>(canClearLogs && showConfirm);
   const router = useRouter();
 
   const uniqueActions = [...new Set(initialLogs.map(l => l.action))];
@@ -112,6 +114,7 @@ export default function AuditLogClient({ initialLogs, onRefresh, canClearLogs = 
           <Search className="absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
           <input
             type="text"
+            aria-label="بحث في سجل المراقبة"
             value={search}
             onChange={e => setSearch(e.target.value)}
             placeholder="بحث في السجل..."
@@ -119,6 +122,7 @@ export default function AuditLogClient({ initialLogs, onRefresh, canClearLogs = 
           />
         </div>
         <select
+          aria-label="تصفية سجل المراقبة حسب العملية"
           value={actionFilter}
           onChange={e => setActionFilter(e.target.value)}
           className="bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-4 py-2.5 rounded-xl text-sm font-bold"
@@ -146,14 +150,21 @@ export default function AuditLogClient({ initialLogs, onRefresh, canClearLogs = 
       {/* Confirmation Modal */}
       {canClearLogs && showConfirm && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-[200] p-4">
-          <div className="bg-white dark:bg-slate-900 rounded-[2.5rem] shadow-2xl max-w-md w-full overflow-hidden border border-slate-200 dark:border-slate-800 animate-in zoom-in duration-300">
+          <div
+            ref={clearDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="clear-audit-dialog-title"
+            tabIndex={-1}
+            className="bg-white dark:bg-slate-900 rounded-[2.5rem] shadow-2xl max-w-md w-full overflow-hidden border border-slate-200 dark:border-slate-800 animate-in zoom-in duration-300"
+          >
             <div className="p-8 text-center space-y-6">
               <div className="w-20 h-20 bg-red-100 dark:bg-red-900/30 rounded-3xl flex items-center justify-center text-red-600 mx-auto shadow-lg shadow-red-500/10">
                 <AlertCircle className="w-10 h-10" />
               </div>
               
               <div className="space-y-2">
-                <h3 className="text-2xl font-black text-slate-900 dark:text-white">تأكيد مسح السجلات؟</h3>
+                <h3 id="clear-audit-dialog-title" className="text-2xl font-black text-slate-900 dark:text-white">تأكيد مسح السجلات؟</h3>
                 <p className="text-slate-500 font-bold leading-relaxed">
                   هذا الإجراء سيقوم بحذف جميع سجلات النشاط نهائياً. لا يمكن التراجع عن هذه الخطوة.
                 </p>
@@ -192,7 +203,7 @@ export default function AuditLogClient({ initialLogs, onRefresh, canClearLogs = 
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-3 mb-1">
-                  <span className={`px-2.5 py-0.5 rounded-lg text-[10px] font-black uppercase tracking-wide ${ACTION_COLORS[log.action] || 'bg-slate-100 text-slate-600'}`}>
+                  <span className={`px-2.5 py-0.5 rounded-lg text-xs font-black ${ACTION_COLORS[log.action] || 'bg-slate-100 text-slate-600'}`}>
                     {log.action}
                   </span>
                   <span className="text-sm font-bold text-slate-700 dark:text-slate-300">{log.full_name}</span>
@@ -214,7 +225,7 @@ export default function AuditLogClient({ initialLogs, onRefresh, canClearLogs = 
           ))}
         </div>
         <div className="p-4 bg-slate-50 dark:bg-slate-800/50 border-t border-slate-100 dark:border-slate-800 text-center">
-          <p className="text-xs text-slate-400 font-bold">عرض {filteredLogs.length} من {initialLogs.length} سجل</p>
+          <p className="text-sm text-slate-500 font-bold">عرض {filteredLogs.length} من {initialLogs.length} سجل</p>
         </div>
       </div>
     </div>

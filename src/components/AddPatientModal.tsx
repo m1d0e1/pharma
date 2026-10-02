@@ -1,16 +1,26 @@
 'use client';
 import { useHotkeys } from 'react-hotkeys-hook';
 
-import { useRef, useState } from 'react'
+import { useId, useRef, useState } from 'react'
 import { addPatientAction } from '@/app/actions-client/patients'
 import { toast } from 'react-hot-toast'
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap'
 import { User, Phone, MapPin, Calendar, CreditCard, HeartPulse, Save, X, Activity } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 interface AddPatientModalProps {
   pharmacyId: string
   onClose: () => void
-  onSuccess: () => void
+  onSuccess: (patient?: {
+    id: string
+    full_name: string
+    phone?: string | null
+    credit_limit?: number
+    wallet_balance?: number
+    opening_balance?: number
+    outstanding_balance?: number
+    payment_method?: 'cash' | 'credit' | 'visa' | 'wallet'
+  }) => void
 }
 
 export default function AddPatientModal({ pharmacyId, onClose, onSuccess }: AddPatientModalProps) {
@@ -33,6 +43,7 @@ export default function AddPatientModal({ pharmacyId, onClose, onSuccess }: AddP
   const [isSubmitting, setIsSubmitting] = useState(false)
   const submittingRef = useRef(false)
   const [errors, setErrors] = useState<{ fullName?: boolean }>({})
+  const dialogRef = useDialogFocusTrap<HTMLDivElement>(true)
 
   const handleClose = () => {
     if (submittingRef.current) return
@@ -83,7 +94,16 @@ export default function AddPatientModal({ pharmacyId, onClose, onSuccess }: AddP
 
       if (result.success) {
         toast.success('تمت إضافة العميل بنجاح')
-        onSuccess()
+        onSuccess({
+          id: result.id!,
+          full_name: fullName,
+          phone: phone || null,
+          credit_limit: creditLimit,
+          wallet_balance: 0,
+          opening_balance: openingBalance,
+          outstanding_balance: openingBalance,
+          payment_method: paymentMethod as 'cash' | 'credit' | 'visa' | 'wallet',
+        })
         onClose()
       } else {
         toast.error(result.error || 'حدث خطأ أثناء إضافة العميل')
@@ -97,26 +117,29 @@ export default function AddPatientModal({ pharmacyId, onClose, onSuccess }: AddP
   }
 
   return (
-    <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4 z-[200]" dir="rtl">
-      <div className="bg-white dark:bg-slate-900 rounded-[40px] shadow-2xl w-full max-w-4xl max-h-[95vh] overflow-hidden border border-white/20 animate-in zoom-in duration-300 flex flex-col">
+    <div className="fixed inset-0 bg-slate-900/60 flex items-center justify-center p-2 sm:p-4 z-[200]" dir="rtl">
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="add-patient-title"
+        tabIndex={-1}
+        className="bg-white dark:bg-slate-900 rounded-2xl sm:rounded-3xl shadow-2xl w-full max-w-4xl max-h-[calc(100vh-1rem)] sm:max-h-[95vh] overflow-hidden border border-slate-200 dark:border-slate-800 animate-in zoom-in duration-200 flex flex-col"
+      >
         
-        <div className="bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 p-8 flex justify-between items-center text-white relative shrink-0">
-          <div className="absolute top-0 left-0 w-full h-full opacity-10 pointer-events-none overflow-hidden">
-             <div className="absolute -top-10 -left-10 w-40 h-40 bg-white rounded-full blur-3xl"></div>
-             <div className="absolute -bottom-10 -right-10 w-40 h-40 bg-white rounded-full blur-3xl"></div>
-          </div>
+        <div className="bg-blue-700 p-4 sm:p-6 flex justify-between items-center text-white relative shrink-0">
           <div className="relative z-10">
-            <h2 className="text-3xl font-black text-white flex items-center gap-3">
-               <User className="w-8 h-8" /> إضافة عميل جديد
+            <h2 id="add-patient-title" className="text-2xl sm:text-3xl font-black text-white flex items-center gap-3">
+               <User className="w-7 h-7" /> إضافة عميل جديد
             </h2>
-            <p className="text-blue-100 text-sm mt-1 font-bold opacity-80 uppercase tracking-widest">إنشاء سجل مالي وطبي متكامل للعميل</p>
+            <p className="text-blue-100 text-sm mt-1 font-bold">إنشاء سجل العميل وبيانات التعامل الأساسية</p>
           </div>
-          <button onClick={handleClose} disabled={isSubmitting} className="p-3 bg-white/10 hover:bg-white/20 rounded-2xl transition-all relative z-10 disabled:opacity-50 disabled:cursor-not-allowed">
+          <button type="button" aria-label="إغلاق نافذة إضافة العميل" onClick={handleClose} disabled={isSubmitting} className="p-3 bg-white/10 hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white rounded-xl transition-colors relative z-10 disabled:opacity-50 disabled:cursor-not-allowed">
             <X className="w-6 h-6" />
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-10 space-y-10 overflow-y-auto flex-1 custom-scrollbar bg-slate-50/30 dark:bg-slate-950/30">
+        <form onSubmit={handleSubmit} className="p-4 sm:p-6 space-y-8 overflow-y-auto flex-1 custom-scrollbar bg-slate-50/30 dark:bg-slate-950/30">
           
           {/* Personal Info Section */}
           <div className="space-y-6">
@@ -132,6 +155,7 @@ export default function AddPatientModal({ pharmacyId, onClose, onSuccess }: AddP
                 placeholder="محمد أحمد..."
                 icon={User}
                 hasError={errors.fullName}
+                autoFocus
               />
               <InputField label="الاسم (En)" value={nameEn} onChange={setNameEn} placeholder="Name in English..." dir="ltr" />
               <InputField label="رقم الكود" value="تلقائي" onChange={() => {}} disabled placeholder="2" />
@@ -150,19 +174,19 @@ export default function AddPatientModal({ pharmacyId, onClose, onSuccess }: AddP
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               <InputField label="المنطقة" value={area} onChange={setArea} placeholder="مثال: المعادي..." />
               <div className="space-y-2">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-2">تاريخ الميلاد</label>
-                <input type="date" value={birthDate} onChange={(e) => setBirthDate(e.target.value)} className="w-full bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-800 p-4 rounded-2xl outline-none font-bold transition-all shadow-sm focus:border-blue-500" />
+                <label htmlFor="add-patient-birth-date" className="text-xs font-black text-slate-500 mr-2">تاريخ الميلاد</label>
+                <input id="add-patient-birth-date" type="date" value={birthDate} onChange={(e) => setBirthDate(e.target.value)} className="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-4 rounded-2xl outline-none font-bold transition-all shadow-sm focus:border-blue-500" />
               </div>
-              <div className="space-y-2">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-2">النوع</label>
+              <fieldset className="space-y-2">
+                <legend className="text-xs font-black text-slate-500 mr-2">النوع</legend>
                 <div className="flex gap-2">
                    {['male', 'female'].map((g) => (
-                     <button key={g} type="button" onClick={() => setGender(g as any)} className={`flex-1 py-4 rounded-2xl font-black text-xs transition-all ${gender === g ? 'bg-blue-600 text-white shadow-lg' : 'bg-white dark:bg-slate-800 text-slate-400 border border-slate-100 dark:border-slate-800'}`}>
+                     <button key={g} type="button" aria-pressed={gender === g} onClick={() => setGender(g as any)} className={`flex-1 py-4 rounded-2xl font-black text-xs transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${gender === g ? 'bg-blue-600 text-white' : 'bg-white dark:bg-slate-800 text-slate-500 border border-slate-200 dark:border-slate-700'}`}>
                        {g === 'male' ? 'ذكر' : 'أنثى'}
                      </button>
                    ))}
                 </div>
-              </div>
+              </fieldset>
             </div>
           </div>
 
@@ -171,8 +195,8 @@ export default function AddPatientModal({ pharmacyId, onClose, onSuccess }: AddP
              <SectionHeader icon={Calendar} label="بيانات التعامل والمركبة" color="text-indigo-600" />
              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-2">طبيعة العميل</label>
-                  <select value={customerType} onChange={(e) => setCustomerType(e.target.value)} className="w-full bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-800 p-4 rounded-2xl outline-none font-bold shadow-sm focus:border-indigo-500 appearance-none">
+                  <label htmlFor="add-patient-type" className="text-xs font-black text-slate-500 mr-2">طبيعة العميل</label>
+                  <select id="add-patient-type" value={customerType} onChange={(e) => setCustomerType(e.target.value)} className="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-4 rounded-2xl outline-none font-bold shadow-sm focus:border-indigo-500 appearance-none">
                      <option value="individual">فرد</option>
                      <option value="company">شركة</option>
                      <option value="vip">VIP</option>
@@ -188,11 +212,12 @@ export default function AddPatientModal({ pharmacyId, onClose, onSuccess }: AddP
             <SectionHeader icon={CreditCard} label="البيانات المالية والمسحوبات" color="text-emerald-600" />
             <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
               <div className="space-y-2">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-2">طريقة الدفع</label>
-                <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)} className="w-full bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-800 p-4 rounded-2xl outline-none font-bold shadow-sm focus:border-emerald-500 appearance-none">
+                <label htmlFor="add-patient-payment-method" className="text-xs font-black text-slate-500 mr-2">طريقة الدفع</label>
+                <select id="add-patient-payment-method" value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)} className="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-4 rounded-2xl outline-none font-bold shadow-sm focus:border-emerald-500 appearance-none">
                    <option value="cash">نقدي (Cash)</option>
                    <option value="credit">آجل (Credit)</option>
                    <option value="visa">فيزا (Visa)</option>
+                   <option value="wallet">محفظة (Wallet)</option>
                 </select>
               </div>
               <InputField label="الحد الأقصى للرصيد" type="number" value={creditLimit.toString()} onChange={(val) => setCreditLimit(Number(val))} placeholder="0.00" color="text-rose-600" />
@@ -202,17 +227,17 @@ export default function AddPatientModal({ pharmacyId, onClose, onSuccess }: AddP
           </div>
 
           <div className="space-y-2">
-            <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-2 flex items-center gap-2">
+            <label htmlFor="add-patient-notes" className="text-xs font-black text-slate-500 mr-2 flex items-center gap-2">
                <HeartPulse className="w-3 h-3 text-rose-500" /> ملاحظات إضافية
             </label>
-            <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={3} className="w-full bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-800 p-4 rounded-3xl outline-none font-bold transition-all resize-none shadow-sm focus:border-purple-500" placeholder="سجل أي ملاحظات خاصة بالعميل أو تاريخه المرضي..." />
+            <textarea id="add-patient-notes" value={notes} onChange={(e) => setNotes(e.target.value)} rows={3} className="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-4 rounded-2xl outline-none font-bold transition-all resize-none shadow-sm focus:border-purple-500" placeholder="سجل أي ملاحظات خاصة بالعميل أو تاريخه المرضي..." />
           </div>
 
           <div className="flex gap-4 pt-4 shrink-0">
             <button type="submit" disabled={isSubmitting} className="flex-[2] bg-gradient-to-r from-blue-600 to-indigo-600 text-white py-5 rounded-3xl font-black text-lg hover:shadow-2xl hover:shadow-blue-500/30 transition-all transform active:scale-[0.98] disabled:opacity-50 flex items-center justify-center gap-3">
-              {isSubmitting ? <Activity className="animate-spin w-6 h-6" /> : <><Save className="w-6 h-6" /> حفظ العميل (S)</>}
+              {isSubmitting ? <Activity className="animate-spin w-6 h-6" /> : <><Save className="w-6 h-6" /> حفظ العميل</>}
             </button>
-            <button type="button" onClick={handleClose} disabled={isSubmitting} className="flex-1 bg-white dark:bg-slate-800 text-slate-500 py-5 rounded-3xl font-black text-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 transition-all disabled:opacity-50 disabled:cursor-not-allowed">إغلاق (C)</button>
+            <button type="button" onClick={handleClose} disabled={isSubmitting} className="flex-1 bg-white dark:bg-slate-800 text-slate-500 py-5 rounded-3xl font-black text-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 transition-all disabled:opacity-50 disabled:cursor-not-allowed">إغلاق</button>
           </div>
         </form>
       </div>
@@ -229,16 +254,20 @@ function SectionHeader({ icon: Icon, label, color }: any) {
   )
 }
 
-function InputField({ label, value, onChange, placeholder, required, type = "text", icon: Icon, disabled, dir, color, hasError }: any) {
+function InputField({ label, value, onChange, placeholder, required, type = "text", icon: Icon, disabled, dir, color, hasError, autoFocus }: any) {
+  const inputId = useId()
   return (
     <div className="space-y-2">
-      <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-2">{label}</label>
+      <label htmlFor={inputId} className="text-xs font-black text-slate-500 mr-2">{label}</label>
       <div className="relative">
         <input
+          id={inputId}
           type={type}
           required={required}
           value={value}
           disabled={disabled}
+          autoFocus={autoFocus}
+          aria-invalid={hasError || undefined}
           onChange={(e) => onChange(e.target.value)}
           className={cn(
             "w-full bg-white dark:bg-slate-800 border p-4 rounded-2xl outline-none font-black transition-all shadow-sm",

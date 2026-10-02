@@ -118,7 +118,7 @@ describe('coverage gap: report error recovery', () => {
     render(<PurchasesReportsClient userRole="owner" />);
     await waitFor(() => expect(getPurchasesReportsAction).toHaveBeenCalledTimes(1));
 
-    fireEvent.change(screen.getByPlaceholderText('رقم الفاتورة...'), { target: { value: 'P-500' } });
+    fireEvent.change(screen.getByRole('textbox', { name: 'رقم الفاتورة' }), { target: { value: 'P-500' } });
     fireEvent.click(screen.getByRole('button', { name: /بحث في الفواتير/ }));
 
     await waitFor(() => expect(getPurchasesReportsAction).toHaveBeenLastCalledWith(
@@ -135,7 +135,7 @@ describe('coverage gap: report error recovery', () => {
     render(<SalesReportsClient userRole="owner" />);
     await waitFor(() => expect(getSalesReportsAction).toHaveBeenCalledTimes(1));
 
-    fireEvent.change(screen.getByPlaceholderText('ابحث برقم الفاتورة...'), { target: { value: 'S-500' } });
+    fireEvent.change(screen.getByRole('textbox', { name: 'رقم الفاتورة' }), { target: { value: 'S-500' } });
     fireEvent.click(screen.getByRole('button', { name: /بحث \(F\)/ }));
 
     await waitFor(() => expect(getSalesReportsAction).toHaveBeenLastCalledWith(
@@ -443,6 +443,11 @@ describe('coverage gap: report error recovery', () => {
     await waitFor(() => expect(getPurchaseInvoiceDetailsAction).toHaveBeenCalledWith('purchase-a'));
     expect(await screen.findByRole('heading', { name: 'فاتورة شراء INV-A' })).toBeInTheDocument();
     expect(screen.getAllByText('Panadol Extra').length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole('button', { name: 'إغلاق تفاصيل فاتورة الشراء' }));
+
+    expect(fireEvent.keyDown(row, { key: ' ' })).toBe(false);
+    await waitFor(() => expect(getPurchaseInvoiceDetailsAction).toHaveBeenCalledTimes(2));
+    expect(await screen.findByRole('heading', { name: 'فاتورة شراء INV-A' })).toBeInTheDocument();
   });
 
   it('preserves the purchase-invoice modal when delete is cancelled or throws', async () => {

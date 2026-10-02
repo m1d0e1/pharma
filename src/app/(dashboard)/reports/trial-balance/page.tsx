@@ -63,10 +63,10 @@ export default function TrialBalanceReportPage() {
   }
 
   return (
-    <div className="p-8">
-      <div className="flex justify-between items-center mb-6">
+    <div className="p-4 sm:p-8">
+      <div className="flex flex-col gap-4 sm:flex-row sm:justify-between sm:items-center mb-6">
         <h1 className="text-2xl font-bold">ميزان المراجعة</h1>
-        <button onClick={() => window.print()} className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-xl font-bold shadow-sm hover:bg-blue-700 transition-all no-print">
+        <button type="button" onClick={() => window.print()} className="flex items-center justify-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-xl font-bold shadow-sm hover:bg-blue-700 transition-all no-print">
           <Printer className="w-5 h-5" />
           طباعة التقرير
         </button>

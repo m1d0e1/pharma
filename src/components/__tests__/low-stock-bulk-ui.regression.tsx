@@ -93,8 +93,10 @@ describe('low stock alert multi-selection and bulky actions ui', () => {
     localStorage.setItem('pharma_session_user', JSON.stringify({ id: 'buyer-1', pharmacy_id: 'local_default' }));
   });
 
+  const managedPermissions = { canViewRestock: true, canViewPurchases: true };
+
   it('renders all low stock items with bulk toolbar buttons', () => {
-    render(<LowStockClient initialItems={mockItems} />);
+    render(<LowStockClient initialItems={mockItems} {...managedPermissions} />);
 
     expect(screen.getByText('تحديد الكل (3)')).toBeInTheDocument();
     expect(screen.getByText('إضافة الكل للكشكول (3)')).toBeInTheDocument();
@@ -102,10 +104,29 @@ describe('low stock alert multi-selection and bulky actions ui', () => {
     expect(screen.getByText('تحويل للمشتريات (3)')).toBeInTheDocument();
     expect(screen.getByText('تصدير Excel')).toBeInTheDocument();
     expect(screen.getByText('نسخ للواتساب')).toBeInTheDocument();
+    expect(screen.getByText('نفد من المخزون (0)')).toHaveClass('text-xs');
+    expect(screen.getAllByText('الرصيد / الحد')[0]).toHaveClass('text-xs');
+    expect(screen.getAllByText('العجز المقدر')[0]).toHaveClass('text-xs');
+  });
+
+  it('keeps low-stock-only users read-only when restock and purchase permissions are denied', () => {
+    render(<LowStockClient initialItems={mockItems} canViewRestock={false} canViewPurchases={false} />);
+
+    expect(screen.getByText('Panadol Extra')).toBeInTheDocument();
+    expect(screen.getByText('تصدير Excel')).toBeInTheDocument();
+    expect(screen.getByText('طباعة')).toBeInTheDocument();
+    expect(screen.getAllByTitle('عرض بالمخزون')).toHaveLength(mockItems.length);
+
+    expect(screen.queryByText('كشكول النواقص')).not.toBeInTheDocument();
+    expect(screen.queryByText(/إضافة الكل للكشكول/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/إنشاء أمر شراء/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/تحويل للمشتريات/)).not.toBeInTheDocument();
+    expect(screen.queryByText('إضافة للكشكول')).not.toBeInTheDocument();
+    expect(screen.queryByText('طلب شراء')).not.toBeInTheDocument();
   });
 
   it('handles select all and activates floating bulk action bar', async () => {
-    render(<LowStockClient initialItems={mockItems} />);
+    render(<LowStockClient initialItems={mockItems} {...managedPermissions} />);
 
     const selectAllBtn = screen.getByText('تحديد الكل (3)');
     fireEvent.click(selectAllBtn);
@@ -116,7 +137,7 @@ describe('low stock alert multi-selection and bulky actions ui', () => {
   });
 
   it('performs bulk add to shortages notebook for selected items', async () => {
-    render(<LowStockClient initialItems={mockItems} />);
+    render(<LowStockClient initialItems={mockItems} {...managedPermissions} />);
 
     // Select all
     fireEvent.click(screen.getByText('تحديد الكل (3)'));
@@ -133,7 +154,7 @@ describe('low stock alert multi-selection and bulky actions ui', () => {
 
   it('converts selected items to purchase invoice and navigates to purchases/new', async () => {
     const setItemSpy = jest.spyOn(Storage.prototype, 'setItem');
-    render(<LowStockClient initialItems={mockItems} />);
+    render(<LowStockClient initialItems={mockItems} {...managedPermissions} />);
 
     // Select all
     fireEvent.click(screen.getByText('تحديد الكل (3)'));
@@ -156,7 +177,7 @@ describe('low stock alert multi-selection and bulky actions ui', () => {
       },
     });
 
-    render(<LowStockClient initialItems={mockItems} />);
+    render(<LowStockClient initialItems={mockItems} {...managedPermissions} />);
 
     const copyBtn = screen.getByText('نسخ للواتساب');
     fireEvent.click(copyBtn);
@@ -297,7 +318,7 @@ describe('low stock alert multi-selection and bulky actions ui', () => {
 
   it('preserves selected low-stock rows and reports failure when bulk shortage writes are rejected', async () => {
     (addToShortagesAction as jest.Mock).mockResolvedValue({ success: false, error: 'shortage write rejected' });
-    render(<LowStockClient initialItems={mockItems} />);
+    render(<LowStockClient initialItems={mockItems} {...managedPermissions} />);
 
     fireEvent.click(screen.getByText('تحديد الكل (3)'));
     fireEvent.click(screen.getByText('إضافة للكشكول (3)'));
@@ -312,7 +333,7 @@ describe('low stock alert multi-selection and bulky actions ui', () => {
     let resolvePending: (value: any) => void = () => {};
     const pending = new Promise(resolve => { resolvePending = resolve; });
     (addToShortagesAction as jest.Mock).mockImplementation(() => pending);
-    render(<LowStockClient initialItems={mockItems} />);
+    render(<LowStockClient initialItems={mockItems} {...managedPermissions} />);
     fireEvent.click(screen.getByText('تحديد الكل (3)'));
     const bulkAdd = screen.getByText('إضافة للكشكول (3)');
 
@@ -332,7 +353,7 @@ describe('low stock alert multi-selection and bulky actions ui', () => {
     });
     (addToShortagesAction as jest.Mock).mockReturnValue(pending);
 
-    render(<LowStockClient initialItems={[mockItems[0]]} />);
+    render(<LowStockClient initialItems={[mockItems[0]]} {...managedPermissions} />);
     const addButton = screen.getByRole('button', { name: 'إضافة للكشكول' });
 
     act(() => {

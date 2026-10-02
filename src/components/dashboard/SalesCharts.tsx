@@ -291,7 +291,7 @@ export default function ReportsClient({
             
             {/* Center Summary Text */}
             <div className="absolute top-[50%] left-1/2 -translate-x-1/2 -translate-y-1/2 text-center pointer-events-none">
-              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">إجمالي الفئات</p>
+              <p className="text-[11px] font-black text-slate-500 mb-1">إجمالي الفئات</p>
               <p className="text-3xl font-black text-slate-900 dark:text-white leading-none">
                 {categoryData.length}
               </p>

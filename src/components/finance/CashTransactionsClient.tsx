@@ -8,6 +8,7 @@ import {
   ArrowUpRight, ArrowDownLeft, Clock, Wallet, Layers, Filter
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap';
 import { 
   createCashMovementAction, 
   getCashMovementsAction 
@@ -39,6 +40,7 @@ export default function CashTransactionsClient({
   const [searchTerm, setSearchTerm] = useState('');
   const [isMounted, setIsMounted] = useState(false);
   const loadRequestRef = useRef(0);
+  const cashMovementDialogRef = useDialogFocusTrap<HTMLDivElement>(showForm.show);
 
   useEffect(() => {
     setIsMounted(true);
@@ -139,35 +141,35 @@ export default function CashTransactionsClient({
 
   return (
     <div className="space-y-8" dir="rtl">
-      <div className="bg-white dark:bg-slate-900 p-8 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
+      <div className="bg-white dark:bg-slate-900 p-4 sm:p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-5">
         <div>
           <h2 className="text-2xl font-black text-slate-800 dark:text-white">حركة النقدية (صرف / توريد)</h2>
           <p className="text-slate-500 font-bold mt-1">كل حركة تُربط تلقائياً بالوردية المفتوحة وتظهر في تسليم الدرج والقيود اليومية</p>
         </div>
-        <div className="flex flex-wrap gap-3">
+        <div className="flex flex-wrap gap-2 sm:gap-3 w-full md:w-auto">
           <Link
             href="/shifts"
-            className="px-5 py-3.5 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-2xl font-black hover:bg-slate-200 dark:hover:bg-slate-700 transition-all flex items-center gap-2 text-sm"
+            className="px-4 py-3 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-xl font-black hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors flex items-center gap-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
           >
             <Clock className="w-4 h-4 text-blue-500" />
             الورديات
           </Link>
           <Link
             href="/finance/handover"
-            className="px-5 py-3.5 bg-blue-600 text-white rounded-2xl font-black hover:bg-blue-700 transition-all shadow-lg shadow-blue-500/20 flex items-center gap-2 text-sm"
+            className="px-4 py-3 bg-blue-600 text-white rounded-xl font-black hover:bg-blue-700 transition-colors flex items-center gap-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
           >
             <Wallet className="w-4 h-4" />
             تسليم الدرج
           </Link>
           <button 
             onClick={() => setShowForm({ show: true, type: 'disbursement' })}
-            className="px-6 py-3.5 bg-rose-600 text-white rounded-2xl font-black hover:bg-rose-700 transition-all shadow-xl shadow-rose-500/20 flex items-center gap-2 text-sm"
+            className="px-4 py-3 bg-rose-600 text-white rounded-xl font-black hover:bg-rose-700 transition-colors flex items-center gap-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 focus-visible:ring-offset-2"
           >
             <Plus className="w-4 h-4" /> صرف نقدية
           </button>
           <button 
             onClick={() => setShowForm({ show: true, type: 'receipt' })}
-            className="px-6 py-3.5 bg-emerald-600 text-white rounded-2xl font-black hover:bg-emerald-700 transition-all shadow-xl shadow-emerald-500/20 flex items-center gap-2 text-sm"
+            className="px-4 py-3 bg-emerald-600 text-white rounded-xl font-black hover:bg-emerald-700 transition-colors flex items-center gap-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2"
           >
             <Plus className="w-4 h-4" /> توريد نقدية
           </button>
@@ -232,8 +234,15 @@ export default function CashTransactionsClient({
       </div>
 
       {showForm.show && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-8">
-          <div className="w-full max-w-3xl animate-in zoom-in duration-300">
+        <div
+          ref={cashMovementDialogRef}
+          className="fixed inset-0 bg-slate-950/65 z-[100] flex items-center justify-center p-3 sm:p-6 overflow-y-auto"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="cash-movement-title"
+          tabIndex={-1}
+        >
+          <div className="w-full max-w-3xl my-auto animate-in fade-in duration-200">
             <CashMovementForm 
               type={showForm.type} 
               currentShift={currentShift}
@@ -247,18 +256,18 @@ export default function CashTransactionsClient({
         </div>
       )}
 
-      <div className="bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 overflow-hidden shadow-sm">
-        <div className="p-8 border-b border-slate-100 dark:border-slate-800 flex flex-col md:flex-row justify-between items-center gap-4">
+      <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
+        <div className="p-4 sm:p-6 border-b border-slate-100 dark:border-slate-800 flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4">
           <div className="flex items-center gap-4 w-full md:w-auto">
             <h4 className="font-black text-slate-700 dark:text-slate-200 text-sm">
               سجل الحركات الأخيرة ({filteredMovements.length})
             </h4>
             
-            <div className="flex bg-slate-100 dark:bg-slate-800 p-1 rounded-2xl gap-1">
+            <div className="flex flex-wrap bg-slate-100 dark:bg-slate-800 p-1 rounded-xl gap-1">
               <button
                 onClick={() => setFilterType('all')}
                 className={cn(
-                  "px-3.5 py-1.5 rounded-xl text-xs font-black transition-all",
+                  "px-3.5 py-2 rounded-lg text-xs font-black transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500",
                   filterType === 'all'
                     ? "bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm"
                     : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
@@ -269,7 +278,7 @@ export default function CashTransactionsClient({
               <button
                 onClick={() => setFilterType('disbursement')}
                 className={cn(
-                  "px-3.5 py-1.5 rounded-xl text-xs font-black transition-all flex items-center gap-1",
+                  "px-3.5 py-2 rounded-lg text-xs font-black transition-colors flex items-center gap-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500",
                   filterType === 'disbursement'
                     ? "bg-rose-600 text-white shadow-sm"
                     : "text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/20"
@@ -280,7 +289,7 @@ export default function CashTransactionsClient({
               <button
                 onClick={() => setFilterType('receipt')}
                 className={cn(
-                  "px-3.5 py-1.5 rounded-xl text-xs font-black transition-all flex items-center gap-1",
+                  "px-3.5 py-2 rounded-lg text-xs font-black transition-colors flex items-center gap-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500",
                   filterType === 'receipt'
                     ? "bg-emerald-600 text-white shadow-sm"
                     : "text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/20"
@@ -298,16 +307,18 @@ export default function CashTransactionsClient({
               placeholder="بحث في البيان، المستلم، الملاحظات، أو المستخدم..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pr-10 pl-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl text-xs font-bold text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              aria-label="بحث في الحركات النقدية"
+              className="w-full pr-10 pl-10 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-sm font-bold text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
             {searchTerm && (
-              <button onClick={() => setSearchTerm('')} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
+              <button type="button" aria-label="مسح البحث" onClick={() => setSearchTerm('')} className="absolute left-2 top-1/2 -translate-y-1/2 p-1.5 rounded-lg text-slate-400 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
                 <X className="w-3.5 h-3.5" />
               </button>
             )}
           </div>
         </div>
-        <table className="w-full text-right">
+        <div className="overflow-x-auto">
+        <table className="w-full min-w-[760px] text-right">
           <thead className="bg-slate-50 dark:bg-slate-800/50">
             <tr>
               <th className="px-8 py-5 text-xs font-black text-slate-400 uppercase">التاريخ</th>
@@ -366,7 +377,7 @@ export default function CashTransactionsClient({
                      m.category === 'pharmacy' ? 'توريد للصيدلية' :
                      m.category === 'handover' ? 'تسليم درج' : m.category}
                   </p>
-                  <p className="text-[11px] text-slate-400 font-bold mt-0.5">
+                  <p className="text-xs text-slate-500 dark:text-slate-400 font-bold mt-0.5">
                     {[m.sub_category, m.target_name, m.notes].filter(Boolean).join(' • ') || '—'}
                   </p>
                 </td>
@@ -378,17 +389,18 @@ export default function CashTransactionsClient({
                 <td className="px-8 py-5">
                   <p className="font-bold text-slate-700 dark:text-slate-300 text-xs">{m.user_name || m.user_id}</p>
                   {m.shift_id ? (
-                    <Link href="/shifts" className="text-[10px] font-mono text-blue-500 hover:underline inline-block mt-0.5">
+                    <Link href="/shifts" className="text-xs font-mono text-blue-600 hover:underline inline-block mt-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded">
                       وردية #{String(m.shift_id).slice(0, 8)}
                     </Link>
                   ) : (
-                    <span className="text-[10px] text-slate-400 font-bold">الخزينة الرئيسية</span>
+                    <span className="text-xs text-slate-500 dark:text-slate-400 font-bold">الخزينة الرئيسية</span>
                   )}
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   );
@@ -471,61 +483,63 @@ function CashMovementForm({ type, currentShift, onClose }: { type: 'disbursement
   };
 
   return (
-     <div className="bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-2xl overflow-hidden">
+     <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-xl overflow-hidden">
         <div className={cn(
-           "p-8 border-b text-white flex justify-between items-center",
-           type === 'disbursement' ? "bg-gradient-to-r from-rose-600 to-rose-800" : "bg-gradient-to-r from-emerald-600 to-emerald-800"
+           "p-5 sm:p-6 border-b text-white flex justify-between items-center gap-4",
+           type === 'disbursement' ? "bg-rose-700" : "bg-emerald-700"
         )}>
            <div className="flex items-center gap-4">
               <div className="w-12 h-12 bg-white/20 rounded-2xl flex items-center justify-center">
                  <ArrowRightLeft className="w-6 h-6 text-white" />
               </div>
               <div>
-                 <h3 className="text-2xl font-black">{type === 'disbursement' ? 'صرف نقدية جديدة' : 'توريد نقدية جديدة'}</h3>
-                 <p className="text-white/60 font-bold">أدخل تفاصيل العملية المالية بدقة</p>
+                 <h3 id="cash-movement-title" className="text-xl sm:text-2xl font-black">{type === 'disbursement' ? 'صرف نقدية جديدة' : 'توريد نقدية جديدة'}</h3>
+                 <p className="text-white/80 text-sm font-bold">أدخل تفاصيل العملية المالية بدقة</p>
               </div>
            </div>
-           <button onClick={handleCancel} disabled={loading} className="p-3 hover:bg-white/10 rounded-2xl transition-all disabled:opacity-50"><X className="w-6 h-6" /></button>
+           <button type="button" aria-label="إغلاق نموذج الحركة النقدية" onClick={handleCancel} disabled={loading} className="p-2.5 hover:bg-white/10 rounded-xl transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"><X className="w-6 h-6" /></button>
         </div>
 
-        <div className="p-10 space-y-8">
-           <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+        <div className="p-4 sm:p-6 space-y-6">
+           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="space-y-2">
-                 <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mr-2">تاريخ المستند</label>
-                 <input type="text" value={formData.date} readOnly className="w-full bg-slate-50 dark:bg-slate-800 p-4 rounded-2xl font-black text-slate-500 outline-none" />
+                 <label htmlFor="cash-doc-date" className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">تاريخ المستند</label>
+                 <input id="cash-doc-date" type="text" value={formData.date} readOnly className="w-full bg-slate-50 dark:bg-slate-800 p-3.5 rounded-xl font-black text-slate-600 dark:text-slate-300 outline-none" />
               </div>
               <div className="space-y-2">
-                 <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mr-2">التاريخ الفعلي</label>
-                 <input type="text" value={formData.actual_date} readOnly className="w-full bg-slate-50 dark:bg-slate-800 p-4 rounded-2xl font-black text-slate-500 outline-none" />
+                 <label htmlFor="cash-actual-date" className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">التاريخ الفعلي</label>
+                 <input id="cash-actual-date" type="text" value={formData.actual_date} readOnly className="w-full bg-slate-50 dark:bg-slate-800 p-3.5 rounded-xl font-black text-slate-600 dark:text-slate-300 outline-none" />
               </div>
               <div className="space-y-2">
-                 <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mr-2">مسلسل</label>
-                 <input type="text" value="Auto" readOnly className="w-full bg-slate-50 dark:bg-slate-800 p-4 rounded-2xl font-black text-center text-blue-600 outline-none placeholder:text-blue-200" />
+                 <label htmlFor="cash-sequence" className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">مسلسل</label>
+                 <input id="cash-sequence" type="text" value="Auto" readOnly className="w-full bg-slate-50 dark:bg-slate-800 p-3.5 rounded-xl font-black text-center text-blue-600 outline-none" />
               </div>
            </div>
 
-           <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+           <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
               <div className="space-y-3">
-                 <label className="text-lg font-black text-slate-700 dark:text-slate-300">القيمة المالية</label>
+                 <label htmlFor="cash-amount" className="text-sm font-black text-slate-700 dark:text-slate-300">القيمة المالية</label>
                  <div className="relative">
                     <DollarSign className="absolute right-4 top-1/2 -translate-y-1/2 w-6 h-6 text-slate-400" />
                     <input 
+                       id="cash-amount"
                        type="number" 
                        autoFocus
                        value={formData.amount || ''}
                        onChange={(e) => setFormData({...formData, amount: parseFloat(e.target.value) || 0})}
                        placeholder="0.00"
-                       className="w-full pr-14 pl-6 py-5 bg-slate-50 dark:bg-slate-800 border-4 border-transparent focus:border-blue-500 rounded-3xl outline-none font-black text-3xl transition-all text-center" 
+                       className="w-full pr-12 pl-5 py-4 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-blue-500 rounded-2xl outline-none font-black text-2xl transition-colors text-center"
                     />
                  </div>
               </div>
 
               <div className="space-y-3">
-                 <label className="text-lg font-black text-slate-700 dark:text-slate-300">{type === 'disbursement' ? 'صرف من' : 'وارد إلى'}</label>
+                 <label htmlFor="cash-source" className="text-sm font-black text-slate-700 dark:text-slate-300">{type === 'disbursement' ? 'صرف من' : 'وارد إلى'}</label>
                  <select 
+                   id="cash-source"
                    value={formData.source_type}
                    onChange={(e) => setFormData({...formData, source_type: e.target.value})}
-                   className="w-full bg-slate-50 dark:bg-slate-800 p-5 rounded-3xl outline-none font-black text-xl border-4 border-transparent focus:border-blue-500 transition-all appearance-none"
+                   className="w-full bg-slate-50 dark:bg-slate-800 p-4 rounded-2xl outline-none font-black text-base border-2 border-transparent focus:border-blue-500 transition-colors appearance-none"
                  >
                     <option value="pos">نقطة البيع (درج الكاشير)</option>
                     <option value="main_safe">خزينة المحل الرئيسية</option>
@@ -534,11 +548,12 @@ function CashMovementForm({ type, currentShift, onClose }: { type: 'disbursement
               </div>
            </div>
 
-           <div className="bg-slate-50 dark:bg-slate-800/50 p-8 rounded-[40px] border border-slate-100 dark:border-slate-800 space-y-6">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+           <div className="bg-slate-50 dark:bg-slate-800/50 p-4 sm:p-5 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-5">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                  <div className="space-y-2">
-                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mr-2">{type === 'disbursement' ? 'صرف إلى النوع' : 'وارد من النوع'}</label>
+                    <label htmlFor="cash-category" className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">{type === 'disbursement' ? 'صرف إلى النوع' : 'وارد من النوع'}</label>
                     <select 
+                       id="cash-category"
                        value={formData.category}
                        onChange={(e) => setFormData({...formData, category: e.target.value})}
                        className="w-full bg-white dark:bg-slate-900 p-4 rounded-2xl outline-none font-black border-2 border-transparent focus:border-blue-500 transition-all"
@@ -548,8 +563,9 @@ function CashMovementForm({ type, currentShift, onClose }: { type: 'disbursement
                  </div>
                  {type === 'disbursement' && (
                     <div className="space-y-2">
-                       <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mr-2">التصنيف الفرعي</label>
+                       <label htmlFor="cash-subcategory" className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">التصنيف الفرعي</label>
                        <select 
+                          id="cash-subcategory"
                           value={formData.sub_category}
                           onChange={(e) => setFormData({...formData, sub_category: e.target.value})}
                           className="w-full bg-white dark:bg-slate-900 p-4 rounded-2xl outline-none font-black border-2 border-transparent focus:border-blue-500 transition-all"
@@ -561,8 +577,9 @@ function CashMovementForm({ type, currentShift, onClose }: { type: 'disbursement
                  )}
                  {type === 'receipt' && (
                     <div className="space-y-2">
-                       <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mr-2">إسم الجهة / الشخص</label>
+                       <label htmlFor="cash-target-name" className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">اسم الجهة / الشخص</label>
                        <input 
+                          id="cash-target-name"
                           type="text" 
                           value={formData.target_name}
                           onChange={(e) => setFormData({...formData, target_name: e.target.value})}
@@ -574,8 +591,9 @@ function CashMovementForm({ type, currentShift, onClose }: { type: 'disbursement
               </div>
 
               <div className="space-y-2">
-                 <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mr-2">ملاحظات إضافية</label>
+                 <label htmlFor="cash-notes" className="text-xs font-black text-slate-500 dark:text-slate-400 mr-2">ملاحظات إضافية</label>
                  <textarea 
+                    id="cash-notes"
                     value={formData.notes}
                     onChange={(e) => setFormData({...formData, notes: e.target.value})}
                     rows={3} 
@@ -586,20 +604,20 @@ function CashMovementForm({ type, currentShift, onClose }: { type: 'disbursement
            </div>
         </div>
 
-        <div className="p-8 bg-slate-50 dark:bg-slate-800/50 border-t border-slate-100 dark:border-slate-800 flex gap-4">
+        <div className="p-4 sm:p-6 bg-slate-50 dark:bg-slate-800/50 border-t border-slate-100 dark:border-slate-800 flex flex-col-reverse sm:flex-row gap-3">
            <button 
               onClick={handleSubmit}
               disabled={loading}
               className={cn(
-                 "flex-1 py-5 rounded-[2rem] font-black text-xl text-white transition-all shadow-2xl flex items-center justify-center gap-3 active:scale-95",
-                 type === 'disbursement' ? "bg-rose-600 hover:bg-rose-700 shadow-rose-500/20" : "bg-emerald-600 hover:bg-emerald-700 shadow-emerald-500/20"
+                 "flex-1 py-3.5 rounded-xl font-black text-base text-white transition-colors flex items-center justify-center gap-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2",
+                 type === 'disbursement' ? "bg-rose-600 hover:bg-rose-700 focus-visible:ring-rose-500" : "bg-emerald-600 hover:bg-emerald-700 focus-visible:ring-emerald-500"
               )}
            >
               {loading ? <Activity className="w-6 h-6 animate-spin" /> : <Save className="w-6 h-6" />}
-              حفظ العملية (S)
+              حفظ العملية
            </button>
-           <button onClick={handleCancel} disabled={loading} className="px-10 py-5 bg-white dark:bg-slate-900 text-slate-500 rounded-[2rem] font-black text-xl border border-slate-100 dark:border-slate-700 hover:bg-slate-50 transition-all disabled:opacity-50">
-              إلغاء (C)
+           <button type="button" onClick={handleCancel} disabled={loading} className="px-6 py-3.5 bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 rounded-xl font-black text-base border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500">
+              إلغاء
            </button>
         </div>
      </div>

@@ -1,5 +1,8 @@
 pub mod auth;
 pub mod critical;
+pub(crate) mod inventory_units;
+pub(crate) mod loyalty_policy;
+pub(crate) mod permission_policy;
 pub(crate) mod purchase_accounting_policy;
 pub(crate) mod purchase_dto;
 pub(crate) mod purchase_policy;

@@ -106,7 +106,7 @@ export default function DashboardHeader() {
                 <p className="text-sm font-black text-slate-900 dark:text-white">
                   {user?.full_name || user?.username}
                 </p>
-                <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400">
+                <p className="text-[11px] font-bold text-slate-500 dark:text-slate-400">
                   {user?.role === 'owner' ? 'المالك' :
                    user?.role === 'admin' ? 'مدير' :
                    user?.role === 'pharmacist' ? 'صيدلي' : 'كاشير'}

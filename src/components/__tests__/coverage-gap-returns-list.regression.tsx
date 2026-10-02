@@ -63,6 +63,9 @@ describe('returns-list UI behavior', () => {
     expect(screen.getByText('دواء مرتجع')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'إغلاق' }));
     expect(screen.queryByRole('heading', { name: 'تفاصيل مرتجع المبيعات' })).not.toBeInTheDocument();
+
+    expect(fireEvent.keyDown(row as HTMLElement, { key: ' ' })).toBe(false);
+    expect(screen.getByRole('heading', { name: 'تفاصيل مرتجع المبيعات' })).toBeInTheDocument();
   });
 
   it('keeps server-matched return rows visible when search text differs only by case', async () => {

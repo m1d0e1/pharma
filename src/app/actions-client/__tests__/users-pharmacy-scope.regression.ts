@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import { createSqliteTransactionDb as mockCreateSqliteTransactionDb } from '@/tests/helpers/sqlite-transaction-db';
+import { ROLE_PERMISSIONS } from '@/lib/auth/roles';
 
 let mockDb: Database.Database;
 let mockSession: any;
@@ -73,5 +74,19 @@ describe('staff pharmacy scope', () => {
     expect((await getStaffAction()).data.map((user: any) => user.username)).toEqual(['default-staff']);
     mockSession = { id: 'owner-1', role: 'owner', pharmacy_id: 'ph-1' };
     expect((await getStaffAction()).data).toEqual([]);
+  });
+
+  it('stores intended cashier role defaults instead of an explicit empty permission payload', async () => {
+    mockSession = { id: 'owner-1', role: 'owner', pharmacy_id: 'ph-1' };
+
+    expect(await addUserAction({ username: 'cashier-1', full_name: 'Cashier One', role: 'cashier' })).toEqual({ success: true });
+
+    const stored = mockDb.prepare("SELECT permissions, pharmacy_id FROM users WHERE username = 'cashier-1'").get() as any;
+    const permissions = JSON.parse(stored.permissions);
+    const intended = Object.fromEntries(ROLE_PERMISSIONS.cashier.permissions.map(key => [key, true]));
+
+    expect(permissions).toEqual(expect.objectContaining(intended));
+    expect(Object.keys(permissions)).not.toHaveLength(0);
+    expect(stored.pharmacy_id).toBe('ph-1');
   });
 });

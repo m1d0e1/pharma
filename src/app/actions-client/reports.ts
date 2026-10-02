@@ -58,7 +58,7 @@ const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, 
 export async function getShiftReportAction(shiftId: string) {
   try {
     const user = await getLocalSession();
-    if (!user || (!hasUserPermissionSync(user, 'can_view_shifts') && !hasUserPermissionSync(user, 'rep_can_view_sales') && !hasUserPermissionSync(user, 'rep_can_view_shifts'))) return { success: false, error: 'غير مصرح' };
+    if (!user || !hasUserPermissionSync(user, 'rep_can_view_shifts')) return { success: false, error: 'غير مصرح' };
     if (!await getShiftForPharmacy(shiftId, user.pharmacy_id)) {
       return { success: false, error: 'الوردية غير موجودة أو لا تخص هذه الصيدلية' };
     }
@@ -95,7 +95,7 @@ export async function getShiftReportAction(shiftId: string) {
         SUM(total_refund) as total
       FROM returns
       WHERE shift_id = ?
-        AND (status IS NULL OR status = '' OR status IN ('approved', 'completed'))
+        AND (status IS NULL OR status = '' OR LOWER(status) IN ('approved', 'completed'))
       GROUP BY refund_method
     `).all(shiftId) as any[];
 
@@ -209,7 +209,13 @@ const getStockAlertsStmt = db.prepare(`
     WHERE (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
       AND (i.expiry_date IS NULL OR i.expiry_date >= date('now', 'localtime'))
     GROUP BY i.drug_id
-    HAVING SUM(COALESCE(i.quantity, 0)) <= COALESCE(MAX(m.reorder_point), 5)
+    HAVING SUM(
+      CASE
+        WHEN COALESCE(m.has_expiry, 1) = 0 OR i.expiry_date IS NOT NULL
+          THEN COALESCE(i.quantity, 0)
+        ELSE 0
+      END
+    ) <= COALESCE(MAX(m.reorder_point), 5)
   ) low_stock_drugs
 `);
 

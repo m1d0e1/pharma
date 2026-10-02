@@ -13,6 +13,7 @@ import {
   Clock
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap';
 import { FinancialNoticeForm } from './FinancialComponents';
 import TrialBalanceSettingsClient from './TrialBalanceSettingsClient';
 import TrialBalanceReport from '@/components/reports/TrialBalanceReport';
@@ -625,24 +626,24 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
   if (!isMounted) return null;
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-12 gap-8" dir="rtl">
+    <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 lg:gap-6" dir="rtl">
        {/* Sidebar Navigation */}
        <div className="lg:col-span-3 space-y-4">
-          <div className="bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 p-4 shadow-sm">
-             <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-6 mb-4">قائمة الحسابات</p>
-             <div className="space-y-6">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 p-3 sm:p-4 shadow-sm">
+             <p className="text-xs font-black text-slate-500 dark:text-slate-400 px-3 mb-3">قائمة الحسابات</p>
+             <div className="space-y-4">
                 {visibleAccountTabs.map((group) => (
                    <div key={group.group} className="space-y-2">
-                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-6 mb-2">{group.group}</p>
+                      <p className="text-xs font-black text-slate-500 dark:text-slate-400 px-3 mb-2">{group.group}</p>
                       <div className="space-y-1">
                          {group.items.map((tab) => (
                             <button
                               key={tab.id}
                               onClick={() => setActiveTab(tab.id)}
                               className={cn(
-                                "w-full flex items-center gap-4 px-6 py-4 rounded-[20px] font-black transition-all group",
+                                "w-full flex items-center gap-3 px-3.5 py-3 rounded-xl font-black transition-colors group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500",
                                 activeTab === tab.id 
-                                  ? "bg-slate-900 text-white shadow-xl translate-x-[-8px]" 
+                                  ? "bg-slate-900 text-white"
                                   : "text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800"
                               )}
                             >
@@ -661,22 +662,22 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
              </div>
           </div>
 
-          <div className="bg-gradient-to-br from-indigo-600 to-purple-700 rounded-[40px] p-8 text-white shadow-2xl">
-             <TrendingUp className="w-12 h-12 mb-6 opacity-50" />
+          <div className="bg-slate-900 rounded-3xl p-5 sm:p-6 text-white shadow-sm">
+             <TrendingUp className="w-9 h-9 mb-4 opacity-60" />
              <h4 className="text-xl font-black mb-2">إجمالي السيولة</h4>
-             <p className="text-4xl font-black mb-1">
+             <p className="text-3xl font-black mb-1">
                 {activeTab === 'treasury' && loadError ? '—' : totalLiquidity.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 <span className="text-sm opacity-70"> ج.م</span>
              </p>
-             <p className="text-sm font-bold opacity-60">رصيد النقدية الدفتري + أرصدة البنوك المسجلة؛ يختلف عن نقدية الدرج الفعلية</p>
+             <p className="text-sm font-bold text-slate-300">رصيد النقدية الدفتري + أرصدة البنوك المسجلة؛ يختلف عن نقدية الدرج الفعلية</p>
           </div>
        </div>
 
        {/* Content Area */}
-       <div className="lg:col-span-9 space-y-8">
+       <div className="lg:col-span-9 space-y-6">
           {activeTab === 'treasury' && (
-             <div className="space-y-8 animate-in fade-in slide-in-from-left-4">
-                <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white dark:bg-slate-900 p-8 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-sm">
+             <div className="space-y-6 animate-in fade-in duration-200">
+                <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white dark:bg-slate-900 p-4 sm:p-6 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-sm">
                    <div>
                       <h2 className="text-2xl font-black text-slate-800 dark:text-white">سجل توريدات وحركات النقدية</h2>
                       <p className="text-slate-500 font-bold">متابعة جميع المبالغ الداخلة والخارجة من الخزينة ونقاط البيع</p>
@@ -684,18 +685,18 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                    <div className="flex flex-wrap items-center gap-3">
                      <Link
                        href="/shifts"
-                       className="px-5 py-4 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-[20px] font-black hover:bg-slate-200 dark:hover:bg-slate-700 transition-all flex items-center gap-2 text-sm"
+                       className="px-4 py-3 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-xl font-black hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors flex items-center gap-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500"
                      >
                        <Clock className="w-4 h-4 text-blue-500" />
                        الورديات
                      </Link>
                      {canViewHandover && <Link
                        href="/finance/handover"
-                       className="px-5 py-4 bg-blue-600 text-white rounded-[20px] font-black hover:bg-blue-700 transition-all shadow-xl shadow-blue-500/20 text-sm"
+                       className="px-4 py-3 bg-blue-600 text-white rounded-xl font-black hover:bg-blue-700 transition-colors text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
                      >
                        تسليم الدرج
                      </Link>}
-                     <button onClick={() => window.print()} className="p-4 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-[20px] hover:bg-slate-200 transition-all no-print">
+                     <button type="button" aria-label="طباعة سجل النقدية" onClick={() => window.print()} className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl hover:bg-slate-200 transition-colors no-print focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500">
                        <Printer className="w-5 h-5" />
                      </button>
                       {canProcessCash && <button
@@ -703,7 +704,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                            setActiveTab('cash_movement');
                            setShowCashForm({ show: true, type: 'disbursement' });
                        }}
-                       className="px-6 py-4 bg-rose-600 text-white rounded-[20px] font-black hover:bg-rose-700 transition-all shadow-xl shadow-rose-500/20 flex items-center gap-2 text-sm"
+                       className="px-4 py-3 bg-rose-600 text-white rounded-xl font-black hover:bg-rose-700 transition-colors flex items-center gap-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 focus-visible:ring-offset-2"
                       >
                          <Plus className="w-4 h-4" /> صرف نقدية
                       </button>}
@@ -712,7 +713,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                            setActiveTab('cash_movement');
                            setShowCashForm({ show: true, type: 'receipt' });
                        }}
-                       className="px-6 py-4 bg-emerald-600 text-white rounded-[20px] font-black hover:bg-emerald-700 transition-all shadow-xl shadow-emerald-500/20 flex items-center gap-2 text-sm"
+                       className="px-4 py-3 bg-emerald-600 text-white rounded-xl font-black hover:bg-emerald-700 transition-colors flex items-center gap-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2"
                       >
                          <Plus className="w-4 h-4" /> إضافة توريد جديد
                       </button>}
@@ -743,7 +744,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                     />
                  )}
 
-                 <div className="bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 overflow-hidden shadow-sm">
+                 <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-x-auto shadow-sm">
                      <div className="p-8 border-b border-slate-100 dark:border-slate-800 flex flex-wrap justify-between items-center gap-4">
                         <div className="flex flex-wrap items-center gap-3">
                           <div className="bg-slate-100 dark:bg-slate-800 p-1 rounded-xl flex gap-1">
@@ -768,7 +769,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                         <span className="text-xs font-black text-slate-400">عدد الحركات: ({filteredTreasuryMovements.length})</span>
                      </div>
                      </div>
-                     <table className="w-full text-right">
+                     <table className="w-full min-w-[720px] text-right">
                        <thead className="bg-slate-50 dark:bg-slate-800/50">
                           <tr>
                              <th className="px-8 py-5 text-xs font-black text-slate-400 uppercase">التاريخ</th>
@@ -797,7 +798,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                                        m.category === 'pharmacy' ? 'توريد للصيدلية' :
                                        m.category === 'handover' ? 'تسليم درج' : m.category || (m.type === 'receipt' ? 'توريد نقدية' : 'صرف نقدية')}
                                    </p>
-                                   <p className="text-[11px] text-slate-400 font-bold mt-0.5">
+                                   <p className="text-xs text-slate-400 font-bold mt-0.5">
                                       {[m.sub_category, m.target_name, m.notes].filter(Boolean).join(' • ') || '—'}
                                    </p>
                                 </td>
@@ -810,7 +811,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                                          {m.source_type === 'pos' ? 'نقطة البيع' : m.source_type === 'main_safe' ? 'خزينة المحل' : m.source_type === 'admin' ? 'خزينة الإدارة' : m.source_type === 'user_drawer' ? `درج ${m.user_name || 'المستخدم'}` : m.source_type === 'user_drawer_received' ? `درج ${m.user_name || 'المستلم'}` : m.source_type || 'الخزينة'}
                                       </span>
                                       {m.shift_id && (
-                                         <Link href="/shifts" className="text-[10px] font-mono text-slate-400 hover:text-blue-500">
+                                         <Link href="/shifts" className="text-xs font-mono text-slate-400 hover:text-blue-500">
                                             وردية #{String(m.shift_id).slice(0, 8)}
                                          </Link>
                                       )}
@@ -835,28 +836,28 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
 
           {activeTab === 'pos_management' && (
              <div className="space-y-8 animate-in fade-in slide-in-from-left-4">
-                <div className="flex justify-between items-center bg-white dark:bg-slate-900 p-8 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-sm">
+                <div className="flex justify-between items-center bg-white dark:bg-slate-900 p-4 sm:p-6 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-sm">
                    <div>
                       <h2 className="text-2xl font-black">إدارة نقاط البيع</h2>
                       <p className="text-slate-500 font-bold">تعريف ومتابعة أرصدة نقاط البيع المختلفة</p>
                    </div>
                    <div className="flex items-center gap-4">
-                     <button onClick={() => window.print()} className="p-4 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-[24px] hover:bg-slate-200 transition-all no-print">
+                     <button type="button" aria-label="طباعة" onClick={() => window.print()} className="p-4 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-[24px] hover:bg-slate-200 transition-all no-print">
                        <Printer className="w-6 h-6" />
                      </button>
                      <button
                        onClick={() => setShowAddPosModal(true)}
-                       className="px-10 py-5 bg-purple-600 text-white rounded-[24px] font-black hover:bg-purple-700 transition-all shadow-xl shadow-purple-500/20 flex items-center gap-3 active:scale-95"
+                       className="px-10 py-5 bg-purple-600 text-white rounded-[24px] font-black hover:bg-purple-700 transition-all shadow-xl shadow-purple-500/20 flex items-center gap-3 "
                      >
                         <Plus className="w-6 h-6" /> إضافة نقطة بيع
                      </button>
                    </div>
                 </div>
 
-                <div className="bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 overflow-hidden shadow-sm">
-                   <table className="w-full text-right">
+                <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-x-auto shadow-sm">
+                   <table className="w-full min-w-[720px] text-right">
                       <thead className="bg-slate-50 dark:bg-slate-800/50">
-                         <tr className="text-slate-400 text-[10px] font-black uppercase tracking-widest">
+                         <tr className="text-slate-400 text-xs font-black uppercase tracking-widest">
                             <th className="px-8 py-6">كود</th>
                             <th className="px-8 py-6">الإسم (Ar)</th>
                             <th className="px-8 py-6">الإسم (En)</th>
@@ -886,21 +887,21 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                                <td className="px-8 py-6 text-center">
                                   <div className="flex flex-col items-center">
                                      <span className="font-bold text-slate-700 dark:text-slate-300 text-xs">{pos.location || 'نقطة رئيسية'}</span>
-                                     <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{pos.computer_name || 'Terminal'}</span>
+                                     <span className="text-xs font-black text-slate-400 uppercase tracking-widest">{pos.computer_name || 'Terminal'}</span>
                                   </div>
                                </td>
                                <td className="px-8 py-6 text-center">
                                   <div className="flex justify-center gap-2">
                                      <button
                                        onClick={() => setEditingPos(pos)}
-                                       title="تعديل نقطة البيع"
+                                       aria-label="تعديل نقطة البيع" title="تعديل نقطة البيع"
                                        className="p-3 bg-slate-100 dark:bg-slate-800 hover:bg-blue-50 dark:hover:bg-blue-950/40 text-slate-600 hover:text-blue-600 rounded-xl transition-all"
                                      >
                                         <Edit className="w-4 h-4" />
                                      </button>
                                      <button
                                        onClick={() => handleDeletePos(pos)}
-                                       title="حذف نقطة البيع"
+                                       aria-label="حذف نقطة البيع" title="حذف نقطة البيع"
                                        className="p-3 bg-slate-100 dark:bg-slate-800 hover:bg-rose-50 dark:hover:bg-rose-950/40 text-slate-600 hover:text-rose-600 rounded-xl transition-all"
                                      >
                                         <Trash2 className="w-4 h-4" />
@@ -917,7 +918,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
 
           {activeTab === 'expense_definitions' && (
              <div className="space-y-8 animate-in fade-in slide-in-from-left-4">
-                <div className="flex flex-wrap justify-between items-center gap-4 bg-white dark:bg-slate-900 p-8 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-sm">
+                <div className="flex flex-wrap justify-between items-center gap-4 bg-white dark:bg-slate-900 p-4 sm:p-6 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-sm">
                    <div>
                       <h2 className="text-2xl font-black">تعريف المصروفات</h2>
                       <p className="text-slate-500 font-bold">تكويد وتصنيف أنواع المصاريف المختلفة</p>
@@ -932,13 +933,13 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                       </Link>}
                       {canRecordExpenses && <button
                          onClick={() => setShowRecordExpenseModal(true)}
-                         className="px-8 py-4 bg-rose-600 hover:bg-rose-700 text-white rounded-[20px] font-black text-sm shadow-xl shadow-rose-500/20 flex items-center gap-2 active:scale-95 transition-all"
+                         className="px-8 py-4 bg-rose-600 hover:bg-rose-700 text-white rounded-[20px] font-black text-sm shadow-xl shadow-rose-500/20 flex items-center gap-2  transition-all"
                       >
                          <Plus className="w-5 h-5" /> إضافة مصروف (F4)
                       </button>}
                       <button
                          onClick={() => setShowAddExpenseModal(true)}
-                         className="px-8 py-4 bg-amber-600 hover:bg-amber-700 text-white rounded-[20px] font-black text-sm flex items-center gap-2 shadow-lg shadow-amber-600/20 active:scale-95 transition-all"
+                         className="px-8 py-4 bg-amber-600 hover:bg-amber-700 text-white rounded-[20px] font-black text-sm flex items-center gap-2 shadow-lg shadow-amber-600/20  transition-all"
                       >
                          <Plus className="w-5 h-5" />
                          <span>إضافة نوع مصروف</span>
@@ -946,7 +947,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                    </div>
                 </div>
 
-                <div className="bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 overflow-hidden shadow-sm">
+                <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-x-auto shadow-sm">
                    <div className="p-6 border-b border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-4 bg-slate-50/50 dark:bg-slate-800/30">
                       <div className="relative flex-1 min-w-[280px]">
                          <Search className="w-5 h-5 text-slate-400 absolute right-4 top-1/2 -translate-y-1/2" />
@@ -963,9 +964,9 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                       </div>
                    </div>
 
-                   <table className="w-full text-right">
+                   <table className="w-full min-w-[720px] text-right">
                       <thead className="bg-slate-50 dark:bg-slate-800/50">
-                         <tr className="text-slate-400 text-[10px] font-black uppercase tracking-widest">
+                         <tr className="text-slate-400 text-xs font-black uppercase tracking-widest">
                             <th className="px-8 py-6">الكود</th>
                             <th className="px-8 py-6">الإسم (ع)</th>
                             <th className="px-8 py-6">الإسم (En)</th>
@@ -1010,14 +1011,14 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                                    <div className="flex items-center justify-center gap-2">
                                       <button
                                         onClick={() => setEditingExpenseDef(exp)}
-                                        title="تعديل تعريف المصروف"
+                                        aria-label="تعديل تعريف المصروف" title="تعديل تعريف المصروف"
                                         className="p-3 bg-amber-50 dark:bg-amber-950/40 text-amber-600 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/60 rounded-xl transition-all shadow-sm"
                                       >
                                          <Edit className="w-4 h-4" />
                                       </button>
                                       <button
                                         onClick={() => handleDeleteExpenseDef(exp)}
-                                        title="حذف تعريف المصروف"
+                                        aria-label="حذف تعريف المصروف" title="حذف تعريف المصروف"
                                         className="p-3 bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-900/60 rounded-xl transition-all shadow-sm"
                                       >
                                          <Trash2 className="w-4 h-4" />
@@ -1080,7 +1081,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                     </div>
                  </div>
 
-                 <div className="bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 overflow-hidden shadow-sm">
+                 <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-x-auto shadow-sm">
                     <div className="p-8 border-b border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-4">
                        <div>
                           <h4 className="text-xl font-black text-slate-800 dark:text-white">سجل الإشعارات والتسويات الأخيرة</h4>
@@ -1097,14 +1098,14 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                                  className="w-full pl-4 pr-10 py-2.5 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border border-slate-200 dark:border-slate-700 outline-none font-bold text-xs focus:border-slate-500 transition-all text-slate-900 dark:text-white"
                               />
                            </div>
-                           <button onClick={() => window.print()} className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-2xl hover:bg-slate-200 transition-all no-print">
+                           <button type="button" aria-label="طباعة" onClick={() => window.print()} className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-2xl hover:bg-slate-200 transition-all no-print">
                               <Printer className="w-5 h-5" />
                            </button>
                           </div>
                         </div>
-                     <table className="w-full text-right">
+                     <table className="w-full min-w-[720px] text-right">
                         <thead className="bg-slate-50 dark:bg-slate-800/50">
-                           <tr className="text-slate-400 text-[10px] font-black uppercase tracking-widest">
+                           <tr className="text-slate-400 text-xs font-black uppercase tracking-widest">
                               <th className="px-8 py-6">التاريخ</th>
                               <th className="px-8 py-6">النوع</th>
                               <th className="px-8 py-6">الجهة المستهدفة</th>
@@ -1133,7 +1134,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                                  <td className="px-8 py-6">
                                     <div className="flex items-center gap-2">
                                        <span className={cn(
-                                          "px-2 py-0.5 rounded-lg text-[10px] font-black",
+                                          "px-2 py-0.5 rounded-lg text-xs font-black",
                                           n.target_type === 'customer' ? "bg-blue-50 dark:bg-blue-950/30 text-blue-600" : n.target_type === 'supplier' ? "bg-amber-50 dark:bg-amber-950/30 text-amber-600" : "bg-purple-50 dark:bg-purple-950/30 text-purple-600"
                                        )}>
                                           {n.target_type === 'customer' ? 'عميل' : n.target_type === 'supplier' ? 'مورد' : 'صيدلية'}
@@ -1160,18 +1161,18 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
 
           {activeTab === 'banks' && (
              <div className="space-y-8 animate-in fade-in slide-in-from-left-4">
-                <div className="flex justify-between items-center bg-white dark:bg-slate-900 p-8 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-sm">
+                <div className="flex justify-between items-center bg-white dark:bg-slate-900 p-4 sm:p-6 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-sm">
                    <div>
                       <h2 className="text-2xl font-black text-slate-800 dark:text-white">الحسابات البنكية</h2>
                       <p className="text-slate-500 font-bold">متابعة أرصدة وحركات الحسابات البنكية</p>
                    </div>
                    <div className="flex items-center gap-4">
-                     <button onClick={() => window.print()} className="p-4 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-[24px] hover:bg-slate-200 transition-all no-print">
+                     <button type="button" aria-label="طباعة" onClick={() => window.print()} className="p-4 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-[24px] hover:bg-slate-200 transition-all no-print">
                        <Printer className="w-6 h-6" />
                      </button>
                      <button
                        onClick={() => setShowAddBankModal(true)}
-                       className="px-10 py-5 bg-blue-600 text-white rounded-[24px] font-black hover:bg-blue-700 transition-all shadow-xl shadow-blue-500/20 flex items-center gap-3 active:scale-95"
+                       className="px-10 py-5 bg-blue-600 text-white rounded-[24px] font-black hover:bg-blue-700 transition-all shadow-xl shadow-blue-500/20 flex items-center gap-3 "
                      >
                         <Plus className="w-6 h-6" /> إضافة حساب بنكي
                      </button>
@@ -1189,13 +1190,13 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                    ) : banks.length === 0 ? (
                       <div className="col-span-2 py-20 text-center text-slate-400 italic font-bold">لا توجد حسابات بنكية مسجلة. اضغط &quot;إضافة حساب بنكي&quot; للبدء.</div>
                    ) : banks.map((bank: any) => (
-                      <div key={`bank-${bank.id}`} className="bg-white dark:bg-slate-900 p-8 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-sm hover:border-blue-500 transition-all group relative">
+                      <div key={`bank-${bank.id}`} className="bg-white dark:bg-slate-900 p-4 sm:p-6 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-sm hover:border-blue-500 transition-all group relative">
                          <div className="flex justify-between items-start mb-6">
-                            <div className="w-16 h-16 bg-blue-50 dark:bg-blue-900/20 rounded-[24px] flex items-center justify-center text-blue-600 group-hover:scale-110 transition-transform">
-                               <Landmark className="w-8 h-8" />
+                            <div className="w-12 h-12 bg-blue-50 dark:bg-blue-900/20 rounded-2xl flex items-center justify-center text-blue-600">
+                               <Landmark className="w-6 h-6" />
                             </div>
                             <div className="text-left">
-                               <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">الرصيد الحالي</p>
+                               <p className="text-xs font-black text-slate-400 uppercase tracking-widest">الرصيد الحالي</p>
                                <p className="text-3xl font-black text-slate-900 dark:text-white font-mono">{Number(bank.current_balance || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })} <span className="text-sm">ج.م</span></p>
                             </div>
                          </div>
@@ -1205,6 +1206,8 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                             <span className="text-xs font-black text-slate-500 uppercase tracking-widest font-mono">رقم الحساب: {bank.account_number || '—'} {bank.branch ? `(${bank.branch})` : ''}</span>
                             <div className="flex gap-2">
                                <button 
+                                 type="button"
+                                 aria-label={`تعديل الحساب البنكي ${bank.name_ar}`}
                                  onClick={() => setEditingBank(bank)}
                                  title="تعديل الحساب"
                                  className="p-2.5 bg-slate-100 dark:bg-slate-800 hover:bg-blue-50 text-slate-600 hover:text-blue-600 rounded-xl transition-all"
@@ -1212,6 +1215,8 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                                   <Edit className="w-4 h-4" />
                                </button>
                                <button 
+                                 type="button"
+                                 aria-label={`حذف الحساب البنكي ${bank.name_ar}`}
                                  onClick={() => handleDeleteBank(bank)}
                                  title="حذف الحساب"
                                  className="p-2.5 bg-slate-100 dark:bg-slate-800 hover:bg-rose-50 text-slate-600 hover:text-rose-600 rounded-xl transition-all"
@@ -1228,31 +1233,31 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
 
           {activeTab === 'papers' && (
               <div className="space-y-8 animate-in fade-in slide-in-from-left-4">
-                 <div className="flex flex-wrap justify-between items-center gap-4 bg-white dark:bg-slate-900 p-8 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-sm">
+                 <div className="flex flex-wrap justify-between items-center gap-4 bg-white dark:bg-slate-900 p-4 sm:p-6 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-sm">
                     <div>
                        <h2 className="text-2xl font-black text-slate-800 dark:text-white">الأوراق المالية (شيكات / كمبيالات)</h2>
                        <p className="text-slate-500 font-bold">متابعة استحقاقات وتحصيل وصرف الشيكات والكمبيالات</p>
                     </div>
                     <div className="flex flex-wrap items-center gap-3">
-                       <button onClick={() => window.print()} className="p-4 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-[24px] hover:bg-slate-200 transition-all no-print">
+                       <button type="button" aria-label="طباعة" onClick={() => window.print()} className="p-4 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-[24px] hover:bg-slate-200 transition-all no-print">
                           <Printer className="w-6 h-6" />
                        </button>
                        <button
                          onClick={() => setShowAddPaperModal({ show: true, type: 'check', direction: 'out' })}
-                         className="px-6 py-4 bg-purple-600 text-white rounded-2xl font-black hover:bg-purple-700 transition-all shadow-lg shadow-purple-500/20 flex items-center gap-2 active:scale-95 text-xs"
+                         className="px-6 py-4 bg-purple-600 text-white rounded-2xl font-black hover:bg-purple-700 transition-all shadow-lg shadow-purple-500/20 flex items-center gap-2  text-xs"
                        >
                           <Plus className="w-4 h-4" /> تسجيل شيك صادر
                        </button>
                        <button
                          onClick={() => setShowAddPaperModal({ show: true, type: 'check', direction: 'in' })}
-                         className="px-6 py-4 bg-indigo-600 text-white rounded-2xl font-black hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-500/20 flex items-center gap-2 active:scale-95 text-xs"
+                         className="px-6 py-4 bg-indigo-600 text-white rounded-2xl font-black hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-500/20 flex items-center gap-2  text-xs"
                        >
                           <Plus className="w-4 h-4" /> تسجيل شيك وارد
                        </button>
                     </div>
                  </div>
 
-                 <div className="bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 overflow-hidden shadow-sm">
+                 <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-x-auto shadow-sm">
                     <div className="p-6 border-b border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-4 bg-slate-50/50 dark:bg-slate-800/30">
                        <div className="relative flex-1 min-w-[280px]">
                           <Search className="w-5 h-5 text-slate-400 absolute right-4 top-1/2 -translate-y-1/2" />
@@ -1269,9 +1274,9 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                        </div>
                     </div>
 
-                    <table className="w-full text-right">
+                    <table className="w-full min-w-[720px] text-right">
                        <thead className="bg-slate-50 dark:bg-slate-800/50">
-                          <tr className="text-slate-400 text-[10px] font-black uppercase tracking-widest">
+                          <tr className="text-slate-400 text-xs font-black uppercase tracking-widest">
                              <th className="px-8 py-6">رقم الورقة</th>
                              <th className="px-8 py-6">النوع</th>
                              <th className="px-8 py-6">الجهة / الساحب</th>
@@ -1305,7 +1310,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                                 <td className="px-8 py-6 text-center font-black text-lg font-mono text-slate-900 dark:text-white">{Number(p.amount || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })} ج.م</td>
                                 <td className="px-8 py-6 text-center">
                                    <span className={cn(
-                                     "px-3.5 py-1 rounded-full text-[11px] font-black",
+                                     "px-3.5 py-1 rounded-full text-xs font-black",
                                      p.status === 'cashed' ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400" :
                                      p.status === 'bounced' ? "bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:text-rose-400" :
                                      p.status === 'cancelled' ? "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400" :
@@ -1338,7 +1343,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                                       )}
                                       <button
                                         onClick={() => handleDeletePaper(p)}
-                                        title="حذف الورقة المالية"
+                                        aria-label="حذف الورقة المالية" title="حذف الورقة المالية"
                                         className="p-2 text-slate-400 hover:text-rose-600 rounded-lg transition-all"
                                       >
                                          <Trash2 className="w-4 h-4" />
@@ -1355,18 +1360,18 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
 
           {activeTab === 'cards' && (
              <div className="space-y-8 animate-in fade-in slide-in-from-left-4">
-                <div className="flex justify-between items-center bg-white dark:bg-slate-900 p-8 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-sm">
+                <div className="flex justify-between items-center bg-white dark:bg-slate-900 p-4 sm:p-6 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-sm">
                    <div>
                       <h2 className="text-2xl font-black text-slate-800 dark:text-white">ماكينات وبطاقات الائتمان</h2>
                       <p className="text-slate-500 font-bold">إدارة عُهد ونقاط التحصيل الإلكتروني والماكينات</p>
                    </div>
                    <div className="flex items-center gap-4">
-                     <button onClick={() => window.print()} className="p-4 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-[24px] hover:bg-slate-200 transition-all no-print">
+                     <button type="button" aria-label="طباعة" onClick={() => window.print()} className="p-4 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-[24px] hover:bg-slate-200 transition-all no-print">
                        <Printer className="w-6 h-6" />
                      </button>
                      <button
                        onClick={() => setShowAddCardModal(true)}
-                       className="px-10 py-5 bg-indigo-600 text-white rounded-[24px] font-black hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-500/20 flex items-center gap-3 active:scale-95"
+                       className="px-10 py-5 bg-indigo-600 text-white rounded-[24px] font-black hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-500/20 flex items-center gap-3 "
                      >
                         <Plus className="w-6 h-6" /> إضافة ماكينة / كارت
                      </button>
@@ -1385,20 +1390,19 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                       <div className="col-span-3 py-20 text-center text-slate-400 italic font-bold">لا توجد ماكينات مسجلة. اضغط &quot;إضافة ماكينة / كارت&quot; للبدء.</div>
                    ) : cards.map((c: any) => (
                       <div key={`card-${c.id}`} className="bg-white dark:bg-slate-900 p-6 rounded-[32px] border border-slate-100 dark:border-slate-800 shadow-sm relative overflow-hidden group">
-                         <div className="absolute -right-4 -top-4 w-24 h-24 bg-indigo-500/5 rounded-full group-hover:scale-150 transition-transform" />
                          <div className="flex justify-between items-start mb-6">
                             <CreditCard className="w-10 h-10 text-indigo-600" />
                             <div className="flex gap-1">
                                <button 
                                  onClick={() => setEditingCard(c)}
-                                 title="تعديل الماكينة"
+                                 aria-label="تعديل الماكينة" title="تعديل الماكينة"
                                  className="p-2 bg-slate-100 dark:bg-slate-800 hover:bg-indigo-50 text-slate-600 hover:text-indigo-600 rounded-xl transition-all"
                                >
                                   <Edit className="w-4 h-4" />
                                </button>
                                <button 
                                  onClick={() => handleDeleteCard(c)}
-                                 title="حذف الماكينة"
+                                 aria-label="حذف الماكينة" title="حذف الماكينة"
                                  className="p-2 bg-slate-100 dark:bg-slate-800 hover:bg-rose-50 text-slate-600 hover:text-rose-600 rounded-xl transition-all"
                                >
                                   <Trash2 className="w-4 h-4" />
@@ -1409,11 +1413,11 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                          <p className="text-xs font-bold text-slate-400 uppercase mb-6">{c.name_en || '—'}</p>
                          <div className="flex justify-between items-end pt-4 border-t border-slate-100 dark:border-slate-800">
                             <div>
-                               <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">الرصيد الحالي</p>
+                               <p className="text-xs font-black text-slate-400 uppercase tracking-widest">الرصيد الحالي</p>
                                <p className="text-2xl font-black text-indigo-600 font-mono">{Number(c.current_balance || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })} ج.م</p>
                             </div>
                             <div className="text-left">
-                               <p className="text-[10px] font-black text-rose-500 uppercase tracking-widest">العمولة</p>
+                               <p className="text-xs font-black text-rose-500 uppercase tracking-widest">العمولة</p>
                                <p className="font-black text-rose-500 font-mono">{c.commission_pct}%</p>
                             </div>
                          </div>
@@ -1438,7 +1442,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
 
              return (
               <div className="space-y-8 animate-in fade-in slide-in-from-left-4">
-                 <div className="flex flex-wrap justify-between items-center gap-4 bg-white dark:bg-slate-900 p-8 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-sm">
+                 <div className="flex flex-wrap justify-between items-center gap-4 bg-white dark:bg-slate-900 p-4 sm:p-6 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-sm">
                     <div>
                        <h2 className="text-2xl font-black text-slate-800 dark:text-white">المصاريف التشغيلية</h2>
                        <p className="text-slate-500 font-bold">سجل المصروفات الفعلي وتحليل التكاليف</p>
@@ -1453,7 +1457,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                        </Link>
                        {canRecordExpenses && <button
                          onClick={() => setShowRecordExpenseModal(true)}
-                         className="px-8 py-4 bg-rose-600 hover:bg-rose-700 text-white rounded-[20px] font-black text-sm shadow-xl shadow-rose-500/20 flex items-center gap-2 active:scale-95 transition-all"
+                         className="px-8 py-4 bg-rose-600 hover:bg-rose-700 text-white rounded-[20px] font-black text-sm shadow-xl shadow-rose-500/20 flex items-center gap-2  transition-all"
                        >
                           <Plus className="w-5 h-5" /> إضافة مصروف (F4)
                        </button>}
@@ -1461,21 +1465,21 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                  </div>
 
                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    <div className="p-8 bg-rose-50 dark:bg-rose-900/10 rounded-[40px] border border-rose-100 dark:border-rose-900/20">
+                    <div className="p-8 bg-rose-50 dark:bg-rose-900/10 rounded-3xl border border-rose-100 dark:border-rose-900/20">
                        <p className="text-xs font-black text-rose-600 uppercase tracking-widest mb-2">إجمالي الشهر</p>
                        <p className="text-4xl font-black text-rose-700 font-mono">{totalMonthExpenses.toLocaleString()} <span className="text-sm">ج.م</span></p>
                     </div>
-                    <div className="p-8 bg-blue-50 dark:bg-blue-900/10 rounded-[40px] border border-blue-100 dark:border-blue-900/20">
+                    <div className="p-8 bg-blue-50 dark:bg-blue-900/10 rounded-3xl border border-blue-100 dark:border-blue-900/20">
                        <p className="text-xs font-black text-blue-600 uppercase tracking-widest mb-2">أكبر تصنيف</p>
                        <p className="text-2xl font-black text-blue-700">{largestCategoryLabel}</p>
                     </div>
-                    <div className="p-8 bg-amber-50 dark:bg-amber-900/10 rounded-[40px] border border-amber-100 dark:border-amber-900/20">
+                    <div className="p-8 bg-amber-50 dark:bg-amber-900/10 rounded-3xl border border-amber-100 dark:border-amber-900/20">
                        <p className="text-xs font-black text-amber-600 uppercase tracking-widest mb-2">عدد العمليات</p>
                        <p className="text-4xl font-black text-amber-700 font-mono">{expensesList.length} <span className="text-sm">عملية</span></p>
                     </div>
                  </div>
 
-                 <div className="bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 overflow-hidden shadow-sm">
+                 <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-x-auto shadow-sm">
                     <div className="p-6 border-b border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-4 bg-slate-50/50 dark:bg-slate-800/30">
                        <div className="relative flex-1 min-w-[280px]">
                           <Search className="w-5 h-5 text-slate-400 absolute right-4 top-1/2 -translate-y-1/2" />
@@ -1488,7 +1492,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                           />
                        </div>
                        <div className="flex items-center gap-3">
-                          <button onClick={() => window.print()} className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-2xl hover:bg-slate-200 transition-all no-print">
+                          <button type="button" aria-label="طباعة" onClick={() => window.print()} className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-2xl hover:bg-slate-200 transition-all no-print">
                              <Printer className="w-5 h-5" />
                           </button>
                           <div className="text-xs font-black text-slate-400 px-2">
@@ -1497,9 +1501,9 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                        </div>
                     </div>
 
-                    <table className="w-full text-right">
+                    <table className="w-full min-w-[720px] text-right">
                        <thead className="bg-slate-50 dark:bg-slate-800/50">
-                          <tr className="text-slate-400 text-[10px] font-black uppercase tracking-widest">
+                          <tr className="text-slate-400 text-xs font-black uppercase tracking-widest">
                              <th className="px-8 py-6">التاريخ</th>
                              <th className="px-8 py-6">التصنيف</th>
                              <th className="px-8 py-6">القيمة</th>
@@ -1564,7 +1568,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
 
           {activeTab === 'audit_logs' && (
              <div className="space-y-8 animate-in fade-in slide-in-from-left-4">
-                <div className="flex justify-between items-center bg-white dark:bg-slate-900 p-8 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-sm">
+                <div className="flex justify-between items-center bg-white dark:bg-slate-900 p-4 sm:p-6 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-sm">
                    <div>
                       <h2 className="text-2xl font-black text-slate-800 dark:text-white">سجل الرقابة والأحداث</h2>
                       <p className="text-slate-500 font-bold">تتبع جميع العمليات الحساسة التي تمت على النظام</p>
@@ -1577,10 +1581,10 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                    </div>
                 </div>
 
-                <div className="bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 overflow-hidden shadow-sm">
-                   <table className="w-full text-right">
+                <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-x-auto shadow-sm">
+                   <table className="w-full min-w-[720px] text-right">
                       <thead className="bg-slate-50 dark:bg-slate-800/50">
-                         <tr className="text-slate-400 text-[10px] font-black uppercase tracking-widest">
+                         <tr className="text-slate-400 text-xs font-black uppercase tracking-widest">
                             <th className="px-8 py-6">الوقت والتاريخ</th>
                             <th className="px-8 py-6">نوع العملية</th>
                             <th className="px-8 py-6">التفاصيل</th>
@@ -1612,7 +1616,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
 
           {activeTab === 'chart_of_accounts' && (
               <div className="space-y-8 animate-in fade-in slide-in-from-left-4">
-                 <div className="flex justify-between items-center bg-white dark:bg-slate-900 p-8 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-sm">
+                 <div className="flex justify-between items-center bg-white dark:bg-slate-900 p-4 sm:p-6 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-sm">
                     <div>
                        <h2 className="text-2xl font-black text-slate-800 dark:text-white">شجرة الحسابات (Chart of Accounts)</h2>
                        <p className="text-slate-500 font-bold">هيكل الحسابات المالي للصيدلية</p>
@@ -1644,10 +1648,10 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                  </div>
 
                  {coaViewMode === 'table' ? (
-                    <div className="bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 overflow-hidden shadow-sm">
-                       <table className="w-full text-right">
+                    <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-x-auto shadow-sm">
+                       <table className="w-full min-w-[720px] text-right">
                           <thead className="bg-slate-50 dark:bg-slate-800/50">
-                             <tr className="text-slate-400 text-[10px] font-black uppercase tracking-widest">
+                             <tr className="text-slate-400 text-xs font-black uppercase tracking-widest">
                                 <th className="px-8 py-6">كود الحساب</th>
                                 <th className="px-8 py-6">إسم الحساب</th>
                                 <th className="px-8 py-6">النوع</th>
@@ -1667,11 +1671,11 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                                 )}>
                                    <td className="px-8 py-6 font-mono font-black text-blue-600">{acc.code}</td>
                                    <td className="px-8 py-6 font-black" style={{ paddingRight: `${(acc.code.split('.').length - 1) * 20 + 32}px` }}>
-                                      {acc.is_group ? '📁 ' : '📄 '}{acc.name_ar}
+                                      {acc.is_group ? 'ðŸ“ ' : 'ðŸ“„ '}{acc.name_ar}
                                    </td>
                                    <td className="px-8 py-6">
                                       <span className={cn(
-                                         "px-3 py-1 rounded-lg text-[10px] font-black uppercase",
+                                         "px-3 py-1 rounded-lg text-xs font-black uppercase",
                                          acc.type === 'asset' ? "bg-emerald-100 text-emerald-600" :
                                          acc.type === 'liability' ? "bg-rose-100 text-rose-600" :
                                          acc.type === 'equity' ? "bg-blue-100 text-blue-600" :
@@ -1695,14 +1699,14 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                                          </button>
                                          <button
                                             onClick={() => setEditingAccount(acc)}
-                                            title="تعديل الحساب"
+                                            aria-label="تعديل الحساب" title="تعديل الحساب"
                                             className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-xl transition-all"
                                           >
                                              <Edit className="w-4 h-4" />
                                           </button>
                                           <button
                                             onClick={() => handleDeleteAccount(acc)}
-                                            title="حذف الحساب"
+                                            aria-label="حذف الحساب" title="حذف الحساب"
                                             className="p-3 bg-rose-50 dark:bg-rose-950/30 text-rose-500 hover:bg-rose-600 hover:text-white rounded-xl transition-all"
                                           >
                                             <Trash2 className="w-4 h-4" />
@@ -1715,7 +1719,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                        </table>
                     </div>
                  ) : (
-                    <div className="bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 p-8 min-h-[600px] shadow-sm overflow-hidden">
+                    <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-100 dark:border-slate-800 p-8 min-h-[600px] shadow-sm overflow-hidden">
                        <div className="max-w-4xl mx-auto">
                           {buildAccountTree(accounts).map((root: any) => (
                              <AccountTreeNode 
@@ -1735,7 +1739,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
            )}
            {activeTab === 'daily_journals' && (
               <div className="space-y-8 animate-in fade-in slide-in-from-left-4">
-                 <div className="flex justify-between items-center bg-white dark:bg-slate-900 p-8 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-sm">
+                 <div className="flex justify-between items-center bg-white dark:bg-slate-900 p-4 sm:p-6 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-sm">
                     <div>
                        <h2 className="text-2xl font-black text-slate-800 dark:text-white">القيود اليومية (Daily Journals)</h2>
                        <p className="text-slate-500 font-bold">تسجيل الحركات المالية المزدوجة</p>
@@ -1749,10 +1753,10 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                     </button>
                  </div>
 
-                 <div className="bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 overflow-hidden shadow-sm">
-                    <table className="w-full text-right">
+                 <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-x-auto shadow-sm">
+                    <table className="w-full min-w-[720px] text-right">
                        <thead className="bg-slate-50 dark:bg-slate-800/50">
-                          <tr className="text-slate-400 text-[10px] font-black uppercase tracking-widest">
+                          <tr className="text-slate-400 text-xs font-black uppercase tracking-widest">
                              <th className="px-8 py-6">رقم القيد</th>
                              <th className="px-8 py-6">التاريخ</th>
                              <th className="px-8 py-6">البيان</th>
@@ -1778,7 +1782,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                                 <td className="px-8 py-6 font-black">{j.description}</td>
                                 <td className="px-8 py-6 font-black text-lg text-blue-600">{j.total_amount.toLocaleString()} ج.م</td>
                                 <td className="px-8 py-6">
-                                   <button onClick={(e) => { e.stopPropagation(); setSelectedJournalId(j.id); }} title="عرض تفاصيل القيد" className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-500 rounded-xl hover:text-blue-600 transition-all"><ArrowRight className="w-4 h-4" /></button>
+                                   <button onClick={(e) => { e.stopPropagation(); setSelectedJournalId(j.id); }} aria-label="عرض تفاصيل القيد" title="عرض تفاصيل القيد" className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-500 rounded-xl hover:text-blue-600 transition-all"><ArrowRight className="w-4 h-4" /></button>
                                 </td>
                              </tr>
                           ))}
@@ -1789,7 +1793,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
            )}
 
            {!ACCOUNT_TABS.flatMap(g => g.items).map(t => t.id).includes(activeTab) && (
-              <div className="h-[60vh] flex flex-col items-center justify-center bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 border-dashed animate-in zoom-in duration-500">
+              <div className="h-[60vh] flex flex-col items-center justify-center bg-white dark:bg-slate-900 rounded-3xl border border-slate-100 dark:border-slate-800 border-dashed animate-in zoom-in duration-500">
                  <PieChart className="w-24 h-24 text-slate-200 mb-6" />
                  <h3 className="text-2xl font-black text-slate-300">قريباً: {ACCOUNT_TABS.flatMap(g => g.items).find(t => t.id === activeTab)?.label}</h3>
                  <p className="text-slate-400 font-bold">جاري العمل على تجهيز هذه الواحدة لتناسب النظام الجديد</p>
@@ -1894,21 +1898,21 @@ function StatCard({ label, value, color, icon: Icon, onClick, active }: any) {
       aria-expanded={active}
       aria-label={`عرض تفاصيل ${label}`}
       className={cn(
-        "w-full p-8 rounded-[40px] border transition-all hover:scale-105 hover:shadow-xl text-right",
+        "w-full p-4 sm:p-6 rounded-3xl border transition-colors hover:border-current text-right focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current focus-visible:ring-offset-2",
         (colorMap as any)[color],
-        onClick && "cursor-pointer select-none active:scale-95",
-        active && "ring-2 ring-offset-2 ring-current shadow-md scale-[1.02]"
+        onClick && "cursor-pointer select-none ",
+        active && "ring-2 ring-offset-2 ring-current"
       )}
     >
        <div className="flex justify-between items-center mb-6">
           <div className="w-14 h-14 bg-white dark:bg-slate-900 rounded-2xl flex items-center justify-center shadow-sm">
              <Icon className="w-8 h-8" />
           </div>
-          <span className="text-[10px] font-black uppercase tracking-widest opacity-60">تقرير مباشر</span>
+          <span className="text-xs font-black uppercase tracking-widest opacity-60">تقرير مباشر</span>
        </div>
        <p className="text-sm font-black opacity-70 mb-2">{label}</p>
        <p className="text-4xl font-black">{value} <span className="text-sm">ج.م</span></p>
-       <p className="text-[10px] font-bold opacity-60 mt-3">اضغط لعرض التفاصيل</p>
+       <p className="text-xs font-bold opacity-60 mt-3">اضغط لعرض التفاصيل</p>
     </button>
   );
 }
@@ -1936,7 +1940,7 @@ function TreasuryMetricDetails({
   };
 
   return (
-    <section className="bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 overflow-hidden shadow-lg" aria-live="polite">
+    <section className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm" aria-live="polite">
       <div className="p-6 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between gap-4">
         <div>
           <h3 className="text-xl font-black text-slate-800 dark:text-white">{labels[metric]}</h3>
@@ -1945,12 +1949,12 @@ function TreasuryMetricDetails({
             <span className="text-xs text-slate-400 mr-2">({detailCount} {metric === 'treasury' ? 'بند احتساب' : 'حركة'})</span>
           </p>
         </div>
-        <button type="button" onClick={onClose} aria-label="إغلاق التفاصيل" className="p-3 rounded-2xl bg-slate-100 dark:bg-slate-800 text-slate-500 hover:text-rose-600 transition-colors">
+        <button type="button" onClick={onClose} aria-label="إغلاق التفاصيل" className="p-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-500 hover:text-rose-600 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500">
           <X className="w-5 h-5" />
         </button>
       </div>
       <div className="max-h-[420px] overflow-auto">
-        <table className="w-full text-right">
+        <table className="w-full min-w-[680px] text-right">
           <thead className="bg-slate-50 dark:bg-slate-800/50 sticky top-0">
             <tr>
               <th className="px-6 py-4 text-xs font-black text-slate-400">{metric === 'treasury' ? 'بداية الوردية' : 'التاريخ'}</th>
@@ -1969,7 +1973,7 @@ function TreasuryMetricDetails({
                 <td className="px-6 py-4 text-xs font-bold text-slate-500" dir="ltr">{safeFormat(detail.created_at || detail.date, 'yyyy/MM/dd HH:mm')}</td>
                 <td className="px-6 py-4">
                   <p className="font-black text-sm text-slate-800 dark:text-white">{detail.description || '—'}</p>
-                  {detail.shift_id && <Link href="/shifts" className="text-[10px] font-mono text-blue-500">وردية #{String(detail.shift_id).slice(0, 8)}</Link>}
+                  {detail.shift_id && <Link href="/shifts" className="text-xs font-mono text-blue-500">وردية #{String(detail.shift_id).slice(0, 8)}</Link>}
                 </td>
                 <td className="px-6 py-4 text-xs font-bold text-slate-500">{detail.user_name || '—'}</td>
                 <td className={cn('px-6 py-4 font-black', detail.type === 'receipt' ? 'text-emerald-600' : 'text-rose-600')}>
@@ -1981,7 +1985,7 @@ function TreasuryMetricDetails({
         </table>
       </div>
       {detailCount > details.length && (
-        <p className="px-6 py-3 text-[11px] font-bold text-slate-400 border-t border-slate-100 dark:border-slate-800">يتم عرض أحدث {details.length} حركة من أصل {detailCount} للحفاظ على سرعة الشاشة.</p>
+        <p className="px-6 py-3 text-xs font-bold text-slate-400 border-t border-slate-100 dark:border-slate-800">يتم عرض أحدث {details.length} حركة من أصل {detailCount} للحفاظ على سرعة الشاشة.</p>
       )}
     </section>
   );
@@ -2064,7 +2068,7 @@ function AccountTreeNode({ node, onAddSub, onEdit, onDelete, canManage, level = 
 
                <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-3">
-                     <span className="text-[10px] font-mono font-black text-slate-400 opacity-60 tracking-tighter">{node.code}</span>
+                     <span className="text-xs font-mono font-black text-slate-500 dark:text-slate-400 tracking-tight">{node.code}</span>
                      <h4 className={cn(
                         "font-black truncate",
                         level === 0 ? "text-lg text-slate-900 dark:text-white" : "text-slate-700 dark:text-slate-300",
@@ -2073,7 +2077,7 @@ function AccountTreeNode({ node, onAddSub, onEdit, onDelete, canManage, level = 
                         {node.name_ar}
                      </h4>
                   </div>
-                  <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest truncate">{node.name_en}</p>
+                  <p className="text-xs font-bold text-slate-500 dark:text-slate-400 truncate">{node.name_en}</p>
                </div>
 
                {/* Balance Display */}
@@ -2083,20 +2087,21 @@ function AccountTreeNode({ node, onAddSub, onEdit, onDelete, canManage, level = 
                      node.balance > 0 ? "text-emerald-600" : "text-slate-400"
                   )}>
                      {node.balance?.toLocaleString('en-US') || 0}
-                     <span className="text-[10px] mr-1">ج.م</span>
+                     <span className="text-xs mr-1">ج.م</span>
                   </p>
                </div>
             </div>
 
-            {/* Hover Actions */}
-            {canManage && <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-all duration-200 pr-4">
+            {/* Actions stay visible on compact screens and become visible on hover or keyboard focus on larger screens. */}
+            {canManage && <div className="flex items-center gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 transition-opacity duration-150 pr-2 sm:pr-4">
                {node.is_group ? (
                   <button 
                     onClick={(e) => {
                        e.stopPropagation();
                        onAddSub(node.id);
                     }}
-                    className="p-2.5 bg-blue-50 dark:bg-blue-900/20 text-blue-600 rounded-xl hover:bg-blue-600 hover:text-white transition-all shadow-sm"
+                    aria-label={`إضافة حساب فرعي تحت ${node.name_ar}`}
+                    className="p-2.5 bg-blue-50 dark:bg-blue-900/20 text-blue-600 rounded-xl hover:bg-blue-600 hover:text-white transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
                     title="إضافة حساب فرعي"
                   >
                     <Plus className="w-4 h-4" />
@@ -2104,14 +2109,16 @@ function AccountTreeNode({ node, onAddSub, onEdit, onDelete, canManage, level = 
                ) : null}
                <button 
                  onClick={(e) => { e.stopPropagation(); onEdit(node); }}
-                 className="p-2.5 bg-slate-100 dark:bg-slate-800 text-slate-500 rounded-xl hover:bg-slate-900 dark:hover:bg-white dark:hover:text-slate-900 transition-all shadow-sm"
+                 aria-label={`تعديل الحساب ${node.name_ar}`}
+                 className="p-2.5 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl hover:bg-slate-900 hover:text-white dark:hover:bg-white dark:hover:text-slate-900 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500"
                  title="تعديل الحساب"
                >
                  <Edit className="w-4 h-4" />
                </button>
                <button 
                  onClick={(e) => { e.stopPropagation(); onDelete(node); }}
-                 className="p-2.5 bg-rose-50 dark:bg-rose-950/30 text-rose-600 rounded-xl hover:bg-rose-600 hover:text-white transition-all shadow-sm"
+                 aria-label={`حذف الحساب ${node.name_ar}`}
+                 className="p-2.5 bg-rose-50 dark:bg-rose-950/30 text-rose-600 rounded-xl hover:bg-rose-600 hover:text-white transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500"
                  title="حذف الحساب"
                >
                  <Trash2 className="w-4 h-4" />
@@ -2142,6 +2149,7 @@ function AccountTreeNode({ node, onAddSub, onEdit, onDelete, canManage, level = 
 function EditAccountModal({ show, account, onClose, onSuccess }: any) {
    const [loading, setLoading] = useState(false);
    const submittingRef = useRef(false);
+   const dialogRef = useDialogFocusTrap<HTMLDivElement>(Boolean(show && account));
    const handleClose = () => {
       if (submittingRef.current) return;
       onClose();
@@ -2195,21 +2203,22 @@ function EditAccountModal({ show, account, onClose, onSuccess }: any) {
    };
 
    return (
-      <div className="fixed inset-0 z-[100] flex items-center justify-center p-8 bg-slate-900/60 backdrop-blur-md animate-in fade-in duration-300" dir="rtl">
-         <div className="bg-white dark:bg-slate-900 w-full max-w-2xl rounded-[48px] overflow-hidden shadow-2xl border border-slate-100 dark:border-slate-800 flex flex-col max-h-[90vh]">
-            <div className="p-10 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center bg-slate-50/50 dark:bg-slate-800/50">
+      <div className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-6 bg-slate-950/65 animate-in fade-in duration-200" dir="rtl">
+         <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="edit-account-title" tabIndex={-1} className="bg-white dark:bg-slate-900 w-full max-w-2xl rounded-3xl overflow-hidden shadow-xl border border-slate-200 dark:border-slate-800 flex flex-col max-h-[94vh]">
+            <div className="p-4 sm:p-6 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center gap-4 bg-slate-50/50 dark:bg-slate-800/50">
                <div>
-                  <h3 className="text-2xl font-black text-slate-800 dark:text-white">تعديل بيانات الحساب</h3>
+                  <h3 id="edit-account-title" className="text-xl sm:text-2xl font-black text-slate-800 dark:text-white">تعديل بيانات الحساب</h3>
                   <p className="text-slate-500 font-bold">الحساب: <span className="text-blue-600 font-mono">#{account.code} - {account.name_ar}</span></p>
                </div>
-               <button onClick={handleClose} disabled={loading} className="p-4 bg-white dark:bg-slate-800 text-slate-400 rounded-2xl hover:text-rose-500 transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"><X className="w-6 h-6" /></button>
+               <button type="button" aria-label="إغلاق تعديل الحساب" onClick={handleClose} disabled={loading} className="p-2.5 bg-white dark:bg-slate-800 text-slate-500 rounded-xl hover:text-rose-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"><X className="w-6 h-6" /></button>
             </div>
             
-            <div className="p-10 space-y-8 overflow-y-auto custom-scrollbar">
-               <div className="grid grid-cols-2 gap-8">
+            <div className="p-4 sm:p-6 space-y-5 overflow-y-auto custom-scrollbar">
+               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-3">
-                     <label className="text-xs font-black text-slate-400 uppercase tracking-widest px-2">كود الحساب</label>
+                     <label htmlFor="edit-account-code" className="text-xs font-black text-slate-500 dark:text-slate-400 px-1">كود الحساب</label>
                      <input 
+                        id="edit-account-code"
                         type="text" 
                         value={formData.code}
                         onChange={e => setFormData({...formData, code: e.target.value})}
@@ -2217,8 +2226,9 @@ function EditAccountModal({ show, account, onClose, onSuccess }: any) {
                      />
                   </div>
                   <div className="space-y-3">
-                     <label className="text-xs font-black text-slate-400 uppercase tracking-widest px-2">نوع الحساب</label>
+                     <label htmlFor="edit-account-type" className="text-xs font-black text-slate-500 dark:text-slate-400 px-1">نوع الحساب</label>
                      <select 
+                        id="edit-account-type"
                         value={formData.type}
                         onChange={e => setFormData({...formData, type: e.target.value as any})}
                         className="w-full px-8 py-5 bg-slate-50 dark:bg-slate-800 rounded-3xl outline-none font-black focus:ring-4 ring-blue-500/10 transition-all border border-transparent focus:border-blue-500/20"
@@ -2234,8 +2244,9 @@ function EditAccountModal({ show, account, onClose, onSuccess }: any) {
                </div>
 
                <div className="space-y-3">
-                  <label className="text-xs font-black text-slate-400 uppercase tracking-widest px-2">إسم الحساب (بالعربي)</label>
+                  <label htmlFor="edit-account-name-ar" className="text-xs font-black text-slate-500 dark:text-slate-400 px-1">اسم الحساب (بالعربي)</label>
                   <input 
+                     id="edit-account-name-ar"
                      type="text" 
                      value={formData.name_ar}
                      onChange={e => setFormData({...formData, name_ar: e.target.value})}
@@ -2244,8 +2255,9 @@ function EditAccountModal({ show, account, onClose, onSuccess }: any) {
                </div>
 
                <div className="space-y-3">
-                  <label className="text-xs font-black text-slate-400 uppercase tracking-widest px-2">إسم الحساب (English)</label>
+                  <label htmlFor="edit-account-name-en" className="text-xs font-black text-slate-500 dark:text-slate-400 px-1">اسم الحساب (English)</label>
                   <input 
+                     id="edit-account-name-en"
                      type="text" 
                      value={formData.name_en}
                      onChange={e => setFormData({...formData, name_en: e.target.value})}
@@ -2255,27 +2267,28 @@ function EditAccountModal({ show, account, onClose, onSuccess }: any) {
 
                <div className="flex items-center gap-4 p-6 bg-blue-50 dark:bg-blue-900/10 rounded-3xl border border-blue-100 dark:border-blue-800">
                   <input 
+                     id="edit-account-group"
                      type="checkbox" 
                      checked={formData.is_group === 1}
                      onChange={e => setFormData({...formData, is_group: e.target.checked ? 1 : 0})}
                      className="w-6 h-6 rounded-lg text-blue-600 focus:ring-blue-500 transition-all cursor-pointer"
                   />
                   <div>
-                     <p className="font-black text-blue-700">هذا الحساب هو &quot;حساب رئيسي&quot; (Group)</p>
-                     <p className="text-[10px] font-bold text-blue-600 opacity-70 italic">الحسابات الرئيسية لا تقبل قيود مباشرة، بل تحتوي على حسابات فرعية</p>
+                     <label htmlFor="edit-account-group" className="font-black text-blue-700 cursor-pointer">هذا الحساب هو حساب رئيسي (Group)</label>
+                     <p className="text-xs font-bold text-blue-700/80">الحسابات الرئيسية لا تقبل قيودًا مباشرة، بل تحتوي على حسابات فرعية</p>
                   </div>
                </div>
             </div>
 
-            <div className="p-10 bg-slate-50 dark:bg-slate-800/50 flex gap-4">
+            <div className="p-4 sm:p-6 bg-slate-50 dark:bg-slate-800/50 flex flex-col-reverse sm:flex-row gap-3">
                <button 
                   onClick={handleSubmit}
                   disabled={loading}
-                  className="flex-1 py-5 bg-slate-900 text-white rounded-3xl font-black text-xl hover:bg-slate-800 transition-all shadow-xl active:scale-95 disabled:opacity-50"
+                  className="flex-1 py-3.5 bg-slate-900 text-white rounded-xl font-black text-base hover:bg-slate-800 transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
                >
                   {loading ? 'جاري الحفظ...' : 'حفظ التعديلات'}
                </button>
-               <button onClick={handleClose} disabled={loading} className="px-10 py-5 bg-white dark:bg-slate-900 text-slate-500 rounded-3xl font-black text-xl border border-slate-100 dark:border-slate-700 hover:bg-slate-50 transition-all disabled:opacity-50 disabled:cursor-not-allowed">إلغاء</button>
+               <button type="button" onClick={handleClose} disabled={loading} className="px-6 py-3.5 bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 rounded-xl font-black text-base border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500">إلغاء</button>
             </div>
          </div>
       </div>
@@ -2285,6 +2298,7 @@ function EditAccountModal({ show, account, onClose, onSuccess }: any) {
 function AddAccountModal({ show, parentId, onClose, onSuccess, accounts }: any) {
    const [loading, setLoading] = useState(false);
    const submittingRef = useRef(false);
+   const dialogRef = useDialogFocusTrap<HTMLDivElement>(show);
    const handleClose = () => {
       if (submittingRef.current) return;
       onClose();
@@ -2331,21 +2345,22 @@ if (!show) return null;
    };
 
    return (
-      <div className="fixed inset-0 z-[100] flex items-center justify-center p-8 bg-slate-900/60 backdrop-blur-md animate-in fade-in duration-300">
-         <div className="bg-white dark:bg-slate-900 w-full max-w-2xl rounded-[48px] overflow-hidden shadow-2xl border border-slate-100 dark:border-slate-800 flex flex-col max-h-[90vh]">
-            <div className="p-10 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center bg-slate-50/50 dark:bg-slate-800/50">
+      <div className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-6 bg-slate-950/65 animate-in fade-in duration-200">
+         <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="add-account-title" tabIndex={-1} className="bg-white dark:bg-slate-900 w-full max-w-2xl rounded-3xl overflow-hidden shadow-xl border border-slate-200 dark:border-slate-800 flex flex-col max-h-[94vh]">
+            <div className="p-4 sm:p-6 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center gap-4 bg-slate-50/50 dark:bg-slate-800/50">
                <div>
-                  <h3 className="text-2xl font-black text-slate-800 dark:text-white">إضافة حساب فرعي جديد</h3>
+                  <h3 id="add-account-title" className="text-xl sm:text-2xl font-black text-slate-800 dark:text-white">إضافة حساب فرعي جديد</h3>
                   <p className="text-slate-500 font-bold">للحساب الرئيسي: <span className="text-blue-600">{parent?.name_ar || 'دليل الحسابات'}</span></p>
                </div>
-               <button onClick={handleClose} disabled={loading} className="p-4 bg-white dark:bg-slate-800 text-slate-400 rounded-2xl hover:text-rose-500 transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"><X className="w-6 h-6" /></button>
+               <button type="button" aria-label="إغلاق إضافة الحساب" onClick={handleClose} disabled={loading} className="p-2.5 bg-white dark:bg-slate-800 text-slate-500 rounded-xl hover:text-rose-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"><X className="w-6 h-6" /></button>
             </div>
             
-            <div className="p-10 space-y-8 overflow-y-auto custom-scrollbar">
-               <div className="grid grid-cols-2 gap-8">
+            <div className="p-4 sm:p-6 space-y-5 overflow-y-auto custom-scrollbar">
+               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-3">
-                     <label className="text-xs font-black text-slate-400 uppercase tracking-widest px-2">كود الحساب</label>
+                     <label htmlFor="add-account-code" className="text-xs font-black text-slate-500 dark:text-slate-400 px-1">كود الحساب</label>
                      <input 
+                        id="add-account-code"
                         type="text" 
                         value={formData.code}
                         onChange={e => setFormData({...formData, code: e.target.value})}
@@ -2354,8 +2369,9 @@ if (!show) return null;
                      />
                   </div>
                   <div className="space-y-3">
-                     <label className="text-xs font-black text-slate-400 uppercase tracking-widest px-2">نوع الحساب</label>
+                     <label htmlFor="add-account-type" className="text-xs font-black text-slate-500 dark:text-slate-400 px-1">نوع الحساب</label>
                      <select 
+                        id="add-account-type"
                         value={formData.type}
                         onChange={e => setFormData({...formData, type: e.target.value as any})}
                         className="w-full px-8 py-5 bg-slate-50 dark:bg-slate-800 rounded-3xl outline-none font-black focus:ring-4 ring-blue-500/10 transition-all border border-transparent focus:border-blue-500/20"
@@ -2370,8 +2386,9 @@ if (!show) return null;
                </div>
 
                <div className="space-y-3">
-                  <label className="text-xs font-black text-slate-400 uppercase tracking-widest px-2">إسم الحساب (بالعربي)</label>
+                  <label htmlFor="add-account-name-ar" className="text-xs font-black text-slate-500 dark:text-slate-400 px-1">اسم الحساب (بالعربي)</label>
                   <input 
+                     id="add-account-name-ar"
                      type="text" 
                      value={formData.name_ar}
                      onChange={e => setFormData({...formData, name_ar: e.target.value})}
@@ -2380,8 +2397,9 @@ if (!show) return null;
                </div>
 
                <div className="space-y-3">
-                  <label className="text-xs font-black text-slate-400 uppercase tracking-widest px-2">إسم الحساب (English)</label>
+                  <label htmlFor="add-account-name-en" className="text-xs font-black text-slate-500 dark:text-slate-400 px-1">اسم الحساب (English)</label>
                   <input 
+                     id="add-account-name-en"
                      type="text" 
                      value={formData.name_en}
                      onChange={e => setFormData({...formData, name_en: e.target.value})}
@@ -2391,27 +2409,28 @@ if (!show) return null;
 
                <div className="flex items-center gap-4 p-6 bg-blue-50 dark:bg-blue-900/10 rounded-3xl border border-blue-100 dark:border-blue-800">
                   <input 
+                     id="add-account-group"
                      type="checkbox" 
                      checked={formData.is_group === 1}
                      onChange={e => setFormData({...formData, is_group: e.target.checked ? 1 : 0})}
                      className="w-6 h-6 rounded-lg text-blue-600 focus:ring-blue-500 transition-all cursor-pointer"
                   />
                   <div>
-                     <p className="font-black text-blue-700">هذا الحساب هو &quot;حساب رئيسي&quot; (Group)</p>
-                     <p className="text-[10px] font-bold text-blue-600 opacity-70 italic">الحسابات الرئيسية لا تقبل قيود مباشرة، بل تحتوي على حسابات فرعية</p>
+                     <label htmlFor="add-account-group" className="font-black text-blue-700 cursor-pointer">هذا الحساب هو حساب رئيسي (Group)</label>
+                     <p className="text-xs font-bold text-blue-700/80">الحسابات الرئيسية لا تقبل قيودًا مباشرة، بل تحتوي على حسابات فرعية</p>
                   </div>
                </div>
             </div>
 
-            <div className="p-10 bg-slate-50 dark:bg-slate-800/50 flex gap-4">
+            <div className="p-4 sm:p-6 bg-slate-50 dark:bg-slate-800/50 flex flex-col-reverse sm:flex-row gap-3">
                <button 
                   onClick={handleSubmit}
                   disabled={loading}
-                  className="flex-1 py-5 bg-slate-900 text-white rounded-3xl font-black text-xl hover:bg-slate-800 transition-all shadow-xl active:scale-95 disabled:opacity-50"
+                  className="flex-1 py-3.5 bg-slate-900 text-white rounded-xl font-black text-base hover:bg-slate-800 transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
                >
                   {loading ? 'جاري الحفظ...' : 'إضافة الحساب'}
                </button>
-               <button onClick={handleClose} disabled={loading} className="px-10 py-5 bg-white dark:bg-slate-900 text-slate-500 rounded-3xl font-black text-xl border border-slate-100 dark:border-slate-700 hover:bg-slate-50 transition-all disabled:opacity-50 disabled:cursor-not-allowed">إلغاء</button>
+               <button type="button" onClick={handleClose} disabled={loading} className="px-6 py-3.5 bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 rounded-xl font-black text-base border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500">إلغاء</button>
             </div>
          </div>
       </div>
@@ -2424,6 +2443,7 @@ function JournalDetailsModal({ journalId, onClose }: { journalId: string | null,
    const [loadError, setLoadError] = useState('');
    const [loadAttempt, setLoadAttempt] = useState(0);
    const requestRef = useRef(0);
+   const dialogRef = useDialogFocusTrap<HTMLDivElement>(Boolean(journalId));
 
    useHotkeys('esc', () => { if(typeof onClose === 'function') onClose(); }, { enableOnFormTags: true });
 
@@ -2463,22 +2483,22 @@ function JournalDetailsModal({ journalId, onClose }: { journalId: string | null,
    const totalCredit = entries.reduce((sum, e) => sum + e.credit, 0);
 
    return (
-      <div className="fixed inset-0 z-[110] flex items-center justify-center p-8 bg-slate-900/60 backdrop-blur-md animate-in fade-in duration-300">
-         <div className="bg-white dark:bg-slate-900 w-full max-w-4xl rounded-[48px] overflow-hidden shadow-2xl border border-slate-100 dark:border-slate-800 flex flex-col max-h-[90vh]">
-            <div className="p-10 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center bg-slate-50/50 dark:bg-slate-800/50">
+      <div className="fixed inset-0 z-[110] flex items-center justify-center p-3 sm:p-6 bg-slate-950/65 animate-in fade-in duration-200">
+         <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="journal-details-title" tabIndex={-1} className="bg-white dark:bg-slate-900 w-full max-w-4xl rounded-3xl overflow-hidden shadow-xl border border-slate-200 dark:border-slate-800 flex flex-col max-h-[94vh]">
+            <div className="p-4 sm:p-6 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center gap-4 bg-slate-50/50 dark:bg-slate-800/50">
                <div className="flex items-center gap-5">
                   <div className="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center text-white shadow-lg">
                      <FileText className="w-8 h-8" />
                   </div>
                   <div>
-                     <h3 className="text-2xl font-black text-slate-800 dark:text-white">تفاصيل القيد المحاسبي</h3>
+                     <h3 id="journal-details-title" className="text-xl sm:text-2xl font-black text-slate-800 dark:text-white">تفاصيل القيد المحاسبي</h3>
                      <p className="text-slate-500 font-bold tracking-widest font-mono">#{journalId.slice(0, 12).toUpperCase()}</p>
                   </div>
                </div>
-               <button onClick={onClose} className="p-4 bg-white dark:bg-slate-800 text-slate-400 rounded-2xl hover:text-rose-500 transition-all shadow-sm"><X className="w-6 h-6" /></button>
+               <button type="button" aria-label="إغلاق تفاصيل القيد" onClick={onClose} className="p-2.5 bg-white dark:bg-slate-800 text-slate-500 rounded-xl hover:text-rose-600 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"><X className="w-6 h-6" /></button>
             </div>
 
-            <div className="p-10 overflow-y-auto custom-scrollbar flex-1">
+            <div className="p-4 sm:p-6 overflow-y-auto custom-scrollbar flex-1">
                {loading ? (
                   <div className="py-20 text-center">
                      <Activity className="w-12 h-12 animate-spin text-blue-500 mx-auto mb-4" />
@@ -2497,21 +2517,21 @@ function JournalDetailsModal({ journalId, onClose }: { journalId: string | null,
                   </div>
                ) : (
                   <div className="space-y-8">
-                     <div className="bg-slate-50 dark:bg-slate-800/50 p-8 rounded-[32px] border border-slate-100 dark:border-slate-700/50 flex justify-between">
+                     <div className="bg-slate-50 dark:bg-slate-800/50 p-4 sm:p-5 rounded-2xl border border-slate-200 dark:border-slate-700 flex flex-col sm:flex-row justify-between gap-4">
                         <div>
-                           <p className="text-[10px] font-black text-slate-400 uppercase mb-1">البيان / الوصف</p>
+                           <p className="text-xs font-black text-slate-500 dark:text-slate-400 mb-1">البيان / الوصف</p>
                            <p className="text-lg font-black text-slate-800 dark:text-white">{entries[0]?.description || 'بدون بيان'}</p>
                         </div>
                         <div className="text-left">
-                           <p className="text-[10px] font-black text-slate-400 uppercase mb-1">تاريخ القيد</p>
+                           <p className="text-xs font-black text-slate-500 dark:text-slate-400 mb-1">تاريخ القيد</p>
                            <p className="text-lg font-black text-slate-800 dark:text-white">{safeFormat(entries[0]?.date, 'yyyy/MM/dd HH:mm')}</p>
                         </div>
                      </div>
 
-                     <div className="rounded-[32px] border border-slate-100 dark:border-slate-800 overflow-hidden">
-                        <table className="w-full text-right border-collapse">
+                     <div className="rounded-2xl border border-slate-200 dark:border-slate-800 overflow-x-auto">
+                        <table className="w-full min-w-[720px] text-right border-collapse">
                            <thead className="bg-slate-100 dark:bg-slate-800">
-                              <tr className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                              <tr className="text-xs font-black text-slate-500 dark:text-slate-400">
                                  <th className="px-8 py-5">الحساب</th>
                                  <th className="px-8 py-5 text-center">مدين (Debit)</th>
                                  <th className="px-8 py-5 text-center">دائن (Credit)</th>
@@ -2523,7 +2543,7 @@ function JournalDetailsModal({ journalId, onClose }: { journalId: string | null,
                                  <tr key={idx} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/20 transition-colors">
                                     <td className="px-8 py-5">
                                        <p className="font-black text-slate-800 dark:text-white">{entry.account_name}</p>
-                                       <p className="text-[10px] font-mono font-bold text-blue-500">{entry.account_code}</p>
+                                       <p className="text-xs font-mono font-bold text-blue-600">{entry.account_code}</p>
                                     </td>
                                     <td className="px-8 py-5 text-center font-black text-emerald-600 bg-emerald-50/10">
                                        {entry.debit > 0 ? entry.debit.toLocaleString() : '-'}
@@ -2561,11 +2581,11 @@ function JournalDetailsModal({ journalId, onClose }: { journalId: string | null,
                )}
             </div>
 
-            <div className="p-10 bg-slate-50 dark:bg-slate-800/50 flex gap-4">
-               <button onClick={() => window.print()} className="flex-1 py-5 bg-slate-900 text-white rounded-3xl font-black text-xl hover:bg-slate-800 transition-all flex items-center justify-center gap-3 active:scale-95 shadow-xl">
+            <div className="p-4 sm:p-6 bg-slate-50 dark:bg-slate-800/50 flex flex-col-reverse sm:flex-row gap-3">
+               <button type="button" onClick={() => window.print()} className="flex-1 py-3.5 bg-slate-900 text-white rounded-xl font-black text-base hover:bg-slate-800 transition-colors flex items-center justify-center gap-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
                   <Printer className="w-6 h-6" /> طباعة القيد
                </button>
-               <button onClick={onClose} className="px-10 py-5 bg-white dark:bg-slate-900 text-slate-500 rounded-3xl font-black text-xl border border-slate-100 dark:border-slate-700 hover:bg-slate-50 transition-all">إغلاق</button>
+               <button type="button" onClick={onClose} className="px-6 py-3.5 bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 rounded-xl font-black text-base border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500">إغلاق</button>
             </div>
          </div>
       </div>
@@ -2591,6 +2611,7 @@ function ExpenseDefinitionModal({
   });
   const [loading, setLoading] = useState(false);
   const submittingRef = useRef(false);
+  const dialogRef = useDialogFocusTrap<HTMLDivElement>(show);
   const handleClose = () => {
     if (submittingRef.current) return;
     onClose();
@@ -2652,26 +2673,27 @@ function ExpenseDefinitionModal({
   };
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-8 bg-slate-900/60 backdrop-blur-md animate-in fade-in duration-300" dir="rtl">
-      <div className="bg-white dark:bg-slate-900 w-full max-w-lg rounded-[48px] overflow-hidden shadow-2xl border border-slate-100 dark:border-slate-800 flex flex-col">
-        <div className="p-8 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center bg-amber-50/40 dark:bg-amber-950/20">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-6 bg-slate-950/65 animate-in fade-in duration-200" dir="rtl">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="expense-definition-title" tabIndex={-1} className="bg-white dark:bg-slate-900 w-full max-w-lg rounded-3xl overflow-hidden shadow-xl border border-slate-200 dark:border-slate-800 flex flex-col max-h-[94vh]">
+        <div className="p-4 sm:p-6 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center gap-4 bg-amber-50/40 dark:bg-amber-950/20">
           <div>
-            <h3 className="text-2xl font-black text-slate-800 dark:text-white">
+            <h3 id="expense-definition-title" className="text-xl sm:text-2xl font-black text-slate-800 dark:text-white">
               {isEditing ? 'تعديل تعريف المصروف' : 'إضافة نوع مصروف جديد'}
             </h3>
             <p className="text-slate-500 font-bold text-xs">
               {isEditing ? `المصروف: #${initialData.code} - ${initialData.name_ar}` : 'تكويد وتصنيف المصروفات التشغيلية'}
             </p>
           </div>
-          <button onClick={handleClose} disabled={loading} className="p-3 bg-white dark:bg-slate-800 text-slate-400 rounded-2xl hover:text-rose-500 transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed">
+          <button type="button" aria-label="إغلاق تعريف المصروف" onClick={handleClose} disabled={loading} className="p-2.5 bg-white dark:bg-slate-800 text-slate-500 rounded-xl hover:text-rose-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500">
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-8 space-y-6">
+        <form onSubmit={handleSubmit} className="p-4 sm:p-6 space-y-5 overflow-y-auto">
           <div className="space-y-2">
-            <label className="text-xs font-black text-slate-400 uppercase tracking-widest px-2">كود المصروف *</label>
+            <label htmlFor="expense-definition-code" className="text-xs font-black text-slate-500 dark:text-slate-400 px-1">كود المصروف *</label>
             <input
+              id="expense-definition-code"
               type="text"
               autoFocus
               value={formData.code}
@@ -2682,8 +2704,9 @@ function ExpenseDefinitionModal({
           </div>
 
           <div className="space-y-2">
-            <label className="text-xs font-black text-slate-400 uppercase tracking-widest px-2">اسم المصروف (بالعربي) *</label>
+            <label htmlFor="expense-definition-name-ar" className="text-xs font-black text-slate-500 dark:text-slate-400 px-1">اسم المصروف (بالعربي) *</label>
             <input
+              id="expense-definition-name-ar"
               type="text"
               value={formData.name_ar}
               onChange={e => setFormData({ ...formData, name_ar: e.target.value })}
@@ -2693,8 +2716,9 @@ function ExpenseDefinitionModal({
           </div>
 
           <div className="space-y-2">
-            <label className="text-xs font-black text-slate-400 uppercase tracking-widest px-2">اسم المصروف (English)</label>
+            <label htmlFor="expense-definition-name-en" className="text-xs font-black text-slate-500 dark:text-slate-400 px-1">اسم المصروف (English)</label>
             <input
+              id="expense-definition-name-en"
               type="text"
               value={formData.name_en}
               onChange={e => setFormData({ ...formData, name_en: e.target.value })}
@@ -2707,7 +2731,7 @@ function ExpenseDefinitionModal({
             <button
               type="submit"
               disabled={loading}
-              className="flex-1 py-4 bg-amber-600 text-white rounded-2xl font-black text-lg hover:bg-amber-700 transition-all flex items-center justify-center gap-2 active:scale-95 shadow-xl disabled:opacity-50"
+              className="flex-1 py-3.5 bg-amber-600 text-white rounded-xl font-black text-base hover:bg-amber-700 transition-colors flex items-center justify-center gap-2 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-offset-2"
             >
               <Save className="w-5 h-5" />
               {loading ? 'جاري الحفظ...' : isEditing ? 'حفظ التعديلات' : 'إضافة المصروف'}
@@ -2716,7 +2740,7 @@ function ExpenseDefinitionModal({
               type="button"
               onClick={handleClose}
               disabled={loading}
-              className="px-6 py-4 bg-slate-100 dark:bg-slate-800 text-slate-500 rounded-2xl font-black hover:bg-slate-200 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              className="px-6 py-3.5 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl font-black hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500"
             >
               إلغاء
             </button>
@@ -2746,6 +2770,7 @@ function RecordExpenseModal({
   });
   const [loading, setLoading] = useState(false);
   const submittingRef = useRef(false);
+  const dialogRef = useDialogFocusTrap<HTMLDivElement>(show);
   const handleClose = () => {
     if (submittingRef.current) return;
     onClose();
@@ -2806,22 +2831,23 @@ function RecordExpenseModal({
   };
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-8 bg-slate-900/60 backdrop-blur-md animate-in fade-in duration-300" dir="rtl">
-      <div className="bg-white dark:bg-slate-900 w-full max-w-lg rounded-[48px] overflow-hidden shadow-2xl border border-slate-100 dark:border-slate-800 flex flex-col">
-        <div className="p-8 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center bg-rose-50/40 dark:bg-rose-950/20">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-6 bg-slate-950/65 animate-in fade-in duration-200" dir="rtl">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="record-expense-title" tabIndex={-1} className="bg-white dark:bg-slate-900 w-full max-w-lg rounded-3xl overflow-hidden shadow-xl border border-slate-200 dark:border-slate-800 flex flex-col max-h-[94vh]">
+        <div className="p-4 sm:p-6 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center gap-4 bg-rose-50/40 dark:bg-rose-950/20">
           <div>
-            <h3 className="text-2xl font-black text-slate-800 dark:text-white">إضافة مصروف تشغيلي جديد</h3>
+            <h3 id="record-expense-title" className="text-xl sm:text-2xl font-black text-slate-800 dark:text-white">إضافة مصروف تشغيلي جديد</h3>
             <p className="text-xs font-bold text-slate-400 mt-1">تسجيل مصروف فعلي مع خصم تلقائي من الخزينة وربط القيود المحاسبية</p>
           </div>
-          <button onClick={handleClose} disabled={loading} className="p-3 bg-slate-100 dark:bg-slate-800 rounded-full hover:bg-slate-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+          <button type="button" aria-label="إغلاق تسجيل المصروف" onClick={handleClose} disabled={loading} className="p-2.5 bg-slate-100 dark:bg-slate-800 rounded-xl hover:bg-slate-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500">
             <X className="w-5 h-5 text-slate-500" />
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-8 space-y-6">
+        <form onSubmit={handleSubmit} className="p-4 sm:p-6 space-y-5 overflow-y-auto">
           <div className="space-y-2">
-            <label className="text-xs font-black text-slate-500 mr-2">تصنيف المصروف *</label>
+            <label htmlFor="record-expense-category" className="text-xs font-black text-slate-500 mr-2">تصنيف المصروف *</label>
             <select
+              id="record-expense-category"
               value={formData.category}
               onChange={e => setFormData({ ...formData, category: e.target.value })}
               className="w-full p-4 bg-slate-50 dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 outline-none font-bold text-sm text-slate-900 dark:text-white focus:border-rose-500 transition-all"
@@ -2843,10 +2869,11 @@ function RecordExpenseModal({
             </select>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-2">
-              <label className="text-xs font-black text-slate-500 mr-2">قيمة المصروف (ج.م) *</label>
+              <label htmlFor="record-expense-amount" className="text-xs font-black text-slate-500 mr-2">قيمة المصروف (ج.م) *</label>
               <input
+                id="record-expense-amount"
                 type="number"
                 step="any"
                 min="0.01"
@@ -2858,8 +2885,9 @@ function RecordExpenseModal({
               />
             </div>
             <div className="space-y-2">
-              <label className="text-xs font-black text-slate-500 mr-2">تاريخ المصروف *</label>
+              <label htmlFor="record-expense-date" className="text-xs font-black text-slate-500 mr-2">تاريخ المصروف *</label>
               <input
+                id="record-expense-date"
                 type="date"
                 required
                 value={formData.date}
@@ -2870,8 +2898,9 @@ function RecordExpenseModal({
           </div>
 
           <div className="space-y-2">
-            <label className="text-xs font-black text-slate-500 mr-2">ملاحظات / وصف المصروف</label>
+            <label htmlFor="record-expense-description" className="text-xs font-black text-slate-500 mr-2">ملاحظات / وصف المصروف</label>
             <textarea
+              id="record-expense-description"
               rows={3}
               placeholder="اكتب بيان أو سبب المصروف..."
               value={formData.description}
@@ -2892,7 +2921,7 @@ function RecordExpenseModal({
             <button
               type="submit"
               disabled={loading}
-              className="px-8 py-3.5 bg-rose-600 hover:bg-rose-700 text-white rounded-2xl font-black text-sm transition-all shadow-lg shadow-rose-600/20 active:scale-95 disabled:opacity-50 flex items-center gap-2"
+              className="px-8 py-3.5 bg-rose-600 hover:bg-rose-700 text-white rounded-2xl font-black text-sm transition-all shadow-lg shadow-rose-600/20  disabled:opacity-50 flex items-center gap-2"
             >
               <Plus className="w-4 h-4" />
               <span>{loading ? 'جاري الحفظ...' : 'حفظ المصروف'}</span>
@@ -2924,6 +2953,7 @@ function BankModal({ show, initialData, onClose, onSuccess }: BankModalProps) {
   });
   const [loading, setLoading] = useState(false);
   const submittingRef = useRef(false);
+  const dialogRef = useDialogFocusTrap<HTMLDivElement>(show);
   const handleClose = () => {
     if (submittingRef.current) return;
     onClose();
@@ -2988,23 +3018,24 @@ function BankModal({ show, initialData, onClose, onSuccess }: BankModalProps) {
   };
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-8 bg-slate-900/60 backdrop-blur-md animate-in fade-in duration-300" dir="rtl">
-      <div className="bg-white dark:bg-slate-900 w-full max-w-lg rounded-[48px] overflow-hidden shadow-2xl border border-slate-100 dark:border-slate-800 flex flex-col">
-        <div className="p-8 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center bg-blue-50/40 dark:bg-blue-950/20">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-6 bg-slate-950/65 animate-in fade-in duration-200" dir="rtl">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="bank-modal-title" tabIndex={-1} className="bg-white dark:bg-slate-900 w-full max-w-lg rounded-3xl overflow-hidden shadow-xl border border-slate-200 dark:border-slate-800 flex flex-col max-h-[94vh]">
+        <div className="p-4 sm:p-6 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center gap-4 bg-blue-50/40 dark:bg-blue-950/20">
           <div>
-            <h3 className="text-2xl font-black text-slate-800 dark:text-white">{initialData ? 'تعديل الحساب البنكي' : 'إضافة حساب بنكي جديد'}</h3>
+            <h3 id="bank-modal-title" className="text-xl sm:text-2xl font-black text-slate-800 dark:text-white">{initialData ? 'تعديل الحساب البنكي' : 'إضافة حساب بنكي جديد'}</h3>
             <p className="text-xs font-bold text-slate-400 mt-1">تسجيل وتحديث بيانات الحسابات المصرفية وأرصدتها</p>
           </div>
-          <button onClick={handleClose} disabled={loading} className="p-3 bg-slate-100 dark:bg-slate-800 rounded-full hover:bg-slate-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+          <button type="button" aria-label="إغلاق بيانات الحساب البنكي" onClick={handleClose} disabled={loading} className="p-2.5 bg-slate-100 dark:bg-slate-800 rounded-xl hover:bg-slate-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
             <X className="w-5 h-5 text-slate-500" />
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-8 space-y-6">
-          <div className="grid grid-cols-2 gap-4">
+        <form onSubmit={handleSubmit} className="p-4 sm:p-6 space-y-5 overflow-y-auto">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-2">
-              <label className="text-xs font-black text-slate-500 mr-2">اسم البنك (عربي) *</label>
+              <label htmlFor="bank-name-ar" className="text-xs font-black text-slate-500 mr-2">اسم البنك (عربي) *</label>
               <input
+                id="bank-name-ar"
                 type="text"
                 required
                 placeholder="مثال: البنك الأهلي المصري"
@@ -3014,8 +3045,9 @@ function BankModal({ show, initialData, onClose, onSuccess }: BankModalProps) {
               />
             </div>
             <div className="space-y-2">
-              <label className="text-xs font-black text-slate-500 mr-2">اسم البنك (إنجليزي)</label>
+              <label htmlFor="bank-name-en" className="text-xs font-black text-slate-500 mr-2">اسم البنك (إنجليزي)</label>
               <input
+                id="bank-name-en"
                 type="text"
                 placeholder="مثال: NBE"
                 value={formData.name_en}
@@ -3025,10 +3057,11 @@ function BankModal({ show, initialData, onClose, onSuccess }: BankModalProps) {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-2">
-              <label className="text-xs font-black text-slate-500 mr-2">رقم الحساب / IBAN</label>
+              <label htmlFor="bank-account-number" className="text-xs font-black text-slate-500 mr-2">رقم الحساب / IBAN</label>
               <input
+                id="bank-account-number"
                 type="text"
                 placeholder="مثال: 123456789012"
                 value={formData.account_number}
@@ -3037,8 +3070,9 @@ function BankModal({ show, initialData, onClose, onSuccess }: BankModalProps) {
               />
             </div>
             <div className="space-y-2">
-              <label className="text-xs font-black text-slate-500 mr-2">الفرع</label>
+              <label htmlFor="bank-branch" className="text-xs font-black text-slate-500 mr-2">الفرع</label>
               <input
+                id="bank-branch"
                 type="text"
                 placeholder="مثال: فرع المعادي"
                 value={formData.branch}
@@ -3049,8 +3083,9 @@ function BankModal({ show, initialData, onClose, onSuccess }: BankModalProps) {
           </div>
 
           <div className="space-y-2">
-            <label className="text-xs font-black text-slate-500 mr-2">{initialData ? 'الرصيد الحالي (للعرض فقط)' : 'الرصيد الافتتاحي (عند الإنشاء فقط)'}</label>
+            <label htmlFor="bank-balance" className="text-xs font-black text-slate-500 mr-2">{initialData ? 'الرصيد الحالي (للعرض فقط)' : 'الرصيد الافتتاحي (عند الإنشاء فقط)'}</label>
             <input
+              id="bank-balance"
               type="number"
               step="0.01"
               placeholder="0.00"
@@ -3063,7 +3098,7 @@ function BankModal({ show, initialData, onClose, onSuccess }: BankModalProps) {
 
           <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100 dark:border-slate-800">
             <button type="button" onClick={handleClose} disabled={loading} className="px-6 py-3.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-600 dark:text-slate-300 rounded-2xl font-bold text-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed">إلغاء</button>
-            <button type="submit" disabled={loading} className="px-8 py-3.5 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-black text-sm transition-all shadow-lg shadow-blue-600/20 active:scale-95 disabled:opacity-50 flex items-center gap-2">
+            <button type="submit" disabled={loading} className="px-8 py-3.5 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-black text-sm transition-all shadow-lg shadow-blue-600/20  disabled:opacity-50 flex items-center gap-2">
               <Plus className="w-4 h-4" />
               <span>{loading ? 'جاري الحفظ...' : initialData ? 'حفظ التعديلات' : 'إضافة الحساب'}</span>
             </button>
@@ -3095,6 +3130,7 @@ function CardModal({ show, initialData, banks, onClose, onSuccess }: CardModalPr
   });
   const [loading, setLoading] = useState(false);
   const submittingRef = useRef(false);
+  const dialogRef = useDialogFocusTrap<HTMLDivElement>(show);
   const handleClose = () => {
     if (submittingRef.current) return;
     onClose();
@@ -3159,23 +3195,24 @@ function CardModal({ show, initialData, banks, onClose, onSuccess }: CardModalPr
   };
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-8 bg-slate-900/60 backdrop-blur-md animate-in fade-in duration-300" dir="rtl">
-      <div className="bg-white dark:bg-slate-900 w-full max-w-lg rounded-[48px] overflow-hidden shadow-2xl border border-slate-100 dark:border-slate-800 flex flex-col">
-        <div className="p-8 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center bg-indigo-50/40 dark:bg-indigo-950/20">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-6 bg-slate-950/65 animate-in fade-in duration-200" dir="rtl">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="card-modal-title" tabIndex={-1} className="bg-white dark:bg-slate-900 w-full max-w-lg rounded-3xl overflow-hidden shadow-xl border border-slate-200 dark:border-slate-800 flex flex-col max-h-[94vh]">
+        <div className="p-4 sm:p-6 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center gap-4 bg-indigo-50/40 dark:bg-indigo-950/20">
           <div>
-            <h3 className="text-2xl font-black text-slate-800 dark:text-white">{initialData ? 'تعديل ماكينة التحصيل / البطاقة' : 'إضافة ماكينة تحصيل / كارت'}</h3>
+            <h3 id="card-modal-title" className="text-xl sm:text-2xl font-black text-slate-800 dark:text-white">{initialData ? 'تعديل ماكينة التحصيل / البطاقة' : 'إضافة ماكينة تحصيل / كارت'}</h3>
             <p className="text-xs font-bold text-slate-400 mt-1">ربط ماكينات الدفع الإلكتروني (POS Terminals) ونسب العمولة البنكية</p>
           </div>
-          <button onClick={handleClose} disabled={loading} className="p-3 bg-slate-100 dark:bg-slate-800 rounded-full hover:bg-slate-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+          <button type="button" aria-label="إغلاق بيانات ماكينة التحصيل" onClick={handleClose} disabled={loading} className="p-2.5 bg-slate-100 dark:bg-slate-800 rounded-xl hover:bg-slate-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">
             <X className="w-5 h-5 text-slate-500" />
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-8 space-y-6">
-          <div className="grid grid-cols-2 gap-4">
+        <form onSubmit={handleSubmit} className="p-4 sm:p-6 space-y-5 overflow-y-auto">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-2">
-              <label className="text-xs font-black text-slate-500 mr-2">اسم الماكينة / الحساب *</label>
+              <label htmlFor="card-name-ar" className="text-xs font-black text-slate-500 mr-2">اسم الماكينة / الحساب *</label>
               <input
+                id="card-name-ar"
                 type="text"
                 required
                 placeholder="مثال: فوري - كاشير 1"
@@ -3185,8 +3222,9 @@ function CardModal({ show, initialData, banks, onClose, onSuccess }: CardModalPr
               />
             </div>
             <div className="space-y-2">
-              <label className="text-xs font-black text-slate-500 mr-2">الاسم بالإنجليزية</label>
+              <label htmlFor="card-name-en" className="text-xs font-black text-slate-500 mr-2">الاسم بالإنجليزية</label>
               <input
+                id="card-name-en"
                 type="text"
                 placeholder="مثال: Fawry POS 1"
                 value={formData.name_en}
@@ -3197,8 +3235,9 @@ function CardModal({ show, initialData, banks, onClose, onSuccess }: CardModalPr
           </div>
 
           <div className="space-y-2">
-            <label className="text-xs font-black text-slate-500 mr-2">البنك المرتبط (اختياري)</label>
+            <label htmlFor="card-bank" className="text-xs font-black text-slate-500 mr-2">البنك المرتبط (اختياري)</label>
             <select
+              id="card-bank"
               value={formData.bank_id}
               onChange={e => setFormData({ ...formData, bank_id: e.target.value })}
               className="w-full p-4 bg-slate-50 dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 outline-none font-bold text-sm text-slate-900 dark:text-white focus:border-indigo-500 transition-all"
@@ -3210,10 +3249,11 @@ function CardModal({ show, initialData, banks, onClose, onSuccess }: CardModalPr
             </select>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-2">
-              <label className="text-xs font-black text-slate-500 mr-2">نسبة العمولة (%)</label>
+              <label htmlFor="card-commission" className="text-xs font-black text-slate-500 mr-2">نسبة العمولة (%)</label>
               <input
+                id="card-commission"
                 type="number"
                 step="0.01"
                 placeholder="مثال: 1.5"
@@ -3223,8 +3263,9 @@ function CardModal({ show, initialData, banks, onClose, onSuccess }: CardModalPr
               />
             </div>
             <div className="space-y-2">
-              <label className="text-xs font-black text-slate-500 mr-2">{initialData ? 'الرصيد الحالي (للعرض فقط)' : 'الرصيد الافتتاحي'}</label>
+              <label htmlFor="card-balance" className="text-xs font-black text-slate-500 mr-2">{initialData ? 'الرصيد الحالي (للعرض فقط)' : 'الرصيد الافتتاحي'}</label>
               <input
+                id="card-balance"
                 type="number"
                 step="0.01"
                 placeholder="0.00"
@@ -3238,7 +3279,7 @@ function CardModal({ show, initialData, banks, onClose, onSuccess }: CardModalPr
 
           <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100 dark:border-slate-800">
             <button type="button" onClick={handleClose} disabled={loading} className="px-6 py-3.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-600 dark:text-slate-300 rounded-2xl font-bold text-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed">إلغاء</button>
-            <button type="submit" disabled={loading} className="px-8 py-3.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl font-black text-sm transition-all shadow-lg shadow-indigo-600/20 active:scale-95 disabled:opacity-50 flex items-center gap-2">
+            <button type="submit" disabled={loading} className="px-8 py-3.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl font-black text-sm transition-all shadow-lg shadow-indigo-600/20  disabled:opacity-50 flex items-center gap-2">
               <Plus className="w-4 h-4" />
               <span>{loading ? 'جاري الحفظ...' : initialData ? 'حفظ التعديلات' : 'إضافة الماكينة'}</span>
             </button>
@@ -3268,6 +3309,7 @@ function PosModal({ show, initialData, onClose, onSuccess }: PosModalProps) {
   });
   const [loading, setLoading] = useState(false);
   const submittingRef = useRef(false);
+  const dialogRef = useDialogFocusTrap<HTMLDivElement>(show);
   const handleClose = () => {
     if (submittingRef.current) return;
     onClose();
@@ -3330,23 +3372,24 @@ function PosModal({ show, initialData, onClose, onSuccess }: PosModalProps) {
   };
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-8 bg-slate-900/60 backdrop-blur-md animate-in fade-in duration-300" dir="rtl">
-      <div className="bg-white dark:bg-slate-900 w-full max-w-lg rounded-[48px] overflow-hidden shadow-2xl border border-slate-100 dark:border-slate-800 flex flex-col">
-        <div className="p-8 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center bg-purple-50/40 dark:bg-purple-950/20">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-6 bg-slate-950/65 animate-in fade-in duration-200" dir="rtl">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="pos-modal-title" tabIndex={-1} className="bg-white dark:bg-slate-900 w-full max-w-lg rounded-3xl overflow-hidden shadow-xl border border-slate-200 dark:border-slate-800 flex flex-col max-h-[94vh]">
+        <div className="p-4 sm:p-6 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center gap-4 bg-purple-50/40 dark:bg-purple-950/20">
           <div>
-            <h3 className="text-2xl font-black text-slate-800 dark:text-white">{initialData ? 'تعديل نقطة البيع (POS)' : 'إضافة نقطة بيع جديدة'}</h3>
+            <h3 id="pos-modal-title" className="text-xl sm:text-2xl font-black text-slate-800 dark:text-white">{initialData ? 'تعديل نقطة البيع (POS)' : 'إضافة نقطة بيع جديدة'}</h3>
             <p className="text-xs font-bold text-slate-400 mt-1">تعريف محطات وأجهزة الكاشير ونقاط البيع المختلفة</p>
           </div>
-          <button onClick={handleClose} disabled={loading} className="p-3 bg-slate-100 dark:bg-slate-800 rounded-full hover:bg-slate-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+          <button type="button" aria-label="إغلاق بيانات نقطة البيع" onClick={handleClose} disabled={loading} className="p-2.5 bg-slate-100 dark:bg-slate-800 rounded-xl hover:bg-slate-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-500">
             <X className="w-5 h-5 text-slate-500" />
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-8 space-y-6">
-          <div className="grid grid-cols-2 gap-4">
+        <form onSubmit={handleSubmit} className="p-4 sm:p-6 space-y-5 overflow-y-auto">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-2">
-              <label className="text-xs font-black text-slate-500 mr-2">اسم النقطة (عربي) *</label>
+              <label htmlFor="pos-name-ar" className="text-xs font-black text-slate-500 mr-2">اسم النقطة (عربي) *</label>
               <input
+                id="pos-name-ar"
                 type="text"
                 required
                 placeholder="مثال: كاشير 1 - الصالة"
@@ -3356,8 +3399,9 @@ function PosModal({ show, initialData, onClose, onSuccess }: PosModalProps) {
               />
             </div>
             <div className="space-y-2">
-              <label className="text-xs font-black text-slate-500 mr-2">اسم النقطة (إنجليزي)</label>
+              <label htmlFor="pos-name-en" className="text-xs font-black text-slate-500 mr-2">اسم النقطة (إنجليزي)</label>
               <input
+                id="pos-name-en"
                 type="text"
                 placeholder="مثال: POS-01"
                 value={formData.name_en}
@@ -3367,10 +3411,11 @@ function PosModal({ show, initialData, onClose, onSuccess }: PosModalProps) {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-2">
-              <label className="text-xs font-black text-slate-500 mr-2">الموقع / القسم</label>
+              <label htmlFor="pos-location" className="text-xs font-black text-slate-500 mr-2">الموقع / القسم</label>
               <input
+                id="pos-location"
                 type="text"
                 placeholder="مثال: الصالة الرئيسية"
                 value={formData.location}
@@ -3379,8 +3424,9 @@ function PosModal({ show, initialData, onClose, onSuccess }: PosModalProps) {
               />
             </div>
             <div className="space-y-2">
-              <label className="text-xs font-black text-slate-500 mr-2">اسم الكمبيوتر / الجهاز</label>
+              <label htmlFor="pos-computer" className="text-xs font-black text-slate-500 mr-2">اسم الكمبيوتر / الجهاز</label>
               <input
+                id="pos-computer"
                 type="text"
                 placeholder="مثال: PC-PHARMA-01"
                 value={formData.computer_name}
@@ -3392,7 +3438,7 @@ function PosModal({ show, initialData, onClose, onSuccess }: PosModalProps) {
 
           <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100 dark:border-slate-800">
             <button type="button" onClick={handleClose} disabled={loading} className="px-6 py-3.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-600 dark:text-slate-300 rounded-2xl font-bold text-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed">إلغاء</button>
-            <button type="submit" disabled={loading} className="px-8 py-3.5 bg-purple-600 hover:bg-purple-700 text-white rounded-2xl font-black text-sm transition-all shadow-lg shadow-purple-600/20 active:scale-95 disabled:opacity-50 flex items-center gap-2">
+            <button type="submit" disabled={loading} className="px-8 py-3.5 bg-purple-600 hover:bg-purple-700 text-white rounded-2xl font-black text-sm transition-all shadow-lg shadow-purple-600/20  disabled:opacity-50 flex items-center gap-2">
               <Plus className="w-4 h-4" />
               <span>{loading ? 'جاري الحفظ...' : initialData ? 'حفظ التعديلات' : 'إضافة النقطة'}</span>
             </button>
@@ -3426,6 +3472,7 @@ function PaperModal({ show, type, direction, banks, onClose, onSuccess }: PaperM
   });
   const [loading, setLoading] = useState(false);
   const submittingRef = useRef(false);
+  const dialogRef = useDialogFocusTrap<HTMLDivElement>(show);
   const handleClose = () => {
     if (submittingRef.current) return;
     onClose();
@@ -3488,23 +3535,24 @@ function PaperModal({ show, type, direction, banks, onClose, onSuccess }: PaperM
   const isIncoming = direction === 'in';
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-8 bg-slate-900/60 backdrop-blur-md animate-in fade-in duration-300" dir="rtl">
-      <div className="bg-white dark:bg-slate-900 w-full max-w-lg rounded-[48px] overflow-hidden shadow-2xl border border-slate-100 dark:border-slate-800 flex flex-col">
-        <div className={cn("p-8 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center", isIncoming ? "bg-indigo-50/40 dark:bg-indigo-950/20" : "bg-purple-50/40 dark:bg-purple-950/20")}>
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-6 bg-slate-950/65 animate-in fade-in duration-200" dir="rtl">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="paper-modal-title" tabIndex={-1} className="bg-white dark:bg-slate-900 w-full max-w-lg rounded-3xl overflow-hidden shadow-xl border border-slate-200 dark:border-slate-800 flex flex-col max-h-[94vh]">
+        <div className={cn("p-4 sm:p-6 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center gap-4", isIncoming ? "bg-indigo-50/40 dark:bg-indigo-950/20" : "bg-purple-50/40 dark:bg-purple-950/20")}>
           <div>
-            <h3 className="text-2xl font-black text-slate-800 dark:text-white">تسجيل {isCheck ? 'شيك' : 'كمبيالة'} {isIncoming ? 'وارد (مقبوض)' : 'صادر (مدفوع)'}</h3>
+            <h3 id="paper-modal-title" className="text-xl sm:text-2xl font-black text-slate-800 dark:text-white">تسجيل {isCheck ? 'شيك' : 'كمبيالة'} {isIncoming ? 'وارد (مقبوض)' : 'صادر (مدفوع)'}</h3>
             <p className="text-xs font-bold text-slate-400 mt-1">متابعة استحقاق الورقة المالية ومواعيد تحصيلها وصرفها</p>
           </div>
-          <button onClick={handleClose} disabled={loading} className="p-3 bg-slate-100 dark:bg-slate-800 rounded-full hover:bg-slate-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+          <button type="button" aria-label="إغلاق تسجيل الورقة المالية" onClick={handleClose} disabled={loading} className="p-2.5 bg-slate-100 dark:bg-slate-800 rounded-xl hover:bg-slate-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-500">
             <X className="w-5 h-5 text-slate-500" />
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-8 space-y-6">
-          <div className="grid grid-cols-2 gap-4">
+        <form onSubmit={handleSubmit} className="p-4 sm:p-6 space-y-5 overflow-y-auto">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-2">
-              <label className="text-xs font-black text-slate-500 mr-2">رقم {isCheck ? 'الشيك' : 'الورقة'} *</label>
+              <label htmlFor="paper-number" className="text-xs font-black text-slate-500 mr-2">رقم {isCheck ? 'الشيك' : 'الورقة'} *</label>
               <input
+                id="paper-number"
                 type="text"
                 required
                 placeholder="مثال: 987456"
@@ -3514,8 +3562,9 @@ function PaperModal({ show, type, direction, banks, onClose, onSuccess }: PaperM
               />
             </div>
             <div className="space-y-2">
-              <label className="text-xs font-black text-slate-500 mr-2">المبلغ (ج.م) *</label>
+              <label htmlFor="paper-amount" className="text-xs font-black text-slate-500 mr-2">المبلغ (ج.م) *</label>
               <input
+                id="paper-amount"
                 type="number"
                 step="0.01"
                 required
@@ -3527,10 +3576,11 @@ function PaperModal({ show, type, direction, banks, onClose, onSuccess }: PaperM
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-2">
-              <label className="text-xs font-black text-slate-500 mr-2">{isIncoming ? 'اسم الساحب / العميل *' : 'اسم المستفيد / المورد *'}</label>
+              <label htmlFor="paper-target" className="text-xs font-black text-slate-500 mr-2">{isIncoming ? 'اسم الساحب / العميل *' : 'اسم المستفيد / المورد *'}</label>
               <input
+                id="paper-target"
                 type="text"
                 required
                 placeholder="الجهة أو الشخص"
@@ -3540,8 +3590,9 @@ function PaperModal({ show, type, direction, banks, onClose, onSuccess }: PaperM
               />
             </div>
             <div className="space-y-2">
-              <label className="text-xs font-black text-slate-500 mr-2">تاريخ الاستحقاق *</label>
+              <label htmlFor="paper-due-date" className="text-xs font-black text-slate-500 mr-2">تاريخ الاستحقاق *</label>
               <input
+                id="paper-due-date"
                 type="date"
                 required
                 value={formData.due_date}
@@ -3552,8 +3603,9 @@ function PaperModal({ show, type, direction, banks, onClose, onSuccess }: PaperM
           </div>
 
           <div className="space-y-2">
-            <label className="text-xs font-black text-slate-500 mr-2">البنك المسحوب عليه (اختياري)</label>
+            <label htmlFor="paper-bank" className="text-xs font-black text-slate-500 mr-2">البنك المسحوب عليه (اختياري)</label>
             <select
+              id="paper-bank"
               value={formData.bank_id}
               onChange={e => setFormData({ ...formData, bank_id: e.target.value })}
               className="w-full p-4 bg-slate-50 dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 outline-none font-bold text-sm text-slate-900 dark:text-white focus:border-purple-500 transition-all"
@@ -3566,8 +3618,9 @@ function PaperModal({ show, type, direction, banks, onClose, onSuccess }: PaperM
           </div>
 
           <div className="space-y-2">
-            <label className="text-xs font-black text-slate-500 mr-2">ملاحظات إضافية</label>
+            <label htmlFor="paper-notes" className="text-xs font-black text-slate-500 mr-2">ملاحظات إضافية</label>
             <textarea
+              id="paper-notes"
               rows={2}
               placeholder="اكتب أي ملاحظات أو تفاصيل إضافية..."
               value={formData.notes}
@@ -3578,7 +3631,7 @@ function PaperModal({ show, type, direction, banks, onClose, onSuccess }: PaperM
 
           <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100 dark:border-slate-800">
             <button type="button" onClick={handleClose} disabled={loading} className="px-6 py-3.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-600 dark:text-slate-300 rounded-2xl font-bold text-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed">إلغاء</button>
-            <button type="submit" disabled={loading} className={cn("px-8 py-3.5 text-white rounded-2xl font-black text-sm transition-all shadow-lg active:scale-95 disabled:opacity-50 flex items-center gap-2", isIncoming ? "bg-indigo-600 hover:bg-indigo-700 shadow-indigo-600/20" : "bg-purple-600 hover:bg-purple-700 shadow-purple-600/20")}>
+            <button type="submit" disabled={loading} className={cn("px-8 py-3.5 text-white rounded-2xl font-black text-sm transition-all shadow-lg  disabled:opacity-50 flex items-center gap-2", isIncoming ? "bg-indigo-600 hover:bg-indigo-700 shadow-indigo-600/20" : "bg-purple-600 hover:bg-purple-700 shadow-purple-600/20")}>
               <Plus className="w-4 h-4" />
               <span>{loading ? 'جاري الحفظ...' : 'تسجيل الورقة المالية'}</span>
             </button>
@@ -3615,6 +3668,7 @@ function ManualJournalModal({ show, accounts, onClose, onSuccess }: ManualJourna
   ]);
   const [loading, setLoading] = useState(false);
   const submittingRef = useRef(false);
+  const dialogRef = useDialogFocusTrap<HTMLDivElement>(show);
   const handleClose = () => {
     if (submittingRef.current) return;
     onClose();
@@ -3700,23 +3754,24 @@ function ManualJournalModal({ show, accounts, onClose, onSuccess }: ManualJourna
   };
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-slate-900/60 backdrop-blur-md animate-in fade-in duration-300" dir="rtl">
-      <div className="bg-white dark:bg-slate-900 w-full max-w-3xl rounded-[48px] overflow-hidden shadow-2xl border border-slate-100 dark:border-slate-800 flex flex-col max-h-[90vh]">
-        <div className="p-8 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center bg-blue-50/40 dark:bg-blue-950/20">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-6 bg-slate-950/65 animate-in fade-in duration-200" dir="rtl">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="manual-journal-title" tabIndex={-1} className="bg-white dark:bg-slate-900 w-full max-w-3xl rounded-3xl overflow-hidden shadow-xl border border-slate-200 dark:border-slate-800 flex flex-col max-h-[94vh]">
+        <div className="p-4 sm:p-6 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center gap-4 bg-blue-50/40 dark:bg-blue-950/20">
           <div>
-            <h3 className="text-2xl font-black text-slate-800 dark:text-white">إنشاء سند قيد يومي يدوي</h3>
+            <h3 id="manual-journal-title" className="text-xl sm:text-2xl font-black text-slate-800 dark:text-white">إنشاء سند قيد يومي يدوي</h3>
             <p className="text-xs font-bold text-slate-400 mt-1">تسجيل حركة محاسبية مزدوجة (مدين / دائن) مع التحقق الفوري من التوازن</p>
           </div>
-          <button onClick={handleClose} disabled={loading} className="p-3 bg-slate-100 dark:bg-slate-800 rounded-full hover:bg-slate-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+          <button type="button" aria-label="إغلاق سند القيد" onClick={handleClose} disabled={loading} className="p-2.5 bg-slate-100 dark:bg-slate-800 rounded-xl hover:bg-slate-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
             <X className="w-5 h-5 text-slate-500" />
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-8 space-y-6 overflow-y-auto flex-1">
-          <div className="grid grid-cols-3 gap-4">
+        <form onSubmit={handleSubmit} className="p-4 sm:p-6 space-y-5 overflow-y-auto flex-1">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div className="space-y-2">
-              <label className="text-xs font-black text-slate-500 mr-2">تاريخ القيد *</label>
+              <label htmlFor="manual-journal-date" className="text-xs font-black text-slate-500 mr-2">تاريخ القيد *</label>
               <input
+                id="manual-journal-date"
                 type="date"
                 required
                 value={date}
@@ -3724,9 +3779,10 @@ function ManualJournalModal({ show, accounts, onClose, onSuccess }: ManualJourna
                 className="w-full p-4 bg-slate-50 dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 outline-none font-bold text-sm text-slate-900 dark:text-white focus:border-blue-500 transition-all font-mono"
               />
             </div>
-            <div className="col-span-2 space-y-2">
-              <label className="text-xs font-black text-slate-500 mr-2">بيان القيد العام *</label>
+            <div className="sm:col-span-2 space-y-2">
+              <label htmlFor="manual-journal-description" className="text-xs font-black text-slate-500 mr-2">بيان القيد العام *</label>
               <input
+                id="manual-journal-description"
                 type="text"
                 required
                 placeholder="مثال: تسوية رصيد بنكي / قيد إقفال عهدة"
@@ -3743,7 +3799,7 @@ function ManualJournalModal({ show, accounts, onClose, onSuccess }: ManualJourna
               <button
                 type="button"
                 onClick={addLine}
-                className="px-4 py-2 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-xl text-xs font-black transition-all flex items-center gap-1.5"
+                className="px-4 py-2.5 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-xl text-sm font-black transition-colors flex items-center gap-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
               >
                 <Plus className="w-4 h-4" /> إضافة طرف
               </button>
@@ -3754,6 +3810,7 @@ function ManualJournalModal({ show, accounts, onClose, onSuccess }: ManualJourna
                 <div key={idx} className="p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border border-slate-200 dark:border-slate-700 flex flex-wrap md:flex-nowrap items-center gap-3">
                   <div className="w-28">
                     <select
+                      aria-label={`نوع الطرف ${idx + 1}`}
                       value={line.type}
                       onChange={e => updateLine(idx, 'type', e.target.value)}
                       className={cn(
@@ -3768,6 +3825,7 @@ function ManualJournalModal({ show, accounts, onClose, onSuccess }: ManualJourna
 
                   <div className="flex-1 min-w-[200px]">
                     <select
+                      aria-label={`الحساب للطرف ${idx + 1}`}
                       value={line.account_id}
                       onChange={e => updateLine(idx, 'account_id', e.target.value)}
                       required
@@ -3784,6 +3842,7 @@ function ManualJournalModal({ show, accounts, onClose, onSuccess }: ManualJourna
 
                   <div className="w-36">
                     <input
+                      aria-label={`مبلغ الطرف ${idx + 1}`}
                       type="number"
                       step="0.01"
                       placeholder="المبلغ"
@@ -3796,6 +3855,7 @@ function ManualJournalModal({ show, accounts, onClose, onSuccess }: ManualJourna
 
                   <div className="flex-1 min-w-[160px]">
                     <input
+                      aria-label={`شرح الطرف ${idx + 1}`}
                       type="text"
                       placeholder="شرح الطرف (اختياري)"
                       value={line.notes}
@@ -3807,8 +3867,9 @@ function ManualJournalModal({ show, accounts, onClose, onSuccess }: ManualJourna
                   {entries.length > 2 && (
                     <button
                       type="button"
+                      aria-label={`حذف الطرف ${idx + 1}`}
                       onClick={() => removeLine(idx)}
-                      className="p-2.5 text-slate-400 hover:text-rose-600 rounded-xl transition-all"
+                      className="p-2.5 text-slate-500 hover:text-rose-600 rounded-xl transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500"
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
@@ -3833,7 +3894,7 @@ function ManualJournalModal({ show, accounts, onClose, onSuccess }: ManualJourna
             <button
               type="submit"
               disabled={loading || !isBalanced}
-              className="px-8 py-3.5 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-black text-sm transition-all shadow-lg shadow-blue-600/20 active:scale-95 disabled:opacity-50 flex items-center gap-2"
+              className="px-8 py-3.5 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-black text-sm transition-all shadow-lg shadow-blue-600/20  disabled:opacity-50 flex items-center gap-2"
             >
               <Plus className="w-4 h-4" />
               <span>{loading ? 'جاري الحفظ...' : 'حفظ القيد اليومي'}</span>

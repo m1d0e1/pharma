@@ -4,6 +4,31 @@ type ReorderDb = Pick<TransactionDb, 'prepare'>;
 
 export const DEFAULT_REORDER_LIMIT = 10;
 
+const LEGACY_MEDIUM_UNIT_ALIASES = ['medium', 'strip', 'شريط'] as const;
+const LEGACY_SMALL_UNIT_ALIASES = ['small', 'unit', 'pill', 'tablet', 'capsule', 'قرص', 'كبسولة'] as const;
+
+function sqlStringList(values: readonly string[]) {
+  return values.map(value => `'${value.replace(/'/g, "''")}'`).join(', ');
+}
+
+export function getSalesQuantityInLargeSql(options: {
+  quantity: string;
+  unit: string;
+  mediumUnit: string;
+  smallUnit: string;
+  largeFactor: string;
+  smallFactor: string;
+}) {
+  const normalizedUnit = `LOWER(TRIM(COALESCE(${options.unit}, '')))`;
+  return `CASE
+    WHEN ${normalizedUnit} IN (${sqlStringList(LEGACY_MEDIUM_UNIT_ALIASES)}) OR ${options.unit} = ${options.mediumUnit}
+      THEN ${options.quantity} / ${options.largeFactor}
+    WHEN ${normalizedUnit} IN (${sqlStringList(LEGACY_SMALL_UNIT_ALIASES)}) OR ${options.unit} = ${options.smallUnit}
+      THEN ${options.quantity} / (${options.largeFactor} * ${options.smallFactor})
+    ELSE ${options.quantity}
+  END`;
+}
+
 export async function getSalesConversionSql(scopedDb: ReorderDb) {
   const hasColumn = async (column: 'large_to_medium' | 'medium_to_small') => {
     try {
@@ -36,6 +61,14 @@ export async function getEffectiveReorderState(
 ) {
   const pharmacyScope = String(pharmacyId || 'local_default');
   const conversion = await getSalesConversionSql(scopedDb);
+  const quantityInLarge = getSalesQuantityInLargeSql({
+    quantity: 'si.quantity_sold',
+    unit: 'si.unit',
+    mediumUnit: 'sales_drug.medium_unit',
+    smallUnit: 'sales_drug.small_unit',
+    largeFactor: conversion.largeFactor,
+    smallFactor: conversion.smallFactor,
+  });
   const row = await scopedDb.prepare(`
     SELECT
       COALESCE((
@@ -44,23 +77,13 @@ export async function getEffectiveReorderState(
         WHERE i.drug_id = md.id
           AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
           AND i.quantity > 0
+          AND (COALESCE(md.has_expiry, 1) = 0 OR i.expiry_date IS NOT NULL)
           AND (i.expiry_date IS NULL OR i.expiry_date >= date('now', 'localtime'))
       ), 0) AS current_stock,
       MAX(
         COALESCE(NULLIF(md.reorder_point, 0), NULLIF(md.min_limit, 0), ?),
         COALESCE((
-          SELECT SUM(
-            CASE
-              WHEN si.unit IN ('medium', 'strip', 'شريط') OR si.unit = sales_drug.medium_unit
-                THEN si.quantity_sold / ${conversion.largeFactor}
-              WHEN si.unit = 'small' OR si.unit = sales_drug.small_unit
-                THEN si.quantity_sold / (
-                  ${conversion.largeFactor}
-                  * ${conversion.smallFactor}
-                )
-              ELSE si.quantity_sold
-            END
-          )
+          SELECT SUM(${quantityInLarge})
           FROM sales_items si
           JOIN sales_invoices inv ON inv.id = si.invoice_id
           JOIN master_drugs sales_drug ON sales_drug.id = si.drug_id

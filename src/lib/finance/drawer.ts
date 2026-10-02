@@ -38,7 +38,7 @@ const HANDOVER_DETAILS_SQL = `
       SELECT COALESCE(SUM(CAST(r.total_refund AS REAL)), 0)
       FROM returns r
       WHERE r.refund_method = 'cash'
-        AND (r.status IS NULL OR r.status = '' OR r.status IN ('approved', 'completed'))
+        AND (r.status IS NULL OR r.status = '' OR LOWER(r.status) IN ('approved', 'completed'))
         AND r.shift_id = s.id
     ) AS returns,
     (

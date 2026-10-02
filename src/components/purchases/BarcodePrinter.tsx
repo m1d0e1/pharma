@@ -4,6 +4,7 @@ import React, { useRef } from 'react'
 import Barcode from 'react-barcode'
 import { useReactToPrint } from 'react-to-print'
 import { Printer, X } from 'lucide-react'
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap'
 
 interface BarcodeItem {
   id: number | string
@@ -21,6 +22,7 @@ interface Props {
 
 export default function BarcodePrinter({ items, onClose }: Props) {
   const componentRef = useRef<HTMLDivElement>(null)
+  const dialogRef = useDialogFocusTrap<HTMLDivElement>(true)
 
   const handlePrint = useReactToPrint({
     contentRef: componentRef,
@@ -29,16 +31,17 @@ export default function BarcodePrinter({ items, onClose }: Props) {
 
   return (
     <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md flex items-center justify-center p-4 z-[120] animate-in fade-in duration-300" dir="rtl">
-      <div className="bg-white dark:bg-slate-900 rounded-[40px] shadow-hard w-full max-w-4xl overflow-hidden border border-slate-200 dark:border-slate-800 transform animate-in zoom-in duration-500 max-h-[90vh] flex flex-col">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="barcode-printer-title" tabIndex={-1} onKeyDown={(event) => { if (event.key === 'Escape') onClose(); }} className="bg-white dark:bg-slate-900 rounded-3xl shadow-hard w-full max-w-4xl overflow-hidden border border-slate-200 dark:border-slate-800 transform animate-in zoom-in duration-500 max-h-[90vh] flex flex-col">
         
         {/* Header */}
         <div className="p-8 border-b border-slate-50 dark:border-slate-800 flex justify-between items-center bg-slate-50/50 dark:bg-slate-800/20">
           <div>
-            <h2 className="text-2xl font-black text-slate-900 dark:text-white">طباعة الباركود</h2>
+            <h2 id="barcode-printer-title" className="text-2xl font-black text-slate-900 dark:text-white">طباعة الباركود</h2>
             <p className="text-slate-500 text-xs font-bold mt-1">توليد ملصقات احترافية للأصناف المشتراة</p>
           </div>
           <div className="flex gap-3">
             <button 
+              type="button"
               onClick={() => handlePrint()}
               className="bg-primary-600 hover:bg-primary-700 text-white px-6 py-3 rounded-2xl font-black flex items-center gap-2 shadow-lg shadow-primary-500/20 transition-all active:scale-95"
             >
@@ -46,6 +49,7 @@ export default function BarcodePrinter({ items, onClose }: Props) {
               طباعة الكل
             </button>
             <button
+              type="button"
               onClick={onClose}
               aria-label="إغلاق نافذة طباعة الباركود"
               className="p-3 bg-slate-200 dark:bg-slate-800 rounded-2xl hover:rotate-90 transition-transform"
@@ -78,7 +82,7 @@ export default function BarcodePrinter({ items, onClose }: Props) {
                     margin={0}
                   />
                 </div>
-                <div className="flex justify-between w-full text-[10px] font-black border-t border-slate-100 pt-1 mt-1">
+                <div className="flex justify-between w-full text-[11px] font-black border-t border-slate-100 pt-1 mt-1">
                   <span>Price: {Number(item.selling_price).toFixed(2)}</span>
                   <span>Exp: {item.expiry_date || 'N/A'}</span>
                 </div>

@@ -71,9 +71,9 @@ export default function ShiftReportClient({ shiftId }: { shiftId: string }) {
   return (
     <div className="max-w-5xl mx-auto space-y-8 pb-20" dir="rtl">
       {/* Header Actions */}
-      <div className="flex justify-between items-center bg-white dark:bg-slate-900 p-6 rounded-[32px] border border-slate-100 dark:border-slate-800 shadow-sm sticky top-4 z-10 backdrop-blur-md bg-opacity-80">
+      <div className="flex flex-col gap-4 sm:flex-row sm:justify-between sm:items-center bg-white dark:bg-slate-900 p-5 sm:p-6 rounded-[32px] border border-slate-100 dark:border-slate-800 shadow-sm sticky top-4 z-10 backdrop-blur-md bg-opacity-80">
         <div className="flex items-center gap-4">
-          <button onClick={() => window.history.back()} aria-label="العودة" title="العودة" className="p-3 bg-slate-50 dark:bg-slate-800 rounded-2xl text-slate-400 hover:text-slate-800 transition-all">
+          <button type="button" onClick={() => window.history.back()} aria-label="العودة" title="العودة" className="p-3 bg-slate-50 dark:bg-slate-800 rounded-2xl text-slate-500 hover:text-slate-800 transition-all">
             <ArrowRight className="w-6 h-6" />
           </button>
           <div>
@@ -83,13 +83,14 @@ export default function ShiftReportClient({ shiftId }: { shiftId: string }) {
         </div>
         <div className="flex gap-3 items-center">
           <button 
+            type="button"
             onClick={() => setShowReceiptsModal(true)} 
             className="px-5 py-3 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300 rounded-2xl font-black text-xs flex items-center gap-2 hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-all border border-blue-100 dark:border-blue-800 shadow-sm"
           >
             <Receipt className="w-5 h-5 text-blue-600 dark:text-blue-400" />
             <span>عرض فواتير الوردية</span>
           </button>
-          <button onClick={() => window.print()} className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black flex items-center gap-2 hover:bg-slate-800 transition-all shadow-lg">
+          <button type="button" onClick={() => window.print()} className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black flex items-center gap-2 hover:bg-slate-800 transition-all shadow-lg">
             <Printer className="w-5 h-5" /> طباعة
           </button>
         </div>
@@ -150,8 +151,8 @@ export default function ShiftReportClient({ shiftId }: { shiftId: string }) {
                       </div>
                    </div>
                    <div className="text-left">
-                      <p className="text-xl font-black">{s.total.toLocaleString()} <span className="text-[10px]">ج.م</span></p>
-                      {s.remaining > 0 && <p className="text-[10px] font-bold text-rose-500">آجل: {s.remaining.toLocaleString()}</p>}
+                      <p className="text-xl font-black">{s.total.toLocaleString()} <span className="text-xs">ج.م</span></p>
+                      {s.remaining > 0 && <p className="text-xs font-bold text-rose-500">آجل: {s.remaining.toLocaleString()}</p>}
                    </div>
                 </div>
               ))}
@@ -159,11 +160,10 @@ export default function ShiftReportClient({ shiftId }: { shiftId: string }) {
         </div>
 
         {/* Cash Flow Reconciliation */}
-        <div className="bg-slate-900 text-white rounded-[40px] p-10 shadow-2xl relative overflow-hidden">
-           <div className="absolute top-0 right-0 w-64 h-64 bg-blue-500/10 blur-[100px] rounded-full" />
-           <h3 className="text-2xl font-black mb-8 relative z-10">مطابقة نقدية درج الوردية</h3>
+        <div className="bg-slate-900 text-white rounded-[40px] p-6 sm:p-10 shadow-xl border border-slate-800">
+           <h3 className="text-2xl font-black mb-8">مطابقة نقدية درج الوردية</h3>
            
-           <div className="space-y-6 relative z-10">
+           <div className="space-y-6">
               <ReconRow label="نقدية بداية الوردية بالدرج" value={shift.starting_cash} />
               <ReconRow label="مبيعات الوردية المدفوعة نقدًا (+)" value={summary.cashSales} color="text-emerald-400" />
               <ReconRow label="مرتجعات نقدية (-)" value={summary.cashReturns} color="text-rose-400" />
@@ -209,7 +209,7 @@ function InfoCard({ icon: Icon, label, value, subValue }: any) {
         <Icon className="w-7 h-7" />
       </div>
       <div>
-        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">{label}</p>
+        <p className="text-xs font-black text-slate-500 mb-1">{label}</p>
         <p className="text-lg font-black text-slate-800 dark:text-white">{value}</p>
         <p className="text-xs font-bold text-blue-500">{subValue}</p>
       </div>
@@ -226,19 +226,28 @@ function StatBox({ label, value, icon: Icon, color, onClick, clickableHint }: an
   };
   return (
     <div 
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      aria-label={onClick ? `${label}: ${value}. ${clickableHint || ''}` : undefined}
       onClick={onClick}
+      onKeyDown={onClick ? (event: React.KeyboardEvent<HTMLDivElement>) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onClick();
+        }
+      } : undefined}
       className={cn(
         "bg-white dark:bg-slate-900 p-6 rounded-[32px] border border-slate-100 dark:border-slate-800 shadow-sm text-center transition-all",
-        onClick && "cursor-pointer hover:shadow-md hover:border-blue-300 dark:hover:border-blue-700 active:scale-95 group"
+        onClick && "cursor-pointer hover:shadow-md hover:border-blue-300 dark:hover:border-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 active:scale-95 group"
       )}
     >
       <div className={cn("w-12 h-12 rounded-xl flex items-center justify-center mx-auto mb-4 transition-transform group-hover:scale-110", colors[color])}>
         <Icon className="w-6 h-6" />
       </div>
-      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">{label}</p>
+      <p className="text-xs font-black text-slate-500 mb-1">{label}</p>
       <p className="text-2xl font-black text-slate-800 dark:text-white">{value.toLocaleString()}</p>
       {clickableHint && (
-        <p className="text-[9px] font-bold text-blue-500 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">
+        <p className="text-xs font-bold text-blue-500 mt-1">
           {clickableHint}
         </p>
       )}

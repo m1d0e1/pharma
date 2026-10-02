@@ -3,13 +3,14 @@
 import Link from 'next/link';
 import { toast } from 'react-hot-toast';
 import { useRouter, usePathname } from 'next/navigation';
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useHotkeys } from 'react-hotkeys-hook';
 import TopMenuBar from '@/components/TopMenuBar';
 import SidebarNav from '@/components/SidebarNav';
 import ThemeToggle from '@/components/ThemeToggle';
 import { getClientSession, hasUserPermissionSync, logoutLocal } from '@/lib/auth/local';
 import { dbGet } from '@/lib/db/tauri';
+import { pharmacyIdentityConfigKey } from '@/lib/settings/pharmacy-identity';
 import { Monitor, Bell, LogOut, Menu, ArrowRight } from 'lucide-react';
 import HeaderAlerts from '@/components/HeaderAlerts';
 import AuthGuard from '@/components/AuthGuard';
@@ -17,6 +18,67 @@ import PermissionGuard from '@/components/PermissionGuard';
 import { getRoutePermission } from '@/lib/auth/roles';
 import { isTauri as isTauriRuntime } from '@/lib/env';
 import packageInfo from '../../../package.json';
+
+const NATIVE_MENU_ROUTES = [
+  ['pos', '/pos'],
+  ['purchases_new', '/purchases/new'],
+  ['dashboard', '/'],
+  ['stores_items', '/stores/items'],
+  ['stores_alternatives', '/stores/alternatives'],
+  ['stores_nature', '/stores/nature'],
+  ['stores_usage', '/stores/usage'],
+  ['stores_units', '/stores/units'],
+  ['stores_indications', '/stores/indications'],
+  ['stores_drug_indications', '/stores/drug-indications'],
+  ['stores_manufacturers', '/stores/manufacturers'],
+  ['stores_scientific_groups', '/stores/scientific-groups'],
+  ['stores_categories', '/stores/categories'],
+  ['inventory', '/inventory'],
+  ['stores_shortages', '/stores/shortages'],
+  ['inventory_item_movements', '/inventory/item-movements'],
+  ['restock', '/restock'],
+  ['inventory_opening_balances', '/inventory/opening-balances'],
+  ['stores_adjustments', '/stores/adjustments'],
+  ['stores_adjustment_reasons', '/stores/adjustment-reasons'],
+  ['inventory_settlement', '/inventory/settlement'],
+  ['stores_delete_items', '/stores/delete-items'],
+  ['receipts', '/receipts'],
+  ['sales', '/sales'],
+  ['sales_delivery', '/sales/delivery'],
+  ['sales_cogs', '/sales/cogs'],
+  ['sales_settlement', '/sales/settlement'],
+  ['returns', '/returns'],
+  ['purchases', '/purchases'],
+  ['purchase_orders', '/purchase-orders'],
+  ['purchases_suppliers', '/purchases/suppliers'],
+  ['purchases_returns', '/purchases/returns'],
+  ['accounts', '/accounts'],
+  ['accounts_cash_transactions', '/accounts/cash-transactions'],
+  ['finance_banks', '/finance/banks'],
+  ['finance_cards', '/finance/cards'],
+  ['finance_pos_management', '/finance/pos-management'],
+  ['finance_accounts', '/finance/accounts'],
+  ['accounts_settings_trial_balance', '/accounts/settings/trial-balance'],
+  ['reports', '/reports'],
+  ['reports_sales2', '/reports/sales'],
+  ['reports_purchases', '/reports/purchases'],
+  ['reports_trial_balance', '/reports/trial-balance'],
+  ['expenses', '/expenses'],
+  ['patients', '/patients'],
+  ['interactions', '/interactions'],
+] as const;
+
+function getAllowedNativeMenuRouteIds(user: any): string[] {
+  return NATIVE_MENU_ROUTES
+    .filter(([, route]) => {
+      const requirement = getRoutePermission(route);
+      if (!requirement) return true;
+      return Array.isArray(requirement)
+        ? requirement.some(key => hasUserPermissionSync(user, key))
+        : hasUserPermissionSync(user, requirement);
+    })
+    .map(([id]) => id);
+}
 
 export default function DashboardLayout({
   children,
@@ -34,11 +96,32 @@ export default function DashboardLayout({
   const [pharmacyName, setPharmacyName] = useState<string>('فارما تيك');
   const [loading, setLoading] = useState(true);
   const [isTauri, setIsTauri] = useState(false);
+  const nativeMenuSyncQueueRef = useRef<Promise<void>>(Promise.resolve());
   const roleLabel = userRole === 'owner' ? 'مالك' : userRole === 'admin' ? 'مدير النظام' : userRole === 'manager' ? 'مدير' : userRole === 'cashier' ? 'كاشير' : 'صيدلي';
-  const permissionUser = { role: userRole, permissions };
+  const permissionUser = useMemo(() => ({ role: userRole, permissions }), [userRole, permissions]);
   const canAccessPos = hasUserPermissionSync(permissionUser, 'can_access_pos');
   const canViewInventory = hasUserPermissionSync(permissionUser, 'can_view_stores');
   const canViewPurchases = hasUserPermissionSync(permissionUser, 'can_view_purchases');
+  const nativeAdminMenuAccess = useMemo(() => ({
+    staff: hasUserPermissionSync(permissionUser, 'rep_can_view_activity'),
+    staffManage: hasUserPermissionSync(permissionUser, 'can_view_staff_manage'),
+    staffRoles: hasUserPermissionSync(permissionUser, 'can_view_staff_roles'),
+    audit: hasUserPermissionSync(permissionUser, 'can_view_audit'),
+    settings: hasUserPermissionSync(permissionUser, 'can_view_settings'),
+    allowedRouteIds: getAllowedNativeMenuRouteIds(permissionUser),
+  }), [permissionUser]);
+  const enqueueNativeMenuSync = useCallback((access: typeof nativeAdminMenuAccess, reportError: boolean) => {
+    const sync = nativeMenuSyncQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        const { invoke } = await import('@tauri-apps/api/core');
+        await invoke('sync_native_admin_menu', { access });
+      });
+    nativeMenuSyncQueueRef.current = sync.catch(() => undefined);
+    if (reportError) {
+      void sync.catch((error) => console.error('Failed to sync native Administration menu:', error));
+    }
+  }, []);
 
   const log = (m: string) => typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__?.invoke('log_frontend_error', { message: m });
 
@@ -66,7 +149,10 @@ export default function DashboardLayout({
           }
 
           try {
-            const pharmacyNameRow = await dbGet("SELECT value FROM config WHERE key = 'pharmacy_name'");
+            const pharmacyNameRow = await dbGet(
+              'SELECT value FROM config WHERE key = ?',
+              [pharmacyIdentityConfigKey('pharmacy_name', localUser.pharmacy_id)]
+            );
             if (pharmacyNameRow?.value) {
               setPharmacyName(pharmacyNameRow.value);
             }
@@ -85,6 +171,25 @@ export default function DashboardLayout({
 
     loadSessionAndConfig();
   }, []);
+
+  useEffect(() => {
+    if (!isTauriRuntime || loading) return;
+    enqueueNativeMenuSync(nativeAdminMenuAccess, true);
+  }, [loading, nativeAdminMenuAccess, enqueueNativeMenuSync]);
+
+  useEffect(() => {
+    if (!isTauriRuntime) return;
+    return () => {
+      enqueueNativeMenuSync({
+        staff: false,
+        staffManage: false,
+        staffRoles: false,
+        audit: false,
+        settings: false,
+        allowedRouteIds: [],
+      }, false);
+    };
+  }, [enqueueNativeMenuSync]);
 
   // Handle native Tauri menu events
   useEffect(() => {
@@ -121,8 +226,17 @@ export default function DashboardLayout({
         });
 
         unlistenAction = await currentWindow.listen<string>('menu-action', async (event) => {
-          if (typeof document !== 'undefined' && !document.hasFocus()) return;
           const action = event.payload;
+
+          // F10 is reserved by the Windows native menu. The Rust menu accelerator
+          // forwards it here so the mounted purchase form can handle the same
+          // save-draft intent without entering the native menu loop.
+          if (action === 'purchase-save-draft') {
+            window.dispatchEvent(new Event('pharma:purchase-save-draft'));
+            return;
+          }
+
+          if (typeof document !== 'undefined' && !document.hasFocus()) return;
           
           if (action === 'print') window.print();
           if (action === 'about') {
@@ -258,35 +372,35 @@ export default function DashboardLayout({
   useHotkeys('ctrl+p, meta+p', (e) => {
     e.preventDefault();
     if (canAccessPos) router.push('/pos');
-  }, { enableOnFormTags: true });
+  }, { enableOnFormTags: true, preventDefault: true });
 
   useHotkeys('ctrl+i, meta+i', (e) => {
     e.preventDefault();
     if (canViewInventory) router.push('/inventory');
-  }, { enableOnFormTags: true });
+  }, { enableOnFormTags: true, preventDefault: true });
 
   useHotkeys('ctrl+o, meta+o', (e) => {
     e.preventDefault();
     if (canViewPurchases) router.push('/purchases');
-  }, { enableOnFormTags: true });
+  }, { enableOnFormTags: true, preventDefault: true });
 
   useHotkeys('ctrl+d, meta+d', (e) => {
     e.preventDefault();
     router.push('/');
-  }, { enableOnFormTags: true });
+  }, { enableOnFormTags: true, preventDefault: true });
 
   useHotkeys('ctrl+n, meta+n', (e) => {
     e.preventDefault();
     import('@tauri-apps/api/core')
       .then(({ invoke }) => invoke('open_new_window'))
       .catch(() => window.open('/', '_blank'));
-  }, { enableOnFormTags: true });
+  }, { enableOnFormTags: true, preventDefault: true });
 
   useHotkeys('f1', (e) => {
     e.preventDefault();
     const searchInput = document.querySelector<HTMLInputElement>('[data-nav="search-input"], input[placeholder*="بحث"], input[type="search"]');
     if (searchInput) searchInput.focus();
-  }, { enableOnFormTags: true });
+  }, { enableOnFormTags: true, preventDefault: true });
 
   const handleLogout = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -349,7 +463,7 @@ export default function DashboardLayout({
                     </div>
                     <div className="hidden sm:block">
                       <p className="text-sm font-black text-slate-900 dark:text-white leading-tight">{pharmacyName}</p>
-                      <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-tight">
+                      <p className="text-xs text-slate-500 dark:text-slate-400 leading-tight">
                         {userRole === 'owner' || userRole === 'admin' ? '👑' : '🧪'} {roleLabel}
                       </p>
                     </div>

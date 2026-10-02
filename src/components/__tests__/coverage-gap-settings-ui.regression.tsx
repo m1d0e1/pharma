@@ -39,6 +39,9 @@ describe('settings form and reference-sync UI interactions', () => {
 
     render(<PharmacySettingsForm pharmacy={{ name: 'Old Pharmacy', name_en: 'Old EN', phone: '111' }} />);
 
+    expect(screen.getByLabelText('الإسم (بالعربية)')).toHaveValue('Old Pharmacy');
+    expect(screen.getByLabelText('الإسم (English)')).toHaveValue('Old EN');
+    expect(screen.getByLabelText('التليفون', { selector: '#pharmacy-phone' })).toHaveValue('111');
     fireEvent.change(screen.getByDisplayValue('Old Pharmacy'), { target: { value: 'New Pharmacy' } });
     fireEvent.change(screen.getByDisplayValue('111'), { target: { value: '222' } });
     fireEvent.click(screen.getByRole('button', { name: /حفظ البيانات/i }));

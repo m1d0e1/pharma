@@ -69,7 +69,7 @@ export default function NewOpeningBalanceClient() {
 
   const handleSubmit = async () => {
     if (!selectedDrug) return toast.error('يرجى اختيار صنف');
-    if (!expiryDate) return toast.error('يرجى تحديد تاريخ الصلاحية');
+    if (Number(selectedDrug.has_expiry ?? 1) !== 0 && !expiryDate) return toast.error('يرجى تحديد تاريخ الصلاحية');
     if (quantity <= 0) return toast.error('الكمية يجب أن تكون أكبر من 0');
     if (costPrice === '' || !Number.isFinite(costPrice) || costPrice < 0) return toast.error('يرجى إدخال سعر تكلفة صحيح، أو صفر للصنف المجاني');
 
@@ -83,7 +83,7 @@ export default function NewOpeningBalanceClient() {
         quantity,
         cost_price: costPrice,
         unit_price: unitPrice,
-        expiry_date: expiryDate
+        expiry_date: expiryDate || null
       });
 
       if (res.success) {
@@ -119,11 +119,11 @@ export default function NewOpeningBalanceClient() {
         </Link>
       </div>
 
-      <div className="bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 p-8 shadow-sm max-w-3xl">
+      <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-100 dark:border-slate-800 p-6 shadow-sm max-w-3xl">
         <div className="space-y-6">
           {!selectedDrug ? (
             <div className="relative">
-              <label className="block text-sm font-bold mb-2">ابحث عن الصنف</label>
+              <label htmlFor="opening-drug-search" className="block text-sm font-bold mb-2">ابحث عن الصنف</label>
               <div className="relative">
                 <Search className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
                 <input
@@ -152,14 +152,15 @@ export default function NewOpeningBalanceClient() {
               {searchResults.length > 0 && (
                 <div className="absolute z-10 w-full mt-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-lg max-h-60 overflow-y-auto">
                   {searchResults.map(drug => (
-                    <div 
+                    <button
+                      type="button"
                       key={drug.id} 
                       onClick={() => selectDrug(drug)}
-                      className="p-3 hover:bg-slate-50 dark:hover:bg-slate-700 cursor-pointer border-b border-slate-100 dark:border-slate-700 last:border-0"
+                      className="w-full text-right p-3 hover:bg-slate-50 dark:hover:bg-slate-700 border-b border-slate-100 dark:border-slate-700 last:border-0 focus-visible:ring-2 focus-visible:ring-blue-500"
                     >
                       <div className="font-bold">{drug.trade_name}</div>
                       <div className="text-xs text-slate-500">{drug.trade_name_en}</div>
-                    </div>
+                    </button>
                   ))}
                 </div>
               )}
@@ -177,10 +178,11 @@ export default function NewOpeningBalanceClient() {
           )}
 
           {selectedDrug && (
-            <div className="grid grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
               <div>
-                <label className="block text-sm font-bold mb-2">الكمية (علبة)</label>
+                <label htmlFor="opening-quantity" className="block text-sm font-bold mb-2">الكمية (علبة)</label>
                 <input
+                  id="opening-quantity"
                   type="number"
                   min="1"
                   value={quantity}
@@ -193,6 +195,7 @@ export default function NewOpeningBalanceClient() {
                 <input
                   id="opening-expiry"
                   type="date"
+                  required={Number(selectedDrug.has_expiry ?? 1) !== 0}
                   value={expiryDate}
                   onChange={(e) => setExpiryDate(e.target.value)}
                   className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-800 rounded-xl outline-none focus:ring-2 focus:ring-blue-500"
@@ -211,8 +214,9 @@ export default function NewOpeningBalanceClient() {
                 />
               </div>
               <div>
-                <label className="block text-sm font-bold mb-2">سعر البيع للجمهور (للعلبة)</label>
+                <label htmlFor="opening-sale-price" className="block text-sm font-bold mb-2">سعر البيع للجمهور (للعلبة)</label>
                 <input
+                  id="opening-sale-price"
                   type="number"
                   step="0.01"
                   value={unitPrice}
@@ -225,6 +229,7 @@ export default function NewOpeningBalanceClient() {
 
           <div className="pt-6">
             <button
+              type="button"
               onClick={handleSubmit}
               disabled={isSubmitting || isCommitted || !selectedDrug}
               className="w-full py-4 bg-blue-600 text-white rounded-xl font-black hover:bg-blue-700 transition-all disabled:opacity-50 flex items-center justify-center gap-2"

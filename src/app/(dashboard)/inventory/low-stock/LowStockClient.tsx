@@ -55,9 +55,11 @@ export interface LowStockItem {
 
 interface Props {
   initialItems: LowStockItem[];
+  canViewRestock: boolean;
+  canViewPurchases: boolean;
 }
 
-export default function LowStockClient({ initialItems }: Props) {
+export default function LowStockClient({ initialItems, canViewRestock, canViewPurchases }: Props) {
   const router = useRouter();
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<'all' | 'out_of_stock' | 'critical' | 'low'>('all');
@@ -94,6 +96,7 @@ export default function LowStockClient({ initialItems }: Props) {
 
   const filteredDrugIds = useMemo(() => filteredItems.map(item => item.drug_id), [filteredItems]);
   const isAllFilteredSelected = filteredDrugIds.length > 0 && filteredDrugIds.every(id => selectedIds.includes(id));
+  const canCreatePurchaseOrder = canViewRestock || canViewPurchases;
 
   const handleToggleSelect = (drugId: number) => {
     setSelectedIds(prev => prev.includes(drugId) ? prev.filter(id => id !== drugId) : [...prev, drugId]);
@@ -117,6 +120,7 @@ export default function LowStockClient({ initialItems }: Props) {
   };
 
   const addToNotebook = async (item: LowStockItem) => {
+    if (!canViewRestock) return;
     if (savingDrugIdsRef.current.has(item.drug_id)) return;
     savingDrugIdsRef.current.add(item.drug_id);
     const suggestedQuantity = getSuggestedQuantity(item);
@@ -135,6 +139,7 @@ export default function LowStockClient({ initialItems }: Props) {
   };
 
   const handleBulkAddToShortages = async (useSelectedOnly = false) => {
+    if (!canViewRestock) return;
     const itemsToAdd = useSelectedOnly && selectedIds.length > 0
       ? initialItems.filter(i => selectedIds.includes(i.drug_id))
       : filteredItems;
@@ -178,6 +183,7 @@ export default function LowStockClient({ initialItems }: Props) {
   };
 
   const handleOpenPurchaseOrderModal = (useSelectedOnly = false) => {
+    if (!canCreatePurchaseOrder) return;
     const itemsToOrder = useSelectedOnly && selectedIds.length > 0
       ? initialItems.filter(i => selectedIds.includes(i.drug_id))
       : filteredItems;
@@ -202,6 +208,7 @@ export default function LowStockClient({ initialItems }: Props) {
   };
 
   const handleConvertToPurchase = (useSelectedOnly = false) => {
+    if (!canViewPurchases) return;
     const itemsToConvert = useSelectedOnly && selectedIds.length > 0
       ? initialItems.filter(i => selectedIds.includes(i.drug_id))
       : filteredItems;
@@ -342,13 +349,15 @@ export default function LowStockClient({ initialItems }: Props) {
             </button>
           </div>
 
-          <Link
-            href="/stores/shortages"
-            className="px-5 py-3.5 bg-purple-50 text-purple-700 dark:bg-purple-950/40 dark:text-purple-300 rounded-2xl border border-purple-200 dark:border-purple-800/40 hover:bg-purple-600 hover:text-white transition-all flex items-center gap-2 font-black text-xs whitespace-nowrap"
-          >
-            <FileText className="w-4 h-4" />
-            <span>كشكول النواقص</span>
-          </Link>
+          {canViewRestock && (
+            <Link
+              href="/stores/shortages"
+              className="px-5 py-3.5 bg-purple-50 text-purple-700 dark:bg-purple-950/40 dark:text-purple-300 rounded-2xl border border-purple-200 dark:border-purple-800/40 hover:bg-purple-600 hover:text-white transition-all flex items-center gap-2 font-black text-xs whitespace-nowrap"
+            >
+              <FileText className="w-4 h-4" />
+              <span>كشكول النواقص</span>
+            </Link>
+          )}
 
           <Link 
             href="/inventory"
@@ -375,30 +384,36 @@ export default function LowStockClient({ initialItems }: Props) {
           {isAllFilteredSelected ? "إلغاء تحديد الكل" : `تحديد الكل (${filteredItems.length})`}
         </button>
 
-        <button
-          onClick={() => handleBulkAddToShortages(false)}
-          disabled={isBulkAdding}
-          className="bg-purple-600 hover:bg-purple-700 text-white px-6 py-3 rounded-2xl font-black text-xs shadow-md shadow-purple-500/20 transition-all flex items-center gap-2 active:scale-95 disabled:opacity-50"
-        >
-          {isBulkAdding ? <Loader2 className="w-4 h-4 animate-spin" /> : <ClipboardList className="w-4 h-4" />}
-          إضافة الكل للكشكول ({filteredItems.length})
-        </button>
+        {canViewRestock && (
+          <button
+            onClick={() => handleBulkAddToShortages(false)}
+            disabled={isBulkAdding}
+            className="bg-purple-600 hover:bg-purple-700 text-white px-6 py-3 rounded-2xl font-black text-xs shadow-md shadow-purple-500/20 transition-all flex items-center gap-2 active:scale-95 disabled:opacity-50"
+          >
+            {isBulkAdding ? <Loader2 className="w-4 h-4 animate-spin" /> : <ClipboardList className="w-4 h-4" />}
+            إضافة الكل للكشكول ({filteredItems.length})
+          </button>
+        )}
 
-        <button
-          onClick={() => handleOpenPurchaseOrderModal(false)}
-          className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-2xl font-black text-xs shadow-md shadow-blue-500/20 transition-all flex items-center gap-2 active:scale-95"
-        >
-          <Package className="w-4 h-4" />
-          إنشاء أمر شراء ({filteredItems.length})
-        </button>
+        {canCreatePurchaseOrder && (
+          <button
+            onClick={() => handleOpenPurchaseOrderModal(false)}
+            className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-2xl font-black text-xs shadow-md shadow-blue-500/20 transition-all flex items-center gap-2 active:scale-95"
+          >
+            <Package className="w-4 h-4" />
+            إنشاء أمر شراء ({filteredItems.length})
+          </button>
+        )}
 
-        <button
-          onClick={() => handleConvertToPurchase(false)}
-          className="bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-3 rounded-2xl font-black text-xs shadow-md shadow-emerald-500/20 transition-all flex items-center gap-2 active:scale-95"
-        >
-          <ShoppingCart className="w-4 h-4" />
-          تحويل للمشتريات ({filteredItems.length})
-        </button>
+        {canViewPurchases && (
+          <button
+            onClick={() => handleConvertToPurchase(false)}
+            className="bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-3 rounded-2xl font-black text-xs shadow-md shadow-emerald-500/20 transition-all flex items-center gap-2 active:scale-95"
+          >
+            <ShoppingCart className="w-4 h-4" />
+            تحويل للمشتريات ({filteredItems.length})
+          </button>
+        )}
 
         <button
           onClick={() => handleCopyForWhatsApp(false)}
@@ -462,30 +477,36 @@ export default function LowStockClient({ initialItems }: Props) {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <button
-              onClick={() => handleBulkAddToShortages(true)}
-              disabled={isBulkAdding}
-              className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2.5 rounded-xl font-black text-xs transition-all flex items-center gap-1.5 active:scale-95 shadow-md shadow-purple-600/20 disabled:opacity-50"
-            >
-              {isBulkAdding ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ClipboardList className="w-3.5 h-3.5" />}
-              إضافة للكشكول ({selectedIds.length})
-            </button>
+            {canViewRestock && (
+              <button
+                onClick={() => handleBulkAddToShortages(true)}
+                disabled={isBulkAdding}
+                className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2.5 rounded-xl font-black text-xs transition-all flex items-center gap-1.5 active:scale-95 shadow-md shadow-purple-600/20 disabled:opacity-50"
+              >
+                {isBulkAdding ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ClipboardList className="w-3.5 h-3.5" />}
+                إضافة للكشكول ({selectedIds.length})
+              </button>
+            )}
 
-            <button
-              onClick={() => handleOpenPurchaseOrderModal(true)}
-              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-xl font-black text-xs transition-all flex items-center gap-1.5 active:scale-95 shadow-md shadow-blue-600/20"
-            >
-              <Package className="w-3.5 h-3.5" />
-              أمر شراء ({selectedIds.length})
-            </button>
+            {canCreatePurchaseOrder && (
+              <button
+                onClick={() => handleOpenPurchaseOrderModal(true)}
+                className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-xl font-black text-xs transition-all flex items-center gap-1.5 active:scale-95 shadow-md shadow-blue-600/20"
+              >
+                <Package className="w-3.5 h-3.5" />
+                أمر شراء ({selectedIds.length})
+              </button>
+            )}
 
-            <button
-              onClick={() => handleConvertToPurchase(true)}
-              className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-xl font-black text-xs transition-all flex items-center gap-1.5 active:scale-95 shadow-md shadow-emerald-600/20"
-            >
-              <ShoppingCart className="w-3.5 h-3.5" />
-              فاتورة مشتريات ({selectedIds.length})
-            </button>
+            {canViewPurchases && (
+              <button
+                onClick={() => handleConvertToPurchase(true)}
+                className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-xl font-black text-xs transition-all flex items-center gap-1.5 active:scale-95 shadow-md shadow-emerald-600/20"
+              >
+                <ShoppingCart className="w-3.5 h-3.5" />
+                فاتورة مشتريات ({selectedIds.length})
+              </button>
+            )}
 
             <button
               onClick={() => handleCopyForWhatsApp(true)}
@@ -577,7 +598,7 @@ export default function LowStockClient({ initialItems }: Props) {
                             {item.trade_name_en || item.trade_name}
                           </div>
                           {item.barcode && (
-                            <span className="text-[10px] text-slate-400 font-mono">{item.barcode}</span>
+                            <span className="text-[11px] text-slate-500 font-mono">{item.barcode}</span>
                           )}
                         </td>
                         <td className="p-4 text-center">
@@ -596,11 +617,11 @@ export default function LowStockClient({ initialItems }: Props) {
                         </td>
                         <td className="p-4">
                           <div className="text-slate-700 dark:text-slate-300 truncate max-w-[160px]">{item.manufacturer || '---'}</div>
-                          <div className="text-[10px] text-slate-400 truncate max-w-[160px]">{item.active_ingredient || '---'}</div>
+                          <div className="text-[11px] text-slate-500 truncate max-w-[160px]">{item.active_ingredient || '---'}</div>
                         </td>
                         <td className="p-4 text-center">
                           <span className={cn(
-                            "px-2.5 py-1 rounded-full text-[10px] font-black",
+                            "px-2.5 py-1 rounded-full text-[11px] font-black",
                             isZero 
                               ? "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400" 
                               : item.status === 'critical' 
@@ -612,23 +633,27 @@ export default function LowStockClient({ initialItems }: Props) {
                         </td>
                         <td className="p-4 text-center no-print">
                           <div className="flex items-center justify-center gap-1">
-                            <button
-                              onClick={() => addToNotebook(item)}
-                              disabled={savingDrugId === item.drug_id}
-                              className="px-2.5 py-1.5 bg-purple-100 hover:bg-purple-200 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 rounded-lg text-xs font-black transition-colors flex items-center gap-1 disabled:opacity-50"
-                              title="إضافة لكشكول النواقص"
-                            >
-                              {savingDrugId === item.drug_id ? <Loader2 className="w-3 h-3 animate-spin" /> : <ClipboardList className="w-3 h-3" />}
-                              <span>كشكول</span>
-                            </button>
-                            <Link
-                              href={`/purchases/new?drugId=${item.drug_id}`}
-                              className="px-2.5 py-1.5 bg-primary-600 hover:bg-primary-700 text-white rounded-lg text-xs font-black transition-colors flex items-center gap-1 shadow-sm"
-                              title="طلب شراء"
-                            >
-                              <ShoppingCart className="w-3 h-3" />
-                              <span>شراء</span>
-                            </Link>
+                            {canViewRestock && (
+                              <button
+                                onClick={() => addToNotebook(item)}
+                                disabled={savingDrugId === item.drug_id}
+                                className="px-2.5 py-1.5 bg-purple-100 hover:bg-purple-200 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 rounded-lg text-xs font-black transition-colors flex items-center gap-1 disabled:opacity-50"
+                                title="إضافة لكشكول النواقص"
+                              >
+                                {savingDrugId === item.drug_id ? <Loader2 className="w-3 h-3 animate-spin" /> : <ClipboardList className="w-3 h-3" />}
+                                <span>كشكول</span>
+                              </button>
+                            )}
+                            {canViewPurchases && (
+                              <Link
+                                href={`/purchases/new?drugId=${item.drug_id}`}
+                                className="px-2.5 py-1.5 bg-primary-600 hover:bg-primary-700 text-white rounded-lg text-xs font-black transition-colors flex items-center gap-1 shadow-sm"
+                                title="طلب شراء"
+                              >
+                                <ShoppingCart className="w-3 h-3" />
+                                <span>شراء</span>
+                              </Link>
+                            )}
                             <Link
                               href={`/inventory?search=${encodeURIComponent(item.barcode || item.trade_name_en || item.trade_name)}`}
                               className="p-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-lg transition-colors"
@@ -691,7 +716,7 @@ export default function LowStockClient({ initialItems }: Props) {
                         <TrendingDown className="w-5 h-5" />
                       </div>
                       <div>
-                        <span className={`px-2.5 py-0.5 rounded-lg text-[10px] font-black ${
+                        <span className={`px-2.5 py-0.5 rounded-lg text-xs font-black ${
                           isZero 
                             ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' 
                             : item.status === 'critical' 
@@ -704,7 +729,7 @@ export default function LowStockClient({ initialItems }: Props) {
                     </div>
 
                     <div className="px-3 py-1.5 bg-slate-50 dark:bg-slate-800 rounded-xl border border-slate-100 dark:border-slate-700 text-left">
-                      <span className="text-[10px] font-bold text-slate-400 block">الرصيد / الحد</span>
+                      <span className="text-xs font-bold text-slate-400 block">الرصيد / الحد</span>
                       <span className={`text-base font-black ${isZero ? 'text-red-600' : 'text-amber-600'}`}>
                         {item.quantity} <span className="text-xs text-slate-400">/ {reorderLimit}</span>
                       </span>
@@ -717,7 +742,7 @@ export default function LowStockClient({ initialItems }: Props) {
                         {item.trade_name_en || item.trade_name}
                       </h3>
                       {item.barcode && (
-                        <span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 font-mono text-[9px] font-bold">
+                        <span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 font-mono text-[11px] font-bold">
                           {item.barcode}
                         </span>
                       )}
@@ -727,32 +752,36 @@ export default function LowStockClient({ initialItems }: Props) {
 
                   <div className="grid grid-cols-2 gap-2 pt-4 border-t border-slate-50 dark:border-slate-800 text-xs">
                     <div>
-                      <p className="text-[10px] font-black text-slate-400 uppercase">الشركة</p>
+                      <p className="text-[11px] font-black text-slate-500">الشركة</p>
                       <p className="font-bold text-slate-700 dark:text-slate-300 truncate">{item.manufacturer || 'غير مسجل'}</p>
                     </div>
                     <div className="text-left">
-                      <p className="text-[10px] font-black text-slate-400 uppercase">العجز المقدر</p>
+                      <p className="text-xs font-black text-slate-400 uppercase">العجز المقدر</p>
                       <p className="font-black text-red-600">{deficit} وحدة</p>
                     </div>
                   </div>
                 </div>
 
                 <div className="mt-6 flex gap-2 no-print">
-                  <button
-                    onClick={() => addToNotebook(item)}
-                    disabled={savingDrugId === item.drug_id}
-                    className="flex-1 bg-purple-100 hover:bg-purple-200 dark:bg-purple-900/20 dark:hover:bg-purple-900/40 text-purple-700 dark:text-purple-400 py-2.5 rounded-xl font-black text-xs transition-all flex items-center justify-center gap-1.5 disabled:opacity-50"
-                  >
-                    {savingDrugId === item.drug_id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ClipboardList className="w-3.5 h-3.5" />}
-                    <span>إضافة للكشكول</span>
-                  </button>
-                  <Link 
-                    href={`/purchases/new?drugId=${item.drug_id}`}
-                    className="flex-1 bg-primary-600 hover:bg-primary-700 text-white py-2.5 rounded-xl font-black text-xs transition-all flex items-center justify-center gap-1.5 shadow-md shadow-primary-500/20 active:scale-95"
-                  >
-                    <ShoppingCart className="w-3.5 h-3.5" />
-                    <span>طلب شراء</span>
-                  </Link>
+                  {canViewRestock && (
+                    <button
+                      onClick={() => addToNotebook(item)}
+                      disabled={savingDrugId === item.drug_id}
+                      className="flex-1 bg-purple-100 hover:bg-purple-200 dark:bg-purple-900/20 dark:hover:bg-purple-900/40 text-purple-700 dark:text-purple-400 py-2.5 rounded-xl font-black text-xs transition-all flex items-center justify-center gap-1.5 disabled:opacity-50"
+                    >
+                      {savingDrugId === item.drug_id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ClipboardList className="w-3.5 h-3.5" />}
+                      <span>إضافة للكشكول</span>
+                    </button>
+                  )}
+                  {canViewPurchases && (
+                    <Link
+                      href={`/purchases/new?drugId=${item.drug_id}`}
+                      className="flex-1 bg-primary-600 hover:bg-primary-700 text-white py-2.5 rounded-xl font-black text-xs transition-all flex items-center justify-center gap-1.5 shadow-md shadow-primary-500/20 active:scale-95"
+                    >
+                      <ShoppingCart className="w-3.5 h-3.5" />
+                      <span>طلب شراء</span>
+                    </Link>
+                  )}
                   <Link 
                     href={`/inventory?search=${encodeURIComponent(item.barcode || item.trade_name_en || item.trade_name)}`}
                     className="p-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-xl transition-all flex items-center justify-center"
@@ -775,7 +804,7 @@ export default function LowStockClient({ initialItems }: Props) {
       )}
 
       {/* Purchase Order Modal */}
-      {isPoModalOpen && (
+      {canCreatePurchaseOrder && isPoModalOpen && (
         <PurchaseOrderModal
           initialItems={poItems}
           onClose={() => setIsPoModalOpen(false)}

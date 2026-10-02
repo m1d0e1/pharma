@@ -21,7 +21,7 @@ export function patientOutstandingBalanceExpression(patientAlias = 'p'): string 
       JOIN sales_invoices rsi ON rsi.id = r.invoice_id
       WHERE rsi.patient_id = ${patientAlias}.id
         AND r.refund_method = 'patient_account'
-        AND (r.status = 'approved' OR r.status = 'completed')
+        AND LOWER(COALESCE(r.status, '')) IN ('approved', 'completed')
     ) +
     (
       SELECT COALESCE(SUM(
@@ -45,8 +45,19 @@ export function patientOutstandingBalanceExpression(patientAlias = 'p'): string 
       FROM financial_notices fn
       WHERE fn.target_type = 'customer'
         AND fn.target_id = ${patientAlias}.id
-        AND NOT EXISTS (
-          SELECT 1
+        AND (
+          SELECT COUNT(*)
+          FROM financial_notices ranked_notice
+          WHERE ranked_notice.target_type = 'customer'
+            AND ranked_notice.target_id = fn.target_id
+            AND ranked_notice.type = fn.type
+            AND ABS(CAST(ranked_notice.amount AS REAL) - CAST(fn.amount AS REAL)) < 0.000001
+            AND COALESCE(ranked_notice.date, '') = COALESCE(fn.date, '')
+            AND COALESCE(ranked_notice.user_id, '') = COALESCE(fn.user_id, '')
+            AND COALESCE(ranked_notice.reason, '') = COALESCE(fn.reason, '')
+            AND ranked_notice.rowid <= fn.rowid
+        ) > (
+          SELECT COUNT(*)
           FROM patient_transactions mirrored
           WHERE mirrored.patient_id = fn.target_id
             AND mirrored.type = 'adjustment'

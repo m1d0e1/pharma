@@ -21,6 +21,71 @@ function errorMessage(error: unknown, fallback: string) {
   return fallback;
 }
 
+const APPROVED_RETURNS_CTES = `
+  approved_return_rows AS (
+    SELECT
+      ri.sale_item_id,
+      r.invoice_id,
+      CAST(ri.quantity_returned AS REAL) AS quantity_returned,
+      CASE
+        WHEN ri.unit IS NULL OR TRIM(ri.unit) = '' THEN COALESCE(NULLIF(TRIM(si.unit), ''), 'large')
+        ELSE ri.unit
+      END AS return_unit,
+      COALESCE(NULLIF(TRIM(si.unit), ''), 'large') AS sold_unit,
+      MAX(COALESCE(NULLIF(CAST(si.large_to_medium AS REAL), 0), 1), 1) AS large_to_medium,
+      MAX(COALESCE(NULLIF(CAST(si.medium_to_small AS REAL), 0), 1), 1) AS medium_to_small,
+      md.medium_unit,
+      md.small_unit
+    FROM return_items ri
+    JOIN returns r ON r.id = ri.return_id
+    JOIN sales_items si ON si.id = ri.sale_item_id AND si.invoice_id = r.invoice_id
+    LEFT JOIN master_drugs md ON md.id = si.drug_id
+    WHERE LOWER(COALESCE(r.status, '')) IN ('approved', 'completed')
+  ),
+  approved_returns AS (
+    SELECT
+      sale_item_id,
+      invoice_id,
+      SUM(
+        (
+          CASE
+            WHEN LOWER(TRIM(return_unit)) IN ('medium', 'strip', 'شريط')
+              OR (
+                TRIM(COALESCE(medium_unit, '')) <> ''
+                AND LOWER(TRIM(return_unit)) = LOWER(TRIM(medium_unit))
+              )
+            THEN quantity_returned / large_to_medium
+            WHEN LOWER(TRIM(return_unit)) IN ('small', 'unit', 'pill')
+              OR (
+                TRIM(COALESCE(small_unit, '')) <> ''
+                AND LOWER(TRIM(return_unit)) = LOWER(TRIM(small_unit))
+              )
+            THEN quantity_returned / (large_to_medium * medium_to_small)
+            ELSE quantity_returned
+          END
+        ) * (
+          CASE
+            WHEN LOWER(TRIM(sold_unit)) IN ('medium', 'strip', 'شريط')
+              OR (
+                TRIM(COALESCE(medium_unit, '')) <> ''
+                AND LOWER(TRIM(sold_unit)) = LOWER(TRIM(medium_unit))
+              )
+            THEN large_to_medium
+            WHEN LOWER(TRIM(sold_unit)) IN ('small', 'unit', 'pill')
+              OR (
+                TRIM(COALESCE(small_unit, '')) <> ''
+                AND LOWER(TRIM(sold_unit)) = LOWER(TRIM(small_unit))
+              )
+            THEN large_to_medium * medium_to_small
+            ELSE 1
+          END
+        )
+      ) AS returned_quantity
+    FROM approved_return_rows
+    GROUP BY sale_item_id, invoice_id
+  )
+`;
+
 export async function getNegativeStockInvoicesAction() {
   try {
     const context = await getSettlementContext();
@@ -28,14 +93,7 @@ export async function getNegativeStockInvoicesAction() {
 
     const items = await dbSelect(
       `
-        WITH approved_returns AS (
-          SELECT ri.sale_item_id, r.invoice_id,
-                 SUM(CAST(ri.quantity_returned AS REAL)) AS returned_quantity
-          FROM return_items ri
-          JOIN returns r ON r.id = ri.return_id
-          WHERE LOWER(COALESCE(r.status, '')) IN ('approved', 'completed')
-          GROUP BY ri.sale_item_id, r.invoice_id
-        )
+        WITH ${APPROVED_RETURNS_CTES}
         SELECT
           si.id,
           si.id AS item_id,
@@ -92,14 +150,7 @@ export async function getUnsettledSalesAction() {
 
     const items = await dbSelect(
       `
-        WITH approved_returns AS (
-          SELECT ri.sale_item_id, r.invoice_id,
-                 SUM(CAST(ri.quantity_returned AS REAL)) AS returned_quantity
-          FROM return_items ri
-          JOIN returns r ON r.id = ri.return_id
-          WHERE LOWER(COALESCE(r.status, '')) IN ('approved', 'completed')
-          GROUP BY ri.sale_item_id, r.invoice_id
-        )
+        WITH ${APPROVED_RETURNS_CTES}
         SELECT
           si.id AS item_id,
           si.invoice_id,
@@ -119,10 +170,12 @@ export async function getUnsettledSalesAction() {
           (
             SELECT COALESCE(SUM(i.quantity), 0)
             FROM inventory i
+            JOIN master_drugs stock_md ON stock_md.id = i.drug_id
             WHERE i.drug_id = si.drug_id
               AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
               AND i.quantity > 0
               AND COALESCE(i.batch_number, '') NOT LIKE 'RET-%'
+              AND (COALESCE(stock_md.has_expiry, 1) = 0 OR i.expiry_date IS NOT NULL)
               AND (i.expiry_date IS NULL OR i.expiry_date >= DATE('now', 'localtime'))
           ) AS current_stock_balance
         FROM sales_items si
@@ -162,21 +215,23 @@ export async function getDrugBatchesAction(drugId: number) {
     const batches = await dbSelect(
       `
         SELECT
-          id,
-          id AS inventory_id,
-          batch_number,
-          expiry_date,
-          quantity,
-          cost_price
-        FROM inventory
-        WHERE drug_id = ?
-          AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
-          AND quantity > 0
-          AND COALESCE(batch_number, '') NOT LIKE 'RET-%'
-          AND (expiry_date IS NULL OR expiry_date >= DATE('now', 'localtime'))
-        ORDER BY CASE WHEN expiry_date IS NULL THEN 1 ELSE 0 END,
-                 expiry_date ASC,
-                 created_at ASC
+          i.id,
+          i.id AS inventory_id,
+          i.batch_number,
+          i.expiry_date,
+          i.quantity,
+          i.cost_price
+        FROM inventory i
+        JOIN master_drugs md ON md.id = i.drug_id
+        WHERE i.drug_id = ?
+          AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
+          AND i.quantity > 0
+          AND COALESCE(i.batch_number, '') NOT LIKE 'RET-%'
+          AND (COALESCE(md.has_expiry, 1) = 0 OR i.expiry_date IS NOT NULL)
+          AND (i.expiry_date IS NULL OR i.expiry_date >= DATE('now', 'localtime'))
+        ORDER BY CASE WHEN i.expiry_date IS NULL THEN 1 ELSE 0 END,
+                 i.expiry_date ASC,
+                 i.created_at ASC
       `,
       [normalizedDrugId, context.pharmacyId, context.pharmacyId],
     );

@@ -25,17 +25,29 @@ jest.mock('@/app/actions-client/shifts', () => ({
 }));
 
 import {
+  addBankAction,
+  addCardAction,
+  addPointOfSaleAction,
+  deleteBankAction,
+  deleteCardAction,
+  deletePointOfSaleAction,
   getActivityLogsAction,
+  getBanksAction,
+  getCardsAction,
   getCashMovementsAction,
   getFinancialNoticesAction,
   getJournalDetailsAction,
   getJournalsAction,
+  getPointsOfSaleAction,
   getTreasuryDashboardAction,
   getTrialBalanceAction,
   generateDailySnapshotAction,
   addPaperAction,
   deletePaperAction,
   getPapersAction,
+  updateBankAction,
+  updateCardAction,
+  updatePointOfSaleAction,
   updatePaperStatusAction,
 } from '@/app/actions-client/finance';
 
@@ -167,6 +179,39 @@ describe('finance pharmacy scope', () => {
         pharmacy_id TEXT,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
       );
+      CREATE TABLE banks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name_ar TEXT NOT NULL,
+        name_en TEXT,
+        account_number TEXT,
+        branch TEXT,
+        current_balance REAL DEFAULT 0,
+        pharmacy_id TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE TABLE credit_cards (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name_ar TEXT NOT NULL,
+        name_en TEXT,
+        bank_id INTEGER,
+        commission_pct REAL DEFAULT 0,
+        current_balance REAL DEFAULT 0,
+        pharmacy_id TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE TABLE points_of_sale (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name_ar TEXT NOT NULL,
+        name_en TEXT,
+        location TEXT,
+        computer_name TEXT,
+        current_balance REAL DEFAULT 0,
+        initial_credit REAL DEFAULT 0,
+        initial_debit REAL DEFAULT 0,
+        status TEXT DEFAULT 'active',
+        pharmacy_id TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
 
       INSERT INTO users VALUES
         ('u1', 'u1', 'User One', 'ph-1'),
@@ -213,6 +258,15 @@ describe('finance pharmacy scope', () => {
       VALUES
         ('paper-1','check','in','P1',10,'2026-10-01','pending','PH1 Paper','ph-1'),
         ('paper-2','check','in','P2',20,'2026-10-01','pending','PH2 Paper','ph-2');
+      INSERT INTO banks (id,name_ar,name_en,current_balance,pharmacy_id) VALUES
+        (1,'PH1 Bank','PH1 Bank',0,'ph-1'),
+        (2,'PH2 Bank','PH2 Bank',0,'ph-2');
+      INSERT INTO credit_cards (id,name_ar,name_en,bank_id,current_balance,pharmacy_id) VALUES
+        (1,'PH1 Card','PH1 Card',1,0,'ph-1'),
+        (2,'PH2 Card','PH2 Card',2,0,'ph-2');
+      INSERT INTO points_of_sale (id,name_ar,name_en,status,current_balance,pharmacy_id) VALUES
+        (1,'PH1 POS','PH1 POS','active',0,'ph-1'),
+        (2,'PH2 POS','PH2 POS','active',0,'ph-2');
       ALTER TABLE shifts ADD COLUMN user_id TEXT;
       ALTER TABLE shifts ADD COLUMN start_time TEXT;
       ALTER TABLE shifts ADD COLUMN end_time TEXT;
@@ -292,5 +346,30 @@ describe('finance pharmacy scope', () => {
 
     mockSession = { id: 'u2', role: 'owner', pharmacy_id: 'ph-2' };
     expect((await getPapersAction()).data?.map((row: any) => row.id)).toEqual(['paper-2']);
+  });
+
+  it('keeps banks, card terminals, and POS definitions inside their pharmacy for reads and mutations', async () => {
+    expect((await getBanksAction()).data?.map((row: any) => row.id)).toEqual([1]);
+    expect((await getCardsAction()).data?.map((row: any) => row.id)).toEqual([1]);
+    expect((await getPointsOfSaleAction()).data?.map((row: any) => row.id)).toEqual([1]);
+
+    expect(await updateBankAction(2, { name_ar: 'blocked' })).toMatchObject({ success: false });
+    expect(await updateCardAction(2, { name_ar: 'blocked' })).toMatchObject({ success: false });
+    expect(await updatePointOfSaleAction(2, { name_ar: 'blocked' })).toMatchObject({ success: false });
+    expect(await deleteBankAction(2)).toMatchObject({ success: false });
+    expect(await deleteCardAction(2)).toMatchObject({ success: false });
+    expect(await deletePointOfSaleAction(2)).toMatchObject({ success: false });
+
+    expect(await addBankAction({ name_ar: 'PH1 New Bank' })).toMatchObject({ success: true });
+    expect(await addCardAction({ name_ar: 'PH1 New Card', bank_id: 1 })).toMatchObject({ success: true });
+    expect(await addPointOfSaleAction({ name_ar: 'PH1 New POS' })).toMatchObject({ success: true });
+    expect(mockDb.prepare("SELECT pharmacy_id FROM banks WHERE name_ar='PH1 New Bank'").get()).toEqual({ pharmacy_id: 'ph-1' });
+    expect(mockDb.prepare("SELECT pharmacy_id FROM credit_cards WHERE name_ar='PH1 New Card'").get()).toEqual({ pharmacy_id: 'ph-1' });
+    expect(mockDb.prepare("SELECT pharmacy_id FROM points_of_sale WHERE name_ar='PH1 New POS'").get()).toEqual({ pharmacy_id: 'ph-1' });
+
+    mockSession = { id: 'u2', role: 'owner', pharmacy_id: 'ph-2' };
+    expect((await getBanksAction()).data?.map((row: any) => row.id)).toEqual([2]);
+    expect((await getCardsAction()).data?.map((row: any) => row.id)).toEqual([2]);
+    expect((await getPointsOfSaleAction()).data?.map((row: any) => row.id)).toEqual([2]);
   });
 });

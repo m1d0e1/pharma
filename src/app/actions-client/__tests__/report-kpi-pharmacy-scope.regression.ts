@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import { createSqliteTransactionDb as mockCreateSqliteTransactionDb } from '@/tests/helpers/sqlite-transaction-db';
 
 let mockDb: Database.Database;
+let mockUser: any;
 
 jest.mock('@/lib/db/tauri', () => ({
   dbSelect: jest.fn(async (sql: string, params: unknown[] = []) => mockDb.prepare(sql).all(...params)),
@@ -14,18 +15,21 @@ jest.mock('@/lib/db/tauri', () => ({
 }));
 
 jest.mock('@/lib/auth/local', () => ({
-  getLocalSession: jest.fn(async () => ({ id: 'u1', role: 'owner', pharmacy_id: 'ph-1' })),
-  hasUserPermissionSync: jest.fn(() => true),
+  getLocalSession: jest.fn(async () => mockUser),
+  hasUserPermissionSync: jest.fn((user: any, permission: string) =>
+    user?.role === 'owner' || user?.permissions?.[permission] === true
+  ),
 }));
 
 jest.mock('@/app/actions-client/shifts', () => ({
-  getShiftForPharmacy: jest.fn(async () => null),
+  getShiftForPharmacy: jest.fn(async () => ({ id: 'shift-1' })),
 }));
 
-import { getDashboardKPIsAction, getSalesTrendAction } from '@/app/actions-client/reports';
+import { getDashboardKPIsAction, getSalesTrendAction, getShiftReportAction } from '@/app/actions-client/reports';
 
 describe('report KPI pharmacy scope', () => {
   beforeEach(() => {
+    mockUser = { id: 'u1', role: 'owner', pharmacy_id: 'ph-1' };
     mockDb = new Database(':memory:');
     mockDb.exec(`
       CREATE TABLE users (id TEXT PRIMARY KEY, pharmacy_id TEXT);
@@ -52,7 +56,8 @@ describe('report KPI pharmacy scope', () => {
         medium_to_small REAL,
         reorder_point REAL,
         medium_unit TEXT,
-        small_unit TEXT
+        small_unit TEXT,
+        has_expiry INTEGER DEFAULT 1
       );
       CREATE TABLE accounts (id INTEGER PRIMARY KEY);
       CREATE TABLE trial_balance_settings (category TEXT PRIMARY KEY, account_id INTEGER);
@@ -94,16 +99,16 @@ describe('report KPI pharmacy scope', () => {
       INSERT INTO daily_journals VALUES ('j1', 'u1', 'ph-1'), ('j2', 'u2', 'ph-2');
       INSERT INTO journal_entries VALUES ('j1', 6, 'debit', 30), ('j2', 6, 'debit', 90);
 
-      INSERT INTO master_drugs VALUES (1, 1, 1, 5, 'strip', 'tablet');
+      INSERT INTO master_drugs VALUES (1, 1, 1, 5, 'strip', 'tablet', 1);
      INSERT INTO inventory VALUES
-        ('i1', 'ph-1', 1, 2, 10, NULL),
-        ('i2', 'ph-2', 1, 1, 10, NULL);
+        ('i1', 'ph-1', 1, 2, 10, date('now', '+30 days')),
+        ('i2', 'ph-2', 1, 1, 10, date('now', '+30 days'));
       INSERT INTO stock_adjustments VALUES
         ('i1', 4, 2, datetime('now')),
         ('i2', 6, 1, datetime('now'));
 
       INSERT INTO returns VALUES
-        ('r1', NULL, 'u1', 'ph-1', 10, 'approved', datetime('now')),
+        ('r1', NULL, 'u1', 'ph-1', 10, 'APPROVED', datetime('now')),
         ('r2', NULL, 'u2', 'ph-2', 20, 'approved', datetime('now'));
     `);
   });
@@ -122,6 +127,17 @@ describe('report KPI pharmacy scope', () => {
         stock_alerts_count: 1,
       },
     });
+  });
+
+  it('does not expose shift financial reports to a user with only ordinary shift access', async () => {
+    mockUser = {
+      id: 'pharmacist-1',
+      role: 'pharmacist',
+      pharmacy_id: 'ph-1',
+      permissions: { can_view_shifts: true, rep_can_view_shifts: false, rep_can_view_sales: false },
+    };
+
+    expect(await getShiftReportAction('shift-1')).toEqual({ success: false, error: 'غير مصرح' });
   });
 
   it('uses custom master unit labels when calculating report KPI COGS', async () => {
@@ -165,6 +181,7 @@ describe('report KPI pharmacy scope', () => {
         ('ph1-batch-a', 'ph-1', 1, 3, 10),
         ('ph1-batch-b', 'ph-1', 1, 3, 12)
     `).run();
+    mockDb.prepare("UPDATE inventory SET expiry_date = date('now', '+30 days') WHERE pharmacy_id = 'ph-1'").run();
 
     const result = await getDashboardKPIsAction();
 
@@ -180,6 +197,21 @@ describe('report KPI pharmacy scope', () => {
       INSERT INTO inventory (id, pharmacy_id, drug_id, quantity, cost_price, expiry_date) VALUES
         ('ph1-usable', 'ph-1', 1, 1, 10, date('now', '+30 days')),
         ('ph1-expired', 'ph-1', 1, 100, 10, date('now', '-1 day'))
+    `).run();
+
+    const result = await getDashboardKPIsAction();
+
+    expect(result).toMatchObject({
+      success: true,
+      data: { stock_alerts_count: 1 },
+    });
+  });
+
+  it('treats unknown expiry as zero usable stock for expiry-tracked report alerts', async () => {
+    mockDb.prepare("DELETE FROM inventory WHERE pharmacy_id = 'ph-1'").run();
+    mockDb.prepare(`
+      INSERT INTO inventory (id, pharmacy_id, drug_id, quantity, cost_price, expiry_date)
+      VALUES ('ph1-unknown-expiry', 'ph-1', 1, 100, 10, NULL)
     `).run();
 
     const result = await getDashboardKPIsAction();

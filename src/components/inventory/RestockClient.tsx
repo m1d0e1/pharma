@@ -44,7 +44,7 @@ export default function RestockClient({ items, onUpdateQuantity }: Props) {
                   <td className="px-8 py-5">
                     <div className="flex flex-col">
                       <span className="font-bold text-slate-900 dark:text-white">{item.master_drugs.trade_name}</span>
-                      <span className="text-[10px] text-slate-400 font-bold uppercase">{item.master_drugs.manufacturer}</span>
+                      <span className="text-xs text-slate-500 font-bold">{item.master_drugs.manufacturer}</span>
                     </div>
                   </td>
                   <td className="px-8 py-5 text-center">
@@ -82,7 +82,7 @@ export default function RestockClient({ items, onUpdateQuantity }: Props) {
                   </td>
                   <td className="px-8 py-5">
                     <span className="font-black text-slate-900 dark:text-white">
-                      {estimatedCost.toLocaleString()} <span className="text-[10px] font-bold">ج.م</span>
+                      {estimatedCost.toLocaleString()} <span className="text-xs font-bold">ج.م</span>
                     </span>
                   </td>
                 </tr>

@@ -4,6 +4,7 @@ import React, { useEffect, useState, useMemo, useRef } from 'react'
 import { Plus, Trash2, ChevronRight, ChevronDown, Folder, FolderOpen, Save, X, Edit3 } from 'lucide-react'
 import { toast, Toaster } from 'react-hot-toast'
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local'
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap'
 
 interface Category {
   id: number;
@@ -30,6 +31,7 @@ export default function ProductCategoriesManagement({ initialData, onAdd, onUpda
   const savingRef = useRef(false);
   const deletingIdsRef = useRef(new Set<number>());
   const [canManage, setCanManage] = useState(false);
+  const dialogRef = useDialogFocusTrap<HTMLDivElement>(isModalOpen);
 
   useEffect(() => {
     let active = true;
@@ -287,12 +289,12 @@ export default function ProductCategoriesManagement({ initialData, onAdd, onUpda
 
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-          <div className="bg-white dark:bg-slate-900 w-full max-w-md rounded-[32px] shadow-hard border border-slate-100 dark:border-slate-800 overflow-hidden animate-in zoom-in-95">
+          <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="category-editor-title" tabIndex={-1} className="bg-white dark:bg-slate-900 w-full max-w-md rounded-3xl shadow-hard border border-slate-100 dark:border-slate-800 overflow-hidden animate-in zoom-in-95">
              <div className="p-8 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center">
-                <h3 className="text-2xl font-black text-slate-900 dark:text-white">
+                <h3 id="category-editor-title" className="text-2xl font-black text-slate-900 dark:text-white">
                   {editingItem ? 'تعديل مجموعة' : 'إضافة مجموعة'}
                 </h3>
-                <button disabled={isSaving} onClick={handleCloseModal}><X className="w-8 h-8 text-slate-400" /></button>
+                <button type="button" aria-label="إغلاق محرر المجموعة" disabled={isSaving} onClick={handleCloseModal}><X className="w-8 h-8 text-slate-400" /></button>
              </div>
              <div className="p-8 space-y-6">
                 <div className="p-4 bg-slate-50 dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700">
@@ -302,17 +304,20 @@ export default function ProductCategoriesManagement({ initialData, onAdd, onUpda
                    </span>
                 </div>
                 <div className="space-y-2">
-                   <label className="text-sm font-black text-slate-700 dark:text-slate-300 mr-2">الإسم بالعربي *</label>
+                   <label htmlFor="category-name-ar" className="text-sm font-black text-slate-700 dark:text-slate-300 mr-2">الإسم بالعربي *</label>
                    <input 
+                      id="category-name-ar"
                       type="text" 
                       className="w-full px-6 py-4 bg-slate-50 dark:bg-slate-800 rounded-2xl border-none outline-none focus:ring-4 focus:ring-primary-500/10 font-black dark:text-white border-2 border-transparent focus:border-primary-500"
                       value={formData.name_ar}
                       onChange={(e) => setFormData({ ...formData, name_ar: e.target.value })}
+                      autoFocus
                    />
                 </div>
                 <div className="space-y-2">
-                   <label className="text-sm font-black text-slate-700 dark:text-slate-300 mr-2">الإسم بالإنجليزي</label>
+                   <label htmlFor="category-name-en" className="text-sm font-black text-slate-700 dark:text-slate-300 mr-2">الإسم بالإنجليزي</label>
                    <input 
+                      id="category-name-en"
                       type="text" 
                       className="w-full px-6 py-4 bg-slate-50 dark:bg-slate-800 rounded-2xl border-none outline-none focus:ring-4 focus:ring-primary-500/10 font-black dark:text-white border-2 border-transparent focus:border-primary-500"
                       dir="ltr"

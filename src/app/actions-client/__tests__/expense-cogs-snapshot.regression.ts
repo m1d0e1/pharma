@@ -89,10 +89,32 @@ describe('expense P&L historical COGS snapshots', () => {
   it('reverses returned COGS using the same historical sale conversion', async () => {
     mockDb.exec(`
       INSERT INTO returns (id, pharmacy_id, total_refund, status, created_at)
-      VALUES ('return-1', 'ph-1', 5, 'completed', '2026-08-11 12:00:00');
+      VALUES ('return-1', 'ph-1', 5, 'APPROVED', '2026-08-11 12:00:00');
       INSERT INTO return_items
         (id, return_id, inventory_id, drug_id, quantity_returned, unit, sale_item_id)
       VALUES (1, 'return-1', 'lot-1', 1, 1, 'medium', 1);
+    `);
+
+    const result = await getExpenseSummaryAction('2026-08');
+
+    expect(result).toMatchObject({
+      success: true,
+      data: {
+        totalRevenue: 10,
+        totalReturns: 5,
+        totalCOGS: 2,
+        netProfit: 3,
+      },
+    });
+  });
+
+  it('treats a missing historical return unit as the original sale unit for COGS reversal', async () => {
+    mockDb.exec(`
+      INSERT INTO returns (id, pharmacy_id, total_refund, status, created_at)
+      VALUES ('legacy-null-unit-return', 'ph-1', 5, 'completed', '2026-08-11 12:00:00');
+      INSERT INTO return_items
+        (id, return_id, inventory_id, drug_id, quantity_returned, unit, sale_item_id)
+      VALUES (2, 'legacy-null-unit-return', 'lot-1', 1, 1, NULL, 1);
     `);
 
     const result = await getExpenseSummaryAction('2026-08');

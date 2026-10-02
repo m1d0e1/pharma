@@ -9,7 +9,7 @@ export const metadata = {
 export default function CashTransactionsPage() {
   return (
     <PermissionGuard permissionKey="acc_can_process_cash_flow">
-      <div className="p-8">
+      <div className="p-3 sm:p-6">
         <CashTransactionsClient />
       </div>
     </PermissionGuard>

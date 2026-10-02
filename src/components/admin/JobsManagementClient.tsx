@@ -102,16 +102,17 @@ export default function JobsManagementClient({ initialJobs, onAddJob, onDeleteJo
                     <Briefcase className="w-6 h-6 text-primary-600" />
                   </div>
                   <button 
+                    type="button"
                     onClick={() => handleDelete(job.id)}
                     disabled={deletingJobId !== null}
                     aria-label={deletingJobId === job.id ? `جاري حذف وظيفة ${job.name_ar}` : `حذف وظيفة ${job.name_ar}`}
-                    className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-xl transition-all opacity-0 group-hover:opacity-100"
+                    className="p-2 text-slate-500 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-xl transition-all opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 focus:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
                   >
                     <Trash2 className="w-5 h-5" />
                   </button>
                 </div>
                 <CardTitle className="mt-4 text-xl font-bold">{job.name_ar}</CardTitle>
-                <CardDescription className="font-medium text-slate-500">{job.name_en || 'No English Name'}</CardDescription>
+                <CardDescription className="font-medium text-slate-500">{job.name_en || 'بدون اسم إنجليزي'}</CardDescription>
               </CardHeader>
               <CardContent className="pt-6">
                 <div className="flex items-center justify-between text-sm">
@@ -158,11 +159,12 @@ export default function JobsManagementClient({ initialJobs, onAddJob, onDeleteJo
           <CardContent>
             <form onSubmit={handleAdd} className="space-y-5">
               <div className="space-y-2">
-                <label className="text-sm font-bold text-slate-600 dark:text-slate-400 flex items-center gap-2">
+                <label htmlFor="job-name-ar" className="text-sm font-bold text-slate-600 dark:text-slate-400 flex items-center gap-2">
                   <Languages className="w-4 h-4" /> المسمى (بالعربي)
                 </label>
                 <input 
                   type="text"
+                  id="job-name-ar"
                   required
                   value={newJob.name_ar}
                   onChange={e => setNewJob({...newJob, name_ar: e.target.value})}
@@ -172,11 +174,12 @@ export default function JobsManagementClient({ initialJobs, onAddJob, onDeleteJo
               </div>
 
               <div className="space-y-2">
-                <label className="text-sm font-bold text-slate-600 dark:text-slate-400 flex items-center gap-2">
+                <label htmlFor="job-name-en" className="text-sm font-bold text-slate-600 dark:text-slate-400 flex items-center gap-2">
                   <Languages className="w-4 h-4" /> المسمى (بالإنجليزي)
                 </label>
                 <input 
                   type="text"
+                  id="job-name-en"
                   value={newJob.name_en}
                   onChange={e => setNewJob({...newJob, name_en: e.target.value})}
                   className="w-full px-4 py-3 rounded-xl bg-slate-50 dark:bg-slate-800 border-none focus:ring-2 focus:ring-primary-500 transition-all font-bold"
@@ -184,24 +187,26 @@ export default function JobsManagementClient({ initialJobs, onAddJob, onDeleteJo
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <label className="text-sm font-bold text-slate-600 dark:text-slate-400 flex items-center gap-2">
+                  <label htmlFor="job-min-salary" className="text-sm font-bold text-slate-600 dark:text-slate-400 flex items-center gap-2">
                     <DollarSign className="w-4 h-4" /> أقل مرتب
                   </label>
                   <input 
                     type="number"
+                    id="job-min-salary"
                     value={newJob.min_salary}
                     onChange={e => setNewJob({...newJob, min_salary: Number(e.target.value)})}
                     className="w-full px-4 py-3 rounded-xl bg-slate-50 dark:bg-slate-800 border-none focus:ring-2 focus:ring-primary-500 transition-all font-bold"
                   />
                 </div>
                 <div className="space-y-2">
-                  <label className="text-sm font-bold text-slate-600 dark:text-slate-400 flex items-center gap-2">
+                  <label htmlFor="job-max-salary" className="text-sm font-bold text-slate-600 dark:text-slate-400 flex items-center gap-2">
                     <DollarSign className="w-4 h-4" /> أعلى مرتب
                   </label>
                   <input 
                     type="number"
+                    id="job-max-salary"
                     value={newJob.max_salary}
                     onChange={e => setNewJob({...newJob, max_salary: Number(e.target.value)})}
                     className="w-full px-4 py-3 rounded-xl bg-slate-50 dark:bg-slate-800 border-none focus:ring-2 focus:ring-primary-500 transition-all font-bold"

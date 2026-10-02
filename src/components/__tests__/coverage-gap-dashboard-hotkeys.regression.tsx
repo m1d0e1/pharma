@@ -36,6 +36,12 @@ function lastHotkeyHandler(keys: string) {
   return calls[calls.length - 1][1] as (event: { preventDefault: jest.Mock }) => void;
 }
 
+function lastHotkeyOptions(keys: string) {
+  const calls = (useHotkeys as jest.Mock).mock.calls.filter(args => args[0] === keys);
+  expect(calls.length).toBeGreaterThan(0);
+  return calls[calls.length - 1][2] as { enableOnFormTags?: boolean; preventDefault?: boolean };
+}
+
 describe('coverage-gap: dashboard global keyboard shortcuts', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -57,6 +63,10 @@ describe('coverage-gap: dashboard global keyboard shortcuts', () => {
       ['ctrl+o, meta+o', '/purchases'],
       ['ctrl+p, meta+p', '/pos'],
     ] as const) {
+      expect(lastHotkeyOptions(keys)).toEqual(expect.objectContaining({
+        enableOnFormTags: true,
+        preventDefault: true,
+      }));
       const preventDefault = jest.fn();
       lastHotkeyHandler(keys)({ preventDefault });
       expect(preventDefault).toHaveBeenCalledTimes(1);
@@ -65,6 +75,10 @@ describe('coverage-gap: dashboard global keyboard shortcuts', () => {
 
     const search = screen.getByPlaceholderText('بحث سريع');
     expect(search).not.toHaveFocus();
+    expect(lastHotkeyOptions('f1')).toEqual(expect.objectContaining({
+      enableOnFormTags: true,
+      preventDefault: true,
+    }));
     const preventDefault = jest.fn();
     lastHotkeyHandler('f1')({ preventDefault });
     expect(preventDefault).toHaveBeenCalledTimes(1);

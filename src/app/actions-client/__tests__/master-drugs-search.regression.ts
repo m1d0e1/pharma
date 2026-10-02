@@ -45,6 +45,7 @@ describe('searchMasterDrugsAction search and filter browsing regression', () => 
         is_medicine INTEGER DEFAULT 1,
         is_service INTEGER DEFAULT 0,
         stop_dealing INTEGER DEFAULT 0,
+        has_expiry INTEGER DEFAULT 1,
         notes TEXT
       );
 
@@ -107,6 +108,16 @@ describe('searchMasterDrugsAction search and filter browsing regression', () => 
     expect(res.success).toBe(true);
     expect(res.data?.length).toBe(1);
     expect(res.data?.[0].trade_name_en).toBe('Concor 5mg');
+  });
+
+  it('preserves cached has_expiry metadata when cache and database both match the same drug', async () => {
+    const cached = mockDb.prepare('SELECT * FROM master_drugs WHERE id = 1').get() as any;
+    (secureCache.getAllDrugs as jest.Mock).mockReturnValue([{ ...cached, has_expiry: 0 }]);
+
+    const res = await searchMasterDrugsAction({ query: 'Concor', status: 'active' });
+
+    expect(res.success).toBe(true);
+    expect(res.data?.find((drug: any) => drug.id === 1)).toMatchObject({ has_expiry: 0 });
   });
 
   it('distinguishes known zero purchase cost from unknown cost', async () => {

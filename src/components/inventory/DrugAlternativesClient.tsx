@@ -5,6 +5,7 @@ import { Search, Plus, Trash2, X, Activity, FlaskConical, Save } from 'lucide-re
 import { toast, Toaster } from 'react-hot-toast'
 import { dbSelect } from '@/lib/db/tauri'
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local'
+import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap'
 import {
   addDrugAlternativeAction,
   addDrugInteractionAction,
@@ -40,6 +41,7 @@ export default function DrugAlternativesClient() {
   const selectionRequestRef = useRef(0);
   const selectedDrugRef = useRef<MasterDrug | null>(null);
   const mutationKeysRef = useRef<Set<string>>(new Set());
+  const alternativeDialogRef = useDialogFocusTrap<HTMLDivElement>(canManage && isSearchingAlt);
 
   // Helper for searching master drugs locally
   const localSearchMasterDrugs = async (query: string) => {
@@ -351,12 +353,13 @@ export default function DrugAlternativesClient() {
       <Toaster position="top-center" />
       
       {/* Search Header */}
-      <div className="bg-white dark:bg-slate-900 p-8 rounded-[40px] shadow-hard border border-slate-100 dark:border-slate-800">
+      <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl shadow-hard border border-slate-100 dark:border-slate-800">
         <div className="relative max-w-2xl mx-auto">
-          <label className="block text-sm font-black text-slate-500 mb-2 mr-4">تحديد الصنف الأساسي (كود أو إسم)</label>
+          <label htmlFor="alternative-primary-search" className="block text-sm font-black text-slate-500 mb-2 mr-4">تحديد الصنف الأساسي (كود أو إسم)</label>
           <div className="relative">
             <Search className="absolute right-5 top-1/2 -translate-y-1/2 w-6 h-6 text-primary-500" />
             <input 
+              id="alternative-primary-search"
               type="text" 
               placeholder="ابحث عن الصنف لربط البدائل به..."
               className="w-full pr-14 pl-6 py-5 bg-slate-50 dark:bg-slate-800 rounded-3xl outline-none focus:ring-4 focus:ring-primary-500/10 font-black text-lg dark:text-white border-2 border-transparent focus:border-primary-500 transition-all"
@@ -555,8 +558,9 @@ export default function DrugAlternativesClient() {
                 <div className="space-y-6">
                   {canManage && <div className="flex flex-col md:flex-row gap-4 items-end bg-amber-50 dark:bg-amber-900/10 p-6 rounded-3xl border border-amber-100 dark:border-amber-900/20">
                     <div className="flex-1 w-full space-y-2">
-                      <label className="text-sm font-bold text-amber-700 dark:text-amber-500">إسم الغذاء المتعارض</label>
+                      <label htmlFor="food-interaction-name" className="text-sm font-bold text-amber-700 dark:text-amber-500">إسم الغذاء المتعارض</label>
                       <input 
+                        id="food-interaction-name"
                         type="text" 
                         value={newFoodInteraction}
                         onChange={(e) => setNewFoodInteraction(e.target.value)}
@@ -610,16 +614,17 @@ export default function DrugAlternativesClient() {
       {/* Alternative Search Modal */}
       {canManage && isSearchingAlt && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-          <div className="bg-white dark:bg-slate-900 w-full max-w-2xl rounded-[40px] shadow-hard border border-slate-100 dark:border-slate-800 overflow-hidden animate-in zoom-in-95">
+          <div ref={alternativeDialogRef} role="dialog" aria-modal="true" aria-labelledby="alternative-search-title" tabIndex={-1} className="bg-white dark:bg-slate-900 w-full max-w-2xl rounded-3xl shadow-hard border border-slate-100 dark:border-slate-800 overflow-hidden animate-in zoom-in-95">
              <div className="p-8 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center">
-                <h3 className="text-2xl font-black text-slate-900 dark:text-white">البحث عن بديل لـ {selectedDrug?.trade_name}</h3>
-                <button onClick={() => setIsSearchingAlt(false)}><X className="w-8 h-8 text-slate-400 hover:text-red-500 transition-all" /></button>
+                <h3 id="alternative-search-title" className="text-2xl font-black text-slate-900 dark:text-white">البحث عن بديل لـ {selectedDrug?.trade_name}</h3>
+                <button type="button" aria-label="إغلاق البحث عن بديل" onClick={() => setIsSearchingAlt(false)}><X className="w-8 h-8 text-slate-400 hover:text-red-500 transition-all" /></button>
              </div>
              <div className="p-8 space-y-6">
                 <div className="relative">
                    <Search className="absolute right-5 top-1/2 -translate-y-1/2 w-6 h-6 text-slate-400" />
                    <input 
                       type="text" 
+                      aria-label="بحث عن الصنف البديل"
                       placeholder="ابحث عن الصنف البديل..."
                       className="w-full pr-14 pl-6 py-5 bg-slate-50 dark:bg-slate-800 rounded-3xl outline-none focus:ring-2 focus:ring-primary-500 font-bold dark:text-white"
                       value={altSearchTerm}

@@ -11,6 +11,7 @@ import {
   PurchaseReturnUnit,
   purchaseReturnMatchesSearch,
   purchaseReturnPriceForUnit,
+  purchaseReturnQuantityInLargeUnits,
   purchaseReturnQuantityForUnit,
 } from '@/lib/purchases/return-units';
 
@@ -46,6 +47,7 @@ export default function PurchaseReturnClient() {
   
   // Invoice state
   const [invoices, setInvoices] = useState<any[]>([]);
+  const [listRevision, setListRevision] = useState(0);
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string>('');
   const [isLoadingInvoices, setIsLoadingInvoices] = useState(false);
   
@@ -58,6 +60,12 @@ export default function PurchaseReturnClient() {
   const [itemSearch, setItemSearch] = useState('');
 
   const [selectedIndex, setSelectedIndex] = useState<number>(-1);
+
+  const invalidatePreparedReturn = () => {
+    detailRequestRef.current += 1;
+    setSelectedInvoiceId('');
+    setItems([]);
+  };
 
   useEffect(() => {
     getSuppliersAction()
@@ -84,6 +92,7 @@ export default function PurchaseReturnClient() {
             selectedInvoiceIdRef.current = nextIndex >= 0 ? list[nextIndex].id : '';
             setInvoices(list);
             setSelectedIndex(nextIndex);
+            setListRevision(value => value + 1);
           } else {
             toast.error(res.error || 'فشل تحميل فواتير الشراء');
           }
@@ -98,6 +107,7 @@ export default function PurchaseReturnClient() {
             selectedInvoiceIdRef.current = nextIndex >= 0 ? list[nextIndex].id : '';
             setInvoices(list);
             setSelectedIndex(nextIndex);
+            setListRevision(value => value + 1);
           } else {
             toast.error(res.error || 'فشل تحميل فواتير الشراء');
           }
@@ -133,7 +143,7 @@ export default function PurchaseReturnClient() {
     }
     // Selection and the refreshed invoice list are the only triggers for loading details.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedIndex, invoices]);
+  }, [selectedIndex, invoices, listRevision]);
 
   // Scroll selected button into view
   useEffect(() => {
@@ -216,6 +226,9 @@ export default function PurchaseReturnClient() {
           unit_price: Number(item.refundable_large_unit_price || 0),
           original_unit: 'large',
           unit: 'large',
+          large_unit: String(item.large_unit || '').trim() || 'علبة',
+          medium_unit: String(item.medium_unit || '').trim() || 'شريط',
+          small_unit: String(item.small_unit || '').trim() || 'وحدة',
           base_price: Number(item.refundable_large_unit_price || 0),
           large_to_medium: item.strips_per_box || item.large_to_medium || 1,
           medium_to_small: item.medium_to_small || 1,
@@ -254,6 +267,12 @@ export default function PurchaseReturnClient() {
       
       if (field === 'unit') {
         const unit = value as PurchaseReturnUnit;
+        const preparedLargeQuantity = purchaseReturnQuantityInLargeUnits(
+          Number(item.quantity || 0),
+          item.unit as PurchaseReturnUnit,
+          item.large_to_medium,
+          item.medium_to_small
+        );
         item.unit = unit;
         item.unit_price = purchaseReturnPriceForUnit(
           item.refundable_large_unit_price,
@@ -261,12 +280,20 @@ export default function PurchaseReturnClient() {
           item.large_to_medium,
           item.medium_to_small
         );
-        item.quantity = Math.min(Number(item.quantity || 0), purchaseReturnQuantityForUnit(
-          item.remaining_large_quantity,
-          unit,
-          item.large_to_medium,
-          item.medium_to_small
-        ));
+        item.quantity = Math.min(
+          purchaseReturnQuantityForUnit(
+            preparedLargeQuantity,
+            unit,
+            item.large_to_medium,
+            item.medium_to_small
+          ),
+          purchaseReturnQuantityForUnit(
+            item.remaining_large_quantity,
+            unit,
+            item.large_to_medium,
+            item.medium_to_small
+          )
+        );
       }
 
       if (field !== 'quantity' && field !== 'unit') item[field] = value;
@@ -347,16 +374,20 @@ export default function PurchaseReturnClient() {
         <div className="lg:col-span-1 space-y-4">
           <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-4 space-y-3">
             <div>
-              <label className="block text-xs font-bold text-slate-500 mb-1.5">البحث بالباركود أو اسم الصنف أو رقم الفاتورة (جميع فواتير المشتريات)</label>
+              <label htmlFor="purchase-return-search" className="block text-xs font-bold text-slate-500 mb-1.5">البحث بالباركود أو اسم الصنف أو رقم الفاتورة (جميع فواتير المشتريات)</label>
               <div className="relative">
                 <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                 <input
+                  id="purchase-return-search"
                   type="text"
                   autoFocus
                   placeholder="امسح الباركود، أو اكتب اسم الدواء، أو رقم الفاتورة..."
                   className="w-full pl-4 pr-9 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold text-xs text-slate-900 dark:text-white"
                   value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
+                  onChange={(e) => {
+                    invalidatePreparedReturn();
+                    setSearchTerm(e.target.value);
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
                       e.preventDefault();
@@ -370,11 +401,13 @@ export default function PurchaseReturnClient() {
               </div>
             </div>
             <div>
-              <label className="block text-xs font-bold text-slate-500 mb-1.5">أو اختر المورد</label>
+              <label htmlFor="purchase-return-supplier" className="block text-xs font-bold text-slate-500 mb-1.5">أو اختر المورد</label>
               <select
+                id="purchase-return-supplier"
                 className="w-full p-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold text-slate-900 dark:text-white text-xs"
                 value={selectedSupplierId}
                 onChange={(e) => {
+                  invalidatePreparedReturn();
                   setSelectedSupplierId(e.target.value);
                   setSearchTerm('');
                 }}
@@ -403,6 +436,8 @@ export default function PurchaseReturnClient() {
               ) : (
                 invoices.map((inv, idx) => (
                   <button
+                    type="button"
+                    aria-pressed={selectedIndex === idx}
                     key={inv.id}
                     onClick={() => {
                       selectedInvoiceIdRef.current = inv.id;
@@ -416,26 +451,26 @@ export default function PurchaseReturnClient() {
                   >
                     <div className="flex justify-between items-center w-full">
                       <span className="font-black text-xs text-slate-800 dark:text-slate-100">رقم الفاتورة: {inv.invoice_number || inv.id.slice(0, 8)}</span>
-                      <span dir="ltr" className="text-[10px] text-slate-500 font-bold bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded">
+                      <span dir="ltr" className="text-[11px] text-slate-500 font-bold bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded">
                         {inv.created_at ? formatInvoiceDateTime(inv.created_at) : inv.invoice_date || ''}
                       </span>
                     </div>
                     <div className="flex justify-between items-center w-full mt-1">
                       <span className="text-sm font-black text-blue-600 dark:text-blue-400">{Number(inv.total_amount || 0).toFixed(2)} ج.م</span>
-                      <span className="text-[9px] bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded font-black text-slate-500">
+                      <span className="text-[11px] bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded font-black text-slate-500">
                         {inv.payment_method === 'cash' ? 'نقدي' : 'آجل'}
                       </span>
                     </div>
                     {inv.supplier_name && (
-                      <div className="text-[10px] text-purple-600 dark:text-purple-400 font-bold mt-1">🏢 المورد: {inv.supplier_name}</div>
+                      <div className="text-[11px] text-purple-600 dark:text-purple-400 font-bold mt-1">🏢 المورد: {inv.supplier_name}</div>
                     )}
-                    <div className="text-[9px] text-slate-400 font-bold">المستلم: {inv.staff_name || 'غير محدد'}</div>
+                    <div className="text-[11px] text-slate-500 font-bold">المستلم: {inv.staff_name || 'غير محدد'}</div>
                   </button>
                 ))
               )}
             </div>
             {invoices.length > 0 && (
-              <div className="mt-3 text-[10px] text-slate-400 font-bold text-center border-t border-slate-100 dark:border-slate-700/50 pt-2">
+              <div className="mt-3 text-[11px] text-slate-500 font-bold text-center border-t border-slate-100 dark:border-slate-700/50 pt-2">
                 💡 استخدم الأسهم <span className="font-black text-slate-600 dark:text-slate-300">↑</span> و <span className="font-black text-slate-600 dark:text-slate-300">↓</span> للتنقل السريع
               </div>
             )}
@@ -464,6 +499,7 @@ export default function PurchaseReturnClient() {
                   <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                   <input
                     type="search"
+                    aria-label="البحث داخل أصناف فاتورة الشراء المحددة"
                     value={itemSearch}
                     onChange={(e) => setItemSearch(e.target.value)}
                     placeholder="ابحث باسم الصنف أو امسح الباركود..."
@@ -488,24 +524,29 @@ export default function PurchaseReturnClient() {
                           <td className="p-3 font-medium text-slate-800 dark:text-slate-200">
                             <div>{item.drug_name}</div>
                             {item.drug_name_en && item.drug_name_en !== item.drug_name && (
-                              <div className="text-[10px] text-slate-400 mt-1">{item.drug_name_en}</div>
+                              <div className="text-[11px] text-slate-500 mt-1">{item.drug_name_en}</div>
                             )}
-                            {item.barcode && <div className="text-[10px] font-mono text-blue-600 mt-1">{item.barcode}</div>}
+                            {item.barcode && <div className="text-[11px] font-mono text-blue-600 mt-1">{item.barcode}</div>}
                           </td>
                           <td className="p-3 text-slate-500">
-                            <div>{item.original_quantity} علبة</div>
-                            <div className="mt-1 text-[10px] font-bold text-emerald-600">
+                            <div>{item.original_quantity} {item.large_unit || 'علبة'}</div>
+                            <div className="mt-1 text-[11px] font-bold text-emerald-600">
                               المتبقي: {purchaseReturnQuantityForUnit(
                                 item.remaining_large_quantity,
                                 item.unit as PurchaseReturnUnit,
                                 item.large_to_medium,
                                 item.medium_to_small
-                              ).toFixed(2)} {item.unit === 'large' ? 'علبة' : item.unit === 'medium' ? 'شريط' : 'وحدة'}
+                              ).toFixed(2)} {item.unit === 'large'
+                                ? (item.large_unit || 'علبة')
+                                : item.unit === 'medium'
+                                  ? (item.medium_unit || 'شريط')
+                                  : (item.small_unit || 'وحدة')}
                             </div>
                           </td>
                           <td className="p-3 flex items-center justify-center gap-2">
                             <input
                               type="number"
+                              aria-label={`كمية مرتجع ${item.drug_name}`}
                               min="0"
                               max={purchaseReturnQuantityForUnit(
                                 item.remaining_large_quantity,
@@ -518,13 +559,14 @@ export default function PurchaseReturnClient() {
                               onChange={(e) => updateItem(index, 'quantity', Number(e.target.value))}
                             />
                             <select
+                              aria-label={`وحدة مرتجع ${item.drug_name}`}
                               className="w-24 p-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded text-slate-900 dark:text-white text-sm"
                               value={item.unit || 'large'}
                               onChange={(e) => updateItem(index, 'unit', e.target.value)}
                             >
-                              <option value="large">علبة</option>
-                              <option value="medium">شريط</option>
-                              <option value="small">وحدة</option>
+                              <option value="large">{item.large_unit || 'علبة'}</option>
+                              <option value="medium">{item.medium_unit || 'شريط'}</option>
+                              <option value="small">{item.small_unit || 'وحدة'}</option>
                             </select>
                           </td>
                           <td className="p-3">
@@ -559,6 +601,7 @@ export default function PurchaseReturnClient() {
                   </div>
                   
                   <button
+                    type="button"
                     onClick={handleSubmit}
                     disabled={isSubmitting || isCommitted || activeItems.length === 0}
                     className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white p-3.5 rounded-xl font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed mt-6 shadow-md shadow-blue-500/10"
@@ -570,11 +613,12 @@ export default function PurchaseReturnClient() {
 
                 {/* Settings panel */}
                 <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6 space-y-4">
-                  <h3 className="font-bold text-slate-855 dark:text-white">خيارات المرتجع</h3>
+                  <h3 className="font-bold text-slate-800 dark:text-white">خيارات المرتجع</h3>
                   
                   <div>
-                    <label className="block text-xs font-bold text-slate-500 mb-1">طريقة الاسترداد *</label>
+                    <label htmlFor="purchase-return-refund-method" className="block text-xs font-bold text-slate-500 mb-1">طريقة الاسترداد *</label>
                     <select
+                      id="purchase-return-refund-method"
                       className="w-full p-2.5 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-blue-500 font-bold"
                       value={refundMethod}
                       onChange={(e) => setRefundMethod(e.target.value as any)}
@@ -585,8 +629,9 @@ export default function PurchaseReturnClient() {
                   </div>
 
                   <div>
-                    <label className="block text-xs font-bold text-slate-500 mb-1">سبب المرتجع / ملاحظات</label>
+                    <label htmlFor="purchase-return-reason" className="block text-xs font-bold text-slate-500 mb-1">سبب المرتجع / ملاحظات</label>
                     <textarea
+                      id="purchase-return-reason"
                       className="w-full p-2.5 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-blue-500 font-bold"
                       rows={2}
                       value={reason}

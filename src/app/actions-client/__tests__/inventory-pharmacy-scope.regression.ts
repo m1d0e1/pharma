@@ -36,6 +36,8 @@ jest.unmock('@/app/actions-client/inventory');
 jest.unmock('@/app/actions-client/master-drugs');
 
 import {
+  addInventoryAction,
+  addOpeningBalanceAction,
   getDrugDetailsFullAction,
   getInventoryAlertsAction,
   getInventoryListAction,
@@ -55,6 +57,7 @@ describe('inventory read models preserve pharmacy boundaries', () => {
     mockDb.exec(`
       ALTER TABLE sales_items ADD COLUMN large_to_medium INTEGER DEFAULT 1;
       ALTER TABLE sales_items ADD COLUMN medium_to_small INTEGER DEFAULT 1;
+      ALTER TABLE inventory ADD COLUMN medium_to_small INTEGER DEFAULT 1;
       ALTER TABLE activity_log ADD COLUMN pharmacy_id TEXT;
     `);
     mockDb.pragma('foreign_keys = ON');
@@ -211,6 +214,43 @@ describe('inventory read models preserve pharmacy boundaries', () => {
     expect(item).toEqual(expect.objectContaining({ avg_monthly_usage: 5 }));
   });
 
+  it('keeps reorder alerts scoped to usable inventory in the signed-in pharmacy', async () => {
+    mockDb.exec(`
+      INSERT INTO master_drugs (id, trade_name, trade_name_en, reorder_point, has_expiry) VALUES
+        (9401, 'أجنبي فقط', 'Foreign only reorder', 5, 1),
+        (9402, 'منتهي فقط', 'Expired only reorder', 5, 1),
+        (9403, 'محلي صفري', 'Local zero reorder', 5, 1),
+        (9404, 'صلاحية مجهولة', 'Unknown expiry reorder', 5, 1);
+
+      INSERT INTO inventory (id, pharmacy_id, drug_id, quantity, local_selling_price, expiry_date) VALUES
+        ('foreign-only-reorder', 'ph-2', 9401, 1, 10, '2099-12-31'),
+        ('expired-only-reorder', NULL, 9402, 1, 10, '2020-01-01'),
+        ('local-zero-reorder', NULL, 9403, 0, 10, '2099-12-31'),
+        ('unknown-expiry-reorder', NULL, 9404, 5, 10, NULL);
+    `);
+
+    const local = await getLowStockAction(10);
+    expect(local.success).toBe(true);
+    expect(local.data?.map((row: any) => row.drug_id)).toContain(9403);
+    expect(local.data?.find((row: any) => row.drug_id === 9404)).toEqual(
+      expect.objectContaining({ current_stock: 0, quantity: 0 }),
+    );
+    expect(local.data?.map((row: any) => row.drug_id)).not.toContain(9401);
+    expect(local.data?.map((row: any) => row.drug_id)).not.toContain(9402);
+
+    const localAlerts = await getInventoryAlertsAction();
+    expect(localAlerts.success).toBe(true);
+    expect(localAlerts.data?.alerts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 9404, alert_type: 'low_stock', quantity: 0 }),
+    ]));
+
+    mockSession = { id: 'admin', role: 'owner', pharmacy_id: 'ph-2' };
+    const foreign = await getLowStockAction(10);
+    expect(foreign.success).toBe(true);
+    expect(foreign.data?.map((row: any) => row.drug_id)).toContain(9401);
+    expect(foreign.data?.map((row: any) => row.drug_id)).not.toContain(9403);
+  });
+
   it('normalizes mixed sale units to large units for box-per-month consumption', async () => {
     mockDb.exec(`
       UPDATE master_drugs
@@ -250,6 +290,107 @@ describe('inventory read models preserve pharmacy boundaries', () => {
     expect(mockDb.prepare("SELECT COUNT(*) AS count FROM stock_adjustments WHERE inventory_id = 'local-active'").get()).toEqual({ count: 1 });
     expect(mockDb.prepare("SELECT COUNT(*) AS count FROM journal_entries WHERE journal_id = 'test-id'").get()).toEqual({ count: 2 });
     expect(notifyInventoryChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps generated stock-adjustment movements visible to a non-default pharmacy', async () => {
+    mockSession = { id: 'admin', role: 'owner', pharmacy_id: 'ph-2' };
+    mockDb.exec(`
+      UPDATE inventory SET cost_price = 5 WHERE id = 'foreign-active';
+      INSERT OR IGNORE INTO adjustment_reasons (id, name_ar) VALUES (9001, 'تصحيح اختبار');
+    `);
+
+    const adjustment = await createStockAdjustmentAction('foreign-active', {
+      reason_id: 9001,
+      old_quantity: 7,
+      new_quantity: 8,
+    });
+    expect(adjustment.success).toBe(true);
+
+    const movements = await getMovementsAction();
+    expect(movements.success).toBe(true);
+    expect(movements.data?.filter((row: any) => row.action === 'STOCK_ADJUSTMENT')).toEqual([
+      expect.objectContaining({ pharmacy_id: 'ph-2' }),
+    ]);
+  });
+
+  it('keeps generated opening-balance movements visible to a non-default pharmacy', async () => {
+    mockSession = { id: 'admin', role: 'owner', pharmacy_id: 'ph-2' };
+
+    const opening = await addOpeningBalanceAction({
+      drug_id: 9201,
+      quantity: 1,
+      cost_price: 0,
+      unit_price: 12,
+      expiry_date: '2099-12-31',
+    });
+
+    expect(opening.success).toBe(true);
+    const movements = await getMovementsAction();
+    expect(movements.success).toBe(true);
+    expect(movements.data?.filter((row: any) => row.action === 'OPENING_BALANCE')).toEqual([
+      expect.objectContaining({ pharmacy_id: 'ph-2' }),
+    ]);
+    expect(mockDb.prepare("SELECT pharmacy_id, quantity FROM inventory WHERE id = 'test-id'").get()).toEqual({
+      pharmacy_id: 'ph-2',
+      quantity: 1,
+    });
+  });
+
+  it('allows null inventory expiry only for non-expiring master drugs', async () => {
+    mockDb.prepare('UPDATE master_drugs SET has_expiry = 0 WHERE id = 9201').run();
+
+    const nonExpiring = await addInventoryAction({
+      drug_id: 9201,
+      quantity: 1,
+      local_selling_price: 12,
+      expiry_date: null,
+    });
+    expect(nonExpiring.success).toBe(true);
+    expect(mockDb.prepare("SELECT expiry_date FROM inventory WHERE id = 'test-id'").get()).toEqual({ expiry_date: null });
+  });
+
+  it('rejects null inventory expiry for expiring master drugs', async () => {
+    mockDb.prepare('UPDATE master_drugs SET has_expiry = 1 WHERE id = 9201').run();
+
+    const expiring = await addInventoryAction({
+      drug_id: 9201,
+      quantity: 1,
+      local_selling_price: 12,
+      expiry_date: null,
+    });
+    expect(expiring.success).toBe(false);
+    expect(expiring.error).toContain('تاريخ الصلاحية');
+    expect((mockDb.prepare("SELECT COUNT(*) AS total FROM inventory WHERE id = 'test-id'").get() as any).total).toBe(0);
+  });
+
+  it('allows a null opening-balance expiry only for non-expiring drugs', async () => {
+    mockDb.prepare('UPDATE master_drugs SET has_expiry = 0 WHERE id = 9201').run();
+
+    const opening = await addOpeningBalanceAction({
+      drug_id: 9201,
+      quantity: 1,
+      cost_price: 0,
+      unit_price: 12,
+      expiry_date: null,
+    });
+
+    expect(opening.success).toBe(true);
+    expect(mockDb.prepare("SELECT expiry_date FROM inventory WHERE id = 'test-id'").get()).toEqual({ expiry_date: null });
+  });
+
+  it('rejects a null opening-balance expiry for an expiring drug', async () => {
+    mockDb.prepare('UPDATE master_drugs SET has_expiry = 1 WHERE id = 9201').run();
+
+    const opening = await addOpeningBalanceAction({
+      drug_id: 9201,
+      quantity: 1,
+      cost_price: 0,
+      unit_price: 12,
+      expiry_date: null,
+    });
+
+    expect(opening.success).toBe(false);
+    expect((mockDb.prepare("SELECT COUNT(*) AS total FROM inventory WHERE id = 'test-id'").get() as any).total).toBe(0);
   });
 
   it('includes stock adjustments and zeroing in item movements', async () => {
