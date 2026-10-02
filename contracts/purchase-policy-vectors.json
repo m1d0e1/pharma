@@ -150,6 +150,34 @@
         }
       ],
       "expected_ok": true
+    },
+    {
+      "name": "same drug: YYYY/MM/DD and YYYY-MM-DD with same date is duplicate",
+      "items": [
+        {
+          "id": 1,
+          "quantity": 1,
+          "cost_price": 10,
+          "selling_price": 12,
+          "bonus_quantity": 0,
+          "tax_percent": 0,
+          "discount_percent": 0,
+          "strips_per_box": 1,
+          "expiry_date": "2028-01-31"
+        },
+        {
+          "id": 1,
+          "quantity": 1,
+          "cost_price": 10,
+          "selling_price": 12,
+          "bonus_quantity": 0,
+          "tax_percent": 0,
+          "discount_percent": 0,
+          "strips_per_box": 1,
+          "expiry_date": "2028/01/31"
+        }
+      ],
+      "expected_ok": false
     }
   ],
   "items": [

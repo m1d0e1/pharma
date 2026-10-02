@@ -8,6 +8,10 @@ pub(crate) fn normalize_date_ymd(input: Option<&str>) -> Option<String> {
         return None;
     }
     let parts: Vec<&str> = value.split(&['/', '-'][..]).collect();
+    if parts.len() == 3 && parts[0].len() == 4 {
+        // YYYY/MM/DD or YYYY-MM-DD → always emit as YYYY-MM-DD
+        return Some(format!("{}-{:0>2}-{:0>2}", parts[0], parts[1], parts[2]));
+    }
     if parts.len() == 3 && parts[0].len() <= 2 && parts[2].len() == 4 {
         return Some(format!("{}-{:0>2}-{:0>2}", parts[2], parts[1], parts[0]));
     }
@@ -215,9 +219,20 @@ pub(crate) fn validate_completed_purchase_expiry(
     items: &[PurchaseItem],
     today: &str,
 ) -> Result<(), String> {
+    validate_completed_purchase_expiry_with_non_expiring(items, today, &HashSet::new())
+}
+
+pub(crate) fn validate_completed_purchase_expiry_with_non_expiring(
+    items: &[PurchaseItem],
+    today: &str,
+    non_expiring_drug_ids: &HashSet<i64>,
+) -> Result<(), String> {
     for item in items {
         let expiry = normalize_valid_date_ymd(item.expiry_date.as_deref())?;
         let Some(expiry) = expiry else {
+            if non_expiring_drug_ids.contains(&item.id) {
+                continue;
+            }
             return Err(format!(
                 "Completed purchase requires an expiry date for drug {}",
                 item.id

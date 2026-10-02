@@ -45,11 +45,14 @@ export function normalizePurchaseDateToYMD(dateStr: string | null | undefined): 
 export function assertCompletedPurchaseExpiryPolicy(
   items: PurchasePolicyItem[],
   today = localDate(),
+  nonExpiringDrugIds: ReadonlySet<number> = new Set<number>(),
 ) {
   for (const item of items) {
     const expiry = normalizePurchaseDateToYMD(item.expiry_date);
-    const drugId = Number(item.id ?? item.drug_id);
+    // Persisted purchase rows have their own line id; drug_id is the catalog identity.
+    const drugId = Number(item.drug_id ?? item.id);
     if (!expiry) {
+      if (nonExpiringDrugIds.has(drugId)) continue;
       throw new Error(`تاريخ الصلاحية مطلوب لفاتورة الشراء المكتملة للصنف ${drugId || ''}`.trim());
     }
     if (expiry < today) {
@@ -68,7 +71,7 @@ export function purchaseLotIdentity(item: PurchasePolicyItem) {
 export function assertNoDuplicatePurchaseLots(items: PurchasePolicyItem[]) {
   const seen = new Set<string>();
   for (const item of items) {
-    const drugId = Number(item.id ?? item.drug_id);
+    const drugId = Number(item.drug_id ?? item.id);
     const key = purchaseLotIdentity(item);
     if (seen.has(key)) {
       throw new Error(`سطر شراء مكرر للصنف ${drugId || ''} بنفس تاريخ الصلاحية؛ ادمج الكميات في سطر واحد`.trim());
