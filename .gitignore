@@ -57,7 +57,5 @@ Thumbs.db
 !.vscode/extensions.json
 
 # Test files
-src/tests/
-*.test.ts
 test_*
 tsconfig.tsbuildinfo
