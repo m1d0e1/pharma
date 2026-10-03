@@ -18,6 +18,21 @@ describe('Tauri Configuration', () => {
     expect(config.version).toMatch(/^\d+\.\d+\.\d+$/);
   });
 
+  it('keeps release versions aligned across npm, Cargo, and Tauri metadata', () => {
+    const packageJson = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../package.json'), 'utf-8'));
+    const packageLock = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../package-lock.json'), 'utf-8'));
+    const cargoToml = fs.readFileSync(path.resolve(__dirname, '../../src-tauri/Cargo.toml'), 'utf-8');
+    const cargoLock = fs.readFileSync(path.resolve(__dirname, '../../src-tauri/Cargo.lock'), 'utf-8');
+    const cargoTomlVersion = cargoToml.match(/^version\s*=\s*"([^"]+)"/m)?.[1];
+    const cargoLockVersion = cargoLock.match(/\[\[package\]\]\s*\r?\nname = "pharma"\s*\r?\nversion = "([^"]+)"/m)?.[1];
+
+    expect(packageLock.version).toBe(packageJson.version);
+    expect(packageLock.packages?.['']?.version).toBe(packageJson.version);
+    expect(cargoTomlVersion).toBe(packageJson.version);
+    expect(cargoLockVersion).toBe(packageJson.version);
+    expect(config.version).toBe(packageJson.version);
+  });
+
   it('frontendDist points to the correct export directory', () => {
     expect(config.build.frontendDist).toBe('../out');
   });

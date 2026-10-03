@@ -13,17 +13,8 @@ struct ChecksumRepair {
     legacy: &'static [&'static str],
 }
 
-fn current_checksum(repair: &ChecksumRepair) -> &'static str {
-    if repair
-        .migration
-        .as_bytes()
-        .windows(2)
-        .any(|bytes| bytes == b"\r\n")
-    {
-        repair.current_crlf
-    } else {
-        repair.current_lf
-    }
+fn current_checksum(repair: &ChecksumRepair) -> String {
+    embedded_migration_checksum_hex(repair.version, "checksum_repair", repair.migration)
 }
 
 fn checksum_requires_repair(repair: &ChecksumRepair, checksum: &str) -> Result<bool, String> {
@@ -106,11 +97,32 @@ const CHECKSUM_REPAIRS: &[ChecksumRepair] = &[
         legacy: &["5EDF8FB853589FF8E8C5DE39B9A3432B940C4DB1BC1F0A43438C2B14D376DB187063BDE0F6C55E34C4C2EE261AA3F5A7"],
     },
     ChecksumRepair {
+        version: 6,
+        migration: include_str!("../migrations/006_accounting_upgrade_seed.sql"),
+        current_lf: "8C1DEC5BFB088CCB52A98D085D81F34EFC948B37B2E6DE2946F067BAEA8D07F419C8E064553B850E9417EF03312E7D7A",
+        current_crlf: "748A5081D73A5527CDBAACA558C0B515DBFD139826506E94FD8BB7E6700428B2AB07C05A01E7CD6DBBE689F970D37E1E",
+        legacy: &[],
+    },
+    ChecksumRepair {
         version: 7,
         migration: include_str!("../migrations/007_purchase_inventory_links.sql"),
         current_lf: "ADD70A4E03CA17C0E204F600C91803410D880921B6C6A2504D39309E684CA58B2B7B2CA683BDF3E1EB7ABA6EE96C64AE",
         current_crlf: "1AF436DBA20429D9EF69ECA504162C15D8DA72A70758C5B53AAEE9B33D46A699704D8DC5F11C425E3D2E9F4A09175A63",
         legacy: &["48DF50E8B76D93E61F77DEB39E7498CFA1D34B6A7AB76DC1E773320F1B1D448C43B191746F5958858AD1C6F75C6E6013"],
+    },
+    ChecksumRepair {
+        version: 8,
+        migration: include_str!("../migrations/008_patient_accounting.sql"),
+        current_lf: "09BB9D9AFA5BE22F074E9073ECEBA993227E4FE23CC90FEAB5F442B4A4FCD772456F4202856F49E6F653E4BFA8439D65",
+        current_crlf: "8076D5E5B907A5E692896235AECDCCDD8068F023820E275B6FC2F334FD7850B29E7A8BB5A7A37601E5CC3EE2BA083DB8",
+        legacy: &[],
+    },
+    ChecksumRepair {
+        version: 9,
+        migration: include_str!("../migrations/009_rebuild_master_drugs_fts.sql"),
+        current_lf: "EF02EDB00A5C1F2EC8111E2E481083BE205ABE78B5FA2446DCC2F2359C867DD21B89CF58D19482B1E99983AFA311CEB1",
+        current_crlf: "E1B2CCE223C6F5E2DB22E1044647D5AA2E756285B8624E6C30A1518014224EBB196B6ECA4FDFE25FB124BEAFCB621949",
+        legacy: &[],
     },
     ChecksumRepair {
         version: 12,
@@ -121,6 +133,20 @@ const CHECKSUM_REPAIRS: &[ChecksumRepair] = &[
             "390BDCB64ED1FBE1C12E844281BB50251DED58D07B2B1AFB54F80BCE2B179E6C8E1026153452274980FC2271C2B6C1C6",
             "439E557C6F5CF1D421B704D34066717BDD3FF61D6FFA77B13BF51638F6FD4FD7FB70BBF6F32E4534E921A985E909B01A",
         ],
+    },
+    ChecksumRepair {
+        version: 13,
+        migration: include_str!("../migrations/013_shift_handover_details.sql"),
+        current_lf: "FB62CCC62133EBA1964883C10193C40ECCD1F69CB661173D8018B2095BDD327E8FCB56DF476A46404375AC00C824E4DA",
+        current_crlf: "B3F5FE13EA6263CFE816FFA5481069B18F96853A07F0962DAD3AD34339558CB6EFC2DCB48443E938F715C89D2909F3E1",
+        legacy: &["8BB1234322CB986511F074EDB35A3F8EF37F4A1CC52784C20183047C7EAF27982EAD59A1C1717F606026F67E3A6BC78F"],
+    },
+    ChecksumRepair {
+        version: 14,
+        migration: include_str!("../migrations/014_inventory_performance.sql"),
+        current_lf: "80E7B05251D3FF452E7C73F62C3314CE9BF728773C08C1C9AF39CD1058D03B17A3E3488E60A0DE8515AB9EF189A08A6E",
+        current_crlf: "078311A26AB6AB59D7C81B074B6EDF92739A83B5D7E6F6254FD4251B9BAFCBBB1754E0F3A8F6E409CC47C2FC62A91265",
+        legacy: &[],
     },
 ];
 
@@ -3163,7 +3189,7 @@ mod tests {
         let repair = &CHECKSUM_REPAIRS[0];
         assert_eq!(checksum_requires_repair(repair, repair.legacy[0]), Ok(true));
         assert_eq!(
-            checksum_requires_repair(repair, current_checksum(repair)),
+            checksum_requires_repair(repair, &current_checksum(repair)),
             Ok(false)
         );
         assert!(checksum_requires_repair(repair, "UNKNOWN").is_err());
@@ -3209,6 +3235,79 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(checksum, current);
+
+        connection.close().await.unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn repairs_released_legacy_eol_checksums_before_pending_migrations() {
+        let source = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("pharma_local.db");
+        let path = std::env::temp_dir().join(format!(
+            "pharma-legacy-eol-checksums-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::copy(&source, &path).unwrap();
+
+        let mut connection = connect(&path).await.unwrap();
+        prepare_connection(&mut connection).await.unwrap();
+
+        for (version, description, historical) in [
+            (
+                6_i64,
+                "accounting_upgrade_seed",
+                "748A5081D73A5527CDBAACA558C0B515DBFD139826506E94FD8BB7E6700428B2AB07C05A01E7CD6DBBE689F970D37E1E",
+            ),
+            (
+                8_i64,
+                "patient_accounting",
+                "8076D5E5B907A5E692896235AECDCCDD8068F023820E275B6FC2F334FD7850B29E7A8BB5A7A37601E5CC3EE2BA083DB8",
+            ),
+            (
+                9_i64,
+                "rebuild_master_drugs_fts",
+                "E1B2CCE223C6F5E2DB22E1044647D5AA2E756285B8624E6C30A1518014224EBB196B6ECA4FDFE25FB124BEAFCB621949",
+            ),
+            (
+                13_i64,
+                "shift_handover_details",
+                "8BB1234322CB986511F074EDB35A3F8EF37F4A1CC52784C20183047C7EAF27982EAD59A1C1717F606026F67E3A6BC78F",
+            ),
+            (
+                14_i64,
+                "inventory_performance",
+                "078311A26AB6AB59D7C81B074B6EDF92739A83B5D7E6F6254FD4251B9BAFCBBB1754E0F3A8F6E409CC47C2FC62A91265",
+            ),
+        ] {
+            sqlx::query(&format!(
+                "INSERT OR REPLACE INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (?, ?, 1, X'{historical}', 0)"
+            ))
+            .bind(version)
+            .bind(description)
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        }
+
+        prepare_connection(&mut connection).await.unwrap();
+
+        for (version, description, sql) in [
+            (6_i64, "accounting_upgrade_seed", include_str!("../migrations/006_accounting_upgrade_seed.sql")),
+            (8_i64, "patient_accounting", include_str!("../migrations/008_patient_accounting.sql")),
+            (9_i64, "rebuild_master_drugs_fts", include_str!("../migrations/009_rebuild_master_drugs_fts.sql")),
+            (13_i64, "shift_handover_details", include_str!("../migrations/013_shift_handover_details.sql")),
+            (14_i64, "inventory_performance", include_str!("../migrations/014_inventory_performance.sql")),
+        ] {
+            let expected = embedded_migration_checksum_hex(version, description, sql);
+            let actual: String = sqlx::query_scalar(
+                "SELECT hex(checksum) FROM _sqlx_migrations WHERE version = ? AND success = 1",
+            )
+            .bind(version)
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+            assert_eq!(actual, expected, "migration {version} checksum was not normalized");
+        }
 
         connection.close().await.unwrap();
         std::fs::remove_file(path).unwrap();
@@ -4341,9 +4440,19 @@ mod tests {
             INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
             VALUES (5, 'purchase_return_details', 1, X'5EDF8FB853589FF8E8C5DE39B9A3432B940C4DB1BC1F0A43438C2B14D376DB187063BDE0F6C55E34C4C2EE261AA3F5A7', 0);
             INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
+            VALUES (6, 'accounting_upgrade_seed', 1, X'748A5081D73A5527CDBAACA558C0B515DBFD139826506E94FD8BB7E6700428B2AB07C05A01E7CD6DBBE689F970D37E1E', 0);
+            INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
             VALUES (7, 'purchase_inventory_links', 1, X'48DF50E8B76D93E61F77DEB39E7498CFA1D34B6A7AB76DC1E773320F1B1D448C43B191746F5958858AD1C6F75C6E6013', 0);
             INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
+            VALUES (8, 'patient_accounting', 1, X'8076D5E5B907A5E692896235AECDCCDD8068F023820E275B6FC2F334FD7850B29E7A8BB5A7A37601E5CC3EE2BA083DB8', 0);
+            INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
+            VALUES (9, 'rebuild_master_drugs_fts', 1, X'E1B2CCE223C6F5E2DB22E1044647D5AA2E756285B8624E6C30A1518014224EBB196B6ECA4FDFE25FB124BEAFCB621949', 0);
+            INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
             VALUES (12, 'shortages_pharmacy_scope', 1, X'390BDCB64ED1FBE1C12E844281BB50251DED58D07B2B1AFB54F80BCE2B179E6C8E1026153452274980FC2271C2B6C1C6', 0);
+            INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
+            VALUES (13, 'shift_handover_details', 1, X'8BB1234322CB986511F074EDB35A3F8EF37F4A1CC52784C20183047C7EAF27982EAD59A1C1717F606026F67E3A6BC78F', 0);
+            INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
+            VALUES (14, 'inventory_performance', 1, X'078311A26AB6AB59D7C81B074B6EDF92739A83B5D7E6F6254FD4251B9BAFCBBB1754E0F3A8F6E409CC47C2FC62A91265', 0);
             "#,
         )
         .execute(&mut connection)
