@@ -3659,6 +3659,8 @@ async fn apply_purchase_accounting(
     Ok(())
 }
 
+// These parameters mirror the historical sale row used to recreate a return lot.
+#[allow(clippy::too_many_arguments)]
 async fn ensure_return_inventory(
     tx: &mut Transaction<'_, Sqlite>,
     inventory_id: Option<&str>,

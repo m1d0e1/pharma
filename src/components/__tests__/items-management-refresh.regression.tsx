@@ -127,7 +127,7 @@ describe('ItemsManagementClient auto-refresh and total count regression', () => 
 
     fireEvent.click(await screen.findByRole('button', { name: 'إضافة صنف جديد' }));
     expect(screen.getByRole('dialog', { name: 'إضافة صنف جديد لقاعدة البيانات' })).toHaveAttribute('tabindex', '-1');
-    await waitFor(() => expect(screen.getByRole('button', { name: 'إغلاق محرر الصنف' })).toHaveFocus());
+    await waitFor(() => expect(screen.getByLabelText('Trade Name (English) *')).toHaveFocus());
   });
 
   it('keeps catalog data visible but hides mutation controls from can_view_stores-only users', async () => {

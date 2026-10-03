@@ -215,6 +215,7 @@ pub(crate) fn validate_purchase_items(items: &[PurchaseItem]) -> Result<(), Stri
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn validate_completed_purchase_expiry(
     items: &[PurchaseItem],
     today: &str,

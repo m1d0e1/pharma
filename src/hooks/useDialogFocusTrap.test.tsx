@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useDialogFocusTrap } from './useDialogFocusTrap';
 
 function Harness() {
@@ -40,5 +40,27 @@ describe('useDialogFocusTrap', () => {
 
     fireEvent.click(last);
     expect(opener).toHaveFocus();
+  });
+
+  it('does not steal focus that already moved inside before deferred autofocus runs', () => {
+    let pendingFrame: FrameRequestCallback | null = null;
+    const requestFrame = jest.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => {
+      pendingFrame = callback;
+      return 1;
+    });
+    const cancelFrame = jest.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {});
+
+    render(<Harness />);
+    fireEvent.click(screen.getByRole('button', { name: 'فتح' }));
+
+    const last = screen.getByRole('button', { name: 'الأخير' });
+    last.focus();
+    act(() => {
+      pendingFrame?.(0);
+    });
+
+    expect(last).toHaveFocus();
+    requestFrame.mockRestore();
+    cancelFrame.mockRestore();
   });
 });

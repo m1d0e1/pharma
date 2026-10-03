@@ -27,6 +27,7 @@ export function useDialogFocusTrap<T extends HTMLElement>(isOpen = true) {
     };
 
     const focusInside = () => {
+      if (dialog.contains(document.activeElement)) return;
       const first = Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).find(isVisible);
       (first || dialog).focus();
     };

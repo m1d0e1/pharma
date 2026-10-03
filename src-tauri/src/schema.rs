@@ -1,5 +1,6 @@
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::{Connection, Row, Sqlite, SqliteConnection, Transaction};
+use std::fmt::Write as _;
 use std::path::Path;
 use std::str::FromStr;
 use tauri::Manager;
@@ -33,6 +34,14 @@ fn checksum_requires_repair(repair: &ChecksumRepair, checksum: &str) -> Result<b
     }
 }
 
+fn checksum_bytes_hex(checksum: &[u8]) -> String {
+    let mut hex = String::with_capacity(checksum.len() * 2);
+    for byte in checksum {
+        write!(&mut hex, "{byte:02X}").expect("writing to a String cannot fail");
+    }
+    hex
+}
+
 fn embedded_migration_checksum_hex(version: i64, description: &'static str, sql: &'static str) -> String {
     let migration = sqlx::migrate::Migration::new(
         version,
@@ -41,11 +50,7 @@ fn embedded_migration_checksum_hex(version: i64, description: &'static str, sql:
         sql.into(),
         false,
     );
-    migration
-        .checksum
-        .iter()
-        .map(|byte| format!("{byte:02X}"))
-        .collect()
+    checksum_bytes_hex(&migration.checksum)
 }
 
 const CHECKSUM_REPAIRS: &[ChecksumRepair] = &[
@@ -5603,11 +5608,7 @@ mod tests {
             DAILY_SNAPSHOT_SCOPE_MIGRATION.into(),
             false,
         );
-        let sqlx_checksum: String = sqlx_migration
-            .checksum
-            .iter()
-            .map(|byte| format!("{byte:02X}"))
-            .collect();
+        let sqlx_checksum = checksum_bytes_hex(&sqlx_migration.checksum);
         assert_eq!(
             migration_20_checksum,
             daily_snapshot_scope_migration_checksum()
