@@ -1165,6 +1165,9 @@ export function initLocalDb() {
   if (!shiftColumns.some(c => c.name === 'receiver_id')) {
     addColumnSafely('shifts', 'receiver_id', "TEXT");
   }
+  if (!shiftColumns.some(c => c.name === 'treasury_retained_cash')) {
+    addColumnSafely('shifts', 'treasury_retained_cash', "REAL");
+  }
   addColumnSafely('shifts', 'pharmacy_id', 'TEXT');
   addColumnSafely('cash_movements', 'pharmacy_id', 'TEXT');
   addColumnSafely('daily_journals', 'pharmacy_id', 'TEXT');

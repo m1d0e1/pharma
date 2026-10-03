@@ -117,6 +117,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
   const [treasuryView, setTreasuryView] = useState<'all' | 'handovers' | 'disbursements' | 'receipts'>('all');
   const [treasurySummary, setTreasurySummary] = useState({
     treasuryBalance: 0,
+    drawerBalance: 0,
     ledgerCashBalance: 0,
     todayReceipts: 0,
     todayExpenses: 0,
@@ -398,7 +399,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
            ]);
            if (requestId !== loadTabRequestRef.current) return;
            if (summaryRes.success && summaryRes.data) setTreasurySummary(summaryRes.data as typeof treasurySummary);
-           else setLoadError(summaryRes.error || 'تعذر تحميل رصيد الدرج؛ لا تعتمد على الرصيد السابق');
+           else setLoadError(summaryRes.error || 'تعذر تحميل رصيد الخزنة؛ لا تعتمد على الرصيد السابق');
            if (movementsRes.success) setMovements(movementsRes.data as any[]);
            if (posRes.success) setPointsOfSale(posRes.data as any[]);
            if (banksRes.success) setBanks(banksRes.data as any[]);
@@ -482,7 +483,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
         if (requestId !== loadTabRequestRef.current) return;
         console.error('Load data error:', error);
         const messages: Record<string, string> = {
-          treasury: 'تعذر تحميل رصيد الدرج؛ لا تعتمد على الرصيد السابق',
+          treasury: 'تعذر تحميل رصيد الخزنة؛ لا تعتمد على الرصيد السابق',
           pos_management: 'تعذر تحميل بيانات نقاط البيع',
           banks: 'تعذر تحميل بيانات الحسابات البنكية',
           papers: 'تعذر تحميل بيانات الأوراق المالية',
@@ -501,6 +502,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
 
   const {
     treasuryBalance,
+    drawerBalance,
     ledgerCashBalance,
     todayReceipts,
     todayExpenses,
@@ -724,14 +726,14 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                    {loadError}
                    <button type="button" className="mr-4 underline" onClick={() => void loadTabData()}>إعادة المحاولة</button>
                  </div> : <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
-                    <StatCard label="رصيد الخزنة (الدرج)" value={treasuryBalance.toLocaleString('en-US')} color="emerald" icon={Wallet} onClick={() => openTreasuryMetric('treasury')} active={selectedTreasuryMetric === 'treasury'} />
+                    <StatCard label="رصيد الخزنة" value={treasuryBalance.toLocaleString('en-US')} color="emerald" icon={Wallet} onClick={() => openTreasuryMetric('treasury')} active={selectedTreasuryMetric === 'treasury'} />
                     <StatCard label="توريدات اليوم" value={todayReceipts.toLocaleString('en-US')} color="blue" icon={ArrowRightLeft} onClick={() => openTreasuryMetric('receipts')} active={selectedTreasuryMetric === 'receipts'} />
                     <StatCard label="المصروفات اليومية" value={todayExpenses.toLocaleString('en-US')} color="rose" icon={Receipt} onClick={() => openTreasuryMetric('expenses')} active={selectedTreasuryMetric === 'expenses'} />
                     <StatCard label="تسليمات الورديات هذا الشهر" value={totalShiftHandovers.toLocaleString('en-US')} color="blue" icon={ShieldCheck} onClick={() => openTreasuryMetric('handovers')} active={selectedTreasuryMetric === 'handovers'} />
                  </div>}
 
                  <p className="text-sm text-slate-500 leading-relaxed">
-                   رصيد الخزنة (الدرج) هو النقدية الفعلية المتوقعة حاليًا في الوردية المفتوحة: رصيد البداية ومبيعات النقد والتوريدات، بعد خصم المرتجعات والمصروفات والتسليمات. يُسجّل الجرد الفعلي عند التسليم؛ والتحويل لوردية تالية لا ينشئ إيرادًا جديدًا، أما التسليم للخزينة أو البنك فيخصم من الدرج.
+                   رصيد الخزنة هو النقد المحتفظ به خارج درج الوردية بعد التسليم. عند عدّ 9000 ج.م ووضع 3000 ج.م في درج الوردية التالية، يُضاف 6000 ج.م إلى الخزنة. رصيد درج الوردية المفتوحة حاليًا: <strong>{Number(drawerBalance || 0).toLocaleString('en-US')} ج.م</strong>.
                  </p>
                  {selectedTreasuryMetric && !loadError && (
                     <TreasuryMetricDetails
@@ -1933,7 +1935,7 @@ function TreasuryMetricDetails({
   onClose: () => void;
 }) {
   const labels: Record<TreasuryMetricKey, string> = {
-    treasury: 'تفاصيل رصيد الخزنة (الدرج)',
+    treasury: 'تفاصيل رصيد الخزنة',
     receipts: 'تفاصيل توريدات اليوم',
     expenses: 'تفاصيل المصروفات اليومية',
     handovers: 'تفاصيل تسليمات الورديات - الشهر الحالي',
@@ -1957,7 +1959,7 @@ function TreasuryMetricDetails({
         <table className="w-full min-w-[680px] text-right">
           <thead className="bg-slate-50 dark:bg-slate-800/50 sticky top-0">
             <tr>
-              <th className="px-6 py-4 text-xs font-black text-slate-400">{metric === 'treasury' ? 'بداية الوردية' : 'التاريخ'}</th>
+              <th className="px-6 py-4 text-xs font-black text-slate-400">التاريخ</th>
               <th className="px-6 py-4 text-xs font-black text-slate-400">البيان</th>
               <th className="px-6 py-4 text-xs font-black text-slate-400">المستخدم</th>
               <th className="px-6 py-4 text-xs font-black text-slate-400">المبلغ</th>

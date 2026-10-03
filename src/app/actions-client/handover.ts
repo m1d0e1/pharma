@@ -182,10 +182,18 @@ export async function processHandoverAction(data: {
 
       const difference = data.actualCash - details.expected_cash;
       const isInternalHandover = data.transferTargetType === 'next_shift';
-      const remainingCash = isInternalHandover
-        ? data.actualCash
+      // transferAmount is always the amount sent to the selected destination.
+      // For a next-shift handover, that amount becomes the new drawer float and
+      // everything else counted in the old drawer is retained in main treasury.
+      const carriedCash = isInternalHandover
+        ? data.transferAmount
         : Math.max(0, data.actualCash - data.transferAmount);
-      const carriedCash = Math.max(0, data.actualCash - data.transferAmount);
+      const treasuryRetainedCash = data.transferTargetType === 'treasury'
+        ? data.transferAmount
+        : isInternalHandover
+          ? Math.max(0, data.actualCash - data.transferAmount)
+          : 0;
+      const remainingCash = carriedCash;
       const shiftStatus = Math.abs(difference) > 5 ? 'discrepancy' : 'closed';
       const nextShiftId = managedUserId ? null : generateId();
 
@@ -264,23 +272,23 @@ export async function processHandoverAction(data: {
         ? await db.prepare(`
             UPDATE shifts
             SET end_time = CURRENT_TIMESTAMP, ending_cash = ?, actual_cash = ?,
-                transfer_amount = ?, transfer_target = ?, cash_difference = ?,
+                transfer_amount = ?, transfer_target = ?, treasury_retained_cash = ?, cash_difference = ?,
                 receiver_id = NULL, notes = ?, status = ?
             WHERE id = ? AND CAST(user_id AS TEXT) = CAST(? AS TEXT) AND status = 'open'
           `).run(
             remainingCash, data.actualCash, data.transferAmount,
-            data.transferTargetType || 'treasury', difference,
+            data.transferTargetType || 'treasury', treasuryRetainedCash, difference,
             data.notes || null, shiftStatus, data.shiftId, shiftOwnerId
           )
         : await db.prepare(`
             UPDATE shifts
             SET end_time = CURRENT_TIMESTAMP, ending_cash = ?, actual_cash = ?,
                 transfer_amount = COALESCE(transfer_amount, 0) + ?, transfer_target = ?,
-                cash_difference = ?, receiver_id = ?, notes = ?, status = ?
+                treasury_retained_cash = ?, cash_difference = ?, receiver_id = ?, notes = ?, status = ?
             WHERE id = ? AND status = 'open'
           `).run(
             carriedCash, data.actualCash, data.transferAmount,
-            data.transferTargetType || 'treasury', difference, receiver?.id || null,
+            data.transferTargetType || 'treasury', treasuryRetainedCash, difference, receiver?.id || null,
             data.notes || null, shiftStatus, data.shiftId
           );
       if (shiftUpdate.changes !== 1) throw new Error('تم إغلاق الوردية أو تعديلها بالفعل');
@@ -296,12 +304,7 @@ export async function processHandoverAction(data: {
           )
         `).run(nextShiftId,user.id,pharmacyId,carriedCash,`وردية مشتركة بعد تسليم ${data.shiftId}`,pharmacyId);
         if (opened.changes !== 1) throw new Error('توجد وردية أخرى مفتوحة؛ لم يتم التسليم. راجع إدارة الورديات');
-        if (isInternalHandover && data.transferAmount > 0) {
-          receiverShiftId = nextShiftId;
-          await db.prepare(`INSERT INTO cash_movements(id,user_id,shift_id,type,category,amount,source_type,target_name,notes,date)
-            VALUES(?,?,?,'receipt','handover_received',?,'user_drawer_received',?,?,datetime('now','localtime'))
-          `).run(generateId(),receiver.id,nextShiftId,data.transferAmount,user.id,`استلام من الوردية ${data.shiftId}. ${data.notes || ''}`);
-        }
+        if (isInternalHandover) receiverShiftId = nextShiftId;
         await db.prepare('INSERT INTO activity_log(user_id,action,details) VALUES (?,\'START_SHIFT\',?)').run(user.id,`Opened shared shift ${nextShiftId} after ${data.shiftId}; opening float ${carriedCash}`);
       }
 
@@ -310,7 +313,7 @@ export async function processHandoverAction(data: {
         managedUserId ? 'CLOSE_USER_SHIFT_AND_DEACTIVATE' : 'HANDOVER',
         managedUserId
           ? `Closed shift ${data.shiftId} and deactivated ${managedUser.username}; cash ${data.actualCash}; difference ${difference.toFixed(2)}`
-          : JSON.stringify({ shiftId:data.shiftId, newShiftId:nextShiftId, actorId:user.id, receiverId:receiver?.id, actualCash:data.actualCash, expectedCash:details.expected_cash, transferAmount:data.transferAmount, transferTargetType:data.transferTargetType, transferTargetId:data.transferTargetId, difference, carriedCash, notes:data.notes || '' })
+          : JSON.stringify({ shiftId:data.shiftId, newShiftId:nextShiftId, actorId:user.id, receiverId:receiver?.id, actualCash:data.actualCash, expectedCash:details.expected_cash, transferAmount:data.transferAmount, transferTargetType:data.transferTargetType, transferTargetId:data.transferTargetId, difference, carriedCash, treasuryRetainedCash, notes:data.notes || '' })
       );
 
       if (managedUserId && data.deactivateManagedUser) {

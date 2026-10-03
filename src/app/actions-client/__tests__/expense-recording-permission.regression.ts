@@ -49,6 +49,8 @@ describe('expense recording permission contract', () => {
       amount: 25,
       description: 'cash-flow expense',
       date: '2026-09-21',
+      source_type: 'main_safe',
+      shift_id: 'shift-1',
     })).resolves.toEqual({ success: true, id: 'expense-1' });
 
     expect(dbTransaction).toHaveBeenCalledTimes(1);
@@ -58,6 +60,8 @@ describe('expense recording permission contract', () => {
         category: 'operating_expenses',
         sub_category: 'rent',
         amount: 25,
+        source_type: 'main_safe',
+        shift_id: 'shift-1',
       }),
       expect.objectContaining({ prepare: expect.any(Function) }),
     );

@@ -182,7 +182,14 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
 
   if (!isOpen) return null;
 
-  const remainingCash = form.transferTargetType === 'next_shift' ? (form.actualCash || 0) : (form.actualCash || 0) - (form.transferAmount || 0);
+  const remainingCash = form.transferTargetType === 'next_shift'
+    ? (form.transferAmount || 0)
+    : (form.actualCash || 0) - (form.transferAmount || 0);
+  const treasuryRetainedCash = form.transferTargetType === 'treasury'
+    ? (form.transferAmount || 0)
+    : form.transferTargetType === 'next_shift'
+      ? Math.max(0, (form.actualCash || 0) - (form.transferAmount || 0))
+      : 0;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -220,7 +227,7 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
       });
 
       if (res.success) {
-        toast.success(`تم التسليم وإغلاق الوردية وفتح وردية مشتركة جديدة (الرصيد ${Number(res.remainingCash ?? 0).toFixed(2)} ج.م)`);
+        toast.success(`تم التسليم وإغلاق الوردية وفتح وردية مشتركة جديدة (رصيد الدرج الجديد ${Number(res.remainingCash ?? 0).toFixed(2)} ج.م)`);
         onClose();
       } else {
         toast.error(res.error || 'فشل تسليم الدرج');
@@ -415,6 +422,13 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
                     value={remainingCash.toFixed(2)} 
                     className="col-span-2 px-3 py-1.5 bg-amber-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded font-black text-emerald-700 dark:text-emerald-400 text-center"
                   />
+                </div>
+
+                <div className="grid grid-cols-3 items-center gap-2">
+                  <span className="col-span-1 text-slate-700 dark:text-slate-300">المبلغ المضاف إلى الخزنة الرئيسية</span>
+                  <div className="col-span-2 px-3 py-1.5 bg-emerald-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded font-black text-emerald-700 dark:text-emerald-400 text-center">
+                    {treasuryRetainedCash.toFixed(2)}
+                  </div>
                 </div>
               </div>
             </div>

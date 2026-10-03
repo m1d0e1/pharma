@@ -131,6 +131,8 @@ describe('coverage gap: staff-management direct controls', () => {
     renderStaff({ onAddUser });
 
     await user.click(screen.getByRole('button', { name: 'إضافة موظف جديد' }));
+    const addDialog = screen.getByRole('dialog', { name: 'إضافة موظف' });
+    await waitFor(() => expect(addDialog).toContainElement(document.activeElement as HTMLElement));
     await user.type(screen.getByPlaceholderText('مثال: د. محمد علي'), 'Thrown User');
     await user.type(screen.getByPlaceholderText('m_ali'), 'thrown');
     await user.click(screen.getByRole('button', { name: 'حفظ الموظف' }));
@@ -146,6 +148,8 @@ describe('coverage gap: staff-management direct controls', () => {
     renderStaff({ onResetPassword });
 
     await user.click(screen.getByTitle('إعادة تعيين كلمة المرور'));
+    const resetDialog = screen.getByRole('dialog', { name: 'إعادة تعيين المرور' });
+    await waitFor(() => expect(resetDialog).toContainElement(document.activeElement as HTMLElement));
     await user.type(screen.getByPlaceholderText('أدخل كلمة المرور الجديدة'), 'abcdef');
     await user.click(screen.getByRole('button', { name: 'تأكيد التغيير' }));
 

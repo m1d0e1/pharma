@@ -36,14 +36,14 @@ describe('receipt table keyboard interaction', () => {
     render(<ReceiptListClient initialInvoices={[invoice as any]} />);
 
     expect(screen.getByRole('textbox', { name: 'بحث في الفواتير' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /طباعة الفاتورة INV-KEYB/ })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /إرسال الفاتورة INV-KEYB عبر واتساب/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /طباعة الفاتورة INV-KEYB/ })).toHaveClass('min-h-11', 'min-w-11');
+    expect(screen.getByRole('button', { name: /إرسال الفاتورة INV-KEYB عبر واتساب/ })).toHaveClass('min-h-11', 'min-w-11');
     const row = screen.getByText('Keyboard Receipt Customer').closest('tr') as HTMLTableRowElement;
     expect(row).toHaveAttribute('tabindex', '0');
     fireEvent.keyDown(row, { key: 'Enter' });
 
     expect(await screen.findByRole('dialog', { name: 'فاتورة مبيعات' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'إغلاق تفاصيل الفاتورة' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'إغلاق تفاصيل الفاتورة' })).toHaveClass('h-11', 'w-11');
   });
 
   it('opens receipt details from a focused row with Space and prevents page scrolling', async () => {

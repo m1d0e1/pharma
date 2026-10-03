@@ -107,6 +107,7 @@ export async function getShiftReportAction(shiftId: string) {
         SUM(amount) as total
       FROM cash_movements
       WHERE shift_id = ?
+        AND LOWER(COALESCE(source_type, '')) <> 'main_safe'
       GROUP BY type, category
     `).all(shiftId) as any[];
 

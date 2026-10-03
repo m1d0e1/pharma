@@ -168,7 +168,7 @@ export default function ReceiptDetailsModal({ invoice, onClose, autoPrint = fals
               type="button"
               aria-label="إغلاق تفاصيل الفاتورة"
               onClick={onClose} 
-              className="p-1.5 hover:bg-white/10 rounded-lg transition-all text-slate-400 hover:text-white"
+              className="inline-flex h-11 w-11 items-center justify-center hover:bg-white/10 rounded-lg transition-all text-slate-400 hover:text-white"
             >
               <X className="w-4 h-4" />
             </button>
@@ -222,7 +222,7 @@ export default function ReceiptDetailsModal({ invoice, onClose, autoPrint = fals
                 </div>
               ))}
               {(!invoice.sales_items || invoice.sales_items.length === 0) && (
-                <div className="py-4 flex flex-col items-center justify-center text-slate-400 gap-1 text-xs">
+                <div className="py-4 flex flex-col items-center justify-center text-slate-600 dark:text-slate-300 gap-1 text-xs">
                   <p className="font-bold italic">لا توجد أصناف مسجلة</p>
                 </div>
               )}
@@ -242,7 +242,7 @@ export default function ReceiptDetailsModal({ invoice, onClose, autoPrint = fals
                    invoice.payment_method === 'delivery' ? '🛵' : '💸'}
                 </span>
                 <div>
-                  <p className="text-xs font-black text-slate-400 uppercase">طريقة الدفع</p>
+                  <p className="text-xs font-black text-slate-600 dark:text-slate-300 uppercase">طريقة الدفع</p>
                   <span className="font-bold text-slate-800 dark:text-white text-xs">
                     {invoice.payment_method === 'cash' ? 'نقدي (Cash)' : 
                      invoice.payment_method === 'credit' ? 'حساب أجل (Credit)' :
@@ -261,19 +261,19 @@ export default function ReceiptDetailsModal({ invoice, onClose, autoPrint = fals
                 <span className="font-bold text-xs">{subtotal.toFixed(2)} ج.م</span>
               </div>
               {discount > 0 && (
-                <div className="flex justify-between items-center px-1 text-rose-500 text-xs">
+                <div className="flex justify-between items-center px-1 text-rose-700 dark:text-rose-300 text-xs">
                   <span className="font-bold">إجمالي الخصم:</span>
                   <span className="font-bold">-{discount.toFixed(2)} ج.م</span>
                 </div>
               )}
               {Number(invoice.loyalty_discount_amount || 0) > 0 && Number(invoice.points_redeemed || 0) > 0 && (
-                <div className="flex justify-between items-center px-1 text-amber-600 text-xs">
+                <div className="flex justify-between items-center px-1 text-amber-700 dark:text-amber-300 text-xs">
                   <span className="font-bold">منه خصم نقاط الولاء ({Math.floor(Number(invoice.points_redeemed))} نقطة):</span>
                   <span className="font-bold">-{Number(invoice.loyalty_discount_amount).toFixed(2)} ج.م</span>
                 </div>
               )}
               {additionalFees > 0 && (
-                <div className="flex justify-between items-center px-1 text-amber-600 text-xs">
+                <div className="flex justify-between items-center px-1 text-amber-700 dark:text-amber-300 text-xs">
                   <span className="font-bold">رسوم إضافية:</span>
                   <span className="font-bold">+{additionalFees.toFixed(2)} ج.م</span>
                 </div>
@@ -281,7 +281,7 @@ export default function ReceiptDetailsModal({ invoice, onClose, autoPrint = fals
               <div className="pt-1.5 border-t border-slate-200 dark:border-slate-700 flex justify-between items-baseline">
                 <span className="font-black text-slate-700 dark:text-slate-200 text-xs">المطلبوب:</span>
                 <span className="text-xl font-black text-blue-600 dark:text-blue-400 tracking-tight">
-                  {invoice.total_amount.toLocaleString()} <span className="text-[11px] text-slate-400 font-bold">ج.م</span>
+                  {invoice.total_amount.toLocaleString()} <span className="text-[11px] text-slate-600 dark:text-slate-300 font-bold">ج.م</span>
                 </span>
               </div>
             </div>

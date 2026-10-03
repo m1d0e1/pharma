@@ -71,6 +71,7 @@ describe('finance pharmacy scope', () => {
         type TEXT,
         category TEXT,
         amount REAL,
+        source_type TEXT,
         target_name TEXT,
         notes TEXT,
         date TEXT,
@@ -271,13 +272,21 @@ describe('finance pharmacy scope', () => {
       ALTER TABLE shifts ADD COLUMN start_time TEXT;
       ALTER TABLE shifts ADD COLUMN end_time TEXT;
       ALTER TABLE shifts ADD COLUMN starting_cash REAL DEFAULT 0;
+      ALTER TABLE shifts ADD COLUMN actual_cash REAL;
       ALTER TABLE shifts ADD COLUMN transfer_amount REAL DEFAULT 0;
+      ALTER TABLE shifts ADD COLUMN transfer_target TEXT;
+      ALTER TABLE shifts ADD COLUMN treasury_retained_cash REAL;
       ALTER TABLE sales_invoices ADD COLUMN shift_id TEXT;
       ALTER TABLE sales_invoices ADD COLUMN payment_method TEXT;
       ALTER TABLE sales_invoices ADD COLUMN paid_amount REAL DEFAULT 0;
       ALTER TABLE sales_invoices ADD COLUMN remaining_amount REAL DEFAULT 0;
       ALTER TABLE returns ADD COLUMN shift_id TEXT;
       ALTER TABLE returns ADD COLUMN refund_method TEXT;
+      INSERT INTO shifts
+        (id, pharmacy_id, status, user_id, start_time, end_time, actual_cash, transfer_amount, transfer_target, treasury_retained_cash)
+      VALUES
+        ('treasury-ph1', 'ph-1', 'closed', 'u1', datetime('now', '-2 hours'), datetime('now', '-1 hour'), 100, 40, 'next_shift', 60),
+        ('treasury-ph2', 'ph-2', 'closed', 'u2', datetime('now', '-2 hours'), datetime('now', '-1 hour'), 150, 60, 'next_shift', 90);
     `);
   });
 
@@ -289,12 +298,15 @@ describe('finance pharmacy scope', () => {
     expect(await getTreasuryDashboardAction()).toMatchObject({
       success: true,
       data: {
-        treasuryBalance: 0,
+        treasuryBalance: 60,
         ledgerCashBalance: 100,
         todayReceipts: 10,
         todayExpenses: 3,
       },
     });
+    expect((await getTreasuryDashboardAction('treasury')).data?.details).toEqual([
+      expect.objectContaining({ shift_id: 'treasury-ph1', amount: 60 }),
+    ]);
 
     expect((await getJournalsAction()).data?.map((row: any) => row.id)).toEqual(['j1']);
     expect((await getJournalDetailsAction('j2')).data).toEqual([]);

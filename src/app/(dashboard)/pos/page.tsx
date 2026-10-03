@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, forwardRef, useImperativeHandle, useMemo, 
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useBarcodeScanner } from '@/hooks/useBarcodeScanner';
 import { toast, Toaster } from 'react-hot-toast';
-import { ShoppingCart, Search, User, X, Loader2, FileText, Clock, Plus, Trash2, Maximize2, Minimize2, Calculator, BarChart3, RotateCcw, PlusCircle, Settings, Save, Info, ArrowLeftRight } from 'lucide-react';
+import { ShoppingCart, Search, User, X, Loader2, FileText, Clock, Plus, Trash2, Maximize2, Minimize2, Calculator, BarChart3, RotateCcw, PlusCircle, Settings, Save, Info, ArrowLeftRight, Banknote, CreditCard, Wallet, Truck, Pill } from 'lucide-react';
 import nextDynamic from 'next/dynamic';
 import { useHotkeys } from 'react-hotkeys-hook';
 
@@ -106,12 +106,12 @@ interface Patient {
 }
 
 const PAYMENT_METHODS = [
-  { id: 'cash', label: 'كاش', icon: '💵', selectedClass: 'bg-emerald-500 text-white border-emerald-600 shadow-lg' },
-  { id: 'credit', label: 'آجل', icon: '💳', selectedClass: 'bg-blue-500 text-white border-blue-600 shadow-lg' },
-  { id: 'wallet', label: 'محفظة', icon: '👛', selectedClass: 'bg-purple-500 text-white border-purple-600 shadow-lg' },
-  { id: 'visa', label: 'فيزا', icon: '🏧', selectedClass: 'bg-indigo-500 text-white border-indigo-600 shadow-lg' },
-  { id: 'check', label: 'شيك', icon: '🧾', selectedClass: 'bg-amber-500 text-white border-amber-600 shadow-lg' },
-  { id: 'delivery', label: 'توصيل', icon: '🛵', selectedClass: 'bg-rose-500 text-white border-rose-600 shadow-lg' },
+  { id: 'cash', label: 'كاش', icon: Banknote, selectedClass: 'bg-emerald-700 text-white border-emerald-800' },
+  { id: 'credit', label: 'آجل', icon: Clock, selectedClass: 'bg-blue-700 text-white border-blue-800' },
+  { id: 'wallet', label: 'محفظة', icon: Wallet, selectedClass: 'bg-purple-700 text-white border-purple-800' },
+  { id: 'visa', label: 'فيزا', icon: CreditCard, selectedClass: 'bg-indigo-700 text-white border-indigo-800' },
+  { id: 'check', label: 'شيك', icon: FileText, selectedClass: 'bg-amber-700 text-white border-amber-800' },
+  { id: 'delivery', label: 'توصيل', icon: Truck, selectedClass: 'bg-rose-700 text-white border-rose-800' },
 ] as const;
 
 export interface POSSearchSidebarRef {
@@ -195,7 +195,7 @@ const POSSearchSidebar = memo(forwardRef<POSSearchSidebarRef, POSSearchSidebarPr
     }, [searchTerm, searchByActive, searchRetry]);
 
     return (
-      <div className="bg-white dark:bg-slate-900 p-5 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-xl flex flex-col min-h-0 flex-1">
+      <div className="bg-white dark:bg-slate-900 p-5 rounded-3xl border border-slate-200 dark:border-slate-800 flex flex-col min-h-0 flex-1">
         <div className="relative mb-2">
           <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
           <input
@@ -278,7 +278,10 @@ const POSSearchSidebar = memo(forwardRef<POSSearchSidebarRef, POSSearchSidebarPr
         
         <div className="flex-1 overflow-auto space-y-2">
           {isLoading ? (
-            <div className="py-10 flex justify-center"><Loader2 className="w-6 h-6 animate-spin text-blue-500" /></div>
+            <div role="status" aria-live="polite" className="py-10 flex flex-col items-center justify-center gap-2 text-slate-700 dark:text-slate-200">
+              <Loader2 className="w-6 h-6 animate-spin text-blue-600 dark:text-blue-400" aria-hidden="true" />
+              <span className="text-xs font-bold">جاري البحث عن الأصناف...</span>
+            </div>
           ) : searchError ? (
             <div className="py-8 text-center space-y-3">
               <p className="text-sm font-black text-rose-600">تعذر البحث عن الأصناف</p>
@@ -289,6 +292,10 @@ const POSSearchSidebar = memo(forwardRef<POSSearchSidebarRef, POSSearchSidebarPr
               >
                 إعادة البحث عن الأصناف
               </button>
+            </div>
+          ) : searchTerm.trim().length >= 2 && searchResults.length === 0 ? (
+            <div role="status" className="py-8 text-center text-xs font-bold text-slate-600 dark:text-slate-300">
+              لا توجد أصناف مطابقة
             </div>
           ) : searchResults.map(drug => (
             <button 
@@ -347,6 +354,7 @@ export default function POSPage() {
   const [patientSearch, setPatientSearch] = useState('');
   const [patientResults, setPatientResults] = useState<Patient[]>([]);
   const [patientSearchError, setPatientSearchError] = useState(false);
+  const [patientSearchLoading, setPatientSearchLoading] = useState(false);
   const [patientSearchRetry, setPatientSearchRetry] = useState(0);
   const patientSearchRequestRef = useRef(0);
   const [pointsToRedeem, setPointsToRedeem] = useState(0);
@@ -419,78 +427,8 @@ export default function POSPage() {
     fetchUnits();
   }, []);
 
-  // Dynamic navigation sequence helper
-  const getNavElements = useCallback(() => {
-    const elements: HTMLElement[] = [];
-    
-    // 1. Search input
-    const searchInput = document.querySelector('[data-nav="search-input"]') as HTMLElement;
-    if (searchInput) elements.push(searchInput);
-    
-    // 2. Cart items
-    cart.forEach((item, index) => {
-      const unitSelect = document.querySelector(`[data-nav="unit-select-${index}"]`) as HTMLElement;
-      const qtyInput = document.querySelector(`[data-nav="qty-input-${index}"]`) as HTMLElement;
-      const priceInput = document.querySelector(`[data-nav="price-input-${index}"]`) as HTMLElement;
-      const discountInput = document.querySelector(`[data-nav="discount-input-${index}"]`) as HTMLElement;
-      const removeButton = document.querySelector(`[data-nav="remove-item-${index}"]`) as HTMLElement;
-      
-      if (unitSelect) elements.push(unitSelect);
-      if (qtyInput) elements.push(qtyInput);
-      if (priceInput) elements.push(priceInput);
-      if (discountInput) elements.push(discountInput);
-      if (removeButton) elements.push(removeButton);
-    });
-    
-    // 3. Billing inputs
-    const patientInput = document.querySelector('[data-nav="patient-input"]') as HTMLElement;
-    if (patientInput) elements.push(patientInput);
-    
-    const feesInput = document.querySelector('[data-nav="additional-fees-input"]') as HTMLElement;
-    if (feesInput) elements.push(feesInput);
-    
-    const discountPercentInput = document.querySelector('[data-nav="discount-percent-input"]') as HTMLElement;
-    if (discountPercentInput) elements.push(discountPercentInput);
-    
-    // 4. Checkout button
-    const checkoutBtn = document.querySelector('[data-nav="checkout-button"]') as HTMLElement;
-    if (checkoutBtn) elements.push(checkoutBtn);
-    
-    return elements;
-  }, [cart]);
-
-  const handleNavigationKey = useCallback((e: React.KeyboardEvent) => {
-    if (e.key !== 'Tab') return;
-    
-    const elements = getNavElements();
-    if (elements.length === 0) return;
-    
-    const activeEl = document.activeElement as HTMLElement;
-    const index = elements.indexOf(activeEl);
-    
-    if (e.shiftKey) {
-      // Shift + Tab: go backwards
-      e.preventDefault();
-      const prevIndex = index <= 0 ? elements.length - 1 : index - 1;
-      elements[prevIndex].focus();
-      if ('select' in elements[prevIndex]) {
-        (elements[prevIndex] as any).select();
-      }
-    } else {
-      // Tab: go forwards
-      e.preventDefault();
-      const nextIndex = index === -1 || index === elements.length - 1 ? 0 : index + 1;
-      elements[nextIndex].focus();
-      if ('select' in elements[nextIndex]) {
-        (elements[nextIndex] as any).select();
-      }
-    }
-  }, [getNavElements]);
-
   const handleInputKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === 'Tab') {
-      handleNavigationKey(e);
-    } else if (e.key === 'Enter') {
+    if (e.key === 'Enter') {
       const activeEl = document.activeElement as HTMLElement;
       const navAttr = activeEl.getAttribute('data-nav');
       if (navAttr && (
@@ -508,7 +446,7 @@ export default function POSPage() {
         }
       }
     }
-  }, [handleNavigationKey]);
+  }, []);
 
   const loadUser = useCallback(async () => {
     setIsUserLoading(true);
@@ -590,9 +528,11 @@ export default function POSPage() {
       if (patientSearch.length < 2) {
         setPatientResults([]);
         setPatientSearchError(false);
+        setPatientSearchLoading(false);
         return;
       }
       setPatientSearchError(false);
+      setPatientSearchLoading(true);
       try {
         const { searchPatientsAction } = await import('@/app/actions-client/patients');
         const res = await searchPatientsAction(patientSearch);
@@ -608,6 +548,8 @@ export default function POSPage() {
         console.error('Patient search error:', error);
         setPatientResults([]);
         setPatientSearchError(true);
+      } finally {
+        if (requestId === patientSearchRequestRef.current) setPatientSearchLoading(false);
       }
     };
     const timer = setTimeout(searchPatients, 300);
@@ -620,6 +562,7 @@ export default function POSPage() {
   const loadAllPatients = useCallback(async () => {
     const requestId = ++patientSearchRequestRef.current;
     setPatientSearchError(false);
+    setPatientSearchLoading(true);
     try {
       const { searchPatientsAction } = await import('@/app/actions-client/patients');
       const res = await searchPatientsAction('', true);
@@ -635,6 +578,8 @@ export default function POSPage() {
       console.error('Load all patients error:', error);
       setPatientResults([]);
       setPatientSearchError(true);
+    } finally {
+      if (requestId === patientSearchRequestRef.current) setPatientSearchLoading(false);
     }
   }, []);
 
@@ -1168,8 +1113,9 @@ export default function POSPage() {
 
   if (isUserLoading) {
     return (
-      <div className="flex justify-center items-center py-12">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+      <div role="status" aria-live="polite" className="flex flex-col justify-center items-center gap-3 py-12 text-slate-700 dark:text-slate-200" dir="rtl">
+        <div aria-hidden="true" className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+        <p className="font-bold">جاري تحميل نقطة البيع...</p>
       </div>
     );
   }
@@ -1194,11 +1140,11 @@ export default function POSPage() {
   }
 
   return (
-    <div className="flex flex-1 min-h-0 gap-2 xl:gap-3 font-sans" dir="rtl">
+    <div className="flex flex-1 min-h-0 flex-col gap-3 overflow-y-auto font-sans xl:flex-row xl:overflow-hidden" dir="rtl">
       <Toaster position="top-center" />
 
       {/* LEFT SIDEBAR ACTIONS */}
-      <div className="w-20 flex flex-col gap-2 bg-white dark:bg-slate-900 p-2 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xl overflow-y-auto shrink-0">
+      <div className="flex w-full shrink-0 gap-2 overflow-x-auto rounded-2xl border border-slate-200 bg-white p-2 dark:border-slate-800 dark:bg-slate-900 xl:w-20 xl:flex-col xl:overflow-y-auto">
         <SidebarButton icon={Plus} label="جديد" color="bg-emerald-500" onClick={resetCart} />
         {canSaveDraft && <SidebarButton icon={Save} label="حفظ" color="bg-blue-500" onClick={() => handleCheckout('draft')} />}
         <SidebarButton icon={ShoppingCart} label="بيع" color="bg-indigo-500" onClick={() => handleCheckout('completed')} />
@@ -1241,16 +1187,16 @@ export default function POSPage() {
             }
           }} 
         />
-        <div className="h-px bg-slate-100 dark:bg-slate-800 my-1" />
+        <div className="hidden h-px bg-slate-100 dark:bg-slate-800 my-1 xl:block" />
         {canShowDrafts && <SidebarButton icon={FileText} label="فواتير معلقة" color="bg-amber-500" onClick={() => { fetchDrafts(); setShowDraftsModal(true); }} />}
         {canViewReturns && <SidebarButton icon={RotateCcw} label="استرجاع" color="bg-rose-500" onClick={() => setShowReturnModal(true)} />}
         {canHandover && <SidebarButton icon={ArrowLeftRight} label="تسليم الدرج" color="bg-blue-600" onClick={() => setShowHandoverModal(true)} />}
-        <div className="h-px bg-slate-100 dark:bg-slate-800 my-1" />
+        <div className="hidden h-px bg-slate-100 dark:bg-slate-800 my-1 xl:block" />
         {canViewPatients && (
           <SidebarButton icon={User} label="عميل جديد" color="bg-purple-500" onClick={() => setShowAddPatientModal(true)} />
         )}
         <SidebarButton icon={PlusCircle} label="إضافة صنف" color="bg-slate-700" onClick={() => { searchSidebarRef.current?.clear(); searchSidebarRef.current?.focus(); }} />
-        <div className="mt-auto pt-3 border-t border-slate-100 dark:border-slate-800">
+        <div className="flex shrink-0 gap-2 xl:mt-auto xl:flex-col xl:gap-0 xl:border-t xl:border-slate-100 xl:pt-3 dark:xl:border-slate-800">
           <SidebarButton icon={Calculator} label="آلة حاسبة" color="bg-slate-600" onClick={() => window.open('https://www.google.com/search?q=calculator', '_blank')} />
           <SidebarButton icon={BarChart3} label="تقارير" color="bg-slate-600" onClick={() => router.push('/reports')} />
           <SidebarButton icon={Settings} label="خيارات" color="bg-slate-600" onClick={() => router.push('/settings')} />
@@ -1261,34 +1207,34 @@ export default function POSPage() {
       <div className="flex-1 flex flex-col gap-3 min-w-0 min-h-0">
         
         {/* Top Invoice Info Header */}
-        <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-lg grid grid-cols-2 xl:grid-cols-4 gap-3 xl:gap-4">
+        <div className="grid grid-cols-1 gap-3 rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900 md:grid-cols-2 xl:grid-cols-4 xl:gap-4">
           <div className="col-span-1 space-y-1">
             <div className="text-xs font-black text-slate-500">بيانات العميل</div>
             {selectedPatient ? (
               <div className="space-y-1">
                 <div className="flex items-center justify-between bg-purple-50 dark:bg-purple-900/20 p-2 rounded-xl border border-purple-100 dark:border-purple-800">
-                  <span className="font-bold text-xs text-purple-700 dark:text-purple-300 break-words leading-relaxed" title={selectedPatient.full_name}>👤 {selectedPatient.full_name}</span>
-                  <button type="button" aria-label={`إلغاء اختيار العميل ${selectedPatient.full_name}`} onClick={() => { setSelectedPatient(null); if (paymentMethod === 'credit' || paymentMethod === 'wallet') setPaymentMethod('cash'); }} className="text-purple-400 hover:text-purple-900 font-bold px-1 text-sm shrink-0">×</button>
+                  <span className="flex items-center gap-1.5 font-bold text-xs text-purple-700 dark:text-purple-300 break-words leading-relaxed" title={selectedPatient.full_name}><User aria-hidden="true" className="h-4 w-4 shrink-0" />{selectedPatient.full_name}</span>
+                  <button type="button" aria-label={`إلغاء اختيار العميل ${selectedPatient.full_name}`} onClick={() => { setSelectedPatient(null); if (paymentMethod === 'credit' || paymentMethod === 'wallet') setPaymentMethod('cash'); }} className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg text-purple-700 hover:bg-purple-100 hover:text-purple-900 dark:text-purple-300 dark:hover:bg-purple-900/30">×</button>
                 </div>
                 {paymentMethod === 'credit' && (
                   <div className="text-[11px] font-black px-1 flex justify-between">
-                    <span className="text-slate-400">الائتمان المتبقي:</span>
-                    <span className={((selectedPatient.credit_limit || 0) - (selectedPatient.outstanding_balance || 0)) < total ? "text-rose-500 font-bold" : "text-emerald-600 font-bold"}>
+                    <span className="text-slate-600 dark:text-slate-300">الائتمان المتبقي:</span>
+                    <span className={((selectedPatient.credit_limit || 0) - (selectedPatient.outstanding_balance || 0)) < total ? "text-rose-700 dark:text-rose-400 font-bold" : "text-emerald-700 dark:text-emerald-400 font-bold"}>
                       {((selectedPatient.credit_limit || 0) - (selectedPatient.outstanding_balance || 0)).toFixed(2)} ج.م
                     </span>
                   </div>
                 )}
                 {paymentMethod === 'wallet' && (
                   <div className="text-[11px] font-black px-1 flex justify-between">
-                    <span className="text-slate-400">رصيد المحفظة:</span>
-                    <span className={(selectedPatient.wallet_balance || 0) < total ? "text-rose-500 font-bold" : "text-emerald-600 font-bold"}>
+                    <span className="text-slate-600 dark:text-slate-300">رصيد المحفظة:</span>
+                    <span className={(selectedPatient.wallet_balance || 0) < total ? "text-rose-700 dark:text-rose-400 font-bold" : "text-emerald-700 dark:text-emerald-400 font-bold"}>
                       {Number(selectedPatient.wallet_balance || 0).toFixed(2)} ج.م
                     </span>
                   </div>
                 )}
                 <div className="text-[11px] font-black px-1 flex items-center justify-between gap-2">
-                  <span className="text-slate-400">نقاط الولاء:</span>
-                  <span className="text-amber-600 dark:text-amber-400">{Math.floor(Number(selectedPatient.points_balance || 0))}</span>
+                  <span className="text-slate-600 dark:text-slate-300">نقاط الولاء:</span>
+                  <span className="text-amber-700 dark:text-amber-300">{Math.floor(Number(selectedPatient.points_balance || 0))}</span>
                 </div>
                 {Number(selectedPatient.points_balance || 0) >= MIN_REDEEM_POINTS && maximumRedeemablePoints >= MIN_REDEEM_POINTS && (
                   <div className="grid grid-cols-[1fr_auto] items-end gap-2 rounded-lg bg-amber-50/70 dark:bg-amber-900/10 p-2 border border-amber-100 dark:border-amber-900/30">
@@ -1332,18 +1278,20 @@ export default function POSPage() {
                   onDoubleClick={() => void loadAllPatients()}
                   data-nav="patient-input"
                   onKeyDown={handleInputKeyDown}
-                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-100 dark:border-slate-700 dark:text-white rounded-xl pr-3 pl-20 py-2 text-xs font-bold outline-none focus:ring-2 focus:ring-purple-500"
+                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-100 dark:border-slate-700 dark:text-white rounded-xl pr-3 pl-24 py-3 text-xs font-bold outline-none focus:ring-2 focus:ring-purple-500"
                 />
                 <button
                   type="button"
                   onClick={() => void loadAllPatients()}
-                  className="absolute left-2 top-1/2 -translate-y-1/2 rounded-lg px-2 py-1 text-[11px] font-black text-purple-700 dark:text-purple-300 hover:bg-purple-100 dark:hover:bg-purple-900/30"
+                  className="absolute left-1 top-1/2 inline-flex min-h-11 -translate-y-1/2 items-center justify-center rounded-lg px-3 text-[11px] font-black text-purple-700 dark:text-purple-300 hover:bg-purple-100 dark:hover:bg-purple-900/30"
                 >
                   عرض الكل
                 </button>
-                {(patientResults.length > 0 || (patientSearch.length >= 2)) && (
+                {(patientSearchLoading || patientResults.length > 0 || patientSearchError || patientSearch.length >= 2) && (
                   <div className="absolute top-full left-0 right-0 max-h-64 overflow-y-auto bg-white dark:bg-slate-800 shadow-2xl rounded-2xl mt-2 z-50 border border-slate-100 dark:border-slate-700 p-2">
-                    {patientSearchError ? (
+                    {patientSearchLoading ? (
+                      <div role="status" aria-live="polite" className="py-5 text-center text-xs font-bold text-slate-600 dark:text-slate-300">جاري البحث عن العملاء...</div>
+                    ) : patientSearchError ? (
                       <div className="py-5 text-center space-y-3">
                         <p className="text-xs font-black text-rose-600">تعذر البحث عن العملاء</p>
                         <button
@@ -1354,6 +1302,8 @@ export default function POSPage() {
                           إعادة البحث عن العملاء
                         </button>
                       </div>
+                    ) : patientResults.length === 0 ? (
+                      <div role="status" className="py-5 text-center text-xs font-bold text-slate-600 dark:text-slate-300">لا توجد نتائج مطابقة</div>
                     ) : patientResults.map(p => (
                       <button 
                         key={p.id}
@@ -1368,8 +1318,8 @@ export default function POSPage() {
                         className="w-full text-right p-3 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-xl text-xs font-bold transition-colors border-b last:border-b-0 border-slate-50 dark:border-slate-700/30"
                       >
                         <span className="flex items-center justify-between gap-3">
-                          <span className="font-bold text-slate-800 dark:text-white break-words" title={p.full_name}>
-                            👤 {p.full_name} {p.phone ? `(${p.phone})` : ''}
+                          <span className="flex items-center gap-1.5 font-bold text-slate-800 dark:text-white break-words" title={p.full_name}>
+                            <User aria-hidden="true" className="h-4 w-4 shrink-0" />{p.full_name} {p.phone ? `(${p.phone})` : ''}
                           </span>
                           <span className={`shrink-0 text-[11px] ${Number(p.outstanding_balance || 0) > 0 ? 'text-rose-600 dark:text-rose-400 font-black' : 'text-emerald-600 dark:text-emerald-400 font-bold'}`}>
                             مديونية: {Math.max(0, Number(p.outstanding_balance || 0)).toFixed(2)} ج.م
@@ -1383,24 +1333,28 @@ export default function POSPage() {
             )}
           </div>
 
-          <div className="col-span-2 space-y-1">
+          <div className="col-span-1 space-y-1 md:col-span-2">
              <div id="pos-payment-method-label" className="text-xs font-black text-slate-500">نوع الفاتورة (طريقة الدفع)</div>
-             <div role="group" aria-labelledby="pos-payment-method-label" className="flex gap-2">
-                {PAYMENT_METHODS.filter(method => method.id !== 'credit' || canSellCredit).map(method => (
-                  <button 
-                    type="button"
-                    key={method.id}
-                    onClick={() => setPaymentMethod(method.id as any)}
-                    aria-pressed={paymentMethod === method.id}
-                    className={`flex-1 py-2 rounded-xl font-black text-xs transition-all border ${
-                      paymentMethod === method.id 
-                        ? method.selectedClass
-                        : 'bg-white dark:bg-slate-800 text-slate-600 border-slate-100 dark:border-slate-800'
-                    }`}
-                  >
-                    {method.icon} {method.label}
-                  </button>
-                ))}
+             <div role="group" aria-labelledby="pos-payment-method-label" className="flex flex-wrap gap-2">
+                {PAYMENT_METHODS.filter(method => method.id !== 'credit' || canSellCredit).map(method => {
+                  const PaymentIcon = method.icon;
+                  return (
+                    <button
+                      type="button"
+                      key={method.id}
+                      onClick={() => setPaymentMethod(method.id as any)}
+                      aria-pressed={paymentMethod === method.id}
+                      className={`flex min-h-11 min-w-20 flex-1 items-center justify-center gap-1.5 rounded-xl border px-2 py-2 font-black text-xs transition-colors ${
+                        paymentMethod === method.id
+                          ? method.selectedClass
+                          : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700'
+                      }`}
+                    >
+                      <PaymentIcon aria-hidden="true" className="h-4 w-4" />
+                      {method.label}
+                    </button>
+                  );
+                })}
              </div>
              {paymentMethod === 'check' && (
                <label className="block space-y-1">
@@ -1441,14 +1395,14 @@ export default function POSPage() {
                   onChange={(e) => setDiscountPercent(Math.min(maxInvoiceDiscountPercent, Math.max(0, Number(e.target.value))))}
                   data-nav="discount-percent-input"
                   onKeyDown={handleInputKeyDown}
-                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-100 dark:border-slate-700 p-2 rounded-xl text-xs font-black text-center text-rose-500"
+                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-100 dark:border-slate-700 p-2 rounded-xl text-xs font-black text-center text-rose-700 dark:text-rose-400"
                 />
              </div>
           </div>
         </div>
 
         {/* Main Items Table */}
-        <div className="flex-1 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xl overflow-hidden flex flex-col min-h-0">
+        <div className="flex-1 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col min-h-0">
           <div className="overflow-x-auto overflow-y-auto flex-1">
             <table className="w-full text-right border-collapse min-w-full">
               <thead className="border-b border-slate-200 dark:border-slate-700">
@@ -1471,8 +1425,19 @@ export default function POSPage() {
                   <tr 
                     key={item.id} 
                     onClick={() => setSelectedRowCartId(item.id)}
+                    onFocus={(event) => {
+                      if (event.target === event.currentTarget) setSelectedRowCartId(item.id);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) {
+                        event.preventDefault();
+                        setSelectedRowCartId(item.id);
+                      }
+                    }}
                     onContextMenu={(e) => handleContextMenu(e, item.drug_id, item.id)}
-                    className={`group hover:bg-slate-50/50 dark:hover:bg-slate-800/50 transition-colors cursor-pointer ${selectedRowCartId === item.id ? 'bg-blue-50/50 dark:bg-blue-900/20 ring-1 ring-inset ring-blue-500/20' : ''}`}
+                    tabIndex={0}
+                    aria-selected={selectedRowCartId === item.id}
+                    className={`group hover:bg-slate-50/50 dark:hover:bg-slate-800/50 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500 ${selectedRowCartId === item.id ? 'bg-blue-50/50 dark:bg-blue-900/20 ring-1 ring-inset ring-blue-500/20' : ''}`}
                   >
                     <td className="px-1 py-2 text-[10px] font-bold text-slate-500 text-center w-10">#{item.drug_id}</td>
                     <td className="px-1.5 py-2 text-right">
@@ -1515,8 +1480,8 @@ export default function POSPage() {
                       )}
                     </td>
                     <td className="px-1 py-2 text-center w-20">
-                      <div className="flex items-center justify-center gap-0.5 bg-slate-100 dark:bg-slate-800 rounded-lg p-0.5 w-20 mx-auto font-sans">
-                        <button tabIndex={-1} onClick={() => setCart(p => p.map(i => i.id === item.id ? {...i, qty: Math.max(1, i.qty-1)} : i))} className="w-4 h-4 flex items-center justify-center hover:bg-white dark:hover:bg-slate-700 rounded text-slate-500 font-bold text-xs">-</button>
+                      <div className="flex min-w-[9rem] items-center justify-center gap-1 bg-slate-100 dark:bg-slate-800 rounded-lg p-1 mx-auto font-sans">
+                        <button type="button" aria-label={`تقليل كمية ${item.trade_name_en || item.trade_name}`} onClick={() => setCart(p => p.map(i => i.id === item.id ? {...i, qty: Math.max(1, i.qty-1)} : i))} className="inline-flex h-11 w-11 items-center justify-center rounded text-slate-700 hover:bg-white dark:text-slate-200 dark:hover:bg-slate-700 font-bold text-base">-</button>
                         <input 
                           type="number" 
                           min={1}
@@ -1530,13 +1495,14 @@ export default function POSPage() {
                             setCart(p => p.map(i => i.id === item.id ? {...i, qty: isNaN(newQty) ? 1 : Math.min(maxQty, Math.max(1, newQty))} : i))
                           }}
                           onKeyDown={handleInputKeyDown}
-                          className="w-8 bg-transparent text-center font-bold text-xs outline-none focus:ring-1 focus:ring-blue-500 rounded p-0"
+                          className="w-12 bg-transparent text-center font-bold text-xs outline-none focus:ring-1 focus:ring-blue-500 rounded p-0"
                         />
                         <button
-                          tabIndex={-1}
+                          type="button"
+                          aria-label={`زيادة كمية ${item.trade_name_en || item.trade_name}`}
                           disabled={!item.isNegative && item.qty >= Math.floor(stockInSelectedUnit(item) + 1e-9)}
                           onClick={() => setCart(p => p.map(i => i.id === item.id ? {...i, qty: i.isNegative ? i.qty + 1 : Math.min(i.qty + 1, Math.max(1, Math.floor(stockInSelectedUnit(i))))} : i))}
-                          className="w-4 h-4 flex items-center justify-center hover:bg-white dark:hover:bg-slate-700 rounded text-slate-500 disabled:opacity-30 font-bold text-xs"
+                          className="inline-flex h-11 w-11 items-center justify-center rounded text-slate-700 hover:bg-white dark:text-slate-200 dark:hover:bg-slate-700 disabled:opacity-30 font-bold text-base"
                         >+</button>
                       </div>
                     </td>
@@ -1579,7 +1545,7 @@ export default function POSPage() {
                           data-nav={`discount-input-${index}`}
                           onKeyDown={handleInputKeyDown}
                           aria-label={`خصم الصنف ${item.trade_name_en || item.trade_name}`}
-                          className="w-12 bg-slate-50 dark:bg-slate-800 border-none p-0.5 rounded text-[11px] font-black text-center text-rose-500 focus:ring-2 focus:ring-rose-500"
+                          className="w-12 bg-slate-50 dark:bg-slate-800 border-none p-0.5 rounded text-[11px] font-black text-center text-rose-700 dark:text-rose-400 focus:ring-2 focus:ring-rose-500"
                           placeholder="%"
                         />
                       ) : (
@@ -1596,9 +1562,9 @@ export default function POSPage() {
                         aria-label={`حذف ${item.trade_name_en || item.trade_name} من الفاتورة`}
                         onKeyDown={handleInputKeyDown}
                         onClick={() => setCart(p => p.filter(i => i.id !== item.id))}
-                        className="p-1 text-red-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-colors opacity-60 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 focus:opacity-100"
+                        className="inline-flex min-h-11 min-w-11 items-center justify-center text-red-600 hover:text-red-700 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20 rounded transition-colors opacity-80 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 focus:opacity-100"
                       >
-                        <Trash2 className="w-3 h-3" />
+                        <Trash2 className="w-4 h-4" />
                       </button>
                     </td>
                   </tr>
@@ -1608,13 +1574,13 @@ export default function POSPage() {
           </div>
 
           {/* Table Totals Bar */}
-          <div className="bg-slate-50 dark:bg-slate-800/50 p-4 border-t border-slate-200 dark:border-slate-700 flex justify-between items-center">
-              <div className="flex gap-8">
+          <div className="flex flex-col gap-4 border-t border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-800/50 md:flex-row md:items-center md:justify-between">
+              <div className="flex flex-wrap gap-4 md:gap-8">
               <TotalLabel label="عدد الأصناف" value={cart.length} />
               <TotalLabel label="إجمالي الكميات" value={cart.reduce((s, i) => s + i.qty, 0)} />
-              <TotalLabel label="إجمالي الخصم" value={(totalDiscount + percentDiscountValue + cart.reduce((s,i) => s + (i.price * i.qty * (i.itemDiscountPercent || 0) / 100), 0)).toFixed(2)} color="text-rose-500" />
+              <TotalLabel label="إجمالي الخصم" value={(totalDiscount + percentDiscountValue + cart.reduce((s,i) => s + (i.price * i.qty * (i.itemDiscountPercent || 0) / 100), 0)).toFixed(2)} color="text-rose-700 dark:text-rose-400" />
             </div>
-            <div className="flex items-center gap-4">
+            <div className="flex flex-wrap items-center justify-between gap-4 md:justify-end">
                <div className="text-right">
                   <p className="text-[11px] font-black text-slate-500">المبلغ الإجمالي</p>
                   <p className="text-2xl font-black text-emerald-500">{total.toLocaleString('en-US')} ج.م</p>
@@ -1624,7 +1590,7 @@ export default function POSPage() {
                  disabled={isProcessing || cart.length === 0 || hasInvalidStockQuantity}
                  data-nav="checkout-button"
                  onKeyDown={handleInputKeyDown}
-                 className="px-10 py-4 bg-emerald-500 text-white rounded-2xl font-black text-lg hover:bg-emerald-400 transition-all shadow-xl shadow-emerald-500/20 flex items-center gap-2"
+                 className="flex min-h-11 items-center gap-2 rounded-2xl bg-emerald-700 px-8 py-3 font-black text-white shadow-md transition-colors hover:bg-emerald-600"
                >
                  {isProcessing ? <Loader2 className="w-5 h-5 animate-spin" /> : <ShoppingCart className="w-5 h-5" />}
                  إتمام البيع
@@ -1635,18 +1601,18 @@ export default function POSPage() {
       </div>
 
       {/* Right Search Area */}
-      <div className="w-[260px] xl:w-[300px] flex flex-col gap-4 shrink-0">
+      <div className="flex w-full shrink-0 flex-col gap-4 xl:w-[300px]">
          <POSSearchSidebar ref={searchSidebarRef} addToCart={addToCart} onKeyDown={handleInputKeyDown} showStock={canViewStock} />
 
          {alternatives.length > 0 && (
             <div className="bg-indigo-50 dark:bg-indigo-900/20 p-5 rounded-3xl border border-indigo-100 dark:border-indigo-900/40">
-              <h4 className="font-black text-indigo-900 dark:text-indigo-200 text-xs mb-3 flex items-center gap-2">🧬 بدائل مقترحة</h4>
+              <h4 className="font-black text-indigo-900 dark:text-indigo-200 text-xs mb-3 flex items-center gap-2"><Pill aria-hidden="true" className="h-4 w-4" />بدائل مقترحة</h4>
               <div className="space-y-2 max-h-[200px] overflow-auto">
                 {[...alternatives].sort((a, b) => (b.total_stock || 0) - (a.total_stock || 0)).map(a => (
                   <button key={a.id} onClick={() => addToCart(a)} className="w-full flex justify-between items-center bg-white dark:bg-slate-800 p-2 rounded-xl text-[11px] font-black shadow-sm">
                     <div className="flex flex-col text-right">
                       <span className="dark:text-white truncate max-w-[150px]">{a.trade_name_en || a.trade_name}</span>
-                      <span className="text-slate-400">{a.total_stock} in stock</span>
+                      <span className="text-slate-600 dark:text-slate-300">{a.total_stock} in stock</span>
                     </div>
                     <span className="text-emerald-600">{a.min_price} EGP</span>
                   </button>
@@ -1872,10 +1838,11 @@ function ContextMenuItem({ icon: Icon, label, onClick, color = "text-slate-700 d
 function SidebarButton({ icon: Icon, label, color, onClick }: any) {
   return (
     <button 
+      type="button"
       onClick={onClick}
-      className="flex flex-col items-center justify-center gap-0.5 p-1 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 transition-all group w-full"
+      className="group flex min-h-11 min-w-16 flex-col items-center justify-center gap-0.5 rounded-xl p-1 transition-colors hover:bg-slate-50 dark:hover:bg-slate-800 xl:w-full xl:min-w-0"
     >
-      <div className={`p-2 rounded-lg ${color} text-white shadow-sm group-hover:scale-110 transition-transform`}>
+      <div className={`p-2 rounded-lg ${color} text-white`}>
         <Icon className="w-4 h-4" />
       </div>
       <span className="text-[11px] font-black text-slate-600 dark:text-slate-300 text-center leading-tight truncate w-full">{label}</span>

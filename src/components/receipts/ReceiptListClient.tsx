@@ -165,8 +165,8 @@ export default function ReceiptListClient({ initialInvoices }: Props) {
                   </td>
                   <td className="px-8 py-5">
                     <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
-                       <button type="button" aria-label={`طباعة الفاتورة ${inv.id.substring(0, 8)}`} onClick={() => handleDirectPrint(inv)} className="p-2 hover:bg-blue-50 text-blue-600 rounded-lg transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500" title="طباعة">🖨️</button>
-                       <button type="button" aria-label={`إرسال الفاتورة ${inv.id.substring(0, 8)} عبر واتساب`} onClick={() => handleDirectWhatsApp(inv)} className="p-2 hover:bg-emerald-50 text-emerald-600 rounded-lg transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500" title="واتساب">📱</button>
+                       <button type="button" aria-label={`طباعة الفاتورة ${inv.id.substring(0, 8)}`} onClick={() => handleDirectPrint(inv)} className="inline-flex min-h-11 min-w-11 items-center justify-center p-2 hover:bg-blue-50 text-blue-600 rounded-lg transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500" title="طباعة">🖨️</button>
+                       <button type="button" aria-label={`إرسال الفاتورة ${inv.id.substring(0, 8)} عبر واتساب`} onClick={() => handleDirectWhatsApp(inv)} className="inline-flex min-h-11 min-w-11 items-center justify-center p-2 hover:bg-emerald-50 text-emerald-600 rounded-lg transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500" title="واتساب">📱</button>
                     </div>
                   </td>
                 </tr>
@@ -174,7 +174,11 @@ export default function ReceiptListClient({ initialInvoices }: Props) {
               
               {filteredInvoices.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="p-16 text-center text-slate-400 font-bold">لم يتم العثور على فواتير.</td>
+                  <td colSpan={6} className="p-16 text-center text-slate-600 dark:text-slate-300 font-bold">
+                    <span role="status">
+                      {searchTerm.trim() ? 'لا توجد فواتير مطابقة لبحثك.' : 'لا توجد فواتير مسجلة.'}
+                    </span>
+                  </td>
                 </tr>
               )}
             </tbody>

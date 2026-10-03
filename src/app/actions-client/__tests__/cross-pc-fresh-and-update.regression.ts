@@ -129,6 +129,7 @@ function applyAllMigrations(db: Database.Database) {
     '026_sales_loyalty_redemption_snapshot.sql',
     '027_drug_catalog_reconciliation.sql',
     '028_finance_definitions_pharmacy_scope.sql',
+    '029_shift_treasury_retained_cash.sql',
   ];
   for (const file of files) {
     const sql = readFileSync(`src-tauri/migrations/${file}`, 'utf8');
@@ -190,6 +191,7 @@ function applyLocalSchemaRepairs(db: Database.Database) {
   addCol('shifts', 'transfer_amount', 'REAL DEFAULT 0');
   addCol('shifts', 'transfer_target', "TEXT DEFAULT 'vault'");
   addCol('shifts', 'cash_difference', 'REAL DEFAULT 0');
+  addCol('shifts', 'treasury_retained_cash', 'REAL');
   addCol('shifts', 'pharmacy_id', 'TEXT');
   addCol('cash_movements', 'source_type', 'TEXT');
   addCol('cash_movements', 'target_name', 'TEXT');

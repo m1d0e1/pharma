@@ -1237,6 +1237,11 @@ pub(crate) async fn ensure_compatibility(
             "cash_difference REAL DEFAULT 0",
         ),
         ("shifts", "receiver_id", "receiver_id TEXT"),
+        (
+            "shifts",
+            "treasury_retained_cash",
+            "treasury_retained_cash REAL",
+        ),
         ("cash_movements", "sub_category", "sub_category TEXT"),
         ("cash_movements", "actual_date", "actual_date TEXT"),
         ("cash_movements", "source_type", "source_type TEXT"),
@@ -1954,6 +1959,7 @@ async fn prepare_connection(connection: &mut SqliteConnection) -> Result<(), Str
     let migration_25_applied = applied.iter().any(|row| row.get::<i64, _>("version") == 25);
     let migration_26_applied = applied.iter().any(|row| row.get::<i64, _>("version") == 26);
     let migration_28_applied = applied.iter().any(|row| row.get::<i64, _>("version") == 28);
+    let migration_29_applied = applied.iter().any(|row| row.get::<i64, _>("version") == 29);
     let (scoped_snapshot_without_migration_20, scoped_snapshot_needs_rebuild) =
         if migration_20_applied
             || !table_exists(connection, "daily_financial_snapshots")
@@ -2021,6 +2027,10 @@ async fn prepare_connection(connection: &mut SqliteConnection) -> Result<(), Str
     ensure_compatibility(&mut transaction)
         .await
         .map_err(|e| e.to_string())?;
+    let treasury_retained_cash_preapplied = !migration_29_applied
+        && has_column(&mut transaction, "shifts", "treasury_retained_cash")
+            .await
+            .map_err(|e| e.to_string())?;
     let finance_definitions_scope_preapplied = if migration_28_applied {
         false
     } else {
@@ -2159,6 +2169,19 @@ async fn prepare_connection(connection: &mut SqliteConnection) -> Result<(), Str
         );
         sqlx::query(&format!(
             "INSERT OR IGNORE INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (28, 'finance_definitions_pharmacy_scope', 1, X'{checksum}', 0)"
+        ))
+        .execute(&mut *transaction)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+    if treasury_retained_cash_preapplied {
+        let checksum = embedded_migration_checksum_hex(
+            29,
+            "shift_treasury_retained_cash",
+            include_str!("../migrations/029_shift_treasury_retained_cash.sql"),
+        );
+        sqlx::query(&format!(
+            "INSERT OR IGNORE INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (29, 'shift_treasury_retained_cash', 1, X'{checksum}', 0)"
         ))
         .execute(&mut *transaction)
         .await
@@ -2982,7 +3005,7 @@ mod tests {
         .fetch_all(connection)
         .await
         .unwrap();
-        assert_eq!(versions, (1_i64..=28_i64).collect::<Vec<_>>());
+        assert_eq!(versions, (1_i64..=29_i64).collect::<Vec<_>>());
     }
 
     async fn assert_catalog_delete_tombstone(connection: &mut SqliteConnection, id: i64) {
@@ -5055,6 +5078,7 @@ mod tests {
             include_str!("../migrations/026_sales_loyalty_redemption_snapshot.sql"),
             include_str!("../migrations/027_drug_catalog_reconciliation.sql"),
             include_str!("../migrations/028_finance_definitions_pharmacy_scope.sql"),
+            include_str!("../migrations/029_shift_treasury_retained_cash.sql"),
         ];
         let migrator = sqlx::migrate::Migrator {
             migrations: std::borrow::Cow::Owned(
@@ -5106,6 +5130,7 @@ mod tests {
             ("banks", "pharmacy_id"),
             ("credit_cards", "pharmacy_id"),
             ("points_of_sale", "pharmacy_id"),
+            ("shifts", "treasury_retained_cash"),
         ] {
             assert!(has_column(&mut transaction, table, column).await.unwrap(), "{table}.{column}");
         }
@@ -5121,7 +5146,7 @@ mod tests {
             .fetch_one(&mut connection)
             .await
             .unwrap();
-        assert_eq!(migration_max, 28);
+        assert_eq!(migration_max, 29);
         assert_current_migration_ledger(&mut connection).await;
         let foreign_key_violations = sqlx::query("PRAGMA foreign_key_check")
             .fetch_all(&mut connection)
@@ -5173,14 +5198,41 @@ mod tests {
         std::fs::copy(&source, &path).unwrap();
 
         let mut connection = connect(&path).await.unwrap();
-        sqlx::raw_sql(include_str!("../migrations/028_finance_definitions_pharmacy_scope.sql"))
-            .execute(&mut connection)
-            .await
-            .unwrap();
         prepare_connection(&mut connection).await.unwrap();
 
         let recorded: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM _sqlx_migrations WHERE version = 28 AND success = 1",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(recorded, 1);
+
+        connection.close().await.unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn preapplied_treasury_column_records_migration_29_before_plugin_migrations() {
+        let source = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("pharma_local.db");
+        let path = std::env::temp_dir().join(format!(
+            "pharma-preapplied-treasury-retained-cash-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::copy(&source, &path).unwrap();
+
+        let mut connection = connect(&path).await.unwrap();
+        prepare_connection(&mut connection).await.unwrap();
+
+        let column_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('shifts') WHERE name = 'treasury_retained_cash'",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(column_count, 1);
+        let recorded: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM _sqlx_migrations WHERE version = 29 AND success = 1",
         )
         .fetch_one(&mut connection)
         .await
@@ -5222,6 +5274,7 @@ mod tests {
             include_str!("../migrations/026_sales_loyalty_redemption_snapshot.sql"),
             include_str!("../migrations/027_drug_catalog_reconciliation.sql"),
             include_str!("../migrations/028_finance_definitions_pharmacy_scope.sql"),
+            include_str!("../migrations/029_shift_treasury_retained_cash.sql"),
         ];
         let migrator = |count: usize| sqlx::migrate::Migrator {
             migrations: std::borrow::Cow::Owned(sources.iter().take(count).enumerate().map(|(index, sql)| {
@@ -5253,12 +5306,12 @@ mod tests {
         // Once snapshotted, a staff move cannot move the original open drawer.
         sqlx::query("UPDATE users SET pharmacy_id = 'B' WHERE id = 'moved'")
             .execute(&mut connection).await.unwrap();
-        migrator(28).run(&mut connection).await.unwrap();
+        migrator(29).run(&mut connection).await.unwrap();
 
         for restart in [false, true] {
             if restart {
                 prepare_connection(&mut connection).await.unwrap();
-                migrator(28).run(&mut connection).await.unwrap();
+                migrator(29).run(&mut connection).await.unwrap();
             }
             // The second pharmacy can open a drawer; the first cannot open another.
             sqlx::query("INSERT INTO shifts(id,user_id,pharmacy_id,status) VALUES('new-b','b','B','open')")
@@ -5307,7 +5360,7 @@ mod tests {
         std::fs::copy(&source, &fresh_path).unwrap();
         let mut fresh = connect(&fresh_path).await.unwrap();
         prepare_connection(&mut fresh).await.unwrap();
-        migrator(28).run(&mut fresh).await.unwrap();
+        migrator(29).run(&mut fresh).await.unwrap();
         assert_current_migration_ledger(&mut connection).await;
         assert_current_migration_ledger(&mut fresh).await;
         assert_eq!(

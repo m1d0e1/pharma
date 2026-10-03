@@ -9,7 +9,7 @@ import { getPurchaseReturnDetailsAction, getPurchaseReturnsAction } from '@/app/
 import { format } from 'date-fns';
 import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap';
 
-export default function ReturnsClient({ title, type = 'sales' }: { title: string, type?: 'sales' | 'purchases' }) {
+export default function ReturnsClient({ title, type = 'sales', showHeading = true }: { title: string, type?: 'sales' | 'purchases', showHeading?: boolean }) {
   const [searchTerm, setSearchTerm] = useState('');
   const [returns, setReturns] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -38,7 +38,9 @@ export default function ReturnsClient({ title, type = 'sales' }: { title: string
         setLoadMoreError(null);
       } else {
         setLoading(true);
+        setLoadingMore(false);
         setLoadError(null);
+        setLoadMoreError(null);
       }
       try {
       if (type === 'sales') {
@@ -134,11 +136,13 @@ export default function ReturnsClient({ title, type = 'sales' }: { title: string
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-900 dark:text-white">{title}</h1>
-          <p className="text-slate-500 text-sm mt-1">سجل المرتجعات وإدارتها</p>
-        </div>
+      <div className={`flex flex-col md:flex-row md:items-center gap-4 ${showHeading ? 'justify-between' : 'justify-end'}`}>
+        {showHeading && (
+          <div>
+            <h1 className="text-2xl font-bold text-slate-900 dark:text-white">{title}</h1>
+            <p className="text-slate-500 text-sm mt-1">سجل المرتجعات وإدارتها</p>
+          </div>
+        )}
         
         <Link href={newReturnLink} className="flex items-center gap-2 px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-xl transition-colors font-bold text-sm">
           <Plus className="w-4 h-4" />
@@ -162,9 +166,9 @@ export default function ReturnsClient({ title, type = 'sales' }: { title: string
         </div>
 
         {loading ? (
-          <div className="p-12 text-center flex flex-col items-center justify-center">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-500 mb-4"></div>
-            <p className="text-slate-500">جاري تحميل المرتجعات...</p>
+          <div role="status" aria-live="polite" className="p-12 text-center flex flex-col items-center justify-center">
+            <div aria-hidden="true" className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-500 mb-4"></div>
+            <p className="text-slate-600 dark:text-slate-300">{normalizedSearch ? 'جاري البحث في المرتجعات...' : 'جاري تحميل المرتجعات...'}</p>
           </div>
         ) : loadError ? (
           <div className="p-12 text-center flex flex-col items-center justify-center gap-4">
@@ -179,13 +183,13 @@ export default function ReturnsClient({ title, type = 'sales' }: { title: string
             </button>
           </div>
         ) : filteredReturns.length === 0 ? (
-          <div className="p-12 text-center flex flex-col items-center justify-center">
+          <div role="status" className="p-12 text-center flex flex-col items-center justify-center">
             <div className="w-20 h-20 bg-slate-50 dark:bg-slate-800 rounded-full flex items-center justify-center mb-4">
               <ArrowRightLeft className="w-10 h-10 text-slate-400" />
             </div>
-            <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-2">لا توجد مرتجعات</h3>
-            <p className="text-slate-500 max-w-sm mx-auto mb-6">
-              لم تقم بإنشاء أي مرتجعات بعد. يمكنك البدء بإضافة أول مرتجع.
+            <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-2">{normalizedSearch ? 'لا توجد نتائج' : 'لا توجد مرتجعات'}</h3>
+            <p className="text-slate-600 dark:text-slate-300 max-w-sm mx-auto mb-6">
+              {normalizedSearch ? 'لا توجد مرتجعات مطابقة لعبارة البحث الحالية.' : 'لم تقم بإنشاء أي مرتجعات بعد. يمكنك البدء بإضافة أول مرتجع.'}
             </p>
           </div>
         ) : (
@@ -248,8 +252,8 @@ export default function ReturnsClient({ title, type = 'sales' }: { title: string
         )}
       </div>
 
-      {detailsLoading && <div className="text-center text-sm text-slate-500">جاري تحميل تفاصيل المرتجع...</div>}
-      {detailsError && <div className="text-center text-sm font-bold text-rose-600">{detailsError}</div>}
+      {detailsLoading && <div role="status" aria-live="polite" className="text-center text-sm text-slate-600 dark:text-slate-300">جاري تحميل تفاصيل المرتجع...</div>}
+      {detailsError && <div role="alert" className="text-center text-sm font-bold text-rose-600">{detailsError}</div>}
       {selectedReturn && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setSelectedReturn(null)}>
           <div
@@ -260,13 +264,16 @@ export default function ReturnsClient({ title, type = 'sales' }: { title: string
             tabIndex={-1}
             className="max-h-[90vh] w-full max-w-5xl overflow-y-auto rounded-2xl bg-white p-4 sm:p-6 shadow-2xl dark:bg-slate-900"
             onClick={e => e.stopPropagation()}
+            onKeyDown={e => {
+              if (e.key === 'Escape') setSelectedReturn(null);
+            }}
             dir="rtl"
           >
             <div className="mb-5 flex items-center justify-between">
               <h2 id="return-details-title" className="text-xl font-black text-slate-900 dark:text-white">
                 {type === 'sales' ? 'تفاصيل مرتجع المبيعات' : 'تفاصيل مرتجع المشتريات'}
               </h2>
-              <button onClick={() => setSelectedReturn(null)} aria-label="إغلاق" className="rounded-lg p-2 hover:bg-slate-100 dark:hover:bg-slate-800"><X className="h-5 w-5" /></button>
+              <button onClick={() => setSelectedReturn(null)} aria-label="إغلاق" className="inline-flex h-11 w-11 items-center justify-center rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800"><X className="h-5 w-5" /></button>
             </div>
             <div className="mb-6 grid grid-cols-1 gap-3 rounded-xl bg-slate-50 p-4 text-sm dark:bg-slate-800 sm:grid-cols-2 md:grid-cols-4">
               <div><span className="text-slate-500">رقم المرتجع</span><p className="font-bold">{selectedReturn.id}</p></div>

@@ -53,7 +53,8 @@ describe('returns-list UI behavior', () => {
 
     const search = screen.getByPlaceholderText('بحث برقم المرتجع أو الفاتورة...');
     fireEvent.change(search, { target: { value: 'missing' } });
-    expect(screen.getByText('لا توجد مرتجعات')).toBeInTheDocument();
+    expect(await screen.findByText('لا توجد نتائج')).toBeInTheDocument();
+    expect(screen.getByText('لا توجد مرتجعات مطابقة لعبارة البحث الحالية.')).toBeInTheDocument();
     fireEvent.change(search, { target: { value: 'invoice-sales' } });
 
     const row = screen.getByText('عميل مرتجع').closest('tr');
@@ -66,6 +67,9 @@ describe('returns-list UI behavior', () => {
 
     expect(fireEvent.keyDown(row as HTMLElement, { key: ' ' })).toBe(false);
     expect(screen.getByRole('heading', { name: 'تفاصيل مرتجع المبيعات' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'إغلاق' })).toHaveClass('h-11', 'w-11');
+    fireEvent.keyDown(screen.getByRole('dialog', { name: 'تفاصيل مرتجع المبيعات' }), { key: 'Escape' });
+    expect(screen.queryByRole('heading', { name: 'تفاصيل مرتجع المبيعات' })).not.toBeInTheDocument();
   });
 
   it('keeps server-matched return rows visible when search text differs only by case', async () => {
@@ -283,5 +287,32 @@ describe('returns-list UI behavior', () => {
 
     expect(screen.getByText('أحدث مرتجع')).toBeInTheDocument();
     expect(screen.queryByText('older unavailable')).not.toBeInTheDocument();
+  });
+
+  it('clears a superseded load-more spinner when a new search becomes authoritative', async () => {
+    let resolveOlderAppend!: (value: any) => void;
+    const olderAppend = new Promise(resolve => { resolveOlderAppend = resolve; });
+    const newest = { ...salesReturn, id: 'sales-return-new-search', patient_name: 'Newest Search Patient' };
+    (getReturnsAction as jest.Mock).mockImplementation(({ offset = 0, search = '' }: any) => {
+      if (offset > 0) return olderAppend;
+      if (search === 'newest') return Promise.resolve({ success: true, data: [newest], hasMore: true });
+      return Promise.resolve({ success: true, data: [salesReturn], hasMore: true });
+    });
+
+    render(<ReturnsClient title="مرتجعات العملاء" type="sales" />);
+    expect(await screen.findByText('عميل مرتجع')).toBeInTheDocument();
+
+    const loadMore = screen.getByRole('button', { name: 'تحميل المزيد' });
+    fireEvent.click(loadMore);
+    await waitFor(() => expect(getReturnsAction).toHaveBeenCalledWith(expect.objectContaining({ offset: 1 })));
+    expect(screen.getByRole('button', { name: 'جاري تحميل المزيد...' })).toBeDisabled();
+
+    fireEvent.change(screen.getByPlaceholderText('بحث برقم المرتجع أو الفاتورة...'), {
+      target: { value: 'newest' },
+    });
+    expect(await screen.findByText('Newest Search Patient')).toBeInTheDocument();
+
+    expect(screen.getByRole('button', { name: 'تحميل المزيد' })).toBeEnabled();
+    resolveOlderAppend({ success: true, data: [], hasMore: false });
   });
 });

@@ -465,6 +465,8 @@ function CashMovementForm({ type, currentShift, onClose }: { type: 'disbursement
              amount: formData.amount,
              description: formData.notes,
              date: formData.date,
+             source_type: formData.source_type,
+             shift_id: formData.shift_id,
            })
          : await createCashMovementAction({ ...formData, type });
 

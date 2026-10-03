@@ -518,4 +518,50 @@ describe('rendered customer-return flow', () => {
     expect(await screen.findByText('Return Drug')).toBeInTheDocument();
     expect(searchRecentReturnInvoicesAction).toHaveBeenLastCalledWith('Return Drug');
   });
+
+  it('shows a perceivable search state and distinguishes search-no-results from date-no-results', async () => {
+    let resolveSearch!: (value: any) => void;
+    (searchRecentReturnInvoicesAction as jest.Mock).mockImplementationOnce(() => new Promise(resolve => {
+      resolveSearch = resolve;
+    }));
+    render(<SalesReturnClient />);
+    const searchInput = screen.getByPlaceholderText('امسح الباركود، أو اكتب اسم الدواء، أو رقم الفاتورة...');
+
+    fireEvent.change(searchInput, { target: { value: 'missing drug' } });
+    expect(await screen.findByText('جاري البحث عن الفواتير...')).toBeInTheDocument();
+    await waitFor(() => expect(searchRecentReturnInvoicesAction).toHaveBeenCalledWith('missing drug'));
+
+    await act(async () => resolveSearch({ success: true, data: [] }));
+    expect(await screen.findByText('لا توجد فواتير مطابقة لعبارة البحث.')).toBeInTheDocument();
+    expect(screen.queryByText('لا توجد فواتير مكتملة في هذا التاريخ.')).not.toBeInTheDocument();
+  });
+
+  it('does not reveal stale invoice rows after a newer invoice search fails', async () => {
+    (searchRecentReturnInvoicesAction as jest.Mock).mockImplementation(async (term: string) => {
+      if (term === 'stale-source') {
+        return {
+          success: true,
+          data: [{
+            id: 'stale-invoice-1',
+            total_amount: 25,
+            payment_method: 'cash',
+            patient_name: 'Stale Search Patient',
+            user_name: 'Cashier',
+            created_at: '2026-08-25T10:00:00.000Z',
+          }],
+        };
+      }
+      if (term === 'new-source-fails') return { success: false, error: 'search unavailable' };
+      return { success: true, data: [] };
+    });
+
+    render(<SalesReturnClient />);
+    const searchInput = screen.getByPlaceholderText('امسح الباركود، أو اكتب اسم الدواء، أو رقم الفاتورة...');
+    fireEvent.change(searchInput, { target: { value: 'stale-source' } });
+    expect(await screen.findByText(/Stale Search Patient/)).toBeInTheDocument();
+
+    fireEvent.change(searchInput, { target: { value: 'new-source-fails' } });
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('search unavailable'));
+    await waitFor(() => expect(screen.queryByText(/Stale Search Patient/)).not.toBeInTheDocument());
+  });
 });

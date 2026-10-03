@@ -93,6 +93,7 @@ describe('purchase reports and drawer handover regressions', () => {
     mockDb.exec(readFileSync('src-tauri/migrations/024_commercial_papers_pharmacy_scope.sql', 'utf8'));
     mockDb.exec(readFileSync('src-tauri/migrations/026_sales_loyalty_redemption_snapshot.sql', 'utf8'));
     mockDb.exec(readFileSync('src-tauri/migrations/028_finance_definitions_pharmacy_scope.sql', 'utf8'));
+    mockDb.exec(readFileSync('src-tauri/migrations/029_shift_treasury_retained_cash.sql', 'utf8'));
     mockDb.exec(`
       ALTER TABLE inventory ADD COLUMN medium_to_small INTEGER DEFAULT 1;
       ALTER TABLE purchase_invoice_items ADD COLUMN medium_to_small INTEGER DEFAULT 1;
@@ -199,9 +200,10 @@ describe('purchase reports and drawer handover regressions', () => {
     const [first, second] = await Promise.all([processHandoverAction(request),processHandoverAction(request)]);
     expect(first.success).toBe(true); expect(second.success).toBe(false);
     expect(first.newShiftId).not.toBe('rollover');
-    expect(mockDb.prepare("SELECT status,ending_cash,end_time FROM shifts WHERE id='rollover'").get()).toMatchObject({status:'closed',ending_cash:40,end_time:expect.any(String)});
-    expect(mockDb.prepare("SELECT id,starting_cash FROM shifts WHERE status='open'").all()).toEqual([{id:first.newShiftId,starting_cash:40}]);
-    expect((await getHandoverDetailsAction(first.newShiftId!)).data?.expected_cash).toBe(target === 'next_shift' ? 100 : 40);
+    const expectedNextDrawer = target === 'next_shift' ? 60 : 40;
+    expect(mockDb.prepare("SELECT status,ending_cash,end_time FROM shifts WHERE id='rollover'").get()).toMatchObject({status:'closed',ending_cash:expectedNextDrawer,end_time:expect.any(String)});
+    expect(mockDb.prepare("SELECT id,starting_cash FROM shifts WHERE status='open'").all()).toEqual([{id:first.newShiftId,starting_cash:expectedNextDrawer}]);
+    expect((await getHandoverDetailsAction(first.newShiftId!)).data?.expected_cash).toBe(expectedNextDrawer);
     expect(mockDb.prepare("SELECT user_id,shift_id,amount FROM cash_movements WHERE category='handover'").all()).toEqual([{user_id:'admin',shift_id:'rollover',amount:60}]);
     if (target === 'bank') {
       expect(mockDb.prepare('SELECT current_balance FROM banks WHERE id=901').get()).toEqual({current_balance:60});
@@ -232,7 +234,7 @@ describe('purchase reports and drawer handover regressions', () => {
       transferTargetType:'pos', transferTargetId:'903', receiverUsername:'liquidity-receiver', receiverPasswordHash:'password',
     })).toMatchObject({ success:true });
 
-    expect((await getTreasuryDashboardAction()).data).toMatchObject({ treasuryBalance:40, ledgerCashBalance:100 });
+    expect((await getTreasuryDashboardAction()).data).toMatchObject({ treasuryBalance:0, drawerBalance:40, ledgerCashBalance:100 });
     expect(mockDb.prepare('SELECT current_balance FROM points_of_sale WHERE id=903').get()).toEqual({ current_balance:60 });
   });
 
@@ -251,11 +253,13 @@ describe('purchase reports and drawer handover regressions', () => {
       transferTargetType:'bank', transferTargetId:'904', receiverUsername:'liquidity-receiver', receiverPasswordHash:'password',
     })).toMatchObject({ success:true });
 
-    const treasuryBalance = (await getTreasuryDashboardAction()).data?.treasuryBalance;
+    const dashboard = (await getTreasuryDashboardAction()).data;
+    const drawerBalance = dashboard?.drawerBalance;
     const bankBalance = (mockDb.prepare('SELECT current_balance FROM banks WHERE id=904').get() as any).current_balance;
-    expect(treasuryBalance).toBe(40);
+    expect(dashboard?.treasuryBalance).toBe(0);
+    expect(drawerBalance).toBe(40);
     expect(bankBalance).toBe(60);
-    expect(treasuryBalance! + bankBalance).toBe(100);
+    expect(drawerBalance! + bankBalance).toBe(100);
   });
 
   it('keeps the shared shift, handover details, reports, and stale cash movements inside the signed-in pharmacy', async () => {
@@ -1402,12 +1406,13 @@ describe('purchase reports and drawer handover regressions', () => {
     expect(await getTreasuryDashboardAction()).toMatchObject({
       success: true,
       data: {
-        treasuryBalance: -1742,
+        treasuryBalance: 0,
+        drawerBalance: -1742,
         ledgerCashBalance: 500,
         todayReceipts: 100,
         todayExpenses: 25,
         totalShiftHandovers: 150,
-        counts: { treasury: 2, receipts: 1, expenses: 1, handovers: 1 },
+        counts: { treasury: 0, receipts: 1, expenses: 1, handovers: 1 },
       },
     });
     expect(await getTreasuryDashboardAction('expenses')).toMatchObject({
@@ -2516,7 +2521,7 @@ describe('purchase reports and drawer handover regressions', () => {
 
     expect(handoverRes.success).toBe(true);
     expect(handoverRes.difference).toBe(-150);
-    expect(handoverRes.remainingCash).toBe(150);
+    expect(handoverRes.remainingCash).toBe(100);
     expect(handoverRes.status).toBe('discrepancy');
 
     const saved = mockDb.prepare('SELECT actual_cash, transfer_amount, transfer_target, cash_difference, receiver_id, ending_cash, status FROM shifts WHERE id = ?').get('shift-unconfigured-tb') as any;
@@ -2526,20 +2531,25 @@ describe('purchase reports and drawer handover regressions', () => {
       transfer_target: 'next_shift',
       cash_difference: -150,
       receiver_id: 'user-next-cashier',
-      ending_cash: 50,
+      ending_cash: 100,
       status: 'discrepancy',
     });
-    const receiverShift = mockDb.prepare("SELECT id, status FROM shifts WHERE status = 'open'").get() as any;
-    expect(receiverShift).toEqual({ id: handoverRes.newShiftId, status: 'open' });
+    const receiverShift = mockDb.prepare("SELECT id, status, starting_cash FROM shifts WHERE status = 'open'").get() as any;
+    expect(receiverShift).toEqual({ id: handoverRes.newShiftId, status: 'open', starting_cash: 100 });
     expect((mockDb.prepare("SELECT COUNT(*) AS total FROM shifts WHERE status = 'open'").get() as any).total).toBe(1);
-    expect(mockDb.prepare("SELECT amount, source_type FROM cash_movements WHERE shift_id = ? AND category = 'handover_received'").get(handoverRes.newShiftId)).toMatchObject({
-      amount: 100,
-      source_type: 'user_drawer_received',
-    });
+    expect(mockDb.prepare("SELECT COUNT(*) AS total FROM cash_movements WHERE shift_id = ? AND category = 'handover_received'").get(handoverRes.newShiftId)).toEqual({ total: 0 });
     expect(mockDb.prepare("SELECT source_type FROM cash_movements WHERE shift_id = ? AND category = 'handover'").get('shift-unconfigured-tb')).toMatchObject({
       source_type: 'user_drawer',
     });
-    expect((await getHandoverDetailsAction(handoverRes.newShiftId!)).data?.expected_cash).toBe(150);
+    expect((await getHandoverDetailsAction(handoverRes.newShiftId!)).data?.expected_cash).toBe(100);
+    expect((await getTreasuryDashboardAction()).data).toMatchObject({ treasuryBalance: 50, drawerBalance: 100 });
+
+    const history = await getShiftsAction({ status: 'all' });
+    expect(history.success).toBe(true);
+    expect(history.data?.find((row: any) => row.id === 'shift-unconfigured-tb')).toMatchObject({
+      expected_cash_amount: 100,
+      cash_difference: -150,
+    });
   });
 
   it('fetches receipts belonging to a shift with item details, payment methods, and patient info', async () => {

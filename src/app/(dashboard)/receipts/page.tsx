@@ -174,8 +174,9 @@ export default function ReceiptsPage() {
 
   if (loading) {
     return (
-      <div className="flex justify-center items-center py-24" dir="rtl">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+      <div role="status" aria-live="polite" className="flex flex-col justify-center items-center gap-3 py-24 text-slate-600 dark:text-slate-300" dir="rtl">
+        <div aria-hidden="true" className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+        <p className="font-bold">جاري تحميل سجل الفواتير...</p>
       </div>
     );
   }

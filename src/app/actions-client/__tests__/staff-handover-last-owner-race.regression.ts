@@ -86,6 +86,7 @@ describe('staff handover last-owner concurrency', () => {
         actual_cash REAL,
         transfer_amount REAL,
         transfer_target TEXT,
+        treasury_retained_cash REAL,
         cash_difference REAL,
         receiver_id TEXT,
         notes TEXT
@@ -139,7 +140,10 @@ describe('staff handover last-owner concurrency', () => {
       authorizerPassword: 'secret',
     });
 
-    expect(result.success).toBe(false);
+    expect(result).toMatchObject({
+      success: false,
+      error: expect.stringContaining('لا يمكن تعطيل المالك الوحيد'),
+    });
     expect((mockDb.prepare(`
       SELECT COUNT(*) AS count
       FROM users

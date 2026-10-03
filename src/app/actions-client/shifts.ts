@@ -224,6 +224,7 @@ export async function closeShiftAction(data: { shift_id?: string; ending_cash_am
         ), 0) AS REAL) as net
         FROM cash_movements 
         WHERE shift_id = ?
+          AND LOWER(COALESCE(source_type, '')) <> 'main_safe'
       `).get(shiftId) as any;
 
       const expectedCash = Number(shift.starting_cash) + Number(sales.total) - Number(returns.total) + Number(movements.net);
@@ -312,7 +313,7 @@ export async function getShiftsAction(filter: { status: string }) {
     const rawShifts = await db.prepare(`
       SELECT s.id, s.start_time as shift_start, s.end_time as shift_end, 
              s.starting_cash as starting_cash_amount, s.ending_cash as ending_cash_amount,
-             s.actual_cash, s.transfer_amount, s.transfer_target, s.cash_difference,
+             s.actual_cash, s.transfer_amount, s.transfer_target, s.treasury_retained_cash, s.cash_difference,
              s.receiver_id, ru.full_name as receiver_name,
              s.status, s.notes as opening_notes,
              COALESCE(u.full_name, u.username, s.user_id, 'غير معروف') as full_name,
@@ -349,6 +350,7 @@ export async function getShiftsAction(filter: { status: string }) {
             CASE WHEN type IN ('disbursement', 'out') AND category = 'handover' THEN amount ELSE 0 END
           ) as handover_transfers
         FROM cash_movements
+        WHERE LOWER(COALESCE(source_type, '')) <> 'main_safe'
         GROUP BY shift_id
       ) moves ON s.id = moves.shift_id
       WHERE COALESCE(NULLIF(TRIM(s.pharmacy_id), ''), 'local_default') = ?
@@ -363,7 +365,19 @@ export async function getShiftsAction(filter: { status: string }) {
       const netMovements = Number(s.net_movements || 0);
       const totalTransferred = Math.max(Number(s.transfer_amount || 0), Number(s.handover_transfers || 0));
 
-      const expectedCash = startingCash + totalSales - totalRefunds + netMovements;
+      let expectedCash = startingCash + totalSales - totalRefunds + netMovements;
+      // New next-shift handovers keep transfer_amount as the cash seeded into the
+      // replacement drawer, while treasury_retained_cash is the cash removed
+      // from the old drawer into the main safe. The handover movement records
+      // the seed, so add it back and subtract the retained treasury amount to
+      // keep this history view aligned with ending_cash.
+      if (
+        String(s.transfer_target || '').toLowerCase() === 'next_shift'
+        && s.treasury_retained_cash !== null
+        && s.treasury_retained_cash !== undefined
+      ) {
+        expectedCash += totalTransferred - Number(s.treasury_retained_cash || 0);
+      }
 
       let difference: number | null = null;
       if (s.status !== 'open') {
@@ -376,7 +390,11 @@ export async function getShiftsAction(filter: { status: string }) {
 
       // Self-heal legacy bug where shift handover calculated deficit as: actual_cash - (starting + sales - refunds),
       // ignoring all the money already transferred to the treasury!
-      if (s.cash_difference !== null && s.cash_difference !== undefined && totalTransferred > 0) {
+      if (
+        (s.treasury_retained_cash === null || s.treasury_retained_cash === undefined)
+        && s.cash_difference !== null && s.cash_difference !== undefined
+        && totalTransferred > 0
+      ) {
         const stored = Number(s.cash_difference);
         const rawDeficit = Number(s.actual_cash || 0) - (startingCash + totalSales - totalRefunds);
         if (stored < 0 && Math.abs(stored - rawDeficit) < 2) {
@@ -511,6 +529,7 @@ export async function getCurrentShiftStatsAction() {
       ), 0) as net
       FROM cash_movements
       WHERE shift_id = ?
+        AND LOWER(COALESCE(source_type, '')) <> 'main_safe'
     `).get(shift.id) as any;
 
     const startingCash = shift.starting_cash || 0;

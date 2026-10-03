@@ -321,10 +321,29 @@ describe('rendered POS checkout flow', () => {
     const wallet = await screen.findByRole('button', { name: /محفظة/ });
     fireEvent.click(wallet);
     expect(wallet).toHaveAttribute('aria-pressed', 'true');
-    expect(wallet).toHaveClass('bg-purple-500', 'border-purple-600');
+    expect(wallet).toHaveClass('bg-purple-700', 'border-purple-800');
 
     const cash = screen.getByRole('button', { name: /كاش/ });
     expect(cash).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('keeps native Tab navigation and exposes cart quantity controls to keyboard users', async () => {
+    render(<POSPage />);
+
+    const search = await screen.findByPlaceholderText('بحث (اسم أو كود)...');
+    expect(fireEvent.keyDown(search, { key: 'Tab' })).toBe(true);
+
+    const decrement = screen.getByRole('button', { name: 'تقليل كمية Test Drug' });
+    const increment = screen.getByRole('button', { name: 'زيادة كمية Test Drug' });
+    expect(decrement).not.toHaveAttribute('tabindex', '-1');
+    expect(increment).not.toHaveAttribute('tabindex', '-1');
+    expect(decrement).toHaveClass('h-11', 'w-11');
+    expect(increment).toHaveClass('h-11', 'w-11');
+
+    const row = screen.getByText('Test Drug').closest('tr') as HTMLTableRowElement;
+    expect(row).toHaveAttribute('tabindex', '0');
+    fireEvent.focus(row);
+    expect(row).toHaveAttribute('aria-selected', 'true');
   });
 
   it('opens the quick sales-return surface as a named keyboard-contained dialog', async () => {

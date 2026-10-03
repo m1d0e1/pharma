@@ -146,7 +146,7 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
       });
 
       if (res.success) {
-        toast.success(`تم التسليم وإغلاق الوردية وفتح وردية مشتركة جديدة (الرصيد ${Number(res.remainingCash ?? 0).toFixed(2)} ج.م)`);
+        toast.success(`تم التسليم وإغلاق الوردية وفتح وردية مشتركة جديدة (رصيد الدرج الجديد ${Number(res.remainingCash ?? 0).toFixed(2)} ج.م)`);
         if (onClose) {
           onClose();
         } else {

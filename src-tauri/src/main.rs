@@ -659,6 +659,12 @@ fn main() {
             sql: include_str!("../migrations/028_finance_definitions_pharmacy_scope.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 29,
+            description: "shift_treasury_retained_cash",
+            sql: include_str!("../migrations/029_shift_treasury_retained_cash.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()

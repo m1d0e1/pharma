@@ -53,6 +53,7 @@ export default function SalesReturnClient() {
   const [itemsToReturn, setItemsToReturn] = useState<any[]>([]);
   const [reason, setReason] = useState<string>('');
   const [refundMethod, setRefundMethod] = useState<'cash' | 'patient_account' | 'wallet' | 'bank'>('cash');
+  const [isInvoiceListLoading, setIsInvoiceListLoading] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isCommitted, setIsCommitted] = useState(false);
@@ -86,8 +87,15 @@ export default function SalesReturnClient() {
   // Fetch invoices by date or search term (all receipts)
   React.useEffect(() => {
     let cancelled = false;
+    setIsInvoiceListLoading(true);
+    const clearInvoiceList = () => {
+      selectedInvoiceIdRef.current = '';
+      setInvoicesByDate([]);
+      setSelectedIndex(-1);
+      setListRevision(value => value + 1);
+      invalidatePreparedReturn();
+    };
     async function fetchInvoices() {
-      setIsSearching(true);
       try {
         if (searchTerm.trim()) {
           const res = await searchRecentReturnInvoicesAction(searchTerm);
@@ -101,6 +109,7 @@ export default function SalesReturnClient() {
             setSelectedIndex(nextIndex);
             setListRevision(value => value + 1);
           } else {
+            clearInvoiceList();
             toast.error(res.error || 'فشل تحميل فواتير المبيعات');
           }
         } else {
@@ -115,13 +124,17 @@ export default function SalesReturnClient() {
             setSelectedIndex(nextIndex);
             setListRevision(value => value + 1);
           } else {
+            clearInvoiceList();
             toast.error(res.error || 'فشل تحميل فواتير المبيعات');
           }
         }
       } catch {
-        if (!cancelled) toast.error('فشل تحميل فواتير المبيعات');
+        if (!cancelled) {
+          clearInvoiceList();
+          toast.error('فشل تحميل فواتير المبيعات');
+        }
       } finally {
-        if (!cancelled) setIsSearching(false);
+        if (!cancelled) setIsInvoiceListLoading(false);
       }
     }
     const timer = setTimeout(fetchInvoices, 250);
@@ -409,8 +422,14 @@ export default function SalesReturnClient() {
             </h2>
             
             <div ref={listRef} className="space-y-2 max-h-[500px] overflow-y-auto pr-1">
-              {invoicesByDate.length === 0 ? (
-                <div className="py-12 text-center text-slate-400 font-bold text-xs">لا توجد فواتير مكتملة في هذا التاريخ</div>
+              {isInvoiceListLoading ? (
+                <div role="status" aria-live="polite" className="py-12 text-center text-slate-600 dark:text-slate-300 font-bold text-xs">
+                  {searchTerm.trim() ? 'جاري البحث عن الفواتير...' : 'جاري تحميل فواتير التاريخ...'}
+                </div>
+              ) : invoicesByDate.length === 0 ? (
+                <div role="status" className="py-12 text-center text-slate-600 dark:text-slate-300 font-bold text-xs">
+                  {searchTerm.trim() ? 'لا توجد فواتير مطابقة لعبارة البحث.' : 'لا توجد فواتير مكتملة في هذا التاريخ.'}
+                </div>
               ) : (
                 invoicesByDate.map((inv, idx) => (
                   <button
@@ -620,7 +639,7 @@ export default function SalesReturnClient() {
               </div>
             </div>
           ) : (
-            <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-20 text-center text-slate-400 font-bold">
+            <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-20 text-center text-slate-600 dark:text-slate-300 font-bold">
               <FileText className="w-12 h-12 mx-auto mb-3 opacity-30 text-blue-500" />
               الرجاء تحديد فاتورة من القائمة لعرض تفاصيلها والبدء في الإرجاع
             </div>

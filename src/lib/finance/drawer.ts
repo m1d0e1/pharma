@@ -45,16 +45,19 @@ const HANDOVER_DETAILS_SQL = `
       SELECT COALESCE(SUM(CASE WHEN cm.type IN ('receipt', 'in') THEN CAST(cm.amount AS REAL) ELSE 0 END), 0)
       FROM cash_movements cm
       WHERE cm.shift_id = s.id
+        AND LOWER(COALESCE(cm.source_type, '')) <> 'main_safe'
     ) AS receipts,
     (
       SELECT COALESCE(SUM(CASE WHEN cm.type IN ('disbursement', 'out') THEN CAST(cm.amount AS REAL) ELSE 0 END), 0)
       FROM cash_movements cm
       WHERE cm.shift_id = s.id
+        AND LOWER(COALESCE(cm.source_type, '')) <> 'main_safe'
     ) AS disbursements,
     (
       SELECT COALESCE(SUM(CASE WHEN cm.type IN ('disbursement', 'out') AND cm.category = 'handover' THEN CAST(cm.amount AS REAL) ELSE 0 END), 0)
       FROM cash_movements cm
       WHERE cm.shift_id = s.id
+        AND LOWER(COALESCE(cm.source_type, '')) <> 'main_safe'
     ) AS handover_movements
   FROM shifts s
   LEFT JOIN users u ON (CAST(u.id AS TEXT) = CAST(s.user_id AS TEXT) OR LOWER(u.username) = LOWER(s.user_id))

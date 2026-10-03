@@ -2145,9 +2145,9 @@ async fn process_checkout_tx(
         for item in &payload.items {
             let price = sqlx::query(
                 r#"
-                SELECT COALESCE(MIN(i.local_selling_price), md.official_price, 0) AS large_price,
-                       COALESCE(NULLIF(MAX(i.strips_per_box), 0), NULLIF(md.large_to_medium, 0), 1) AS large_to_medium,
-                       COALESCE(NULLIF(MAX(i.medium_to_small), 0), NULLIF(md.medium_to_small, 0), 1) AS medium_to_small,
+                SELECT CAST(COALESCE(MIN(i.local_selling_price), md.official_price, 0) AS REAL) AS large_price,
+                       CAST(COALESCE(NULLIF(MAX(i.strips_per_box), 0), NULLIF(md.large_to_medium, 0), 1) AS REAL) AS large_to_medium,
+                       CAST(COALESCE(NULLIF(MAX(i.medium_to_small), 0), NULLIF(md.medium_to_small, 0), 1) AS REAL) AS medium_to_small,
                        md.medium_unit, md.small_unit
                 FROM master_drugs md
                 LEFT JOIN inventory i ON CAST(i.drug_id AS TEXT) = CAST(md.id AS TEXT)
@@ -2169,20 +2169,15 @@ async fn process_checkout_tx(
             .await
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "Checkout drug does not exist".to_string())?;
-            let mut expected: f64 = price.try_get("large_price").unwrap_or(0.0);
-            let large_to_medium: f64 = price.try_get::<f64, _>("large_to_medium").unwrap_or(1.0).max(1.0);
-            let medium_to_small: f64 = price.try_get::<f64, _>("medium_to_small").unwrap_or(1.0).max(1.0);
+            let large_price: f64 = price.try_get("large_price").map_err(|e| e.to_string())?;
+            let large_to_medium: f64 = price.try_get("large_to_medium").map_err(|e| e.to_string())?;
+            let medium_to_small: f64 = price.try_get("medium_to_small").map_err(|e| e.to_string())?;
             let medium_unit: Option<String> = price.try_get("medium_unit").ok();
             let small_unit: Option<String> = price.try_get("small_unit").ok();
-            if matches!(item.selected_unit.as_str(), "medium" | "strip" | "شريط")
-                || medium_unit.as_deref() == Some(item.selected_unit.as_str())
-            {
-                expected /= large_to_medium;
-            } else if item.selected_unit == "small"
-                || small_unit.as_deref() == Some(item.selected_unit.as_str())
-            {
-                expected /= large_to_medium * medium_to_small;
-            }
+            let mut expected = unit_quantity_in_large(
+                large_price, &item.selected_unit, large_to_medium, medium_to_small,
+                medium_unit.as_deref(), small_unit.as_deref(),
+            );
             expected *= 1.0 - item.item_discount_percent / 100.0;
             if (expected - item.unit_price).abs() > 0.011 {
                 return Err("Unauthorized: can_change_price_sale permission required".into());
@@ -7854,6 +7849,35 @@ mod tests {
             .await
             .expect("unknown-expiry stock must not lower the validated checkout price");
         tx.rollback().await.unwrap();
+
+        for (unit, price) in [
+            ("medium", 6.9), ("strip", 6.9), ("شريط", 6.9),
+            ("Blister", 6.9), ("small", 3.45), ("unit", 3.45),
+            ("pill", 3.45), ("Tablet", 3.45),
+        ] {
+            let mut tx = conn.begin().await.unwrap();
+            sqlx::query("UPDATE master_drugs SET medium_unit = 'Blister', small_unit = 'tablet', medium_to_small = 2 WHERE id = 4463")
+                .execute(&mut *tx).await.unwrap();
+            sqlx::query("UPDATE inventory SET medium_to_small = 2 WHERE id = 'full'")
+                .execute(&mut *tx).await.unwrap();
+            let mut sale = cash_payload(Some("full"));
+            sale.user_id = "price-pos".into();
+            sale.items[0].selected_unit = unit.into();
+            sale.items[0].unit_price = price;
+            process_checkout_tx(&mut tx, sale, price).await
+                .unwrap_or_else(|error| panic!("restricted cashier must sell {unit} at its configured price: {error}"));
+            let stock: f64 = sqlx::query_scalar("SELECT CAST(quantity AS REAL) FROM inventory WHERE id = 'full'")
+                .fetch_one(&mut *tx).await.unwrap();
+            assert!((stock - (7.0 - price / 69.0)).abs() < 0.000_001,
+                "{unit} price validation and stock conversion must agree");
+            let mut changed_price = cash_payload(Some("full"));
+            changed_price.user_id = "price-pos".into();
+            changed_price.items[0].selected_unit = unit.into();
+            changed_price.items[0].unit_price = price + 1.0;
+            assert_eq!(process_checkout_tx(&mut tx, changed_price, price + 1.0).await.unwrap_err(),
+                "Unauthorized: can_change_price_sale permission required");
+            tx.rollback().await.unwrap();
+        }
 
         let mut invalid_status = cash_payload(Some("full"));
         invalid_status.status = "voided".into();

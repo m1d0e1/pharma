@@ -54,7 +54,6 @@ const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, 
 
 import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { ensurePermanentShiftForUser, getShiftForPharmacy } from './shifts';
-import { format } from 'date-fns';
 import { z } from 'zod';
 import { patientOutstandingBalanceQuery } from '@/lib/patients/balance';
 import { isBusinessDate, localDate } from '@/lib/time';
@@ -478,7 +477,7 @@ export async function getTreasuryDashboardAction(detail?: TreasuryMetricKey) {
     }
     const pharmacyId = user.pharmacy_id || 'local_default';
 
-    // Keep accounting liquidity separate from cash remaining in the shared drawer.
+    // Keep accounting liquidity, the open drawer, and retained main-treasury cash separate.
     const drawer = await getOpenDrawerSnapshot(pharmacyId);
     let cashAccount = await db.prepare(`
       SELECT a.id, a.code, a.name_ar
@@ -497,7 +496,7 @@ export async function getTreasuryDashboardAction(detail?: TreasuryMetricKey) {
       `).get() as any;
     }
 
-    const [treasury, receipts, expenses, handovers] = await Promise.all([
+    const [treasury, retainedTreasury, mainSafeMovements, receipts, expenses, handovers] = await Promise.all([
       cashAccount
         ? db.prepare(`
             SELECT
@@ -510,6 +509,29 @@ export async function getTreasuryDashboardAction(detail?: TreasuryMetricKey) {
               AND (dj.pharmacy_id = ? OR (dj.pharmacy_id IS NULL AND ? = 'local_default'))
           `).get(cashAccount.id, pharmacyId, pharmacyId)
         : Promise.resolve({ total: 0, count: 0 }),
+      db.prepare(`
+        SELECT
+          CAST(COALESCE(SUM(CAST(s.treasury_retained_cash AS REAL)), 0) AS REAL) AS total,
+          COUNT(CASE WHEN CAST(COALESCE(s.treasury_retained_cash, 0) AS REAL) > 0 THEN 1 END) AS count
+        FROM shifts s
+        WHERE LOWER(COALESCE(s.status, '')) <> 'open'
+          AND s.treasury_retained_cash IS NOT NULL
+          AND COALESCE(NULLIF(TRIM(s.pharmacy_id), ''), 'local_default') = ?
+      `).get(pharmacyId),
+      db.prepare(`
+        SELECT
+          CAST(COALESCE(SUM(
+            CASE
+              WHEN cm.type IN ('receipt', 'in') THEN CAST(cm.amount AS REAL)
+              WHEN cm.type IN ('disbursement', 'out') THEN -CAST(cm.amount AS REAL)
+              ELSE 0
+            END
+          ), 0) AS REAL) AS total,
+          COUNT(*) AS count
+        FROM cash_movements cm
+        WHERE LOWER(COALESCE(cm.source_type, '')) = 'main_safe'
+          AND (cm.pharmacy_id = ? OR (cm.pharmacy_id IS NULL AND ? = 'local_default'))
+      `).get(pharmacyId, pharmacyId),
       db.prepare(`
         SELECT CAST(COALESCE(SUM(cm.amount), 0) AS REAL) AS total, COUNT(*) AS count
         FROM cash_movements cm
@@ -544,7 +566,54 @@ export async function getTreasuryDashboardAction(detail?: TreasuryMetricKey) {
 
     let details: any[] = [];
     if (detail === 'treasury') {
-      details = drawer.details;
+      details = await db.prepare(`
+        SELECT * FROM (
+          SELECT
+            'retained:' || s.id AS id,
+            COALESCE(s.end_time, s.start_time) AS date,
+            COALESCE(s.end_time, s.start_time) AS created_at,
+            CASE
+              WHEN LOWER(COALESCE(s.transfer_target, 'treasury')) = 'next_shift'
+                THEN 'المتبقي بعد تمويل درج الوردية التالية'
+              ELSE 'تحويل من الوردية إلى الخزنة الرئيسية'
+            END AS description,
+            CAST(s.treasury_retained_cash AS REAL) AS amount,
+            'receipt' AS type,
+            COALESCE(u.full_name, u.username, s.user_id) AS user_name,
+            s.id AS shift_id
+          FROM shifts s
+          LEFT JOIN users u ON CAST(u.id AS TEXT) = CAST(s.user_id AS TEXT)
+          WHERE LOWER(COALESCE(s.status, '')) <> 'open'
+            AND s.treasury_retained_cash IS NOT NULL
+            AND COALESCE(NULLIF(TRIM(s.pharmacy_id), ''), 'local_default') = ?
+            AND CAST(COALESCE(s.treasury_retained_cash, 0) AS REAL) > 0
+
+          UNION ALL
+
+          SELECT
+            cm.id,
+            COALESCE(NULLIF(cm.date, ''), cm.created_at) AS date,
+            cm.created_at,
+            COALESCE(
+              NULLIF(TRIM(cm.notes), ''),
+              NULLIF(TRIM(cm.target_name), ''),
+              CASE WHEN cm.type IN ('receipt', 'in')
+                THEN 'توريد إلى الخزنة الرئيسية'
+                ELSE 'صرف من الخزنة الرئيسية'
+              END
+            ) AS description,
+            CAST(cm.amount AS REAL) AS amount,
+            cm.type,
+            COALESCE(cu.full_name, cu.username, cm.user_id) AS user_name,
+            cm.shift_id
+          FROM cash_movements cm
+          LEFT JOIN users cu ON CAST(cu.id AS TEXT) = CAST(cm.user_id AS TEXT)
+          WHERE LOWER(COALESCE(cm.source_type, '')) = 'main_safe'
+            AND (cm.pharmacy_id = ? OR (cm.pharmacy_id IS NULL AND ? = 'local_default'))
+        )
+        ORDER BY COALESCE(created_at, date) DESC
+        LIMIT 500
+      `).all(pharmacyId, pharmacyId, pharmacyId) as any[];
     } else if (detail === 'receipts') {
       details = await db.prepare(`
         SELECT cm.id, cm.date, cm.created_at,
@@ -599,7 +668,7 @@ export async function getTreasuryDashboardAction(detail?: TreasuryMetricKey) {
     }
 
     const counts = {
-      treasury: drawer.details.length,
+      treasury: Number(retainedTreasury?.count || 0) + Number(mainSafeMovements?.count || 0),
       receipts: Number(receipts?.count || 0),
       expenses: Number(expenses?.count || 0),
       handovers: Number(handovers?.count || 0),
@@ -607,7 +676,8 @@ export async function getTreasuryDashboardAction(detail?: TreasuryMetricKey) {
     return {
       success: true,
       data: {
-        treasuryBalance: drawer.balance,
+        treasuryBalance: Number(retainedTreasury?.total || 0) + Number(mainSafeMovements?.total || 0),
+        drawerBalance: drawer.balance,
         ledgerCashBalance: Number(treasury?.total || 0),
         drawerShiftId: drawer.shiftId,
         todayReceipts: Number(receipts?.total || 0),
@@ -1090,133 +1160,6 @@ export async function getJournalDetailsAction(journalId: string) {
   } catch (error) {
     console.error('Get journal details error:', error);
     return { success: false, error: 'فشل جلب تفاصيل القيد' };
-  }
-}
-
-export async function seedFinanceTestDataAction() {
-  try {
-    const user = await getLocalSession();
-    if (user?.role !== 'owner') return { success: false, error: 'غير مصرح' };
-    // 1. Seed POS
-    const posCount = await db.prepare('SELECT COUNT(*) as count FROM points_of_sale').get() as any;
-    if (posCount.count === 0) {
-      const posStmt = db.prepare(`
-        INSERT INTO points_of_sale (name_ar, name_en, location, computer_name, current_balance)
-        VALUES (?, ?, ?, ?, ?)
-      `);
-      await posStmt.run('نقطة البيع الرئيسية', 'Main POS', 'المحل', 'PC-01', 0);
-      await posStmt.run('نقطة بيع الفرع', 'Branch POS', 'الفرع', 'PC-02', 0);
-    }
-
-    // 2. Seed Expense Definitions
-    const expCount = await db.prepare('SELECT COUNT(*) as count FROM expense_definitions').get() as any;
-    if (expCount.count === 0) {
-      const expStmt = db.prepare(`INSERT INTO expense_definitions (code, name_ar, name_en) VALUES (?, ?, ?)`);
-      await expStmt.run('50', 'كازينو', 'CASINO');
-      await expStmt.run('51', 'خصم عميل', 'Customer Discount');
-      await expStmt.run('15', 'كهرباء', 'Electricity');
-      await expStmt.run('16', 'تليفون وفاكس', 'Telephone & Fax');
-      await expStmt.run('17', 'الرقم الموحد', 'Unified Number');
-      await expStmt.run('18', 'محمول', 'Mobile');
-      await expStmt.run('19', 'إنترنت', 'Internet');
-      await expStmt.run('26', 'إكراميات', 'Tips');
-      await expStmt.run('33', 'اصلاح وصيانة', 'Maintenance');
-    }
-
-    // 3. Seed Banks
-    const bankCount = await db.prepare('SELECT COUNT(*) as count FROM banks').get() as any;
-    if (bankCount.count === 0) {
-       await dbTransaction(async (db) => {
-         const bankStmt = db.prepare(`INSERT INTO banks (name_ar, name_en, account_number, branch, current_balance) VALUES (?, ?, ?, ?, ?)`);
-         await bankStmt.run('البنك التجاري الدولي', 'CIB', '100012345678', 'فرع المهندسين', 125000.00);
-         await postOpeningBalanceJournal(user, 125000, 'رصيد افتتاحي للبنك: البنك التجاري الدولي', db);
-         await bankStmt.run('بنك مصر', 'Banque Misr', '200098765432', 'فرع الدقي', 45000.00);
-         await postOpeningBalanceJournal(user, 45000, 'رصيد افتتاحي للبنك: بنك مصر', db);
-       });
-    }
-
-    // 4. Seed Credit Cards / Terminals
-    const cardCount = await db.prepare('SELECT COUNT(*) as count FROM credit_cards').get() as any;
-    if (cardCount.count === 0) {
-       await dbTransaction(async (db) => {
-         const cardStmt = db.prepare(`INSERT INTO credit_cards (name_ar, name_en, bank_id, commission_pct, current_balance) VALUES (?, ?, ?, ?, ?)`);
-         await cardStmt.run('ماكينة فوري', 'Fawry Terminal', 1, 1.5, 3200.00);
-         await postOpeningBalanceJournal(user, 3200, 'رصيد افتتاحي لماكينة الدفع: ماكينة فوري', db);
-         await cardStmt.run('فيزا بنك مصر', 'BM Visa', 2, 2.0, 1500.00);
-         await postOpeningBalanceJournal(user, 1500, 'رصيد افتتاحي لماكينة الدفع: فيزا بنك مصر', db);
-       });
-    }
-
-    // 5. Seed some Cash Movements
-    const moveCount = await db.prepare('SELECT COUNT(*) as count FROM cash_movements').get() as any;
-    if (moveCount.count === 0) {
-      const user = await getLocalSession();
-      if (user) {
-        const shiftId = await requireOpenShiftId(user.id);
-        const moveStmt = db.prepare(`
-          INSERT INTO cash_movements (id, user_id, shift_id, type, category, amount, date, notes)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `);
-        await moveStmt.run(generateId(), user.id, shiftId, 'receipt', 'patient', 150.00, format(new Date(), 'yyyy-MM-dd'), 'توريد من عميل #123');
-        await moveStmt.run(generateId(), user.id, shiftId, 'disbursement', 'operating_expenses', 50.00, format(new Date(), 'yyyy-MM-dd'), 'دفع فاتورة انترنت');
-      }
-    }
-
-    // 6. Seed Chart of Accounts
-    const accCount = await db.prepare('SELECT COUNT(*) as count FROM accounts').get() as any;
-    if (accCount.count === 0) {
-      const accStmt = db.prepare(`
-        INSERT INTO accounts (code, name_ar, name_en, type, is_group, parent_id)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `);
-      
-      // Top level groups
-      const assetsId = (await accStmt.run('1', 'الأصول', 'Assets', 'asset', 1, null)).lastInsertRowid;
-      const liabId = (await accStmt.run('2', 'الخصوم', 'Liabilities', 'liability', 1, null)).lastInsertRowid;
-      const equityId = (await accStmt.run('3', 'حقوق الملكية', 'Equity', 'equity', 1, null)).lastInsertRowid;
-      const incomeId = (await accStmt.run('4', 'الإيرادات', 'Income', 'income', 1, null)).lastInsertRowid;
-      const expenseId = (await accStmt.run('5', 'المصروفات', 'Expenses', 'expense', 1, null)).lastInsertRowid;
-
-      // Assets sub-groups
-      const curAssetsId = (await accStmt.run('11', 'الأصول المتداولة', 'Current Assets', 'asset', 1, assetsId)).lastInsertRowid;
-      const cashAccountId = (await accStmt.run('111', 'الخزينة الرئيسية', 'Main Treasury', 'asset', 0, curAssetsId)).lastInsertRowid;
-      await accStmt.run('112', 'البنوك', 'Banks', 'asset', 0, curAssetsId);
-      const customersAccountId = (await accStmt.run('113', 'العملاء', 'Customers', 'asset', 0, curAssetsId)).lastInsertRowid;
-      const inventoryAccountId = (await accStmt.run('114', 'مخزون الأدوية', 'Drug Inventory', 'asset', 0, curAssetsId)).lastInsertRowid;
-
-      // Liabilities sub-groups
-      const curLiabId = (await accStmt.run('21', 'الخصوم المتداولة', 'Current Liabilities', 'liability', 1, liabId)).lastInsertRowid;
-      const suppliersAccountId = (await accStmt.run('211', 'الموردين', 'Suppliers (Accounts Payable)', 'liability', 0, curLiabId)).lastInsertRowid;
-
-      // Income sub-groups
-      const salesAccountId = (await accStmt.run('41', 'مبيعات الأدوية', 'Drug Sales', 'income', 0, incomeId)).lastInsertRowid;
-
-      // Expenses sub-groups
-      const opExpId = (await accStmt.run('51', 'مصروفات تشغيلية', 'Operating Expenses', 'expense', 1, expenseId)).lastInsertRowid;
-      await accStmt.run('511', 'إيجار', 'Rent', 'expense', 0, opExpId);
-      await accStmt.run('512', 'كهرباء', 'Electricity', 'expense', 0, opExpId);
-      await accStmt.run('513', 'أجور ومرتبات', 'Salaries', 'expense', 0, opExpId);
-      const cogsAccountId = (await accStmt.run('514', 'تكلفة البضاعة المباعة', 'Cost of Goods Sold', 'expense', 0, opExpId)).lastInsertRowid;
-      const adjustmentAccountId = (await accStmt.run('515', 'تسويات مخزنية (عجز وزيادة)', 'Inventory Adjustments', 'expense', 0, opExpId)).lastInsertRowid;
-      const cashDiffAccountId = (await accStmt.run('516', 'عجز وزيادة الخزينة', 'Cash Shortage/Overage', 'expense', 0, opExpId)).lastInsertRowid;
-
-      // 7. Seed Trial Balance Settings
-      const tbStmt = db.prepare(`INSERT INTO trial_balance_settings (category, account_id) VALUES (?, ?)`);
-      await tbStmt.run('cash_drawer', cashAccountId);
-      await tbStmt.run('sales_revenue', salesAccountId);
-      await tbStmt.run('inventory_asset', inventoryAccountId);
-      await tbStmt.run('cogs_expense', cogsAccountId);
-      await tbStmt.run('accounts_receivable', customersAccountId);
-      await tbStmt.run('accounts_payable', suppliersAccountId);
-      await tbStmt.run('inventory_adjustment', adjustmentAccountId);
-      await tbStmt.run('cash_difference', cashDiffAccountId);
-    }
-
-    revalidatePath('/finance');
-    return { success: true };
-  } catch (error) {
-    console.error('Seed finance error:', error);
-    return { success: false, error: 'فشل تهيئة البيانات' };
   }
 }
 

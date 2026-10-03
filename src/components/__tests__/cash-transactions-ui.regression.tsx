@@ -188,6 +188,8 @@ describe('CashTransactionsClient Regression', () => {
     expect(notesInput).toBe(screen.getByPlaceholderText('اكتب أي ملاحظات هنا...'));
     fireEvent.change(notesInput, { target: { value: 'شاي وسكر' } });
 
+    fireEvent.change(screen.getByLabelText('صرف من'), { target: { value: 'main_safe' } });
+
     const submitBtn = screen.getByRole('button', { name: /حفظ العملية/i });
     fireEvent.click(submitBtn);
 
@@ -197,6 +199,8 @@ describe('CashTransactionsClient Regression', () => {
           amount: 80,
           category: 'operating_expenses',
           description: 'شاي وسكر',
+          source_type: 'main_safe',
+          shift_id: 'shift-100',
         })
       );
     });

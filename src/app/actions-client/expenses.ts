@@ -64,6 +64,8 @@ export async function addExpenseAction(data: {
   amount: number;
   description: string;
   date: string;
+  source_type?: string;
+  shift_id?: string;
 }) {
   try {
     const user = await getLocalSession();
@@ -85,8 +87,10 @@ export async function addExpenseAction(data: {
         category: 'operating_expenses',
         sub_category: data.category,
         amount: data.amount,
+        source_type: data.source_type,
         notes: data.description,
         date: data.date,
+        shift_id: data.shift_id,
       }, db);
       if (!cashMovement.success) throw new Error(cashMovement.error || 'فشل تسجيل حركة المصروف النقدية');
     });

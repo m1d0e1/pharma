@@ -343,6 +343,163 @@ describe('safe drug catalog reconciliation', () => {
     ], adapter(db))).rejects.toThrow(/Duplicate drug id 100/i);
   });
 
+  it('quarantines a second catalog record targeting an already linked local drug without creating a duplicate link', async () => {
+    db.prepare(`
+      INSERT INTO drug_catalog_links (catalog_drug_id, master_drug_id, linked_by)
+      VALUES (1000, 110, 'catalog-admin')
+    `).run();
+    const database = adapter(db);
+    const rows = [
+      { id: 1000, trade_name: 'UNCHANGED DRUG', official_price: 10 },
+      { id: 110, trade_name: 'UNCHANGED DRUG', official_price: 10 },
+    ];
+    const preview = await previewMasterDrugCatalogUpdate(rows, database);
+
+    expect(preview.matchedLinks).toEqual([{ catalogDrugId: 1000, masterDrugId: 110 }]);
+    expect(preview.identityConflicts).toEqual([
+      expect.objectContaining({ catalogDrugId: 110, masterDrugId: 110, incomingName: 'UNCHANGED DRUG' }),
+    ]);
+
+    await applyMasterDrugCatalogUpdate({
+      rows,
+      previewSignature: preview.signature,
+      fieldDecisions: [],
+      newDrugDecisions: [],
+      identityConflictDecisions: [{ catalogDrugId: 110, action: 'keep_local' }],
+      userId: 'catalog-admin',
+      backupPath: 'simulation://backup',
+    }, database);
+
+    expect(db.prepare('SELECT catalog_drug_id, master_drug_id FROM drug_catalog_links ORDER BY catalog_drug_id').all()).toEqual([
+      { catalog_drug_id: 1000, master_drug_id: 110 },
+    ]);
+    expect(db.prepare('SELECT catalog_drug_id, reason FROM drug_catalog_suppressions WHERE catalog_drug_id = 110').get()).toEqual({
+      catalog_drug_id: 110,
+      reason: 'identity_conflict_kept_local',
+    });
+    expect(db.prepare('SELECT id, official_price FROM master_drugs WHERE id = 110').get()).toEqual({ id: 110, official_price: 10 });
+    expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+  });
+
+  it.each([
+    { rows: [{ id: 110, trade_name: 'UNCHANGED DRUG', official_price: 10 }, { id: 1000, trade_name: 'UNCHANGED DRUG', official_price: 10 }] },
+    { rows: [{ id: 110, trade_name: 'UNCHANGED DRUG', official_price: 10 }] },
+  ])('keeps the persisted catalog owner when another matching catalog ID arrives: %j', async ({ rows }) => {
+    db.prepare(`
+      INSERT INTO drug_catalog_links (catalog_drug_id, master_drug_id, linked_by)
+      VALUES (1000, 110, 'catalog-admin')
+    `).run();
+    const database = adapter(db);
+    const preview = await previewMasterDrugCatalogUpdate(rows, database);
+
+    expect(preview.identityConflicts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ catalogDrugId: 110, masterDrugId: 110 }),
+    ]));
+    expect(preview.matchedLinks).toEqual(rows.length === 2
+      ? [{ catalogDrugId: 1000, masterDrugId: 110 }]
+      : []);
+
+    await applyMasterDrugCatalogUpdate({
+      rows,
+      previewSignature: preview.signature,
+      fieldDecisions: [],
+      newDrugDecisions: [],
+      identityConflictDecisions: [{ catalogDrugId: 110, action: 'keep_local' }],
+      userId: 'catalog-admin',
+      backupPath: 'simulation://backup',
+    }, database);
+
+    expect(db.prepare('SELECT catalog_drug_id, master_drug_id FROM drug_catalog_links').all()).toEqual([
+      { catalog_drug_id: 1000, master_drug_id: 110 },
+    ]);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM drug_catalog_links WHERE catalog_drug_id = 110').get()).toEqual({ count: 0 });
+    expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+  });
+
+  it('quarantines duplicate incoming barcodes before applying either new drug', async () => {
+    const database = adapter(db);
+    const rows = [
+      { id: 701, trade_name: 'FIRST DUPLICATE BARCODE', barcode: 'DUPLICATE-CATALOG-BARCODE' },
+      { id: 702, trade_name: 'SECOND DUPLICATE BARCODE', barcode: 'duplicate-catalog-barcode' },
+    ];
+    const preview = await previewMasterDrugCatalogUpdate(rows, database);
+
+    expect(preview.newDrugs).toEqual([]);
+    expect(preview.identityConflicts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ catalogDrugId: 701, currentName: 'باركود مكرر داخل الدليل' }),
+      expect.objectContaining({ catalogDrugId: 702, currentName: 'باركود مكرر داخل الدليل' }),
+    ]));
+
+    await applyMasterDrugCatalogUpdate({
+      rows,
+      previewSignature: preview.signature,
+      fieldDecisions: [],
+      newDrugDecisions: [],
+      identityConflictDecisions: preview.identityConflicts.map(conflict => ({
+        catalogDrugId: conflict.catalogDrugId,
+        action: 'keep_local' as const,
+      })),
+      userId: 'catalog-admin',
+      backupPath: 'simulation://backup',
+    }, database);
+
+    expect(db.prepare('SELECT COUNT(*) AS count FROM master_drugs WHERE id IN (701, 702)').get()).toEqual({ count: 0 });
+    expect(db.prepare('SELECT catalog_drug_id, reason FROM drug_catalog_suppressions WHERE catalog_drug_id IN (701, 702) ORDER BY catalog_drug_id').all()).toEqual([
+      { catalog_drug_id: 701, reason: 'identity_conflict_kept_local' },
+      { catalog_drug_id: 702, reason: 'identity_conflict_kept_local' },
+    ]);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM drug_catalog_links WHERE catalog_drug_id IN (701, 702)').get()).toEqual({ count: 0 });
+    expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+  });
+
+  it('allows a selected master-barcode release before adding its catalog replacement, but preserves active lot ownership', async () => {
+    const database = adapter(db);
+    db.prepare("UPDATE master_drugs SET barcode = 'TRANSFERRED-CODE' WHERE id = 110").run();
+    const transferRows = [
+      { id: 110, trade_name: 'UNCHANGED DRUG', barcode: null },
+      { id: 703, trade_name: 'TRANSFERRED BARCODE DRUG', barcode: 'TRANSFERRED-CODE' },
+    ];
+    const transferPreview = await previewMasterDrugCatalogUpdate(transferRows, database);
+
+    await applyMasterDrugCatalogUpdate({
+      rows: transferRows,
+      previewSignature: transferPreview.signature,
+      fieldDecisions: reviewedFieldDecisions(transferPreview, field => field === 'barcode'),
+      newDrugDecisions: [{ catalogDrugId: 703, action: 'add' }],
+      identityConflictDecisions: [],
+      userId: 'catalog-admin',
+      backupPath: 'simulation://backup',
+    }, database);
+
+    expect(db.prepare('SELECT barcode FROM master_drugs WHERE id = 110').get()).toEqual({ barcode: null });
+    expect(db.prepare('SELECT barcode FROM master_drugs WHERE id = 703').get()).toEqual({ barcode: 'TRANSFERRED-CODE' });
+
+    db.exec(`
+      UPDATE master_drugs SET barcode = 'ACTIVE-LOT-CODE' WHERE id = 110;
+      INSERT INTO inventory (id, drug_id, pharmacy_id, quantity, barcode)
+      VALUES ('active-110', 110, 'local_default', 1, 'ACTIVE-LOT-CODE');
+    `);
+    const blockedRows = [
+      { id: 110, trade_name: 'UNCHANGED DRUG', barcode: null },
+      { id: 704, trade_name: 'ACTIVE LOT BARCODE DRUG', barcode: 'ACTIVE-LOT-CODE' },
+    ];
+    const blockedPreview = await previewMasterDrugCatalogUpdate(blockedRows, database);
+
+    await expect(applyMasterDrugCatalogUpdate({
+      rows: blockedRows,
+      previewSignature: blockedPreview.signature,
+      fieldDecisions: reviewedFieldDecisions(blockedPreview, field => field === 'barcode'),
+      newDrugDecisions: [{ catalogDrugId: 704, action: 'add' }],
+      identityConflictDecisions: [],
+      userId: 'catalog-admin',
+      backupPath: 'simulation://backup',
+    }, database)).rejects.toThrow(/already assigned to another drug/i);
+
+    expect(db.prepare('SELECT barcode FROM master_drugs WHERE id = 110').get()).toEqual({ barcode: 'ACTIVE-LOT-CODE' });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM master_drugs WHERE id = 704').get()).toEqual({ count: 0 });
+    expect(db.prepare('SELECT barcode FROM inventory WHERE id = ?').get('active-110')).toEqual({ barcode: 'ACTIVE-LOT-CODE' });
+  });
+
   it('treats same-ID metadata-only similarity as an identity conflict instead of an automatic catalog link', async () => {
     db.prepare(`
       INSERT INTO master_drugs (

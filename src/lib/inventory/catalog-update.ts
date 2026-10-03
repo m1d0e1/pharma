@@ -1,5 +1,5 @@
 import { dbSelect, dbTransaction, generateId, type TransactionDb } from '@/lib/db/tauri';
-import { assertBarcodeOwnershipAvailable } from '@/lib/inventory/barcode-ownership';
+import { assertBarcodeOwnershipAvailable, normalizeBarcode } from '@/lib/inventory/barcode-ownership';
 
 type CatalogRow = Record<string, unknown>;
 
@@ -405,10 +405,18 @@ async function buildPreview(rows: CatalogRow[], database: ReadDb | Pick<CatalogU
 
   const currentById = new Map(currentRows.map(row => [Number(row.id), row]));
   const linkByCatalog = new Map(links.map(row => [Number(row.catalog_drug_id), Number(row.master_drug_id)]));
+  const catalogByMaster = new Map(links.map(row => [Number(row.master_drug_id), Number(row.catalog_drug_id)]));
   const suppressed = new Set(suppressions.map(row => Number(row.catalog_drug_id)));
   const policyByField = new Map(policies.map(row => [`${row.master_drug_id}:${row.field_name}`, row.policy]));
   const incomingCatalogIds = new Set<number>();
   const matchedMasterIds = new Set<number>();
+  const incomingBarcodeCounts = new Map<string, number>();
+  for (const incoming of incomingRows) {
+    const barcode = normalizeBarcode(incoming.barcode);
+    if (!barcode) continue;
+    const key = barcode.toLowerCase();
+    incomingBarcodeCounts.set(key, (incomingBarcodeCounts.get(key) || 0) + 1);
+  }
 
   const changedDrugs: CatalogChangedDrugPreview[] = [];
   const newDrugs: CatalogNewDrugPreview[] = [];
@@ -434,6 +442,18 @@ async function buildPreview(rows: CatalogRow[], database: ReadDb | Pick<CatalogU
       continue;
     }
 
+    const incomingBarcode = normalizeBarcode(incoming.barcode);
+    if (incomingBarcode && (incomingBarcodeCounts.get(incomingBarcode.toLowerCase()) || 0) > 1) {
+      identityConflicts.push({
+        catalogDrugId,
+        masterDrugId: 0,
+        currentName: 'باركود مكرر داخل الدليل',
+        incomingName: displayName(incoming, catalogDrugId),
+        reason: 'الباركود مكرر داخل ملف الدليل ولا يمكن اختيار مالك واحد بأمان',
+      });
+      continue;
+    }
+
     let current: CatalogRow | undefined;
     let masterDrugId: number | undefined;
     let matchMethod: CatalogChangedDrugPreview['matchMethod'] | null = null;
@@ -451,7 +471,6 @@ async function buildPreview(rows: CatalogRow[], database: ReadDb | Pick<CatalogU
           incomingName: displayName(incoming, catalogDrugId),
           reason: 'نفس الرقم موجود محلياً لكن هوية الدواء لا تتطابق بشكل آمن',
         });
-        matchedMasterIds.add(catalogDrugId);
         continue;
       }
       current = sameIdCurrent;
@@ -471,6 +490,28 @@ async function buildPreview(rows: CatalogRow[], database: ReadDb | Pick<CatalogU
         suppressed: suppressed.has(catalogDrugId),
         incoming: incomingCatalogFields,
         protectedIncomingFields,
+      });
+      continue;
+    }
+
+    if (catalogByMaster.get(masterDrugId) !== undefined && catalogByMaster.get(masterDrugId) !== catalogDrugId) {
+      identityConflicts.push({
+        catalogDrugId,
+        masterDrugId,
+        currentName: displayName(current, masterDrugId),
+        incomingName: displayName(incoming, catalogDrugId),
+        reason: 'الصنف المحلي مرتبط بالفعل بسجل مختلف من الدليل ولا يمكن تغيير مالك الهوية تلقائياً',
+      });
+      continue;
+    }
+
+    if (matchedMasterIds.has(masterDrugId)) {
+      identityConflicts.push({
+        catalogDrugId,
+        masterDrugId,
+        currentName: displayName(current, masterDrugId),
+        incomingName: displayName(incoming, catalogDrugId),
+        reason: 'أكثر من سجل في الدليل يطابق نفس الصنف المحلي ولا يمكن اختيار هوية واحدة بأمان',
       });
       continue;
     }
@@ -628,12 +669,6 @@ export async function applyMasterDrugCatalogUpdate(
         `, [drug.masterDrugId, change.field, policy, request.userId]);
 
         if (decision.action === 'use_catalog') {
-          if (change.field === 'barcode') {
-            await assertBarcodeOwnershipAvailable(
-              transaction,
-              [{ barcode: change.incomingValue, drugId: drug.masterDrugId }],
-            );
-          }
           updates.push([change.field, change.incomingValue]);
           updatedFields++;
         } else {
@@ -665,6 +700,17 @@ export async function applyMasterDrugCatalogUpdate(
       `, [link.catalogDrugId, link.masterDrugId, request.userId]);
     }
 
+    const selectedBarcodeClaims = [
+      ...preview.changedDrugs.flatMap(drug => drug.changes
+        .filter(change => change.field === 'barcode'
+          && fieldDecisionMap.get(`${drug.catalogDrugId}:${drug.masterDrugId}:${change.field}`)?.action === 'use_catalog')
+        .map(change => ({ barcode: change.incomingValue, drugId: drug.masterDrugId }))),
+      ...preview.newDrugs
+        .filter(drug => newDecisionMap.get(drug.catalogDrugId)?.action === 'add')
+        .map(drug => ({ barcode: drug.incoming.barcode, drugId: drug.catalogDrugId })),
+    ];
+    await assertBarcodeOwnershipAvailable(transaction, selectedBarcodeClaims);
+
     for (const drug of preview.newDrugs) {
       const decision = newDecisionMap.get(drug.catalogDrugId);
       if (!decision) throw new Error(`Missing review decision for new catalog drug ${drug.catalogDrugId}`);
@@ -686,10 +732,6 @@ export async function applyMasterDrugCatalogUpdate(
 
       const tradeName = cleanText(drug.incoming.trade_name) || cleanText(drug.incoming.trade_name_en);
       if (!tradeName) throw new Error(`New catalog drug ${drug.catalogDrugId} has no trade name`);
-      if (own(drug.incoming, 'barcode')) {
-        await assertBarcodeOwnershipAvailable(transaction, [{ barcode: drug.incoming.barcode }]);
-      }
-
       const fields = CATALOG_MUTABLE_FIELDS.filter(field => own(drug.incoming, field));
       if (!fields.includes('trade_name')) fields.unshift('trade_name');
       const values = fields.map(field => field === 'trade_name' ? tradeName : drug.incoming[field]);

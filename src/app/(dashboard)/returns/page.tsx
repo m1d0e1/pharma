@@ -41,8 +41,9 @@ export default function ReturnsPage() {
 
   if (loading) {
     return (
-      <div className="flex justify-center items-center py-12">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+      <div role="status" aria-live="polite" className="flex flex-col justify-center items-center gap-3 py-12 text-slate-600 dark:text-slate-300" dir="rtl">
+        <div aria-hidden="true" className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+        <p className="font-bold">جاري تحميل سجل المرتجعات...</p>
       </div>
     );
   }
@@ -71,7 +72,7 @@ export default function ReturnsPage() {
         </div>
       </div>
 
-      <ReturnsClient title="المرتجعات" />
+      <ReturnsClient title="المرتجعات" showHeading={false} />
     </div>
   );
 }

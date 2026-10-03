@@ -35,9 +35,10 @@ import { processCheckoutAction } from '@/app/actions-client/sales';
 import { createCashMovementAction, getTreasuryDashboardAction } from '@/app/actions-client/finance';
 import { createReturnAction } from '@/app/actions-client/returns';
 import { processHandoverAction } from '@/app/actions-client/handover';
-import { closeShiftAction } from '@/app/actions-client/shifts';
+import { closeShiftAction, getCurrentShiftStatsAction, getShiftsAction } from '@/app/actions-client/shifts';
+import { getShiftReportAction } from '@/app/actions-client/reports';
 
-const migrations = ['001_initial.sql', '008_patient_accounting.sql', '011_shift_cash_difference_account.sql', '013_shift_handover_details.sql', '024_commercial_papers_pharmacy_scope.sql', '025_sales_item_discount_snapshot.sql', '026_sales_loyalty_redemption_snapshot.sql', '028_finance_definitions_pharmacy_scope.sql'];
+const migrations = ['001_initial.sql', '008_patient_accounting.sql', '011_shift_cash_difference_account.sql', '013_shift_handover_details.sql', '024_commercial_papers_pharmacy_scope.sql', '025_sales_item_discount_snapshot.sql', '026_sales_loyalty_redemption_snapshot.sql', '028_finance_definitions_pharmacy_scope.sql', '029_shift_treasury_retained_cash.sql'];
 
 function dashboard() {
   return getTreasuryDashboardAction('treasury');
@@ -101,12 +102,11 @@ describe('current drawer treasury balance', () => {
       items: [{ sale_item_id: sale.id, inventory_id: 'stock', drug_name: 'Drawer Drug', quantity: 1, unit_price: 100, unit: 'large' }],
     })).toMatchObject({ success: true, totalRefund: 100 });
     sqlite.prepare("UPDATE returns SET status = 'APPROVED'").run();
-    expect((await dashboard()).data?.treasuryBalance).toBe(50);
+    expect((await dashboard()).data).toMatchObject({ treasuryBalance: 50, drawerBalance: 50 });
     expect(await createCashMovementAction({ type: 'receipt', category: 'pharmacy', amount: 20, date: '2026-09-25' })).toMatchObject({ success: true });
     expect(await createCashMovementAction({ type: 'disbursement', category: 'operating_expenses', amount: 7, date: '2026-09-25' })).toMatchObject({ success: true });
     const result = await dashboard();
-    expect(result.data?.treasuryBalance).toBe(63);
-    expect(result.data!.details.reduce((sum: number, row: any) => sum + (row.type === 'receipt' ? row.amount : -row.amount), 0)).toBe(63);
+    expect(result.data).toMatchObject({ treasuryBalance: 50, drawerBalance: 63 });
   });
 
   it('fails visibly rather than choosing or summing multiple open drawers', async () => {
@@ -117,24 +117,125 @@ describe('current drawer treasury balance', () => {
   it.each(['treasury', 'next_shift', 'bank', 'pos'] as const)('uses the current drawer after a %s handover, checkout, and repeat handover', async target => {
     sqlite.prepare("INSERT INTO shifts(id, user_id, starting_cash, status) VALUES ('old', 'owner', 100, 'open')").run();
     await checkout(100, 'old');
-    expect((await dashboard()).data).toMatchObject({ treasuryBalance: 200, drawerShiftId: 'old' });
+    expect((await dashboard()).data).toMatchObject({ treasuryBalance: 0, drawerBalance: 200, drawerShiftId: 'old' });
 
     const first = await handover('old', 200, 150, target);
     expect(first).toMatchObject({ success: true });
     const newShiftId = first.newShiftId!;
     const afterFirst = await dashboard();
-    const expectedAfterFirst = target === 'next_shift' ? 200 : 50;
-    expect(afterFirst.data).toMatchObject({ treasuryBalance: expectedAfterFirst, drawerShiftId: newShiftId });
+    const expectedAfterFirst = {
+      treasury: { treasuryBalance: 150, drawerBalance: 50 },
+      next_shift: { treasuryBalance: 50, drawerBalance: 150 },
+      bank: { treasuryBalance: 0, drawerBalance: 50 },
+      pos: { treasuryBalance: 0, drawerBalance: 50 },
+    }[target];
+    expect(afterFirst.data).toMatchObject({ ...expectedAfterFirst, drawerShiftId: newShiftId });
 
     await checkout(10, newShiftId);
-    expect((await dashboard()).data?.treasuryBalance).toBe(expectedAfterFirst + 10);
-    const second = await handover(newShiftId, expectedAfterFirst + 10, 10, target);
-    expect(second).toMatchObject({ success: true });
     expect((await dashboard()).data).toMatchObject({
-      treasuryBalance: target === 'next_shift' ? 210 : 50,
+      treasuryBalance: expectedAfterFirst.treasuryBalance,
+      drawerBalance: expectedAfterFirst.drawerBalance + 10,
+    });
+    const second = await handover(newShiftId, expectedAfterFirst.drawerBalance + 10, 10, target);
+    expect(second).toMatchObject({ success: true });
+    const expectedAfterSecond = {
+      treasury: { treasuryBalance: 160, drawerBalance: 50 },
+      next_shift: { treasuryBalance: 200, drawerBalance: 10 },
+      bank: { treasuryBalance: 0, drawerBalance: 50 },
+      pos: { treasuryBalance: 0, drawerBalance: 50 },
+    }[target];
+    expect((await dashboard()).data).toMatchObject({
+      ...expectedAfterSecond,
       drawerShiftId: second.newShiftId,
     });
     expect(sqlite.prepare("SELECT COUNT(*) AS count FROM cash_movements WHERE category = 'handover'").get()).toEqual({ count: 2 });
+  });
+
+  it('splits 9000 into 3000 for the next drawer and 6000 retained in treasury', async () => {
+    sqlite.prepare("INSERT INTO shifts(id, user_id, starting_cash, status) VALUES ('split-9000', 'owner', 9000, 'open')").run();
+    const cashAccount = (sqlite.prepare("SELECT account_id FROM trial_balance_settings WHERE category = 'cash_drawer'").get() as any).account_id;
+    const equityAccount = (sqlite.prepare("SELECT account_id FROM trial_balance_settings WHERE category = 'opening_balance_equity'").get() as any).account_id;
+    sqlite.prepare("INSERT INTO daily_journals(id, date, description, created_by, total_amount) VALUES ('split-opening', date('now', 'localtime'), 'Opening cash for split test', 'owner', 9000)").run();
+    sqlite.prepare("INSERT INTO journal_entries(journal_id, account_id, type, amount) VALUES ('split-opening', ?, 'debit', 9000)").run(cashAccount);
+    sqlite.prepare("INSERT INTO journal_entries(journal_id, account_id, type, amount) VALUES ('split-opening', ?, 'credit', 9000)").run(equityAccount);
+
+    const result = await handover('split-9000', 9000, 3000, 'next_shift');
+
+    expect(result).toMatchObject({ success: true, remainingCash: 3000, startingCash: 3000 });
+    expect(sqlite.prepare("SELECT actual_cash, transfer_amount, transfer_target, treasury_retained_cash, ending_cash, status FROM shifts WHERE id = 'split-9000'").get()).toMatchObject({
+      actual_cash: 9000,
+      transfer_amount: 3000,
+      transfer_target: 'next_shift',
+      treasury_retained_cash: 6000,
+      ending_cash: 3000,
+      status: 'closed',
+    });
+    expect(sqlite.prepare("SELECT starting_cash, status FROM shifts WHERE id = ?").get(result.newShiftId)).toEqual({ starting_cash: 3000, status: 'open' });
+    expect(sqlite.prepare("SELECT COUNT(*) AS count FROM cash_movements WHERE shift_id = ? AND category = 'handover_received'").get(result.newShiftId)).toEqual({ count: 0 });
+    expect(sqlite.prepare("SELECT COUNT(*) AS count FROM shifts WHERE status = 'open'").get()).toEqual({ count: 1 });
+
+    const summary = await dashboard();
+    expect(summary.data).toMatchObject({ treasuryBalance: 6000, drawerBalance: 3000, ledgerCashBalance: 9000, detailCount: 1 });
+    expect(summary.data?.details).toEqual(expect.arrayContaining([
+      expect.objectContaining({ shift_id: 'split-9000', amount: 6000, type: 'receipt' }),
+    ]));
+    expect(summary.data!.treasuryBalance + summary.data!.drawerBalance).toBe(summary.data!.ledgerCashBalance);
+
+    const shiftHistory = await getShiftsAction({ status: 'all' });
+    expect(shiftHistory.data?.find((shift: any) => shift.id === 'split-9000')).toMatchObject({
+      actual_cash: 9000,
+      transfer_amount: 3000,
+      expected_cash_amount: 3000,
+      cash_difference: 0,
+    });
+    expect(await getShiftReportAction('split-9000')).toMatchObject({
+      success: true,
+      data: {
+        summary: {
+          actualCash: 9000,
+          expectedCash: 9000,
+          difference: 0,
+          cashHandover: 3000,
+        },
+      },
+    });
+  });
+
+  it('keeps explicit main-safe cash movements in treasury instead of the open drawer', async () => {
+    sqlite.prepare("INSERT INTO shifts(id, user_id, starting_cash, status) VALUES ('safe-source', 'owner', 100, 'open')").run();
+    const first = await handover('safe-source', 100, 60, 'treasury');
+    expect(first).toMatchObject({ success: true, remainingCash: 40 });
+    expect((await dashboard()).data).toMatchObject({ treasuryBalance: 60, drawerBalance: 40 });
+
+    expect(await createCashMovementAction({
+      type: 'disbursement', category: 'personal', amount: 10,
+      source_type: 'main_safe', date: '2026-09-25',
+    })).toMatchObject({ success: true });
+    expect((await dashboard()).data).toMatchObject({ treasuryBalance: 50, drawerBalance: 40 });
+    expect(await getCurrentShiftStatsAction()).toMatchObject({
+      success: true,
+      data: { expected_cash: 40 },
+    });
+
+    expect(await createCashMovementAction({
+      type: 'receipt', category: 'pharmacy', amount: 5,
+      source_type: 'main_safe', date: '2026-09-25',
+    })).toMatchObject({ success: true });
+    expect((await dashboard()).data).toMatchObject({ treasuryBalance: 55, drawerBalance: 40 });
+  });
+
+  it('ignores main-safe movements when the legacy close action reconciles the drawer', async () => {
+    sqlite.prepare("INSERT INTO shifts(id, user_id, starting_cash, status) VALUES ('legacy-safe-close', 'owner', 100, 'open')").run();
+    expect(await createCashMovementAction({
+      type: 'disbursement', category: 'personal', amount: 10,
+      source_type: 'main_safe', date: '2026-09-25', shift_id: 'legacy-safe-close',
+    })).toMatchObject({ success: true });
+
+    expect(await closeShiftAction({ shift_id: 'legacy-safe-close', ending_cash_amount: 100 })).toMatchObject({ success: true });
+    expect(sqlite.prepare("SELECT status, cash_difference FROM shifts WHERE id = 'legacy-safe-close'").get()).toEqual({
+      status: 'closed',
+      cash_difference: 0,
+    });
   });
 
   it('uses counted overage and shortage as the new drawer starting cash, not an extra sale or handover', async () => {
@@ -142,11 +243,11 @@ describe('current drawer treasury balance', () => {
     await checkout(100, 'over');
     const over = await handover('over', 205, 150, 'treasury');
     expect(over).toMatchObject({ success: true, difference: 5 });
-    expect((await dashboard()).data?.treasuryBalance).toBe(55);
+    expect((await dashboard()).data).toMatchObject({ treasuryBalance: 150, drawerBalance: 55 });
 
     const short = await handover(over.newShiftId!, 50, 20, 'treasury');
     expect(short).toMatchObject({ success: true, difference: -5 });
-    expect((await dashboard()).data?.treasuryBalance).toBe(30);
+    expect((await dashboard()).data).toMatchObject({ treasuryBalance: 170, drawerBalance: 30 });
   });
 
   it('does not use closed/foreign shifts, never creates shift 0, and returns zero with no open drawer', async () => {
@@ -157,14 +258,14 @@ describe('current drawer treasury balance', () => {
         ('foreign', 'receiver', 'other', 777, 'open');
     `);
     const empty = await dashboard();
-    expect(empty.data).toMatchObject({ treasuryBalance: 0, drawerShiftId: null, ledgerCashBalance: 0 });
+    expect(empty.data).toMatchObject({ treasuryBalance: 0, drawerBalance: 0, drawerShiftId: null, ledgerCashBalance: 0 });
     expect(sqlite.prepare("SELECT COUNT(*) AS count FROM shifts WHERE id = '0'").get()).toEqual({ count: 0 });
 
     sqlite.prepare("INSERT INTO shifts(id, user_id, pharmacy_id, starting_cash, status) VALUES ('local', 'owner', 'local_default', 25, 'open')").run();
-    expect((await dashboard()).data).toMatchObject({ treasuryBalance: 25, drawerShiftId: 'local' });
+    expect((await dashboard()).data).toMatchObject({ treasuryBalance: 0, drawerBalance: 25, drawerShiftId: 'local' });
   });
 
-  it('reconciles legacy transfer amounts once and emits drawer detail lines whose signed sum equals the balance', async () => {
+  it('keeps legacy open-drawer transfer reconciliation separate from retained treasury cash', async () => {
     sqlite.exec(`
       INSERT INTO shifts(id, user_id, pharmacy_id, starting_cash, transfer_amount, status) VALUES ('legacy', 'owner', 'local_default', 100, 30, 'open');
       INSERT INTO sales_invoices(id, user_id, shift_id, total_amount, payment_method, status) VALUES ('cash-sale', 'owner', 'legacy', 40, 'cash', 'completed');
@@ -174,16 +275,11 @@ describe('current drawer treasury balance', () => {
         ('handover', 'owner', 'legacy', 'disbursement', 'handover', 30, '2026-01-01');
     `);
     const result = await dashboard();
-    expect(result.data).toMatchObject({ treasuryBalance: 120, drawerShiftId: 'legacy' });
-    const signedTotal = result.data!.details.reduce((sum: number, row: any) => sum + (row.type === 'receipt' ? row.amount : -row.amount), 0);
-    expect(signedTotal).toBe(result.data!.treasuryBalance);
+    expect(result.data).toMatchObject({ treasuryBalance: 0, drawerBalance: 120, drawerShiftId: 'legacy', detailCount: 0, details: [] });
 
     sqlite.prepare("UPDATE shifts SET transfer_amount = 50 WHERE id = 'legacy'").run();
     const legacyUnrecorded = await dashboard();
-    expect(legacyUnrecorded.data?.treasuryBalance).toBe(100);
-    expect(legacyUnrecorded.data?.details).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'legacy:legacy-transfers', amount: 20, type: 'disbursement' }),
-    ]));
+    expect(legacyUnrecorded.data).toMatchObject({ treasuryBalance: 0, drawerBalance: 100 });
   });
 
   it('rolls back legacy shift closure when its cash-difference journal cannot post', async () => {

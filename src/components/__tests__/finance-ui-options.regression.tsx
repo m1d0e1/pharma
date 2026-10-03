@@ -48,7 +48,6 @@ jest.mock('@/app/actions-client/finance', () => ({
   updateAccountAction: jest.fn(),
   deleteAccountAction: jest.fn(),
   getJournalDetailsAction: jest.fn(),
-  seedFinanceTestDataAction: jest.fn(),
   getFinancialNoticesAction: jest.fn(),
   getActivityLogsAction: jest.fn(),
 }));
@@ -90,6 +89,7 @@ beforeEach(() => {
     success: true,
     data: {
       treasuryBalance: 0,
+      drawerBalance: 0,
       ledgerCashBalance: 0,
       todayReceipts: 0,
       todayExpenses: 0,
@@ -102,19 +102,20 @@ beforeEach(() => {
 });
 
 it.each([
-  { ledgerCash: 100, drawer: 200, pos: 0, bank: 20 },
-  { ledgerCash: 100, drawer: 200, pos: 60, bank: 20 },
-  { ledgerCash: 40, drawer: 300, pos: 0, bank: 80 },
-])('keeps ledger liquidity separate from physical drawer cash: %j', async ({ ledgerCash, drawer, pos, bank }) => {
+  { ledgerCash: 100, treasury: 200, drawer: 40, pos: 0, bank: 20 },
+  { ledgerCash: 100, treasury: 200, drawer: 60, pos: 60, bank: 20 },
+  { ledgerCash: 40, treasury: 300, drawer: 80, pos: 0, bank: 80 },
+])('keeps treasury, ledger liquidity, and physical drawer cash separate: %j', async ({ ledgerCash, treasury, drawer, pos, bank }) => {
   (finance.getTreasuryDashboardAction as jest.Mock).mockResolvedValue({
     success: true,
-    data: { treasuryBalance: drawer, ledgerCashBalance: ledgerCash, todayReceipts: 0, todayExpenses: 0, totalShiftHandovers: 0 },
+    data: { treasuryBalance: treasury, drawerBalance: drawer, ledgerCashBalance: ledgerCash, todayReceipts: 0, todayExpenses: 0, totalShiftHandovers: 0 },
   });
   (finance.getPointsOfSaleAction as jest.Mock).mockResolvedValue({ success: true, data: [{ id: 1, name_ar: 'POS', current_balance: pos }] });
   (finance.getBanksAction as jest.Mock).mockResolvedValue({ success: true, data: [{ id: 2, name_ar: 'Bank', current_balance: bank }] });
   render(<AccountsManagementClient initialTab="treasury" />);
   await waitFor(() => expect(screen.getByRole('heading', { name: 'إجمالي السيولة' }).parentElement).toHaveTextContent((ledgerCash + bank).toFixed(2)));
-  expect(screen.getByRole('button', { name: 'عرض تفاصيل رصيد الخزنة (الدرج)' })).toHaveTextContent(String(drawer));
+  expect(screen.getByRole('button', { name: 'عرض تفاصيل رصيد الخزنة' })).toHaveTextContent(String(treasury));
+  expect(screen.getByText(/رصيد درج الوردية المفتوحة حاليًا/)).toHaveTextContent(`${drawer} ج.م`);
   expect(screen.getByText(/يختلف عن نقدية الدرج الفعلية/)).toBeInTheDocument();
 });
 
@@ -205,6 +206,7 @@ it('shows the current-month total money recorded by completed shift handovers', 
     success: true,
     data: {
       treasuryBalance: 500,
+      drawerBalance: 300,
       ledgerCashBalance: 700,
       todayReceipts: 100,
       todayExpenses: 25,
@@ -227,6 +229,7 @@ it.each(['shift-updated', 'storage', 'focus'])('refreshes drawer balance and ope
     success: true,
     data: {
       treasuryBalance: refreshed ? 275 : 120,
+      drawerBalance: refreshed ? 75 : 20,
       ledgerCashBalance: 800,
       todayReceipts: 0,
       todayExpenses: 0,
@@ -234,33 +237,27 @@ it.each(['shift-updated', 'storage', 'focus'])('refreshes drawer balance and ope
       counts: { treasury: 2, receipts: 0, expenses: 0, handovers: 0 },
       detailCount: metric === 'treasury' ? 2 : 0,
       details: metric === 'treasury' ? [{
-        id: refreshed ? 'opening-new' : 'opening-old',
+        id: refreshed ? 'retained-new' : 'retained-old',
         date: '2026-09-25',
-        description: refreshed ? 'رصيد بداية الوردية الجديدة' : 'رصيد بداية الوردية الحالية',
-        amount: refreshed ? 200 : 100,
-        type: 'receipt',
-      }, {
-        id: 'cash-sales',
-        date: '2026-09-25',
-        description: 'مبيعات نقدية',
-        amount: refreshed ? 75 : 20,
+        description: refreshed ? 'المتبقي بعد تمويل درج الوردية التالية' : 'تحويل من الوردية إلى الخزنة الرئيسية',
+        amount: refreshed ? 275 : 120,
         type: 'receipt',
       }] : [],
     },
   }));
 
   render(<AccountsManagementClient initialTab="treasury" />);
-  fireEvent.click(await screen.findByRole('button', { name: 'عرض تفاصيل رصيد الخزنة (الدرج)' }));
-  expect(await screen.findByText('رصيد بداية الوردية الحالية')).toBeInTheDocument();
-  expect(screen.getByText('مبيعات نقدية')).toBeInTheDocument();
+  fireEvent.click(await screen.findByRole('button', { name: 'عرض تفاصيل رصيد الخزنة' }));
+  expect(await screen.findByText('تحويل من الوردية إلى الخزنة الرئيسية')).toBeInTheDocument();
 
   refreshed = true;
   await act(async () => window.dispatchEvent(eventType === 'storage'
     ? new StorageEvent('storage', { key: 'pharma:shift-updated', newValue: 'new-shift' })
     : new Event(eventType)));
-  expect(await screen.findByText('رصيد بداية الوردية الجديدة')).toBeInTheDocument();
-  expect(screen.queryByText('رصيد بداية الوردية الحالية')).not.toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'عرض تفاصيل رصيد الخزنة (الدرج)' })).toHaveTextContent('275');
+  expect(await screen.findByText('المتبقي بعد تمويل درج الوردية التالية')).toBeInTheDocument();
+  expect(screen.queryByText('تحويل من الوردية إلى الخزنة الرئيسية')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'عرض تفاصيل رصيد الخزنة' })).toHaveTextContent('275');
+  expect(screen.getByText(/رصيد درج الوردية المفتوحة حاليًا/)).toHaveTextContent('75 ج.م');
 });
 
 it('hides stale drawer amounts and offers retry when the summary fails', async () => {
@@ -269,18 +266,19 @@ it('hides stale drawer amounts and offers retry when the summary fails', async (
   (finance.getTreasuryDashboardAction as jest.Mock).mockResolvedValue({ success: false, error: 'تعذر حساب رصيد الدرج' });
   await act(async () => window.dispatchEvent(new Event('shift-updated')));
   expect(await screen.findByRole('alert')).toHaveTextContent('تعذر حساب رصيد الدرج');
-  expect(screen.queryByRole('button', { name: 'عرض تفاصيل رصيد الخزنة (الدرج)' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'عرض تفاصيل رصيد الخزنة' })).not.toBeInTheDocument();
   (finance.getTreasuryDashboardAction as jest.Mock).mockResolvedValue({ success: true, data: {
-    treasuryBalance: 40, ledgerCashBalance: 100, todayReceipts: 0, todayExpenses: 0, totalShiftHandovers: 60,
+    treasuryBalance: 40, drawerBalance: 15, ledgerCashBalance: 100, todayReceipts: 0, todayExpenses: 0, totalShiftHandovers: 60,
   } });
   fireEvent.click(screen.getByRole('button', { name: 'إعادة المحاولة' }));
-  await waitFor(() => expect(screen.getByRole('button', { name: 'عرض تفاصيل رصيد الخزنة (الدرج)' })).toHaveTextContent('40'));
+  await waitFor(() => expect(screen.getByRole('button', { name: 'عرض تفاصيل رصيد الخزنة' })).toHaveTextContent('40'));
   expect(screen.queryByRole('alert')).not.toBeInTheDocument();
 });
 
 it('opens authoritative details from every treasury summary card', async () => {
   const totals = {
     treasuryBalance: 45,
+    drawerBalance: 30,
     ledgerCashBalance: 500,
     todayReceipts: 100,
     todayExpenses: 25,
@@ -306,7 +304,7 @@ it('opens authoritative details from every treasury summary card', async () => {
   render(<AccountsManagementClient initialTab="treasury" />);
 
   for (const [label, metric] of [
-    ['رصيد الخزنة (الدرج)', 'treasury'],
+    ['رصيد الخزنة', 'treasury'],
     ['توريدات اليوم', 'receipts'],
     ['المصروفات اليومية', 'expenses'],
     ['تسليمات الورديات هذا الشهر', 'handovers'],
@@ -315,8 +313,8 @@ it('opens authoritative details from every treasury summary card', async () => {
     await waitFor(() => expect(finance.getTreasuryDashboardAction).toHaveBeenCalledWith(metric));
     expect(await screen.findByText(`تفصيل ${metric}`)).toBeInTheDocument();
   }
-  expect(screen.getByText(/التحويل لوردية تالية لا ينشئ إيرادًا جديدًا/)).toBeInTheDocument();
-  expect(screen.queryByRole('button', { name: 'عرض تفاصيل رصيد الخزنة' })).not.toBeInTheDocument();
+  expect(screen.getByText(/عند عدّ 9000 ج\.م ووضع 3000 ج\.م في درج الوردية التالية، يُضاف 6000 ج\.م إلى الخزنة/)).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'عرض تفاصيل رصيد الخزنة' })).toBeInTheDocument();
 });
 
 it('keeps treasury details owned by the newest summary-card request', async () => {
@@ -338,7 +336,7 @@ it('keeps treasury details owned by the newest summary-card request', async () =
   });
 
   render(<AccountsManagementClient initialTab="treasury" />);
-  fireEvent.click(await screen.findByRole('button', { name: 'عرض تفاصيل رصيد الخزنة (الدرج)' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'عرض تفاصيل رصيد الخزنة' }));
   await waitFor(() => expect(finance.getTreasuryDashboardAction).toHaveBeenCalledWith('treasury'));
   fireEvent.click(screen.getByRole('button', { name: 'عرض تفاصيل توريدات اليوم' }));
   await waitFor(() => expect(finance.getTreasuryDashboardAction).toHaveBeenCalledWith('receipts'));
@@ -388,7 +386,7 @@ it('surfaces a thrown treasury-detail request and releases its loading state for
   });
 
   render(<AccountsManagementClient initialTab="treasury" />);
-  const treasury = await screen.findByRole('button', { name: 'عرض تفاصيل رصيد الخزنة (الدرج)' });
+  const treasury = await screen.findByRole('button', { name: 'عرض تفاصيل رصيد الخزنة' });
   fireEvent.click(treasury);
   await waitFor(() => expect(toast.error).toHaveBeenCalledWith('فشل جلب تفاصيل الرقم'));
 
