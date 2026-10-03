@@ -85,6 +85,13 @@ const CHECKSUM_REPAIRS: &[ChecksumRepair] = &[
         ],
     },
     ChecksumRepair {
+        version: 3,
+        migration: include_str!("../migrations/003_sync_metadata.sql"),
+        current_lf: "AC4D263917A382C814AD54B4018090D5B867C42B949BAB27F208A1675F92DDB2B7DBA20363793E32F541509388D6A5F6",
+        current_crlf: "78EAF1F3C3BC3CDCD5372F9B58CB7804E244B8F6383681759F6B4CED58C04A187D24571C10D0A02DD748E5DFFF771426",
+        legacy: &[],
+    },
+    ChecksumRepair {
         version: 4,
         migration: include_str!("../migrations/004_return_items_patch.sql"),
         current_lf: "CF8CB76E3264BA762F3CC260B56FB253BEF65AD4C7B80D6E7DA2F950AB9AD5A88CB0DB45072EF2ECE5E3C553AD00D85F",
@@ -3163,6 +3170,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn repairs_sync_metadata_line_ending_checksum_before_pending_migrations() {
+        let source = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("pharma_local.db");
+        let path = std::env::temp_dir().join(format!(
+            "pharma-sync-metadata-checksum-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::copy(&source, &path).unwrap();
+
+        let mut connection = connect(&path).await.unwrap();
+        prepare_connection(&mut connection).await.unwrap();
+
+        const SYNC_METADATA_LF: &str = "AC4D263917A382C814AD54B4018090D5B867C42B949BAB27F208A1675F92DDB2B7DBA20363793E32F541509388D6A5F6";
+        const SYNC_METADATA_CRLF: &str = "78EAF1F3C3BC3CDCD5372F9B58CB7804E244B8F6383681759F6B4CED58C04A187D24571C10D0A02DD748E5DFFF771426";
+        let current = embedded_migration_checksum_hex(
+            3,
+            "sync_metadata",
+            include_str!("../migrations/003_sync_metadata.sql"),
+        );
+        let historical = if current == SYNC_METADATA_LF {
+            SYNC_METADATA_CRLF
+        } else {
+            SYNC_METADATA_LF
+        };
+        sqlx::query(&format!(
+            "INSERT OR REPLACE INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (3, 'sync_metadata', 1, X'{historical}', 0)"
+        ))
+        .execute(&mut connection)
+        .await
+        .unwrap();
+
+        prepare_connection(&mut connection).await.unwrap();
+
+        let checksum: String = sqlx::query_scalar(
+            "SELECT hex(checksum) FROM _sqlx_migrations WHERE version = 3 AND success = 1",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(checksum, current);
+
+        connection.close().await.unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
     async fn repairs_only_unambiguous_historical_shift_links() {
         let mut connection = SqliteConnection::connect("sqlite::memory:").await.unwrap();
         sqlx::raw_sql(
@@ -4282,6 +4334,8 @@ mod tests {
             VALUES (1, 'initial_schema', 1, X'F82014A0B12E5F2148E15B27514F88C074C127EA08140C38889D59CAC54695EF9BA4194FC77168A621732F9627A20AA2', 0);
             INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
             VALUES (2, 'performance_tuning', 1, X'EB5B98F60883978153907406799C9010EE82FD3B6233E54E3EF0ABE66C182CC4B967378D5C2F431F4180AE8544F7B049', 0);
+            INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
+            VALUES (3, 'sync_metadata', 1, X'78EAF1F3C3BC3CDCD5372F9B58CB7804E244B8F6383681759F6B4CED58C04A187D24571C10D0A02DD748E5DFFF771426', 0);
             INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
             VALUES (4, 'return_items_patch', 1, X'DC6E060272C078A60806DDBE5DBCC30F42837A45725E0A02163D72863B6F5523E2A51618D4215AEE0E3721748C90125D', 0);
             INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)

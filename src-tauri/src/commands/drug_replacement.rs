@@ -432,7 +432,7 @@ async fn replace_tx(
     user_id: &str,
     payload: Replacement,
 ) -> Result<i64, String> {
-    replace_tx_with_allowed_collisions(tx, user_id, payload, &[]).await
+    replace_tx_with_allowed_collisions(tx, user_id, payload, &[], false).await
 }
 
 async fn replace_group_tx(
@@ -514,6 +514,7 @@ async fn replace_group_tx(
                 confirmed_same_product: true,
             },
             &all_ids,
+            true,
         )
         .await?;
     }
@@ -531,6 +532,7 @@ async fn replace_tx_with_allowed_collisions(
     user_id: &str,
     payload: Replacement,
     allowed_collision_ids: &[i64],
+    allow_reviewed_conversion_edits: bool,
 ) -> Result<i64, String> {
     let admin = sqlx::query(
         "SELECT role, permissions FROM users WHERE id=? AND is_active=1",
@@ -716,7 +718,7 @@ async fn replace_tx_with_allowed_collisions(
         return Err("اختر صنفاً بديلاً مختلفاً".into());
     }
     if let Some(edits) = payload.edits.as_ref() {
-        apply_edits(tx, target_id, edits).await?;
+        apply_edits(tx, target_id, edits, allow_reviewed_conversion_edits).await?;
     }
     let pair = sqlx::query("SELECT s.trade_name source_name,t.trade_name target_name,s.barcode source_barcode,t.barcode target_barcode FROM master_drugs s JOIN master_drugs t ON t.id=? WHERE s.id=?")
         .bind(target_id).bind(payload.source_id).fetch_optional(&mut **tx).await.map_err(|e| e.to_string())?.ok_or("الصنف البديل غير موجود")?;
@@ -729,6 +731,16 @@ async fn replace_tx_with_allowed_collisions(
         "no_return",
         "prevent_fractions",
     ] {
+        if allow_reviewed_conversion_edits
+            && matches!(field, "large_to_medium" | "medium_to_small")
+            && payload
+                .edits
+                .as_ref()
+                .and_then(Value::as_object)
+                .is_some_and(|edits| edits.contains_key(field))
+        {
+            continue;
+        }
         let default = if matches!(
             field,
             "large_to_medium" | "medium_to_small" | "is_medicine" | "has_expiry"
@@ -994,6 +1006,7 @@ async fn apply_edits(
     tx: &mut Transaction<'_, Sqlite>,
     id: i64,
     edits: &Value,
+    allow_linked_conversion_edits: bool,
 ) -> Result<(), String> {
     let edits = edits.as_object().ok_or("تعديلات الصنف غير صحيحة")?;
     const TEXT: &[&str] = &[
@@ -1101,7 +1114,7 @@ async fn apply_edits(
                 .fetch_one(&mut **tx)
                 .await
                 .map_err(|e| e.to_string())?;
-                if changed != 0 {
+                if changed != 0 && !(factor && allow_linked_conversion_edits) {
                     for (table, columns) in REFS {
                         let exists: i64 = sqlx::query_scalar(
                             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?",
@@ -1762,6 +1775,168 @@ mod tests {
             3
         );
     }
+
+    #[tokio::test]
+    async fn group_replacement_can_set_reviewed_medium_and_small_units_without_rewriting_history() {
+        let mut db = fixture().await;
+        sqlx::raw_sql(
+            r#"
+            UPDATE master_drugs
+            SET barcode='123', medium_unit='old-strip', small_unit='old-tablet',
+                large_to_medium=2, medium_to_small=1
+            WHERE id=10;
+            UPDATE master_drugs
+            SET barcode='123', medium_unit='other-strip', small_unit='other-tablet',
+                large_to_medium=3, medium_to_small=2
+            WHERE id=20;
+            "#,
+        )
+        .execute(&mut db)
+        .await
+        .unwrap();
+
+        let historical_before: (i64, i64) = sqlx::query_as(
+            "SELECT large_to_medium, medium_to_small FROM sales_items WHERE id=1",
+        )
+        .fetch_one(&mut db)
+        .await
+        .unwrap();
+        let lots_before: Vec<(String, i64, i64)> = sqlx::query_as(
+            "SELECT id, strips_per_box, medium_to_small FROM inventory WHERE id IN ('old-lot','target-lot') ORDER BY id",
+        )
+        .fetch_all(&mut db)
+        .await
+        .unwrap();
+
+        let mut tx = db.begin().await.unwrap();
+        let target = replace_group_tx(
+            &mut tx,
+            "admin",
+            GroupReplacement {
+                source_ids: vec![10],
+                target_id: 20,
+                edits: Some(json!({
+                    "medium_unit": "strip",
+                    "small_unit": "tablet",
+                    "large_to_medium": 10,
+                    "medium_to_small": 10
+                })),
+                confirmed_same_product: true,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(target, 20);
+        tx.commit().await.unwrap();
+
+        let canonical: (String, String, i64, i64) = sqlx::query_as(
+            "SELECT medium_unit, small_unit, large_to_medium, medium_to_small FROM master_drugs WHERE id=20",
+        )
+        .fetch_one(&mut db)
+        .await
+        .unwrap();
+        assert_eq!(canonical, ("strip".into(), "tablet".into(), 10, 10));
+
+        let historical_after: (i64, i64) = sqlx::query_as(
+            "SELECT large_to_medium, medium_to_small FROM sales_items WHERE id=1",
+        )
+        .fetch_one(&mut db)
+        .await
+        .unwrap();
+        assert_eq!(historical_after, historical_before);
+
+        let lots_after: Vec<(String, i64, i64)> = sqlx::query_as(
+            "SELECT id, strips_per_box, medium_to_small FROM inventory WHERE id IN ('old-lot','target-lot') ORDER BY id",
+        )
+        .fetch_all(&mut db)
+        .await
+        .unwrap();
+        assert_eq!(lots_after, lots_before);
+    }
+
+    #[tokio::test]
+    async fn group_replacement_still_rejects_unresolved_conversion_mismatch() {
+        let mut db = fixture().await;
+        sqlx::raw_sql(
+            r#"
+            UPDATE master_drugs SET barcode='123', large_to_medium=2, medium_to_small=1 WHERE id=10;
+            UPDATE master_drugs SET barcode='123', large_to_medium=3, medium_to_small=2 WHERE id=20;
+            "#,
+        )
+        .execute(&mut db)
+        .await
+        .unwrap();
+
+        let mut tx = db.begin().await.unwrap();
+        let error = replace_group_tx(
+            &mut tx,
+            "admin",
+            GroupReplacement {
+                source_ids: vec![10],
+                target_id: 20,
+                edits: Some(json!({"medium_unit":"strip","small_unit":"tablet"})),
+                confirmed_same_product: true,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("large_to_medium") || error.contains("medium_to_small"), "{error}");
+        tx.rollback().await.unwrap();
+
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM master_drugs WHERE id IN (10,20)")
+                .fetch_one(&mut db)
+                .await
+                .unwrap(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn group_replacement_cannot_bypass_explicit_unit_conversion_permission_denial() {
+        let mut db = fixture().await;
+        sqlx::raw_sql(
+            r#"
+            UPDATE users
+            SET permissions='{"can_view_purchases":true,"can_manage_inventory":true,"can_modify_unit_conversion":false}'
+            WHERE id='admin';
+            UPDATE master_drugs SET barcode='123' WHERE id=20;
+            "#,
+        )
+        .execute(&mut db)
+        .await
+        .unwrap();
+
+        let mut tx = db.begin().await.unwrap();
+        let error = replace_group_tx(
+            &mut tx,
+            "admin",
+            GroupReplacement {
+                source_ids: vec![10],
+                target_id: 20,
+                edits: Some(json!({
+                    "medium_unit":"strip",
+                    "small_unit":"tablet",
+                    "large_to_medium":10,
+                    "medium_to_small":10
+                })),
+                confirmed_same_product: true,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("can_modify_unit_conversion"), "{error}");
+        tx.rollback().await.unwrap();
+
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM master_drugs WHERE id IN (10,20)")
+                .fetch_one(&mut db)
+                .await
+                .unwrap(),
+            2
+        );
+    }
+
     #[tokio::test]
     async fn group_replacement_revalidates_that_all_reviewed_owners_still_share_an_active_barcode() {
         let mut db = fixture().await;

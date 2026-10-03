@@ -129,13 +129,27 @@ it('resolves three barcode owners in one reviewed group operation with an explic
   expect(submit).toBeDisabled();
   fireEvent.click(screen.getByLabelText(/الاحتفاظ بالصنف #10/));
   await screen.findByLabelText('البيانات النهائية: الاسم التجاري');
+  fireEvent.change(screen.getByLabelText('البيانات النهائية: الوحدة المتوسطة'), { target: { value: 'strip' } });
+  fireEvent.change(screen.getByLabelText('البيانات النهائية: الوحدة الصغرى'), { target: { value: 'tablet' } });
+  fireEvent.change(screen.getByLabelText('البيانات النهائية: عدد الوحدات المتوسطة'), { target: { value: '10' } });
+  fireEvent.change(screen.getByLabelText('البيانات النهائية: عدد الوحدات الصغرى'), { target: { value: '10' } });
   fireEvent.click(screen.getByLabelText(/جميع الأصناف المذكورة/));
   fireEvent.change(screen.getByLabelText('كلمة مرور المدير الحالي'), { target: { value: 'admin-password' } });
   fireEvent.click(submit);
 
-  await waitFor(() => expect(reconcileDrugBarcodeOwnersAction).toHaveBeenCalledWith([20, 30], 10, 'admin-password', {}));
+  await waitFor(() => expect(reconcileDrugBarcodeOwnersAction).toHaveBeenCalledWith([20, 30], 10, 'admin-password', {
+    medium_unit: 'strip',
+    small_unit: 'tablet',
+    large_to_medium: 10,
+    medium_to_small: 10,
+  }));
   expect(replaceDrugAction).not.toHaveBeenCalled();
-  await waitFor(() => expect(onSuccess).toHaveBeenCalledWith(10, 'backups/group.db', expect.objectContaining({ id: 10 }), {}, [20, 30, 10]));
+  await waitFor(() => expect(onSuccess).toHaveBeenCalledWith(10, 'backups/group.db', expect.objectContaining({ id: 10 }), {
+    medium_unit: 'strip',
+    small_unit: 'tablet',
+    large_to_medium: 10,
+    medium_to_small: 10,
+  }, [20, 30, 10]));
 });
 
 it('includes an unsaved edited target in the group and forces it as canonical when its proposed barcode already has multiple owners', async () => {
