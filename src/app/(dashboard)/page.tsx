@@ -25,7 +25,6 @@ const ShiftManagement = dynamic(() => import('@/components/dashboard/ShiftManage
 const SubscriptionStatus = dynamic(() => import('@/components/dashboard/SubscriptionStatus'));
 const DrugSyncButton = dynamic(() => import('@/components/dashboard/DrugSyncButton'));
 const InteractionsSyncButton = dynamic(() => import('@/components/dashboard/InteractionsSyncButton'));
-const CloudStatus = dynamic(() => import('@/components/dashboard/CloudStatus'));
 const NewsBar = dynamic(() => import('@/components/dashboard/NewsBar'), { ssr: false });
 const DashboardCharts = dynamic(() => import('@/components/dashboard/DashboardCharts').then(mod => mod.DashboardCharts));
 const ReceiptDetailsModal = dynamic(() => import('@/components/receipts/ReceiptDetailsModal'), { ssr: false });
@@ -486,7 +485,6 @@ export default function DashboardPage() {
               تحديث البرنامج
             </button>
           )}
-          <CloudStatus initialSession={null} />
           <div className="px-5 py-3 bg-white/50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-800 backdrop-blur-sm">
             <p className="text-sm font-bold text-slate-600 dark:text-slate-400">
               <Package className="inline w-4 h-4 ml-2 text-blue-500" />

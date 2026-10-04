@@ -34,7 +34,7 @@ jest.mock('@/lib/auth/local', () => ({
 jest.mock('@/lib/cache/secure_cache', () => ({ secureCache: { updateDrug: jest.fn() } }));
 jest.mock('@/lib/env', () => ({ isTauri: false }));
 
-import { addPurchaseInvoiceItemAction, createPurchaseInvoiceAction, completePurchaseInvoiceAction, createPurchaseReturnAction, getPurchaseInvoiceDetailsAction, updateCompletedPurchaseInvoiceAction } from '@/app/actions-client/purchases';
+import { addPurchaseInvoiceItemAction, createPurchaseInvoiceAction, completePurchaseInvoiceAction, createPurchaseReturnAction, getPurchaseInvoiceDetailsAction, searchPurchaseInvoicesForReturnAction, updateCompletedPurchaseInvoiceAction } from '@/app/actions-client/purchases';
 
 const item = (cost = 10) => ({ id: 9001, quantity: 2, bonus_quantity: 1, cost_price: cost, selling_price: 20,
   expiry_date: '2028-01-31', tax_percent: 10, discount_percent: 0, strips_per_box: 1 });
@@ -761,6 +761,45 @@ describe('purchase SQLite fallback accounting and lot safety', () => {
     expect(sqlite.prepare('SELECT quantity FROM inventory WHERE id=?').get(source.inventory_id)).toEqual(stockBefore);
     expect(sqlite.prepare('SELECT balance FROM suppliers WHERE id=1').get()).toEqual(supplierBefore);
     expect(sqlite.prepare('SELECT COUNT(*) AS n FROM purchase_returns').get()).toEqual({ n: 1 });
+  });
+
+  it('hides fully returned purchases from return search while keeping partial returns searchable', async () => {
+    const purchase = await createPurchaseInvoiceAction({
+      supplier_id: 1,
+      invoice_number: 'RETURN-SEARCH-1',
+      status: 'completed',
+      payment_method: 'credit',
+      cart: [plainItem()],
+    });
+    const source = sqlite.prepare('SELECT id,inventory_id FROM purchase_invoice_items WHERE invoice_id=?').get(purchase.id) as any;
+
+    expect((await searchPurchaseInvoicesForReturnAction('RETURN-SEARCH-1')).data?.map((row: any) => row.id)).toEqual([purchase.id]);
+
+    sqlite.prepare(`
+      INSERT INTO purchase_returns
+        (id, purchase_invoice_id, supplier_id, user_id, reason, total_amount, refund_method, status)
+      VALUES ('partial-return', ?, 1, 'admin', 'partial', 10, 'credit', 'completed')
+    `).run(purchase.id);
+    sqlite.prepare(`
+      INSERT INTO purchase_return_items
+        (purchase_return_id, purchase_invoice_item_id, inventory_id, drug_id, drug_name, quantity_returned, unit_price, total_price, unit)
+      VALUES ('partial-return', ?, ?, 9001, 'Drug', 1, 10, 10, 'large')
+    `).run(source.id, source.inventory_id);
+
+    expect((await searchPurchaseInvoicesForReturnAction('RETURN-SEARCH-1')).data?.map((row: any) => row.id)).toEqual([purchase.id]);
+
+    sqlite.prepare(`
+      INSERT INTO purchase_returns
+        (id, purchase_invoice_id, supplier_id, user_id, reason, total_amount, refund_method, status)
+      VALUES ('final-return', ?, 1, 'admin', 'final', 10, 'credit', 'approved')
+    `).run(purchase.id);
+    sqlite.prepare(`
+      INSERT INTO purchase_return_items
+        (purchase_return_id, purchase_invoice_item_id, inventory_id, drug_id, drug_name, quantity_returned, unit_price, total_price, unit)
+      VALUES ('final-return', ?, ?, 9001, 'Drug', 1, 10, 10, 'large')
+    `).run(source.id, source.inventory_id);
+
+    expect(await searchPurchaseInvoicesForReturnAction('RETURN-SEARCH-1')).toMatchObject({ success: true, data: [] });
   });
 
   it('refunds stored allocated cost and bonus stock despite a forged client price', async () => {

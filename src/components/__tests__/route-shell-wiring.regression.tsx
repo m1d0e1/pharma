@@ -64,10 +64,6 @@ jest.mock('@/app/(dashboard)/purchases/returns/new/PurchaseReturnClient', () => 
   return <div data-testid="purchase-return-client" />;
 });
 
-jest.mock('@/components/sales/SettlementClient', () => function MockSettlementClient() {
-  return <div data-testid="settlement-client" />;
-});
-
 jest.mock('@/components/AccessDenied', () => function MockAccessDenied() {
   return <div>access-denied</div>;
 });
@@ -101,7 +97,7 @@ describe('thin route shell wiring', () => {
     expect(screen.getByTestId('trial-balance-settings-client')).toHaveAttribute('data-can-manage', 'undefined');
   });
 
-  it('wires active purchase and settlement route shells to the exercised clients', () => {
+  it('wires active purchase route shells to the exercised clients', () => {
     const invoice = render(<NewPurchaseInvoicePage />);
     expect(screen.getByTestId('purchase-invoice-client')).toBeInTheDocument();
     invoice.unmount();
@@ -113,22 +109,20 @@ describe('thin route shell wiring', () => {
     const newReturn = render(<NewPurchaseReturnPage />);
     expect(screen.getByTestId('purchase-return-client')).toBeInTheDocument();
     newReturn.unmount();
-
-    render(<SettlementPage />);
-    expect(screen.getByTestId('guard-can_view_settlement')).toBeInTheDocument();
-    expect(screen.getByTestId('settlement-client')).toBeInTheDocument();
   });
 
   it('keeps legacy and setup navigation redirects pointed at their supported destinations', () => {
     EditReturnsPage();
     GeneralReturnsPage();
     NewGeneralReturnPage();
+    SettlementPage();
     SetupPage();
 
     expect(mockRedirect.mock.calls).toEqual([
       ['/purchases/returns'],
       ['/purchases/returns'],
       ['/purchases/returns/new'],
+      ['/inventory/settlement'],
       ['/login'],
     ]);
   });

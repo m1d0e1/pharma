@@ -47,7 +47,8 @@ describe('sales dashboard target permissions', () => {
     await waitFor(() => expect(document.querySelector('a[href="/returns"]')).toBeTruthy());
     expect(document.querySelector('a[href="/pos"]')).toBeNull();
     expect(document.querySelector('a[href="/pos?tab=drafts"]')).toBeNull();
-    expect(document.querySelector('a[href="/sales/settlement"]')).toBeTruthy();
+    expect(document.querySelector('a[href="/inventory/settlement"]')).toBeTruthy();
+    expect(document.querySelector('a[href="/sales/settlement"]')).toBeNull();
     expect(document.querySelector('a[href="/sales/delivery"]')).toBeTruthy();
   });
 

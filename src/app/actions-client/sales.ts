@@ -3,13 +3,6 @@ import { dbSelect, dbExecute, dbGet, dbTransaction, generateId } from '@/lib/db/
 import { ensurePermanentShiftForUser, getShiftForPharmacy } from './shifts';
 import { notifyInventoryChanged } from '@/lib/inventory/refresh';
 import { resolveDrugUnitProfile } from '@/lib/inventory/unit-profile';
-const logActivity = async (userId: string, action: string, details: string) => {
-  try {
-    await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [userId, action, details]);
-  } catch (e) {
-    console.error('Failed to log activity:', e);
-  }
-};
 
 function normalizeDateToYMD(dateStr: string | null | undefined): string | null {
   if (!dateStr) return null;

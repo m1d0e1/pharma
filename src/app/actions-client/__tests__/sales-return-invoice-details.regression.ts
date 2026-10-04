@@ -26,7 +26,11 @@ jest.mock('@/app/actions-client/finance', () => ({
 
 jest.mock('@/lib/env', () => ({ isTauri: false }));
 
-import { getInvoiceForReturnAction, getSalesInvoicesByDateAction } from '@/app/actions-client/returns';
+import {
+  getInvoiceForReturnAction,
+  getSalesInvoicesByDateAction,
+  searchRecentReturnInvoicesAction,
+} from '@/app/actions-client/returns';
 
 describe('sales return invoice detail quantities', () => {
   beforeEach(() => {
@@ -43,11 +47,11 @@ describe('sales return invoice detail quantities', () => {
         id INTEGER PRIMARY KEY, trade_name TEXT, trade_name_en TEXT,
         active_ingredient TEXT, large_to_medium INTEGER, medium_to_small INTEGER,
         large_unit TEXT,
-        medium_unit TEXT, small_unit TEXT
+        medium_unit TEXT, small_unit TEXT, barcode TEXT
       );
       CREATE TABLE inventory (
         id TEXT PRIMARY KEY, pharmacy_id TEXT, drug_id INTEGER,
-        strips_per_box INTEGER, medium_to_small INTEGER, expiry_date TEXT
+        strips_per_box INTEGER, medium_to_small INTEGER, expiry_date TEXT, barcode TEXT
       );
       CREATE TABLE sales_items (
         id INTEGER PRIMARY KEY, invoice_id TEXT, inventory_id TEXT, drug_id INTEGER,
@@ -70,9 +74,9 @@ describe('sales return invoice detail quantities', () => {
         payment_method, status, created_at
       ) VALUES ('sale-units', 'ph-1', NULL, 'owner-1', 10, 0, 'cash', 'completed', '2026-09-29 10:00:00');
       INSERT INTO master_drugs VALUES (
-        101, 'Unit Drug', 'Unit Drug', NULL, 10, 2, 'case', 'strip', 'tablet'
+        101, 'Unit Drug', 'Unit Drug', NULL, 10, 2, 'case', 'strip', 'tablet', NULL
       );
-      INSERT INTO inventory VALUES ('lot-1', 'ph-1', 101, 10, 2, '2030-01-01');
+      INSERT INTO inventory VALUES ('lot-1', 'ph-1', 101, 10, 2, '2030-01-01', NULL);
       INSERT INTO sales_items VALUES (
         1, 'sale-units', 'lot-1', 101, 10, 1, 'small', 10, 2
       );
@@ -125,6 +129,24 @@ describe('sales return invoice detail quantities', () => {
 
     expect(result).toMatchObject({ success: true });
     expect((result as any).data).toEqual([]);
+  });
+
+  it('hides a fully returned invoice from free-text search using the same unit-aware remainder rule', async () => {
+    mockDb.prepare("UPDATE return_items SET quantity_returned = 5, unit = 'medium' WHERE return_id = 'prior-return'").run();
+
+    const result = await searchRecentReturnInvoicesAction('sale-units');
+
+    expect(result).toMatchObject({ success: true });
+    expect((result as any).data).toEqual([]);
+  });
+
+  it('keeps a partially returned invoice searchable', async () => {
+    mockDb.prepare("UPDATE return_items SET quantity_returned = 4, unit = 'medium' WHERE return_id = 'prior-return'").run();
+
+    const result = await searchRecentReturnInvoicesAction('sale-units');
+
+    expect(result).toMatchObject({ success: true });
+    expect((result as any).data.map((row: any) => row.id)).toEqual(['sale-units']);
   });
 
 

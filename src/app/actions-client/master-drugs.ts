@@ -10,16 +10,6 @@ const logActivity = async (userId, action, details) => {
     console.error('Failed to log activity:', e);
   }
 };
-const initLocalDb = () => {};
-const clearAuditLogs = async () => {
-  try {
-    await dbExecute('DELETE FROM activity_log');
-    return true;
-  } catch (e) {
-    console.error('Failed to clear activity logs:', e);
-    return false;
-  }
-};
 
 const db = {
   prepare: (sql) => ({
@@ -73,7 +63,7 @@ function parseOptionalConversionFactor(value: unknown): number | null {
   return parsed;
 }
 
-const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
+const revalidatePath = (...args: any[]) => {};
 import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local'
 
 async function canManageInventory() {

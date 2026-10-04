@@ -1500,6 +1500,40 @@ export async function searchPurchaseInvoicesForReturnAction(searchTerm: string) 
       LEFT JOIN master_drugs md ON pii.drug_id = md.id
       WHERE (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
         AND (i.status = 'completed')
+        AND EXISTS (
+          SELECT 1
+          FROM purchase_invoice_items candidate
+          LEFT JOIN master_drugs candidate_md ON candidate_md.id = candidate.drug_id
+          WHERE candidate.invoice_id = i.id
+            AND CAST(candidate.quantity AS REAL) > COALESCE((
+              SELECT SUM(
+                CASE
+                  WHEN LOWER(TRIM(COALESCE(pri.unit, 'large'))) IN ('medium', 'strip')
+                    THEN CAST(pri.quantity_returned AS REAL)
+                      / COALESCE(NULLIF(candidate.strips_per_box, 0), NULLIF(candidate_md.large_to_medium, 0), 1)
+                  WHEN LOWER(TRIM(COALESCE(pri.unit, 'large'))) IN ('small', 'unit', 'pill')
+                    THEN CAST(pri.quantity_returned AS REAL)
+                      / (
+                        COALESCE(NULLIF(candidate.strips_per_box, 0), NULLIF(candidate_md.large_to_medium, 0), 1)
+                        * COALESCE(NULLIF(candidate.medium_to_small, 0), NULLIF(candidate_md.medium_to_small, 0), 1)
+                      )
+                  ELSE CAST(pri.quantity_returned AS REAL)
+                END
+              )
+              FROM purchase_return_items pri
+              JOIN purchase_returns pr ON pr.id = pri.purchase_return_id
+              WHERE pr.purchase_invoice_id = i.id
+                AND LOWER(COALESCE(pr.status, '')) IN ('completed', 'approved')
+                AND (
+                  pri.purchase_invoice_item_id = candidate.id
+                  OR (
+                    pri.purchase_invoice_item_id IS NULL
+                    AND pri.inventory_id = candidate.inventory_id
+                    AND pri.drug_id = candidate.drug_id
+                  )
+                )
+            ), 0) + 0.000001
+        )
         AND (
           i.id LIKE ? OR
           i.invoice_number LIKE ? OR

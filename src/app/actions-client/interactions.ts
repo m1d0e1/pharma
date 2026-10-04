@@ -6,16 +6,6 @@ const logActivity = async (userId: any, action: any, details: any) => {
     console.error('Failed to log activity:', e);
   }
 };
-const initLocalDb = () => {};
-const clearAuditLogs = async () => {
-  try {
-    await dbExecute('DELETE FROM activity_log');
-    return true;
-  } catch (e) {
-    console.error('Failed to clear activity logs:', e);
-    return false;
-  }
-};
 
 const db = {
   prepare: (sql: string) => ({
@@ -49,7 +39,6 @@ const db = {
 import { getLocalSession } from '@/lib/auth/local';
 
 const revalidatePath = (...args: any[]) => {};
-const unstable_cache = (fn: any, ...args: any[]) => fn;
 
 // Get distinct ingredients from the drug_interactions table in SQLite
 async function getDbIngredients() {

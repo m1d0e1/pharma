@@ -1,22 +1,6 @@
 
 import { dbSelect, dbExecute, dbGet, dbTransaction } from '@/lib/db/tauri';
-const logActivity = async (userId, action, details) => {
-  try {
-    await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [userId, action, details]);
-  } catch (e) {
-    console.error('Failed to log activity:', e);
-  }
-};
 const initLocalDb = () => {};
-const clearAuditLogs = async () => {
-  try {
-    await dbExecute('DELETE FROM activity_log');
-    return true;
-  } catch (e) {
-    console.error('Failed to clear activity logs:', e);
-    return false;
-  }
-};
 
 const db = {
   prepare: (sql) => ({
@@ -49,9 +33,9 @@ const db = {
 
 
 
-import { createClient } from '@/utils/supabase/client';
+import { createClient, SupabaseConfigurationError } from '@/utils/supabase/client';
 
-const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
+const revalidatePath = (...args: any[]) => {};
 
 const normalizeCatalogName = (value: unknown) => String(value ?? '')
   .normalize('NFKC')
@@ -290,6 +274,9 @@ export async function syncFromCloudAction() {
 
   } catch (error) {
     console.error('Sync error:', error);
+    if (error instanceof SupabaseConfigurationError) {
+      return { success: false, error: 'إعدادات المزامنة السحابية غير مكتملة على هذا الجهاز' };
+    }
     return { success: false, error: 'حدث خطأ غير متوقع أثناء المزامنة' };
   }
 }

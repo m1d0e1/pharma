@@ -5,7 +5,6 @@ import { toast } from 'react-hot-toast';
 import { useRouter, usePathname } from 'next/navigation';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useHotkeys } from 'react-hotkeys-hook';
-import TopMenuBar from '@/components/TopMenuBar';
 import SidebarNav from '@/components/SidebarNav';
 import ThemeToggle from '@/components/ThemeToggle';
 import { getClientSession, hasUserPermissionSync, logoutLocal } from '@/lib/auth/local';
@@ -46,7 +45,6 @@ const NATIVE_MENU_ROUTES = [
   ['sales', '/sales'],
   ['sales_delivery', '/sales/delivery'],
   ['sales_cogs', '/sales/cogs'],
-  ['sales_settlement', '/sales/settlement'],
   ['returns', '/returns'],
   ['purchases', '/purchases'],
   ['purchase_orders', '/purchase-orders'],

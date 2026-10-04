@@ -67,8 +67,7 @@ Every exported action below needs at least a contract test against the current m
 | `cogs.ts` | sold-item lookup and cost update. |
 | `settlement.ts` | negative-stock invoices, bulk settlement, unsettled sales, batches, individual settlement. |
 | `patients.ts` | patient CRUD/search/profile; allergy/condition add/delete; statement, wallet, list, receipt detail. |
-| `loyalty.ts` | award, redeem, and balance/history. |
-| `shifts.ts` | open/close/list/current/current stats/start/end/force-close. The duplicated open/start and close/end contracts need equivalence tests. |
+| `shifts.ts` | open/close/list/current/current stats/force-close. |
 | `users.ts` | permissions, staff user CRUD/list, jobs CRUD, password reset, management data and performance. |
 | `audit.ts` | list and clear audit logs. |
 | `reports.ts` | shift report, dashboard KPIs, sales trend, reports dashboard. |
@@ -76,8 +75,6 @@ Every exported action below needs at least a contract test against the current m
 | `interactions.ts` | interaction check/list/add. |
 | `shortages.ts` | add and smart shortage list. |
 | `config.ts` | config read/write. |
-| `settings.ts` | pharmacy update and database maintenance. |
-| `labels.ts` | template list/save/default behavior. |
 | `sync.ts` | authenticated incremental cloud sync. |
 | `db.ts` | web-only select/execute bridge; it is not the desktop write boundary. |
 
@@ -175,7 +172,7 @@ For every row, automated tests must cover success, boundary/empty/invalid input,
 | Staff/jobs/permissions | users actions/pages | CRUD, username uniqueness, password, active flag, job salary bounds, role escalation, every permission key in all encodings, changed permission without restart | table-driven action/route/menu tests + components | admin usability review |
 | Audit | audit action/logger/page | all critical mutations, failed login/access, filtering/count/stats, retention and clear permissions; sensitive-data redaction | integration + component | diagnostic usefulness review |
 | Settings | settings page/components | every pharmacy field; local/cloud partial failure; config reload; DB maintenance; labels/default; sync; local users; visual-only controls | components/actions | printer label calibration and maintenance backup |
-| Desktop menu/windows | Rust menu, layout, TopMenuBar, SidebarNav | route parity; role filtering; action payloads; shortcut conflicts; open/minimize/maximize/restore/resize/focus/close; multiwindow event isolation | route-contract tests + packaged WebDriver | multi-monitor and OS menu behavior |
+| Desktop menu/windows | Rust menu, dashboard layout, SidebarNav | route parity; role filtering; action payloads; shortcut conflicts; open/minimize/maximize/restore/resize/focus/close; multiwindow event isolation | route-contract tests + packaged WebDriver | multi-monitor and OS menu behavior |
 | Updater | dashboard layout and Tauri updater | current/newer/older/malformed metadata; valid/invalid signature; cancel; timeout; download/install/relaunch failures | mock endpoint + signed test artifacts | UAC, restart, antivirus and network interruption |
 | Installer/build | configs/scripts/workflows | clean/upgrade/reinstall/uninstall; standard/admin; WebView; seed contents; build interruption; artifact/signature/version consistency | PowerShell VM scripts + seed/build checks | shortcuts, Programs & Features, dialogs |
 
@@ -434,8 +431,6 @@ This is the function-level checklist used to prevent a grouped feature row from 
 - `handover.ts`: `getHandoverDetailsAction`, `processHandoverAction`, `getOpenShiftHandoverAction`, `getShiftCreditSalesAction`.
 - `interactions.ts`: `checkDrugInteractions`, `getInteractionsAction`, `addInteractionAction`.
 - `inventory.ts`: `addInventoryAction`, `updateInventoryAction`, `deleteInventoryAction`, `checkInteractionsAction`, `checkClinicalSafetyAction`, `getLowStockAction`, `settleNegativeStockAction`, `getInventoryAlertsAction`, `getDrugDetailsFullAction`, `getInventoryListAction`, `getMovementsAction`, `getOpeningBalancesAction`, `addOpeningBalanceAction`, `getRestockItemsAction`, `getAdjustmentsAction`, `getUnusedDrugsAction`, `deleteDrugAction`.
-- `labels.ts`: `getLabelTemplatesAction`, `saveLabelTemplateAction`.
-- `loyalty.ts`: `awardLoyaltyPointsAction`, `redeemLoyaltyPointsAction`, `getPatientLoyaltyAction`.
 - `master-drugs.ts`: `getMasterDrugAction`, `addMasterDrugAction`, `searchInventoryAction`, `updateMasterDrugAction`, `searchMasterDrugsAction`, `getUnitsAction`, `addUnitAction`, `updateUnitAction`, `deleteUnitAction`, `addProductCategoryAction`, `updateProductCategoryAction`, `deleteProductCategoryAction`, `getProductCategoriesAction`, `addAlternativeAction`, `getAlternativesAction`, `addIndicationAction`, `updateIndicationAction`, `deleteIndicationAction`, `getIndicationsAction`, `getScientificGroupsAction`, `addScientificGroupAction`, `updateScientificGroupAction`, `deleteScientificGroupAction`, `getItemNaturesAction`, `addItemNatureAction`, `updateItemNatureAction`, `deleteItemNatureAction`, `getUsageMethodsAction`, `addUsageMethodAction`, `updateUsageMethodAction`, `deleteUsageMethodAction`, `getAdjustmentReasonsAction`, `addAdjustmentReasonAction`, `updateAdjustmentReasonAction`, `deleteAdjustmentReasonAction`, `updateGenericBilingualAction`, `deleteGenericBilingualAction`, `getDrugsByIndicationAction`, `addDrugIndicationAction`, `deleteDrugIndicationAction`, `getUnusedItemsAction`, `deleteMasterDrugAction`, `migrateNamesToEnglishAction`, `getManufacturersAction`, `addManufacturerAction`, `getOpeningBalancesAction`, `createOpeningBalanceAction`, `addOpeningBalanceItemAction`, `completeOpeningBalanceAction`, `getShortagesAction`, `addShortageAction`, `updateShortageStatusAction`, `createStockAdjustmentAction`, `addDrugAlternativeAction`, `removeDrugAlternativeAction`, `addDrugInteractionAction`, `removeDrugInteractionAction`, `getRelevanceScore`.
 - `patients.ts`: `addPatientAction`, `searchPatientsAction`, `getPatientProfileAction`, `addPatientAllergyAction`, `addPatientConditionAction`, `deletePatientAllergyAction`, `updatePatientAction`, `getPatientStatementAction`, `updatePatientWalletAction`, `getPatientsAction`, `deletePatientAction`, `getReceiptDetailsAction`.
 - `purchase.ts`: `createPurchaseOrderAction`, `getPurchaseOrdersAction`, `updatePurchaseOrderStatusAction`.
@@ -444,9 +439,8 @@ This is the function-level checklist used to prevent a grouped feature row from 
 - `returns.ts`: `getSalesInvoicesByDateAction`, `createReturnAction`, `getReturnsAction`, `searchInvoicesForReturnAction`, `searchRecentReturnInvoicesAction`, `getInvoiceForReturnAction`.
 - `sales-reports.ts`: `getSalesReportsAction`, `getInvoiceDetailsAction`.
 - `sales.ts`: `searchDrugsAction`, `searchPatientsAction`, `barcodeLookupAction`, `fetchDraftsAction`, `processCheckoutAction`, `getSalesDashboardStatsAction`, `getRelevanceScore`.
-- `settings.ts`: `updatePharmacyAction`, `runDatabaseMaintenanceAction`.
 - `settlement.ts`: `getNegativeStockInvoicesAction`, `settleNegativeStockAction`, `getUnsettledSalesAction`, `getDrugBatchesAction`, `settleSaleItemAction`.
-- `shifts.ts`: `openShiftAction`, `closeShiftAction`, `getShiftsAction`, `getCurrentShiftAction`, `getCurrentShiftStatsAction`, `startShiftAction`, `endShiftAction`, `forceCloseAllShiftsAction`.
+- `shifts.ts`: `openShiftAction`, `closeShiftAction`, `getShiftsAction`, `getCurrentShiftAction`, `getCurrentShiftStatsAction`, `forceCloseAllShiftsAction`.
 - `shortages.ts`: `addToShortagesAction`, `getSmartShortagesAction`.
 - `sync.ts`: `syncFromCloudAction`.
 - `users.ts`: `updateUserPermissionsAction`, `addUserAction`, `deleteUserAction`, `updateUserAction`, `getStaffAction`, `getJobsAction`, `addJobAction`, `deleteJobAction`, `resetUserPasswordAction`, `getStaffManagementDataAction`, `getStaffPerformanceAction`.
@@ -456,17 +450,15 @@ This is the function-level checklist used to prevent a grouped feature row from 
 | Library | Tauri relevance | Required coverage |
 |---|---|---|
 | `lib/db/tauri.ts` | primary packaged adapter | real SQL-plugin reads, guarded writes, initialization retry, transaction serialization and window concurrency |
-| `lib/db/client.ts`, `local.ts`, `migrations.ts`, `schema.ts` | web/test adapter and schema utilities | parity with Rust migrations; avoid counting adapter-only results as Tauri E2E |
-| `lib/auth/local.ts`, `permissions.ts`, `roles.ts` | packaged auth/authorization | session, bcrypt IPC, every permission encoding, live database refresh |
-| `lib/auth/service.ts`, `session.ts`, `jwt.ts`, `password.ts`, `middleware.ts` | mainly web/server path | retain unit tests, but exclude from desktop release confidence unless imported into the static bundle |
-| `lib/cache/secure_cache.ts`, `cache/manager.ts` | packaged search/enrichment | load/reload/update, failure retry, bounded memory, stale-cache avoidance |
-| `lib/pos/cart.ts`, `checkout.ts`, `checkout-calculation.ts`, `billing.ts` | checkout calculations/helpers | units, totals, validation and parity with Rust final totals |
+| `lib/db/client.ts`, `local.ts`, `schema.ts` | web/test adapter and schema utilities | parity with Rust migrations; avoid counting adapter-only results as Tauri E2E |
+| `lib/auth/local.ts`, `roles.ts` | packaged auth/authorization | session, bcrypt IPC, every permission encoding, live database refresh |
+| `lib/auth/service.ts`, `session.ts`, `jwt.ts`, `password.ts` | mainly web/server path | retain unit tests, but exclude from desktop release confidence unless imported into the static bundle |
+| `lib/cache/secure_cache.ts` | packaged search/enrichment | load/reload/update, failure retry, bounded memory, stale-cache avoidance |
+| `lib/pos/checkout-calculation.ts` | active checkout calculation helper | units, totals, validation and parity with Rust final totals |
 | `lib/inventory/import.ts`, `alerts.ts`, `service.ts` | import/analysis and legacy service logic | XLSX/file matrix, alert boundaries, and parity with action SQL |
 | `lib/purchases/invoice-form.ts`, `return-units.ts` | purchase UI calculations | calendar/date, discounts, conversion and Rust parity |
 | `lib/utils/printing.ts` | packaged receipt/WhatsApp printing | escaping, Arabic text, totals, blocked popup, repeated print and printer manual checks |
 | `lib/sync/client.ts`, `universal.ts` | packaged cloud sync | client branch selection, pagination, partial failures, retry and offline behavior |
 | `lib/settings/client.ts` | packaged pharmacy settings | cloud/local success combinations and config persistence |
-| `lib/audit/logger.ts` | audit helper | event coverage, filtering, retention, redaction and transaction relationship |
-| `lib/security/csrf.ts`, `rate-limit.ts`, `errors/*` | web/server-only in current static build | unit-test web mode; verify build excludes reliance on these controls for desktop IPC |
-| `lib/reports/service.ts`, `shifts/service.ts`, `users/service.ts` | legacy/shared services | contract parity or mark unused; tests must identify whether production actions call them |
+| `lib/shifts/service.ts` | legacy/shared service | contract parity or remove once no production/test caller remains |
 | `store/usePOSStore.ts`, `hooks/useBarcodeScanner.ts`, `use-debounce.ts` | packaged UI state/input | persistence/migration, focused window, scan timing, cleanup and debounce cancellation |

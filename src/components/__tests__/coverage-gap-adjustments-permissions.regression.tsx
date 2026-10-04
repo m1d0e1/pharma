@@ -1,9 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import AdjustmentsPage from '@/app/(dashboard)/stores/adjustments/page';
-import TopMenuBar from '@/components/TopMenuBar';
 import { getAdjustmentsAction } from '@/app/actions-client/inventory';
 import { getClientSession } from '@/lib/auth/local';
-import { getRoutePermission } from '@/lib/auth/roles';
 
 const push = jest.fn();
 const prefetch = jest.fn();
@@ -64,15 +62,6 @@ describe('stock-adjustment route permission boundary', () => {
 
     expect(await screen.findByText('ADJUSTMENTS CLIENT')).toBeInTheDocument();
     expect(getAdjustmentsAction).toHaveBeenCalled();
-  });
-
-  it('uses inventory-manage permission for route resolution and hides the TopMenu link from store-only viewers', () => {
-    expect(getRoutePermission('/stores/adjustments')).toBe('can_manage_inventory');
-
-    render(<TopMenuBar userRole="admin" permissions={{ can_view_stores: true, can_manage_inventory: false }} />);
-    fireEvent.click(screen.getByRole('button', { name: 'البيانات الأساسية' }));
-    expect(screen.queryByRole('link', { name: 'التعديلات' })).not.toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'أسباب التعديل' })).toBeInTheDocument();
   });
 
   it('shows a retryable route error instead of a healthy adjustment screen when reason loading fails', async () => {

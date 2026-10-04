@@ -7,7 +7,6 @@ const logActivity = async (userId, action, details) => {
     console.error('Failed to log activity:', e);
   }
 };
-const initLocalDb = () => {};
 const clearAuditLogs = async (pharmacyId: string) => {
   try {
     await dbExecute(
@@ -52,7 +51,7 @@ const db = {
 
 
 
-const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
+const revalidatePath = (...args: any[]) => {};
 import { getLocalSession, getClientSession, hasUserPermissionSync } from '@/lib/auth/local'
 import { localDate } from '@/lib/time';
 

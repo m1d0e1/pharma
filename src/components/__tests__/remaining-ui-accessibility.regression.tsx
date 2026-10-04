@@ -1,7 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import HeaderAlerts from '@/components/HeaderAlerts';
 import ThemeToggle from '@/components/ThemeToggle';
-import TopMenuBar from '@/components/TopMenuBar';
 import JobsManagementClient from '@/components/admin/JobsManagementClient';
 import InteractionsClient from '@/components/interactions/InteractionsClient';
 import { getInventoryAlertsAction } from '@/app/actions-client/inventory';
@@ -77,19 +76,6 @@ describe('remaining module UI accessibility', () => {
     const dismiss = screen.getByRole('button', { name: 'تحديد تنبيه Drug A كمقروء وإخفاؤه' });
     expect(dismiss).toBeInTheDocument();
     expect(dismiss.parentElement).toHaveClass('sm:group-focus-within:opacity-100');
-  });
-
-  it('exposes app help overlays as named focus-contained dialogs', async () => {
-    render(<TopMenuBar userRole="owner" permissions={{}} />);
-
-    fireEvent.click(screen.getByRole('button', { name: 'مساعدة' }));
-    fireEvent.click(screen.getByRole('button', { name: 'اختصارات لوحة المفاتيح' }));
-
-    expect(screen.getByRole('dialog', { name: 'اختصارات لوحة المفاتيح' })).toBeInTheDocument();
-    const close = screen.getByRole('button', { name: 'إغلاق اختصارات لوحة المفاتيح' });
-    await waitFor(() => expect(close).toHaveFocus());
-    fireEvent.keyDown(document, { key: 'Tab' });
-    expect(close).toHaveFocus();
   });
 
   it('keeps job actions keyboard-reachable and associates labels with form fields', () => {

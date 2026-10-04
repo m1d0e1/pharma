@@ -1,9 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import LogoutModal from '@/components/auth/LogoutModal';
 import DrawerHandoverClient from '@/components/finance/DrawerHandoverClient';
 import PosDrawerHandoverModal from '@/components/pos/PosDrawerHandoverModal';
 import { getCurrentShiftAction } from '@/app/actions-client/shifts';
-import { logoutLocalAction } from '@/app/actions-client/auth';
 import {
   getHandoverDetailsAction,
   getOpenShiftHandoverAction,
@@ -14,13 +12,6 @@ import { getClientSession } from '@/lib/auth/local';
 import { getBanksAction } from '@/app/actions-client/finance';
 import toast from 'react-hot-toast';
 
-const mockPush = jest.fn();
-
-jest.mock('next/navigation', () => ({
-  useRouter: () => ({ push: mockPush }),
-}));
-
-jest.mock('@/app/actions-client/auth', () => ({ logoutLocalAction: jest.fn() }));
 jest.mock('react-hotkeys-hook', () => ({ useHotkeys: jest.fn() }));
 jest.mock('@/app/actions-client/shifts', () => ({
   getCurrentShiftAction: jest.fn(),
@@ -52,7 +43,6 @@ jest.mock('react-hot-toast', () => ({
 
 describe('today shift UI wiring', () => {
   beforeEach(() => {
-    mockPush.mockReset();
     (getCurrentShiftAction as jest.Mock).mockReset().mockResolvedValue({ success: true, data: { id: 'shift-1' } });
     (getOpenShiftHandoverAction as jest.Mock).mockReset().mockResolvedValue({ success: true, data: { id: 'shift-1' } });
     (getShiftCreditSalesAction as jest.Mock).mockReset().mockResolvedValue({ success: true, data: [] });
@@ -63,17 +53,6 @@ describe('today shift UI wiring', () => {
     (processHandoverAction as jest.Mock).mockReset().mockResolvedValue({ success: true });
     (getClientSession as jest.Mock).mockReset().mockResolvedValue({ role: 'owner', full_name: 'Owner' });
     (getBanksAction as jest.Mock).mockReset().mockResolvedValue({ success: true, data: [] });
-  });
-
-  it('allows immediate logout while the permanent cash session remains open', async () => {
-    const onClose = jest.fn();
-    render(<LogoutModal isOpen onClose={onClose} />);
-
-    fireEvent.click(await screen.findByRole('button', { name: 'تأكيد تسجيل الخروج' }));
-
-    await waitFor(() => expect(logoutLocalAction).toHaveBeenCalledTimes(1));
-    expect(getCurrentShiftAction).not.toHaveBeenCalled();
-    expect(mockPush).not.toHaveBeenCalled();
   });
 
   it('allows a zero-cash shift to close with a zero transfer', async () => {

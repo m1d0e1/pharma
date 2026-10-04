@@ -1,9 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import DeleteUnusedItemsPage from '@/app/(dashboard)/stores/delete-items/page';
-import TopMenuBar from '@/components/TopMenuBar';
 import { getClientSession } from '@/lib/auth/local';
 import { deleteDrugAction, getUnusedDrugsAction } from '@/app/actions-client/inventory';
-import { getRoutePermission } from '@/lib/auth/roles';
 
 const push = jest.fn();
 const prefetch = jest.fn();
@@ -74,15 +72,6 @@ describe('delete-items permission boundary', () => {
 
     expect(await screen.findByText('DELETE ITEMS CLIENT')).toBeInTheDocument();
     expect(getUnusedDrugsAction).toHaveBeenCalled();
-  });
-
-  it('uses inventory-manage permission for middleware resolution and hides the TopMenu link from view-only admins', async () => {
-    expect(getRoutePermission('/stores/delete-items')).toBe('can_manage_inventory');
-
-    render(<TopMenuBar userRole="admin" permissions={{ can_view_stores: true, can_manage_inventory: false }} />);
-    fireEvent.click(screen.getByRole('button', { name: 'البيانات الأساسية' }));
-    expect(screen.queryByRole('link', { name: 'حذف الأصناف' })).not.toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'الأصناف' })).toBeInTheDocument();
   });
 
   it('keeps the newest post-delete refresh when concurrent item deletions finish out of order', async () => {

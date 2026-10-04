@@ -43,7 +43,7 @@ const salesModules = [
     title: 'تسوية مبيعات بدون رصيد', 
     desc: 'ربط المبيعات السالبة بأرصدة المخزون', 
     icon: PackageSearch, 
-    href: '/sales/settlement', 
+    href: '/inventory/settlement',
     color: 'bg-purple-600',
     roles: ['owner', 'admin', 'pharmacist'],
     permission: 'can_view_settlement'

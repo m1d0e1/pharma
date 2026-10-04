@@ -615,12 +615,11 @@ describe('Exhaustive: Permission Audit', () => {
     can_view_adjustment_reasons: '/stores/adjustment-reasons',
     can_view_delete_items: '/stores/delete-items',
     can_view_purchases_new: '/purchases/new',
-    can_view_sales_settlement: '/sales/settlement',
   } as const;
 
   const TauriMenuRoutes = [
     '/pos', '/purchases/new', '/', '/receipts', '/sales',
-    '/reports/sales', '/sales/delivery', '/sales/cogs', '/sales/settlement',
+    '/reports/sales', '/sales/delivery', '/sales/cogs',
     '/inventory', '/inventory/low-stock', '/stores/shortages',
     '/inventory/item-movements', '/restock', '/inventory/settlement',
     '/inventory/opening-balances', '/purchases', '/purchase-orders',

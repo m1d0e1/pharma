@@ -1,22 +1,5 @@
 
 import { dbSelect, dbExecute, dbGet, dbTransaction, generateId } from '@/lib/db/tauri';
-const logActivity = async (userId, action, details) => {
-  try {
-    await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [userId, action, details]);
-  } catch (e) {
-    console.error('Failed to log activity:', e);
-  }
-};
-const initLocalDb = () => {};
-const clearAuditLogs = async () => {
-  try {
-    await dbExecute('DELETE FROM activity_log');
-    return true;
-  } catch (e) {
-    console.error('Failed to clear activity logs:', e);
-    return false;
-  }
-};
 
 const db = {
   prepare: (sql) => ({
@@ -53,7 +36,7 @@ import { z } from 'zod';
 import { format } from 'date-fns';
 import { localDate } from '@/lib/time';
 
-const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
+const revalidatePath = (...args: any[]) => {};
 
 import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { secureCache } from '@/lib/cache/secure_cache';

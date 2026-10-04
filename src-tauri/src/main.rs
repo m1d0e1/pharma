@@ -251,7 +251,6 @@ fn create_app_menu<R: tauri::Runtime>(
             NativeRouteMenuItem { id: "sales", label: "المبيعات والتحصيل", accelerator: None },
             NativeRouteMenuItem { id: "sales_delivery", label: "توصيل منزلي", accelerator: None },
             NativeRouteMenuItem { id: "sales_cogs", label: "تعديل التكلفة", accelerator: None },
-            NativeRouteMenuItem { id: "sales_settlement", label: "تسوية المبيعات", accelerator: None },
             NativeRouteMenuItem { id: "returns", label: "مرتجعات العملاء", accelerator: None },
         ],
     )?;
@@ -831,7 +830,6 @@ fn handle_menu_event<R: tauri::Runtime>(window: &tauri::Window<R>, id: &str) {
         "reports_sales" | "reports_sales2" => "/reports/sales",
         "sales_delivery" => "/sales/delivery",
         "sales_cogs" => "/sales/cogs",
-        "sales_settlement" => "/sales/settlement",
         "inventory" => "/inventory",
         "inventory_low_stock" => "/inventory/low-stock",
         "stores_shortages" => "/stores/shortages",

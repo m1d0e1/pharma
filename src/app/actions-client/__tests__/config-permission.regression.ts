@@ -23,7 +23,6 @@ jest.mock('@/lib/auth/local', () => ({
 }));
 
 import { updateConfigAction } from '@/app/actions-client/config';
-import { runDatabaseMaintenanceAction } from '@/app/actions-client/settings';
 
 describe('config mutation permission boundary', () => {
   beforeEach(() => {
@@ -44,12 +43,5 @@ describe('config mutation permission boundary', () => {
 
     expect(await updateConfigAction('subscription_status', 'activated')).toEqual({ success: true });
     expect(values.get('subscription_status')).toBe('activated');
-  });
-
-  it('keeps legacy database maintenance owner-only even when settings access is granted', async () => {
-    mockSession = { id: 'admin-1', role: 'admin', permissions: { can_view_settings: true } };
-
-    expect(await runDatabaseMaintenanceAction()).toEqual({ success: false, error: 'غير مصرح - للمالك فقط' });
-    expect(dbExecute).not.toHaveBeenCalled();
   });
 });

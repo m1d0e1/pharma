@@ -765,6 +765,46 @@ export async function searchRecentReturnInvoicesAction(searchTerm: string, days?
       WHERE (si.status IS NULL OR si.status = 'completed' OR si.status = 'approved' OR si.status = 'delivered' OR si.status = '')
         AND (si.pharmacy_id = ? OR (si.pharmacy_id IS NULL AND ? = 'local_default'))
         ${dateFilter}
+        AND EXISTS (
+          SELECT 1
+          FROM sales_items candidate
+          LEFT JOIN inventory candidate_inv ON candidate_inv.id = candidate.inventory_id
+          LEFT JOIN master_drugs candidate_md ON candidate_md.id = candidate.drug_id
+          WHERE candidate.invoice_id = si.id
+            AND candidate.quantity_sold > COALESCE((
+              SELECT SUM(
+                (
+                  CASE
+                    WHEN LOWER(TRIM(COALESCE(NULLIF(TRIM(ri.unit), ''), candidate.unit, 'large'))) IN ('medium', 'strip', '\u0634\u0631\u064a\u0637')
+                      OR LOWER(TRIM(COALESCE(NULLIF(TRIM(ri.unit), ''), candidate.unit, 'large'))) = LOWER(TRIM(COALESCE(candidate_md.medium_unit, '')))
+                    THEN CAST(ri.quantity_returned AS REAL) / COALESCE(NULLIF(candidate.large_to_medium, 0), NULLIF(candidate_inv.strips_per_box, 0), NULLIF(candidate_md.large_to_medium, 0), 1)
+                    WHEN LOWER(TRIM(COALESCE(NULLIF(TRIM(ri.unit), ''), candidate.unit, 'large'))) IN ('small', 'unit', 'pill')
+                      OR LOWER(TRIM(COALESCE(NULLIF(TRIM(ri.unit), ''), candidate.unit, 'large'))) = LOWER(TRIM(COALESCE(candidate_md.small_unit, '')))
+                    THEN CAST(ri.quantity_returned AS REAL)
+                      / (COALESCE(NULLIF(candidate.large_to_medium, 0), NULLIF(candidate_inv.strips_per_box, 0), NULLIF(candidate_md.large_to_medium, 0), 1)
+                        * COALESCE(NULLIF(candidate.medium_to_small, 0), NULLIF(candidate_inv.medium_to_small, 0), NULLIF(candidate_md.medium_to_small, 0), 1))
+                    ELSE CAST(ri.quantity_returned AS REAL)
+                  END
+                ) * (
+                  CASE
+                    WHEN LOWER(TRIM(COALESCE(candidate.unit, 'large'))) IN ('medium', 'strip', '\u0634\u0631\u064a\u0637')
+                      OR LOWER(TRIM(COALESCE(candidate.unit, 'large'))) = LOWER(TRIM(COALESCE(candidate_md.medium_unit, '')))
+                    THEN COALESCE(NULLIF(candidate.large_to_medium, 0), NULLIF(candidate_inv.strips_per_box, 0), NULLIF(candidate_md.large_to_medium, 0), 1)
+                    WHEN LOWER(TRIM(COALESCE(candidate.unit, 'large'))) IN ('small', 'unit', 'pill')
+                      OR LOWER(TRIM(COALESCE(candidate.unit, 'large'))) = LOWER(TRIM(COALESCE(candidate_md.small_unit, '')))
+                    THEN COALESCE(NULLIF(candidate.large_to_medium, 0), NULLIF(candidate_inv.strips_per_box, 0), NULLIF(candidate_md.large_to_medium, 0), 1)
+                      * COALESCE(NULLIF(candidate.medium_to_small, 0), NULLIF(candidate_inv.medium_to_small, 0), NULLIF(candidate_md.medium_to_small, 0), 1)
+                    ELSE 1
+                  END
+                )
+              )
+              FROM return_items ri
+              JOIN returns r ON ri.return_id = r.id
+              WHERE ri.sale_item_id = candidate.id
+                AND r.invoice_id = si.id
+                AND LOWER(COALESCE(r.status, '')) IN ('approved', 'completed')
+            ), 0)
+        )
         AND (
           si.id LIKE ? OR
           p.full_name LIKE ? OR

@@ -1,6 +1,8 @@
 import { getDatabase } from './client';
 import { ensureCanonicalLocalSchema } from './canonical-local-schema';
 import { applyIndexes } from './indexes';
+import { shouldSeedInsecureDevelopmentUsers } from './development-seeds';
+import { getStandaloneBootstrapOwner, shouldRequireStandaloneBootstrap } from './standalone-bootstrap';
 
 // Lazy Proxy to avoid module-load circular dependency and TDZ ReferenceError
 const db = new Proxy({} as any, {
@@ -1551,43 +1553,67 @@ export function initLocalDb() {
     });
   }
 
-  // Seed default admin user (username: admin, password: admin) if not exists
-  const adminExists = db.prepare("SELECT COUNT(*) as count FROM users WHERE username = 'admin'").get() as any;
-  if (adminExists.count === 0) {
-    try {
-      db.prepare(`
-        INSERT INTO users (id, username, password_hash, role, full_name, permissions)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `).run(
-        'admin',
-        'admin',
-        '$2b$12$.FYM9XhLwanE5PdySaxB2uMwZwwLpF9fI6HXf/2XArluRQt0kfvVm',
-        'owner',
-        'System Administrator',
-        '["view_dashboard","view_reports","manage_inventory","manage_staff","process_sales","manage_patients","view_all_sales","manage_settings","void_transactions","manage_shifts","manage_pharmacy","export_data","import_data","view_audit_logs"]'
-      );
-    } catch (e) {
-      console.warn('Failed to seed default admin user:', e);
+  if (shouldSeedInsecureDevelopmentUsers()) {
+    // Explicit opt-in for standalone development only. Never seed known credentials by default.
+    const adminExists = db.prepare("SELECT COUNT(*) as count FROM users WHERE username = 'admin'").get() as any;
+    if (adminExists.count === 0) {
+      try {
+        db.prepare(`
+          INSERT INTO users (id, username, password_hash, role, full_name, permissions)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).run(
+          'admin',
+          'admin',
+          '$2b$12$.FYM9XhLwanE5PdySaxB2uMwZwwLpF9fI6HXf/2XArluRQt0kfvVm',
+          'owner',
+          'System Administrator',
+          '["view_dashboard","view_reports","manage_inventory","manage_staff","process_sales","manage_patients","view_all_sales","manage_settings","void_transactions","manage_shifts","manage_pharmacy","export_data","import_data","view_audit_logs"]'
+        );
+      } catch (e) {
+        console.warn('Failed to seed default admin user:', e);
+      }
+    }
+
+    const testUserExists = db.prepare("SELECT COUNT(*) as count FROM users WHERE id = 'TEST_USER'").get() as any;
+    if (testUserExists.count === 0) {
+      try {
+        db.prepare(`
+          INSERT INTO users (id, username, password_hash, role, full_name, is_active, permissions)
+          VALUES (?, ?, ?, ?, ?, 0, ?)
+        `).run(
+          'TEST_USER',
+          'test_user',
+          '$2b$12$LJ3m4ys3Lk0TSwHnbfOMiOXPm1Qlq5Gz0mN0MxH3K9X5G8q2rK1uO',
+          'pharmacist',
+          'مستخدم تجريبي',
+          '{"can_sell": true, "can_manage_inventory": false}'
+        );
+      } catch (e) {
+        console.warn('Failed to seed default test user:', e);
+      }
     }
   }
 
-  // Seed default TEST_USER if not exists
-  const testUserExists = db.prepare("SELECT COUNT(*) as count FROM users WHERE id = 'TEST_USER'").get() as any;
-  if (testUserExists.count === 0) {
-    try {
+  const localUserCount = db.prepare('SELECT COUNT(*) as count FROM users').get() as { count: number };
+  if (localUserCount.count === 0) {
+    const bootstrapOwner = getStandaloneBootstrapOwner();
+    if (bootstrapOwner) {
+      const bcrypt = require('bcryptjs') as typeof import('bcryptjs');
+      const passwordHash = bcrypt.hashSync(bootstrapOwner.password, 12);
       db.prepare(`
-        INSERT INTO users (id, username, password_hash, role, full_name, is_active, permissions)
-        VALUES (?, ?, ?, ?, ?, 0, ?)
+        INSERT INTO users (id, username, password_hash, role, full_name, pharmacy_id, permissions, is_active)
+        VALUES (?, ?, ?, 'owner', ?, ?, '{}', 1)
       `).run(
-        'TEST_USER',
-        'test_user',
-        '$2b$12$LJ3m4ys3Lk0TSwHnbfOMiOXPm1Qlq5Gz0mN0MxH3K9X5G8q2rK1uO',
-        'pharmacist',
-        'مستخدم تجريبي',
-        '{"can_sell": true, "can_manage_inventory": false}'
+        'bootstrap-owner',
+        bootstrapOwner.username,
+        passwordHash,
+        bootstrapOwner.fullName,
+        bootstrapOwner.pharmacyId,
       );
-    } catch (e) {
-      console.warn('Failed to seed default test user:', e);
+    } else if (shouldRequireStandaloneBootstrap()) {
+      throw new Error(
+        'No users exist in the standalone database. Configure PHARMA_BOOTSTRAP_OWNER_USERNAME and PHARMA_BOOTSTRAP_OWNER_PASSWORD for the first startup.',
+      );
     }
   }
 

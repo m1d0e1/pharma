@@ -1,18 +1,17 @@
 # Menu Architecture Report — Pharmacy Local Enforcer
 
-**Version:** 0.2.14 | **Last Updated:** 2026-06-23
+**Version:** 0.2.108 | **Last Updated:** 2026-10-04
 
 ---
 
 ## 1. System Overview
 
-The application has three parallel menu systems:
+The application has two active menu systems:
 
 | Layer | Technology | File | Scope |
 |-------|-----------|------|-------|
 | **Native Desktop** | Tauri 2 Rust (`SubmenuWithItems`) | `src-tauri/src/main.rs:24-143` | macOS menu bar / Windows title bar |
 | **Sidebar** | React + `lucide-react` icons | `src/components/SidebarNav.tsx` | Dashboard left sidebar (desktop) + bottom nav (mobile) |
-| **Web Top Bar** | React + `lucide-react` icons | `src/components/TopMenuBar.tsx` | Browser/web mode top menu bar |
 
 Each menu item in the native layer maps to a frontend route via the `on_menu_event` handler (`main.rs:179-278`). The Rust handler emits a `menu-navigate` event with the route string, which the frontend listens for via `@tauri-apps/api/event`.
 
@@ -37,14 +36,7 @@ Each menu item in the native layer maps to a frontend route via the `on_menu_eve
 
 ### Sidebar Equivalent (`SidebarNav.tsx:38-44`)
 
-- _No direct sidebar equivalent for File actions._ File operations are executed via keyboard shortcuts or the TopMenuBar.
-
-### Web Top Bar Equivalent (`TopMenuBar.tsx:39-47`)
-
-- `فاتورة مبيعات جديدة` → route `/pos`
-- `فاتورة مشتريات جديدة` → route `/purchases/new`
-- `طباعة` → action `print`
-- `تسجيل الخروج` → action `logout`
+- _No direct sidebar equivalent for native File actions._ Browser mode uses the sidebar/page controls, while desktop File actions and their shortcuts are handled by the dashboard layout/native menu bridge.
 
 ### User Flow: New Sale
 
@@ -428,7 +420,7 @@ New user can login, sees only permitted sidebar items
 
 ### Event Handling (`main.rs:204-215`)
 
-All help actions emit a `menu-action` event with a string identifier. The frontend `TopMenuBar.tsx` listens for these via a Tauri event listener (`@tauri-apps/api/event.listen('menu-action')`) and dispatches to the appropriate modal.
+All help actions emit a `menu-action` event with a string identifier. The dashboard layout (`src/app/(dashboard)/layout.tsx`) listens for these via the Tauri window event bridge and dispatches the corresponding update, shortcuts, about, print, or logout behavior.
 
 ---
 

@@ -1,4 +1,4 @@
-// Legacy Permission type — used by service.ts and users/service.ts
+// Legacy Permission type — used by the web/server auth compatibility service.
 import { isOwnerOnlyStaffPermission } from './staff-policy';
 export type Permission = string;
 
@@ -69,7 +69,6 @@ export const PAGE_PERMISSIONS = {
   can_view_adjustment_reasons: '/stores/adjustment-reasons',
   can_view_delete_items: '/stores/delete-items',
   can_view_purchases_new: '/purchases/new',
-  can_view_sales_settlement: '/sales/settlement',
 } as const;
 
 // Configurable permission required by each navigable route. Longest matches
@@ -134,7 +133,7 @@ export function findUnprotectedRoutes(): string[] {
   const permittedRoutes = new Set(Object.values(PAGE_PERMISSIONS));
   const allMenuRoutes = [
     '/', '/pos', '/purchases/new', '/receipts', '/sales',
-    '/sales/delivery', '/sales/cogs', '/sales/settlement',
+    '/sales/delivery', '/sales/cogs',
     '/inventory', '/inventory/low-stock', '/stores/shortages',
     '/inventory/item-movements', '/restock', '/inventory/settlement',
     '/inventory/opening-balances', '/purchases', '/purchase-orders',

@@ -15,7 +15,6 @@ jest.mock('@/components/AuthGuard', () => ({ children }: any) => children);
 jest.mock('@/components/PermissionGuard', () => ({ children }: any) => children);
 jest.mock('@/components/HeaderAlerts', () => () => null);
 jest.mock('@/components/ThemeToggle', () => () => null);
-jest.mock('@/components/TopMenuBar', () => () => null);
 jest.mock('@/components/SidebarNav', () => () => null);
 jest.mock('@/lib/auth/roles', () => ({ getRoutePermission: () => null }));
 jest.mock('@/lib/db/tauri', () => ({ dbGet: jest.fn().mockResolvedValue(null) }));

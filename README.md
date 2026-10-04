@@ -113,6 +113,15 @@ npm run tauri:build:win7-x86
    NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
    ```
 
+   عند تشغيل نسخة **standalone** جديدة في بيئة production بقاعدة بيانات خالية من المستخدمين، عرّف بيانات المالك الأول مرة واحدة قبل التشغيل:
+   ```env
+   PHARMA_BOOTSTRAP_OWNER_USERNAME=owner
+   PHARMA_BOOTSTRAP_OWNER_PASSWORD=replace-with-a-strong-unique-password
+   PHARMA_BOOTSTRAP_OWNER_FULL_NAME=Pharmacy Owner
+   PHARMA_BOOTSTRAP_PHARMACY_ID=local_default
+   ```
+   يتم تخزين كلمة المرور كـ bcrypt hash، ولا تُستخدم هذه المتغيرات إذا كان هناك مستخدم موجود بالفعل. مسار Tauri المكتبي لا يعتمد على هذا bootstrap.
+
 4. **تشغيل خادم التطوير**
    ```bash
    npm run dev

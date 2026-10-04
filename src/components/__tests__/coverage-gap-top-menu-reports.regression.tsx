@@ -1,8 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import TopMenuBar from '@/components/TopMenuBar';
 import ReportsPage from '@/app/(dashboard)/reports/page';
 import TrialBalanceReportPage from '@/app/(dashboard)/reports/trial-balance/page';
-import { getClientSession, hasUserPermissionSync, logoutLocal } from '@/lib/auth/local';
+import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { getReportsDataAction } from '@/app/actions-client/reports';
 
 const mockPush = jest.fn();
@@ -17,7 +16,6 @@ jest.mock('next/navigation', () => ({
 jest.mock('@/lib/auth/local', () => ({
   getClientSession: jest.fn(),
   hasUserPermissionSync: jest.fn(),
-  logoutLocal: jest.fn(),
 }));
 
 jest.mock('@/app/actions-client/reports', () => ({
@@ -36,13 +34,12 @@ jest.mock('@/components/AccessDenied', () => function MockAccessDenied() {
   return <div>ACCESS DENIED</div>;
 });
 
-describe('coverage-gap: top menu and report actions', () => {
+describe('coverage-gap: report actions', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockPathname.mockReturnValue('/');
     (hasUserPermissionSync as jest.Mock).mockReturnValue(true);
     (getClientSession as jest.Mock).mockResolvedValue({ id: 'owner-1', role: 'owner', permissions: {} });
-    (logoutLocal as jest.Mock).mockResolvedValue(undefined);
     (getReportsDataAction as jest.Mock).mockResolvedValue({
       success: true,
       data: {
@@ -54,78 +51,6 @@ describe('coverage-gap: top menu and report actions', () => {
     Object.defineProperty(window, 'print', { configurable: true, value: jest.fn() });
     Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: jest.fn(() => 'blob:report') });
     Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: jest.fn() });
-  });
-
-  it('opens and closes Help dialogs, routes Alt+P, prints, and logs out through real menu actions', async () => {
-    render(<TopMenuBar userRole="owner" permissions={{}} />);
-
-    fireEvent.click(screen.getByRole('button', { name: 'مساعدة' }));
-    fireEvent.click(screen.getByRole('button', { name: 'اختصارات لوحة المفاتيح' }));
-    expect(screen.getByRole('heading', { name: 'اختصارات لوحة المفاتيح' })).toBeInTheDocument();
-    expect(screen.getByText('Ctrl+D')).toBeInTheDocument();
-    expect(screen.getByText('Alt+P')).toBeInTheDocument();
-    fireEvent.keyDown(window, { key: 'Escape' });
-    expect(screen.queryByRole('heading', { name: 'اختصارات لوحة المفاتيح' })).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: 'مساعدة' }));
-    fireEvent.click(screen.getByRole('button', { name: 'عن النظام' }));
-    expect(screen.getByText('نظام إدارة الصيدليات')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'إغلاق' }));
-    expect(screen.queryByText('نظام إدارة الصيدليات')).not.toBeInTheDocument();
-
-    fireEvent.keyDown(window, { key: 'p', altKey: true });
-    expect(mockPush).toHaveBeenCalledWith('/pos');
-
-    fireEvent.click(screen.getByRole('button', { name: 'ملف' }));
-    fireEvent.click(screen.getByRole('button', { name: 'طباعة' }));
-    expect(window.print).toHaveBeenCalledTimes(1);
-
-    fireEvent.click(screen.getByRole('button', { name: 'ملف' }));
-    fireEvent.click(screen.getByRole('button', { name: 'تسجيل الخروج' }));
-    await waitFor(() => expect(logoutLocal).toHaveBeenCalledTimes(1));
-    expect(mockPush).toHaveBeenCalledWith('/login');
-  });
-
-  it('does not route Alt+P to POS when the current user lacks POS permission', () => {
-    (hasUserPermissionSync as jest.Mock).mockImplementation((_user: any, key: string) => key !== 'can_access_pos');
-    render(<TopMenuBar userRole="pharmacist" permissions={{ can_access_pos: false }} />);
-
-    fireEvent.keyDown(window, { key: 'p', altKey: true });
-
-    expect(mockPush).not.toHaveBeenCalledWith('/pos');
-  });
-
-  it('shows purchase orders to a restock-only user without exposing full purchases', () => {
-    (hasUserPermissionSync as jest.Mock).mockImplementation((_user: any, key: string) => key === 'can_view_restock');
-    render(<TopMenuBar userRole="pharmacist" permissions={{ can_view_restock: true, can_view_purchases: false }} />);
-
-    fireEvent.click(screen.getByRole('button', { name: 'المشتريات' }));
-    expect(screen.getByRole('link', { name: 'أوامر الشراء' })).toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: 'المشتريات' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: 'فاتورة مشتريات جديدة' })).not.toBeInTheDocument();
-  });
-
-  it('does not expose denied sale, purchase, or inventory links through alternate menus', () => {
-    (hasUserPermissionSync as jest.Mock).mockImplementation((_user: any, key: string) =>
-      !['can_access_pos', 'can_view_sales', 'can_view_purchases', 'can_view_stores'].includes(key)
-    );
-    render(<TopMenuBar userRole="pharmacist" permissions={{
-      can_access_pos: false,
-      can_view_sales: false,
-      can_view_purchases: false,
-      can_view_stores: false,
-    }} />);
-
-    fireEvent.click(screen.getByRole('button', { name: 'ملف' }));
-    expect(screen.queryByRole('link', { name: 'فاتورة مبيعات جديدة' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: 'فاتورة مشتريات جديدة' })).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: 'المبيعات' }));
-    expect(screen.queryByRole('link', { name: 'فاتورة مبيعات جديدة' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: 'المبيعات والتحصيل' })).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: 'العمليات المخزنية' }));
-    expect(screen.queryByRole('link', { name: 'المخزون' })).not.toBeInTheDocument();
   });
 
   it('exports the rendered sales summary through a CSV object URL and downloadable anchor', async () => {

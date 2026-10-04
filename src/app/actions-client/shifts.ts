@@ -7,16 +7,6 @@ const logActivity = async (userId, action, details) => {
     console.error('Failed to log activity:', e);
   }
 };
-const initLocalDb = () => {};
-const clearAuditLogs = async () => {
-  try {
-    await dbExecute('DELETE FROM activity_log');
-    return true;
-  } catch (e) {
-    console.error('Failed to clear activity logs:', e);
-    return false;
-  }
-};
 
 const db = {
   prepare: (sql) => ({
@@ -49,7 +39,7 @@ const db = {
 
 
 
-const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
+const revalidatePath = (...args: any[]) => {};
 
 import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 
@@ -554,20 +544,6 @@ export async function getCurrentShiftStatsAction() {
     console.error('Get shift stats error:', error);
     return { success: false, error: 'فشل جلب إحصائيات الوردية' };
   }
-}
-
-// Keep aliases for older versions if any
-export async function startShiftAction(startingCash: number, notes?: string) {
-  return openShiftAction({ starting_cash_amount: startingCash, opening_notes: notes });
-}
-
-export async function endShiftAction(endingCash: number, notes?: string) {
-  // This is a wrapper for the older call signature used in LogoutModal
-  return closeShiftAction({ 
-    shift_id: 'auto', // Logic should find the open one
-    ending_cash_amount: endingCash,
-    closing_notes: notes
-  });
 }
 
 /**

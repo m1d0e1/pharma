@@ -88,7 +88,7 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: "Pharma App v__VERSION__"
-          releaseBody: "Branch-isolation and data-safety stabilization release with immutable pharmacy ownership for historical finance, shift, activity, return and purchase-order records; scoped dashboard, inventory, patient-history and audit views; hardened native return permissions; guarded legacy upgrades; and expanded regression coverage. Includes x64 and x86 installers with signed Tauri updater metadata. Windows Authenticode signing is applied only when the optional certificate secrets are configured. Windows 7 requires UCRT and WebView2 109."
+          releaseBody: "Maintenance release that removes duplicate and dead runtime code, consolidates settlement navigation on /inventory/settlement while retaining the legacy redirect, hardens standalone first-owner bootstrap and cloud-sync configuration handling, preserves validated purchase and sales-return behavior, and expands regression coverage. Includes x64 and x86 installers with signed Tauri updater metadata. Windows Authenticode signing is applied only when the optional certificate secrets are configured. Windows 7 requires UCRT and WebView2 109."
           releaseDraft: false
           prerelease: false
           uploadUpdaterJson: true

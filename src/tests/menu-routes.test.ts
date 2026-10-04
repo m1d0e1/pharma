@@ -9,7 +9,6 @@ const menuRouteMap: Record<string, string> = {
   reports_sales2: '/reports/sales',
   sales_delivery: '/sales/delivery',
   sales_cogs: '/sales/cogs',
-  sales_settlement: '/sales/settlement',
   inventory: '/inventory',
   inventory_low_stock: '/inventory/low-stock',
   stores_shortages: '/stores/shortages',
@@ -120,6 +119,8 @@ const knownPageFiles: string[] = [
   '/settings',
 ];
 
+const compatibilityRoutes = new Set(['/sales/settlement']);
+
 describe('Tauri Menu Routing', () => {
   it('all route menu IDs return a non-empty string route', () => {
     const routeKeys = Object.keys(menuRouteMap);
@@ -149,7 +150,16 @@ describe('Tauri Menu Routing', () => {
   it('all known page files have a corresponding menu route', () => {
     const mappedRoutes = new Set(Object.values(menuRouteMap));
     for (const page of knownPageFiles) {
+      if (compatibilityRoutes.has(page)) continue;
       expect(mappedRoutes).toContain(page);
+    }
+  });
+
+  it('keeps compatibility-only routes out of the live menu map', () => {
+    const mappedRoutes = new Set(Object.values(menuRouteMap));
+    for (const route of compatibilityRoutes) {
+      expect(knownPageFiles).toContain(route);
+      expect(mappedRoutes).not.toContain(route);
     }
   });
 

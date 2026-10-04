@@ -7,16 +7,6 @@ const logActivity = async (userId, action, details) => {
     console.error('Failed to log activity:', e);
   }
 };
-const initLocalDb = () => {};
-const clearAuditLogs = async () => {
-  try {
-    await dbExecute('DELETE FROM activity_log');
-    return true;
-  } catch (e) {
-    console.error('Failed to clear activity logs:', e);
-    return false;
-  }
-};
 
 const db = {
   prepare: (sql) => ({
@@ -54,7 +44,7 @@ import { isStaffOwner } from '@/lib/auth/staff-policy';
 import { sanitizeStaffPermissions } from '@/lib/auth/permission-catalog';
 import { getLocalSession } from '@/lib/auth/local';
 import { ROLE_PERMISSIONS } from '@/lib/auth/roles';
-const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
+const revalidatePath = (...args: any[]) => {};
 
 const defaultOwnerPerms = {
   national_id: '', address: '', birth_date: '', qualification: '', mobile: '', gender: 'ذكر', social_status: 'أعزب', is_delivery_rep: false,

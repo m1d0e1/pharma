@@ -1,10 +1,8 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
 import StaffPage from '@/app/(dashboard)/staff/page';
 import StaffManagePage from '@/app/(dashboard)/staff/manage/page';
 import StaffRolesPage from '@/app/(dashboard)/staff/roles/page';
 import SidebarNav from '@/components/SidebarNav';
-import TopMenuBar from '@/components/TopMenuBar';
 import LocalUserManagement from '@/components/settings/LocalUserManagement';
 import { getClientSession } from '@/lib/auth/local';
 import { addJobAction, addUserAction, getStaffManagementDataAction, getStaffPerformanceAction, getJobsAction } from '@/app/actions-client/users';
@@ -72,23 +70,14 @@ it('hides non-owner staff navigation and the settings staff panel', async () => 
   expect(screen.queryByRole('link', { name: 'أداء الموظفين' })).not.toBeInTheDocument();
   expect(screen.queryByRole('link', { name: 'الوظائف والرواتب' })).not.toBeInTheDocument();
   cleanup();
-  render(<TopMenuBar userRole="admin" permissions={permissions} />);
-  expect(screen.queryByRole('button', { name: 'الموظفون' })).not.toBeInTheDocument();
-  cleanup();
   render(<LocalUserManagement />);
   await waitFor(() => expect(getClientSession).toHaveBeenCalled());
   expect(screen.queryByText('إدارة المستخدمين المحليين')).not.toBeInTheDocument();
 });
 
-it('shows owner navigation in the sidebar and administration menu', async () => {
+it('shows owner navigation in the sidebar', () => {
   render(<SidebarNav userRole="owner" userPermissions={{}} />);
   expect(screen.getByRole('link', { name: 'إدارة الموظفين' })).toBeInTheDocument();
-  cleanup();
-  render(<TopMenuBar userRole="owner" permissions={{}} />);
-  await userEvent.setup().click(screen.getByRole('button', { name: 'الموظفون' }));
-  expect(screen.getByText('إدارة الموظفين')).toBeInTheDocument();
-  expect(screen.getByText('أداء الموظفين')).toBeInTheDocument();
-  expect(screen.getByText('الوظائف والرواتب')).toBeInTheDocument();
 });
 
 it('distinguishes a failed staff-performance load from a legitimate empty analysis and retries', async () => {

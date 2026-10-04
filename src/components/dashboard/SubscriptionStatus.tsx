@@ -4,8 +4,6 @@ import { useState, useEffect, useRef } from 'react';
 import { ShieldCheck, ShieldAlert, Zap, Loader2 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 
-// Simple server action mockup inside the component or I could create a real one.
-// I'll assume we can update a config key in the local DB.
 import { updateConfigAction, getConfigAction } from '@/app/actions-client/config';
 
 export default function SubscriptionStatus() {

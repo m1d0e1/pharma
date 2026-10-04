@@ -1,23 +1,6 @@
 // Client-side auth actions for Tauri/static mode (no 'use server')
 
 import { dbSelect, dbExecute, dbGet, dbTransaction } from '@/lib/db/tauri';
-const logActivity = async (userId, action, details) => {
-  try {
-    await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [userId, action, details]);
-  } catch (e) {
-    console.error('Failed to log activity:', e);
-  }
-};
-const initLocalDb = () => {};
-const clearAuditLogs = async () => {
-  try {
-    await dbExecute('DELETE FROM activity_log');
-    return true;
-  } catch (e) {
-    console.error('Failed to clear activity logs:', e);
-    return false;
-  }
-};
 
 const db = {
   prepare: (sql) => ({

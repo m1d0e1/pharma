@@ -18,7 +18,7 @@ describe('offline public Supabase client', () => {
     const files = [
       ['src', 'app', '(dashboard)', 'layout.tsx'],
       ['src', 'app', 'actions-client', 'auth.ts'],
-      ['src', 'app', 'actions-client', 'settings.ts'],
+      ['src', 'lib', 'settings', 'client.ts'],
       ['src', 'app', 'auth', 'signout', 'route.ts'],
       ['src', 'middleware.ts'],
     ];

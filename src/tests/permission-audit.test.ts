@@ -8,7 +8,7 @@ import { PAGE_PERMISSIONS, ACTION_PERMISSIONS, findUnprotectedRoutes, ROLE_PERMI
 
 const TauriMenuRoutes = [
   '/pos', '/purchases/new', '/', '/receipts', '/sales',
-  '/reports/sales', '/sales/delivery', '/sales/cogs', '/sales/settlement',
+  '/reports/sales', '/sales/delivery', '/sales/cogs',
   '/inventory', '/inventory/low-stock', '/stores/shortages',
   '/inventory/item-movements', '/restock', '/inventory/settlement',
   '/inventory/opening-balances', '/purchases', '/purchase-orders',
@@ -44,6 +44,8 @@ describe('Permission-Route Mapping Audit', () => {
     expect(getRoutePermission('/inventory/item-movements')).toBe('preview_item_movements');
     expect(getRoutePermission('/sales')).toBe('can_view_sales');
     expect(getRoutePermission('/sales/delivery')).toBe('can_view_delivery');
+    expect(getRoutePermission('/sales/settlement')).toBe('can_view_settlement');
+    expect(getRoutePermission('/inventory/settlement')).toBe('can_view_settlement');
     expect(getRoutePermission('/')).toBeUndefined();
     expect(getRoutePermission('/pos')).toBe('can_access_pos');
   });
