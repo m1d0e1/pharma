@@ -226,38 +226,38 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
   const reportUser = user || (userRole ? { role: userRole } : null);
 
   return (
-    <div className="space-y-8 pb-20" dir="rtl">
+    <div className="space-y-6 pb-16" dir="rtl">
       {/* Header */}
-      <div className="bg-white dark:bg-slate-900 p-8 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-sm">
-        <div className="flex flex-col gap-4 sm:flex-row sm:justify-between sm:items-center mb-8">
+      <div className="bg-white dark:bg-slate-900 p-5 sm:p-6 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
+        <div className="flex flex-col gap-4 sm:flex-row sm:justify-between sm:items-center mb-5">
           <div>
-            <h1 className="text-3xl font-black text-slate-800 dark:text-white">تقرير فواتير المشتريات</h1>
-            <p className="text-slate-500 font-bold">عرض وتحليل تفصيلي لعمليات البيع والمرتجعات والأسعار</p>
+            <h1 className="text-2xl font-bold text-slate-800 dark:text-white">تقرير فواتير المشتريات</h1>
+            <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">عرض وتحليل تفصيلي لعمليات البيع والمرتجعات والأسعار</p>
           </div>
-          <div className="flex gap-4">
+          <div className="flex gap-2">
             <button
               type="button"
               onClick={() => window.print()}
               aria-label="طباعة تقرير المشتريات"
               title="طباعة تقرير المشتريات"
-              className="p-5 bg-slate-50 dark:bg-slate-800 text-slate-500 rounded-2xl border border-slate-100 dark:border-slate-700 hover:bg-slate-100 transition-all"
+              className="inline-flex h-11 w-11 items-center justify-center bg-slate-50 dark:bg-slate-800 text-slate-600 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
             >
-              <Printer className="w-6 h-6" />
+              <Printer className="w-5 h-5" />
             </button>
             <button
               type="button"
               onClick={handleExport}
               aria-label="تصدير تقرير المشتريات إلى Excel"
               title="تصدير تقرير المشتريات إلى Excel"
-              className="p-5 bg-blue-50 dark:bg-blue-900/20 text-blue-600 rounded-2xl hover:bg-blue-600 hover:text-white transition-all"
+              className="inline-flex h-11 w-11 items-center justify-center bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300 rounded-lg border border-blue-100 dark:border-blue-900/50 hover:bg-blue-100 dark:hover:bg-blue-950/50 transition-colors"
             >
-              <Download className="w-6 h-6" />
+              <Download className="w-5 h-5" />
             </button>
           </div>
         </div>
 
         {/* Filters */}
-        <div className="space-y-6 p-8 bg-slate-50 dark:bg-slate-800/50 rounded-[32px] border border-slate-100 dark:border-slate-700">
+        <div className="space-y-5 p-4 sm:p-5 bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-slate-200 dark:border-slate-700">
           
           {/* Top Main Search Bar for Drug Name */}
           <div className="space-y-2">
@@ -265,12 +265,12 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
               <Search className="w-4 h-4" /> البحث باسم الصنف / الدواء في كافة فواتير المشتريات
             </label>
             <div className="relative">
-              <Search className="absolute right-4 top-1/2 -translate-y-1/2 w-6 h-6 text-slate-400" />
+              <Search className="absolute right-3.5 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
               <input 
                 id="purchase-report-drug"
                 type="text" 
                 placeholder="ادخل اسم الصنف أو المادة الفعالة للبحث في الفواتير..."
-                className="w-full pr-14 pl-4 py-4 bg-white dark:bg-slate-900 rounded-2xl border-2 border-blue-200 dark:border-blue-900 font-black text-lg text-slate-900 dark:text-white outline-none focus:border-blue-600 shadow-sm"
+                className="w-full pr-11 pl-3.5 py-2.5 bg-white dark:bg-slate-900 rounded-lg border border-blue-200 dark:border-blue-900 text-sm font-medium text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-600 shadow-sm"
                 value={filters.drugName}
                 onChange={(e) => setFilters({...filters, drugName: e.target.value})}
               />
@@ -465,22 +465,22 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
       </div>
 
       {/* Main Table (Invoices) */}
-      <div className="grid grid-cols-1 gap-8">
-        <div className="bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 overflow-hidden shadow-sm">
+      <div className="grid grid-cols-1 gap-4">
+        <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
           <TableScrollContainer>
             <table className="w-full min-w-[1180px] text-right">
               <thead className="bg-slate-50 dark:bg-slate-800/50">
                 <tr className="text-slate-500 text-xs font-black">
-                  <th className="px-6 py-6">الرقم</th>
-                  <th className="px-6 py-6">النوع</th>
-                  <th className="px-6 py-6">التاريخ</th>
-                  <th className="px-6 py-6">المورد</th>
-                  <th className="px-6 py-6">الموظف</th>
-                  <th className="px-6 py-6">إجمالي قبل الخصم</th>
-                  <th className="px-6 py-6">ق. البيع المتوقعة</th>
-                  <th className="px-6 py-6">ق. الخصم</th>
-                  <th className="px-6 py-6">صافي الشراء</th>
-                  <th className="px-6 py-6">الحالة</th>
+                  <th className="px-5 py-3.5">الرقم</th>
+                  <th className="px-5 py-3.5">النوع</th>
+                  <th className="px-5 py-3.5">التاريخ</th>
+                  <th className="px-5 py-3.5">المورد</th>
+                  <th className="px-5 py-3.5">الموظف</th>
+                  <th className="px-5 py-3.5">إجمالي قبل الخصم</th>
+                  <th className="px-5 py-3.5">ق. البيع المتوقعة</th>
+                  <th className="px-5 py-3.5">ق. الخصم</th>
+                  <th className="px-5 py-3.5">صافي الشراء</th>
+                  <th className="px-5 py-3.5">الحالة</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">

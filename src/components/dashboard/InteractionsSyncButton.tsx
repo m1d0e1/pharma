@@ -105,11 +105,11 @@ export default function InteractionsSyncButton() {
       onClick={handleSync}
       disabled={syncing}
       className={`
-        relative overflow-hidden group px-6 py-3 rounded-2xl font-black text-sm transition-all duration-500
-        flex items-center gap-3 shadow-xl
+        relative overflow-hidden group px-4 py-2.5 rounded-lg font-semibold text-sm transition-colors duration-150
+        flex items-center gap-2 shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-slate-950
         ${syncing
           ? 'bg-slate-100 text-slate-400 cursor-not-allowed shadow-none'
-          : 'bg-gradient-to-r from-purple-600 to-pink-600 text-white hover:shadow-purple-500/30 hover:-translate-y-1 active:scale-95'}
+          : 'bg-primary-700 text-white hover:bg-primary-800'}
       `}
     >
       {syncing ? (
@@ -120,8 +120,8 @@ export default function InteractionsSyncButton() {
       ) : (
         <>
           <div className="relative">
-            <Zap className="w-4 h-4 group-hover:scale-125 transition-transform duration-300" />
-            <div className="absolute inset-0 bg-white/20 blur-md rounded-full scale-150 opacity-0 group-hover:opacity-100 transition-opacity"></div>
+            <Zap className="w-4 h-4" />
+            <div className="hidden"></div>
           </div>
           <span>تحديث التفاعلات الدوائية</span>
         </>

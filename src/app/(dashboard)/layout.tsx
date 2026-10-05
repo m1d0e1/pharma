@@ -10,7 +10,7 @@ import ThemeToggle from '@/components/ThemeToggle';
 import { getClientSession, hasUserPermissionSync, logoutLocal } from '@/lib/auth/local';
 import { dbGet } from '@/lib/db/tauri';
 import { pharmacyIdentityConfigKey } from '@/lib/settings/pharmacy-identity';
-import { Monitor, Bell, LogOut, Menu, ArrowRight } from 'lucide-react';
+import { Monitor, LogOut, ArrowRight, Pill } from 'lucide-react';
 import HeaderAlerts from '@/components/HeaderAlerts';
 import AuthGuard from '@/components/AuthGuard';
 import PermissionGuard from '@/components/PermissionGuard';
@@ -428,7 +428,7 @@ export default function DashboardLayout({
       onClick={() => router.back()}
       aria-label="رجوع للصفحة السابقة"
       title="رجوع"
-      className="fixed bottom-5 left-5 z-[190] flex h-11 w-11 items-center justify-center rounded-full bg-blue-600 text-white shadow-lg transition hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-2"
+      className="fixed bottom-20 lg:bottom-5 left-5 z-[190] flex h-11 w-11 items-center justify-center rounded-lg bg-primary-700 text-white shadow-md transition-colors hover:bg-primary-800 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 dark:focus:ring-offset-slate-950"
     >
       <ArrowRight className="h-5 w-5" />
     </button>
@@ -441,7 +441,7 @@ export default function DashboardLayout({
     return (
       <AuthGuard>
         <div
-          className="flex flex-col h-screen overflow-hidden bg-gradient-to-br from-slate-50 to-blue-50 dark:from-slate-950 dark:to-slate-900 font-sans"
+          className="flex flex-col h-screen overflow-hidden bg-slate-50 dark:bg-slate-950 font-sans"
           dir="rtl"
         >
           {backButton}
@@ -450,19 +450,19 @@ export default function DashboardLayout({
           </div>
           {/* 1. Main Toolbar/Header */}
           {!isPos && (
-            <header className="sticky top-0 z-40 bg-white/80 dark:bg-slate-950/80 backdrop-blur-xl border-b border-slate-200/60 dark:border-slate-800/60 shadow-sm">
+            <header className="sticky top-0 z-40 bg-white/95 dark:bg-slate-950/95 backdrop-blur-md border-b border-slate-200 dark:border-slate-800">
               <div className="flex items-center justify-between px-4 h-14">
 
                 {/* Left: Logo + Pharmacy Name + POS Button */}
                 <div className="flex items-center gap-0">
-                  <Link href="/" className="flex items-center gap-2.5 flex-shrink-0 mr-4 group">
-                    <div className="w-9 h-9 bg-gradient-to-br from-blue-500 to-blue-700 rounded-xl flex items-center justify-center text-white shadow-md shadow-blue-500/30 group-hover:shadow-lg group-hover:shadow-blue-500/40 transition-all text-lg">
-                      💊
+                  <Link href="/" className="flex items-center gap-2.5 flex-shrink-0 mr-4 group rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-slate-950">
+                    <div className="w-9 h-9 bg-primary-600 rounded-lg flex items-center justify-center text-white shadow-sm">
+                      <Pill className="h-[18px] w-[18px]" aria-hidden="true" />
                     </div>
                     <div className="hidden sm:block">
-                      <p className="text-sm font-black text-slate-900 dark:text-white leading-tight">{pharmacyName}</p>
+                      <p className="text-sm font-semibold text-slate-900 dark:text-white leading-tight">{pharmacyName}</p>
                       <p className="text-xs text-slate-500 dark:text-slate-400 leading-tight">
-                        {userRole === 'owner' || userRole === 'admin' ? '👑' : '🧪'} {roleLabel}
+                        {roleLabel}
                       </p>
                     </div>
                   </Link>
@@ -472,7 +472,7 @@ export default function DashboardLayout({
                   {canAccessPos && (
                     <Link
                       href="/pos"
-                      className="flex-shrink-0 flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white rounded-xl font-black text-sm shadow-md shadow-blue-500/30 hover:shadow-lg hover:shadow-blue-500/40 transition-all ml-3"
+                      className="flex-shrink-0 flex items-center gap-2 px-3.5 py-2 bg-primary-700 hover:bg-primary-800 text-white rounded-lg font-semibold text-sm shadow-sm transition-colors ml-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-slate-950"
                     >
                       <Monitor className="w-4 h-4" />
                       <span className="hidden sm:inline">الكاشير</span>
@@ -483,8 +483,8 @@ export default function DashboardLayout({
                 {/* Right: User + Theme */}
                 <div className="flex items-center gap-2 flex-shrink-0">
                   <HeaderAlerts />
-                  <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/50 dark:border-slate-700/50">
-                    <div className="w-7 h-7 bg-gradient-to-br from-blue-500 to-blue-700 rounded-lg flex items-center justify-center text-white text-xs font-black shadow-sm">
+                  <div className="hidden md:flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+                    <div className="w-7 h-7 bg-primary-700 rounded-md flex items-center justify-center text-white text-xs font-semibold">
                       {user?.email?.[0]?.toUpperCase() || 'U'}
                     </div>
                     <p className="text-xs font-semibold text-slate-700 dark:text-slate-300 truncate max-w-[100px] hidden lg:block">
@@ -499,7 +499,7 @@ export default function DashboardLayout({
 
           {/* Page Content */}
           <main className={`flex-1 ${isPos ? 'flex flex-col min-h-0 overflow-hidden' : 'overflow-y-auto'}`}>
-            <div className={isPos ? "w-full flex-1 flex flex-col min-h-0" : "w-full p-4 sm:p-6"}>
+            <div className={isPos ? "w-full flex-1 flex flex-col min-h-0 pb-24 lg:pb-0" : "w-full p-4 pb-24 sm:p-6 lg:pb-6"}>
               <PermissionGuard permissionKey={routePermission}>{children}</PermissionGuard>
             </div>
           </main>
@@ -513,23 +513,20 @@ export default function DashboardLayout({
   // ══════════════════════════════════════════════════════════════════════════
   return (
     <AuthGuard>
-      <div className="flex h-screen overflow-hidden bg-gradient-to-br from-slate-50 to-blue-50 dark:from-slate-950 dark:to-slate-900 font-sans" dir="rtl">
+      <div className="flex h-screen overflow-hidden bg-slate-50 dark:bg-slate-950 font-sans" dir="rtl">
         {backButton}
         
         {/* Sidebar */}
-        <aside className="hidden lg:flex w-80 flex-col border-l border-slate-200/60 dark:border-slate-800/60 bg-gradient-glass dark:bg-gradient-glass-dark backdrop-blur-xl shadow-hard z-30">
+        <aside className="hidden lg:flex w-72 flex-col border-l border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 z-30">
           {/* Pharmacy Header */}
-          <div className="p-7 border-b border-slate-200/50 dark:border-slate-800/50">
-            <div className="flex items-center gap-4">
-              <div className="w-14 h-14 bg-gradient-primary rounded-2xl flex items-center justify-center text-white shadow-lg shadow-primary-500/30">
-                <span className="text-3xl">💊</span>
+          <div className="p-5 border-b border-slate-200 dark:border-slate-800">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-primary-600 rounded-lg flex items-center justify-center text-white shadow-sm">
+                <Pill className="h-5 w-5" aria-hidden="true" />
               </div>
               <div className="flex-1">
-                <h2 className="text-xl font-bold text-slate-900 dark:text-white leading-tight">{pharmacyName}</h2>
-                <p className="text-sm text-slate-600 dark:text-slate-400 mt-1.5 flex items-center gap-2">
-                  <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-400 text-xs">
-                    {userRole === 'admin' || userRole === 'owner' ? '👑' : '🧪'}
-                  </span>
+                <h2 className="text-base font-semibold text-slate-900 dark:text-white leading-tight">{pharmacyName}</h2>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 flex items-center gap-2">
                   {roleLabel}
                 </p>
               </div>
@@ -540,19 +537,16 @@ export default function DashboardLayout({
           <SidebarNav userRole={userRole} userPermissions={permissions} />
 
           {/* User Profile & Actions */}
-          <div className="p-5 border-t border-slate-200/50 dark:border-slate-800/50 space-y-5">
-            <div className="flex items-center gap-4 px-5 py-4 rounded-2xl bg-gradient-to-br from-slate-50 to-slate-100/50 dark:from-slate-800/50 dark:to-slate-900/50 backdrop-blur-sm">
-              <div className="w-12 h-12 bg-gradient-primary rounded-xl flex items-center justify-center text-white shadow-md">
-                <span className="font-bold text-lg">{user?.email?.[0]?.toUpperCase() || 'U'}</span>
+          <div className="p-4 border-t border-slate-200 dark:border-slate-800 space-y-3">
+            <div className="flex items-center gap-3 px-3 py-3 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+              <div className="w-9 h-9 bg-primary-700 rounded-lg flex items-center justify-center text-white">
+                <span className="font-semibold text-sm">{user?.email?.[0]?.toUpperCase() || 'U'}</span>
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">
                   {user?.email}
                 </p>
-                <p className="text-xs text-slate-600 dark:text-slate-400 mt-1 flex items-center gap-2">
-                  <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-400 text-xs">
-                    {userRole === 'admin' || userRole === 'owner' ? '👑' : '🧪'}
-                  </span>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 flex items-center gap-2">
                   {roleLabel}
                 </p>
               </div>
@@ -565,9 +559,9 @@ export default function DashboardLayout({
                 <form onSubmit={handleLogout}>
                   <button
                     type="submit"
-                    className="flex items-center gap-4 w-full px-5 py-4 rounded-2xl text-sm font-bold text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-900/20 transition-colors"
+                    className="flex min-h-10 items-center gap-3 w-full px-3 py-2 rounded-lg text-sm font-medium text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 focus-visible:ring-offset-1 dark:focus-visible:ring-offset-slate-950"
                   >
-                    <div className="w-8 h-8 rounded-lg bg-rose-100 dark:bg-rose-900/30 flex items-center justify-center">
+                    <div className="w-8 h-8 rounded-lg bg-rose-100 dark:bg-rose-950/50 flex items-center justify-center">
                       <LogOut className="w-4 h-4" />
                     </div>
                     تسجيل الخروج
@@ -580,14 +574,14 @@ export default function DashboardLayout({
         {/* Main Content */}
         <main className="flex-1 flex flex-col min-h-0 overflow-hidden">
           {/* Top Bar */}
-          <header className="sticky top-0 z-20 bg-gradient-glass dark:bg-gradient-glass-dark backdrop-blur-xl border-b border-slate-200/60 dark:border-slate-800/60 px-5 sm:px-7 py-4 sm:py-5">
+          <header className="sticky top-0 z-20 bg-white/95 dark:bg-slate-950/95 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 px-4 sm:px-6 py-3.5">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-4 sm:gap-5">
                 <div>
-                  <h1 className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-white truncate max-w-[240px] sm:max-w-none leading-tight">
+                  <h1 className="text-lg sm:text-xl font-semibold text-slate-900 dark:text-white truncate max-w-[240px] sm:max-w-none leading-tight">
                     نظام إدارة الصيدليات الذكي
                   </h1>
-                  <p className="text-sm sm:text-base text-slate-600 dark:text-slate-400 hidden sm:block mt-1.5">
+                  <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 hidden sm:block mt-1">
                     إدارة شاملة للصيدلية في مكان واحد
                   </p>
                 </div>
@@ -595,18 +589,15 @@ export default function DashboardLayout({
 
               <div className="flex items-center gap-3 sm:gap-4">
                 <HeaderAlerts />
-                <div className="hidden sm:flex items-center gap-4 px-4 sm:px-5 py-3 rounded-2xl bg-gradient-to-br from-slate-50 to-slate-100/50 dark:from-slate-800/50 dark:to-slate-900/50 backdrop-blur-sm border border-slate-200/50 dark:border-slate-700/50">
-                  <div className="w-9 h-9 sm:w-10 sm:h-10 bg-gradient-primary rounded-xl flex items-center justify-center text-white text-sm sm:text-base font-bold shadow-md">
+                <div className="hidden sm:flex items-center gap-3 px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+                  <div className="w-8 h-8 bg-primary-700 rounded-lg flex items-center justify-center text-white text-sm font-semibold">
                     {user?.email?.[0]?.toUpperCase() || 'U'}
                   </div>
                   <div className="hidden lg:block">
                     <p className="text-sm font-semibold text-slate-900 dark:text-white truncate max-w-[140px]">
                       {user?.email}
                     </p>
-                    <p className="text-xs text-slate-600 dark:text-slate-400 mt-1 flex items-center gap-2">
-                      <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-400 text-xs">
-                        {userRole === 'admin' || userRole === 'owner' ? '👑' : '🧪'}
-                      </span>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 flex items-center gap-2">
                       {roleLabel}
                     </p>
                   </div>
@@ -616,7 +607,7 @@ export default function DashboardLayout({
           </header>
 
           {/* Page Content */}
-          <div className={`flex-1 ${isPos ? 'flex flex-col min-h-0 overflow-hidden p-3' : 'overflow-y-auto p-4 sm:p-6'}`}>
+          <div className={`flex-1 ${isPos ? 'flex flex-col min-h-0 overflow-hidden p-3 pb-24 lg:pb-3' : 'overflow-y-auto p-4 pb-24 sm:p-6 lg:pb-6'}`}>
             <div className={isPos ? "w-full flex-1 flex flex-col min-h-0" : "max-w-7xl mx-auto"}>
               <PermissionGuard permissionKey={routePermission}>{children}</PermissionGuard>
             </div>

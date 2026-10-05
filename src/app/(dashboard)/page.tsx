@@ -529,30 +529,21 @@ export default function DashboardPage() {
             danger: 'text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-500/10 border-rose-100'
           };
           
-          const gradientMap: Record<string, string> = {
-            success: 'from-emerald-50/50 to-white dark:from-emerald-950/20 dark:to-slate-900',
-            info: 'from-blue-50/50 to-white dark:from-blue-950/20 dark:to-slate-900',
-            warning: 'from-orange-50/50 to-white dark:from-orange-950/20 dark:to-slate-900',
-            danger: 'from-rose-50/50 to-white dark:from-rose-950/20 dark:to-slate-900'
-          };
-
           const themeClasses = colorMap[stat.color] || colorMap.info;
-          const bgGradient = gradientMap[stat.color] || gradientMap.info;
           const textIconColor = themeClasses.split(' ').find(c => c.startsWith('text-'));
           const bgIconColor = themeClasses.split(' ').find(c => c.startsWith('bg-'));
           
           const CardContent = (
-            <div className={`stat-card-interactive relative overflow-hidden group h-full bg-gradient-to-br ${bgGradient} p-6 rounded-3xl border border-slate-100/50 dark:border-slate-800/50 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all duration-300`}>
-               <div className={`absolute -right-4 -top-4 w-24 h-24 rounded-full blur-2xl opacity-50 ${bgIconColor}`} />
-               <div className="relative flex items-start justify-between z-10">
+            <div className="stat-card-interactive group h-full p-5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
+               <div className="flex items-start justify-between">
                 <div className="flex-1 col-span-3">
                   <div className="flex items-center justify-between mb-1">
-                    <div className={`p-3 rounded-2xl ${bgIconColor} group-hover:scale-110 group-hover:rotate-3 transition-transform duration-300 shadow-sm`}>
+                    <div className={`p-2.5 rounded-lg ${bgIconColor}`}>
                       <Icon className={`w-5 h-5 ${textIconColor}`} />
                     </div>
                   </div>
-                  <p className="text-3xl font-black tracking-tight text-slate-900 dark:text-white drop-shadow-sm mt-1">{stat.value}</p>
-                  <p className="text-sm font-bold text-slate-500 dark:text-slate-400 mt-1">{stat.title}</p>
+                  <p className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white mt-2 tabular-nums">{stat.value}</p>
+                  <p className="text-sm font-medium text-slate-500 dark:text-slate-400 mt-1">{stat.title}</p>
                   {typeof stat.change === 'number' && (
                     <div className="flex items-center gap-3 mt-3">
                       <div className={`flex items-center gap-1.5 px-2 py-1 rounded-lg ${stat.trend === 'up' ? 'text-emerald-700 bg-emerald-100 dark:bg-emerald-500/20 dark:text-emerald-400' : 'text-rose-700 bg-rose-100 dark:bg-rose-500/20 dark:text-rose-400'}`}>
@@ -608,42 +599,42 @@ export default function DashboardPage() {
 
       {/* Quick Actions */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        {canAccessPos && <Link href="/pos" className="flex items-center gap-4 p-5 bg-white dark:bg-slate-800 rounded-[2rem] shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all border border-blue-200/50 dark:border-blue-800/30 hover:border-blue-300/80 dark:hover:border-blue-600/50 group">
-          <div className="w-12 h-12 bg-blue-100 dark:bg-blue-900/30 rounded-2xl flex items-center justify-center text-blue-600 group-hover:scale-110 transition-transform">
-            <ShoppingCart className="w-6 h-6" />
+        {canAccessPos && <Link href="/pos" className="flex items-center gap-3 p-4 bg-white dark:bg-slate-900 rounded-xl shadow-sm border border-slate-200 dark:border-slate-800 hover:border-blue-300 dark:hover:border-blue-700 transition-colors group">
+          <div className="w-10 h-10 bg-blue-50 dark:bg-blue-950/30 rounded-lg flex items-center justify-center text-blue-600">
+            <ShoppingCart className="w-5 h-5" />
           </div>
           <div>
-            <p className="font-black text-slate-900 dark:text-white">نقطة البيع</p>
+            <p className="font-semibold text-slate-900 dark:text-white">نقطة البيع</p>
             <p className="text-xs text-slate-500">بيع سريع</p>
           </div>
         </Link>}
 
-        {canViewInventory && <Link href="/inventory" className="flex items-center gap-4 p-5 bg-white dark:bg-slate-800 rounded-[2rem] shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all border border-teal-200/50 dark:border-teal-800/30 hover:border-teal-300/80 dark:hover:border-teal-600/50 group">
-          <div className="w-12 h-12 bg-emerald-100 dark:bg-emerald-900/30 rounded-2xl flex items-center justify-center text-emerald-600 group-hover:scale-110 transition-transform">
-            <Package className="w-6 h-6" />
+        {canViewInventory && <Link href="/inventory" className="flex items-center gap-3 p-4 bg-white dark:bg-slate-900 rounded-xl shadow-sm border border-slate-200 dark:border-slate-800 hover:border-emerald-300 dark:hover:border-emerald-700 transition-colors group">
+          <div className="w-10 h-10 bg-emerald-50 dark:bg-emerald-950/30 rounded-lg flex items-center justify-center text-emerald-600">
+            <Package className="w-5 h-5" />
           </div>
           <div>
-            <p className="font-black text-slate-900 dark:text-white">المخزون</p>
+            <p className="font-semibold text-slate-900 dark:text-white">المخزون</p>
             <p className="text-xs text-slate-500">إدارة الأصناف</p>
           </div>
         </Link>}
 
-        {canViewPatients && <Link href="/patients" className="flex items-center gap-4 p-5 bg-white dark:bg-slate-800 rounded-[2rem] shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all border border-purple-200/50 dark:border-purple-800/30 hover:border-purple-300/80 dark:hover:border-purple-600/50 group">
-          <div className="w-12 h-12 bg-purple-100 dark:bg-purple-900/30 rounded-2xl flex items-center justify-center text-purple-600 group-hover:scale-110 transition-transform">
-            <Users className="w-6 h-6" />
+        {canViewPatients && <Link href="/patients" className="flex items-center gap-3 p-4 bg-white dark:bg-slate-900 rounded-xl shadow-sm border border-slate-200 dark:border-slate-800 hover:border-purple-300 dark:hover:border-purple-700 transition-colors group">
+          <div className="w-10 h-10 bg-purple-50 dark:bg-purple-950/30 rounded-lg flex items-center justify-center text-purple-600">
+            <Users className="w-5 h-5" />
           </div>
           <div>
-            <p className="font-black text-slate-900 dark:text-white">المرضى</p>
+            <p className="font-semibold text-slate-900 dark:text-white">المرضى</p>
             <p className="text-xs text-slate-500">سجل العملاء</p>
           </div>
         </Link>}
 
-        {canViewReports && <Link href="/reports" className="flex items-center gap-4 p-5 bg-white dark:bg-slate-800 rounded-[2rem] shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all border border-amber-200/50 dark:border-amber-800/30 hover:border-amber-300/80 dark:hover:border-amber-600/50 group">
-          <div className="w-12 h-12 bg-orange-100 dark:bg-orange-900/30 rounded-2xl flex items-center justify-center text-orange-600 group-hover:scale-110 transition-transform">
-            <ArrowUpLeft className="w-6 h-6" />
+        {canViewReports && <Link href="/reports" className="flex items-center gap-3 p-4 bg-white dark:bg-slate-900 rounded-xl shadow-sm border border-slate-200 dark:border-slate-800 hover:border-amber-300 dark:hover:border-amber-700 transition-colors group">
+          <div className="w-10 h-10 bg-orange-50 dark:bg-orange-950/30 rounded-lg flex items-center justify-center text-orange-600">
+            <ArrowUpLeft className="w-5 h-5" />
           </div>
           <div>
-            <p className="font-black text-slate-900 dark:text-white">التقارير</p>
+            <p className="font-semibold text-slate-900 dark:text-white">التقارير</p>
             <p className="text-xs text-slate-500">تحليل الأداء</p>
           </div>
         </Link>}
@@ -658,7 +649,7 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-sm">
+        <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
           <h2 className="text-lg font-bold text-slate-900 dark:text-white mb-4">أحدث المعاملات المحلية</h2>
           <div className="space-y-4">
             {recentTransactions.length > 0 ? recentTransactions.map((transaction) => (
@@ -688,7 +679,14 @@ export default function DashboardPage() {
                     }
                   }
                 }}
-                className="flex items-center justify-between p-4 rounded-xl border border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/30 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                onKeyDown={(event) => {
+                  if (event.key !== 'Enter' && event.key !== ' ') return;
+                  event.preventDefault();
+                  event.currentTarget.click();
+                }}
+                role="button"
+                tabIndex={0}
+                className="flex items-center justify-between p-4 rounded-xl border border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/30 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-slate-900"
               >
                 <div>
                   <p className="font-bold text-sm">{transaction.patient_name || 'زائر'}</p>

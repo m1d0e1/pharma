@@ -1393,7 +1393,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                    ) : cards.map((c: any) => (
                       <div key={`card-${c.id}`} className="bg-white dark:bg-slate-900 p-6 rounded-[32px] border border-slate-100 dark:border-slate-800 shadow-sm relative overflow-hidden group">
                          <div className="flex justify-between items-start mb-6">
-                            <CreditCard className="w-10 h-10 text-indigo-600" />
+                            <CreditCard className="w-10 h-10 text-primary-600 dark:text-primary-400" />
                             <div className="flex gap-1">
                                <button 
                                  onClick={() => setEditingCard(c)}
@@ -1416,7 +1416,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                          <div className="flex justify-between items-end pt-4 border-t border-slate-100 dark:border-slate-800">
                             <div>
                                <p className="text-xs font-black text-slate-400 uppercase tracking-widest">الرصيد الحالي</p>
-                               <p className="text-2xl font-black text-indigo-600 font-mono">{Number(c.current_balance || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })} ج.م</p>
+                               <p className="text-2xl font-black text-primary-600 dark:text-primary-400 font-mono">{Number(c.current_balance || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })} ج.م</p>
                             </div>
                             <div className="text-left">
                                <p className="text-xs font-black text-rose-500 uppercase tracking-widest">العمولة</p>

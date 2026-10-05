@@ -2,7 +2,7 @@ import React from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import DrugDetailsModal from '@/components/pos/DrugDetailsModal';
 import { getDrugDetailsFullAction } from '@/app/actions-client/inventory';
-import { addDrugInteractionAction, updateMasterDrugAction } from '@/app/actions-client/master-drugs';
+import { addDrugInteractionAction, archiveMasterDrugAction, deleteMasterDrugAction, unarchiveMasterDrugAction, updateMasterDrugAction } from '@/app/actions-client/master-drugs';
 import { toast } from 'react-hot-toast';
 
 let mockUser: any;
@@ -38,6 +38,9 @@ jest.mock('@/app/actions-client/inventory', () => ({
 }));
 
 jest.mock('@/app/actions-client/master-drugs', () => ({
+  archiveMasterDrugAction: jest.fn(),
+  deleteMasterDrugAction: jest.fn(),
+  unarchiveMasterDrugAction: jest.fn(),
   updateMasterDrugAction: jest.fn(),
   searchMasterDrugsAction: jest.fn(),
   addDrugAlternativeAction: jest.fn(),
@@ -76,6 +79,9 @@ describe('DrugDetailsModal inventory-management permissions', () => {
       },
     });
     (addDrugInteractionAction as jest.Mock).mockResolvedValue({ success: true });
+    (archiveMasterDrugAction as jest.Mock).mockResolvedValue({ success: true });
+    (deleteMasterDrugAction as jest.Mock).mockResolvedValue({ success: true });
+    (unarchiveMasterDrugAction as jest.Mock).mockResolvedValue({ success: true });
     (updateMasterDrugAction as jest.Mock).mockResolvedValue({ success: true });
   });
 
@@ -84,6 +90,9 @@ describe('DrugDetailsModal inventory-management permissions', () => {
 
     expect(await screen.findByText('Panadol')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /تعديل/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'أرشفة الصنف' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'إلغاء أرشفة الصنف' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'حذف الصنف نهائياً' })).not.toBeInTheDocument();
   });
 
   it('keeps edit mode available for an authorized inventory manager', async () => {
@@ -97,6 +106,194 @@ describe('DrugDetailsModal inventory-management permissions', () => {
     render(<DrugDetailsModal drugId={11} onClose={jest.fn()} />);
 
     expect(await screen.findByRole('button', { name: /تعديل/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'أرشفة الصنف' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'حذف الصنف نهائياً' })).toBeInTheDocument();
+  });
+
+  it('archives from the drug card without attempting permanent deletion', async () => {
+    mockUser = {
+      id: 'owner',
+      role: 'owner',
+      pharmacy_id: 'ph-1',
+      permissions: {},
+    };
+    const confirm = jest.spyOn(window, 'confirm').mockReturnValue(true);
+    const onDrugUpdated = jest.fn();
+
+    render(<DrugDetailsModal drugId={11} onClose={jest.fn()} onDrugUpdated={onDrugUpdated} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'أرشفة الصنف' }));
+
+    await waitFor(() => expect(archiveMasterDrugAction).toHaveBeenCalledWith(11, true));
+    expect(deleteMasterDrugAction).not.toHaveBeenCalled();
+    expect(onDrugUpdated).toHaveBeenCalledWith(expect.objectContaining({ id: 11, stop_dealing: 1 }));
+    expect(screen.getByRole('button', { name: 'إلغاء أرشفة الصنف' })).toBeInTheDocument();
+    expect(toast.success).toHaveBeenCalledWith('تمت أرشفة الصنف وإيقاف التعامل مع حفظ المخزون والسجل');
+    confirm.mockRestore();
+  });
+
+  it('unarchives an archived drug from the card and returns to the archive option', async () => {
+    mockUser = {
+      id: 'owner',
+      role: 'owner',
+      pharmacy_id: 'ph-1',
+      permissions: {},
+    };
+    (getDrugDetailsFullAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: {
+        id: 11,
+        trade_name: 'Panadol',
+        active_ingredient: 'Paracetamol',
+        official_price: 10,
+        min_price: 10,
+        total_stock: 1,
+        stop_dealing: 1,
+        units: { large: 'box', medium: 'strip', small: 'tablet' },
+        expiry_batches: [], alternatives: [], conflicts: [], consumption_stats: [],
+      },
+    });
+    const confirm = jest.spyOn(window, 'confirm').mockReturnValue(true);
+    const onDrugUpdated = jest.fn();
+
+    render(<DrugDetailsModal drugId={11} onClose={jest.fn()} onDrugUpdated={onDrugUpdated} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'إلغاء أرشفة الصنف' }));
+
+    await waitFor(() => expect(unarchiveMasterDrugAction).toHaveBeenCalledWith(11, true));
+    expect(archiveMasterDrugAction).not.toHaveBeenCalled();
+    expect(deleteMasterDrugAction).not.toHaveBeenCalled();
+    expect(onDrugUpdated).toHaveBeenCalledWith(expect.objectContaining({ id: 11, stop_dealing: 0 }));
+    expect(screen.getByRole('button', { name: 'أرشفة الصنف' })).toBeInTheDocument();
+    expect(toast.success).toHaveBeenCalledWith('تم إلغاء أرشفة الصنف وإعادته للتعامل');
+    confirm.mockRestore();
+  });
+
+  it('permanently deletes an unused drug from the card and reports the deleted id', async () => {
+    mockUser = {
+      id: 'owner',
+      role: 'owner',
+      pharmacy_id: 'ph-1',
+      permissions: {},
+    };
+    const confirm = jest.spyOn(window, 'confirm').mockReturnValue(true);
+    const onClose = jest.fn();
+    const onDrugDeleted = jest.fn();
+
+    render(<DrugDetailsModal drugId={11} onClose={onClose} onDrugDeleted={onDrugDeleted} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'حذف الصنف نهائياً' }));
+
+    await waitFor(() => expect(deleteMasterDrugAction).toHaveBeenCalledWith(11));
+    expect(archiveMasterDrugAction).not.toHaveBeenCalled();
+    expect(onDrugDeleted).toHaveBeenCalledWith(11);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(toast.success).toHaveBeenCalledWith('تم حذف الصنف بنجاح');
+    confirm.mockRestore();
+  });
+
+  it('keeps a linked drug card open when permanent deletion is refused', async () => {
+    mockUser = {
+      id: 'owner',
+      role: 'owner',
+      pharmacy_id: 'ph-1',
+      permissions: {},
+    };
+    const confirm = jest.spyOn(window, 'confirm').mockReturnValue(true);
+    const onClose = jest.fn();
+    const onDrugDeleted = jest.fn();
+    (deleteMasterDrugAction as jest.Mock).mockResolvedValue({
+      success: false,
+      code: 'DRUG_IN_USE',
+      error: 'الصنف مرتبط بمخزون أو فواتير أو سجل طبي',
+    });
+
+    render(<DrugDetailsModal drugId={11} onClose={onClose} onDrugDeleted={onDrugDeleted} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'حذف الصنف نهائياً' }));
+
+    await waitFor(() => expect(deleteMasterDrugAction).toHaveBeenCalledWith(11));
+    expect(onDrugDeleted).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByText('Panadol')).toBeInTheDocument();
+    expect(toast.error).toHaveBeenCalledWith('الصنف مرتبط بمخزون أو فواتير أو سجل طبي');
+    confirm.mockRestore();
+  });
+
+  it('allows an authorized manager to edit unit names and conversion factors from the drug card', async () => {
+    mockUser = {
+      id: 'admin',
+      role: 'admin',
+      pharmacy_id: 'ph-1',
+      permissions: { can_manage_inventory: true, can_modify_unit_conversion: true },
+    };
+    (getDrugDetailsFullAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: {
+        id: 11,
+        trade_name: 'Panadol',
+        active_ingredient: 'Paracetamol',
+        official_price: 10,
+        min_price: 10,
+        total_stock: 1,
+        large_unit: 'box',
+        medium_unit: 'strip-old',
+        small_unit: 'tablet-old',
+        large_to_medium: 2,
+        medium_to_small: 5,
+        units: { large: 'box', medium: 'strip-old', small: 'tablet-old' },
+        expiry_batches: [], alternatives: [], conflicts: [], consumption_stats: [],
+      },
+    });
+    (updateMasterDrugAction as jest.Mock).mockResolvedValue({ success: true });
+
+    render(<DrugDetailsModal drugId={11} onClose={jest.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: /تعديل/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'الوحدات والموردين' }));
+
+    fireEvent.change(screen.getByLabelText('الوحدة الكبرى'), { target: { value: 'carton' } });
+    fireEvent.change(screen.getByLabelText('الوحدة المتوسطة'), { target: { value: 'strip' } });
+    fireEvent.change(screen.getByLabelText('معامل تحويل الوحدة المتوسطة'), { target: { value: '10' } });
+    fireEvent.change(screen.getByLabelText('الوحدة الصغرى'), { target: { value: 'tablet' } });
+    fireEvent.change(screen.getByLabelText('معامل تحويل الوحدة الصغرى'), { target: { value: '12' } });
+    fireEvent.click(screen.getByRole('button', { name: 'حفظ' }));
+
+    await waitFor(() => expect(updateMasterDrugAction).toHaveBeenCalledWith(11, expect.objectContaining({
+      large_unit: 'carton',
+      medium_unit: 'strip',
+      small_unit: 'tablet',
+      large_to_medium: 10,
+      medium_to_small: 12,
+    })));
+  });
+
+  it('keeps unit conversion fields read-only in the drug card without conversion permission', async () => {
+    mockUser = {
+      id: 'admin',
+      role: 'admin',
+      pharmacy_id: 'ph-1',
+      permissions: { can_manage_inventory: true, can_modify_unit_conversion: false },
+    };
+    (getDrugDetailsFullAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: {
+        id: 11,
+        trade_name: 'Panadol',
+        active_ingredient: 'Paracetamol',
+        official_price: 10,
+        min_price: 10,
+        total_stock: 1,
+        large_unit: 'box', medium_unit: 'strip', small_unit: 'tablet',
+        large_to_medium: 2, medium_to_small: 5,
+        units: { large: 'box', medium: 'strip', small: 'tablet' },
+        expiry_batches: [], alternatives: [], conflicts: [], consumption_stats: [],
+      },
+    });
+
+    render(<DrugDetailsModal drugId={11} onClose={jest.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: /تعديل/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'الوحدات والموردين' }));
+
+    expect(screen.getByRole('note')).toHaveTextContent('تعديل معاملات تحويل الوحدات');
+    expect(screen.queryByLabelText('الوحدة الكبرى')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('معامل تحويل الوحدة المتوسطة')).not.toBeInTheDocument();
+    expect(screen.getByText('box')).toBeInTheDocument();
   });
 
   it('exposes interaction detail cards as keyboard-native disclosure buttons', async () => {

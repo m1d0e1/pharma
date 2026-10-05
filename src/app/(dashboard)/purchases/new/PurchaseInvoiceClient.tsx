@@ -1005,7 +1005,7 @@ export default function PurchaseInvoiceClient() {
 
 
   return (
-    <div className="space-y-8 animate-in slide-in-from-bottom duration-500 pb-20" dir="rtl">
+    <div className="space-y-6 pb-20" dir="rtl">
       {replacement && <DrugReplacementDialog {...replacement} onClose={() => setReplacement(null)} onSuccess={(id, _backup, drug, edits, reconciledIds) => {
         const oldId = Number(replacement.source.id);
         const affectedIds = new Set<number>([
@@ -1025,14 +1025,14 @@ export default function PurchaseInvoiceClient() {
         toast.success('تم الاستبدال وحفظ نسخة احتياطية. راجع الفاتورة ثم اضغط حفظ مرة أخرى');
       }} />}
       {/* Header Form */}
-      <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl shadow-hard border border-slate-100 dark:border-slate-800">
-        <div className="flex justify-between items-start mb-8">
+      <div className="bg-white dark:bg-slate-900 p-5 sm:p-6 rounded-xl shadow-sm border border-slate-200 dark:border-slate-800">
+        <div className="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-4 mb-6">
           <div className="flex items-center gap-4">
             <div>
-              <h1 className="text-3xl font-black text-slate-900 dark:text-white">
+              <h1 className="text-2xl font-bold text-slate-900 dark:text-white">
                 {isEditingCompleted ? 'تعديل فاتورة شراء مكتملة' : 'فاتورة شراء جديدة'}
               </h1>
-              <p className="text-slate-500 font-bold">
+              <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
                 {isEditingCompleted ? 'تعديل آمن لفاتورة شراء مكتملة' : 'تسجيل توريدات جديدة وتحديث أرصدة الموردين'}
               </p>
               {isEditingCompleted && (
@@ -1049,19 +1049,19 @@ export default function PurchaseInvoiceClient() {
                   await loadDrafts();
                   setShowDraftsModal(true);
                 }}
-                className="p-3 bg-primary-50 dark:bg-primary-950/20 hover:bg-primary-100 dark:hover:bg-primary-900/30 transition-all rounded-xl text-primary-600 dark:text-primary-400 font-bold text-xs flex items-center gap-2"
+                className="min-h-11 px-3 py-2 bg-primary-50 dark:bg-primary-950/20 hover:bg-primary-100 dark:hover:bg-primary-900/30 transition-colors rounded-lg text-primary-700 dark:text-primary-300 font-semibold text-xs flex items-center gap-2"
               >
                 <FileText className="w-5 h-5" />
                 <span>استرجاع المسودات</span>
               </button>
             )}
-            <button type="button" aria-label="طباعة فاتورة الشراء" onClick={() => window.print()} className="p-3 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 transition-all rounded-xl">
-              <Printer className="w-6 h-6 text-slate-600 dark:text-slate-300" />
+            <button type="button" aria-label="طباعة فاتورة الشراء" onClick={() => window.print()} className="inline-flex h-11 w-11 items-center justify-center bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors rounded-lg">
+              <Printer className="w-5 h-5 text-slate-600 dark:text-slate-300" />
             </button>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
           {/* Supplier Selector */}
           <div className="space-y-3">
             <label htmlFor="purchase-supplier" className="text-xs font-black text-slate-500 mr-2 flex items-center gap-2">
@@ -1215,7 +1215,7 @@ export default function PurchaseInvoiceClient() {
         </div>
 
         {/* Financial Details Row */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-8 mt-10 pt-8 border-t border-slate-50 dark:border-slate-800">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 mt-6 pt-6 border-t border-slate-100 dark:border-slate-800">
            {/* Expenses */}
            <div className="space-y-3">
             <label htmlFor="purchase-expenses" className="text-xs font-black text-slate-500 mr-2 flex items-center gap-2">
@@ -1311,9 +1311,9 @@ export default function PurchaseInvoiceClient() {
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
         {/* Left Side: Search */}
         <div className="lg:col-span-1 space-y-6">
-          <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-soft sticky top-24">
-              <h2 className="font-black text-lg mb-6 flex items-center gap-3">
-              <Package className="w-6 h-6 text-primary-500" />
+          <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm sticky top-24">
+              <h2 className="font-semibold text-base mb-4 flex items-center gap-2.5">
+              <Package className="w-5 h-5 text-primary-600" />
               إضافة صنف
             </h2>
 
@@ -1327,12 +1327,12 @@ export default function PurchaseInvoiceClient() {
                   type="text"
                   aria-label="البحث عن صنف للشراء"
                   placeholder="اسم الصنف أو الباركود..."
-                  className="w-full pr-12 pl-4 py-4 bg-slate-50 dark:bg-slate-800 border-none rounded-2xl font-bold outline-none ring-2 ring-transparent focus:ring-primary-500/20 transition-all"
+                  className="w-full pr-11 pl-3.5 py-2.5 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-sm font-medium outline-none focus:ring-2 focus:ring-primary-500/30 focus:border-primary-500 transition-colors"
                   value={searchQuery}
                   onChange={(e) => handleDrugSearch(e.target.value)}
                 />
                 {searchResults.length > 0 && (
-                  <div className="absolute top-full left-0 right-0 mt-1 bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl shadow-hard z-50 overflow-y-auto max-h-[300px] animate-in fade-in duration-200">
+                  <div className="absolute top-full left-0 right-0 mt-1 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg shadow-xl z-50 overflow-y-auto max-h-[300px]">
                     {searchResults.map((drug) => (
                       <button 
                         key={drug.id}
@@ -1365,7 +1365,7 @@ export default function PurchaseInvoiceClient() {
                 type="button"
                 aria-label="إضافة دواء جديد"
                 onClick={() => setIsQuickAddOpen(true)}
-                className="p-4 bg-primary-600 hover:bg-primary-700 text-white rounded-2xl font-bold transition-all shadow-md flex items-center justify-center shrink-0"
+                className="inline-flex h-11 w-11 items-center justify-center bg-primary-700 hover:bg-primary-800 text-white rounded-lg font-semibold transition-colors shadow-sm shrink-0"
                 title="إضافة دواء جديد كلياً"
               >
                 <Plus className="w-5 h-5" />
@@ -1387,14 +1387,14 @@ export default function PurchaseInvoiceClient() {
               </label>
             </div>
 
-            <div className="mt-8 pt-8 border-t border-slate-50 dark:border-slate-800 space-y-4">
+            <div className="mt-6 pt-5 border-t border-slate-100 dark:border-slate-800 space-y-3">
               <div className="flex justify-between items-center mb-2">
-                <span className="text-slate-400 font-black text-xs uppercase tracking-widest">الإجمالي الفرعي</span>
+                <span className="text-slate-500 font-semibold text-xs">الإجمالي الفرعي</span>
                 <span className="text-lg font-bold text-slate-600 dark:text-slate-400">{subTotal.toFixed(2)} ج.م</span>
               </div>
               <div className="flex justify-between items-center mb-4">
-                <span className="text-slate-400 font-black text-xs uppercase tracking-widest">إجمالي الفاتورة</span>
-                <span className="text-2xl font-black text-primary-600">{totalAmount.toFixed(2)} ج.م</span>
+                <span className="text-slate-500 font-semibold text-xs">إجمالي الفاتورة</span>
+                <span className="text-2xl font-bold text-primary-700 dark:text-primary-300 tabular-nums">{totalAmount.toFixed(2)} ج.م</span>
               </div>
 
               
@@ -1402,7 +1402,7 @@ export default function PurchaseInvoiceClient() {
                 <button 
                   onClick={() => handleSubmit(false)}
                   disabled={isSubmitting || isDrafting || isCommitted || cart.length === 0}
-                  className="w-full py-4 bg-primary-600 hover:bg-primary-700 text-white rounded-2xl font-bold transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+                  className="w-full min-h-11 py-2.5 bg-primary-700 hover:bg-primary-800 text-white rounded-lg font-semibold transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
                 >
                   {isCommitted ? (
                     <>تم حفظ الفاتورة</>
@@ -1461,7 +1461,7 @@ export default function PurchaseInvoiceClient() {
 
         {/* Right Side: Grid */}
         <div className="lg:col-span-3">
-          <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-soft overflow-hidden">
+          <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-right border-collapse">
                 <thead>
@@ -1763,6 +1763,14 @@ export default function PurchaseInvoiceClient() {
           drugId={showDrugDetails} 
           onClose={() => setShowDrugDetails(null)} 
           onDrugUpdated={(updatedDrug) => {
+            // Catalog maintenance is a separate operation from editing a completed
+            // purchase. Keep the historical invoice snapshot unchanged unless the
+            // user explicitly edits/removes that invoice line in the purchase UI.
+            if (isEditingCompleted) return;
+            if (Number(updatedDrug.stop_dealing || 0) === 1) {
+              setCart(prev => prev.filter(item => String(item.id) !== String(updatedDrug.id)));
+              return;
+            }
             setCart(prev => prev.map(item => String(item.id) === String(updatedDrug.id) ? {
               ...item,
               trade_name: updatedDrug.trade_name,
@@ -1777,6 +1785,10 @@ export default function PurchaseInvoiceClient() {
               large_to_medium: updatedDrug.large_to_medium,
               medium_to_small: updatedDrug.medium_to_small
             } : item));
+          }}
+          onDrugDeleted={(deletedId) => {
+            if (isEditingCompleted) return;
+            setCart(prev => prev.filter(item => String(item.id) !== String(deletedId)));
           }}
         />
       )}
@@ -1804,11 +1816,11 @@ export default function PurchaseInvoiceClient() {
       )}
 
       {showDraftsModal && (
-        <div className="fixed inset-0 z-[200] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
-          <div ref={purchaseDraftDialogRef} role="dialog" aria-modal="true" aria-labelledby="purchase-drafts-title" tabIndex={-1} onKeyDown={(event) => { if (event.key === 'Escape') setShowDraftsModal(false); }} className="bg-white dark:bg-slate-900 rounded-3xl max-w-2xl w-full p-6 border border-slate-100 dark:border-slate-800 shadow-2xl space-y-6">
+        <div className="fixed inset-0 z-[200] bg-slate-950/55 flex items-center justify-center p-3 sm:p-4">
+          <div ref={purchaseDraftDialogRef} role="dialog" aria-modal="true" aria-labelledby="purchase-drafts-title" tabIndex={-1} onKeyDown={(event) => { if (event.key === 'Escape') setShowDraftsModal(false); }} className="bg-white dark:bg-slate-900 rounded-xl max-w-2xl w-full p-5 sm:p-6 border border-slate-200 dark:border-slate-800 shadow-xl space-y-5">
             <div className="flex justify-between items-center pb-4 border-b border-slate-100 dark:border-slate-800 flex-row-reverse">
-              <h3 id="purchase-drafts-title" className="text-xl font-black text-slate-900 dark:text-white">المسودات المحفوظة</h3>
-              <button type="button" aria-label="إغلاق مسودات المشتريات" onClick={() => setShowDraftsModal(false)} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-colors"><X className="w-5 h-5 text-slate-500" /></button>
+              <h3 id="purchase-drafts-title" className="text-xl font-semibold text-slate-900 dark:text-white">المسودات المحفوظة</h3>
+              <button type="button" aria-label="إغلاق مسودات المشتريات" onClick={() => setShowDraftsModal(false)} className="inline-flex h-11 w-11 items-center justify-center hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors"><X className="w-5 h-5 text-slate-500" /></button>
             </div>
             
             <div className="max-h-[400px] overflow-y-auto space-y-3 pr-2">
@@ -1816,14 +1828,14 @@ export default function PurchaseInvoiceClient() {
                 <p className="text-center text-slate-400 py-12 font-bold text-sm">لا توجد مسودات محفوظة حالياً</p>
               ) : (
                 drafts.map(d => (
-                  <div key={d.id} className="flex justify-between items-center p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border border-slate-100 dark:border-slate-800 flex-row-reverse">
+                  <div key={d.id} className="flex justify-between items-center p-4 bg-slate-50 dark:bg-slate-800/50 rounded-lg border border-slate-200 dark:border-slate-800 flex-row-reverse">
                     <div className="text-right">
                       <p className="font-black text-sm text-slate-950 dark:text-white">{d.supplier_name}</p>
                       <p className="text-xs text-slate-400 font-bold mt-1">رقم الفاتورة: {d.invoice_number || 'بدون رقم'} | تاريخ: {d.invoice_date}</p>
                     </div>
                     <button 
                       onClick={() => handleLoadDraft(d.id)}
-                      className="px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white text-xs font-bold rounded-xl transition-all shadow-md shadow-primary-500/20"
+                      className="px-3.5 py-2 bg-primary-700 hover:bg-primary-800 text-white text-xs font-semibold rounded-lg transition-colors shadow-sm"
                     >
                       تحميل المسودة
                     </button>

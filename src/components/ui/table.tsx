@@ -39,9 +39,9 @@ const Table = React.forwardRef<HTMLTableElement, TableProps>(
     );
 
     const containerClasses = cn(
-      'overflow-x-auto rounded-xl',
-      bordered && 'border border-slate-200/50 dark:border-slate-700/50',
-      variant === 'elevated' && 'shadow-soft',
+      'overflow-x-auto rounded-xl bg-white dark:bg-slate-900',
+      bordered && 'border border-slate-200 dark:border-slate-800',
+      variant === 'elevated' && 'shadow-md',
       variant === 'default' && 'table-container'
     );
 
@@ -63,7 +63,7 @@ const TableHeader = React.forwardRef<HTMLTableSectionElement, TableHeaderProps>(
     <thead 
       ref={ref} 
       className={cn(
-        'bg-slate-50/80 dark:bg-slate-800/80 backdrop-blur-sm border-b border-slate-200/50 dark:border-slate-700/50',
+        'bg-slate-50 dark:bg-slate-800/70 border-b border-slate-200 dark:border-slate-700',
         className
       )} 
       {...props} 
@@ -76,7 +76,7 @@ const TableBody = React.forwardRef<HTMLTableSectionElement, TableBodyProps>(
   ({ className, ...props }, ref) => (
     <tbody 
       ref={ref} 
-      className={cn('divide-y divide-slate-200/30 dark:divide-slate-700/30', className)} 
+      className={cn('divide-y divide-slate-100 dark:divide-slate-800', className)}
       {...props} 
     />
   )
@@ -88,9 +88,9 @@ const TableRow = React.forwardRef<HTMLTableRowElement, TableRowProps>(
     <tr
       ref={ref}
       className={cn(
-        'transition-colors duration-200',
-        hover && 'hover:bg-slate-50/50 dark:hover:bg-slate-800/30',
-        active && 'bg-primary-50/30 dark:bg-primary-900/20',
+        'transition-colors duration-150',
+        hover && 'hover:bg-slate-50 dark:hover:bg-slate-800/50',
+        active && 'bg-primary-50 dark:bg-primary-950/30',
         className
       )}
       {...props}
@@ -130,9 +130,9 @@ const TableHead = React.forwardRef<HTMLTableCellElement, TableHeadProps>(
       <th
         ref={ref}
         className={cn(
-          'px-6 py-4 font-semibold text-slate-700 dark:text-slate-300 text-right first:rounded-tr-lg last:rounded-tl-lg',
-          sortable && 'cursor-pointer hover:bg-slate-100/50 dark:hover:bg-slate-800/50',
-          sortDirection !== 'none' && 'bg-primary-50/30 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300',
+          'px-5 py-3.5 text-xs font-semibold text-slate-600 dark:text-slate-300 text-right first:rounded-tr-lg last:rounded-tl-lg whitespace-nowrap',
+          sortable && 'cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800',
+          sortDirection !== 'none' && 'bg-primary-50 dark:bg-primary-950/30 text-primary-700 dark:text-primary-300',
           className
         )}
         {...props}
@@ -152,7 +152,7 @@ const TableCell = React.forwardRef<HTMLTableCellElement, TableCellProps>(
     <td
       ref={ref}
       className={cn(
-        'px-6 py-4 border-b border-slate-100/50 dark:border-slate-800/50',
+        'px-5 py-3.5 border-b border-slate-100 dark:border-slate-800 align-middle',
         align === 'left' && 'text-left',
         align === 'center' && 'text-center',
         align === 'right' && 'text-right',
@@ -169,7 +169,7 @@ const TableCaption = React.forwardRef<HTMLTableCaptionElement, React.HTMLAttribu
   ({ className, ...props }, ref) => (
     <caption
       ref={ref}
-      className={cn('mt-4 text-sm text-slate-500 dark:text-slate-400 px-6', className)}
+      className={cn('mt-3 text-sm text-slate-500 dark:text-slate-400 px-5', className)}
       {...props}
     />
   )
@@ -181,7 +181,7 @@ const TableFooter = React.forwardRef<HTMLTableSectionElement, React.HTMLAttribut
     <tfoot
       ref={ref}
       className={cn(
-        'bg-slate-50/50 dark:bg-slate-800/30 border-t border-slate-200/50 dark:border-slate-700/50',
+        'bg-slate-50 dark:bg-slate-800/50 border-t border-slate-200 dark:border-slate-700',
         className
       )}
       {...props}

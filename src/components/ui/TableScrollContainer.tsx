@@ -112,7 +112,7 @@ export default function TableScrollContainer({
     <div className={cn("relative w-full group/tablescroll", containerClassName)}>
       {/* Top Synchronized Horizontal Scrollbar & Quick Navigation */}
       {hasOverflow && (
-        <div className="sticky top-0 z-20 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-200/80 dark:border-slate-700/80 py-1.5 px-2 rounded-t-2xl flex items-center gap-2 select-none shadow-sm no-print">
+        <div className="sticky top-0 z-20 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-200 dark:border-slate-700 py-1.5 px-2 rounded-t-xl flex items-center gap-2 select-none shadow-sm no-print">
           {showScrollButtons && (
             <div className="flex items-center gap-1 shrink-0">
               <button
@@ -120,20 +120,20 @@ export default function TableScrollContainer({
                 onClick={() => scrollStep('right', true)}
                 disabled={!canScrollRight}
                 aria-label="بداية الجدول (اليمين)"
-                className="p-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-25 transition-all text-xs flex items-center"
+                className="inline-flex h-10 w-10 items-center justify-center rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-25 transition-colors"
                 title="بداية الجدول"
               >
-                <ChevronsRight className="w-3.5 h-3.5" />
+                <ChevronsRight className="w-4 h-4" />
               </button>
               <button
                 type="button"
                 onClick={() => scrollStep('right', false)}
                 disabled={!canScrollRight}
                 aria-label="تمرير لليمين"
-                className="p-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-25 transition-all text-xs flex items-center gap-1 font-bold"
+                className="inline-flex h-10 w-10 items-center justify-center rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-25 transition-colors"
                 title="تمرير لليمين"
               >
-                <ChevronRight className="w-3.5 h-3.5" />
+                <ChevronRight className="w-4 h-4" />
               </button>
             </div>
           )}
@@ -158,20 +158,20 @@ export default function TableScrollContainer({
                 onClick={() => scrollStep('left', false)}
                 disabled={!canScrollLeft}
                 aria-label="تمرير لليسار"
-                className="p-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-25 transition-all text-xs flex items-center gap-1 font-bold"
+                className="inline-flex h-10 w-10 items-center justify-center rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-25 transition-colors"
                 title="تمرير لليسار"
               >
-                <ChevronLeft className="w-3.5 h-3.5" />
+                <ChevronLeft className="w-4 h-4" />
               </button>
               <button
                 type="button"
                 onClick={() => scrollStep('left', true)}
                 disabled={!canScrollLeft}
                 aria-label="نهاية الجدول (اليسار)"
-                className="p-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-25 transition-all text-xs flex items-center"
+                className="inline-flex h-10 w-10 items-center justify-center rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-25 transition-colors"
                 title="نهاية الجدول"
               >
-                <ChevronsLeft className="w-3.5 h-3.5" />
+                <ChevronsLeft className="w-4 h-4" />
               </button>
             </div>
           )}

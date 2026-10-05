@@ -123,13 +123,11 @@ export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
       <div ref={dialogRef} role="dialog" aria-modal="true" aria-hidden={replacement ? true : undefined} aria-labelledby="quick-add-drug-title" tabIndex={-1} className="relative bg-white dark:bg-slate-900 rounded-3xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto border border-slate-200/60 dark:border-slate-700/60 animate-in zoom-in-95 fade-in duration-200">
 
         {/* ── Header ── */}
-        <div className="relative bg-gradient-to-br from-indigo-600 via-blue-600 to-blue-500 px-6 py-5 overflow-hidden">
-          <div className="absolute -top-6 -right-6 w-28 h-28 bg-white/10 rounded-full blur-2xl pointer-events-none" />
-          <div className="absolute -bottom-4 -left-4 w-24 h-24 bg-blue-300/20 rounded-full blur-xl pointer-events-none" />
+        <div className="relative bg-primary-700 px-6 py-5 overflow-hidden">
           <div className="relative flex items-center justify-between gap-4">
             <div className="flex items-center gap-3">
               <div className="w-9 h-9 bg-white/20 rounded-xl flex items-center justify-center shrink-0">
-                <Pill className="w-4.5 h-4.5 text-white" />
+                <Pill className="w-[18px] h-[18px] text-white" />
               </div>
               <div>
                 <h2 id="quick-add-drug-title" className="text-lg font-black text-white tracking-tight leading-tight">إضافة صنف جديد للقاعدة</h2>
@@ -329,14 +327,14 @@ export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
                 type="button"
                 disabled={isSubmitting}
                 onClick={handleClose}
-                className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 font-bold text-sm hover:bg-slate-100 dark:hover:bg-slate-800 transition-all active:scale-95 disabled:opacity-50"
+                className="min-h-11 px-4 py-2.5 rounded-lg border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 font-semibold text-sm hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors disabled:opacity-50"
               >
                 إلغاء
               </button>
               <button
                 type="submit"
                 disabled={isSubmitting}
-                className="flex items-center gap-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white px-5 py-2 rounded-xl font-bold text-sm shadow-md shadow-blue-500/20 hover:shadow-blue-500/35 transition-all active:scale-95 disabled:opacity-60 disabled:cursor-not-allowed min-w-[110px] justify-center"
+                className="min-h-11 flex items-center gap-2 bg-primary-700 hover:bg-primary-800 text-white px-5 py-2.5 rounded-lg font-semibold text-sm shadow-sm transition-colors disabled:opacity-60 disabled:cursor-not-allowed min-w-[110px] justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-slate-900"
               >
                 {isSubmitting ? (
                   <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />

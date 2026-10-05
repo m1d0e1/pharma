@@ -293,7 +293,7 @@ export default function ReturnsClient({ title, type = 'sales', showHeading = tru
               <div><span className="text-slate-500">الحالة</span><p className="font-bold">{selectedReturn.status || 'مكتمل'}</p></div>
               <div><span className="text-slate-500">إجمالي المرتجع</span><p className="font-bold text-primary-600">{Number(selectedReturn.total_refund || selectedReturn.total_amount || 0).toFixed(2)} ج.م</p></div>
               <div><span className="text-slate-500">التاريخ</span><p className="font-bold">{selectedReturn.created_at ? format(new Date(selectedReturn.created_at), 'yyyy-MM-dd HH:mm') : '-'}</p></div>
-              <div className="col-span-2 md:col-span-4"><span className="text-slate-500">السبب / الملاحظات</span><p className="font-bold">{selectedReturn.reason || '-'}</p></div>
+              <div className="col-span-1 sm:col-span-2 md:col-span-4"><span className="text-slate-500">السبب / الملاحظات</span><p className="font-bold">{selectedReturn.reason || '-'}</p></div>
             </div>
             <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700">
               <table className="w-full text-right text-sm">

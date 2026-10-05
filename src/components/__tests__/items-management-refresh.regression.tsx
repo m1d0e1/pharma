@@ -41,7 +41,12 @@ jest.mock('@/app/actions-client/master-drugs', () => ({
   updateMasterDrugAction: jest.fn(),
   searchMasterDrugsAction: jest.fn(),
 }));
-jest.mock('@/app/actions-client/drug-replacement', () => ({ findDrugBarcodeConflict: jest.fn(), replaceDrugAction: jest.fn(), getReplacementDrug: jest.fn(async (id: number) => ({ id, trade_name: 'Concor 5mg' })) }));
+jest.mock('@/app/actions-client/drug-replacement', () => ({
+  findDrugBarcodeConflict: jest.fn(),
+  findDrugBarcodeOwners: jest.fn(async () => []),
+  replaceDrugAction: jest.fn(),
+  getReplacementDrug: jest.fn(async (id: number) => ({ id, trade_name: 'Concor 5mg' })),
+}));
 jest.mock('@tauri-apps/plugin-dialog', () => ({ save: jest.fn() }));
 jest.mock('@tauri-apps/api/core', () => ({ invoke: jest.fn() }));
 jest.mock('@/lib/cache/secure_cache', () => ({ secureCache: { reload: jest.fn().mockResolvedValue(undefined) } }));
@@ -154,6 +159,26 @@ describe('ItemsManagementClient auto-refresh and total count regression', () => 
     expect(screen.queryByText('حذف الصنف نهائياً')).not.toBeInTheDocument();
   });
 
+  it('keeps the 256px item context menu inside the right viewport edge', async () => {
+    const originalInnerWidth = window.innerWidth;
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 300 });
+    try {
+      render(<ItemsManagementClient initialItems={sampleItems} totalCount={2} />);
+      await screen.findByRole('button', { name: 'إضافة صنف جديد' });
+
+      fireEvent.contextMenu(screen.getByText('Concor 5mg').closest('tr')!, {
+        clientX: 290,
+        clientY: 40,
+      });
+
+      const menu = screen.getByText('معلومات الصنف').closest('.fixed') as HTMLElement | null;
+      expect(menu).not.toBeNull();
+      expect(menu).toHaveStyle({ left: '32px' });
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth });
+    }
+  });
+
   it('keeps ordinary inventory management available but hides catalog reconciliation from non-admin staff', async () => {
     (getClientSession as jest.Mock).mockResolvedValue({
       id: 'pharmacist-1',
@@ -186,6 +211,38 @@ describe('ItemsManagementClient auto-refresh and total count regression', () => 
     await waitFor(() => expect(archiveMasterDrugAction).toHaveBeenCalledWith(1,true));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(screen.getByText('Concor 5mg').closest('tr')).toHaveClass('opacity-75');
+  });
+
+  it('offers archive and permanent-delete as separate item actions, and archives without attempting deletion', async () => {
+    const confirm = jest.spyOn(window, 'confirm').mockReturnValue(true);
+    (archiveMasterDrugAction as jest.Mock).mockResolvedValue({ success: true });
+    render(<ItemsManagementClient initialItems={sampleItems} totalCount={2} />);
+    await screen.findByRole('button', { name: 'إضافة صنف جديد' });
+
+    fireEvent.contextMenu(screen.getByText('Concor 5mg').closest('tr')!);
+    expect(screen.getByText('أرشفة الصنف')).toBeInTheDocument();
+    expect(screen.getByText('حذف الصنف نهائياً')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('أرشفة الصنف'));
+
+    await waitFor(() => expect(archiveMasterDrugAction).toHaveBeenCalledWith(1, true));
+    expect(deleteMasterDrugAction).not.toHaveBeenCalled();
+    expect(screen.getByText('Concor 5mg').closest('tr')).toHaveClass('opacity-75');
+    confirm.mockRestore();
+  });
+
+  it('permanently deletes an unused drug without archiving it', async () => {
+    const confirm = jest.spyOn(window, 'confirm').mockReturnValue(true);
+    (deleteMasterDrugAction as jest.Mock).mockResolvedValue({ success: true });
+    render(<ItemsManagementClient initialItems={sampleItems} totalCount={2} />);
+    await screen.findByRole('button', { name: 'إضافة صنف جديد' });
+
+    fireEvent.contextMenu(screen.getByText('Concor 5mg').closest('tr')!);
+    fireEvent.click(screen.getByText('حذف الصنف نهائياً'));
+
+    await waitFor(() => expect(deleteMasterDrugAction).toHaveBeenCalledWith(1));
+    expect(archiveMasterDrugAction).not.toHaveBeenCalled();
+    expect(screen.queryByText('Concor 5mg')).not.toBeInTheDocument();
+    confirm.mockRestore();
   });
 
   it('offers a linked-record replacement when deleting a used drug, without deleting on cancellation', async () => {

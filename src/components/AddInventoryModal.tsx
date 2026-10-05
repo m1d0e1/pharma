@@ -5,7 +5,7 @@ import { useState, useEffect, useMemo, useRef } from 'react'
 import { addInventoryAction } from '@/app/actions-client/inventory'
 import { searchMasterDrugsAction, getUnitsAction } from '@/app/actions-client/master-drugs'
 import { toast } from 'react-hot-toast'
-import { Plus, Search, Sparkles } from 'lucide-react'
+import { Plus, Search, Sparkles, Save, X } from 'lucide-react'
 import QuickAddDrugModal from './master-drugs/QuickAddDrugModal'
 import { isSinglePackageUnitName, resolveDrugUnitProfile } from '@/lib/inventory/unit-profile'
 import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap'
@@ -238,15 +238,12 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
 
   return (
     <>
-    <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-[100] animate-in fade-in duration-300" dir="rtl">
-      <div ref={dialogRef} role="dialog" aria-modal="true" aria-hidden={isQuickAddOpen ? true : undefined} aria-labelledby="add-inventory-title" tabIndex={-1} className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl w-full max-w-lg overflow-y-auto max-h-[90vh] border border-slate-200 dark:border-slate-800 transform animate-in zoom-in slide-in-from-bottom-8 duration-500">
+    <div className="fixed inset-0 bg-slate-950/55 flex items-center justify-center p-3 sm:p-4 z-[100]" dir="rtl">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-hidden={isQuickAddOpen ? true : undefined} aria-labelledby="add-inventory-title" tabIndex={-1} className="bg-white dark:bg-slate-900 rounded-xl shadow-xl w-full max-w-lg overflow-y-auto max-h-[calc(100dvh-1.5rem)] border border-slate-200 dark:border-slate-800">
         
         {/* Header */}
-        <div className="bg-gradient-to-r from-blue-600 to-indigo-600 p-6 flex justify-between items-center text-white relative overflow-hidden">
-          <div className="absolute top-0 left-0 w-full h-full opacity-10 pointer-events-none">
-             <div className="absolute -top-10 -left-10 w-40 h-40 bg-white rounded-full blur-3xl"></div>
-          </div>
-          <div className="relative z-10">
+        <div className="bg-blue-700 p-5 flex justify-between items-center text-white">
+          <div>
             <h2 id="add-inventory-title" className="text-xl font-black">
               {step === 1 ? 'البحث عن صنف' : 'إضافة للمخزون'}
             </h2>
@@ -259,9 +256,10 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
             aria-label="إغلاق إضافة المخزون"
             onClick={handleClose}
             disabled={isSubmitting}
-            className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center hover:bg-white/30 transition-colors text-2xl font-bold disabled:opacity-50 disabled:cursor-not-allowed"
+            className="h-11 w-11 rounded-lg bg-white/10 flex items-center justify-center hover:bg-white/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            &times;
+            <span className="sr-only" aria-hidden="true">&times;</span>
+            <X className="h-5 w-5" aria-hidden="true" />
           </button>
         </div>
 
@@ -295,9 +293,9 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
 
             {isSearching && (
               <div className="flex items-center justify-center py-4 gap-2 text-blue-600">
-                <div className="w-2 h-2 bg-current rounded-full animate-bounce"></div>
-                <div className="w-2 h-2 bg-current rounded-full animate-bounce delay-75"></div>
-                <div className="w-2 h-2 bg-current rounded-full animate-bounce delay-150"></div>
+                <div className="w-2 h-2 bg-current rounded-full animate-pulse"></div>
+                <div className="w-2 h-2 bg-current rounded-full animate-pulse delay-75"></div>
+                <div className="w-2 h-2 bg-current rounded-full animate-pulse delay-150"></div>
                 <span className="text-sm font-bold">جاري البحث في قاعدة البيانات...</span>
               </div>
             )}
@@ -474,7 +472,7 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
               <button
                 type="submit"
                 disabled={isSubmitting}
-                className="flex-[2] bg-emerald-600 text-white py-4 rounded-2xl font-black text-lg hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-500/20 disabled:opacity-50 transform active:scale-95 flex items-center justify-center gap-2"
+                className="flex-[2] min-h-11 bg-emerald-700 text-white py-2.5 rounded-lg font-semibold text-sm hover:bg-emerald-800 transition-colors shadow-sm disabled:opacity-50 flex items-center justify-center gap-2"
               >
                 {isSubmitting ? (
                   <>
@@ -483,7 +481,7 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
                   </>
                 ) : (
                   <>
-                    <span>💾</span>
+                    <Save className="h-4 w-4" aria-hidden="true" />
                     <span>حفظ في المخزون</span>
                   </>
                 )}
@@ -491,7 +489,7 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
               <button
                 type="button"
                 onClick={() => setStep(1)}
-                className="flex-1 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 py-4 rounded-2xl font-black hover:bg-slate-200 dark:hover:bg-slate-700 transition-all transform active:scale-95"
+                className="flex-1 min-h-11 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 py-2.5 rounded-lg font-semibold text-sm hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"
               >
                 رجوع
               </button>

@@ -30,7 +30,34 @@ jest.mock('@/lib/auth/local', () => ({
   hasUserPermissionSync: jest.fn(),
 }));
 jest.mock('@/components/purchases/BarcodePrinter', () => () => null);
-jest.mock('@/components/pos/DrugDetailsModal', () => () => null);
+jest.mock('@/components/pos/DrugDetailsModal', () => function MockDrugDetailsModal(props: any) {
+  return (
+    <div data-testid="purchase-drug-details-mock">
+      <button
+        type="button"
+        onClick={() => props.onDrugUpdated?.({
+          id: props.drugId,
+          trade_name: 'Catalog renamed drug',
+          trade_name_en: 'Catalog Renamed Drug',
+          barcode: 'CATALOG-CHANGED',
+          official_price: 99,
+          stop_dealing: 0,
+        })}
+      >
+        mock catalog update
+      </button>
+      <button
+        type="button"
+        onClick={() => props.onDrugUpdated?.({ id: props.drugId, stop_dealing: 1 })}
+      >
+        mock archive
+      </button>
+      <button type="button" onClick={() => props.onDrugDeleted?.(props.drugId)}>
+        mock delete
+      </button>
+    </div>
+  );
+});
 jest.mock('@/components/master-drugs/QuickAddDrugModal', () => () => null);
 jest.mock('@/app/actions-client/drug-replacement', () => ({
   findDrugBarcodeConflict: jest.fn().mockResolvedValue(null),
@@ -185,6 +212,62 @@ describe('rendered purchase-invoice flow', () => {
     jest.mocked(window.confirm).mockReturnValueOnce(true);
     fireEvent.click(save);
     await waitFor(() => expect(updateCompletedPurchaseInvoiceAction).toHaveBeenCalledTimes(2));
+
+    view.unmount();
+    window.history.replaceState({}, '', '/purchases');
+  });
+
+  it('keeps completed purchase lines isolated from catalog update, archive, and delete callbacks', async () => {
+    window.history.replaceState({}, '', '/purchases/new?edit_invoice_id=purchase-1');
+    (getPurchaseInvoiceAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: {
+        id: 'purchase-1', status: 'completed', supplier_id: 7,
+        invoice_number: 'INV-ORIGINAL', invoice_date: '2026-08-30', payment_method: 'cash',
+      },
+    });
+    (getPurchaseInvoiceDetailsAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: [{
+        id: 44, drug_id: 101, trade_name: 'دواء شراء', trade_name_en: 'Purchase Drug',
+        unit_id: 6,
+        quantity: 5, bonus_quantity: 0, cost_price: 12, selling_price: 20,
+        discount_percent: 40, discount_value: 48,
+        expiry_date: '2029-12-31', strips_per_box: 2, barcode: '123456',
+      }],
+    });
+
+    const view = render(<PurchaseInvoiceClient />);
+    expect(await screen.findByRole('heading', { name: 'تعديل فاتورة شراء مكتملة' })).toBeInTheDocument();
+
+    const itemRow = screen.getAllByText('Purchase Drug')[1].closest('tr')!;
+    fireEvent.contextMenu(itemRow, { clientX: 100, clientY: 100 });
+    fireEvent.click(screen.getByRole('button', { name: 'معلومات الصنف' }));
+    expect(await screen.findByTestId('purchase-drug-details-mock')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'mock catalog update' }));
+    expect(screen.getAllByText('Purchase Drug').length).toBeGreaterThan(0);
+    expect(screen.queryByText('Catalog Renamed Drug')).not.toBeInTheDocument();
+    expect(within(itemRow).getByDisplayValue('123456')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'mock archive' }));
+    expect(screen.getAllByText('Purchase Drug').length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole('button', { name: 'mock delete' }));
+    expect(screen.getAllByText('Purchase Drug').length).toBeGreaterThan(0);
+
+    jest.mocked(window.confirm).mockReturnValueOnce(true);
+    fireEvent.click(screen.getByRole('button', { name: /حفظ التعديلات/ }));
+    await waitFor(() => expect(updateCompletedPurchaseInvoiceAction).toHaveBeenCalledTimes(1));
+    expect(updateCompletedPurchaseInvoiceAction).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'purchase-1',
+      cart: [expect.objectContaining({
+        id: 101,
+        purchase_invoice_item_id: 44,
+        barcode: '123456',
+        selling_price: 20,
+      })],
+    }));
 
     view.unmount();
     window.history.replaceState({}, '', '/purchases');

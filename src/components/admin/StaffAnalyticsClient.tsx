@@ -23,8 +23,8 @@ export default function StaffAnalyticsClient({ metrics }: Props) {
     <div className="space-y-8">
       {/* Top Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-xl relative overflow-hidden group">
-          <div className="absolute -right-4 -top-4 w-24 h-24 bg-blue-500/5 rounded-full group-hover:scale-150 transition-transform duration-700"></div>
+        <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm relative overflow-hidden group">
+          <div className="absolute -right-4 -top-4 w-24 h-24 bg-blue-500/5 rounded-full"></div>
           <p className="text-xs font-black text-slate-400 uppercase tracking-widest mb-2">الأكثر مبيعاً</p>
           <h3 className="text-xl font-bold text-slate-900 dark:text-white mb-1">{topPerformer?.name || '---'}</h3>
           <p className="text-3xl font-black text-blue-600">
@@ -32,8 +32,8 @@ export default function StaffAnalyticsClient({ metrics }: Props) {
           </p>
         </div>
 
-        <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-xl relative overflow-hidden group">
-          <div className="absolute -right-4 -top-4 w-24 h-24 bg-emerald-500/5 rounded-full group-hover:scale-150 transition-transform duration-700"></div>
+        <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm relative overflow-hidden group">
+          <div className="absolute -right-4 -top-4 w-24 h-24 bg-emerald-500/5 rounded-full"></div>
           <p className="text-xs font-black text-slate-400 uppercase tracking-widest mb-2">متوسط حجم السلة</p>
           <h3 className="text-xl font-bold text-slate-900 dark:text-white mb-1">إجمالي الفريق</h3>
           <p className="text-3xl font-black text-emerald-600">
@@ -41,11 +41,11 @@ export default function StaffAnalyticsClient({ metrics }: Props) {
           </p>
         </div>
 
-        <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-xl relative overflow-hidden group">
-          <div className="absolute -right-4 -top-4 w-24 h-24 bg-purple-500/5 rounded-full group-hover:scale-150 transition-transform duration-700"></div>
+        <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm relative overflow-hidden group">
+          <div className="absolute -right-4 -top-4 w-24 h-24 bg-primary-500/5 rounded-full"></div>
           <p className="text-xs font-black text-slate-400 uppercase tracking-widest mb-2">معدل إعادة التموين</p>
           <h3 className="text-xl font-bold text-slate-900 dark:text-white mb-1">الهدف الشهري</h3>
-          <p className="text-3xl font-black text-purple-600">68%</p>
+          <p className="text-3xl font-black text-primary-600 dark:text-primary-400">68%</p>
         </div>
       </div>
 

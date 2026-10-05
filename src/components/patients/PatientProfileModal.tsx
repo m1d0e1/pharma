@@ -561,7 +561,7 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
             <div className="space-y-12 animate-in fade-in slide-in-from-bottom-4">
                <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
                   <FinanceStatCard icon={Award} label="نقاط الولاء" value={formData.points_balance} unit="نقطة" color="from-emerald-500 to-teal-600" />
-                  <FinanceStatCard icon={CreditCard} label="رصيد المحفظة" value={data?.wallet_balance || 0} unit="ج.م" color="from-purple-500 to-indigo-600" />
+                  <FinanceStatCard icon={CreditCard} label="رصيد المحفظة" value={data?.wallet_balance || 0} unit="ج.م" color="from-primary-600 to-primary-700" />
                   <FinanceStatCard icon={ShieldCheck} label="حد الائتمان" value={formData.credit_limit} unit="ج.م" color="from-blue-500 to-indigo-600" />
                   <FinanceStatCard
                     icon={History}
@@ -982,17 +982,17 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                        <div 
                          key={inv.invoice_id} 
                          onClick={() => handleOpenReceipt(inv.invoice_id)}
-                         className="bg-white dark:bg-slate-800/50 p-8 rounded-[40px] border border-slate-100 dark:border-slate-800 flex justify-between items-center hover:shadow-2xl hover:border-purple-500 transition-all cursor-pointer group"
+                         className="bg-white dark:bg-slate-800/50 p-5 rounded-xl border border-slate-200 dark:border-slate-800 flex justify-between items-center hover:bg-slate-50 dark:hover:bg-slate-800 hover:border-slate-300 dark:hover:border-slate-700 transition-colors cursor-pointer group"
                        >
-                          <div className="flex gap-8 items-center">
-                             <div className="w-16 h-16 bg-purple-50 dark:bg-purple-900/30 text-purple-600 rounded-[24px] flex items-center justify-center text-3xl group-hover:scale-110 transition-transform">
-                                📄
+                          <div className="flex gap-4 items-center">
+                             <div className="w-11 h-11 bg-primary-50 dark:bg-primary-950/30 text-primary-600 dark:text-primary-400 rounded-lg flex items-center justify-center">
+                                <FileText className="h-5 w-5" aria-hidden="true" />
                              </div>
                              <div>
                                <p className="font-black text-slate-900 dark:text-white text-xl flex items-center gap-2">
                                  فاتورة #{inv.invoice_id ? inv.invoice_id.substring(0, 8) : ''}
-                                 <span className="text-xs bg-purple-100 dark:bg-purple-900/40 text-purple-600 px-3 py-1 rounded-full font-bold">
-                                   عرض الفاتورة والأصناف 👁️
+                                 <span className="text-xs bg-primary-50 dark:bg-primary-950/30 text-primary-700 dark:text-primary-300 px-2.5 py-1 rounded-full font-semibold">
+                                   عرض الفاتورة والأصناف
                                  </span>
                                </p>
                                <p className="text-sm font-bold text-slate-400 mt-1 line-clamp-1">
@@ -1001,7 +1001,7 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                              </div>
                           </div>
                           <div className="text-left">
-                             <p className="font-black text-purple-600 text-3xl">{Number(inv.total_amount || 0).toFixed(2)} <span className="text-sm">ج.م</span></p>
+                             <p className="font-bold text-primary-700 dark:text-primary-300 text-2xl">{Number(inv.total_amount || 0).toFixed(2)} <span className="text-xs">ج.م</span></p>
                              <p className="text-xs font-black text-slate-500 mt-2">{inv.created_at ? format(new Date(inv.created_at), 'PPP', { locale: ar }) : ''}</p>
                           </div>
                        </div>

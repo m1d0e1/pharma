@@ -1,6 +1,6 @@
 use serde::Deserialize;
 use serde_json::{json, Value};
-use sqlx::{sqlite::SqliteConnectOptions, Connection, Row, Sqlite, SqliteConnection, Transaction};
+use sqlx::{sqlite::SqliteConnectOptions, Connection, QueryBuilder, Row, Sqlite, SqliteConnection, Transaction};
 use std::collections::HashSet;
 use tauri::Manager;
 
@@ -129,6 +129,156 @@ async fn ensure_unit_conversion_edit_permission(
         )
     {
         return Err("Unauthorized: can_modify_unit_conversion permission required".into());
+    }
+    Ok(())
+}
+
+fn is_stable_history_unit(field: &str, value: &str) -> bool {
+    let value = value.trim();
+    match field {
+        "medium_unit" => matches!(value, "medium" | "strip" | "شريط"),
+        "small_unit" => value == "small",
+        _ => false,
+    }
+}
+
+async fn ensure_historical_unit_labels_safe(
+    tx: &mut Transaction<'_, Sqlite>,
+    drug_ids: &[i64],
+    target_id: i64,
+    edits: Option<&Value>,
+) -> Result<(), String> {
+    let mut ids = drug_ids.to_vec();
+    if !ids.contains(&target_id) {
+        ids.push(target_id);
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    if ids.is_empty() {
+        return Ok(());
+    }
+
+    let id_list = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+    let rows = sqlx::query(&format!(
+        "SELECT id,medium_unit,small_unit FROM master_drugs WHERE id IN ({id_list})"
+    ))
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    if rows.len() != ids.len() {
+        return Err("أحد الأصناف تغيّر أو لم يعد موجوداً؛ حدّث شاشة التعارض".into());
+    }
+    let target = rows
+        .iter()
+        .find(|row| row.get::<i64, _>("id") == target_id)
+        .ok_or_else(|| "الصنف البديل غير موجود".to_string())?;
+    let edit_map = edits.and_then(Value::as_object);
+    let mut candidates: Vec<(i64, &'static str, String)> = Vec::new();
+
+    for field in ["medium_unit", "small_unit"] {
+        let target_current = target
+            .try_get::<Option<String>, _>(field)
+            .unwrap_or(None)
+            .unwrap_or_default();
+        let final_label = match edit_map.and_then(|map| map.get(field)) {
+            Some(Value::Null) => String::new(),
+            Some(value) => value
+                .as_str()
+                .ok_or_else(|| "قيمة وحدة غير صحيحة".to_string())?
+                .trim()
+                .to_string(),
+            None => target_current.trim().to_string(),
+        };
+
+        for row in &rows {
+            let drug_id = row.get::<i64, _>("id");
+            let previous = row
+                .try_get::<Option<String>, _>(field)
+                .unwrap_or(None)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            if previous.is_empty()
+                || previous == final_label
+                || is_stable_history_unit(field, &previous)
+            {
+                continue;
+            }
+            candidates.push((drug_id, field, previous));
+        }
+    }
+
+    if candidates.is_empty() {
+        return Ok(());
+    }
+
+    // Check all source/target labels in one set-wise query. Group reconciliation can contain
+    // multiple owners, so doing this inside the per-source replacement loop would repeatedly
+    // scan historical sales/returns while holding the write transaction.
+    let mut query = QueryBuilder::<Sqlite>::new("WITH candidates(drug_id,field,label) AS (");
+    query.push_values(candidates.iter(), |mut values, (drug_id, field, label)| {
+        values.push_bind(*drug_id).push_bind(*field).push_bind(label);
+    });
+    query.push(
+        r#")
+        SELECT c.field,c.label
+        FROM candidates c
+        JOIN sales_items si
+          ON si.drug_id=c.drug_id
+         AND LOWER(TRIM(COALESCE(si.unit,'')))=LOWER(TRIM(c.label))
+         AND (
+           TRIM(COALESCE(si.unit,''))=TRIM(c.label)
+           OR NOT (
+             (c.field='medium_unit' AND LOWER(TRIM(COALESCE(si.unit,''))) IN ('medium','strip','شريط'))
+             OR (c.field='small_unit' AND LOWER(TRIM(COALESCE(si.unit,''))) IN ('small','unit','pill'))
+           )
+         )
+        UNION ALL
+        SELECT c.field,c.label
+        FROM candidates c
+        JOIN return_items ri
+          ON ri.drug_id=c.drug_id
+         AND LOWER(TRIM(COALESCE(ri.unit,'')))=LOWER(TRIM(c.label))
+         AND (
+           TRIM(COALESCE(ri.unit,''))=TRIM(c.label)
+           OR NOT (
+             (c.field='medium_unit' AND LOWER(TRIM(COALESCE(ri.unit,''))) IN ('medium','strip','شريط'))
+             OR (c.field='small_unit' AND LOWER(TRIM(COALESCE(ri.unit,''))) IN ('small','unit','pill'))
+           )
+         )
+        UNION ALL
+        SELECT c.field,c.label
+        FROM candidates c
+        JOIN return_items ri
+          ON LOWER(TRIM(COALESCE(ri.unit,'')))=LOWER(TRIM(c.label))
+         AND (
+           TRIM(COALESCE(ri.unit,''))=TRIM(c.label)
+           OR NOT (
+             (c.field='medium_unit' AND LOWER(TRIM(COALESCE(ri.unit,''))) IN ('medium','strip','شريط'))
+             OR (c.field='small_unit' AND LOWER(TRIM(COALESCE(ri.unit,''))) IN ('small','unit','pill'))
+           )
+         )
+        JOIN sales_items si
+          ON si.id=ri.sale_item_id AND si.drug_id=c.drug_id
+        LIMIT 1
+        "#,
+    );
+    if let Some(used) = query
+        .build()
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        let field: String = used.try_get("field").unwrap_or_default();
+        let previous: String = used.try_get("label").unwrap_or_default();
+        let label_name = if field == "medium_unit" {
+            "الوحدة المتوسطة"
+        } else {
+            "الوحدة الصغرى"
+        };
+        return Err(format!(
+            "لا يمكن تغيير اسم {label_name} أو دمج هذا الصنف لأن سجلات مبيعات أو مرتجعات تاريخية ما زالت تستخدم الاسم «{previous}». احتفظ باسم الوحدة أو صحّح السجل بطريقة تحفظ تصنيف الوحدة التاريخي."
+        ));
     }
     Ok(())
 }
@@ -432,7 +582,7 @@ async fn replace_tx(
     user_id: &str,
     payload: Replacement,
 ) -> Result<i64, String> {
-    replace_tx_with_allowed_collisions(tx, user_id, payload, &[], false).await
+    replace_tx_with_allowed_collisions(tx, user_id, payload, &[], false, false).await
 }
 
 async fn replace_group_tx(
@@ -502,6 +652,14 @@ async fn replace_group_tx(
         return Err("تغيّر تعارض الباركود منذ فتح الشاشة؛ حدّث المراجعة قبل الدمج".into());
     }
 
+    ensure_historical_unit_labels_safe(
+        tx,
+        &all_ids,
+        payload.target_id,
+        payload.edits.as_ref(),
+    )
+    .await?;
+
     for source_id in &source_ids {
         replace_tx_with_allowed_collisions(
             tx,
@@ -514,6 +672,7 @@ async fn replace_group_tx(
                 confirmed_same_product: true,
             },
             &all_ids,
+            true,
             true,
         )
         .await?;
@@ -533,6 +692,7 @@ async fn replace_tx_with_allowed_collisions(
     payload: Replacement,
     allowed_collision_ids: &[i64],
     allow_reviewed_conversion_edits: bool,
+    historical_unit_preflight_done: bool,
 ) -> Result<i64, String> {
     let admin = sqlx::query(
         "SELECT role, permissions FROM users WHERE id=? AND is_active=1",
@@ -706,6 +866,15 @@ async fn replace_tx_with_allowed_collisions(
         }
         id
     };
+    if !historical_unit_preflight_done {
+        ensure_historical_unit_labels_safe(
+            tx,
+            &[payload.source_id, target_id],
+            target_id,
+            payload.edits.as_ref(),
+        )
+        .await?;
+    }
     ensure_unit_conversion_edit_permission(
         tx,
         target_id,
@@ -1852,6 +2021,205 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(lots_after, lots_before);
+    }
+
+    #[tokio::test]
+    async fn group_replacement_rejects_custom_unit_renames_that_would_reinterpret_history() {
+        let mut db = fixture().await;
+        sqlx::raw_sql(
+            r#"
+            UPDATE master_drugs
+            SET barcode='123', medium_unit='old-strip', small_unit='old-tablet',
+                large_to_medium=2, medium_to_small=1
+            WHERE id=10;
+            UPDATE master_drugs
+            SET barcode='123', medium_unit='strip', small_unit='tablet',
+                large_to_medium=2, medium_to_small=1
+            WHERE id=20;
+            UPDATE sales_items SET unit='old-strip' WHERE id=1;
+            "#,
+        )
+        .execute(&mut db)
+        .await
+        .unwrap();
+
+        let mut tx = db.begin().await.unwrap();
+        let error = replace_group_tx(
+            &mut tx,
+            "admin",
+            GroupReplacement {
+                source_ids: vec![10],
+                target_id: 20,
+                edits: Some(json!({
+                    "medium_unit": "strip",
+                    "small_unit": "tablet"
+                })),
+                confirmed_same_product: true,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("الوحدة") || error.contains("السجل"), "{error}");
+        tx.rollback().await.unwrap();
+
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM master_drugs WHERE id IN (10,20)")
+                .fetch_one(&mut db)
+                .await
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT unit FROM sales_items WHERE id=1")
+                .fetch_one(&mut db)
+                .await
+                .unwrap(),
+            "old-strip"
+        );
+    }
+
+    #[tokio::test]
+    async fn group_replacement_rejects_case_variant_generic_label_renames_that_break_reports() {
+        let mut db = fixture().await;
+        sqlx::raw_sql(
+            r#"
+            UPDATE master_drugs
+            SET barcode='123', medium_unit='Strip', small_unit='tablet',
+                large_to_medium=2, medium_to_small=1
+            WHERE id=10;
+            UPDATE master_drugs
+            SET barcode='123', medium_unit='Blister', small_unit='tablet',
+                large_to_medium=2, medium_to_small=1
+            WHERE id=20;
+            UPDATE sales_items SET unit='Strip' WHERE id=1;
+            "#,
+        )
+        .execute(&mut db)
+        .await
+        .unwrap();
+
+        let mut tx = db.begin().await.unwrap();
+        let error = replace_group_tx(
+            &mut tx,
+            "admin",
+            GroupReplacement {
+                source_ids: vec![10],
+                target_id: 20,
+                edits: Some(json!({
+                    "medium_unit": "Blister",
+                    "small_unit": "tablet"
+                })),
+                confirmed_same_product: true,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("الوحدة") || error.contains("السجل"), "{error}");
+        tx.rollback().await.unwrap();
+
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT unit FROM sales_items WHERE id=1")
+                .fetch_one(&mut db)
+                .await
+                .unwrap(),
+            "Strip"
+        );
+    }
+
+    #[tokio::test]
+    async fn group_replacement_rejects_casefolded_custom_history_used_by_returns_and_settlement() {
+        let mut db = fixture().await;
+        sqlx::raw_sql(
+            r#"
+            UPDATE master_drugs
+            SET barcode='123', medium_unit='Legacy Strip', small_unit='tablet',
+                large_to_medium=2, medium_to_small=1
+            WHERE id=10;
+            UPDATE master_drugs
+            SET barcode='123', medium_unit='Blister', small_unit='tablet',
+                large_to_medium=2, medium_to_small=1
+            WHERE id=20;
+            UPDATE sales_items SET unit='legacy strip' WHERE id=1;
+            "#,
+        )
+        .execute(&mut db)
+        .await
+        .unwrap();
+
+        let mut tx = db.begin().await.unwrap();
+        let error = replace_group_tx(
+            &mut tx,
+            "admin",
+            GroupReplacement {
+                source_ids: vec![10],
+                target_id: 20,
+                edits: Some(json!({
+                    "medium_unit": "Blister",
+                    "small_unit": "tablet"
+                })),
+                confirmed_same_product: true,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("الوحدة") || error.contains("السجل"), "{error}");
+        tx.rollback().await.unwrap();
+
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT unit FROM sales_items WHERE id=1")
+                .fetch_one(&mut db)
+                .await
+                .unwrap(),
+            "legacy strip"
+        );
+    }
+
+    #[tokio::test]
+    async fn group_replacement_allows_casefolded_canonical_history_that_is_independently_stable() {
+        let mut db = fixture().await;
+        sqlx::raw_sql(
+            r#"
+            UPDATE master_drugs
+            SET barcode='123', medium_unit='Strip', small_unit='tablet',
+                large_to_medium=2, medium_to_small=1
+            WHERE id=10;
+            UPDATE master_drugs
+            SET barcode='123', medium_unit='Blister', small_unit='tablet',
+                large_to_medium=2, medium_to_small=1
+            WHERE id=20;
+            UPDATE sales_items SET unit='STRIP' WHERE id=1;
+            "#,
+        )
+        .execute(&mut db)
+        .await
+        .unwrap();
+
+        let mut tx = db.begin().await.unwrap();
+        let target = replace_group_tx(
+            &mut tx,
+            "admin",
+            GroupReplacement {
+                source_ids: vec![10],
+                target_id: 20,
+                edits: Some(json!({
+                    "medium_unit": "Blister",
+                    "small_unit": "tablet"
+                })),
+                confirmed_same_product: true,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(target, 20);
+        tx.commit().await.unwrap();
+
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT unit FROM sales_items WHERE id=1")
+                .fetch_one(&mut db)
+                .await
+                .unwrap(),
+            "STRIP"
+        );
     }
 
     #[tokio::test]

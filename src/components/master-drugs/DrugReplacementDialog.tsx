@@ -38,6 +38,7 @@ export default function DrugReplacementDialog({ source, target, newDrug, pending
   const [edits, setEdits] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(true);
   const [barcodeOwners, setBarcodeOwners] = useState<any[]>([]);
+  const [ownerReviewBarcodes, setOwnerReviewBarcodes] = useState<string[]>([]);
   const [ownersLoading, setOwnersLoading] = useState(false);
   const [ownersError, setOwnersError] = useState('');
   const [canonicalId, setCanonicalId] = useState<number | null>(null);
@@ -72,12 +73,21 @@ export default function DrugReplacementDialog({ source, target, newDrug, pending
   const sharedBarcodes = [...new Set(barcodes(sourceInfo).filter(code => barcodes(targetInfo).includes(code)))];
   const proposedBarcode = String(pendingEdit?.barcode || newDrug?.barcode || '').trim().toLowerCase();
   const reviewBarcodes = [...new Set([...sharedBarcodes, proposedBarcode].filter(Boolean))];
-  const sharedBarcodeKey = reviewBarcodes.join('|');
+  // Stock/lot barcode evidence stays pharmacy-scoped, but a barcode already visible on either
+  // master record is safe to use as a lookup key for global owner identity. This lets a user
+  // reconcile a real global duplicate even when the other owner's lot exists in another branch.
+  const visibleMasterBarcodes = [sourceInfo?.barcode, targetInfo?.barcode]
+    .filter(Boolean)
+    .map(code => String(code).trim().toLowerCase())
+    .filter(Boolean);
+  const ownerLookupBarcodes = [...new Set([...reviewBarcodes, ...visibleMasterBarcodes])];
+  const ownerLookupKey = ownerLookupBarcodes.join('|');
   React.useEffect(() => {
     let cancelled = false;
-    if (!sharedBarcodeKey) {
+    if (!ownerLookupKey) {
       if (!loading) {
         setBarcodeOwners([]);
+        setOwnerReviewBarcodes([]);
         setOwnersError('');
         setOwnersLoading(false);
         setCanonicalId(null);
@@ -86,14 +96,28 @@ export default function DrugReplacementDialog({ source, target, newDrug, pending
     }
     setOwnersLoading(true);
     setOwnersError('');
-    const codes = sharedBarcodeKey.split('|').filter(Boolean);
+    const codes = ownerLookupKey.split('|').filter(Boolean);
     Promise.all(codes.map(code => findDrugBarcodeOwners(code))).then(groups => {
       if (cancelled) return;
+      const sourceId = Number(sourceInfo?.id);
+      const comparisonTargetId = selectedId ? Number(selectedId) : null;
+      const pendingTargetId = pendingEdit && target?.id ? Number(target.id) : null;
+      const relevantGroups = groups
+        .map((owners, index) => ({ owners, code: codes[index] }))
+        .filter(({ owners, code }) => {
+          const ownerIds = new Set(owners.map((owner: any) => Number(owner.id)));
+          if (!ownerIds.has(sourceId)) return false;
+          if (newDrug) return Boolean(proposedBarcode && code === proposedBarcode && owners.length > 1);
+          if (pendingTargetId && proposedBarcode && code === proposedBarcode && !ownerIds.has(pendingTargetId)) {
+            return owners.length > 1;
+          }
+          return Boolean(comparisonTargetId && ownerIds.has(comparisonTargetId));
+        });
       const byId = new Map<number, any>();
-      for (const drug of groups.flat()) byId.set(Number(drug.id), drug);
+      for (const drug of relevantGroups.flatMap(group => group.owners)) byId.set(Number(drug.id), drug);
       const owners = [...byId.values()].sort((a, b) => Number(a.id) - Number(b.id));
       setBarcodeOwners(owners);
-      const pendingTargetId = pendingEdit && target?.id ? Number(target.id) : null;
+      setOwnerReviewBarcodes(relevantGroups.map(group => group.code));
       const pendingTargetIsExternal = Boolean(
         pendingTargetId
         && owners.length > 1
@@ -108,12 +132,13 @@ export default function DrugReplacementDialog({ source, target, newDrug, pending
     }).catch(() => {
       if (cancelled) return;
       setBarcodeOwners([]);
+      setOwnerReviewBarcodes([]);
       setCanonicalId(null);
       setOwnersError('تعذر تحميل كل الأصناف المرتبطة بهذا الباركود؛ لم يتم تغيير البيانات.');
       setOwnersLoading(false);
     });
     return () => { cancelled = true; };
-  }, [sharedBarcodeKey, newDrug, pendingEdit, target?.id, loading]);
+  }, [ownerLookupKey, newDrug, pendingEdit, target?.id, selectedId, sourceInfo?.id, proposedBarcode, loading]);
   const pendingTargetId = pendingEdit && target?.id ? Number(target.id) : null;
   const pendingTargetIsExternal = Boolean(
     pendingTargetId
@@ -125,6 +150,14 @@ export default function DrugReplacementDialog({ source, target, newDrug, pending
     : null;
   const groupOwners = pendingTargetOwner ? [...barcodeOwners, pendingTargetOwner] : barcodeOwners;
   const groupMode = groupOwners.length > 2 || Boolean(newDrug && barcodeOwners.length > 1);
+  const twoOwnerBarcodeMatch = Boolean(
+    !groupMode
+    && barcodeOwners.length === 2
+    && sourceInfo?.id
+    && selected?.id
+    && barcodeOwners.some(owner => Number(owner.id) === Number(sourceInfo.id))
+    && barcodeOwners.some(owner => Number(owner.id) === Number(selected.id)),
+  );
   const searchSequence = React.useRef(0);
   const submitLock = React.useRef(false);
   const dialogRef = React.useRef<HTMLElement>(null);
@@ -142,7 +175,7 @@ export default function DrugReplacementDialog({ source, target, newDrug, pending
       if (!first) { e.preventDefault(); return; }
       if (e.shiftKey && (document.activeElement === first || document.activeElement === e.currentTarget)) { e.preventDefault(); last.focus(); }
       else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
-    }} className="bg-white dark:bg-slate-900 rounded-2xl p-6 w-full max-w-6xl max-h-[90vh] overflow-auto space-y-4">
+    }} className="bg-white dark:bg-slate-900 rounded-2xl p-4 sm:p-6 w-full max-w-6xl max-h-[90vh] overflow-auto space-y-4">
       <h2 id="replacement-title" className="font-bold text-xl">{onArchived ? 'تحذير: حذف آمن أو استبدال الصنف القديم' : 'تحذير: استبدال الصنف القديم وحفظ روابطه'}</h2>
       <p>الصنف القديم: {source.trade_name_en || source.trade_name || `#${source.id}`} (#{source.id})</p>
       <p>لا يمكن مشاركة الباركود بين صنفين أو حذف سجل مستخدم مباشرة. عند اختيار نقل الروابط: تُنشأ نسخة احتياطية وتُنقل دفعات المخزون والفواتير والمرتجعات والروابط إلى البديل، ثم يُحذف السجل القديم. تبقى الكميات والتكاليف وأسعار الفواتير السابقة دون تغيير.</p>
@@ -152,7 +185,7 @@ export default function DrugReplacementDialog({ source, target, newDrug, pending
         <p>يوقف البيع والشراء الجديد لهذا الصنف ولا يحذف كمياته أو فواتيره أو سجله الطبي. يبقى قابلاً للمراجعة في إدارة الأصناف ضمن «متوقف»، ويمكن استعادته بإلغاء «إيقاف التعامل». الباركود يبقى محجوزاً؛ استخدم نقل الروابط أدناه إذا كنت تريد استعماله لصنف بديل مطابق.</p>
         <p>الرصيد المحفوظ: {sourceInfo?.stock_quantity ?? 'جاري التحميل'} — باركود الدفعات: {sourceInfo?.inventory_barcodes || '—'}</p>
         <label className="flex gap-2"><input type="checkbox" checked={archiveConfirmed} disabled={busy} onChange={e => setArchiveConfirmed(e.target.checked)} />أوافق على إيقاف الصنف مع حفظ المخزون والسجل، وليس مسح الحركات.</label>
-        <button type="button" disabled={busy || loading || !archiveConfirmed} className="bg-amber-700 text-white rounded p-3 disabled:opacity-40" onClick={async () => {
+        <button type="button" disabled={busy || loading || !archiveConfirmed} className="w-full sm:w-auto bg-amber-700 text-white rounded p-3 disabled:opacity-40" onClick={async () => {
           if (submitLock.current) return;
           submitLock.current=true; setBusy(true); setError('');
           try {
@@ -196,9 +229,12 @@ export default function DrugReplacementDialog({ source, target, newDrug, pending
         <button type="button" disabled={busy || loading} className="border rounded p-2" onClick={() => setLoadAttempt(attempt => attempt + 1)}>إعادة تحميل بيانات الصنفين</button>
       </div>}
       {!loading && sourceInfo && targetInfo && <>
-        {reviewBarcodes.length > 0 && <p className="bg-emerald-50 text-emerald-800 p-2">باركود قيد المراجعة بين البطاقة أو دفعات المخزون: {reviewBarcodes.join('، ')}</p>}
+        {(ownerReviewBarcodes.length > 0 || reviewBarcodes.length > 0) && <p className="bg-emerald-50 text-emerald-800 p-2">باركود قيد المراجعة بين البطاقة أو دفعات المخزون: {(ownerReviewBarcodes.length > 0 ? ownerReviewBarcodes : reviewBarcodes).join('، ')}</p>}
         {ownersLoading && <p role="status">جاري فحص جميع الأصناف المرتبطة بالباركود...</p>}
         {ownersError && <p role="alert" className="text-red-600">{ownersError}</p>}
+        {twoOwnerBarcodeMatch && <p className="bg-blue-50 text-blue-900 dark:bg-blue-950/30 dark:text-blue-200 p-3 rounded-lg">
+          الصنفان يشتركان في نفس الباركود. يمكنك مراجعة وتغيير أسماء الوحدات ومعاملات التحويل في «البيانات النهائية» قبل الدمج؛ تبقى معاملات الوحدات المحفوظة في الدفعات والفواتير السابقة دون إعادة كتابة.
+        </p>}
         {groupMode && <div className="border-2 border-amber-500 bg-amber-50 dark:bg-amber-950/30 rounded-xl p-4 space-y-3">
           <h3 className="font-black text-amber-900 dark:text-amber-200">تعارض باركود متعدد — {groupOwners.length} أصناف مرتبطة بنفس الباركود</h3>
           <p className="text-sm">لا تحاول دمجها اثنين اثنين. اختر السجل النهائي الصحيح؛ ستُنقل روابط ومخزون وسجل جميع الأصناف الأخرى إليه في نسخة احتياطية ومعاملة واحدة. إذا كان أي صف دواءً أو تركيزاً أو عبوة مختلفة، ألغِ العملية وصحح باركوده بدلاً من الدمج.</p>
@@ -252,17 +288,19 @@ export default function DrugReplacementDialog({ source, target, newDrug, pending
       <label className="block">كلمة مرور المدير الحالي<input type="password" autoComplete="current-password" className="w-full border rounded p-2" value={password} disabled={busy} onChange={e => setPassword(e.target.value)} /></label>
       <p>التأكيد يحفظ التعديلات والاستبدال معاً. في شاشة الشراء: ستعود للفاتورة بالبيانات المصححة؛ راجعها ثم اضغط «حفظ نهائي» لإتمام الشراء.</p>
       {error && <p role="alert" className="text-red-600">{error}</p>}
-      <div className="flex gap-3">
-        <button type="button" disabled={busy || loading || ownersLoading || !!ownersError || !confirmed || !password || (groupMode ? !canonicalId : (!newDrug && !selected))} className="bg-red-600 text-white rounded p-3 disabled:opacity-40" onClick={async () => {
+      <div className="flex flex-col sm:flex-row sm:flex-wrap gap-3 sticky bottom-0 bg-white/95 dark:bg-slate-900/95 py-2">
+        <button type="button" disabled={busy || loading || ownersLoading || !!ownersError || !confirmed || !password || (groupMode ? !canonicalId : (!newDrug && !selected))} className="w-full sm:w-auto bg-red-600 text-white rounded p-3 disabled:opacity-40" onClick={async () => {
           if (submitLock.current) return;
           submitLock.current = true; setBusy(true); setError('');
           let result: any;
           let reconciledIds: number[] | undefined;
           try {
-            if (groupMode) {
-              const sourceIds = groupOwners.map(owner => Number(owner.id)).filter(id => id !== Number(canonicalId));
-              reconciledIds = [...sourceIds, Number(canonicalId)];
-              result = await reconcileDrugBarcodeOwnersAction(sourceIds, Number(canonicalId), password, edits);
+            if (groupMode || twoOwnerBarcodeMatch) {
+              const finalId = groupMode ? Number(canonicalId) : Number(selected.id);
+              const reviewedOwners = groupMode ? groupOwners : barcodeOwners;
+              const sourceIds = reviewedOwners.map(owner => Number(owner.id)).filter(id => id !== finalId);
+              reconciledIds = [...sourceIds, finalId];
+              result = await reconcileDrugBarcodeOwnersAction(sourceIds, finalId, password, edits);
             } else {
               result = await replaceDrugAction(Number(source.id), newDrug ? null : Number(selected.id), newDrug || null, password, edits);
             }
@@ -283,7 +321,7 @@ export default function DrugReplacementDialog({ source, target, newDrug, pending
           }
           else { setError(result.error || 'فشل الاستبدال'); setBusy(false); submitLock.current = false; }
         }}>{busy ? 'جاري النسخ الاحتياطي والاستبدال...' : 'نقل الروابط وحذف القديم'}</button>
-        <button type="button" disabled={busy} className="border rounded p-3" onClick={onClose}>إلغاء — بدون تغيير</button>
+        <button type="button" disabled={busy} className="w-full sm:w-auto border rounded p-3" onClick={onClose}>إلغاء — بدون تغيير</button>
       </div>
     </section>
   </div>;

@@ -11,14 +11,14 @@ describe('Button Component', () => {
   it('applies variant classes correctly', () => {
     const { container } = render(<Button variant="destructive">Delete</Button>);
     const button = container.firstChild;
-    expect(button).toHaveClass('bg-gradient-danger');
+    expect(button).toHaveClass('bg-danger-600');
   });
 
   it('applies size classes correctly', () => {
     const { container } = render(<Button size="lg">Large Button</Button>);
     const button = container.firstChild;
-    expect(button).toHaveClass('h-14');
-    expect(button).not.toHaveClass('h-15');
+    expect(button).toHaveClass('h-11');
+    expect(button).not.toHaveClass('h-14');
   });
 
   it('handles click events', () => {

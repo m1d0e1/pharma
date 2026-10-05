@@ -20,9 +20,10 @@ export async function findDrugBarcodeOwners(barcode: string) {
   if (!code) return [];
   const user = await getLocalSession();
   if (!user || (!hasUserPermissionSync(user, 'can_manage_inventory') && !hasUserPermissionSync(user, 'can_view_purchases'))) return [];
+  const pharmacyId = user.pharmacy_id || 'local_default';
   return dbSelect(`SELECT m.*,
-      (SELECT COALESCE(SUM(quantity),0) FROM inventory WHERE drug_id=m.id) AS stock_quantity,
-      (SELECT GROUP_CONCAT(DISTINCT barcode) FROM inventory WHERE drug_id=m.id AND TRIM(COALESCE(barcode,''))!='') AS inventory_barcodes
+      (SELECT COALESCE(SUM(quantity),0) FROM inventory WHERE drug_id=m.id AND (pharmacy_id=? OR (pharmacy_id IS NULL AND ?='local_default'))) AS stock_quantity,
+      (SELECT GROUP_CONCAT(DISTINCT barcode) FROM inventory WHERE drug_id=m.id AND (pharmacy_id=? OR (pharmacy_id IS NULL AND ?='local_default')) AND TRIM(COALESCE(barcode,''))!='') AS inventory_barcodes
     FROM master_drugs m
     WHERE TRIM(COALESCE(m.barcode,''))=? COLLATE NOCASE
        OR EXISTS(
@@ -31,7 +32,7 @@ export async function findDrugBarcodeOwners(barcode: string) {
            AND (i.quantity IS NULL OR i.quantity != 0)
            AND TRIM(COALESCE(i.barcode,''))=? COLLATE NOCASE
        )
-    ORDER BY m.id`, [code, code]);
+    ORDER BY m.id`, [pharmacyId, pharmacyId, pharmacyId, pharmacyId, code, code]);
 }
 
 export async function getDuplicateDrugBarcodeGroupsAction() {
@@ -146,11 +147,12 @@ export async function getReplacementDrug(id: number) {
   try {
     const user = await getLocalSession();
     if (!user || (!hasUserPermissionSync(user, 'can_manage_inventory') && !hasUserPermissionSync(user, 'can_view_purchases'))) return null;
+    const pharmacyId = user.pharmacy_id || 'local_default';
     const rows = await dbSelect(`SELECT m.*,
-      (SELECT COALESCE(SUM(quantity),0) FROM inventory WHERE drug_id=m.id) AS stock_quantity,
-      (SELECT GROUP_CONCAT(DISTINCT barcode) FROM inventory WHERE drug_id=m.id AND TRIM(COALESCE(barcode,''))!='') AS inventory_barcodes,
-      (SELECT GROUP_CONCAT(DISTINCT barcode) FROM inventory WHERE drug_id=m.id AND (quantity IS NULL OR quantity != 0) AND TRIM(COALESCE(barcode,''))!='') AS active_inventory_barcodes
-      FROM master_drugs m WHERE id=?`, [id]);
+      (SELECT COALESCE(SUM(quantity),0) FROM inventory WHERE drug_id=m.id AND (pharmacy_id=? OR (pharmacy_id IS NULL AND ?='local_default'))) AS stock_quantity,
+      (SELECT GROUP_CONCAT(DISTINCT barcode) FROM inventory WHERE drug_id=m.id AND (pharmacy_id=? OR (pharmacy_id IS NULL AND ?='local_default')) AND TRIM(COALESCE(barcode,''))!='') AS inventory_barcodes,
+      (SELECT GROUP_CONCAT(DISTINCT barcode) FROM inventory WHERE drug_id=m.id AND (pharmacy_id=? OR (pharmacy_id IS NULL AND ?='local_default')) AND (quantity IS NULL OR quantity != 0) AND TRIM(COALESCE(barcode,''))!='') AS active_inventory_barcodes
+      FROM master_drugs m WHERE id=?`, [pharmacyId, pharmacyId, pharmacyId, pharmacyId, pharmacyId, pharmacyId, id]);
     return rows[0] || null;
   } catch (error) {
     // Replacement already committed: callers must recover without suggesting it failed.

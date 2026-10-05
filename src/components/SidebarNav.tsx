@@ -152,7 +152,7 @@ export default function SidebarNav({ userRole, userPermissions }: Props) {
   return (
     <>
       {/* Desktop Navigation */}
-      <nav className="flex-1 p-5 space-y-6 overflow-y-auto hidden lg:block">
+      <nav className="flex-1 px-3 py-4 space-y-5 overflow-y-auto hidden lg:block">
         {(() => {
           const grouped = filteredItems.reduce((acc, item) => {
             const cat = item.category || 'أخرى';
@@ -162,8 +162,8 @@ export default function SidebarNav({ userRole, userPermissions }: Props) {
           }, {} as Record<string, typeof filteredItems>);
           
           return Object.entries(grouped).map(([category, items]) => (
-            <div key={category} className="space-y-2">
-              <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest px-4 mb-2">{category}</h3>
+            <div key={category} className="space-y-1">
+              <h3 className="px-3 mb-1.5 text-[11px] font-semibold text-slate-500 dark:text-slate-400">{category}</h3>
               {items.map((item) => {
                 const Icon = item.icon
                 const isActive = pathname === item.href || 
@@ -178,28 +178,24 @@ export default function SidebarNav({ userRole, userPermissions }: Props) {
                     onMouseEnter={!isHighPriority ? () => router.prefetch(item.href) : undefined}
                     aria-label={item.label}
                     className={cn(
-                      "flex items-center gap-4 px-5 py-4 rounded-2xl transition-all duration-300 group border border-transparent",
+                      "flex min-h-11 items-center gap-3 px-3 py-2.5 rounded-lg transition-colors duration-150 group border border-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-1 dark:focus-visible:ring-offset-slate-950",
                       isActive 
-                        ? "bg-gradient-primary text-white shadow-lg shadow-primary-500/30 border-transparent" 
-                        : "text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/50 hover:text-primary-700 dark:hover:text-primary-400"
+                        ? "bg-primary-50 text-primary-700 border-primary-100 dark:bg-primary-950/40 dark:text-primary-300 dark:border-primary-900/60"
+                        : "text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white"
                     )}
                   >
                     <div className={cn(
-                      "w-10 h-10 rounded-xl flex items-center justify-center transition-all",
+                      "w-8 h-8 rounded-lg flex items-center justify-center transition-colors",
                       isActive
-                        ? "bg-white/20"
-                        : "bg-slate-100 dark:bg-slate-800 group-hover:bg-primary-100 dark:group-hover:bg-primary-900/30"
+                        ? "bg-primary-100 dark:bg-primary-900/50"
+                        : "bg-slate-100 dark:bg-slate-800 group-hover:bg-slate-200 dark:group-hover:bg-slate-700"
                     )}>
                       <Icon className={cn(
-                        "w-5 h-5 transition-all",
-                        isActive ? "text-white" : "opacity-80 group-hover:opacity-100 group-hover:text-primary-600 dark:group-hover:text-primary-400"
+                        "w-4 h-4 transition-colors",
+                        isActive ? "text-primary-700 dark:text-primary-300" : "text-slate-500 dark:text-slate-400 group-hover:text-slate-700 dark:group-hover:text-slate-200"
                       )} />
                     </div>
-                    <span className="font-bold text-base">{item.label}</span>
-                    <div className="flex-1" />
-                    {!isActive && (
-                      <div className="w-1.5 h-1.5 bg-primary-500 rounded-full opacity-0 group-hover:opacity-100 transition-opacity" />
-                    )}
+                    <span className="font-medium text-sm leading-5">{item.label}</span>
                   </Link>
                 )
               })}
@@ -209,8 +205,8 @@ export default function SidebarNav({ userRole, userPermissions }: Props) {
       </nav>
 
       {/* Mobile Bottom Navigation */}
-      {mounted && createPortal(<nav aria-label="التنقل الرئيسي للجوال" className="lg:hidden fixed bottom-0 left-0 right-0 bg-gradient-glass dark:bg-gradient-glass-dark backdrop-blur-xl border-t border-slate-200/60 dark:border-slate-800/60 z-40 shadow-hard">
-        <div className="flex justify-around p-3">
+      {mounted && createPortal(<nav aria-label="التنقل الرئيسي للجوال" className="lg:hidden fixed bottom-0 left-0 right-0 bg-white/95 dark:bg-slate-950/95 backdrop-blur-md border-t border-slate-200 dark:border-slate-800 z-40 shadow-[0_-8px_24px_-20px_rgba(15,23,42,0.45)] pb-[env(safe-area-inset-bottom)]">
+        <div className="flex justify-around px-2 py-2">
           {mobileNavItems.map((item) => {
               const Icon = item.icon
               const isActive = pathname === item.href || 
@@ -224,19 +220,19 @@ export default function SidebarNav({ userRole, userPermissions }: Props) {
                   onMouseEnter={!isHighPriority ? () => router.prefetch(item.href) : undefined}
                   aria-label={item.label}
                   className={cn(
-                    "flex flex-col items-center p-3 rounded-2xl transition-all duration-300 active:scale-95 group",
-                    isActive ? "text-primary-600 dark:text-primary-400" : "text-slate-600 dark:text-slate-400"
+                    "flex min-h-12 min-w-12 flex-col items-center justify-center px-2 py-1.5 rounded-lg transition-colors duration-150 group",
+                    isActive ? "text-primary-700 dark:text-primary-300" : "text-slate-600 dark:text-slate-400"
                   )}
                 >
                   <div className={cn(
-                    "w-10 h-10 rounded-xl flex items-center justify-center transition-all",
+                    "w-8 h-8 rounded-lg flex items-center justify-center transition-colors",
                     isActive 
                       ? "bg-primary-100 dark:bg-primary-900/30" 
-                      : "bg-slate-100 dark:bg-slate-800"
+                      : "bg-transparent"
                   )}>
                     <Icon className="w-5 h-5" />
                   </div>
-                  <span className="text-xs mt-1.5 font-bold">{item.label}</span>
+                  <span className="text-[11px] mt-0.5 font-medium max-w-20 truncate">{item.label}</span>
                 </Link>
               )
             })}
@@ -244,25 +240,25 @@ export default function SidebarNav({ userRole, userPermissions }: Props) {
             <button
               type="button"
               onClick={() => setShowMobileMore(v => !v)}
-              className="flex flex-col items-center p-3 rounded-2xl text-slate-600 dark:text-slate-400"
+              className="flex min-h-12 min-w-12 flex-col items-center justify-center px-2 py-1.5 rounded-lg text-slate-600 dark:text-slate-400 transition-colors hover:bg-slate-100 dark:hover:bg-slate-800"
               aria-label="المزيد من الخيارات"
               aria-expanded={showMobileMore}
             >
-              <div className="w-10 h-10 rounded-xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center">
+              <div className="w-8 h-8 rounded-lg bg-slate-100 dark:bg-slate-800 flex items-center justify-center">
                 <span className="text-xs font-black">+{mobileMoreItems.length}</span>
               </div>
-              <span className="text-xs mt-1.5 font-bold">المزيد</span>
+              <span className="text-[11px] mt-0.5 font-medium">المزيد</span>
             </button>
           )}
         </div>
         {showMobileMore && mobileMoreItems.length > 0 && (
-          <div className="absolute bottom-full left-3 right-3 mb-2 max-h-[60vh] overflow-y-auto rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-2xl p-2">
+          <div className="absolute bottom-full left-3 right-3 mb-2 max-h-[60vh] overflow-y-auto rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-xl p-2">
             {mobileMoreItems.map(item => {
               const Icon = item.icon
               return (
-                <Link key={`more-${item.href}`} href={item.href} onClick={() => setShowMobileMore(false)} className="flex items-center gap-3 p-3 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800">
+                <Link key={`more-${item.href}`} href={item.href} onClick={() => setShowMobileMore(false)} className="flex min-h-11 items-center gap-3 p-2.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800">
                   <Icon className="w-4 h-4" />
-                  <span className="text-sm font-bold">{item.label}</span>
+                  <span className="text-sm font-medium">{item.label}</span>
                 </Link>
               )
             })}

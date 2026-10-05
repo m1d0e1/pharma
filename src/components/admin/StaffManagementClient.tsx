@@ -600,53 +600,49 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
   };
 
   return (
-    <div className="space-y-8" dir="rtl">
-      {/* Premium Header Card */}
-      <div className="bg-gradient-to-r from-primary-600 to-primary-800 dark:from-slate-800 dark:to-slate-900 p-8 rounded-[40px] shadow-2xl shadow-primary-500/10 flex flex-col md:flex-row justify-between items-center gap-6 relative overflow-hidden">
-        <div className="absolute top-0 right-0 w-64 h-64 bg-white/5 rounded-full -mr-32 -mt-32 blur-3xl" />
-        <div className="relative z-10 flex items-center gap-6">
-          <div className="w-16 h-16 bg-white/10 backdrop-blur-xl rounded-3xl flex items-center justify-center text-white border border-white/20">
-            <Users className="w-8 h-8" />
+    <div className="space-y-6" dir="rtl">
+      <div className="bg-white dark:bg-slate-900 p-5 sm:p-6 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+        <div className="flex items-center gap-4">
+          <div className="w-11 h-11 bg-primary-50 dark:bg-primary-950/40 rounded-lg flex items-center justify-center text-primary-600 dark:text-primary-300 border border-primary-100 dark:border-primary-900/60">
+            <Users className="w-5 h-5" />
           </div>
           <div>
-            <h2 className="text-3xl font-black text-white tracking-tight">إدارة الكادر</h2>
-            <p className="text-primary-100 dark:text-slate-400 font-bold">إدارة بيانات وصلاحيات فريق العمل في الصيدلية</p>
+            <h2 className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">إدارة الكادر</h2>
+            <p className="text-sm text-slate-500 dark:text-slate-400">إدارة بيانات وصلاحيات فريق العمل في الصيدلية</p>
           </div>
         </div>
         <button 
           onClick={() => setShowAddModal(true)}
-          className="relative z-10 px-10 py-5 bg-white text-primary-700 dark:bg-primary-600 dark:text-white rounded-[24px] font-black shadow-xl hover:scale-105 active:scale-95 transition-all flex items-center gap-3 group"
+          className="min-h-11 px-4 py-2.5 bg-primary-700 text-white rounded-lg font-semibold shadow-sm hover:bg-primary-800 transition-colors flex items-center gap-2"
         >
-          <UserPlus className="w-6 h-6 group-hover:rotate-12 transition-transform" />
+          <UserPlus className="w-4 h-4" />
           إضافة موظف جديد
         </button>
       </div>
 
       {/* User Cards Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
         {users.map(user => (
-          <div key={user.id} className="bg-white dark:bg-slate-900/60 backdrop-blur-xl p-8 rounded-[40px] border border-slate-100 dark:border-slate-800/80 shadow-soft hover:shadow-hard hover:-translate-y-2 transition-all duration-500 group relative overflow-hidden">
-            <div className="absolute top-0 right-0 w-32 h-32 bg-primary-500/5 rounded-full -mr-16 -mt-16 group-hover:scale-150 transition-all duration-1000" />
-            
-            <div className="relative z-10 flex flex-col items-center">
-              <div className="w-20 h-20 bg-gradient-to-br from-primary-100 to-primary-55 dark:from-primary-900/30 dark:to-primary-800/10 rounded-[28px] flex items-center justify-center text-primary-600 dark:text-primary-400 font-black text-3xl mb-4 border border-primary-100 dark:border-primary-900/30 shadow-lg group-hover:rotate-3 transition-transform">
+          <div key={user.id} className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm transition-colors group">
+            <div className="flex flex-col items-center">
+              <div className="w-12 h-12 bg-primary-50 dark:bg-primary-950/40 rounded-lg flex items-center justify-center text-primary-600 dark:text-primary-300 font-semibold text-lg mb-3 border border-primary-100 dark:border-primary-900/50">
                 {user.full_name?.[0] || user.username[0].toUpperCase()}
               </div>
               
-              <h3 className="font-black text-xl text-slate-900 dark:text-white mb-1">{user.full_name || user.username}</h3>
-              <div className="flex items-center gap-2 mb-6">
-                <span className="text-xs px-3 py-1 bg-slate-100 dark:bg-slate-800 rounded-full font-black text-slate-500 border border-slate-200 dark:border-slate-700">
+              <h3 className="font-semibold text-lg text-slate-900 dark:text-white mb-1">{user.full_name || user.username}</h3>
+              <div className="flex items-center gap-2 mb-4">
+                <span className="text-xs px-2.5 py-1 bg-slate-100 dark:bg-slate-800 rounded-full font-semibold text-slate-500 border border-slate-200 dark:border-slate-700">
                   {user.role}
                 </span>
-                <span className="text-xs px-3 py-1 bg-primary-50 dark:bg-primary-900/20 rounded-full font-black text-primary-600 dark:text-primary-400 border border-primary-100 dark:border-primary-800/30">
+                <span className="text-xs px-2.5 py-1 bg-primary-50 dark:bg-primary-950/30 rounded-full font-semibold text-primary-600 dark:text-primary-400 border border-primary-100 dark:border-primary-900/40">
                   @{user.username}
                 </span>
               </div>
 
-              <div className="w-full flex gap-3">
+              <div className="w-full flex gap-2">
                 <button 
                   onClick={() => handleEdit(user)}
-                  className="flex-1 py-4 bg-slate-900 dark:bg-primary-600 text-white rounded-[20px] font-black text-sm flex items-center justify-center gap-2 hover:shadow-lg hover:shadow-primary-500/30 transition-all active:scale-95"
+                  className="flex-1 min-h-11 px-3 py-2.5 bg-slate-900 dark:bg-primary-700 text-white rounded-lg font-semibold text-sm flex items-center justify-center gap-2 hover:bg-slate-800 dark:hover:bg-primary-800 transition-colors"
                 >
                   <Edit3 className="w-4 h-4" />
                   تعديل
@@ -655,19 +651,19 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
                   type="button"
                   aria-label={`حذف الموظف ${user.full_name || user.username}`}
                   onClick={() => handleDelete(user.id, user.full_name || user.username)}
-                  className="p-4 bg-rose-50 dark:bg-rose-900/10 text-rose-600 dark:text-rose-400 rounded-[20px] hover:bg-rose-600 hover:text-white dark:hover:bg-rose-500 dark:hover:text-white transition-all active:scale-95 group/del"
+                  className="inline-flex h-11 w-11 items-center justify-center bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-400 rounded-lg hover:bg-rose-100 dark:hover:bg-rose-950/50 transition-colors"
                   title="حذف الموظف"
                 >
-                  <Trash2 className="w-5 h-5 group-hover/del:scale-110 transition-transform" />
+                  <Trash2 className="w-4 h-4" />
                 </button>
                 <button 
                   type="button"
                   aria-label={`إعادة تعيين كلمة مرور ${user.full_name || user.username}`}
                   onClick={() => setShowResetModal(user)}
-                  className="p-4 bg-amber-50 dark:bg-amber-900/10 text-amber-600 dark:text-amber-400 rounded-[20px] hover:bg-amber-600 hover:text-white dark:hover:bg-amber-500 dark:hover:text-white transition-all active:scale-95 group/key"
+                  className="inline-flex h-11 w-11 items-center justify-center bg-amber-50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400 rounded-lg hover:bg-amber-100 dark:hover:bg-amber-950/50 transition-colors"
                   title="إعادة تعيين كلمة المرور"
                 >
-                  <Key className="w-5 h-5 group-hover/key:rotate-12 transition-transform" />
+                  <Key className="w-4 h-4" />
                 </button>
               </div>
             </div>
@@ -677,17 +673,17 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
 
       {/* Edit User/Permissions Modal */}
       {selectedUser && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-[100] p-4 animate-in fade-in duration-300">
-          <div ref={editDialogRef} role="dialog" aria-modal="true" aria-labelledby="edit-staff-dialog-title" tabIndex={-1} className="bg-white dark:bg-slate-900 w-full max-w-5xl h-[85vh] rounded-[50px] shadow-hard border border-slate-100 dark:border-slate-800 flex flex-col overflow-hidden animate-in zoom-in duration-500">
+        <div className="fixed inset-0 bg-slate-950/55 flex items-center justify-center z-[100] p-3 sm:p-4 animate-in fade-in duration-200">
+          <div ref={editDialogRef} role="dialog" aria-modal="true" aria-labelledby="edit-staff-dialog-title" tabIndex={-1} className="bg-white dark:bg-slate-900 w-full max-w-5xl max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-2rem)] rounded-xl shadow-xl border border-slate-200 dark:border-slate-800 flex flex-col overflow-hidden animate-in zoom-in duration-200">
             {/* Modal Header */}
-            <div className="p-8 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center bg-slate-50/50 dark:bg-slate-800/30">
-              <div className="flex items-center gap-5">
-                <div className="p-5 bg-gradient-to-br from-primary-600 to-primary-700 rounded-[28px] text-white shadow-xl shadow-primary-500/20">
-                  <Lock className="w-7 h-7" />
+            <div className="p-5 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-slate-50 dark:bg-slate-800/40">
+              <div className="flex items-center gap-3">
+                <div className="p-3 bg-primary-700 rounded-lg text-white shadow-sm">
+                  <Lock className="w-5 h-5" />
                 </div>
                 <div>
-                  <h2 id="edit-staff-dialog-title" className="text-3xl font-black text-slate-900 dark:text-white tracking-tight">إدارة الموظف</h2>
-                  <p className="text-slate-500 font-bold flex items-center gap-2">
+                  <h2 id="edit-staff-dialog-title" className="text-xl font-semibold text-slate-900 dark:text-white tracking-tight">إدارة الموظف</h2>
+                  <p className="text-sm text-slate-500 flex items-center gap-2">
                     <span className="w-2 h-2 rounded-full bg-emerald-500" />
                     {selectedUser.full_name || selectedUser.username}
                   </p>
@@ -697,16 +693,16 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
                 type="button"
                 aria-label="إغلاق إدارة الموظف"
                 onClick={() => setSelectedUser(null)} 
-                className="p-4 bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 rounded-2xl hover:bg-rose-50 dark:hover:bg-rose-900/20 text-slate-400 hover:text-rose-500 transition-all"
+                className="inline-flex h-11 w-11 items-center justify-center bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-950/30 text-slate-400 hover:text-rose-500 transition-colors"
               >
-                <X className="w-7 h-7" />
+                <X className="w-5 h-5" />
               </button>
             </div>
 
             {/* Modal Body */}
-            <div className="flex flex-1 overflow-hidden">
+            <div className="flex flex-1 min-h-0 flex-col lg:flex-row overflow-hidden">
               {/* Tabs Sidebar */}
-              <div className="w-72 border-l border-slate-100 dark:border-slate-800 p-8 space-y-3 bg-slate-50/30 dark:bg-slate-900/50">
+              <div className="w-full lg:w-64 shrink-0 border-b lg:border-b-0 lg:border-l border-slate-200 dark:border-slate-800 p-3 lg:p-4 bg-slate-50 dark:bg-slate-900/50 flex lg:block gap-2 lg:space-y-2 overflow-x-auto lg:overflow-y-auto">
                 {[
                   { id: 'info', label: 'حساب المستخدم', icon: Lock },
                   { id: 'personal', label: 'بيانات شخصية', icon: UserIcon },
@@ -726,28 +722,25 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
                     key={tab.id}
                     onClick={() => setActiveTab(tab.id as any)}
                     className={cn(
-                      "w-full flex items-center gap-4 px-6 py-4 rounded-[20px] font-black text-sm transition-all relative overflow-hidden",
+                      "shrink-0 lg:w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg font-semibold text-sm transition-colors",
                       activeTab === tab.id 
-                        ? 'bg-primary-600 text-white shadow-xl shadow-primary-500/20' 
+                        ? 'bg-primary-700 text-white'
                         : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 dark:text-slate-400'
                     )}
                   >
-                    <tab.icon className={cn("w-5 h-5 transition-transform", activeTab === tab.id && "scale-110")} />
+                    <tab.icon className="w-4 h-4" />
                     {tab.label}
-                    {activeTab === tab.id && (
-                      <div className="absolute right-0 top-0 bottom-0 w-1.5 bg-white/20" />
-                    )}
                   </button>
                 ))}
               </div>
 
               {/* Content Area */}
-              <div className="flex-1 overflow-auto p-10 bg-white dark:bg-slate-900 custom-scrollbar">
+              <div className="flex-1 min-h-0 overflow-auto p-4 sm:p-6 bg-white dark:bg-slate-900 custom-scrollbar">
                 {activeTab === 'info' && (
-                  <div className="max-w-2xl mx-auto space-y-8 animate-in slide-in-from-left-4 duration-500">
-                    <div className="bg-primary-50/50 dark:bg-primary-900/10 p-8 rounded-[32px] border border-primary-100/50 dark:border-primary-800/20 flex items-center gap-6 mb-8">
-                       <div className="w-16 h-16 bg-white dark:bg-slate-800 rounded-2xl flex items-center justify-center text-primary-600 shadow-sm">
-                          <Lock className="w-8 h-8" />
+                  <div className="max-w-2xl mx-auto space-y-6 animate-in slide-in-from-left-4 duration-200">
+                    <div className="bg-primary-50/50 dark:bg-primary-950/20 p-5 rounded-xl border border-primary-100 dark:border-primary-900/40 flex items-center gap-4 mb-6">
+                       <div className="w-11 h-11 bg-white dark:bg-slate-800 rounded-lg flex items-center justify-center text-primary-600 shadow-sm">
+                          <Lock className="w-5 h-5" />
                        </div>
                        <div>
                           <h4 className="font-black text-slate-900 dark:text-white text-lg">صلاحيات دخول البرنامج</h4>
@@ -957,10 +950,10 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
 
                 {PERMISSION_MODULES.map(module => activeTab === module.id && (
                   <div key={module.id} className="grid grid-cols-1 md:grid-cols-2 gap-4 animate-in slide-in-from-right-4 duration-500">
-                    <div className="col-span-2 mb-4">
-                      <div className="flex items-center gap-4 p-6 bg-slate-50 dark:bg-slate-800/40 rounded-[28px] border border-slate-100 dark:border-slate-800/60">
-                        <div className="w-12 h-12 bg-white dark:bg-slate-800 rounded-2xl flex items-center justify-center text-primary-600 shadow-sm">
-                          <ShieldCheck className="w-6 h-6" />
+                    <div className="col-span-full mb-3">
+                      <div className="flex items-center gap-3 p-4 bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-slate-200 dark:border-slate-800">
+                        <div className="w-10 h-10 bg-white dark:bg-slate-800 rounded-lg flex items-center justify-center text-primary-600 shadow-sm">
+                          <ShieldCheck className="w-5 h-5" />
                         </div>
                         <div>
                           <h4 className="font-black text-slate-900 dark:text-white">{module.title}</h4>
@@ -976,19 +969,19 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
             </div>
 
             {/* Modal Footer */}
-            <div className="p-10 border-t border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/30 flex justify-end gap-5">
+            <div className="p-4 sm:p-6 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/30 flex flex-col-reverse sm:flex-row sm:justify-end gap-3">
               <button 
                 onClick={() => setSelectedUser(null)}
-                className="px-10 py-5 bg-white dark:bg-slate-800 border-2 border-slate-200 dark:border-slate-700 rounded-[24px] font-black text-slate-700 dark:text-white hover:bg-slate-50 dark:hover:bg-slate-700 transition-all active:scale-95"
+                className="w-full sm:w-auto min-h-11 px-5 py-2.5 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg font-semibold text-slate-700 dark:text-white hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
               >
                 إلغاء
               </button>
               <button 
                 onClick={saveAll}
                 disabled={isSaving}
-                className="px-14 py-5 bg-primary-600 text-white rounded-[24px] font-black shadow-2xl shadow-primary-500/30 hover:bg-primary-700 hover:-translate-y-1 transition-all flex items-center gap-3 disabled:bg-slate-400 active:scale-95"
+                className="w-full sm:w-auto min-h-11 px-5 py-2.5 bg-primary-700 text-white rounded-lg font-semibold shadow-sm hover:bg-primary-800 transition-colors flex items-center justify-center gap-2 disabled:bg-slate-400"
               >
-                {isSaving ? 'جاري الحفظ...' : <><Save className="w-6 h-6" /> حفظ التغييرات</>}
+                {isSaving ? 'جاري الحفظ...' : <><Save className="w-4 h-4" /> حفظ التغييرات</>}
               </button>
             </div>
           </div>

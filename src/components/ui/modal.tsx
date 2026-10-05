@@ -113,11 +113,11 @@ const Modal: React.FC<ModalProps> = ({
   }
 
   return (
-    <div className="fixed inset-0 z-[100] animate-in fade-in duration-300">
+    <div className="fixed inset-0 z-[100]">
       {/* Backdrop */}
       <div 
         className={cn(
-          "fixed inset-0 bg-slate-900/60 backdrop-blur-sm transition-opacity",
+          "fixed inset-0 bg-slate-950/55 transition-opacity",
           overlayClassName
         )}
         onClick={onClose}
@@ -125,7 +125,7 @@ const Modal: React.FC<ModalProps> = ({
       
       {/* Modal Container */}
       <div className="fixed inset-0 overflow-y-auto">
-        <div className="flex min-h-full items-center justify-center p-4">
+        <div className="flex min-h-full items-center justify-center p-3 sm:p-5">
           {/* Modal Content */}
           <div 
             ref={contentRef}
@@ -136,7 +136,7 @@ const Modal: React.FC<ModalProps> = ({
             aria-label={!title ? 'نافذة حوار' : undefined}
             tabIndex={-1}
             className={cn(
-              "relative w-full transform overflow-hidden rounded-2xl bg-white dark:bg-slate-900 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in zoom-in slide-in-from-bottom-8 duration-500",
+              "relative w-full transform overflow-hidden rounded-xl bg-white dark:bg-slate-900 shadow-xl border border-slate-200 dark:border-slate-800",
               sizeClasses[size],
               contentClassName
             )}
@@ -144,16 +144,16 @@ const Modal: React.FC<ModalProps> = ({
           >
             {/* Header */}
             {(title || description || showCloseButton) && (
-              <div className="border-b border-slate-100 dark:border-slate-800 px-8 py-6">
+              <div className="border-b border-slate-200 dark:border-slate-800 px-5 sm:px-6 py-4">
                 <div className="flex items-start justify-between">
                   <div className="flex-1">
                     {title && (
-                      <h2 id={titleId} className="text-2xl font-bold text-slate-900 dark:text-white">
+                      <h2 id={titleId} className="text-xl font-semibold text-slate-900 dark:text-white">
                         {title}
                       </h2>
                     )}
                     {description && (
-                      <p id={descriptionId} className="mt-2 text-slate-600 dark:text-slate-400">
+                      <p id={descriptionId} className="mt-1.5 text-sm text-slate-600 dark:text-slate-400">
                         {description}
                       </p>
                     )}
@@ -163,7 +163,7 @@ const Modal: React.FC<ModalProps> = ({
                     <button
                       type="button"
                       onClick={onClose}
-                      className="ml-4 flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700 hover:text-slate-700 dark:hover:text-slate-300 transition-colors"
+                      className="ms-4 flex h-10 w-10 items-center justify-center rounded-lg text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-700 dark:hover:text-slate-200 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-slate-900"
                       aria-label="إغلاق النافذة"
                     >
                       <X className="h-5 w-5" />
@@ -174,7 +174,7 @@ const Modal: React.FC<ModalProps> = ({
             )}
 
             {/* Body */}
-            <div className="px-8 py-6">
+            <div className="px-5 sm:px-6 py-5">
               {children}
             </div>
 
@@ -193,7 +193,7 @@ interface ModalHeaderProps {
 }
 
 const ModalHeader: React.FC<ModalHeaderProps> = ({ children, className }) => (
-  <div className={cn("px-8 py-6 border-b border-slate-100 dark:border-slate-800", className)}>
+  <div className={cn("px-5 sm:px-6 py-4 border-b border-slate-200 dark:border-slate-800", className)}>
     {children}
   </div>
 )
@@ -204,7 +204,7 @@ interface ModalBodyProps {
 }
 
 const ModalBody: React.FC<ModalBodyProps> = ({ children, className }) => (
-  <div className={cn("px-8 py-6", className)}>
+  <div className={cn("px-5 sm:px-6 py-5", className)}>
     {children}
   </div>
 )
@@ -215,7 +215,7 @@ interface ModalFooterProps {
 }
 
 const ModalFooter: React.FC<ModalFooterProps> = ({ children, className }) => (
-  <div className={cn("px-8 py-6 border-t border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/30", className)}>
+  <div className={cn("px-5 sm:px-6 py-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40", className)}>
     <div className="flex items-center justify-end gap-3">
       {children}
     </div>
@@ -228,7 +228,7 @@ interface ModalTitleProps {
 }
 
 const ModalTitle: React.FC<ModalTitleProps> = ({ children, className }) => (
-  <h2 className={cn("text-2xl font-bold text-slate-900 dark:text-white", className)}>
+  <h2 className={cn("text-xl font-semibold text-slate-900 dark:text-white", className)}>
     {children}
   </h2>
 )
@@ -239,7 +239,7 @@ interface ModalDescriptionProps {
 }
 
 const ModalDescription: React.FC<ModalDescriptionProps> = ({ children, className }) => (
-  <p className={cn("mt-2 text-slate-600 dark:text-slate-400", className)}>
+  <p className={cn("mt-1.5 text-sm text-slate-600 dark:text-slate-400", className)}>
     {children}
   </p>
 )

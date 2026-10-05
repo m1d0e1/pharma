@@ -109,6 +109,78 @@ it('compares full records, highlights shared information and batch barcodes, and
   expect(replaceDrugAction).toHaveBeenCalledWith(10, 20, null, 'admin-password', { manufacturer: 'Old manufacturer' });
 });
 
+it('lets two drugs sharing one barcode reconcile reviewed unit names and conversion factors', async () => {
+  jest.clearAllMocks();
+  const old = {
+    id: 10, trade_name: 'Old pack', barcode: '123', inventory_barcodes: '123', stock_quantity: 2,
+    large_unit: 'box', medium_unit: 'strip-old', small_unit: 'tablet-old', large_to_medium: 2, medium_to_small: 5,
+  };
+  const target = {
+    id: 20, trade_name: 'Canonical pack', barcode: '123', inventory_barcodes: '123', stock_quantity: 3,
+    large_unit: 'carton', medium_unit: 'strip-target', small_unit: 'tablet-target', large_to_medium: 3, medium_to_small: 4,
+  };
+  (getReplacementDrug as jest.Mock).mockImplementation(async id => id === 10 ? old : target);
+  (findDrugBarcodeOwners as jest.Mock).mockResolvedValue([old, target]);
+  (reconcileDrugBarcodeOwnersAction as jest.Mock).mockResolvedValue({ success: true, id: 20, backupPath: 'backups/pair.db' });
+
+  render(<DrugReplacementDialog source={old} target={target} onClose={jest.fn()} onSuccess={jest.fn()} />);
+
+  expect(await screen.findByText(/الصنفان يشتركان في نفس الباركود/)).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText('البيانات النهائية: الوحدة الكبرى'), { target: { value: 'box' } });
+  fireEvent.change(screen.getByLabelText('البيانات النهائية: الوحدة المتوسطة'), { target: { value: 'strip' } });
+  fireEvent.change(screen.getByLabelText('البيانات النهائية: الوحدة الصغرى'), { target: { value: 'tablet' } });
+  fireEvent.change(screen.getByLabelText('البيانات النهائية: عدد الوحدات المتوسطة'), { target: { value: '10' } });
+  fireEvent.change(screen.getByLabelText('البيانات النهائية: عدد الوحدات الصغرى'), { target: { value: '10' } });
+  fireEvent.click(screen.getByRole('checkbox'));
+  fireEvent.change(screen.getByLabelText('كلمة مرور المدير الحالي'), { target: { value: 'admin-password' } });
+  fireEvent.click(screen.getByRole('button', { name: 'نقل الروابط وحذف القديم' }));
+
+  await waitFor(() => expect(reconcileDrugBarcodeOwnersAction).toHaveBeenCalledWith([10], 20, 'admin-password', {
+    large_unit: 'box',
+    medium_unit: 'strip',
+    small_unit: 'tablet',
+    large_to_medium: 10,
+    medium_to_small: 10,
+  }));
+  expect(replaceDrugAction).not.toHaveBeenCalled();
+});
+
+it('discovers a two-owner conflict from a visible master barcode even when the other owner lot is hidden by pharmacy scope', async () => {
+  jest.clearAllMocks();
+  const oldScoped = {
+    id: 10, trade_name: 'Foreign-lot owner', barcode: null, inventory_barcodes: null, active_inventory_barcodes: null, stock_quantity: 0,
+    large_unit: 'box', medium_unit: 'strip-old', small_unit: 'tablet-old', large_to_medium: 2, medium_to_small: 5,
+  };
+  const targetScoped = {
+    id: 20, trade_name: 'Canonical pack', barcode: '123', inventory_barcodes: null, active_inventory_barcodes: null, stock_quantity: 3,
+    large_unit: 'carton', medium_unit: 'strip-target', small_unit: 'tablet-target', large_to_medium: 3, medium_to_small: 4,
+  };
+  const globalOldOwner = { ...oldScoped, inventory_barcodes: null, active_inventory_barcodes: null };
+  (getReplacementDrug as jest.Mock).mockImplementation(async id => id === 10 ? oldScoped : targetScoped);
+  (findDrugBarcodeOwners as jest.Mock).mockImplementation(async code => code === '123' ? [globalOldOwner, targetScoped] : []);
+  (reconcileDrugBarcodeOwnersAction as jest.Mock).mockResolvedValue({ success: true, id: 20, backupPath: 'backups/cross-pharmacy-pair.db' });
+
+  render(<DrugReplacementDialog source={oldScoped} target={targetScoped} onClose={jest.fn()} onSuccess={jest.fn()} />);
+
+  expect(await screen.findByText(/الصنفان يشتركان في نفس الباركود/)).toBeInTheDocument();
+  expect(findDrugBarcodeOwners).toHaveBeenCalledWith('123');
+  fireEvent.change(screen.getByLabelText('البيانات النهائية: الوحدة المتوسطة'), { target: { value: 'strip' } });
+  fireEvent.change(screen.getByLabelText('البيانات النهائية: الوحدة الصغرى'), { target: { value: 'tablet' } });
+  fireEvent.change(screen.getByLabelText('البيانات النهائية: عدد الوحدات المتوسطة'), { target: { value: '10' } });
+  fireEvent.change(screen.getByLabelText('البيانات النهائية: عدد الوحدات الصغرى'), { target: { value: '10' } });
+  fireEvent.click(screen.getByRole('checkbox'));
+  fireEvent.change(screen.getByLabelText('كلمة مرور المدير الحالي'), { target: { value: 'admin-password' } });
+  fireEvent.click(screen.getByRole('button', { name: 'نقل الروابط وحذف القديم' }));
+
+  await waitFor(() => expect(reconcileDrugBarcodeOwnersAction).toHaveBeenCalledWith([10], 20, 'admin-password', {
+    medium_unit: 'strip',
+    small_unit: 'tablet',
+    large_to_medium: 10,
+    medium_to_small: 10,
+  }));
+  expect(replaceDrugAction).not.toHaveBeenCalled();
+});
+
 it('resolves three barcode owners in one reviewed group operation with an explicit canonical record', async () => {
   jest.clearAllMocks();
   const canonical = { id: 10, trade_name: 'DEXATROL EYE/EAR DROPS 5 ML', barcode: '123', inventory_barcodes: '123', stock_quantity: 10, large_to_medium: 1, medium_to_small: 1, large_unit: 'bottle', active_ingredient: 'DEXAMETHASONE', manufacturer: 'EIPICO', official_price: 27 };

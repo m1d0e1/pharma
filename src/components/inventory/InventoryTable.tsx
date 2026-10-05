@@ -12,7 +12,7 @@ import { useHotkeys } from 'react-hotkeys-hook'
 import AddInventoryModal from '../AddInventoryModal'
 import { deleteInventoryAction, importInventoryWorkbookAction } from '@/app/actions-client/inventory'
 import { dbSelect } from '@/lib/db/tauri'
-import { Download, Upload } from 'lucide-react'
+import { Download, Upload, Search, Package, Pill, Banknote, Eye, Pencil, Trash2 } from 'lucide-react'
 
 interface InventoryItem {
   id: string
@@ -59,6 +59,7 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
   const [sort, setSort] = useState<{ key: string; dir: 'asc' | 'desc' } | null>(null);
   const itemsPerPage = 50;
   const printRef = useRef<HTMLDivElement>(null);
+  const importInputRef = useRef<HTMLInputElement>(null);
   const deletingIdsRef = useRef<Set<string>>(new Set());
   const handlePrint = useReactToPrint({
     contentRef: printRef,
@@ -293,72 +294,79 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
   return (
     <div className="space-y-6">
       {/* Search Bar */}
-      <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm flex items-center gap-4">
+      <div className="bg-white dark:bg-slate-900 p-4 sm:p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col lg:flex-row lg:items-center gap-3">
         <div className="relative flex-1">
-          <span className="absolute inset-y-0 right-4 flex items-center text-slate-400">🔍</span>
+          <span className="absolute inset-y-0 right-3.5 flex items-center text-slate-400" aria-hidden="true"><Search className="h-4 w-4" /></span>
           <input
             type="text"
             placeholder="بحث بالاسم، الباركود، أو المادة الفعالة..."
-            className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 pr-12 pl-4 py-3 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all font-medium"
+            className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 pr-10 pl-3.5 py-2.5 rounded-lg focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 outline-none transition-colors text-sm font-medium"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
           />
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
            <button 
              onClick={handleExportAll} 
-             className="px-4 py-2 bg-slate-100 dark:bg-slate-800 rounded-xl text-xs font-bold hover:bg-slate-200 transition-all flex items-center gap-1"
+             className="min-h-11 px-3.5 py-2 bg-slate-100 dark:bg-slate-800 rounded-lg text-xs font-semibold hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors flex items-center gap-1.5"
            >
              <Download className="w-3.5 h-3.5" />
              تصدير Excel
            </button>
            
            {canManageInventory && (
-             <label
-               className="px-4 py-2 bg-slate-100 dark:bg-slate-800 rounded-xl text-xs font-bold hover:bg-slate-200 transition-all flex items-center gap-1 cursor-pointer"
-             >
-               <Upload className="w-3.5 h-3.5" />
-               استيراد Excel
+             <>
+               <button
+                 type="button"
+                 onClick={() => importInputRef.current?.click()}
+                 className="min-h-11 px-3.5 py-2 bg-slate-100 dark:bg-slate-800 rounded-lg text-xs font-semibold hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors flex items-center gap-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-slate-900"
+               >
+                 <Upload className="w-3.5 h-3.5" />
+                 استيراد Excel
+               </button>
                <input
+                 ref={importInputRef}
                  type="file"
                  accept=".xlsx, .xls"
                  onChange={handleImportAll}
                  className="hidden"
+                 tabIndex={-1}
+                 aria-hidden="true"
                />
-             </label>
+             </>
            )}
 
-           <button onClick={() => handlePrint()} className="px-4 py-2 bg-slate-100 dark:bg-slate-800 rounded-xl text-xs font-bold hover:bg-slate-200 transition-all">طباعة النواقص</button>
+           <button onClick={() => handlePrint()} className="min-h-11 px-3.5 py-2 bg-slate-100 dark:bg-slate-800 rounded-lg text-xs font-semibold hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors">طباعة النواقص</button>
         </div>
       </div>
 
       {/* Stats Summary Card Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div className="bg-gradient-to-r from-blue-500/10 to-indigo-500/10 dark:from-blue-500/20 dark:to-indigo-500/20 border border-blue-100 dark:border-blue-900/50 p-6 rounded-3xl flex justify-between items-center shadow-sm">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 rounded-xl flex justify-between items-center shadow-sm">
           <div>
-            <p className="text-xs font-black text-blue-600 dark:text-blue-400 uppercase tracking-widest">إجمالي كمية الأدوية المتوفرة</p>
-            <p className="text-3xl font-black text-slate-900 dark:text-white mt-2">
-              {totalQuantity.toLocaleString('ar-EG')} <span className="text-sm font-bold text-slate-500">وحدة كبيرة (تشمل الكسور)</span>
+            <p className="text-xs font-semibold text-blue-700 dark:text-blue-300">إجمالي كمية الأدوية المتوفرة</p>
+            <p className="text-2xl font-bold text-slate-900 dark:text-white mt-1.5 tabular-nums">
+              {totalQuantity.toLocaleString('ar-EG')} <span className="text-xs font-medium text-slate-500">وحدة كبيرة (تشمل الكسور)</span>
             </p>
           </div>
-          <div className="text-4xl bg-blue-500/15 dark:bg-blue-500/30 p-4 rounded-2xl">📦</div>
+          <div className="h-10 w-10 bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300 flex items-center justify-center rounded-lg"><Package className="h-5 w-5" /></div>
         </div>
 
-        <div className="bg-gradient-to-r from-purple-500/10 to-pink-500/10 dark:from-purple-500/20 dark:to-pink-500/20 border border-purple-100 dark:border-purple-900/50 p-6 rounded-3xl flex justify-between items-center shadow-sm">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 rounded-xl flex justify-between items-center shadow-sm">
           <div>
-            <p className="text-xs font-black text-purple-600 dark:text-purple-400 uppercase tracking-widest">إجمالي الأصناف المتوفرة</p>
-            <p className="text-3xl font-black text-slate-900 dark:text-white mt-2">
-              {uniqueDrugsCount.toLocaleString('ar-EG')} <span className="text-sm font-bold text-slate-500">صنف</span>
+            <p className="text-xs font-semibold text-purple-700 dark:text-purple-300">إجمالي الأصناف المتوفرة</p>
+            <p className="text-2xl font-bold text-slate-900 dark:text-white mt-1.5 tabular-nums">
+              {uniqueDrugsCount.toLocaleString('ar-EG')} <span className="text-xs font-medium text-slate-500">صنف</span>
             </p>
           </div>
-          <div className="text-4xl bg-purple-500/15 dark:bg-purple-500/30 p-4 rounded-2xl">🧪</div>
+          <div className="h-10 w-10 bg-purple-50 dark:bg-purple-950/30 text-purple-700 dark:text-purple-300 flex items-center justify-center rounded-lg"><Pill className="h-5 w-5" /></div>
         </div>
 
-        <div className="bg-gradient-to-r from-emerald-500/10 to-teal-500/10 dark:from-emerald-500/20 dark:to-teal-500/20 border border-emerald-100 dark:border-emerald-900/50 p-6 rounded-3xl flex justify-between items-center shadow-sm">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 rounded-xl flex justify-between items-start gap-4 shadow-sm">
           <div>
-            <p className="text-xs font-black text-emerald-600 dark:text-emerald-400 uppercase tracking-widest">قيمة المخزون بسعر البيع</p>
-            <p className="text-3xl font-black text-emerald-600 dark:text-emerald-400 mt-2">
-              {totalValue.toLocaleString('ar-EG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <span className="text-sm font-bold">ج.م</span>
+            <p className="text-xs font-semibold text-emerald-700 dark:text-emerald-300">قيمة المخزون بسعر البيع</p>
+            <p className="text-2xl font-bold text-emerald-700 dark:text-emerald-300 mt-1.5 tabular-nums">
+              {totalValue.toLocaleString('ar-EG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <span className="text-xs font-medium">ج.م</span>
             </p>
             <p className="text-sm mt-2 text-slate-600 dark:text-slate-300">
               التكلفة المسجلة: {totalCost.toLocaleString('ar-EG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ج.م
@@ -367,12 +375,12 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
               تنبيه: {uncostedLots.toLocaleString('ar-EG')} دفعة بتكلفة صفرية أو غير مسجلة؛ راجع التكلفة قبل الاعتماد على التقييم.
             </p>}
           </div>
-          <div className="text-4xl bg-emerald-500/15 dark:bg-emerald-500/30 p-4 rounded-2xl">💰</div>
+          <div className="h-10 w-10 shrink-0 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300 flex items-center justify-center rounded-lg"><Banknote className="h-5 w-5" /></div>
         </div>
       </div>
 
       <p className="text-sm text-slate-500">الإجماليات تخص جميع دفعات نتيجة البحث، وليس الصفحة الحالية فقط. تشمل الكميات منتهية الصلاحية؛ قيمة البيع ليست إيرادًا محققًا أو رصيد خزينة.</p>
-      <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-xl overflow-hidden">
+      <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-right border-collapse">
             <thead>
@@ -467,26 +475,29 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
                       <div className="flex gap-2">
                         <button 
                           onClick={() => setDetailsDrugId(item.drug_id)}
-                          className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400 rounded-lg transition-all" 
+                          aria-label={`عرض تفاصيل ${item.master_drugs.trade_name_en || item.master_drugs.trade_name}`}
+                          className="inline-flex h-11 w-11 items-center justify-center hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400 rounded-lg transition-colors"
                           title="تفاصيل"
                         >
-                          👁️
+                          <Eye className="h-4 w-4" />
                         </button>
                         {canManageInventory && (
                           <>
                             <button
                               onClick={() => setEditingItem(item)}
-                              className="p-2 hover:bg-blue-100 dark:hover:bg-blue-900/30 text-blue-600 dark:text-blue-400 rounded-lg transition-all"
+                              aria-label={`تعديل ${item.master_drugs.trade_name_en || item.master_drugs.trade_name}`}
+                              className="inline-flex h-11 w-11 items-center justify-center hover:bg-blue-50 dark:hover:bg-blue-950/30 text-blue-700 dark:text-blue-300 rounded-lg transition-colors"
                               title="تعديل"
                             >
-                              ✏️
+                              <Pencil className="h-4 w-4" />
                             </button>
                             <button
                               onClick={() => handleForceDelete(item.id)}
-                              className="p-2 hover:bg-red-100 dark:hover:bg-red-900/30 text-red-600 dark:text-red-400 rounded-lg transition-all"
+                              aria-label={`حذف دفعة ${item.master_drugs.trade_name_en || item.master_drugs.trade_name}`}
+                              className="inline-flex h-11 w-11 items-center justify-center hover:bg-red-50 dark:hover:bg-red-950/30 text-red-700 dark:text-red-300 rounded-lg transition-colors"
                               title="حذف"
                             >
-                              🗑️
+                              <Trash2 className="h-4 w-4" />
                             </button>
                           </>
                         )}
@@ -499,8 +510,8 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
               {paginatedItems.length === 0 && (
                 <tr>
                   <td colSpan={6} className="p-16 text-center">
-                    <div className="flex flex-col items-center justify-center space-y-4 opacity-50">
-                      <div className="text-5xl">📦</div>
+                    <div className="flex flex-col items-center justify-center space-y-3 text-slate-400">
+                      <Package className="h-10 w-10 text-slate-300 dark:text-slate-600" />
                       <p className="text-slate-500 font-medium">لم يتم العثور على نتائج للبحث في المخزون.</p>
                     </div>
                   </td>
@@ -612,6 +623,9 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
           drugId={detailsDrugId} 
           onClose={() => setDetailsDrugId(null)} 
           onDrugUpdated={() => {
+            handleRefresh();
+          }}
+          onDrugDeleted={() => {
             handleRefresh();
           }}
         />

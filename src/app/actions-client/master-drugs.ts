@@ -54,6 +54,76 @@ function changesUnitConversion(data: any, current: any): boolean {
   return changesLarge || changesSmall || changesUnitNames;
 }
 
+const STABLE_MEDIUM_HISTORY_UNITS = new Set(['medium', 'strip', 'شريط']);
+const STABLE_SMALL_HISTORY_UNITS = new Set(['small']);
+
+async function assertHistoricalUnitLabelChangeSafe(
+  transactionDb: TransactionDb,
+  drugId: number,
+  current: any,
+  data: any,
+) {
+  for (const { field, stable } of [
+    { field: 'medium_unit', stable: STABLE_MEDIUM_HISTORY_UNITS },
+    { field: 'small_unit', stable: STABLE_SMALL_HISTORY_UNITS },
+  ] as const) {
+    if (data[field] === undefined) continue;
+    const previousLabel = normalizeUnitName(current?.[field]);
+    const requestedLabel = normalizeUnitName(data[field]);
+    // Historical report/COGS SQL compares configured unit labels case-sensitively.
+    // Only the exact generic aliases below remain safe after the configured label changes.
+    if (!previousLabel || requestedLabel === previousLabel || stable.has(previousLabel)) continue;
+
+    // Some return/settlement paths compare configured custom labels case-insensitively,
+    // while report SQL recognizes the built-in aliases only in their exact canonical form.
+    // Ignore exact built-in aliases (they remain stable after a rename), but treat any other
+    // case-folded match as dependent on the configured label.
+    const independentHistoryAliases = field === 'medium_unit'
+      ? "('medium', 'strip', 'شريط')"
+      : "('small', 'unit', 'pill')";
+
+    const usage = await transactionDb.prepare(`
+      SELECT (
+        EXISTS(
+          SELECT 1 FROM sales_items
+          WHERE drug_id = ?
+            AND LOWER(TRIM(COALESCE(unit, ''))) = LOWER(TRIM(?))
+            AND (
+              TRIM(COALESCE(unit, '')) = TRIM(?)
+              OR LOWER(TRIM(COALESCE(unit, ''))) NOT IN ${independentHistoryAliases}
+            )
+        ) OR EXISTS(
+          SELECT 1 FROM return_items
+          WHERE drug_id = ?
+            AND LOWER(TRIM(COALESCE(unit, ''))) = LOWER(TRIM(?))
+            AND (
+              TRIM(COALESCE(unit, '')) = TRIM(?)
+              OR LOWER(TRIM(COALESCE(unit, ''))) NOT IN ${independentHistoryAliases}
+            )
+        ) OR EXISTS(
+          SELECT 1
+          FROM return_items ri
+          JOIN sales_items si ON si.id = ri.sale_item_id
+          WHERE si.drug_id = ?
+            AND LOWER(TRIM(COALESCE(ri.unit, ''))) = LOWER(TRIM(?))
+            AND (
+              TRIM(COALESCE(ri.unit, '')) = TRIM(?)
+              OR LOWER(TRIM(COALESCE(ri.unit, ''))) NOT IN ${independentHistoryAliases}
+            )
+        )
+      ) AS used
+    `).get(
+      drugId, previousLabel, previousLabel,
+      drugId, previousLabel, previousLabel,
+      drugId, previousLabel, previousLabel,
+    ) as any;
+
+    if (Number(usage?.used || 0) === 1) {
+      throw new Error(`لا يمكن تغيير اسم ${field === 'medium_unit' ? 'الوحدة المتوسطة' : 'الوحدة الصغرى'} لأن سجلات مبيعات أو مرتجعات تاريخية ما زالت تستخدم الاسم الحالي. غيّر معاملات التحويل فقط أو احتفظ باسم الوحدة لحماية الحسابات التاريخية.`);
+    }
+  }
+}
+
 function parseOptionalConversionFactor(value: unknown): number | null {
   if (value === undefined || value === null || value === '') return null;
   const parsed = Number(value);
@@ -402,6 +472,7 @@ export async function updateMasterDrugAction(id: number, data: any) {
           throw new Error('غير مصرح بتعديل معاملات التحويل');
         }
       }
+      await assertHistoricalUnitLabelChangeSafe(db, id, transactionalCurrent, data);
       persistedUnitState = {
         large_unit: data.large_unit === undefined ? transactionalCurrent.large_unit : (data.large_unit || null),
         medium_unit: data.medium_unit === undefined ? transactionalCurrent.medium_unit : (data.medium_unit || null),
@@ -1250,7 +1321,28 @@ export async function archiveMasterDrugAction(id: number, confirmed: boolean) {
       await db.prepare("INSERT INTO activity_log(user_id,action,details) VALUES(?,'ARCHIVE_MASTER_DRUG',?)").run(user.id, `Archived drug #${id}; inventory, barcodes and history preserved`);
     })();
     try { secureCache.updateDrug(id, { stop_dealing: 1 }); await secureCache.reload(); } catch (error) { console.warn('Archived drug cache refresh', error); }
-    window.dispatchEvent(new Event('inventory-alerts-refresh'));
+    notifyInventoryChanged();
+    revalidatePath('/stores/items');
+    return { success: true };
+  } catch (error: any) { return { success: false, error: error.message }; }
+}
+
+export async function unarchiveMasterDrugAction(id: number, confirmed: boolean) {
+  try {
+    const user = await getLocalSession();
+    if (!user || !hasUserPermissionSync(user, 'can_manage_inventory')) return { success: false, error: 'غير مصرح' };
+    if (confirmed !== true || !Number.isInteger(id) || id <= 0) return { success: false, error: 'يلزم تأكيد إلغاء الأرشفة لصنف صحيح' };
+    await db.transaction(async (db) => {
+      const result = await db.prepare(`
+        UPDATE master_drugs
+        SET stop_dealing=0
+        WHERE id=? AND stop_dealing=1
+      `).run(id);
+      if (Number(result.changes) !== 1) throw new Error('الصنف غير موجود أو غير مؤرشف');
+      await db.prepare("INSERT INTO activity_log(user_id,action,details) VALUES(?,'UNARCHIVE_MASTER_DRUG',?)").run(user.id, `Unarchived drug #${id}; inventory, barcodes and history preserved`);
+    })();
+    try { secureCache.updateDrug(id, { stop_dealing: 0 }); await secureCache.reload(); } catch (error) { console.warn('Unarchived drug cache refresh', error); }
+    notifyInventoryChanged();
     revalidatePath('/stores/items');
     return { success: true };
   } catch (error: any) { return { success: false, error: error.message }; }

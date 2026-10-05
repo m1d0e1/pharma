@@ -283,7 +283,7 @@ export default function SuppliersManagementClient({
           </div>
         </div>
 
-        <div className="bg-white dark:bg-slate-900 p-6 rounded-[28px] border border-slate-100 dark:border-slate-800 shadow-sm flex items-center justify-between border-r-8 border-r-rose-500">
+        <div className="bg-white dark:bg-slate-900 p-6 rounded-[28px] border border-slate-100 dark:border-slate-800 shadow-sm flex items-center justify-between">
           <div>
             <p className="text-xs font-black text-rose-500 uppercase tracking-widest">إجمالي مديونية الموردين</p>
             <h3 className="text-3xl font-black text-rose-600 dark:text-rose-400 mt-1">
@@ -296,7 +296,7 @@ export default function SuppliersManagementClient({
           </div>
         </div>
 
-        <div className="bg-white dark:bg-slate-900 p-6 rounded-[28px] border border-slate-100 dark:border-slate-800 shadow-sm flex items-center justify-between border-r-8 border-r-emerald-500">
+        <div className="bg-white dark:bg-slate-900 p-6 rounded-[28px] border border-slate-100 dark:border-slate-800 shadow-sm flex items-center justify-between">
           <div>
             <p className="text-xs font-black text-emerald-600 uppercase tracking-widest">حسابات خالصة</p>
             <h3 className="text-3xl font-black text-emerald-600 dark:text-emerald-400 mt-1">
@@ -413,7 +413,7 @@ export default function SuppliersManagementClient({
                         type="button"
                         aria-label={`تعديل المورد ${supplier.name_ar}`}
                         onClick={() => handleOpenEdit(supplier)}
-                        className="p-2 text-slate-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-xl transition-colors"
+                        className="inline-flex h-11 w-11 items-center justify-center text-slate-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/30 rounded-lg transition-colors"
                         title="تعديل"
                       >
                         <Edit className="w-4 h-4" />
@@ -422,7 +422,7 @@ export default function SuppliersManagementClient({
                         type="button"
                         aria-label={`حذف المورد ${supplier.name_ar}`}
                         onClick={() => handleDeleteSupplier(supplier.id)}
-                        className="p-2 text-slate-500 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/20 rounded-xl transition-colors"
+                        className="inline-flex h-11 w-11 items-center justify-center text-slate-500 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-lg transition-colors"
                         title="حذف"
                       >
                         <Trash2 className="w-4 h-4" />
@@ -499,8 +499,8 @@ export default function SuppliersManagementClient({
 
       {/* Add / Edit Supplier Modal */}
       {canMutate && isAddEditOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in">
-          <div ref={addEditDialogRef} role="dialog" aria-modal="true" aria-labelledby="supplier-edit-title" tabIndex={-1} onKeyDown={(event) => { if (event.key === 'Escape' && !isSavingSupplier) setIsAddEditOpen(false); }} className="bg-white dark:bg-slate-900 rounded-3xl max-w-lg w-full p-6 border border-slate-100 dark:border-slate-800 shadow-2xl space-y-6">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/55 animate-in fade-in">
+          <div ref={addEditDialogRef} role="dialog" aria-modal="true" aria-labelledby="supplier-edit-title" tabIndex={-1} onKeyDown={(event) => { if (event.key === 'Escape' && !isSavingSupplier) setIsAddEditOpen(false); }} className="bg-white dark:bg-slate-900 rounded-xl max-w-lg w-full max-h-[calc(100dvh-1.5rem)] overflow-y-auto p-5 sm:p-6 border border-slate-200 dark:border-slate-800 shadow-xl space-y-5">
             <div className="flex justify-between items-center pb-4 border-b border-slate-100 dark:border-slate-800">
               <h3 id="supplier-edit-title" className="text-xl font-black text-slate-900 dark:text-white">
                 {editingSupplier ? 'تعديل بيانات المورد' : 'إضافة مورد جديد'}
@@ -509,7 +509,7 @@ export default function SuppliersManagementClient({
                 type="button"
                 aria-label="إغلاق بيانات المورد"
                 onClick={() => setIsAddEditOpen(false)}
-                className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-white rounded-xl"
+                className="inline-flex h-11 w-11 items-center justify-center text-slate-400 hover:text-slate-600 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -588,8 +588,8 @@ export default function SuppliersManagementClient({
 
       {/* Supplier Payment Modal */}
       {canPay && paymentSupplier && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in">
-          <div ref={paymentDialogRef} role="dialog" aria-modal="true" aria-labelledby="supplier-payment-title" tabIndex={-1} onKeyDown={(event) => { if (event.key === 'Escape' && !isProcessingPayment) setPaymentSupplier(null); }} className="bg-white dark:bg-slate-900 rounded-3xl max-w-lg w-full p-6 border border-slate-100 dark:border-slate-800 shadow-2xl space-y-6">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/55 animate-in fade-in">
+          <div ref={paymentDialogRef} role="dialog" aria-modal="true" aria-labelledby="supplier-payment-title" tabIndex={-1} onKeyDown={(event) => { if (event.key === 'Escape' && !isProcessingPayment) setPaymentSupplier(null); }} className="bg-white dark:bg-slate-900 rounded-xl max-w-lg w-full max-h-[calc(100dvh-1.5rem)] overflow-y-auto p-5 sm:p-6 border border-slate-200 dark:border-slate-800 shadow-xl space-y-5">
             <div className="flex justify-between items-center pb-4 border-b border-slate-100 dark:border-slate-800">
               <div>
                 <h3 id="supplier-payment-title" className="text-xl font-black text-slate-900 dark:text-white">سداد دفعة للمورد</h3>
@@ -599,7 +599,7 @@ export default function SuppliersManagementClient({
                 type="button"
                 aria-label="إغلاق سداد المورد"
                 onClick={() => setPaymentSupplier(null)}
-                className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-white rounded-xl"
+                className="inline-flex h-11 w-11 items-center justify-center text-slate-400 hover:text-slate-600 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -659,7 +659,7 @@ export default function SuppliersManagementClient({
                 )}
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label htmlFor="supplier-payment-method" className="block text-xs font-black text-slate-500 mb-1">طريقة الدفع</label>
                   <select
@@ -746,8 +746,8 @@ export default function SuppliersManagementClient({
 
       {/* Supplier Statement Modal */}
       {statementSupplier && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in">
-          <div ref={statementDialogRef} role="dialog" aria-modal="true" aria-labelledby="supplier-statement-title" tabIndex={-1} onKeyDown={(event) => { if (event.key === 'Escape') setStatementSupplier(null); }} className="bg-white dark:bg-slate-900 rounded-3xl max-w-3xl w-full p-6 border border-slate-100 dark:border-slate-800 shadow-2xl space-y-6 max-h-[85vh] flex flex-col overflow-hidden">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/55 animate-in fade-in">
+          <div ref={statementDialogRef} role="dialog" aria-modal="true" aria-labelledby="supplier-statement-title" tabIndex={-1} onKeyDown={(event) => { if (event.key === 'Escape') setStatementSupplier(null); }} className="bg-white dark:bg-slate-900 rounded-xl max-w-3xl w-full p-5 sm:p-6 border border-slate-200 dark:border-slate-800 shadow-xl space-y-5 max-h-[calc(100dvh-2rem)] flex flex-col overflow-hidden">
             <div className="flex justify-between items-center pb-4 border-b border-slate-100 dark:border-slate-800 shrink-0">
               <div>
                 <h3 id="supplier-statement-title" className="text-xl font-black text-slate-900 dark:text-white">كشف حساب المورد</h3>
@@ -757,7 +757,7 @@ export default function SuppliersManagementClient({
                 type="button"
                 aria-label="إغلاق كشف حساب المورد"
                 onClick={() => setStatementSupplier(null)}
-                className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-white rounded-xl"
+                className="inline-flex h-11 w-11 items-center justify-center text-slate-400 hover:text-slate-600 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
               >
                 <X className="w-5 h-5" />
               </button>

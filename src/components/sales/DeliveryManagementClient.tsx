@@ -123,7 +123,7 @@ export default function DeliveryManagementClient() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
           {invoices.map((inv) => (
-            <div key={inv.id} className="bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 overflow-hidden shadow-sm hover:shadow-xl transition-all group border-b-4 border-b-rose-500/20">
+            <div key={inv.id} className="bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 overflow-hidden shadow-sm hover:shadow-xl transition-all group">
               <div className="p-8 space-y-6">
                 <div className="flex justify-between items-start">
                   <div className="p-4 bg-rose-50 dark:bg-rose-900/20 rounded-2xl">

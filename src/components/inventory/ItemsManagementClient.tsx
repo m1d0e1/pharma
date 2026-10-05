@@ -26,6 +26,7 @@ import {
    Settings,
    History,
    Eye,
+   Archive,
    Trash2,
    Download,
    Upload
@@ -42,6 +43,7 @@ import BarcodeConflictReviewModal from '@/components/inventory/BarcodeConflictRe
 import DrugCatalogUpdateReviewModal from '@/components/inventory/DrugCatalogUpdateReviewModal';
 import {
    addMasterDrugAction,
+   archiveMasterDrugAction,
    deleteMasterDrugAction,
    previewMasterDrugCatalogUpdateAction,
    searchMasterDrugsAction,
@@ -209,10 +211,25 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
       }
    };
 
+   const handleArchive = async (id: number) => {
+      if (!canManageInventory) return;
+      try {
+         const res = await archiveMasterDrugAction(id, true);
+         if (res.success) {
+            setItems(current => current.map(item => Number(item.id) === Number(id) ? { ...item, stop_dealing: 1 } : item));
+            toast.success('تمت أرشفة الصنف وإيقاف التعامل مع حفظ المخزون والسجل');
+         } else {
+            toast.error(res.error || 'فشل أرشفة الصنف');
+         }
+      } catch (err: any) {
+         toast.error(err.message || 'فشل أرشفة الصنف');
+      }
+   };
+
    const handleContextMenu = (e: React.MouseEvent, drugId: number | string) => {
      e.preventDefault();
-     const menuWidth = 192;
-     const menuHeight = 220;
+     const menuWidth = 256;
+     const menuHeight = 292;
      let x = e.clientX;
      let y = e.clientY;
      if (x + menuWidth > window.innerWidth) x = window.innerWidth - menuWidth - 12;
@@ -1207,7 +1224,7 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
 
       {contextMenu && (
         <div 
-          className="fixed z-[300] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden w-64 animate-in fade-in zoom-in duration-200"
+          className="fixed z-[300] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-y-auto w-64 max-h-[min(70vh,24rem)] animate-in fade-in zoom-in duration-200"
           style={{ top: contextMenu.y, left: contextMenu.x }}
         >
           <div className="p-2 space-y-1">
@@ -1229,12 +1246,28 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                   }}
                 />
                 <div className="h-px bg-slate-100 dark:bg-slate-800 my-1 mx-2" />
+                {Number(items.find(i => String(i.id) === String(contextMenu.drugId))?.stop_dealing || 0) !== 1 && (
+                  <ContextMenuItem
+                    icon={Archive}
+                    label="أرشفة الصنف"
+                    color="text-amber-600 dark:text-amber-400"
+                    onClick={() => {
+                      if(confirm('هل تريد أرشفة الصنف؟ سيتم إيقاف التعامل مع حفظ المخزون والفواتير والسجل.')) {
+                        void handleArchive(contextMenu.drugId as number);
+                      }
+                      setContextMenu(null);
+                    }}
+                  />
+                )}
                 <ContextMenuItem
                   icon={Trash2}
                   label="حذف الصنف نهائياً"
                   color="text-red-500"
                   onClick={() => {
-                    if(confirm('هل أنت متأكد من حذف الصنف؟')) { handleDelete(contextMenu.drugId as number); setContextMenu(null); }
+                    if(confirm('هل أنت متأكد من حذف الصنف نهائياً؟ لا يمكن حذف صنف مرتبط بمخزون أو فواتير أو سجل طبي؛ عندها ستظهر لك خيارات الأرشفة أو نقل الروابط.')) {
+                      void handleDelete(contextMenu.drugId as number);
+                    }
+                    setContextMenu(null);
                   }}
                 />
               </>
@@ -1252,6 +1285,9 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                 ...item,
                 ...updatedDrug
              } : item));
+          }}
+          onDrugDeleted={(deletedId) => {
+             setItems(prev => prev.filter(item => String(item.id) !== String(deletedId)));
           }}
         />
       )}

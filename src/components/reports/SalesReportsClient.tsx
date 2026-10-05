@@ -162,23 +162,23 @@ export default function SalesReportsClient({ userRole, user }: { userRole?: stri
   const reportUser = user || (userRole ? { role: userRole } : null);
 
   return (
-    <div className="space-y-8 pb-20" dir="rtl">
+    <div className="space-y-6 pb-16" dir="rtl">
       {/* Header */}
-      <div className="bg-white dark:bg-slate-900 p-8 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-sm">
-        <div className="flex flex-col gap-4 sm:flex-row sm:justify-between sm:items-center mb-8">
+      <div className="bg-white dark:bg-slate-900 p-5 sm:p-6 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
+        <div className="flex flex-col gap-4 sm:flex-row sm:justify-between sm:items-center mb-5">
           <div>
-            <h1 className="text-3xl font-black text-slate-800 dark:text-white">تقرير فواتير المبيعات</h1>
-            <p className="text-slate-500 font-bold">عرض وتحليل تفصيلي لعمليات البيع والمرتجعات</p>
+            <h1 className="text-2xl font-bold text-slate-800 dark:text-white">تقرير فواتير المبيعات</h1>
+            <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">عرض وتحليل تفصيلي لعمليات البيع والمرتجعات</p>
           </div>
-          <div className="flex gap-4">
+          <div className="flex gap-2">
             <button 
               type="button"
               onClick={() => window.print()}
               aria-label="طباعة تقرير المبيعات"
               title="طباعة تقرير المبيعات"
-              className="p-5 bg-slate-50 dark:bg-slate-800 text-slate-500 rounded-2xl border border-slate-100 dark:border-slate-700 hover:bg-slate-100 transition-all"
+              className="inline-flex h-11 w-11 items-center justify-center bg-slate-50 dark:bg-slate-800 text-slate-600 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
             >
-              <Printer className="w-6 h-6" />
+              <Printer className="w-5 h-5" />
             </button>
             <button 
               type="button"
@@ -207,15 +207,15 @@ export default function SalesReportsClient({ userRole, user }: { userRole?: stri
                 link.click();
                 document.body.removeChild(link);
               }}
-              className="p-5 bg-blue-50 dark:bg-blue-900/20 text-blue-600 rounded-2xl hover:bg-blue-600 hover:text-white transition-all"
+              className="inline-flex h-11 w-11 items-center justify-center bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300 rounded-lg border border-blue-100 dark:border-blue-900/50 hover:bg-blue-100 dark:hover:bg-blue-950/50 transition-colors"
             >
-              <Download className="w-6 h-6" />
+              <Download className="w-5 h-5" />
             </button>
           </div>
         </div>
 
         {/* Filters */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 p-8 bg-slate-50 dark:bg-slate-800/50 rounded-[32px] border border-slate-100 dark:border-slate-700">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 p-4 sm:p-5 bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-slate-200 dark:border-slate-700">
           <div className="space-y-2">
             <label htmlFor="sales-report-start-date" className="text-xs font-black text-slate-500 mr-2">من تاريخ</label>
             <div className="relative">
@@ -399,21 +399,21 @@ export default function SalesReportsClient({ userRole, user }: { userRole?: stri
       </div>
 
       {/* Main Table (Invoices) */}
-      <div className="grid grid-cols-1 gap-8">
-        <div className="bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 overflow-hidden shadow-sm">
+      <div className="grid grid-cols-1 gap-4">
+        <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
           <TableScrollContainer>
             <table className="w-full min-w-[1100px] text-right">
               <thead className="bg-slate-50 dark:bg-slate-800/50">
                 <tr className="text-slate-500 text-xs font-black">
-                  <th className="px-8 py-6">الرقم</th>
-                  <th className="px-8 py-6">النوع</th>
-                  <th className="px-8 py-6">التاريخ</th>
-                  <th className="px-8 py-6">العميل</th>
-                  <th className="px-8 py-6">الموظف</th>
-                  <th className="px-8 py-6">ق. الفاتورة</th>
-                  <th className="px-8 py-6">ق. الخصم</th>
-                  <th className="px-8 py-6">ق. بعد الخصم</th>
-                  <th className="px-8 py-6">الحالة</th>
+                  <th className="px-5 py-3.5">الرقم</th>
+                  <th className="px-5 py-3.5">النوع</th>
+                  <th className="px-5 py-3.5">التاريخ</th>
+                  <th className="px-5 py-3.5">العميل</th>
+                  <th className="px-5 py-3.5">الموظف</th>
+                  <th className="px-5 py-3.5">ق. الفاتورة</th>
+                  <th className="px-5 py-3.5">ق. الخصم</th>
+                  <th className="px-5 py-3.5">ق. بعد الخصم</th>
+                  <th className="px-5 py-3.5">الحالة</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">

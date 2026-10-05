@@ -159,8 +159,9 @@ export default function SalesDashboardPage() {
 
   if (loadingRole) {
     return (
-      <div className="flex justify-center items-center py-24" dir="rtl">
+      <div role="status" aria-live="polite" className="flex justify-center items-center gap-3 py-24 text-slate-500" dir="rtl">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500" />
+        <span className="text-sm font-medium">جاري تحميل صلاحيات المبيعات...</span>
       </div>
     );
   }
@@ -169,7 +170,7 @@ export default function SalesDashboardPage() {
     return (
       <div className="flex flex-col items-center justify-center gap-4 py-24" dir="rtl">
         <p className="font-black text-rose-600">تعذر تحميل صلاحيات المبيعات</p>
-        <button type="button" onClick={() => void loadRole()} className="px-6 py-3 rounded-2xl bg-slate-900 text-white font-black">
+        <button type="button" onClick={() => void loadRole()} className="px-4 py-2.5 rounded-lg bg-slate-900 text-white font-semibold">
           إعادة المحاولة
         </button>
       </div>
@@ -177,78 +178,72 @@ export default function SalesDashboardPage() {
   }
 
   return (
-    <div className="container mx-auto py-12 space-y-12" dir="rtl">
+    <div className="container mx-auto py-6 space-y-8" dir="rtl">
       <div className="space-y-2">
-        <h1 className="text-4xl font-black text-slate-900 dark:text-white">إدارة المبيعات</h1>
-        <p className="text-slate-500 font-bold text-lg">تحكم كامل في العمليات البيعية، المرتجعات، والتقارير المالية</p>
+        <h1 className="text-2xl font-bold text-slate-900 dark:text-white">إدارة المبيعات</h1>
+        <p className="text-slate-500 text-sm sm:text-base">تحكم كامل في العمليات البيعية، المرتجعات، والتقارير المالية</p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         {filteredModules.map((module, idx) => (
           <Link 
             key={idx} 
             href={module.href}
-            className="group relative bg-white dark:bg-slate-900 p-8 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-sm hover:shadow-2xl hover:-translate-y-2 transition-all duration-500 overflow-hidden"
+            className="group relative bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm hover:border-primary-300 dark:hover:border-primary-700 transition-colors overflow-hidden"
           >
             <div className={cn(
-              "w-16 h-16 rounded-3xl flex items-center justify-center text-white mb-6 shadow-lg transition-transform group-hover:scale-110 duration-500",
+              "w-11 h-11 rounded-lg flex items-center justify-center text-white mb-4 shadow-sm",
               module.color
             )}>
-              <module.icon className="w-8 h-8" />
+              <module.icon className="w-5 h-5" />
             </div>
             
-            <h3 className="text-xl font-black text-slate-800 dark:text-white mb-2 group-hover:text-blue-600 transition-colors">
+            <h3 className="text-lg font-semibold text-slate-800 dark:text-white mb-1.5 group-hover:text-primary-700 dark:group-hover:text-primary-400 transition-colors">
               {module.title}
             </h3>
-            <p className="text-slate-400 font-bold text-sm leading-relaxed">
+            <p className="text-slate-500 dark:text-slate-400 text-sm leading-relaxed">
               {module.desc}
             </p>
-
-            <div className="absolute top-6 left-6 opacity-0 group-hover:opacity-10 transition-opacity">
-               <module.icon className="w-24 h-24 rotate-12" />
-            </div>
           </Link>
         ))}
       </div>
 
       {/* Quick Stats Overlay (Dynamic) */}
-      <div className="bg-slate-900 rounded-[50px] p-12 text-white overflow-hidden relative shadow-2xl">
+      <div className="bg-slate-900 rounded-xl p-6 sm:p-7 text-white overflow-hidden relative shadow-md border border-slate-800">
          {statsError ? (
            <div className="relative z-10 flex flex-col items-center justify-center gap-4 py-8 text-center">
              <p className="font-black text-rose-300">{statsError}</p>
              <button
                type="button"
                onClick={loadStats}
-               className="px-6 py-3 rounded-2xl bg-white text-slate-900 font-black"
+             className="px-4 py-2.5 rounded-lg bg-white text-slate-900 font-semibold"
              >
                إعادة المحاولة
              </button>
            </div>
-         ) : <div className="relative z-10 grid grid-cols-1 md:grid-cols-3 gap-12">
-            <div className="space-y-4">
+         ) : <div className="relative z-10 grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="space-y-2">
                <p className="text-white/40 font-black text-xs uppercase tracking-widest">مبيعات اليوم</p>
-               <h4 className="text-5xl font-black text-emerald-400">
-                 {loadingStats ? '...' : stats.todaySales.toLocaleString()} <span className="text-lg">ج.م</span>
+               <h4 className="text-3xl font-bold text-emerald-400 tabular-nums">
+                 {loadingStats ? '...' : stats.todaySales.toLocaleString()} <span className="text-sm">ج.م</span>
                </h4>
-               <p className="text-white/60 font-bold text-sm">{stats.salesChangeText}</p>
+               <p className="text-white/60 text-sm">{stats.salesChangeText}</p>
             </div>
-            <div className="space-y-4 border-r border-white/10 pr-12">
+            <div className="space-y-2 md:border-r md:border-white/10 md:pr-6">
                <p className="text-white/40 font-black text-xs uppercase tracking-widest">طلبات التوصيل اليوم</p>
-               <h4 className="text-5xl font-black text-rose-400">
+               <h4 className="text-3xl font-bold text-rose-400 tabular-nums">
                  {loadingStats ? '...' : stats.deliveryCount}
                </h4>
-               <p className="text-white/60 font-bold text-sm">{stats.pendingDeliveryCountText}</p>
+               <p className="text-white/60 text-sm">{stats.pendingDeliveryCountText}</p>
             </div>
-            <div className="space-y-4 border-r border-white/10 pr-12">
+            <div className="space-y-2 md:border-r md:border-white/10 md:pr-6">
                <p className="text-white/40 font-black text-xs uppercase tracking-widest">متوسط الفاتورة اليوم</p>
-               <h4 className="text-5xl font-black text-blue-400">
-                 {loadingStats ? '...' : stats.averageInvoice.toLocaleString()} <span className="text-lg">ج.م</span>
+               <h4 className="text-3xl font-bold text-blue-400 tabular-nums">
+                 {loadingStats ? '...' : stats.averageInvoice.toLocaleString()} <span className="text-sm">ج.م</span>
                </h4>
-               <p className="text-white/60 font-bold text-sm">{stats.averageInvoiceChangeText}</p>
+               <p className="text-white/60 text-sm">{stats.averageInvoiceChangeText}</p>
             </div>
          </div>}
-
-         <div className="absolute top-0 right-0 w-full h-full bg-gradient-to-br from-blue-600/10 to-transparent pointer-events-none" />
       </div>
     </div>
   );

@@ -1,6 +1,6 @@
 # Menu Architecture Report — Pharmacy Local Enforcer
 
-**Version:** 0.2.108 | **Last Updated:** 2026-10-04
+**Version:** 0.2.109 | **Last Updated:** 2026-10-05
 
 ---
 

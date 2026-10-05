@@ -2,11 +2,11 @@
 
 import React, { useState, useEffect } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook';
-import { X, Package, Calendar, History, BarChart2, Info, ArrowLeftRight, ShieldCheck, TrendingUp, AlertTriangle, Truck, DollarSign, Layers, ArrowRight, Edit, Save } from 'lucide-react';
+import { X, Package, Calendar, History, BarChart2, Info, ArrowLeftRight, ShieldCheck, TrendingUp, AlertTriangle, Truck, DollarSign, Layers, ArrowRight, Edit, Save, Archive, ArchiveRestore, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'react-hot-toast';
 import { getDrugDetailsFullAction } from '@/app/actions-client/inventory';
-import { updateMasterDrugAction, searchMasterDrugsAction, addDrugAlternativeAction, removeDrugAlternativeAction, addDrugInteractionAction, removeDrugInteractionAction } from '@/app/actions-client/master-drugs';
+import { archiveMasterDrugAction, deleteMasterDrugAction, unarchiveMasterDrugAction, updateMasterDrugAction, searchMasterDrugsAction, addDrugAlternativeAction, removeDrugAlternativeAction, addDrugInteractionAction, removeDrugInteractionAction } from '@/app/actions-client/master-drugs';
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap';
 
@@ -14,9 +14,10 @@ interface DrugDetailsModalProps {
   drugId: number | string;
   onClose: () => void;
   onDrugUpdated?: (data: any) => void;
+  onDrugDeleted?: (drugId: number | string) => void;
 }
 
-export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: DrugDetailsModalProps) {
+export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated, onDrugDeleted }: DrugDetailsModalProps) {
   useHotkeys('esc', () => { if(typeof onClose === 'function') onClose(); }, { enableOnFormTags: true });
 
   const [activeTab, setActiveTab] = useState<'info' | 'expiry' | 'stock' | 'alternatives' | 'usage' | 'consumption' | 'units_suppliers' | 'financial' | 'advanced'>('info');
@@ -32,10 +33,13 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: Dru
   const [isEditing, setIsEditing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const savingRef = React.useRef(false);
+  const lifecycleMutationRef = React.useRef(false);
   const detailsMutationRef = React.useRef(false);
   const detailRequestRef = React.useRef(0);
   const [formData, setFormData] = useState<any>(null);
   const [canManageInventory, setCanManageInventory] = useState(false);
+  const [canModifyUnitConversion, setCanModifyUnitConversion] = useState(false);
+  const [isLifecycleMutating, setIsLifecycleMutating] = useState(false);
 
   const [altSearchQuery, setAltSearchQuery] = useState('');
   const [altSearchResults, setAltSearchResults] = useState<any[]>([]);
@@ -58,6 +62,7 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: Dru
     getClientSession().then(user => {
       if (active) {
         setCanManageInventory(!!user && hasUserPermissionSync(user, 'can_manage_inventory'));
+        setCanModifyUnitConversion(!!user && hasUserPermissionSync(user, 'can_modify_unit_conversion'));
       }
     });
     return () => { active = false; };
@@ -244,6 +249,76 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: Dru
     }
   };
 
+  const handleArchiveDrug = async () => {
+    if (!canManageInventory || lifecycleMutationRef.current) return;
+    if (!confirm('هل تريد أرشفة الصنف؟ سيتم إيقاف التعامل مع حفظ المخزون والفواتير والسجل.')) return;
+    lifecycleMutationRef.current = true;
+    setIsLifecycleMutating(true);
+    try {
+      const result = await archiveMasterDrugAction(Number(currentId), true);
+      if (!result.success) {
+        toast.error(result.error || 'فشل أرشفة الصنف');
+        return;
+      }
+      const archivedDrug = { ...drugData, ...formData, id: Number(currentId), stop_dealing: 1 };
+      setDrugData(archivedDrug);
+      setFormData(archivedDrug);
+      toast.success('تمت أرشفة الصنف وإيقاف التعامل مع حفظ المخزون والسجل');
+      onDrugUpdated?.(archivedDrug);
+    } catch {
+      toast.error('فشل أرشفة الصنف');
+    } finally {
+      lifecycleMutationRef.current = false;
+      setIsLifecycleMutating(false);
+    }
+  };
+
+  const handleUnarchiveDrug = async () => {
+    if (!canManageInventory || lifecycleMutationRef.current) return;
+    if (!confirm('هل تريد إلغاء أرشفة الصنف وإعادته للتعامل؟ سيظل المخزون والفواتير والسجل كما هي.')) return;
+    lifecycleMutationRef.current = true;
+    setIsLifecycleMutating(true);
+    try {
+      const result = await unarchiveMasterDrugAction(Number(currentId), true);
+      if (!result.success) {
+        toast.error(result.error || 'فشل إلغاء أرشفة الصنف');
+        return;
+      }
+      const restoredDrug = { ...drugData, ...formData, id: Number(currentId), stop_dealing: 0 };
+      setDrugData(restoredDrug);
+      setFormData(restoredDrug);
+      toast.success('تم إلغاء أرشفة الصنف وإعادته للتعامل');
+      onDrugUpdated?.(restoredDrug);
+    } catch {
+      toast.error('فشل إلغاء أرشفة الصنف');
+    } finally {
+      lifecycleMutationRef.current = false;
+      setIsLifecycleMutating(false);
+    }
+  };
+
+  const handleDeleteDrug = async () => {
+    if (!canManageInventory || lifecycleMutationRef.current) return;
+    if (!confirm('هل أنت متأكد من حذف الصنف نهائياً؟ لا يمكن حذف صنف مرتبط بمخزون أو فواتير أو سجل طبي.')) return;
+    lifecycleMutationRef.current = true;
+    setIsLifecycleMutating(true);
+    try {
+      const result = await deleteMasterDrugAction(Number(currentId));
+      if (!result.success) {
+        toast.error(result.error || 'فشل حذف الصنف');
+        return;
+      }
+      toast.success('تم حذف الصنف بنجاح');
+      onDrugDeleted?.(currentId);
+      onClose();
+    } catch {
+      toast.error('فشل حذف الصنف');
+    } finally {
+      lifecycleMutationRef.current = false;
+      setIsLifecycleMutating(false);
+    }
+  };
+
   const tabs = [
     { id: 'info', label: 'بيانات الصنف', icon: Info },
     { id: 'units_suppliers', label: 'الوحدات والموردين', icon: Truck },
@@ -321,6 +396,43 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: Dru
           </div>
         )}
 
+        {canManageInventory && !isEditing && (
+          <div className="border-b border-slate-100 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-900/80 px-4 sm:px-6 py-3 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 shrink-0">
+            {Number(drugData?.stop_dealing || 0) === 1 ? (
+              <button
+                type="button"
+                disabled={isLifecycleMutating}
+                onClick={handleUnarchiveDrug}
+                className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm font-black text-emerald-800 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-emerald-900/40 dark:bg-emerald-950/20 dark:text-emerald-200"
+              >
+                <ArchiveRestore className="w-4 h-4" /> إلغاء أرشفة الصنف
+              </button>
+            ) : (
+              <button
+                type="button"
+                disabled={isLifecycleMutating}
+                onClick={handleArchiveDrug}
+                className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm font-black text-amber-800 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-200"
+              >
+                <Archive className="w-4 h-4" /> أرشفة الصنف
+              </button>
+            )}
+            <button
+              type="button"
+              disabled={isLifecycleMutating}
+              onClick={handleDeleteDrug}
+              className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-2.5 text-sm font-black text-red-700 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-900/40 dark:bg-red-950/20 dark:text-red-300"
+            >
+              <Trash2 className="w-4 h-4" /> حذف الصنف نهائياً
+            </button>
+            <p className="text-xs font-bold text-slate-500 sm:mr-auto">
+              {Number(drugData?.stop_dealing || 0) === 1
+                ? 'إلغاء الأرشفة يعيد الصنف للتعامل مع إبقاء المخزون والفواتير والسجل كما هي.'
+                : 'الأرشفة تحفظ السجل والمخزون؛ الحذف النهائي متاح فقط للصنف غير المرتبط بأي حركة أو سجل.'}
+            </p>
+          </div>
+        )}
+
         {/* Tabs Bar */}
         <div role="group" aria-label="أقسام تفاصيل الصنف" className="flex bg-slate-50 dark:bg-slate-800/50 p-2 gap-2 border-b border-slate-100 dark:border-slate-800 shrink-0 overflow-x-auto no-scrollbar">
           {tabs.map(tab => (
@@ -393,6 +505,11 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: Dru
 
           {activeTab === 'units_suppliers' && (
              <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4">
+                {isEditing && !canModifyUnitConversion && (
+                  <div role="note" className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-200">
+                    تعديل أسماء الوحدات ومعاملات التحويل يتطلب صلاحية «تعديل معاملات تحويل الوحدات».
+                  </div>
+                )}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                    <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-100 dark:border-slate-800 space-y-4 shadow-sm">
                       <h4 className="font-black text-xs text-slate-400 uppercase tracking-widest flex items-center gap-2">
@@ -402,14 +519,14 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: Dru
                          <UnitRow 
                             label="الوحدة الكبرى" 
                             value={isEditing ? formData?.large_unit : drugData?.large_unit || drugData?.units?.large} 
-                            isEditing={isEditing} 
+                            isEditing={isEditing && canModifyUnitConversion}
                             onChange={(val: string) => setFormData({...formData, large_unit: val})}
                          />
                          <UnitRow 
                             label="الوحدة المتوسطة" 
                             value={isEditing ? formData?.medium_unit : drugData?.medium_unit || drugData?.units?.medium} 
                             factor={isEditing ? formData?.large_to_medium : drugData?.large_to_medium} 
-                            isEditing={isEditing} 
+                            isEditing={isEditing && canModifyUnitConversion}
                             onChange={(val: string) => setFormData({...formData, medium_unit: val})}
                             onChangeFactor={(val: number) => setFormData({...formData, large_to_medium: val})}
                          />
@@ -417,7 +534,7 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated }: Dru
                             label="الوحدة الصغرى" 
                             value={isEditing ? formData?.small_unit : drugData?.small_unit || drugData?.units?.small} 
                             factor={isEditing ? formData?.medium_to_small : drugData?.medium_to_small} 
-                            isEditing={isEditing} 
+                            isEditing={isEditing && canModifyUnitConversion}
                             onChange={(val: string) => setFormData({...formData, small_unit: val})}
                             onChangeFactor={(val: number) => setFormData({...formData, medium_to_small: val})}
                          />

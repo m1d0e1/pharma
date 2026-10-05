@@ -88,7 +88,7 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: "Pharma App v__VERSION__"
-          releaseBody: "Maintenance release that removes duplicate and dead runtime code, consolidates settlement navigation on /inventory/settlement while retaining the legacy redirect, hardens standalone first-owner bootstrap and cloud-sync configuration handling, preserves validated purchase and sales-return behavior, and expands regression coverage. Includes x64 and x86 installers with signed Tauri updater metadata. Windows Authenticode signing is applied only when the optional certificate secrets are configured. Windows 7 requires UCRT and WebView2 109."
+          releaseBody: "Release v0.2.109 hardens drug identity and barcode reconciliation, protects historical unit labels used by sales and return records, propagates archive/unarchive inventory refreshes across open app windows, and keeps completed purchase snapshots isolated from later catalog edit/archive/delete callbacks. It also includes the reviewed UI/accessibility polish across inventory, purchases, POS, reports, staff, patients, suppliers, settings, returns, settlement, and shared components, with expanded regression coverage for permissions, pharmacy scope, accounting, lifecycle actions, and stale-state races. Includes x64 and x86 installers with signed Tauri updater metadata. Windows Authenticode signing is applied only when the optional certificate secrets are configured. Windows 7 requires UCRT and WebView2 109."
           releaseDraft: false
           prerelease: false
           uploadUpdaterJson: true

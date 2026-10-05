@@ -6,9 +6,9 @@
   --foreground-rgb: 15, 23, 42;
   --background-start-rgb: 248, 250, 252;
   --background-end-rgb: 241, 245, 249;
-  --radius: 0.75rem;
-  --radius-lg: 1rem;
-  --radius-xl: 1.5rem;
+  --radius: 0.625rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
   --font-sans: system-ui, sans-serif;
   --font-arabic: Tahoma, Arial, sans-serif;
   --line-height-tight: 1.25;
@@ -34,12 +34,11 @@
   }
   
   body {
-    @apply bg-gradient-to-br from-slate-50 via-white to-blue-50/30 dark:from-slate-950 dark:via-slate-900 dark:to-slate-900 text-slate-900 dark:text-slate-50 font-sans antialiased;
+    @apply bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-50 font-sans antialiased;
     font-feature-settings: "ss01", "ss02", "cv01", "cv02";
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    line-height: var(--line-height-relaxed);
-    letter-spacing: -0.01em;
+    line-height: var(--line-height-normal);
   }
 
   h1, h2, h3, h4, h5, h6 {
@@ -48,29 +47,29 @@
   }
 
   h1 {
-    @apply text-4xl md:text-5xl;
-  }
-
-  h2 {
     @apply text-3xl md:text-4xl;
   }
 
-  h3 {
+  h2 {
     @apply text-2xl md:text-3xl;
   }
 
-  h4 {
+  h3 {
     @apply text-xl md:text-2xl;
   }
 
+  h4 {
+    @apply text-lg md:text-xl;
+  }
+
   p {
-    @apply text-base md:text-lg;
+    @apply text-base;
     line-height: var(--line-height-normal);
   }
 
   .text-lead {
-    @apply text-lg md:text-xl text-slate-600 dark:text-slate-400;
-    line-height: var(--line-height-relaxed);
+    @apply text-base md:text-lg text-slate-600 dark:text-slate-400;
+    line-height: var(--line-height-normal);
   }
   
   :dir(rtl) {
@@ -113,27 +112,27 @@
 
 @layer components {
   .card {
-    @apply bg-gradient-card dark:bg-gradient-card-dark backdrop-blur-sm rounded-2xl border border-slate-200/50 dark:border-slate-700/50 shadow-soft p-6 transition-all duration-300 hover:shadow-medium hover:border-slate-300/50 dark:hover:border-slate-600/50;
+    @apply bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm p-5 transition-colors duration-150;
   }
   
   .card-gradient {
-    @apply bg-gradient-to-br from-white/95 via-white to-slate-50/95 dark:from-slate-800/95 dark:via-slate-800 dark:to-slate-900/95 backdrop-blur-sm rounded-2xl border border-slate-200/50 dark:border-slate-700/50 shadow-soft p-6;
+    @apply bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm p-5;
   }
   
   .card-elevated {
-    @apply bg-gradient-glass dark:bg-gradient-glass-dark rounded-2xl border border-slate-200/70 dark:border-slate-700/70 shadow-medium p-6 ring-1 ring-black/5 dark:ring-white/5;
+    @apply bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-md p-5;
   }
   
   .card-interactive {
-    @apply card cursor-pointer transition-all duration-300 hover:scale-[1.02] hover:shadow-hard active:scale-[0.98] hover:bg-gradient-to-br hover:from-white hover:to-slate-50 dark:hover:from-slate-800 dark:hover:to-slate-900;
+    @apply card cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/60 hover:border-slate-300 dark:hover:border-slate-700;
   }
 
   .card-glass {
-    @apply bg-gradient-glass dark:bg-gradient-glass-dark backdrop-blur-lg rounded-2xl border border-white/30 dark:border-slate-700/50 shadow-lg p-6;
+    @apply bg-white/95 dark:bg-slate-900/95 rounded-xl border border-slate-200 dark:border-slate-800 shadow-md p-5;
   }
   
   .input-primary {
-    @apply w-full px-4 py-3 bg-white/50 dark:bg-slate-800/50 backdrop-blur-sm border border-slate-300/50 dark:border-slate-600/50 rounded-xl text-slate-900 dark:text-white focus:ring-2 focus:ring-primary-500/50 focus:border-primary-300 dark:focus:border-primary-700 focus:bg-white dark:focus:bg-slate-800 transition-all duration-300 placeholder:text-slate-400 dark:placeholder:text-slate-500 shadow-sm;
+    @apply w-full min-h-10 px-3.5 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-sm text-slate-900 dark:text-white focus:ring-2 focus:ring-primary-500/30 focus:border-primary-500 dark:focus:border-primary-500 transition-colors duration-150 placeholder:text-slate-400 dark:placeholder:text-slate-500 shadow-sm;
   }
   
   .input-error {
@@ -149,23 +148,23 @@
   }
   
   .badge {
-    @apply inline-flex items-center px-4 py-1.5 rounded-full text-xs font-bold tracking-wide transition-all duration-300;
+    @apply inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border transition-colors duration-150;
   }
   
   .badge-success {
-    @apply bg-gradient-to-r from-success-500 to-success-600 text-white shadow-sm shadow-success-500/30 hover:shadow-success-500/50;
+    @apply bg-success-50 border-success-200 text-success-700 dark:bg-success-950/50 dark:border-success-800 dark:text-success-300;
   }
   
   .badge-warning {
-    @apply bg-gradient-to-r from-warning-500 to-warning-600 text-white shadow-sm shadow-warning-500/30 hover:shadow-warning-500/50;
+    @apply bg-warning-50 border-warning-200 text-warning-800 dark:bg-warning-950/50 dark:border-warning-800 dark:text-warning-300;
   }
   
   .badge-danger {
-    @apply bg-gradient-to-r from-danger-500 to-danger-600 text-white shadow-sm shadow-danger-500/30 hover:shadow-danger-500/50;
+    @apply bg-danger-50 border-danger-200 text-danger-700 dark:bg-danger-950/50 dark:border-danger-800 dark:text-danger-300;
   }
   
   .badge-info {
-    @apply bg-gradient-to-r from-primary-500 to-primary-600 text-white shadow-sm shadow-primary-500/30 hover:shadow-primary-500/50;
+    @apply bg-primary-50 border-primary-200 text-primary-700 dark:bg-primary-950/50 dark:border-primary-800 dark:text-primary-300;
   }
 
   .badge-outline {
@@ -177,7 +176,7 @@
   }
   
   .table-container {
-    @apply overflow-x-auto rounded-2xl border border-slate-200/60 dark:border-slate-700/60 shadow-soft backdrop-blur-sm bg-gradient-card dark:bg-gradient-card-dark;
+    @apply overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm;
   }
   
   .table {
@@ -185,19 +184,19 @@
   }
   
   .table thead {
-    @apply bg-gradient-to-r from-slate-50/90 to-slate-100/70 dark:from-slate-800/90 dark:to-slate-900/70 backdrop-blur-sm;
+    @apply bg-slate-50 dark:bg-slate-800/70;
   }
   
   .table th {
-    @apply px-7 py-5 font-bold text-slate-800 dark:text-slate-200 border-b border-slate-200/60 dark:border-slate-700/60 whitespace-nowrap text-sm uppercase tracking-wide;
+    @apply px-5 py-3.5 font-semibold text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-slate-700 whitespace-nowrap text-xs;
   }
   
   .table td {
-    @apply px-7 py-5 border-b border-slate-100/40 dark:border-slate-800/40;
+    @apply px-5 py-3.5 border-b border-slate-100 dark:border-slate-800;
   }
   
   .table tbody tr {
-    @apply hover:bg-gradient-to-r hover:from-slate-50/60 hover:to-slate-100/40 dark:hover:from-slate-800/40 dark:hover:to-slate-900/30 transition-all duration-300;
+    @apply hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors duration-150;
   }
   
   .table-striped tbody tr:nth-child(even) {
@@ -205,11 +204,11 @@
   }
   
   .table-compact th {
-    @apply px-5 py-4 text-xs;
+    @apply px-4 py-3 text-xs;
   }
   
   .table-compact td {
-    @apply px-5 py-4;
+    @apply px-4 py-3;
   }
 
   .table-modern {
@@ -237,7 +236,7 @@
   }
   
   .stat-card {
-    @apply bg-gradient-to-br from-white/95 to-slate-50/95 dark:from-slate-800/95 dark:to-slate-900/95 backdrop-blur-sm rounded-2xl border border-slate-200/60 dark:border-slate-700/60 p-6 shadow-soft transition-all duration-300 hover:shadow-medium hover:border-slate-300/60 dark:hover:border-slate-600/60;
+    @apply bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5 shadow-sm transition-colors duration-150;
   }
   
   .stat-card-primary {
@@ -257,31 +256,31 @@
   }
   
   .stat-card-interactive {
-    @apply stat-card cursor-pointer transition-all duration-300 hover:scale-[1.02] hover:shadow-hard active:scale-[0.98] hover:translate-y-[-4px];
+    @apply stat-card cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/60 hover:border-slate-300 dark:hover:border-slate-700;
   }
   
   .page-header {
-    @apply flex flex-col md:flex-row md:items-center justify-between gap-8 mb-12 pb-8 border-b border-slate-200/50 dark:border-slate-700/50;
+    @apply flex flex-col md:flex-row md:items-center justify-between gap-4 md:gap-6 mb-7 pb-5 border-b border-slate-200 dark:border-slate-800;
   }
   
   .page-title {
-    @apply text-4xl md:text-5xl font-bold text-slate-900 dark:text-white tracking-tight leading-tight;
+    @apply text-2xl md:text-3xl font-bold text-slate-900 dark:text-white tracking-tight leading-tight;
   }
   
   .page-subtitle {
-    @apply text-slate-600 dark:text-slate-400 mt-4 text-lg md:text-xl max-w-3xl leading-relaxed;
+    @apply text-slate-600 dark:text-slate-400 mt-2 text-sm md:text-base max-w-3xl leading-relaxed;
   }
   
   .section {
-    @apply space-y-10;
+    @apply space-y-6;
   }
   
   .section-title {
-    @apply text-2xl md:text-3xl font-bold text-slate-800 dark:text-white tracking-tight leading-tight;
+    @apply text-xl md:text-2xl font-bold text-slate-800 dark:text-white tracking-tight leading-tight;
   }
   
   .section-subtitle {
-    @apply text-slate-600 dark:text-slate-400 mt-3 text-base md:text-lg leading-relaxed;
+    @apply text-slate-600 dark:text-slate-400 mt-2 text-sm md:text-base leading-relaxed;
   }
 
   .spacing-xs {
@@ -305,19 +304,19 @@
   }
   
   .empty-state {
-    @apply flex flex-col items-center justify-center py-16 px-6 text-center rounded-2xl border-2 border-dashed border-slate-200/50 dark:border-slate-700/50 bg-slate-50/30 dark:bg-slate-800/20 backdrop-blur-sm;
+    @apply flex flex-col items-center justify-center py-12 px-6 text-center rounded-xl border border-dashed border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900;
   }
   
   .empty-state-icon {
-    @apply text-7xl mb-6 text-slate-300/80 dark:text-slate-600/80;
+    @apply text-5xl mb-4 text-slate-300 dark:text-slate-600;
   }
   
   .empty-state-title {
-    @apply text-2xl font-bold text-slate-700 dark:text-slate-300 mb-3;
+    @apply text-lg font-semibold text-slate-700 dark:text-slate-300 mb-2;
   }
   
   .empty-state-description {
-    @apply text-slate-500 dark:text-slate-400 max-w-md text-lg;
+    @apply text-slate-500 dark:text-slate-400 max-w-md text-sm;
   }
   
   .empty-state-action {
@@ -383,27 +382,27 @@
   }
   
   .gradient-text {
-    @apply bg-gradient-to-r from-primary-600 to-primary-400 dark:from-primary-400 dark:to-primary-300 bg-clip-text text-transparent;
+    @apply text-primary-600 dark:text-primary-400;
   }
   
   .gradient-text-success {
-    @apply bg-gradient-to-r from-success-600 to-success-400 dark:from-success-400 dark:to-success-300 bg-clip-text text-transparent;
+    @apply text-success-600 dark:text-success-400;
   }
   
   .gradient-text-warning {
-    @apply bg-gradient-to-r from-warning-600 to-warning-400 dark:from-warning-400 dark:to-warning-300 bg-clip-text text-transparent;
+    @apply text-warning-600 dark:text-warning-400;
   }
   
   .gradient-text-danger {
-    @apply bg-gradient-to-r from-danger-600 to-danger-400 dark:from-danger-400 dark:to-danger-300 bg-clip-text text-transparent;
+    @apply text-danger-600 dark:text-danger-400;
   }
   
   .hover-lift {
-    @apply transition-transform duration-300 hover:-translate-y-1;
+    @apply transition-colors duration-150;
   }
   
   .hover-glow {
-    @apply transition-shadow duration-300 hover:shadow-lg hover:shadow-primary-500/20;
+    @apply transition-colors duration-150;
   }
   
   .focus-ring {

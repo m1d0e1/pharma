@@ -70,11 +70,12 @@ import {
   getUnusedItemsAction,
   importMasterDrugWorkbookAction,
   previewMasterDrugCatalogUpdateAction,
+  unarchiveMasterDrugAction,
   updateProductCategoryAction,
   updateMasterDrugAction,
 } from '@/app/actions-client/master-drugs';
 import { secureCache } from '@/lib/cache/secure_cache';
-import { notifyDrugCatalogChanged } from '@/lib/inventory/refresh';
+import { notifyDrugCatalogChanged, notifyInventoryChanged } from '@/lib/inventory/refresh';
 
 function applyCurrentMigrations(db: Database.Database, includeInitial = true) {
   const files = readdirSync('src-tauri/migrations')
@@ -262,6 +263,7 @@ describe.each(databaseVariants)('$name deletion invariants', ({ initialize }) =>
   beforeEach(() => {
     (secureCache.reload as jest.Mock).mockClear();
     (notifyDrugCatalogChanged as jest.Mock).mockClear();
+    (notifyInventoryChanged as jest.Mock).mockClear();
     mockGeneratedId = 0;
     mockPermission = true;
     mockConversionPermission = true;
@@ -574,6 +576,26 @@ describe.each(databaseVariants)('$name deletion invariants', ({ initialize }) =>
     expect(mockDb.prepare('SELECT stop_dealing FROM master_drugs WHERE id=2006').get()).toEqual({ stop_dealing:1 });
     expect(['inventory','sales_items','return_items','purchase_invoice_items','refill_reminders'].map(table => mockDb.prepare(`SELECT * FROM ${table}`).all())).toEqual(before);
     expect(mockDb.prepare("SELECT COUNT(*) AS count FROM activity_log WHERE action='ARCHIVE_MASTER_DRUG'").get()).toEqual({ count:1 });
+    expect(notifyInventoryChanged).toHaveBeenCalledTimes(1);
+    expect(mockDb.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+  });
+
+  it('unarchives an archived drug only with permission and confirmation, preserving stock and history', async () => {
+    insertUserAndDrug(2001);
+    seedMasterDrugReferences();
+    mockDb.prepare('UPDATE master_drugs SET stop_dealing=1 WHERE id=2006').run();
+    const before = ['inventory','sales_items','return_items','purchase_invoice_items','refill_reminders'].map(table => mockDb.prepare(`SELECT * FROM ${table}`).all());
+
+    expect((await unarchiveMasterDrugAction(2006, false)).success).toBe(false);
+    mockPermission = false;
+    expect((await unarchiveMasterDrugAction(2006, true)).success).toBe(false);
+    mockPermission = true;
+
+    expect(await unarchiveMasterDrugAction(2006, true)).toEqual({ success: true });
+    expect(mockDb.prepare('SELECT stop_dealing FROM master_drugs WHERE id=2006').get()).toEqual({ stop_dealing: 0 });
+    expect(['inventory','sales_items','return_items','purchase_invoice_items','refill_reminders'].map(table => mockDb.prepare(`SELECT * FROM ${table}`).all())).toEqual(before);
+    expect(mockDb.prepare("SELECT COUNT(*) AS count FROM activity_log WHERE action='UNARCHIVE_MASTER_DRUG'").get()).toEqual({ count: 1 });
+    expect(notifyInventoryChanged).toHaveBeenCalledTimes(1);
     expect(mockDb.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
   });
 
@@ -674,6 +696,118 @@ describe.each(databaseVariants)('$name deletion invariants', ({ initialize }) =>
     expect(mockDb.prepare('SELECT large_unit, medium_unit, small_unit FROM master_drugs WHERE id=3051').get()).toEqual({
       large_unit: 'Box', medium_unit: 'Strip', small_unit: 'Tablet',
     });
+  });
+
+  it('rejects renaming a custom unit label when historical sales still depend on that label', async () => {
+    insertUserAndDrug(3054);
+    mockDb.prepare(`
+      UPDATE master_drugs
+      SET large_unit='Box', medium_unit='Legacy Strip', small_unit='Tablet', large_to_medium=3, medium_to_small=10
+      WHERE id=3054
+    `).run();
+    mockDb.prepare(`INSERT INTO sales_invoices (id, user_id, status) VALUES ('legacy-unit-sale', 'admin', 'completed')`).run();
+    mockDb.prepare(`
+      INSERT INTO sales_items (invoice_id, drug_id, quantity_sold, unit_price, unit)
+      VALUES ('legacy-unit-sale', 3054, 1, 10, 'Legacy Strip')
+    `).run();
+
+    const result = await updateMasterDrugAction(3054, {
+      trade_name: 'Drug 3054',
+      official_price: 10,
+      large_unit: 'Box',
+      medium_unit: 'New Strip',
+      small_unit: 'Tablet',
+      large_to_medium: 3,
+      medium_to_small: 10,
+    });
+
+    expect(result).toMatchObject({ success: false });
+    expect(mockDb.prepare('SELECT medium_unit FROM master_drugs WHERE id=3054').get()).toEqual({ medium_unit: 'Legacy Strip' });
+    expect(mockDb.prepare("SELECT unit FROM sales_items WHERE invoice_id='legacy-unit-sale'").get()).toEqual({ unit: 'Legacy Strip' });
+  });
+
+  it('rejects renaming a case-variant generic unit label when reports still depend on its exact case', async () => {
+    insertUserAndDrug(3055);
+    mockDb.prepare(`
+      UPDATE master_drugs
+      SET large_unit='Box', medium_unit='Strip', small_unit='Tablet', large_to_medium=3, medium_to_small=10
+      WHERE id=3055
+    `).run();
+    mockDb.prepare(`INSERT INTO sales_invoices (id, user_id, status) VALUES ('case-unit-sale', 'admin', 'completed')`).run();
+    mockDb.prepare(`
+      INSERT INTO sales_items (invoice_id, drug_id, quantity_sold, unit_price, unit)
+      VALUES ('case-unit-sale', 3055, 3, 10, 'Strip')
+    `).run();
+
+    const result = await updateMasterDrugAction(3055, {
+      trade_name: 'Drug 3055',
+      official_price: 10,
+      large_unit: 'Box',
+      medium_unit: 'Blister',
+      small_unit: 'Tablet',
+      large_to_medium: 3,
+      medium_to_small: 10,
+    });
+
+    expect(result).toMatchObject({ success: false });
+    expect(mockDb.prepare('SELECT medium_unit FROM master_drugs WHERE id=3055').get()).toEqual({ medium_unit: 'Strip' });
+    expect(mockDb.prepare("SELECT unit FROM sales_items WHERE invoice_id='case-unit-sale'").get()).toEqual({ unit: 'Strip' });
+  });
+
+  it('rejects renaming a custom unit label when case-insensitive consumers still depend on it', async () => {
+    insertUserAndDrug(3056);
+    mockDb.prepare(`
+      UPDATE master_drugs
+      SET large_unit='Box', medium_unit='Legacy Strip', small_unit='Tablet', large_to_medium=3, medium_to_small=10
+      WHERE id=3056
+    `).run();
+    mockDb.prepare(`INSERT INTO sales_invoices (id, user_id, status) VALUES ('casefold-unit-sale', 'admin', 'completed')`).run();
+    mockDb.prepare(`
+      INSERT INTO sales_items (invoice_id, drug_id, quantity_sold, unit_price, unit)
+      VALUES ('casefold-unit-sale', 3056, 3, 10, 'legacy strip')
+    `).run();
+
+    const result = await updateMasterDrugAction(3056, {
+      trade_name: 'Drug 3056',
+      official_price: 10,
+      large_unit: 'Box',
+      medium_unit: 'Blister',
+      small_unit: 'Tablet',
+      large_to_medium: 3,
+      medium_to_small: 10,
+    });
+
+    expect(result).toMatchObject({ success: false });
+    expect(mockDb.prepare('SELECT medium_unit FROM master_drugs WHERE id=3056').get()).toEqual({ medium_unit: 'Legacy Strip' });
+    expect(mockDb.prepare("SELECT unit FROM sales_items WHERE invoice_id='casefold-unit-sale'").get()).toEqual({ unit: 'legacy strip' });
+  });
+
+  it('allows a case-variant configured rename when history uses only an independent canonical alias', async () => {
+    insertUserAndDrug(3057);
+    mockDb.prepare(`
+      UPDATE master_drugs
+      SET large_unit='Box', medium_unit='Strip', small_unit='Tablet', large_to_medium=3, medium_to_small=10
+      WHERE id=3057
+    `).run();
+    mockDb.prepare(`INSERT INTO sales_invoices (id, user_id, status) VALUES ('independent-alias-sale', 'admin', 'completed')`).run();
+    mockDb.prepare(`
+      INSERT INTO sales_items (invoice_id, drug_id, quantity_sold, unit_price, unit)
+      VALUES ('independent-alias-sale', 3057, 3, 10, 'STRIP')
+    `).run();
+
+    const result = await updateMasterDrugAction(3057, {
+      trade_name: 'Drug 3057',
+      official_price: 10,
+      large_unit: 'Box',
+      medium_unit: 'Blister',
+      small_unit: 'Tablet',
+      large_to_medium: 3,
+      medium_to_small: 10,
+    });
+
+    expect(result).toMatchObject({ success: true });
+    expect(mockDb.prepare('SELECT medium_unit FROM master_drugs WHERE id=3057').get()).toEqual({ medium_unit: 'Blister' });
+    expect(mockDb.prepare("SELECT unit FROM sales_items WHERE invoice_id='independent-alias-sale'").get()).toEqual({ unit: 'STRIP' });
   });
 
   it('rechecks conversion permission against the transactional row before a stale save can overwrite it', async () => {

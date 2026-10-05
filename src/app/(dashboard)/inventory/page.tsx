@@ -78,8 +78,9 @@ function InventoryPageContent() {
 
   if (loading && items.length === 0) {
     return (
-      <div className="flex justify-center items-center py-24" dir="rtl">
+      <div role="status" aria-live="polite" className="flex justify-center items-center gap-3 py-24 text-slate-500" dir="rtl">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+        <span className="text-sm font-medium">جاري تحميل المخزون...</span>
       </div>
     );
   }
@@ -127,8 +128,9 @@ function InventoryPageContent() {
 export default function InventoryPage() {
   return (
     <Suspense fallback={
-      <div className="flex justify-center items-center py-24" dir="rtl">
+      <div role="status" aria-live="polite" className="flex justify-center items-center gap-3 py-24 text-slate-500" dir="rtl">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+        <span className="text-sm font-medium">جاري تحميل المخزون...</span>
       </div>
     }>
       <InventoryPageContent />

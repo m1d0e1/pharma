@@ -1800,6 +1800,10 @@ export default function POSPage() {
           drugId={showDrugDetails} 
           onClose={() => setShowDrugDetails(null)} 
           onDrugUpdated={(updatedDrug) => {
+            if (Number(updatedDrug.stop_dealing || 0) === 1) {
+              setCart(prev => prev.filter(item => String(item.drug_id) !== String(updatedDrug.id)));
+              return;
+            }
             setCart(prev => prev.map(item => String(item.drug_id) === String(updatedDrug.id) ? {
               ...item,
               trade_name: updatedDrug.trade_name,
@@ -1811,10 +1815,16 @@ export default function POSPage() {
                      (updatedDrug.official_price || item.basePrice),
               units: {
                 ...item.units,
+                large: updatedDrug.large_unit || item.units.large,
+                medium: updatedDrug.medium_unit || item.units.medium,
+                small: updatedDrug.small_unit || item.units.small,
                 large_to_medium: updatedDrug.large_to_medium,
                 medium_to_small: updatedDrug.medium_to_small
               }
             } : item));
+          }}
+          onDrugDeleted={(deletedId) => {
+            setCart(prev => prev.filter(item => String(item.drug_id) !== String(deletedId)));
           }}
         />
       )}

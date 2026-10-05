@@ -1,11 +1,12 @@
 import Database from 'better-sqlite3';
 import { readFileSync } from 'fs';
 let mockDb: Database.Database;
+let mockSession: any = { id: 'admin', role: 'admin', pharmacy_id: 'ph-a' };
 jest.mock('@/lib/db/tauri', () => ({
   dbGet: jest.fn(async (sql: string, params: any[]) => mockDb.prepare(sql).get(...params)),
   dbSelect: jest.fn(async (sql: string, params: any[]) => mockDb.prepare(sql).all(...params)),
 }));
-jest.mock('@/lib/auth/local', () => ({ getLocalSession: jest.fn(async () => ({ id: 'admin', role: 'admin' })), hasUserPermissionSync: jest.fn(() => true) }));
+jest.mock('@/lib/auth/local', () => ({ getLocalSession: jest.fn(async () => mockSession), hasUserPermissionSync: jest.fn(() => true) }));
 jest.mock('@/lib/env', () => ({ isTauri: true }));
 jest.mock('@/lib/cache/secure_cache', () => ({ secureCache: { reload: jest.fn(async () => {}) } }));
 jest.mock('@tauri-apps/api/core', () => ({ invoke: jest.fn() }));
@@ -16,11 +17,12 @@ import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 beforeEach(() => {
   jest.clearAllMocks();
   localStorage.clear();
+  mockSession = { id: 'admin', role: 'admin', pharmacy_id: 'ph-a' };
   mockDb = new Database(':memory:');
   mockDb.exec(`CREATE TABLE master_drugs(id INTEGER PRIMARY KEY,trade_name TEXT,trade_name_en TEXT,barcode TEXT,large_to_medium INTEGER,official_price REAL);
-    CREATE TABLE inventory(drug_id INTEGER,barcode TEXT,quantity REAL);
+    CREATE TABLE inventory(drug_id INTEGER,barcode TEXT,quantity REAL,pharmacy_id TEXT DEFAULT 'ph-a');
     INSERT INTO master_drugs VALUES(10,'Old',NULL,NULL,2,20),(20,'Correct',NULL,'123',2,40);
-    INSERT INTO inventory VALUES(10,'123',1.5),(10,'456',0.5);`);
+    INSERT INTO inventory(drug_id,barcode,quantity) VALUES(10,'123',1.5),(10,'456',0.5);`);
 });
 afterEach(() => mockDb.close());
 
@@ -58,9 +60,35 @@ it('returns every active owner of a conflicting barcode and ignores exhausted in
   mockDb.exec(`
     INSERT INTO master_drugs VALUES(30,'Third',NULL,'123',2,30);
     INSERT INTO master_drugs VALUES(40,'Exhausted alias',NULL,NULL,2,30);
-    INSERT INTO inventory VALUES(40,'123',0);
+    INSERT INTO inventory(drug_id,barcode,quantity) VALUES(40,'123',0);
   `);
   expect((await findDrugBarcodeOwners('123')).map((drug: any) => drug.id)).toEqual([10,20,30]);
+});
+
+it('keeps global barcode owners while hiding foreign-pharmacy stock and lot barcode evidence', async () => {
+  mockDb.exec(`
+    INSERT INTO master_drugs VALUES(30,'Foreign inventory owner',NULL,NULL,2,30);
+    INSERT INTO inventory(drug_id,barcode,quantity,pharmacy_id) VALUES
+      (10,'FOREIGN-ONLY',9,'ph-b'),
+      (30,'123',7,'ph-b');
+  `);
+
+  const owners = await findDrugBarcodeOwners('123');
+  expect(owners.map((drug: any) => drug.id)).toEqual([10,20,30]);
+  expect(owners.find((drug: any) => drug.id === 10)).toMatchObject({
+    stock_quantity: 2,
+    inventory_barcodes: '123,456',
+  });
+  expect(owners.find((drug: any) => drug.id === 30)).toMatchObject({
+    stock_quantity: 0,
+    inventory_barcodes: null,
+  });
+
+  expect(await getReplacementDrug(10)).toMatchObject({
+    stock_quantity: 2,
+    inventory_barcodes: '123,456',
+    active_inventory_barcodes: '123,456',
+  });
 });
 
 it('lists every duplicate-barcode group with the same active-owner rule used by purchase validation', async () => {
@@ -69,7 +97,7 @@ it('lists every duplicate-barcode group with the same active-owner rule used by 
     INSERT INTO master_drugs VALUES(40,'Other A',NULL,'999',2,30);
     INSERT INTO master_drugs VALUES(50,'Other B',NULL,'999',2,30);
     INSERT INTO master_drugs VALUES(60,'Historical only',NULL,NULL,2,30);
-    INSERT INTO inventory VALUES(60,'123',0);
+    INSERT INTO inventory(drug_id,barcode,quantity) VALUES(60,'123',0);
   `);
   const groups = await getDuplicateDrugBarcodeGroupsAction();
   expect(groups).toEqual(expect.arrayContaining([
