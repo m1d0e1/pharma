@@ -77,14 +77,22 @@ was authenticated or actually consented.** Likewise, an evidence digest
 commits to document bytes but does not establish who authored that document
 or whether the content is true. Actual human approval must be independently
 validated against original, retained consent evidence through a separately
-trusted approval process. The diagnostic deliberately implements no such
-human-authentication verification and always reports
+trusted approval process. The packet-only diagnostic deliberately implements
+no such human-authentication verification and always reports
 `owner_and_accountant_human_authorization_independently_verified: false`
 and `production_allowed: false`, **even for a cryptographically valid pair
 of operator witness signatures**. An operator may not use their own assertion
 as a silent substitute for owner or accountant review. Durable challenge
 consumption/replay prevention and verified human authorization evidence would
-be required in the future native workflow before any operational use.
+be required in the future native workflow before any operational use. A new
+**separate read-only private evidence preflight** at
+`scripts/qa_original_history_legacy_epoch_consent_preflight.py` validates
+the actual document bytes and independently signed consent-verifier receipts
+distinct from controlled operator signatures. Its contract is documented in
+`docs/ORIGINAL_HISTORY_SQLX69_PRIVATE_FINANCIAL_CONSENT_PREFLIGHT_2026_10_19.md`.
+Even valid technical external receipts remain production-blocked without
+governed issuer trust, authentic retained human consent, and separate release
+authorization.
 
 **Independent controlled operator-witness trust anchors are deliberately
 unprovisioned** in this diagnostic. Neither JSON, command-line arguments nor

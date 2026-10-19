@@ -17,6 +17,9 @@ use std::fs;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
+#[path = "historical_approval_storage.rs"]
+mod historical_approval_storage;
+
 const DENIED: &str = "Independent source-bound historical import approval required";
 const DOMAIN: &[u8] = b"pharma/native/audited-historical-import-consent/v1\0";
 const FORMAT: &str = "pharma-native-audited-historical-import-consent-v1";
@@ -24,6 +27,8 @@ const PURPOSE: &str = "historical-source-custody-review-only";
 const TENANT: &str = "primary_pharmacy";
 const MAX_AGE: u64 = 30 * 24 * 60 * 60;
 const MAX_BYTES: u64 = 700_000_000;
+const OWNER_RECORD_FORMAT: &str = "pharma-native-original-owner-evidence-v1";
+const OWNER_RECORD_PURPOSE: &str = "independently-witnessed-historical-owner-identity";
 
 fn identifier(value: &str) -> bool {
     !value.is_empty()
@@ -220,6 +225,65 @@ fn parse_grant(bytes: &[u8]) -> Result<HistoricalImportGrant, &'static str> {
         return Err(DENIED);
     }
     Ok(grant)
+}
+
+/// Receipt references an independently witnessed real owner authentication
+/// event, not a password, legacy bcrypt, chat statement or local owner self
+/// declaration. The identity operator's signature on the grant binds the
+/// exact bytes of this offline record; only the operator can authenticate
+/// that the referenced external evidence exists and was actually reviewed.
+fn inspect_owner_identity_record(
+    raw: &[u8],
+    grant: &HistoricalImportGrant,
+    trust: &TrustedApprovers,
+    now_unix: u64,
+) -> Result<(), &'static str> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct OwnerIdentityRecord {
+        format: String,
+        purpose: String,
+        owner_id: String,
+        destination_pharmacy: String,
+        original_v29_sha256: String,
+        original_v67_sha256: String,
+        authentication_method: String,
+        independent_evidence_reference: String,
+        independent_evidence_sha256: String,
+        witnessed_at_unix: u64,
+    }
+    if raw.is_empty()
+        || raw.len() > 4096
+        || Sha256::digest(raw).as_slice() != grant.owner_authentication_record_sha256
+    {
+        return Err(DENIED);
+    }
+    let record: OwnerIdentityRecord = serde_json::from_slice(raw).map_err(|_| DENIED)?;
+    if record.format != OWNER_RECORD_FORMAT
+        || record.purpose != OWNER_RECORD_PURPOSE
+        || record.owner_id != trust.owner_id
+        || record.destination_pharmacy != TENANT
+        || hex::<32>(&record.original_v29_sha256)? != grant.original_v29_sha256
+        || hex::<32>(&record.original_v67_sha256)? != grant.original_v67_sha256
+        || !matches!(
+            record.authentication_method.as_str(),
+            "independent_in_person_identity_review" | "independent_institutional_identity_review"
+        )
+        || record.independent_evidence_reference.len() < 16
+        || record.independent_evidence_reference.len() > 256
+        || !record
+            .independent_evidence_reference
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b':'))
+        || hex::<32>(&record.independent_evidence_sha256)? == [0; 32]
+        || record.witnessed_at_unix == 0
+        || record.witnessed_at_unix > grant.issued_at_unix
+        || record.witnessed_at_unix > now_unix
+        || grant.issued_at_unix - record.witnessed_at_unix > MAX_AGE
+    {
+        return Err(DENIED);
+    }
+    Ok(())
 }
 
 fn frame(message: &mut Vec<u8>, value: &[u8]) {
@@ -545,6 +609,25 @@ fn snapshot_sha256(path: &Path) -> Result<[u8; 32], &'static str> {
 pub(crate) fn verify_detached_historical_import_grant(
     stage_token: &str,
 ) -> Result<VerifiedHistoricalImportCustody, String> {
+    verify_staged_owner_evidence(stage_token, false).map(|(verified, _)| verified)
+}
+
+/// Strict native maintenance intake. The authenticated operator custody
+/// envelope and actual witnessed identity record must both be present.
+/// Only a single DPAPI-protected evidence receipt may be stored for each
+/// independently pinned challenge, and no downstream command consumes it as
+/// an installation, user enrollment, finance or startup authorization.
+pub(crate) fn ingest_historical_owner_authentication_evidence(
+    stage_token: &str,
+) -> Result<PathBuf, String> {
+    let (_, receipt) = verify_staged_owner_evidence(stage_token, true)?;
+    receipt.ok_or_else(|| DENIED.into())
+}
+
+fn verify_staged_owner_evidence(
+    stage_token: &str,
+    store_verified_receipt: bool,
+) -> Result<(VerifiedHistoricalImportCustody, Option<PathBuf>), String> {
     let trust = independently_pinned_approvers().map_err(str::to_string)?;
     if stage_token.len() != 32
         || !stage_token
@@ -558,6 +641,12 @@ pub(crate) fn verify_detached_historical_import_grant(
     let stage = root.join(format!("pharma-historical-import-stage-{stage_token}"));
     let source = stage.join("audited-sqlx69.sqlite3");
     checked_detached_path(&source, &root).map_err(str::to_string)?;
+    // The operator-staged evidence folder and all three inputs must have
+    // independently installed, non-inherited owner/SYSTEM-only Windows DACLs.
+    // Lock source file replacement/writes throughout the SQLx inspection.
+    historical_approval_storage::assert_private_stage(&stage).map_err(str::to_string)?;
+    let _source_lock =
+        historical_approval_storage::locked_input(&source).map_err(str::to_string)?;
     let approval_path = stage.join("historical-approval.json");
     let approval_metadata = fs::symlink_metadata(&approval_path).map_err(|_| DENIED)?;
     if !approval_metadata.file_type().is_file() || !(1..=4096).contains(&approval_metadata.len()) {
@@ -570,7 +659,13 @@ pub(crate) fn verify_detached_historical_import_grant(
             return Err(DENIED.into());
         }
     }
-    let raw = fs::read(approval_path).map_err(|_| DENIED)?;
+    let approval_lock =
+        historical_approval_storage::locked_input(&approval_path).map_err(str::to_string)?;
+    let mut raw = Vec::new();
+    (&approval_lock)
+        .take(4097)
+        .read_to_end(&mut raw)
+        .map_err(|_| DENIED)?;
     let grant = parse_grant(&raw).map_err(str::to_string)?;
     // Neither JSON nor SQLite source selects an approver, trust root, source
     // custody request or destination; all are native-pinned.
@@ -579,6 +674,18 @@ pub(crate) fn verify_detached_historical_import_grant(
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| DENIED)?
         .as_secs();
+    let owner_path = stage.join("owner-authentication-evidence.json");
+    let owner_lock =
+        historical_approval_storage::locked_input(&owner_path).map_err(str::to_string)?;
+    if owner_lock.metadata().map_err(|_| DENIED)?.len() > 4096 {
+        return Err(DENIED.into());
+    }
+    let mut owner_evidence = Vec::new();
+    (&owner_lock)
+        .take(4097)
+        .read_to_end(&mut owner_evidence)
+        .map_err(|_| DENIED)?;
+    inspect_owner_identity_record(&owner_evidence, &grant, &trust, now).map_err(str::to_string)?;
     let verified = tauri::async_runtime::block_on(async {
         let mut connection = SqliteConnection::connect_with(
             &SqliteConnectOptions::new()
@@ -603,7 +710,25 @@ pub(crate) fn verify_detached_historical_import_grant(
     if snapshot_sha256(&source).map_err(str::to_string)? != source_sha256 {
         return Err(DENIED.into());
     }
-    Ok(verified)
+    // The windows-native custody receipt is intentionally written only after
+    // all source and dual-signature checks pass. A missing protected receipt
+    // directory is denial. Its file name is SHA256(request_nonce) to prevent
+    // replay under another stage token; existing receipts are never replaced.
+    let receipt = if store_verified_receipt {
+        Some(
+            historical_approval_storage::persist_signed_review(
+                &root,
+                verified.source_sha256,
+                verified.approval_sha256,
+                grant.owner_authentication_record_sha256,
+                grant.request_nonce,
+            )
+            .map_err(str::to_string)?,
+        )
+    } else {
+        None
+    };
+    Ok((verified, receipt))
 }
 
 #[cfg(test)]
@@ -619,6 +744,22 @@ mod tests {
         let random = ring::rand::SystemRandom::new();
         let pkcs8 = Ed25519KeyPair::generate_pkcs8(&random).unwrap();
         Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap()
+    }
+
+    fn identity_record(grant: &HistoricalImportGrant) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "format": OWNER_RECORD_FORMAT,
+            "purpose": OWNER_RECORD_PURPOSE,
+            "owner_id": grant.owner_id,
+            "destination_pharmacy": TENANT,
+            "original_v29_sha256": lower(&grant.original_v29_sha256),
+            "original_v67_sha256": lower(&grant.original_v67_sha256),
+            "authentication_method": "independent_in_person_identity_review",
+            "independent_evidence_reference": "operator-private-identity-review-12345",
+            "independent_evidence_sha256": lower(&[81; 32]),
+            "witnessed_at_unix": 399_999,
+        }))
+        .unwrap()
     }
 
     fn synthetic_grant() -> (
@@ -656,6 +797,8 @@ mod tests {
             identity_witness_signature: [0; 64],
             source_reviewer_signature: [0; 64],
         };
+        let record = identity_record(&grant);
+        grant.owner_authentication_record_sha256 = Sha256::digest(&record).into();
         let statement = signed_statement(&grant, &trust);
         let identity_message = [b"identity-witness\0".as_slice(), &statement].concat();
         let reviewer_message = [b"source-reviewer\0".as_slice(), &statement].concat();
@@ -830,6 +973,71 @@ mod tests {
             .unwrap()
             .remove("source_reviewer_ed25519_signature");
         assert!(parse_grant(&serde_json::to_vec(&no_review).unwrap()).is_err());
+    }
+
+    #[test]
+    fn owner_evidence_is_real_signed_input_bytes_not_chat_or_digest_assertion() {
+        let (grant, trust, _, _) = synthetic_grant();
+        let record = identity_record(&grant);
+        assert!(inspect_owner_identity_record(&record, &grant, &trust, 400_001).is_ok());
+        assert!(inspect_owner_identity_record(
+            b"Owner confirms approval in chat",
+            &grant,
+            &trust,
+            400_001
+        )
+        .is_err());
+        let mut tampered: serde_json::Value = serde_json::from_slice(&record).unwrap();
+        for (field, replacement) in [
+            ("authentication_method", serde_json::json!("chat_assertion")),
+            ("original_v67_sha256", serde_json::json!(lower(&[68; 32]))),
+            (
+                "independent_evidence_sha256",
+                serde_json::json!(lower(&[0; 32])),
+            ),
+            ("owner_id", serde_json::json!("other-owner")),
+            ("witnessed_at_unix", serde_json::json!(600_000)),
+        ] {
+            tampered[field] = replacement;
+            assert!(
+                inspect_owner_identity_record(
+                    &serde_json::to_vec(&tampered).unwrap(),
+                    &grant,
+                    &trust,
+                    400_001,
+                )
+                .is_err(),
+                "Mutated independent evidence denied: {field}"
+            );
+            tampered = serde_json::from_slice(&record).unwrap();
+        }
+        tampered["self_authorized"] = serde_json::json!(true);
+        assert!(inspect_owner_identity_record(
+            &serde_json::to_vec(&tampered).unwrap(),
+            &grant,
+            &trust,
+            400_001,
+        )
+        .is_err());
+        let mut wrong_event = grant.clone();
+        wrong_event.owner_authentication_record_sha256 = [9; 32];
+        assert!(inspect_owner_identity_record(&record, &wrong_event, &trust, 400_001).is_err());
+        assert!(
+            verify_signatures(&wrong_event, &trust, [69; 32], 400_001).is_err(),
+            "An unrelated or self-authored identity record cannot inherit operator signatures"
+        );
+    }
+
+    #[test]
+    fn operational_intake_denies_without_independently_pinned_roots() {
+        // Never read a caller's installed profile or create receipts when
+        // operator identity/reviewer trust was not provisioned into the build.
+        if independently_pinned_approvers().is_err() {
+            assert!(ingest_historical_owner_authentication_evidence(
+                "0123456789abcdef0123456789abcdef"
+            )
+            .is_err());
+        }
     }
 
     #[tokio::test]
