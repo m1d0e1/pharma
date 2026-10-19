@@ -2,6 +2,10 @@ import { createFunctionTransactionDb as mockCreateFunctionTransactionDb } from '
 import { dbExecute, dbGet, dbTransaction } from '@/lib/db/tauri';
 import { getLocalSession } from '@/lib/auth/local';
 
+let shiftReadCount = 0;
+let makeSharedShift = false;
+let witnessOwner = 'tenant-a';
+
 jest.mock('@/lib/db/tauri', () => {
   const dbSelect = jest.fn();
   const dbExecute = jest.fn();
@@ -32,12 +36,37 @@ const { updatePatientAction, updatePatientWalletAction } = jest.requireActual(
 describe('patient action financial safeguards', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    (getLocalSession as jest.Mock).mockResolvedValue({ id: 'admin', role: 'owner' });
+    shiftReadCount = 0;
+    makeSharedShift = false;
+    witnessOwner = 'tenant-a';
+    (getLocalSession as jest.Mock).mockResolvedValue({ id: 'admin', role: 'owner', pharmacy_id: 'tenant-a' });
     (dbExecute as jest.Mock).mockResolvedValue({ rowsAffected: 1 });
+    // Independent immutable ownership witness, not a guessed owner from
+    // patient.id or local_default. The SQL text and binds are checked so the
+    // mock cannot accidentally certify another branch's patient.
+    (dbGet as jest.Mock).mockImplementation(async (sql: string, params: unknown[] = []) => {
+      if (sql.includes('SELECT 1 AS owned FROM patients p')) {
+        expect(sql).toContain('native_patient_directory_ownership');
+        expect(sql).toContain('NOT EXISTS (SELECT 1 FROM sales_invoices other');
+        expect(params).toEqual(['patient-1', 'tenant-a', 'tenant-a']);
+        return witnessOwner === 'tenant-a' ? { owned: 1 } : null;
+      }
+      if (sql.includes('AS opening_balance FROM patients')) return { opening_balance: 0 };
+      if (sql.includes('FROM users') && sql.includes('pharmacy_id')) return { pharmacy_id: 'tenant-a' };
+      if (sql.includes('FROM shifts s') && sql.includes('ORDER BY s.start_time')) {
+        shiftReadCount++;
+        return makeSharedShift && shiftReadCount === 1 ? null : {
+          id: makeSharedShift ? 'shared-shift' : 'shift-1', user_id: 'admin', status: 'open',
+        };
+      }
+      if (sql.includes('CAST(wallet_balance AS REAL)')) return { full_name: 'Test Patient', wallet_balance: 40 };
+      if (sql.includes("category = 'cash_drawer'")) return { account_id: 6 };
+      if (sql.includes("category = 'patient_wallet_liability'")) return { account_id: 12 };
+      return null;
+    });
   });
 
   it('does not overwrite wallet or loyalty when ordinary profile fields are saved', async () => {
-    (dbGet as jest.Mock).mockResolvedValueOnce({ opening_balance: 0 });
     const result = await updatePatientAction('patient-1', {
       full_name: 'Test Patient',
       mobile: '01000000000',
@@ -53,6 +82,8 @@ describe('patient action financial safeguards', () => {
     const [sql, params] = (dbExecute as jest.Mock).mock.calls[0];
     expect(sql).not.toContain('wallet_balance');
     expect(sql).not.toContain('loyalty_level');
+    expect(sql).not.toContain('points_balance');
+    expect(sql).not.toContain('opening_balance = ?');
     expect(sql).toContain('mobile = ?');
     expect(sql).toContain('area = ?');
     expect(sql).toContain('car_number = ?');
@@ -61,14 +92,6 @@ describe('patient action financial safeguards', () => {
   });
 
   it('top-ups wallet, cash receipt, and liability journal in one transaction', async () => {
-    (dbGet as jest.Mock)
-      .mockResolvedValueOnce({ pharmacy_id: null })
-      .mockResolvedValueOnce({ pharmacy_id: null })
-      .mockResolvedValueOnce({ id: 'shift-1', user_id: 'admin', status: 'open' })
-      .mockResolvedValueOnce({ full_name: 'Test Patient', wallet_balance: 40 })
-      .mockResolvedValueOnce({ account_id: 6 })
-      .mockResolvedValueOnce({ account_id: 12 });
-
     const result = await updatePatientWalletAction('patient-1', 60, 'advance');
 
     expect(result).toMatchObject({ success: true, balance: 100 });
@@ -95,15 +118,9 @@ describe('patient action financial safeguards', () => {
     (getLocalSession as jest.Mock).mockResolvedValue({
       id: 'pharmacist-1',
       role: 'pharmacist',
+      pharmacy_id: 'tenant-a',
       permissions: { can_view_patients: true, acc_can_process_cash_flow: true },
     });
-    (dbGet as jest.Mock)
-      .mockResolvedValueOnce({ pharmacy_id: null })
-      .mockResolvedValueOnce({ pharmacy_id: null })
-      .mockResolvedValueOnce({ id: 'shift-1', user_id: 'pharmacist-1', status: 'open' })
-      .mockResolvedValueOnce({ full_name: 'Test Patient', wallet_balance: 40 })
-      .mockResolvedValueOnce({ account_id: 6 })
-      .mockResolvedValueOnce({ account_id: 12 });
 
     const result = await updatePatientWalletAction('patient-1', 60, 'advance');
 
@@ -112,14 +129,7 @@ describe('patient action financial safeguards', () => {
   });
 
   it('creates the shared shift before a cash wallet top-up when none is open', async () => {
-    (dbGet as jest.Mock)
-      .mockResolvedValueOnce({ pharmacy_id: null })
-      .mockResolvedValueOnce({ pharmacy_id: null })
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce({ id: 'shared-shift', user_id: 'admin', status: 'open' })
-      .mockResolvedValueOnce({ full_name: 'Test Patient', wallet_balance: 40 })
-      .mockResolvedValueOnce({ account_id: 6 })
-      .mockResolvedValueOnce({ account_id: 12 });
+    makeSharedShift = true;
 
     const result = await updatePatientWalletAction('patient-1', 60, 'advance');
 
@@ -153,6 +163,23 @@ describe('patient action financial safeguards', () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('غير مصرح');
+    expect(dbTransaction).not.toHaveBeenCalled();
+    expect(dbExecute).not.toHaveBeenCalled();
+  });
+
+  it('rejects unowned, cross-tenant and local_default patients before any cash movement or journal write', async () => {
+    witnessOwner = 'tenant-b';
+    expect(await updatePatientWalletAction('patient-1', 60)).toMatchObject({
+      success: false, error: 'Legacy patient ownership needs independent tenant verification',
+    });
+    expect(dbTransaction).not.toHaveBeenCalled();
+    expect(dbExecute).not.toHaveBeenCalled();
+
+    witnessOwner = 'tenant-a';
+    (getLocalSession as jest.Mock).mockResolvedValue({ id: 'admin', role: 'owner', pharmacy_id: 'local_default' });
+    expect(await updatePatientWalletAction('patient-1', 60)).toMatchObject({
+      success: false, error: 'Legacy patient ownership needs independent tenant verification',
+    });
     expect(dbTransaction).not.toHaveBeenCalled();
     expect(dbExecute).not.toHaveBeenCalled();
   });

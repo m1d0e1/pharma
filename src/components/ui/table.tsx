@@ -7,6 +7,7 @@ interface TableProps extends React.TableHTMLAttributes<HTMLTableElement> {
   compact?: boolean;
   bordered?: boolean;
   variant?: 'default' | 'minimal' | 'elevated';
+  scrollRegionLabel?: string;
 }
 
 interface TableHeaderProps extends React.HTMLAttributes<HTMLTableSectionElement> {}
@@ -29,9 +30,27 @@ interface TableCellProps extends React.TdHTMLAttributes<HTMLTableCellElement> {
 }
 
 const Table = React.forwardRef<HTMLTableElement, TableProps>(
-  ({ className, striped = true, hover = true, compact = false, bordered = true, variant = 'default', ...props }, ref) => {
+  ({ className, striped = true, hover = true, compact = false, bordered = true, variant = 'default', scrollRegionLabel, ...props }, ref) => {
+    const viewportRef = React.useRef<HTMLDivElement>(null);
+    const [canScroll, setCanScroll] = React.useState(false);
+
+    React.useEffect(() => {
+      const viewport = viewportRef.current;
+      if (!viewport) return;
+      const update = () => setCanScroll(viewport.scrollWidth > viewport.clientWidth + 1);
+      update();
+      const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(update);
+      observer?.observe(viewport);
+      const table = viewport.querySelector('table');
+      if (table) observer?.observe(table);
+      window.addEventListener('resize', update);
+      return () => {
+        observer?.disconnect();
+        window.removeEventListener('resize', update);
+      };
+    }, [props.children]);
     const tableClasses = cn(
-      'w-full text-sm text-left',
+      'w-full text-sm text-start',
       compact && 'table-compact',
       variant === 'minimal' && 'border-separate border-spacing-0',
       variant === 'elevated' && 'shadow-sm',
@@ -46,7 +65,13 @@ const Table = React.forwardRef<HTMLTableElement, TableProps>(
     );
 
     return (
-      <div className={containerClasses}>
+      <div
+        ref={viewportRef}
+        className={cn(containerClasses, 'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-700 dark:focus-visible:outline-sky-300')}
+        role={canScroll ? 'region' : undefined}
+        aria-label={canScroll ? (scrollRegionLabel || props['aria-label'] || 'جدول بيانات قابل للتمرير أفقياً') : undefined}
+        tabIndex={canScroll ? 0 : undefined}
+      >
         <table
           ref={ref}
           className={tableClasses}

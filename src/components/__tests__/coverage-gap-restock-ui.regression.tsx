@@ -64,7 +64,7 @@ describe('restock route interactions', () => {
     expect(quantityInput).toHaveValue(4);
 
     fireEvent.change(quantityInput, { target: { value: '0' } });
-    fireEvent.click(within(restockRow as HTMLElement).getByRole('button', { name: '-' }));
+    fireEvent.click(within(restockRow as HTMLElement).getByRole('button', { name: 'تقليل كمية طلب Restock Drug' }));
     expect(quantityInput).toHaveValue(0);
 
     fireEvent.change(quantityInput, { target: { value: '6' } });
@@ -87,7 +87,7 @@ describe('restock route interactions', () => {
 
     render(<RestockPage />);
 
-    expect(await screen.findByText('المخزون مكتمل! لا توجد نواقص حالياً.')).toBeInTheDocument();
+    expect(await screen.findByText('لا توجد أصناف تحتاج إلى إعادة تموين حالياً.')).toBeInTheDocument();
     expect(screen.getByText('الميزانية التقديرية لإعادة الملء')).toBeInTheDocument();
   });
 
@@ -99,7 +99,7 @@ describe('restock route interactions', () => {
     render(<RestockPage />);
 
     expect(await screen.findByText('تعذر تحميل قائمة إعادة التموين')).toBeInTheDocument();
-    expect(screen.queryByText('المخزون مكتمل! لا توجد نواقص حالياً.')).not.toBeInTheDocument();
+    expect(screen.queryByText('لا توجد أصناف تحتاج إلى إعادة تموين حالياً.')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'إعادة المحاولة' }));
 
@@ -120,7 +120,7 @@ describe('restock route interactions', () => {
     });
 
     await waitFor(() => expect(getRestockItemsAction).toHaveBeenCalledTimes(2));
-    expect(await screen.findByText('المخزون مكتمل! لا توجد نواقص حالياً.')).toBeInTheDocument();
+    expect(await screen.findByText('لا توجد أصناف تحتاج إلى إعادة تموين حالياً.')).toBeInTheDocument();
     expect(screen.queryByText('Restock Drug')).not.toBeInTheDocument();
   });
 });

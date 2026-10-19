@@ -49,7 +49,7 @@ describe('pharmacy identity config scope', () => {
   });
 
   it('keeps non-default pharmacy identities independent while leaving global config untouched', async () => {
-    config.set('subscription_status', 'activated');
+    config.set('unrelated_global_setting', 'enabled');
     config.set('pharmacy_name', 'Legacy Local Default');
 
     expect(await updatePharmacyClient({ name: 'Pharmacy A', phone: '111' })).toEqual({ success: true });
@@ -65,7 +65,7 @@ describe('pharmacy identity config scope', () => {
 
     mockUser = { id: 'owner-a', role: 'owner', pharmacy_id: 'ph-a', permissions: {} };
     expect(await getConfigAction('pharmacy_name')).toEqual({ success: true, value: 'Pharmacy A' });
-    expect(config.get('subscription_status')).toBe('activated');
+    expect(config.get('unrelated_global_setting')).toBe('enabled');
     expect(config.get('pharmacy_name')).toBe('Legacy Local Default');
   });
 

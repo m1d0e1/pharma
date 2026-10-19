@@ -337,7 +337,7 @@ export default function POSPage() {
   const searchParams = useSearchParams();
   const {
     cart, setCart,
-    selectedPatient, setSelectedPatient,
+    selectedPatient: persistedSelectedPatient, setSelectedPatient,
     paymentMethod, setPaymentMethod,
     checkNumber, setCheckNumber,
     totalDiscount, setTotalDiscount,
@@ -345,8 +345,15 @@ export default function POSPage() {
     additionalFees, setAdditionalFees,
     resetPOS
   } = usePOSStore();
+  // Persisted POS drafts may contain patients created before tenant ownership
+  // existed. Hide every stored name/balance until the current scoped read
+  // certifies that exact ID for this authenticated session.
+  const [verifiedPatientId, setVerifiedPatientId] = useState<string | null>(null);
+  const selectedPatient = persistedSelectedPatient?.id === verifiedPatientId
+    ? persistedSelectedPatient : null;
   const [isProcessing, setIsProcessing] = useState(false);
   const checkoutLockRef = useRef(false);
+  const checkoutRequestNonceRef = useRef<string | null>(null);
   const [alternatives, setAlternatives] = useState<DrugItem[]>([]);
   const searchSidebarRef = useRef<POSSearchSidebarRef>(null);
 
@@ -375,6 +382,8 @@ export default function POSPage() {
   const [canViewReturns, setCanViewReturns] = useState(false);
   const [canViewRestock, setCanViewRestock] = useState(false);
   const [canViewPatients, setCanViewPatients] = useState(false);
+  const [canViewReports, setCanViewReports] = useState(false);
+  const [canViewSettings, setCanViewSettings] = useState(false);
   const [maxInvoiceDiscountPercent, setMaxInvoiceDiscountPercent] = useState(0);
   const [isUserLoading, setIsUserLoading] = useState(true);
   const [userLoadError, setUserLoadError] = useState(false);
@@ -414,18 +423,6 @@ export default function POSPage() {
   const [showDrugDetails, setShowDrugDetails] = useState<string | number | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number, drugId: string | number, cartItemId: string } | null>(null);
   const returnDialogRef = useDialogFocusTrap<HTMLDivElement>(showReturnModal);
-
-  // Dynamic Units
-  const [unitsList, setUnitsList] = useState<{name_ar: string}[]>([]);
-
-  useEffect(() => {
-    async function fetchUnits() {
-      const { getUnitsAction } = await import('@/app/actions-client/master-drugs');
-      const res = await getUnitsAction();
-      if (res.success && res.data) setUnitsList(res.data);
-    }
-    fetchUnits();
-  }, []);
 
   const handleInputKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
@@ -477,12 +474,22 @@ export default function POSPage() {
       setCanViewReturns(hasUserPermissionSync(userObj, 'can_view_returns'));
       setCanViewRestock(hasUserPermissionSync(userObj, 'can_view_restock'));
       setCanViewPatients(hasUserPermissionSync(userObj, 'can_view_patients'));
+      setCanViewReports(hasUserPermissionSync(userObj, 'rep_can_view_sales'));
+      setCanViewSettings(hasUserPermissionSync(userObj, 'can_view_settings'));
       setMaxInvoiceDiscountPercent(permissionNumber(userObj, 'max_invoice_discount_percent'));
 
-      const res = await getCurrentUserAction();
-      if (res.success && res.user) {
-        setCurrentUserName(res.user.full_name);
-        setCurrentUser({ id: res.user.id, pharmacy_id: res.user.pharmacy_id });
+      // The authenticated client session already contains these identity
+      // fields. Avoid a redundant current_local_user IPC on every POS mount.
+      if (userObj.id && userObj.pharmacy_id && userObj.full_name) {
+        setCurrentUserName(userObj.full_name);
+        setCurrentUser({ id: String(userObj.id), pharmacy_id: userObj.pharmacy_id });
+      } else {
+        // Preserve the legacy fallback for incomplete session shapes.
+        const res = await getCurrentUserAction();
+        if (res.success && res.user) {
+          setCurrentUserName(res.user.full_name);
+          setCurrentUser({ id: res.user.id, pharmacy_id: res.user.pharmacy_id });
+        }
       }
     } catch (error) {
       console.error('Failed to load POS user:', error);
@@ -588,18 +595,36 @@ export default function POSPage() {
   // so a present (including zero) field is not proof that the snapshot is current.
   useEffect(() => {
     let active = true;
-    const patientId = selectedPatient?.id;
+    const patientId = persistedSelectedPatient?.id;
     if (!patientId) return () => { active = false; };
 
     void import('@/app/actions-client/patients').then(async (mod) => {
-      const res = await mod.getPatientForPosAction(patientId);
-      if (active && res.success && res.data) {
-        setSelectedPatient(prev => prev && prev.id === res.data.id ? { ...prev, ...res.data } : prev);
+      try {
+        const res = await mod.getPatientForPosAction(patientId);
+        if (!active) return;
+        if (res.success && res.data?.id === patientId) {
+          setSelectedPatient(prev => prev && prev.id === patientId ? { ...prev, ...res.data } : prev);
+          setVerifiedPatientId(patientId);
+        } else {
+          setSelectedPatient(prev => prev?.id === patientId ? null : prev);
+          setVerifiedPatientId(null);
+          if (paymentMethod === 'credit' || paymentMethod === 'wallet') setPaymentMethod('cash');
+        }
+      } catch {
+        if (!active) return;
+        setSelectedPatient(prev => prev?.id === patientId ? null : prev);
+        setVerifiedPatientId(null);
+        if (paymentMethod === 'credit' || paymentMethod === 'wallet') setPaymentMethod('cash');
       }
+    }).catch(() => {
+      if (!active) return;
+      setSelectedPatient(prev => prev?.id === patientId ? null : prev);
+      setVerifiedPatientId(null);
+      if (paymentMethod === 'credit' || paymentMethod === 'wallet') setPaymentMethod('cash');
     });
 
     return () => { active = false; };
-  }, [selectedPatient?.id, setSelectedPatient]);
+  }, [persistedSelectedPatient?.id, setSelectedPatient, setPaymentMethod, paymentMethod]);
 
   useEffect(() => {
     setPointsToRedeem(0);
@@ -882,7 +907,11 @@ export default function POSPage() {
         is_negative: item.isNegative || false
       }));
 
+      // Preserve the same native request ID when the IPC response is
+      // ambiguous. A second generated ID could double-post stock and money.
+      if (!checkoutRequestNonceRef.current) checkoutRequestNonceRef.current = crypto.randomUUID();
       const result = await processCheckoutAction({
+        request_id: checkoutRequestNonceRef.current,
         items: formattedCart,
         patient_id: selectedPatient?.id,
         payment_method: paymentMethod,
@@ -895,6 +924,7 @@ export default function POSPage() {
       });
 
       if (result.success) {
+        checkoutRequestNonceRef.current = null;
         toast.success(status === 'draft' ? 'تم حفظ المسودة بنجاح' : 'تمت العملية بنجاح!');
         
         if (status === 'completed' && result.data) {
@@ -1198,8 +1228,8 @@ export default function POSPage() {
         <SidebarButton icon={PlusCircle} label="إضافة صنف" color="bg-slate-700" onClick={() => { searchSidebarRef.current?.clear(); searchSidebarRef.current?.focus(); }} />
         <div className="flex shrink-0 gap-2 xl:mt-auto xl:flex-col xl:gap-0 xl:border-t xl:border-slate-100 xl:pt-3 dark:xl:border-slate-800">
           <SidebarButton icon={Calculator} label="آلة حاسبة" color="bg-slate-600" onClick={() => window.open('https://www.google.com/search?q=calculator', '_blank')} />
-          <SidebarButton icon={BarChart3} label="تقارير" color="bg-slate-600" onClick={() => router.push('/reports')} />
-          <SidebarButton icon={Settings} label="خيارات" color="bg-slate-600" onClick={() => router.push('/settings')} />
+          {canViewReports && <SidebarButton icon={BarChart3} label="تقارير" color="bg-slate-600" onClick={() => router.push('/reports')} />}
+          {canViewSettings && <SidebarButton icon={Settings} label="خيارات" color="bg-slate-600" onClick={() => router.push('/settings')} />}
         </div>
       </div>
       

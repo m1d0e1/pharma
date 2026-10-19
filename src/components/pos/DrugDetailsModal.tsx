@@ -36,6 +36,8 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated, onDru
   const lifecycleMutationRef = React.useRef(false);
   const detailsMutationRef = React.useRef(false);
   const detailRequestRef = React.useRef(0);
+  const selectedDrugIdRef = React.useRef(currentId);
+  const alternativeSearchRef = React.useRef(0);
   const [formData, setFormData] = useState<any>(null);
   const [canManageInventory, setCanManageInventory] = useState(false);
   const [canModifyUnitConversion, setCanModifyUnitConversion] = useState(false);
@@ -53,6 +55,15 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated, onDru
   const errorDialogRef = useDialogFocusTrap<HTMLDivElement>(loadError);
 
   React.useEffect(() => {
+    selectedDrugIdRef.current = currentId;
+    alternativeSearchRef.current += 1;
+    setAltSearchQuery('');
+    setAltSearchResults([]);
+    setIsSearchingAlt(false);
+    setIsEditing(false);
+  }, [currentId]);
+
+  React.useEffect(() => {
     setCurrentId(drugId);
     setHistory([]);
   }, [drugId]);
@@ -68,23 +79,24 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated, onDru
     return () => { active = false; };
   }, []);
 
-  const loadDrugDetails = async (id: number | string, preserveOnFailure = false) => {
+  const loadDrugDetails = async (id: number | string, preserveOnFailure = false, preserveDraft = false) => {
+    if (String(id) !== String(selectedDrugIdRef.current)) return;
     const requestId = ++detailRequestRef.current;
     if (!preserveOnFailure) setLoading(true);
     if (!preserveOnFailure) setLoadError(false);
     setRefreshError(false);
     try {
       const result = await getDrugDetailsFullAction(id);
-      if (requestId !== detailRequestRef.current) return;
+      if (requestId !== detailRequestRef.current || String(id) !== String(selectedDrugIdRef.current)) return;
       if (result.success) {
         setDrugData(result.data);
-        setFormData(result.data);
+        if (!preserveDraft) setFormData(result.data);
       } else {
         if (preserveOnFailure) setRefreshError(true);
         else setLoadError(true);
       }
     } catch (error) {
-      if (requestId !== detailRequestRef.current) return;
+      if (requestId !== detailRequestRef.current || String(id) !== String(selectedDrugIdRef.current)) return;
       console.error('Failed to load drug details:', error);
       if (preserveOnFailure) setRefreshError(true);
       else setLoadError(true);
@@ -102,15 +114,26 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated, onDru
 
   const handleSearchAlt = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const query = e.target.value;
+    const requestId = ++alternativeSearchRef.current;
     setAltSearchQuery(query);
+    setAltSearchResults([]);
     if (query.length > 2) {
       setIsSearchingAlt(true);
-      const res = await searchMasterDrugsAction(query);
-      if (res.success && res.data) {
-        setAltSearchResults(res.data);
+      try {
+        const res = await searchMasterDrugsAction(query);
+        if (requestId === alternativeSearchRef.current) {
+          setAltSearchResults(res.success && res.data ? res.data : []);
+        }
+      } catch {
+        if (requestId === alternativeSearchRef.current) {
+          setAltSearchResults([]);
+          toast.error('تعذر البحث عن البدائل');
+        }
+      } finally {
+        if (requestId === alternativeSearchRef.current) setIsSearchingAlt(false);
       }
-      setIsSearchingAlt(false);
     } else {
+      setIsSearchingAlt(false);
       setAltSearchResults([]);
     }
   };
@@ -124,7 +147,7 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated, onDru
           toast.success('تمت إضافة البديل بنجاح');
           setAltSearchQuery('');
           setAltSearchResults([]);
-          void loadDrugDetails(currentId, true);
+          void loadDrugDetails(currentId, true, true);
        } else {
           toast.error(res.error || 'حدث خطأ');
        }
@@ -141,7 +164,7 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated, onDru
        const res = await removeDrugAlternativeAction(drugData.id, altId);
        if (res.success) {
           toast.success('تمت إزالة البديل بنجاح');
-          void loadDrugDetails(currentId, true);
+          void loadDrugDetails(currentId, true, true);
        } else {
           toast.error(res.error || 'حدث خطأ');
        }
@@ -164,7 +187,7 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated, onDru
       if (res.success) {
          toast.success('تمت إضافة التفاعل الدوائي بنجاح');
          setConflictIngredientB('');
-         void loadDrugDetails(currentId, true);
+         void loadDrugDetails(currentId, true, true);
       } else {
          toast.error(res.error || 'حدث خطأ');
       }
@@ -180,7 +203,7 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated, onDru
        const res = await removeDrugInteractionAction(id);
        if (res.success) {
          toast.success('تمت إزالة التفاعل الدوائي بنجاح');
-         void loadDrugDetails(currentId, true);
+         void loadDrugDetails(currentId, true, true);
        } else {
          toast.error(res.error || 'حدث خطأ');
        }
@@ -229,10 +252,12 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated, onDru
 
   const handleSave = async () => {
     if (savingRef.current) return;
+    const editingDrugId = currentId;
     savingRef.current = true;
     setIsSaving(true);
     try {
-      const res = await updateMasterDrugAction(currentId as number, formData);
+      const res = await updateMasterDrugAction(editingDrugId as number, formData);
+      if (String(editingDrugId) !== String(selectedDrugIdRef.current)) return;
       if (res.success) {
         toast.success('تم حفظ التعديلات بنجاح');
         setIsEditing(false);
@@ -334,7 +359,7 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated, onDru
       <div ref={mainDialogRef} role="dialog" aria-modal="true" aria-labelledby="drug-details-title" tabIndex={-1} className="bg-white dark:bg-slate-900 w-full max-w-5xl rounded-3xl shadow-2xl border border-slate-100 dark:border-slate-800 flex flex-col max-h-[90vh] overflow-hidden animate-in zoom-in duration-300" dir="rtl">
         
         {/* Header */}
-        <div className="p-6 bg-gradient-to-r from-blue-600 to-indigo-700 text-white flex justify-between items-center shrink-0">
+        <div className="p-5 bg-primary-800 dark:bg-primary-900 text-white flex justify-between items-center shrink-0">
           <div className="flex items-center gap-6">
              <div className="w-12 h-12 bg-white/10 rounded-xl flex items-center justify-center border border-white/20">
                 <Package className="w-6 h-6" />
@@ -944,7 +969,7 @@ export default function DrugDetailsModal({ drugId, onClose, onDrugUpdated, onDru
 
           {activeTab === 'consumption' && (
             <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4">
-               <div className="bg-gradient-to-r from-blue-600 to-indigo-600 p-8 rounded-[2rem] text-white flex justify-between items-center shadow-xl shadow-blue-500/20">
+          <div className="bg-primary-800 dark:bg-primary-900 p-5 rounded-xl text-white flex justify-between items-center shadow-sm">
                   <div>
                      <p className="text-blue-100 font-bold text-sm mb-1 uppercase tracking-widest">متوسط الاستهلاك الشهري</p>
                      <h3 className="text-4xl font-black">

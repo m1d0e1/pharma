@@ -5,7 +5,7 @@ import { useHotkeys } from 'react-hotkeys-hook'
 import { getConfigAction } from '@/app/actions-client/config'
 import toast from 'react-hot-toast'
 import { calculateReceiptTotals, generateReceiptHtml, generateWhatsAppMessage, printHtmlContent } from '@/lib/utils/printing'
-import { Printer, X, Phone } from 'lucide-react'
+import { Banknote, Bike, CircleDollarSign, CreditCard, FileText, Landmark, Phone, Pill, Printer, WalletCards, X } from 'lucide-react'
 import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap'
 
 interface SaleItem {
@@ -142,6 +142,13 @@ export default function ReceiptDetailsModal({ invoice, onClose, autoPrint = fals
   };
 
   const { subtotal, discount, additionalFees } = calculateReceiptTotals(invoice);
+  const PaymentIcon = invoice.payment_method === 'cash' ? Banknote
+    : invoice.payment_method === 'credit' ? CreditCard
+    : invoice.payment_method === 'visa' ? Landmark
+    : invoice.payment_method === 'wallet' ? WalletCards
+    : invoice.payment_method === 'check' ? FileText
+    : invoice.payment_method === 'delivery' ? Bike
+    : CircleDollarSign;
 
   return (
     <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-3 z-[200]" dir="rtl">
@@ -151,14 +158,14 @@ export default function ReceiptDetailsModal({ invoice, onClose, autoPrint = fals
         aria-modal="true"
         aria-labelledby="receipt-details-title"
         tabIndex={-1}
-        className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl w-full max-w-md max-h-[calc(100vh-1.5rem)] overflow-y-auto border border-slate-200 dark:border-slate-800 animate-in zoom-in-95 duration-200"
+        className="bg-white dark:bg-slate-900 rounded-xl shadow-xl w-full max-w-md max-h-[calc(100vh-1.5rem)] overflow-y-auto border border-slate-200 dark:border-slate-800"
       >
         
         {/* Header - Compact Design */}
         <div className="bg-slate-950 p-4 text-white relative overflow-hidden">
           <div className="flex justify-between items-start relative z-10">
             <div className="flex items-center gap-2">
-              <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-sm shadow-md shadow-blue-600/20">🏥</div>
+              <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center"><Pill className="w-4 h-4" aria-hidden="true" /></div>
               <div>
                 <h2 id="receipt-details-title" className="text-sm font-black leading-tight">فاتورة مبيعات</h2>
                 <p className="text-[9px] text-slate-400 font-mono">REF: {invoice.id.slice(0, 10).toUpperCase()}</p>
@@ -168,7 +175,7 @@ export default function ReceiptDetailsModal({ invoice, onClose, autoPrint = fals
               type="button"
               aria-label="إغلاق تفاصيل الفاتورة"
               onClick={onClose} 
-              className="inline-flex h-11 w-11 items-center justify-center hover:bg-white/10 rounded-lg transition-all text-slate-400 hover:text-white"
+              className="inline-flex h-11 w-11 items-center justify-center hover:bg-white/10 rounded-lg transition-colors text-slate-400 hover:text-white"
             >
               <X className="w-4 h-4" />
             </button>
@@ -233,14 +240,7 @@ export default function ReceiptDetailsModal({ invoice, onClose, autoPrint = fals
           <div className="pt-2.5 border-t border-slate-100 dark:border-slate-800 grid grid-cols-2 gap-3 items-end">
             <div>
               <div className="flex items-center gap-2 p-2 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-100 dark:border-slate-800">
-                <span className="text-sm">
-                  {invoice.payment_method === 'cash' ? '💵' : 
-                   invoice.payment_method === 'credit' ? '💳' :
-                   invoice.payment_method === 'visa' ? '🏦' :
-                   invoice.payment_method === 'wallet' ? '👛' :
-                   invoice.payment_method === 'check' ? '📝' :
-                   invoice.payment_method === 'delivery' ? '🛵' : '💸'}
-                </span>
+                <PaymentIcon className="w-4 h-4 text-slate-500 dark:text-slate-400 shrink-0" aria-hidden="true" />
                 <div>
                   <p className="text-xs font-black text-slate-600 dark:text-slate-300 uppercase">طريقة الدفع</p>
                   <span className="font-bold text-slate-800 dark:text-white text-xs">
@@ -292,7 +292,7 @@ export default function ReceiptDetailsModal({ invoice, onClose, autoPrint = fals
              <button 
                type="button"
                onClick={handlePrint} 
-               className="flex items-center justify-center gap-2 bg-slate-900 text-white py-2.5 rounded-xl font-bold text-xs hover:bg-slate-800 transition-all shadow-md active:scale-95"
+               className="flex items-center justify-center gap-2 bg-slate-900 text-white py-2.5 rounded-lg font-semibold text-xs hover:bg-slate-800 transition-colors shadow-sm"
              >
                <Printer className="w-4 h-4 text-blue-400" /> 
                <span>طباعة حرارية</span>
@@ -300,7 +300,7 @@ export default function ReceiptDetailsModal({ invoice, onClose, autoPrint = fals
              <button 
                type="button"
                onClick={handleWhatsApp} 
-               className="flex items-center justify-center gap-2 bg-emerald-600 text-white py-2.5 rounded-xl font-bold text-xs hover:bg-emerald-700 transition-all shadow-md active:scale-95"
+               className="flex items-center justify-center gap-2 bg-emerald-700 text-white py-2.5 rounded-lg font-semibold text-xs hover:bg-emerald-800 transition-colors shadow-sm"
              >
                <Phone className="w-4 h-4" /> 
                <span>إرسال واتساب</span>

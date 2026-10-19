@@ -2,7 +2,7 @@ import React from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import DrugDetailsModal from '@/components/pos/DrugDetailsModal';
 import { getDrugDetailsFullAction } from '@/app/actions-client/inventory';
-import { addDrugInteractionAction, archiveMasterDrugAction, deleteMasterDrugAction, unarchiveMasterDrugAction, updateMasterDrugAction } from '@/app/actions-client/master-drugs';
+import { addDrugInteractionAction, archiveMasterDrugAction, deleteMasterDrugAction, unarchiveMasterDrugAction, updateMasterDrugAction, searchMasterDrugsAction } from '@/app/actions-client/master-drugs';
 import { toast } from 'react-hot-toast';
 
 let mockUser: any;
@@ -590,5 +590,160 @@ describe('DrugDetailsModal inventory-management permissions', () => {
 
     expect(screen.queryByText('Stale Drug')).not.toBeInTheDocument();
     expect(screen.getByText('Newest Drug')).toBeInTheDocument();
+  });
+
+  it('ignores an obsolete alternative-search result after a newer query finishes', async () => {
+    mockUser = { id: 'owner', role: 'owner', pharmacy_id: 'ph-1', permissions: {} };
+    let resolveOld!: (value: any) => void;
+    let resolveNew!: (value: any) => void;
+    (searchMasterDrugsAction as jest.Mock).mockImplementation((query: string) =>
+      new Promise(resolve => {
+        if (query === 'Para') resolveOld = resolve;
+        else if (query === 'Ibup') resolveNew = resolve;
+      }));
+
+    render(<DrugDetailsModal drugId={11} onClose={jest.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: /تعديل/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'البدائل' }));
+    const search = screen.getByPlaceholderText('بحث عن دواء لإضافته كبديل...');
+    fireEvent.change(search, { target: { value: 'Para' } });
+    fireEvent.change(search, { target: { value: 'Ibup' } });
+    await act(async () => resolveNew({ success: true, data: [{ id: 33, trade_name: 'Ibuprofen QA' }] }));
+    expect(screen.getByText('Ibuprofen QA')).toBeInTheDocument();
+    await act(async () => resolveOld({ success: true, data: [{ id: 44, trade_name: 'Paracetamol QA' }] }));
+    expect(screen.getByText('Ibuprofen QA')).toBeInTheDocument();
+    expect(screen.queryByText('Paracetamol QA')).not.toBeInTheDocument();
+  });
+
+  it('does not restore old drug details after a pending save resolves on a newly selected drug', async () => {
+    mockUser = { id: 'owner', role: 'owner', pharmacy_id: 'ph-1', permissions: {} };
+    let resolveSave!: (value: any) => void;
+    (updateMasterDrugAction as jest.Mock).mockImplementation(() => new Promise(resolve => { resolveSave = resolve; }));
+    (getDrugDetailsFullAction as jest.Mock).mockImplementation(async (id: number) => ({
+      success: true,
+      data: {
+        id, trade_name: id === 11 ? 'Original Drug QA' : 'Replacement Drug QA',
+        active_ingredient: 'ingredient', official_price: 12, min_price: 12,
+        total_stock: 1, units: { large: 'box', medium: 'strip', small: 'tablet' },
+        expiry_batches: [], alternatives: [], conflicts: [], consumption_stats: [],
+      },
+    }));
+    const view = render(<DrugDetailsModal drugId={11} onClose={jest.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: /تعديل/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'حفظ' }));
+    await waitFor(() => expect(updateMasterDrugAction).toHaveBeenCalledTimes(1));
+
+    view.rerender(<DrugDetailsModal drugId={22} onClose={jest.fn()} />);
+    expect(await screen.findByText('Replacement Drug QA')).toBeInTheDocument();
+    await act(async () => resolveSave({ success: true }));
+    await waitFor(() => expect(screen.getByText('Replacement Drug QA')).toBeInTheDocument());
+    expect(screen.queryByText('Original Drug QA')).not.toBeInTheDocument();
+    expect((getDrugDetailsFullAction as jest.Mock).mock.calls.map(([id]) => id)).toEqual([11, 22]);
+  });
+
+  it('keeps unsaved drug edit fields while adding a related alternative and refreshing details', async () => {
+    mockUser = { id: 'owner', role: 'owner', pharmacy_id: 'ph-1', permissions: {} };
+    (getDrugDetailsFullAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: {
+        id: 11, trade_name: 'Panadol', active_ingredient: 'Paracetamol',
+        official_price: 12, min_price: 12, total_stock: 1, notes: 'original notes',
+        units: { large: 'box', medium: 'strip', small: 'tablet' },
+        expiry_batches: [], alternatives: [], conflicts: [], consumption_stats: [],
+      },
+    });
+    (searchMasterDrugsAction as jest.Mock).mockResolvedValue({
+      success: true, data: [{ id: 24, trade_name: 'Safe Alternative QA' }],
+    });
+    const { addDrugAlternativeAction } = require('@/app/actions-client/master-drugs');
+    (addDrugAlternativeAction as jest.Mock).mockResolvedValue({ success: true });
+    render(<DrugDetailsModal drugId={11} onClose={jest.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: /تعديل/ }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'ملاحظات إضافية عن الصنف' }), {
+      target: { value: 'unsaved clinical QA draft' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'البدائل' }));
+    fireEvent.change(screen.getByPlaceholderText('بحث عن دواء لإضافته كبديل...'), {
+      target: { value: 'Safe' },
+    });
+    fireEvent.click(await screen.findByText('Safe Alternative QA'));
+    await waitFor(() => expect(getDrugDetailsFullAction).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole('button', { name: 'بيانات الصنف' }));
+    expect(screen.getByRole('textbox', { name: 'ملاحظات إضافية عن الصنف' }))
+      .toHaveValue('unsaved clinical QA draft');
+  });
+
+  it('keeps the returned-to drug authoritative when an older linked-drug interaction finishes', async () => {
+    mockUser = { id: 'owner', role: 'owner', pharmacy_id: 'ph-1', permissions: {} };
+    (getDrugDetailsFullAction as jest.Mock).mockImplementation(async (id: number) => ({
+      success: true,
+      data: {
+        id, trade_name: id === 11 ? 'Original QA Drug' : 'Linked QA Drug',
+        active_ingredient: id === 11 ? 'Ingredient A' : 'Ingredient B',
+        official_price: 10, min_price: 10, total_stock: 1,
+        units: { large: 'box', medium: 'strip', small: 'tablet' },
+        expiry_batches: [],
+        alternatives: id === 11 ? [{ id: 22, trade_name: 'Linked QA Drug', total_stock: 1 }] : [],
+        conflicts: [], consumption_stats: [],
+      },
+    }));
+    let finishInteraction!: (result: any) => void;
+    (addDrugInteractionAction as jest.Mock).mockImplementation(() =>
+      new Promise(resolve => { finishInteraction = resolve; }));
+    render(<DrugDetailsModal drugId={11} onClose={jest.fn()} />);
+    await screen.findByText('Original QA Drug');
+    fireEvent.click(screen.getByRole('button', { name: 'البدائل' }));
+    fireEvent.click(screen.getByText('Linked QA Drug'));
+    expect(await screen.findByRole('heading', { name: 'Linked QA Drug' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /تعديل/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'الأدوية المتعارضة' }));
+    fireEvent.change(screen.getByPlaceholderText('أدخل المادة المتعارضة...'), {
+      target: { value: 'Warfarin' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'إضافة' }));
+    await waitFor(() => expect(addDrugInteractionAction).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole('button', { name: 'رجوع للصنف السابق' }));
+    expect(await screen.findByRole('heading', { name: 'Original QA Drug' })).toBeInTheDocument();
+    await act(async () => finishInteraction({ success: true }));
+    expect(screen.getByRole('heading', { name: 'Original QA Drug' })).toBeInTheDocument();
+    expect((getDrugDetailsFullAction as jest.Mock).mock.calls.map(([id]) => id)).toEqual([11, 22, 11]);
+    fireEvent.click(screen.getByRole('button', { name: /تعديل/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'حفظ' }));
+    await waitFor(() => expect(updateMasterDrugAction).toHaveBeenCalledWith(
+      11, expect.objectContaining({ id: 11, active_ingredient: 'Ingredient A' }),
+    ));
+  });
+
+  it('removes displayed alternative choices as soon as the search query changes or shortens', async () => {
+    mockUser = { id: 'owner', role: 'owner', pharmacy_id: 'ph-1', permissions: {} };
+    let finishSearch!: (result: any) => void;
+    (searchMasterDrugsAction as jest.Mock)
+      .mockResolvedValueOnce({ success: true, data: [{ id: 31, trade_name: 'Old Match QA' }] })
+      .mockImplementationOnce(() => new Promise(resolve => { finishSearch = resolve; }));
+    render(<DrugDetailsModal drugId={11} onClose={jest.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: /تعديل/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'البدائل' }));
+    const search = screen.getByPlaceholderText('بحث عن دواء لإضافته كبديل...');
+    fireEvent.change(search, { target: { value: 'Para' } });
+    expect(await screen.findByText('Old Match QA')).toBeInTheDocument();
+    fireEvent.change(search, { target: { value: 'Ibup' } });
+    expect(screen.queryByText('Old Match QA')).not.toBeInTheDocument();
+    fireEvent.change(search, { target: { value: 'I' } });
+    await act(async () => finishSearch({ success: true, data: [{ id: 32, trade_name: 'Late Match QA' }] }));
+    expect(screen.queryByText('Late Match QA')).not.toBeInTheDocument();
+  });
+
+  it('reports a rejected alternative lookup without leaving a stale selectable result', async () => {
+    mockUser = { id: 'owner', role: 'owner', pharmacy_id: 'ph-1', permissions: {} };
+    (searchMasterDrugsAction as jest.Mock).mockRejectedValueOnce(new Error('synthetic offline search'));
+    render(<DrugDetailsModal drugId={11} onClose={jest.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: /تعديل/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'البدائل' }));
+    fireEvent.change(screen.getByPlaceholderText('بحث عن دواء لإضافته كبديل...'), {
+      target: { value: 'Para' },
+    });
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('تعذر البحث عن البدائل'));
+    expect(screen.queryByText('Safe Alternative QA')).not.toBeInTheDocument();
+    expect(searchMasterDrugsAction).toHaveBeenCalledWith('Para');
   });
 });

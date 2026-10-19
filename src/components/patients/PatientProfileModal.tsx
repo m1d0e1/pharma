@@ -3,7 +3,7 @@ import { useHotkeys } from 'react-hotkeys-hook';
 
 import { useState, useEffect, useLayoutEffect, useRef } from 'react'
 import { 
-  User, Phone, MapPin, Calendar, CreditCard, HeartPulse, Save, X, Activity, 
+  User, Phone, MapPin, Calendar, CreditCard, HeartPulse, Save, X, Activity, Banknote,
   History, Award, ShieldCheck, Trash2, PlusCircle, AlertCircle, FileText
 } from 'lucide-react'
 import { toast } from 'react-hot-toast'
@@ -32,10 +32,13 @@ interface Props {
 export default function PatientProfileModal({ patientId, onClose, onSuccess }: Props) {
   const [canProcessPatientPayments, setCanProcessPatientPayments] = useState(false)
   const [canManageFinancialNotices, setCanManageFinancialNotices] = useState(false)
-  useHotkeys('esc', () => { if(typeof onClose === 'function') onClose(); }, { enableOnFormTags: true });
+  useHotkeys('esc', () => {
+    if (!paymentSubmissionRef.current && !walletTopUpRef.current && typeof onClose === 'function') onClose();
+  }, { enableOnFormTags: true });
   useHotkeys('f1', (e) => {
-    if (!canProcessPatientPayments) return;
+    if (!canProcessPatientPayments || paymentSubmissionRef.current || walletTopUpRef.current) return;
     e.preventDefault();
+    paymentIntentRef.current = null;
     setActiveTab('payments');
     setShowPaymentForm(true);
   }, { enableOnFormTags: true }, [canProcessPatientPayments]);
@@ -79,10 +82,14 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'bank'>('cash')
   const [paymentNotes, setPaymentNotes] = useState('')
   const [paymentDate, setPaymentDate] = useState(format(new Date(), 'yyyy-MM-dd'))
+  const [paymentError, setPaymentError] = useState('')
   const [isSubmittingPayment, setIsSubmittingPayment] = useState(false)
   const paymentSubmissionRef = useRef(false)
+  const paymentIntentRef = useRef<{ fingerprint: string; requestId: string } | null>(null)
   const [isToppingUpWallet, setIsToppingUpWallet] = useState(false)
   const walletTopUpRef = useRef(false)
+  const walletTopUpIntentRef = useRef<{ fingerprint: string; requestId: string } | null>(null)
+  const [walletTopUpError, setWalletTopUpError] = useState('')
 
   // Allergy Form States
   const [showAllergyForm, setShowAllergyForm] = useState(false)
@@ -199,6 +206,10 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
 
   const handleUpdate = async (e?: React.FormEvent) => {
     if (e) e.preventDefault()
+    if (data?.profileScope === 'owned_basics_only') {
+      toast.error('تعديل الملف غير متاح إلى حين توفر أمر أصلي موثق')
+      return
+    }
     if (profileSubmissionRef.current) return
     profileSubmissionRef.current = true
     setIsSubmitting(true)
@@ -228,27 +239,46 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
     }
 
     paymentSubmissionRef.current = true
+    setPaymentError('')
+    const paymentData = {
+      patient_id: patientId,
+      amount: amt,
+      payment_method: paymentMethod,
+      notes: paymentNotes,
+      date: paymentDate
+    }
+    const fingerprint = JSON.stringify(paymentData)
+    if (paymentIntentRef.current?.fingerprint !== fingerprint) {
+      paymentIntentRef.current = { fingerprint, requestId: crypto.randomUUID() }
+    }
     setIsSubmittingPayment(true)
     try {
       const res = await addPatientPaymentAction({
-        patient_id: patientId,
-        amount: amt,
-        payment_method: paymentMethod,
-        notes: paymentNotes,
-        date: paymentDate
+        ...paymentData,
+        request_id: paymentIntentRef.current.requestId
       })
 
       if (res.success) {
+        paymentIntentRef.current = null
+        setPaymentError('')
         toast.success('تم تسجيل الدفعة بنجاح')
         setShowPaymentForm(false)
         setPaymentAmount('')
         setPaymentNotes('')
         setPaymentDate(format(new Date(), 'yyyy-MM-dd'))
         void fetchProfile(true)
+        try {
+          onSuccess()
+        } catch {
+          toast.error('تم تسجيل الدفعة لكن تعذر تحديث قائمة المرضى')
+        }
       } else {
-        toast.error(res.error || 'فشل إضافة الدفعة')
+        const message = res.error || 'فشل إضافة الدفعة'
+        setPaymentError(message)
+        toast.error(message)
       }
     } catch {
+      setPaymentError('حدث خطأ أثناء إضافة الدفعة')
       toast.error('حدث خطأ أثناء إضافة الدفعة')
     } finally {
       paymentSubmissionRef.current = false
@@ -259,23 +289,32 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
   const handleWalletTopUp = async () => {
     if (walletTopUpRef.current) return
     const amt = (document.getElementById('topup-amount') as HTMLInputElement | null)?.value || ''
-    if (!amt || parseFloat(amt) <= 0) {
+    const amount = Number(amt)
+    if (!amt || !Number.isFinite(amount) || amount <= 0) {
       toast.error('يرجى إدخال مبلغ صحيح')
       return
     }
-
+    const fingerprint = JSON.stringify({ patientId, amount, notes: 'شحن يدوي من الملف الشخصي' })
+    if (walletTopUpIntentRef.current?.fingerprint !== fingerprint) {
+      walletTopUpIntentRef.current = { fingerprint, requestId: crypto.randomUUID() }
+    }
+    setWalletTopUpError('')
     walletTopUpRef.current = true
     setIsToppingUpWallet(true)
     try {
       const { updatePatientWalletAction } = await import('@/app/actions-client/patients')
-      const res = await updatePatientWalletAction(patientId, parseFloat(amt), 'شحن يدوي من الملف الشخصي')
+      const res = await updatePatientWalletAction(patientId, amount, 'شحن يدوي من الملف الشخصي', walletTopUpIntentRef.current.requestId)
       if (res.success) {
+        walletTopUpIntentRef.current = null
         toast.success('تم شحن المحفظة بنجاح')
         void fetchProfile(true)
       } else {
-        toast.error(res.error || 'فشل شحن المحفظة')
+        const message = res.error || 'فشل شحن المحفظة'
+        setWalletTopUpError(message)
+        toast.error(message)
       }
     } catch {
+      setWalletTopUpError('حدث خطأ أثناء شحن المحفظة')
       toast.error('حدث خطأ أثناء شحن المحفظة')
     } finally {
       walletTopUpRef.current = false
@@ -390,8 +429,8 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
         {/* Header */}
         <div className="bg-slate-900 p-4 sm:p-6 flex justify-between items-center text-white relative shrink-0 gap-4">
           <div className="relative z-10 flex items-center gap-4 min-w-0">
-            <div className="w-14 h-14 sm:w-16 sm:h-16 bg-purple-600 rounded-2xl flex items-center justify-center text-2xl sm:text-3xl border border-white/10 shrink-0">
-               👤
+            <div className="w-11 h-11 sm:w-12 sm:h-12 bg-purple-600 rounded-lg flex items-center justify-center border border-white/10 shrink-0">
+               <User className="w-6 h-6" aria-hidden="true" />
             </div>
             <div className="min-w-0">
               <h2 id="patient-profile-title" className="text-2xl sm:text-3xl font-black text-white truncate">
@@ -399,7 +438,7 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
               </h2>
               <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-slate-300 font-bold text-sm">
                  <span className="flex items-center gap-1"><Phone className="w-4 h-4" /> {formData.phone || 'بدون هاتف'}</span>
-                 <span className="flex items-center gap-1"><Award className="w-4 h-4" /> {formData.points_balance} نقطة</span>
+                 <span className="flex items-center gap-1"><Award className="w-4 h-4" /> {data?.points_balance == null ? 'النقاط غير متاحة' : `${formData.points_balance} نقطة`}</span>
                  <span className="bg-white/10 px-3 py-1 rounded-full">{formData.customer_type}</span>
               </div>
             </div>
@@ -411,7 +450,10 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
              >
                 <FileText className="w-5 h-5" /> كشف الحساب
              </button>
-             <button type="button" aria-label="إغلاق ملف العميل" onClick={onClose} className="p-3 bg-white/10 hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white rounded-xl transition-colors relative z-10">
+             <button type="button" aria-label="إغلاق ملف العميل"
+               onClick={() => { if (!paymentSubmissionRef.current && !walletTopUpRef.current) onClose(); }}
+               disabled={isSubmittingPayment || isToppingUpWallet}
+               className="p-3 bg-white/10 hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white rounded-xl transition-colors relative z-10 disabled:opacity-50">
                <X className="w-6 h-6" />
              </button>
           </div>
@@ -429,6 +471,11 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
             </button>
           </div>
         )}
+        {data?.profileScope === 'owned_basics_only' && (
+          <p role="note" className="border-b border-amber-200 bg-amber-50 px-6 py-3 text-sm font-bold text-amber-900">
+            بيانات هوية العميل موثقة بالصيدلية. التاريخ الطبي والمدفوعات والرصيد الدائن ورصيد المحفظة غير متحققين للعرض؛ شحن المحفظة يخضع للتحقق الأصلي عند التنفيذ.
+          </p>
+        )}
 
         {/* Tabs */}
         <div className="flex bg-slate-50 dark:bg-slate-800/50 p-2 border-b border-slate-100 dark:border-slate-800 shrink-0 overflow-x-auto no-scrollbar">
@@ -436,15 +483,20 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
              { id: 'profile', label: 'البيانات الأساسية', icon: User },
              { id: 'finance', label: 'المالية والتأمين', icon: CreditCard },
              { id: 'statement', label: 'كشف الحساب', icon: FileText },
-             { id: 'payments', label: 'توريدات نقدية', icon: History },
-             ...(canManageFinancialNotices ? [{ id: 'notices', label: 'إشعارات', icon: AlertCircle }] : []),
-             { id: 'medical', label: 'الملف الطبي', icon: HeartPulse },
-             { id: 'history', label: 'سجل المشتريات', icon: Activity }
+             ...(data?.profileScope === 'owned_basics_only' ? [] : [
+               { id: 'payments', label: 'توريدات نقدية', icon: History },
+               ...(canManageFinancialNotices ? [{ id: 'notices', label: 'إشعارات', icon: AlertCircle }] : []),
+               { id: 'medical', label: 'الملف الطبي', icon: HeartPulse },
+               { id: 'history', label: 'سجل المشتريات', icon: Activity },
+             ])
            ].map(tab => (
              <button
                type="button"
                key={tab.id}
-               onClick={() => setActiveTab(tab.id as any)}
+               onClick={() => {
+                 if (!paymentSubmissionRef.current && !walletTopUpRef.current) setActiveTab(tab.id as any)
+               }}
+               disabled={isSubmittingPayment || isToppingUpWallet}
                aria-pressed={activeTab === tab.id}
                className={`flex-1 min-w-[120px] flex items-center justify-center gap-3 py-4 rounded-2xl font-black text-sm transition-all ${activeTab === tab.id ? 'bg-white dark:bg-slate-900 text-purple-600 shadow-lg' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}
              >
@@ -549,7 +601,7 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
 
                <button 
                  type="submit" 
-                 disabled={isSubmitting}
+                 disabled={isSubmitting || data?.profileScope === 'owned_basics_only'}
                  className="bg-purple-600 text-white px-12 py-5 rounded-3xl font-black hover:bg-purple-700 transition-all flex items-center gap-3 shadow-xl shadow-purple-500/20"
                >
                  <Save className="w-6 h-6" /> {isSubmitting ? 'جاري الحفظ...' : 'حفظ جميع التعديلات'}
@@ -560,13 +612,13 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
           {activeTab === 'finance' && (
             <div className="space-y-12 animate-in fade-in slide-in-from-bottom-4">
                <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-                  <FinanceStatCard icon={Award} label="نقاط الولاء" value={formData.points_balance} unit="نقطة" color="from-emerald-500 to-teal-600" />
-                  <FinanceStatCard icon={CreditCard} label="رصيد المحفظة" value={data?.wallet_balance || 0} unit="ج.م" color="from-primary-600 to-primary-700" />
+                  <FinanceStatCard icon={Award} label="نقاط الولاء" value={data?.points_balance == null ? 'غير متاح' : formData.points_balance} unit="نقطة" color="from-emerald-500 to-teal-600" />
+                  <FinanceStatCard icon={CreditCard} label="رصيد المحفظة" value={data?.wallet_balance == null ? 'غير متاح' : data.wallet_balance} unit="ج.م" color="from-primary-600 to-primary-700" />
                   <FinanceStatCard icon={ShieldCheck} label="حد الائتمان" value={formData.credit_limit} unit="ج.م" color="from-blue-500 to-indigo-600" />
                   <FinanceStatCard
                     icon={History}
-                    label={Number(data?.outstandingBalance || 0) < 0 ? 'رصيد دائن' : 'المديونية الحالية'}
-                    value={Math.abs(Number(data?.outstandingBalance || 0))}
+                    label={typeof data?.outstandingBalance === 'number' && data.outstandingBalance < 0 ? 'رصيد دائن' : 'المديونية الحالية'}
+                    value={typeof data?.outstandingBalance === 'number' ? Math.abs(data.outstandingBalance) : 'غير متاح'}
                     unit="ج.م"
                     color="from-slate-700 to-slate-900"
                   />
@@ -595,6 +647,11 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                           {isToppingUpWallet ? 'جاري الشحن...' : 'تأكيد الشحن'}
                        </button>
                     </div>
+                    {walletTopUpError && (
+                      <p role="alert" className="text-sm font-bold text-red-700 dark:text-red-300">
+                        {walletTopUpError}
+                      </p>
+                    )}
                  </div>
                )}
 
@@ -818,7 +875,13 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
             </div>
           )}
 
-          {activeTab === 'statement' && (
+          {activeTab === 'statement' && data?.profileScope === 'owned_basics_only' && (
+            <div className="space-y-3 p-8 text-sm font-bold text-amber-700 dark:text-amber-300">
+              <p>كشف المريض المتاح موثق جزئياً. يرجى فتحه لعرض مبيعات ومرتجعات وشحن محفظة موثقة، ولا يشمل رصيد حساب كامل.</p>
+              <button type="button" onClick={() => setShowStatement(true)} className="rounded-lg bg-blue-600 px-5 py-3 text-white">فتح الكشف الموثق</button>
+            </div>
+          )}
+          {activeTab === 'statement' && data?.profileScope !== 'owned_basics_only' && (
             <div className="h-full animate-in fade-in slide-in-from-bottom-4">
                <CustomerStatementContent patientId={patientId} />
             </div>
@@ -833,7 +896,7 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                    </div>
                    {canProcessPatientPayments && (
                      <button
-                       onClick={() => setShowPaymentForm(true)}
+                       onClick={() => { paymentIntentRef.current = null; setPaymentError(''); setShowPaymentForm(true); }}
                        className="px-8 py-4 bg-emerald-600 text-white rounded-2xl font-black hover:bg-emerald-700 transition-all shadow-xl shadow-emerald-500/20 flex items-center gap-2"
                      >
                         <PlusCircle className="w-6 h-6" /> إضافة توريد (F1)
@@ -845,13 +908,14 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                     <form onSubmit={handleAddPayment} className="bg-white dark:bg-slate-900 p-8 rounded-[32px] border-2 border-emerald-500 shadow-xl space-y-6 animate-in slide-in-from-top-4 duration-200">
                        <div className="flex justify-between items-center border-b border-slate-100 dark:border-slate-800 pb-4">
                           <h4 className="text-lg font-black text-slate-800 dark:text-white flex items-center gap-2">
-                             💵 تسجيل دفعة جديدة
+                             <Banknote className="w-5 h-5 text-emerald-600" aria-hidden="true" /> تسجيل دفعة جديدة
                           </h4>
                           <button 
                              type="button" 
                              aria-label="إغلاق نموذج الدفعة"
-                             onClick={() => setShowPaymentForm(false)}
-                             className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                             onClick={() => { if (!paymentSubmissionRef.current) { paymentIntentRef.current = null; setShowPaymentForm(false); } }}
+                             disabled={isSubmittingPayment}
+                             className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 disabled:opacity-50"
                           >
                              <X className="w-5 h-5" />
                           </button>
@@ -877,7 +941,12 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                              <select
                                 id="patient-payment-method"
                                 value={paymentMethod}
-                                onChange={(e) => setPaymentMethod(e.target.value as 'cash' | 'bank')}
+                                onChange={(e) => {
+                                  if (e.target.value === 'cash' || e.target.value === 'bank') {
+                                    setPaymentMethod(e.target.value)
+                                    setPaymentError('')
+                                  }
+                                }}
                                 className="w-full bg-slate-50 dark:bg-slate-800 p-4 rounded-2xl border-none outline-none font-bold"
                              >
                                 <option value="cash">نقدي (Cash)</option>
@@ -909,12 +978,18 @@ export default function PatientProfileModal({ patientId, onClose, onSuccess }: P
                              />
                           </div>
                        </div>
+                       {paymentError && (
+                         <p role="alert" className="text-sm font-bold text-red-700 dark:text-red-300">
+                           {paymentError}
+                         </p>
+                       )}
 
                        <div className="flex justify-end gap-4">
                           <button 
                              type="button" 
-                             onClick={() => setShowPaymentForm(false)}
-                             className="px-6 py-3 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 rounded-xl font-bold transition-all text-slate-600 dark:text-slate-200"
+                             onClick={() => { if (!paymentSubmissionRef.current) { paymentIntentRef.current = null; setShowPaymentForm(false); } }}
+                             disabled={isSubmittingPayment}
+                             className="px-6 py-3 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 rounded-xl font-bold transition-all text-slate-600 dark:text-slate-200 disabled:opacity-50"
                           >
                              إلغاء
                           </button>

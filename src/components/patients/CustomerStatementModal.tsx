@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { useHotkeys } from 'react-hotkeys-hook';
-import { X, FileText, History, Package, Printer, Search, Loader2, ArrowUpRight, ArrowDownLeft, User } from 'lucide-react';
+import { X, FileText, History, Package, Printer, Search, Loader2, ArrowUpRight, ArrowDownLeft, User, Pin } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { getPatientStatementAction, getReceiptDetailsAction } from '@/app/actions-client/patients';
 import { toast } from 'react-hot-toast';
@@ -129,12 +129,14 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
   }
 
   const { patient, movements, items, notices, currentBalance } = data;
-  let runningBalance = Number(patient.opening_balance || 0);
+  const verifiedSubset = data.scope === 'verified_subset';
+  let runningBalance: number | null = verifiedSubset ? null : Number(patient.opening_balance || 0);
   const statementMovements = [...(movements || [])]
     .sort((a, b) => statementDate(a.date).getTime() - statementDate(b.date).getTime())
     .map(movement => {
-      const balanceEffect = Number(movement.balance_effect ?? 0);
-      runningBalance += balanceEffect;
+      const balanceEffect = movement.balance_effect == null ? null : Number(movement.balance_effect);
+      if (runningBalance !== null && balanceEffect !== null) runningBalance += balanceEffect;
+      else runningBalance = null;
       return { ...movement, balanceEffect, runningBalance };
     });
 
@@ -149,7 +151,7 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
                 <h3 id="customer-statement-title" className="text-2xl sm:text-3xl font-black text-slate-800 dark:text-white flex items-center gap-3">
                    <FileText className="w-8 h-8 text-blue-600" /> كشف حساب عميل
                 </h3>
-                <p className="text-slate-500 font-bold mt-1">عرض جميع الحركات المالية والأصناف للعميل</p>
+                <p className="text-slate-500 font-bold mt-1">{verifiedSubset ? 'مصادر مبيعات ومرتجعات وشحن محفظة موثقة فقط' : 'عرض جميع الحركات المالية والأصناف للعميل'}</p>
               </div>
               <button type="button" aria-label="إغلاق كشف الحساب" onClick={onClose} className="p-3 hover:bg-slate-100 dark:hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded-xl transition-colors no-print">
                  <X className="w-6 h-6" />
@@ -167,17 +169,22 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
               </div>
               <div className="bg-blue-50 dark:bg-blue-900/10 p-4 rounded-2xl border border-blue-100 dark:border-blue-900/20">
                  <p className="text-xs font-black text-blue-600 mb-1">الرصيد الحالي</p>
-                 <p className="text-2xl font-black text-blue-600">{currentBalance.toLocaleString()} ج.م</p>
+                 <p className="text-2xl font-black text-blue-600">{typeof currentBalance === 'number' ? `${currentBalance.toLocaleString()} ج.م` : 'غير متاح'}</p>
               </div>
               <div className="bg-emerald-50 dark:bg-emerald-900/10 p-4 rounded-2xl border border-emerald-100 dark:border-emerald-900/20">
                  <p className="text-xs font-black text-emerald-600 mb-1">رصيد أول المدة</p>
-                 <p className="text-2xl font-black text-emerald-600">{(patient.opening_balance || 0).toLocaleString()} ج.م</p>
+                 <p className="text-2xl font-black text-emerald-600">{typeof patient.opening_balance === 'number' ? `${patient.opening_balance.toLocaleString()} ج.م` : 'غير متاح'}</p>
               </div>
            </div>
 
+           {verifiedSubset && (
+             <p role="note" className="mt-4 text-sm font-bold text-amber-700 dark:text-amber-300">
+               كشف جزئي موثق؛ لا يشمل {data.unsupported_categories.join('، ')}. رصيد الذمم والرصيد الجاري غير متاح حتى تكتمل مصادر التسوية المعتمدة.
+             </p>
+           )}
            {patient.notes && (
              <div className="mt-4 p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/40 rounded-2xl flex items-center gap-3">
-               <span className="text-xl">📌</span>
+               <Pin className="w-5 h-5 text-amber-700 shrink-0" aria-hidden="true" />
                <div>
                  <p className="text-xs font-black text-amber-800 dark:text-amber-300">ملاحظات العميل:</p>
                  <p className="text-sm font-bold text-amber-900 dark:text-amber-200">{patient.notes}</p>
@@ -189,13 +196,13 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
         {/* Tab Selection */}
         <div className="flex bg-white dark:bg-slate-950 p-2 gap-2 border-b border-slate-200 dark:border-slate-800 shrink-0 no-print">
            <TabButton active={activeTab === 'movements'} onClick={() => setActiveTab('movements')} icon={History} label="حركات وكشف الحساب" />
-           <TabButton active={activeTab === 'items'} onClick={() => setActiveTab('items')} icon={Package} label="أصناف المبيعات" />
-           <TabButton 
+           {!verifiedSubset && <TabButton active={activeTab === 'items'} onClick={() => setActiveTab('items')} icon={Package} label="أصناف المبيعات" />}
+           {!verifiedSubset && <TabButton
              active={activeTab === 'notices'} 
              onClick={() => setActiveTab('notices')} 
              icon={FileText} 
              label={`إشعارات وتعديلات (${(notices || []).length})`} 
-           />
+           />}
         </div>
 
         {/* Content Area */}
@@ -232,7 +239,7 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
                          <td className="px-6 py-4">
                             <span className={cn(
                                "px-3 py-1 rounded-full text-xs font-bold flex items-center gap-2 w-fit",
-                               mov.balanceEffect > 0 ? "bg-blue-100 text-blue-600" : "bg-emerald-100 text-emerald-600"
+                               mov.balanceEffect === null ? 'bg-slate-100 text-slate-700' : mov.balanceEffect > 0 ? "bg-blue-100 text-blue-600" : "bg-emerald-100 text-emerald-600"
                             )}>
                                {mov.balanceEffect > 0 ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownLeft className="w-3 h-3" />}
                                {mov.type}
@@ -250,7 +257,7 @@ export default function CustomerStatementModal({ patientId, onClose }: CustomerS
                          <td className={cn("px-6 py-4 font-black text-lg", mov.balanceEffect > 0 ? "text-blue-600" : "text-emerald-600")}>
                             {mov.value.toLocaleString()} ج.م
                          </td>
-                         <td className="px-6 py-4 font-black text-slate-800 dark:text-white">{mov.runningBalance.toLocaleString()} ج.م</td>
+                         <td className="px-6 py-4 font-black text-slate-800 dark:text-white">{mov.runningBalance === null ? 'غير متاح' : `${mov.runningBalance.toLocaleString()} ج.م`}</td>
                          <td className="px-6 py-4">
                             <span className="bg-slate-100 dark:bg-slate-800 px-3 py-1 rounded-lg text-xs font-black">
                                {mov.payment_method === 'cash' ? 'نقدي' : mov.payment_method === 'credit' ? 'آجل' : mov.payment_method}

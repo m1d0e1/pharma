@@ -97,6 +97,8 @@ export default function EditInventoryModal({ item, onClose, onSuccess }: EditInv
       id: item.id,
       quantity: parseFloat(quantity),
       local_selling_price: parseFloat(localPrice),
+      expected_quantity: item.quantity,
+      expected_local_selling_price: item.local_selling_price,
       expiry_date: expiryDate !== initialExpiryDate ? (expiryDate || null) : undefined,
       large_to_medium: Number(largeToMedium) !== initialConversion ? Number(largeToMedium) : undefined,
       reason_id: reasonId ? parseInt(reasonId) : undefined

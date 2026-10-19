@@ -1,5 +1,6 @@
 
 import { dbSelect, dbExecute, dbGet, dbTransaction } from '@/lib/db/tauri';
+import { setSyncWatermark } from '@/lib/sync/watermark';
 const initLocalDb = () => {};
 
 const db = {
@@ -150,16 +151,9 @@ export async function syncFromCloudAction() {
     // 2. Get Supabase Client (The Cloud Admin)
     const supabase = await createClient();
 
-    // --- INCREMENTAL SYNC LOGIC ---
-    
-    // Ensure table exists (self-healing if migrations haven't run/restarted yet)
-    await db.exec(`
-      CREATE TABLE IF NOT EXISTS sync_metadata (
-        table_name TEXT PRIMARY KEY,
-        last_synced_at TEXT
-      )
-    `);
-    
+    // sync_metadata is owned by the migration/canonical-schema layer.
+    // Action code should never mutate schema at runtime.
+
     // Get last sync timestamps
     const drugsSyncRow = db.prepare('SELECT last_synced_at FROM sync_metadata WHERE table_name = ?').get('cloud_drugs') as any;
     const intSyncRow = db.prepare('SELECT last_synced_at FROM sync_metadata WHERE table_name = ?').get('cloud_drug_interactions') as any;
@@ -203,8 +197,7 @@ export async function syncFromCloudAction() {
     if (allDrugs.length > 0) await syncMasterDrugsToLocal(allDrugs);
 
     // Update last sync time for drugs
-    const updateSyncMeta = db.prepare('INSERT OR REPLACE INTO sync_metadata (table_name, last_synced_at) VALUES (?, ?)');
-    await updateSyncMeta.run('cloud_drugs', nowSyncTime);
+    await setSyncWatermark('cloud_drugs', nowSyncTime);
 
     // 5b. Fetch and Sync Drug Interactions (Incremental)
     console.log(`Fetching interactions updated after ${lastIntSync}...`);
@@ -258,7 +251,7 @@ export async function syncFromCloudAction() {
     }
 
     // Update last sync time for interactions
-    await updateSyncMeta.run('cloud_drug_interactions', nowSyncTime);
+    await setSyncWatermark('cloud_drug_interactions', nowSyncTime);
 
     const syncedUsernames: string[] = [];
     console.log(`Sync completed successfully. Synced ${allDrugs.length} drugs.`);

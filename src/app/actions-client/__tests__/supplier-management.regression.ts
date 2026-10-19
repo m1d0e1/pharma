@@ -46,7 +46,7 @@ function createSupplierSchema() {
       address TEXT,
       balance REAL DEFAULT 0
     );
-    CREATE TABLE purchase_invoices (id TEXT PRIMARY KEY, supplier_id INTEGER NOT NULL);
+    CREATE TABLE purchase_invoices (id TEXT PRIMARY KEY, supplier_id INTEGER NOT NULL, pharmacy_id TEXT);
     CREATE TABLE purchase_returns (id TEXT PRIMARY KEY, supplier_id INTEGER NOT NULL);
     CREATE TABLE supplier_transactions (id INTEGER PRIMARY KEY, supplier_id INTEGER NOT NULL);
     CREATE TABLE financial_notices (
@@ -64,6 +64,7 @@ describe('supplier management authorization and history safety', () => {
     mockSession = {
       id: 'owner-1',
       role: 'owner',
+      pharmacy_id: 'tenant-a',
       permissions: {},
     };
   });
@@ -72,9 +73,11 @@ describe('supplier management authorization and history safety', () => {
 
   it('allows supplier viewing but rejects mutations for non-admin users', async () => {
     mockDb.prepare("INSERT INTO suppliers (name_ar) VALUES ('Existing')").run();
+    mockDb.prepare("INSERT INTO purchase_invoices (id, supplier_id, pharmacy_id) VALUES ('owned-1', 1, 'tenant-a')").run();
     mockSession = {
       id: 'manager-1',
       role: 'manager',
+      pharmacy_id: 'tenant-a',
       permissions: { can_view_suppliers: true, can_view_purchases: true },
     };
 
@@ -87,9 +90,11 @@ describe('supplier management authorization and history safety', () => {
 
   it('keeps purchase-only admins read-only when supplier management is explicitly denied', async () => {
     mockDb.prepare("INSERT INTO suppliers (name_ar) VALUES ('Existing')").run();
+    mockDb.prepare("INSERT INTO purchase_invoices (id, supplier_id, pharmacy_id) VALUES ('owned-2', 1, 'tenant-a')").run();
     mockSession = {
       id: 'admin-1',
       role: 'admin',
+      pharmacy_id: 'tenant-a',
       permissions: { can_view_purchases: true, can_view_suppliers: false },
     };
 
@@ -100,7 +105,7 @@ describe('supplier management authorization and history safety', () => {
     expect(mockDb.prepare('SELECT name_ar FROM suppliers WHERE id = 1').get()).toEqual({ name_ar: 'Existing' });
   });
 
-  it('refuses deletion when purchase history is linked and returns a clear Arabic error', async () => {
+  it('refuses deletion of a shared supplier with linked purchase history', async () => {
     const supplierId = Number(mockDb.prepare("INSERT INTO suppliers (name_ar) VALUES ('Linked')").run().lastInsertRowid);
     mockDb.prepare("INSERT INTO purchase_invoices (id, supplier_id) VALUES ('invoice-1', ?)").run(supplierId);
 
@@ -108,34 +113,26 @@ describe('supplier management authorization and history safety', () => {
 
     expect(result).toEqual({
       success: false,
-      error: 'لا يمكن حذف المورد لوجود فواتير شراء أو مرتجعات أو حركات مالية مرتبطة به',
+      error: 'تعذر إثبات ملكية بيانات المورد للصيدلية؛ لا يمكن تعديل دليل الموردين أو الأرصدة المشتركة',
     });
     expect(mockDb.prepare('SELECT id FROM suppliers WHERE id = ?').get(supplierId)).toBeDefined();
   });
 
-  it('normalizes supplier data, preserves hidden fields on name edits, and deletes an unlinked supplier', async () => {
+  it('rejects even unlinked global-supplier writes without independently verified tenant ownership', async () => {
+    const before = mockDb.prepare('SELECT * FROM suppliers').all();
     const added = await addSupplierAction({
       name_ar: '  New supplier  ',
       name_en: '  New Supplier  ',
       phone: '  0100000000  ',
       address: '  Cairo  ',
     });
-    expect(added.success).toBe(true);
-    const supplierId = Number((added as any).id);
-
-    expect(await updateSupplierAction(supplierId, {
+    expect(added).toMatchObject({ success: false });
+    expect(await updateSupplierAction(1, {
       name_ar: '  Updated supplier  ',
       name_en: '  Updated Supplier  ',
-    })).toEqual({ success: true });
-    expect(mockDb.prepare('SELECT name_ar, name_en, phone, address FROM suppliers WHERE id = ?').get(supplierId)).toEqual({
-      name_ar: 'Updated supplier',
-      name_en: 'Updated Supplier',
-      phone: '0100000000',
-      address: 'Cairo',
-    });
-
-    expect(await deleteSupplierAction(supplierId)).toEqual({ success: true });
-    expect(mockDb.prepare('SELECT id FROM suppliers WHERE id = ?').get(supplierId)).toBeUndefined();
+    })).toMatchObject({ success: false });
+    expect(await deleteSupplierAction(1)).toMatchObject({ success: false });
+    expect(mockDb.prepare('SELECT * FROM suppliers').all()).toEqual(before);
     expect(await addSupplierAction({ name_ar: '   ' })).toMatchObject({ success: false });
   });
 });

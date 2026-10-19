@@ -2,7 +2,7 @@
 import { useHotkeys } from 'react-hotkeys-hook';;
 
 import React from 'react';
-import { X, Loader2, FileText, Clock } from 'lucide-react';
+import { X, Loader2, FileText, Clock, FolderOpen } from 'lucide-react';
 import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap';
 
 interface DraftsModalProps {
@@ -26,14 +26,14 @@ export default function DraftsModal({
 if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
-      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="drafts-modal-title" tabIndex={-1} className="bg-white dark:bg-slate-900 rounded-3xl w-full max-w-2xl shadow-2xl border border-slate-100 dark:border-slate-800 flex flex-col max-h-[80vh]">
-        <div className="p-8 border-b border-slate-50 dark:border-slate-800 flex justify-between items-center">
+    <div className="fixed inset-0 bg-slate-900/60 z-[100] flex items-center justify-center p-4">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="drafts-modal-title" tabIndex={-1} className="bg-white dark:bg-slate-900 rounded-xl w-full max-w-2xl shadow-xl border border-slate-200 dark:border-slate-800 flex flex-col max-h-[80vh]">
+        <div className="p-5 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center">
           <div>
-            <h3 id="drafts-modal-title" className="text-2xl font-black text-slate-950 dark:text-white">📁 المسودات المحفوظة</h3>
-            <p className="text-slate-500 font-bold text-sm">اختر مسودة لاستكمال عملية البيع</p>
+            <h3 id="drafts-modal-title" className="text-xl font-semibold text-slate-950 dark:text-white flex items-center gap-2"><FolderOpen className="w-5 h-5 text-blue-600" aria-hidden="true" /> المسودات المحفوظة</h3>
+            <p className="text-slate-500 text-sm mt-1">اختر مسودة لاستكمال عملية البيع</p>
           </div>
-          <button type="button" aria-label="إغلاق المسودات" onClick={onClose} className="p-3 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-2xl transition-all">
+          <button type="button" aria-label="إغلاق المسودات" onClick={onClose} className="inline-flex h-11 w-11 items-center justify-center hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors">
             <X className="w-6 h-6 text-slate-700 dark:text-slate-300" />
           </button>
         </div>

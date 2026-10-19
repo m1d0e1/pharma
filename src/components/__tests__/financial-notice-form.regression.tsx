@@ -165,6 +165,28 @@ describe('FinancialNoticeForm Component', () => {
     expect(screen.getByDisplayValue('احتفظ بهذه الملاحظة بعد الخطأ')).toBeInTheDocument();
   });
 
+  it('reuses a failed notice intent ID and creates a new ID only after the intent changes', async () => {
+    (finance.addFinancialNoticeAction as jest.Mock).mockResolvedValue({ success: false, error: 'reply lost' });
+    render(<FinancialNoticeForm targetId="p-101" />);
+
+    const amount = screen.getByPlaceholderText('0.00');
+    const submit = screen.getByRole('button', { name: /حفظ الإشعار/i });
+    fireEvent.change(amount, { target: { value: '75' } });
+    fireEvent.click(submit);
+    await waitFor(() => expect(finance.addFinancialNoticeAction).toHaveBeenCalledTimes(1));
+    fireEvent.click(submit);
+    await waitFor(() => expect(finance.addFinancialNoticeAction).toHaveBeenCalledTimes(2));
+
+    const [first, retry] = (finance.addFinancialNoticeAction as jest.Mock).mock.calls.map(([payload]) => payload);
+    expect(retry.request_id).toBe(first.request_id);
+
+    fireEvent.change(amount, { target: { value: '80' } });
+    fireEvent.click(submit);
+    await waitFor(() => expect(finance.addFinancialNoticeAction).toHaveBeenCalledTimes(3));
+    expect((finance.addFinancialNoticeAction as jest.Mock).mock.calls[2][0].request_id)
+      .not.toBe(first.request_id);
+  });
+
   it('shows a retryable selector-load error instead of presenting failed customer data as an empty list', async () => {
     (patients.getPatientsAction as jest.Mock)
       .mockRejectedValueOnce(new Error('patients unavailable'))

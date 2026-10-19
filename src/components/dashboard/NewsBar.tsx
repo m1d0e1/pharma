@@ -4,16 +4,16 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { X, Megaphone, Pill, Zap, Globe } from 'lucide-react';
 
 // ─── How to add news ─────────────────────────────────────────────────────────
-// 1. Go to Supabase → Storage → app-news bucket (create if missing, set to PUBLIC)
-// 2. Upload / replace the file "news.json" with content like:
+// 1. Edit the bundled public/news.json file before packaging the desktop app.
+// 2. The file has this format:
 //    [
 //      { "id": "2026-07-11-1", "text": "تم إضافة 500 دواء جديد لقاعدة البيانات", "type": "drugs" },
 //      { "id": "2026-07-11-2", "text": "تم تحديث 1200 تفاعل دوائي", "type": "interactions" }
 //    ]
-// 3. The bar will show the latest item automatically on next app load.
+// 3. The bar reads local bundled announcements; it never connects to a cloud news service.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const NEWS_URL = 'https://ntaaxbjeoqyetrmxyktf.supabase.co/storage/v1/object/public/app-news/news.json';
+const NEWS_URL = '/news.json';
 const DISMISS_KEY = 'news_dismissed_id';
 
 const TYPE_ICON: Record<string, any> = {
@@ -101,7 +101,7 @@ export default function NewsBar() {
   const Icon = TYPE_ICON[item.type || 'general'] ?? Megaphone;
 
   return (
-    <div role="region" aria-label="أخبار النظام" className="flex items-center gap-3 px-4 py-2.5 bg-gradient-to-l from-blue-600 to-indigo-700 text-white text-sm font-bold rounded-2xl shadow-lg w-full overflow-hidden animate-in slide-in-from-top-2 duration-300 motion-reduce:animate-none">
+    <div role="region" aria-label="أخبار النظام" className="flex items-center gap-3 px-4 py-2.5 bg-primary-800 dark:bg-primary-900 text-white text-sm font-semibold rounded-lg shadow-sm w-full overflow-hidden motion-reduce:animate-none">
       <style>{`
         @keyframes marquee {
           0% { transform: translate3d(50%, 0, 0); }
@@ -119,15 +119,15 @@ export default function NewsBar() {
       `}</style>
       <Globe className="w-4 h-4 shrink-0 opacity-70" />
       <Icon className="w-4 h-4 shrink-0" />
-      <div className="flex-1 overflow-hidden relative h-5 select-none" dir="ltr">
-        <div className="absolute right-0 top-0 whitespace-nowrap animate-marquee hover:[animation-play-state:paused] cursor-pointer text-right w-full pr-4">
+      <div className="flex-1 overflow-hidden relative h-5 select-none" dir="rtl">
+        <div className="absolute right-0 top-0 whitespace-nowrap animate-marquee hover:[animation-play-state:paused] text-end w-full pe-4">
           {item.text}
         </div>
       </div>
       <button
         type="button"
         onClick={dismiss}
-        className="shrink-0 p-1 rounded-full hover:bg-white/20 transition-colors"
+        className="shrink-0 inline-flex h-10 w-10 items-center justify-center rounded-lg hover:bg-white/15 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80"
         aria-label="إخفاء شريط الأخبار"
       >
         <X className="w-3.5 h-3.5" />

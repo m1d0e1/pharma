@@ -38,7 +38,8 @@ export const CloseShiftRequestSchema = z.object({
 export type CloseShiftRequest = z.infer<typeof CloseShiftRequestSchema>;
 
 /**
- * Start a new shift for a user
+ * Open the pharmacy's one shared shift. userId identifies the employee who
+ * opened it, never a cashier-specific drawer.
  * @param pharmacyId - Pharmacy ID
  * @param userId - User ID
  * @param request - Shift creation request
@@ -49,21 +50,27 @@ export function startShift(
   userId: string,
   request: CreateShiftRequest
 ): ShiftRegister {
-  // Check if user already has an open shift
-  const existingShift = getOpenShift(userId);
+  // All employees in this pharmacy reuse one active drawer.
+  const existingShift = getOpenShiftForPharmacy(pharmacyId);
   if (existingShift) {
-    throw new Error('User already has an open shift');
+    return existingShift;
   }
 
   const shiftId = uuidv4();
 
   execute(
     `INSERT INTO shift_registers (id, pharmacy_id, user_id, starting_cash_amount, opening_notes, shift_start, status)
-     VALUES (?, ?, ?, ?, ?, datetime('now'), 'open')`,
-    [shiftId, pharmacyId, userId, request.startingCashAmount, request.openingNotes || null]
+     SELECT ?, ?, ?, ?, ?, datetime('now'), 'open'
+     WHERE NOT EXISTS(
+       SELECT 1 FROM shift_registers
+       WHERE pharmacy_id=? AND LOWER(COALESCE(status,''))='open'
+     )`,
+    [shiftId, pharmacyId, userId, request.startingCashAmount, request.openingNotes || null, pharmacyId]
   );
 
-  return getShift(shiftId);
+  const shared = getOpenShiftForPharmacy(pharmacyId);
+  if (!shared) throw new Error('Shared pharmacy shift could not be opened');
+  return shared;
 }
 
 /**
@@ -143,16 +150,35 @@ export function getShift(shiftId: string): ShiftRegister | null {
 }
 
 /**
- * Get open shift for a user
- * @param userId - User ID
+ * Get the open shared shift for a pharmacy.
+ * Any signed-in employee uses the same shift, regardless of who opened it.
+ */
+export function getOpenShiftForPharmacy(pharmacyId: string): ShiftRegister | null {
+  return mapShiftRow(get<any>(
+    `SELECT sr.*, u.username, u.full_name
+     FROM shift_registers sr
+     LEFT JOIN users u ON sr.user_id=u.id
+     WHERE sr.pharmacy_id=? AND LOWER(COALESCE(sr.status,''))='open'
+     ORDER BY sr.shift_start ASC, sr.rowid ASC LIMIT 1`,
+    [pharmacyId]
+  ));
+}
+
+/**
+ * Get the shared shift available to this user's pharmacy, rather than
+ * requiring that the user who initially opened it is still logged in.
+ * @param userId - Authenticated user ID
  * @returns Open shift or null
  */
 export function getOpenShift(userId: string): ShiftRegister | null {
   const result = get<any>(
     `SELECT sr.*, u.username, u.full_name
      FROM shift_registers sr
-     JOIN users u ON sr.user_id = u.id
-     WHERE sr.user_id = ? AND sr.status = 'open'`,
+     JOIN users actor ON actor.pharmacy_id=sr.pharmacy_id
+     LEFT JOIN users u ON sr.user_id = u.id
+     WHERE actor.id = ? AND COALESCE(actor.is_active,1)=1
+       AND LOWER(COALESCE(sr.status,''))='open'
+     ORDER BY sr.shift_start ASC,sr.rowid ASC LIMIT 1`,
     [userId]
   );
   return mapShiftRow(result);
@@ -306,43 +332,31 @@ export function calculateExpectedCash(shiftId: string): number {
     throw new Error('Shift not found');
   }
 
-  // Get total sales during this shift (bound by shiftEnd if closed)
+  // Only source rows that actually name this shared shift may enter the
+  // drawer total. Do not invent an association via the opener's user_id:
+  // other employees may have posted, and historic unlinked sales must stay
+  // recorded as unlinked rather than silently altering opening balances.
   const salesResult = get<{ total: number }>(
     `SELECT COALESCE(SUM(total_amount), 0) as total
      FROM sales_invoices
-     WHERE (shift_id = ? OR (user_id = ? AND created_at >= ? ${shift.shiftEnd ? `AND created_at <= ?` : ''}))
+     WHERE shift_id = ?
      AND status = 'completed' AND payment_method IN ('cash', 'delivery')`,
-    shift.shiftEnd
-      ? [shift.id, shift.userId, shift.shiftStart, shift.shiftEnd]
-      : [shift.id, shift.userId, shift.shiftStart]
+    [shift.id]
   );
 
   const returnsResult = get<{ total: number }>(
     `SELECT COALESCE(SUM(total_refund), 0) as total
      FROM returns
-     WHERE (shift_id = ? OR (user_id = ? AND created_at >= ? ${shift.shiftEnd ? `AND created_at <= ?` : ''}))
+     WHERE shift_id = ?
      AND status = 'approved' AND refund_method = 'cash'`,
-    shift.shiftEnd
-      ? [shift.id, shift.userId, shift.shiftStart, shift.shiftEnd]
-      : [shift.id, shift.userId, shift.shiftStart]
+    [shift.id]
   );
 
   const movementsResult = get<{ net: number }>(
     `SELECT COALESCE(SUM(CASE WHEN type='receipt' THEN amount ELSE -amount END), 0) as net
      FROM cash_movements
-     WHERE (shift_id = ? OR (user_id = ? AND date >= ? ${shift.shiftEnd ? `AND date <= ?` : ''}))`,
-    shift.shiftEnd
-      ? [
-          shift.id,
-          shift.userId,
-          shift.shiftStart ? localDate(new Date(shift.shiftStart)) : localDate(),
-          shift.shiftEnd ? localDate(new Date(shift.shiftEnd)) : localDate()
-        ]
-      : [
-          shift.id,
-          shift.userId,
-          shift.shiftStart ? localDate(new Date(shift.shiftStart)) : localDate()
-        ]
+     WHERE shift_id = ?`,
+    [shift.id]
   );
 
   const totalSales = salesResult?.total || 0;

@@ -6,7 +6,7 @@ import { createSqliteTransactionDb as mockCreateSqliteTransactionDb } from '@/te
 
 let sqlite: Database.Database;
 let nextId = 0;
-let session: any = { id: 'owner', role: 'owner', pharmacy_id: null };
+let session: any = { id: 'owner', role: 'owner', pharmacy_id: 'local_default' };
 
 jest.mock('@/lib/db/tauri', () => ({
   dbSelect: jest.fn(async (sql: string, params: unknown[] = []) => sqlite.prepare(sql).all(...params)),
@@ -63,7 +63,7 @@ async function handover(shiftId: string, actualCash: number, transferAmount: num
 describe('current drawer treasury balance', () => {
   beforeEach(() => {
     nextId = 0;
-    session = { id: 'owner', role: 'owner', pharmacy_id: null };
+    session = { id: 'owner', role: 'owner', pharmacy_id: 'local_default' };
     sqlite = new Database(':memory:');
     for (const migration of migrations) sqlite.exec(readFileSync(`src-tauri/migrations/${migration}`, 'utf8'));
     sqlite.exec(`
@@ -268,7 +268,7 @@ describe('current drawer treasury balance', () => {
   it('keeps legacy open-drawer transfer reconciliation separate from retained treasury cash', async () => {
     sqlite.exec(`
       INSERT INTO shifts(id, user_id, pharmacy_id, starting_cash, transfer_amount, status) VALUES ('legacy', 'owner', 'local_default', 100, 30, 'open');
-      INSERT INTO sales_invoices(id, user_id, shift_id, total_amount, payment_method, status) VALUES ('cash-sale', 'owner', 'legacy', 40, 'cash', 'completed');
+      INSERT INTO sales_invoices(id, pharmacy_id, user_id, shift_id, total_amount, payment_method, status) VALUES ('cash-sale', 'local_default', 'owner', 'legacy', 40, 'cash', 'completed');
       INSERT INTO cash_movements(id, user_id, shift_id, type, category, amount, date) VALUES
         ('receipt', 'owner', 'legacy', 'receipt', 'pharmacy', 20, '2026-01-01'),
         ('expense', 'owner', 'legacy', 'disbursement', 'expense', 10, '2026-01-01'),

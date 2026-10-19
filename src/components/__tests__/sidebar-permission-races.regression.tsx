@@ -37,12 +37,12 @@ describe('SidebarNav asynchronous permission refresh ordering', () => {
     await waitFor(() => expect(getClientSession).toHaveBeenCalledTimes(2));
 
     await act(async () => {
-      resolveSecond({ permissions: { can_view_sales: false } });
+      resolveSecond({ role: 'pharmacist', permissions: { can_view_sales: false } });
     });
     expect(screen.queryAllByRole('link', { name: 'المبيعات والتحصيل' })).toHaveLength(0);
 
     await act(async () => {
-      resolveFirst({ permissions: { can_view_sales: true } });
+      resolveFirst({ role: 'pharmacist', permissions: { can_view_sales: true } });
     });
 
     expect(screen.queryAllByRole('link', { name: 'المبيعات والتحصيل' })).toHaveLength(0);

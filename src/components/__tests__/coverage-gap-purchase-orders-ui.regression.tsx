@@ -33,7 +33,7 @@ describe('purchase-orders list UI interactions', () => {
     expect(screen.queryByText('PO-BETA')).not.toBeInTheDocument();
 
     fireEvent.change(search, { target: { value: 'missing' } });
-    expect(screen.getByText('لا توجد أوامر شراء مطابقة')).toBeInTheDocument();
+    expect(screen.getByText('لا توجد أوامر شراء مطابقة للفلاتر الحالية')).toBeInTheDocument();
   });
 
   it('surfaces cancellation failure, then updates only after a successful action result', async () => {

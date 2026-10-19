@@ -9,6 +9,7 @@ import SidebarNav from '@/components/SidebarNav';
 import ThemeToggle from '@/components/ThemeToggle';
 import { getClientSession, hasUserPermissionSync, logoutLocal } from '@/lib/auth/local';
 import { dbGet } from '@/lib/db/tauri';
+import { getConfigAction } from '@/app/actions-client/config';
 import { pharmacyIdentityConfigKey } from '@/lib/settings/pharmacy-identity';
 import { Monitor, LogOut, ArrowRight, Pill } from 'lucide-react';
 import HeaderAlerts from '@/components/HeaderAlerts';
@@ -121,20 +122,17 @@ export default function DashboardLayout({
     }
   }, []);
 
-  const log = (m: string) => typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__?.invoke('log_frontend_error', { message: m });
-
   useEffect(() => {
-    // Detect Tauri once on mount
-    log('LAYOUT: mount isTauri=' + isTauriRuntime);
+    // Detect Tauri once on mount.
     setIsTauri(isTauriRuntime);
   }, []);
 
   useEffect(() => {
+    let active = true;
     async function loadSessionAndConfig() {
       try {
-        log('LAYOUT: loadSessionAndConfig start');
         const localUser = await getClientSession();
-        log('LAYOUT: loadSessionAndConfig user=' + (localUser ? localUser.username : 'NULL'));
+        if (!active) return;
         
         if (localUser) {
           setUser({ email: localUser.username, id: localUser.id });
@@ -146,28 +144,40 @@ export default function DashboardLayout({
             setPermissions(parsed);
           }
 
-          try {
-            const pharmacyNameRow = await dbGet(
+          // The pharmacy display name is cosmetic. Do not hold the entire
+          // authenticated workbench or native menu sync behind this DB read.
+          // AuthGuard and route PermissionGuard still validate independently.
+          if (isTauriRuntime) {
+            // The native action obtains the pharmacy from the authenticated
+            // actor, not the renderer session or an arbitrary config SQL read.
+            // This display-only field keeps its neutral label on a denied read.
+            void getConfigAction('pharmacy_name').then(result => {
+              if (active && result.success && typeof result.value === 'string' && result.value.trim()) {
+                setPharmacyName(result.value);
+              }
+            }).catch(() => undefined);
+          } else {
+            void dbGet(
               'SELECT value FROM config WHERE key = ?',
               [pharmacyIdentityConfigKey('pharmacy_name', localUser.pharmacy_id)]
-            );
-            if (pharmacyNameRow?.value) {
-              setPharmacyName(pharmacyNameRow.value);
-            }
-          } catch (dbErr) {
-            console.error('Failed to fetch pharmacy name:', dbErr);
+            ).then(pharmacyNameRow => {
+              if (active && pharmacyNameRow?.value) setPharmacyName(pharmacyNameRow.value);
+            }).catch(dbErr => {
+              if (active) console.error('Failed to fetch pharmacy name:', dbErr);
+            });
           }
         }
       } catch (err: any) {
-        log('LAYOUT: loadSessionAndConfig error=' + err.message);
         console.error('Failed to load session:', err);
       } finally {
-        log('LAYOUT: loadSessionAndConfig finally');
-        setLoading(false);
+        if (active) {
+          setLoading(false);
+        }
       }
     }
 
-    loadSessionAndConfig();
+    void loadSessionAndConfig();
+    return () => { active = false; };
   }, []);
 
   useEffect(() => {
@@ -413,12 +423,14 @@ export default function DashboardLayout({
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-screen bg-slate-50 dark:bg-slate-900" dir="rtl">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 dark:border-blue-400 mx-auto"></div>
-          <p className="mt-4 text-slate-600 dark:text-slate-400 font-medium">جاري التحميل...</p>
+      <AuthGuard>
+        <div className="flex items-center justify-center min-h-screen bg-slate-50 dark:bg-slate-900" dir="rtl">
+          <div className="text-center">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 dark:border-blue-400 mx-auto"></div>
+            <p className="mt-4 text-slate-600 dark:text-slate-400 font-medium">جاري التحميل...</p>
+          </div>
         </div>
-      </div>
+      </AuthGuard>
     );
   }
 
@@ -441,9 +453,12 @@ export default function DashboardLayout({
     return (
       <AuthGuard>
         <div
-          className="flex flex-col h-screen overflow-hidden bg-slate-50 dark:bg-slate-950 font-sans"
+          className="pharma-workbench flex flex-col h-screen overflow-hidden bg-slate-50 dark:bg-slate-950 font-sans"
           dir="rtl"
         >
+          <a href="#dashboard-main" className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:right-3 focus:z-[250] focus:rounded-lg focus:bg-slate-950 focus:px-4 focus:py-2.5 focus:text-sm focus:font-semibold focus:text-white focus:shadow-lg dark:focus:bg-white dark:focus:text-slate-950">
+            الانتقال إلى المحتوى الرئيسي
+          </a>
           {backButton}
           <div className="hidden" aria-hidden="true">
             <SidebarNav userRole={userRole} userPermissions={permissions} />
@@ -451,28 +466,28 @@ export default function DashboardLayout({
           {/* 1. Main Toolbar/Header */}
           {!isPos && (
             <header className="sticky top-0 z-40 bg-white/95 dark:bg-slate-950/95 backdrop-blur-md border-b border-slate-200 dark:border-slate-800">
-              <div className="flex items-center justify-between px-4 h-14">
+              <div className="flex h-16 min-w-0 items-center justify-between gap-3 px-4 sm:px-6">
 
                 {/* Left: Logo + Pharmacy Name + POS Button */}
-                <div className="flex items-center gap-0">
-                  <Link href="/" className="flex items-center gap-2.5 flex-shrink-0 mr-4 group rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-slate-950">
+                <div className="flex min-w-0 items-center gap-3">
+                  <Link href="/" className="group flex min-w-0 items-center gap-2.5 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-slate-950">
                     <div className="w-9 h-9 bg-primary-600 rounded-lg flex items-center justify-center text-white shadow-sm">
                       <Pill className="h-[18px] w-[18px]" aria-hidden="true" />
                     </div>
-                    <div className="hidden sm:block">
-                      <p className="text-sm font-semibold text-slate-900 dark:text-white leading-tight">{pharmacyName}</p>
+                    <div className="hidden min-w-0 sm:block">
+                      <p className="max-w-56 truncate text-sm font-semibold leading-tight text-slate-900 dark:text-white">{pharmacyName}</p>
                       <p className="text-xs text-slate-500 dark:text-slate-400 leading-tight">
                         {roleLabel}
                       </p>
                     </div>
                   </Link>
 
-                  <div className="h-8 w-px bg-slate-200 dark:bg-slate-700 mx-3 flex-shrink-0" />
+                  <div className="h-8 w-px flex-shrink-0 bg-slate-200 dark:bg-slate-700" />
 
                   {canAccessPos && (
                     <Link
                       href="/pos"
-                      className="flex-shrink-0 flex items-center gap-2 px-3.5 py-2 bg-primary-700 hover:bg-primary-800 text-white rounded-lg font-semibold text-sm shadow-sm transition-colors ml-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-slate-950"
+                      className="flex min-h-11 flex-shrink-0 items-center gap-2 rounded-lg bg-primary-700 px-3.5 py-2 text-sm font-semibold text-white transition-colors hover:bg-primary-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-slate-950"
                     >
                       <Monitor className="w-4 h-4" />
                       <span className="hidden sm:inline">الكاشير</span>
@@ -481,7 +496,7 @@ export default function DashboardLayout({
                 </div>
 
                 {/* Right: User + Theme */}
-                <div className="flex items-center gap-2 flex-shrink-0">
+                <div className="flex flex-shrink-0 items-center gap-2">
                   <HeaderAlerts />
                   <div className="hidden md:flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
                     <div className="w-7 h-7 bg-primary-700 rounded-md flex items-center justify-center text-white text-xs font-semibold">
@@ -498,8 +513,8 @@ export default function DashboardLayout({
           )}
 
           {/* Page Content */}
-          <main className={`flex-1 ${isPos ? 'flex flex-col min-h-0 overflow-hidden' : 'overflow-y-auto'}`}>
-            <div className={isPos ? "w-full flex-1 flex flex-col min-h-0 pb-24 lg:pb-0" : "w-full p-4 pb-24 sm:p-6 lg:pb-6"}>
+          <main id="dashboard-main" tabIndex={-1} className={`flex-1 ${isPos ? 'flex flex-col min-h-0 overflow-hidden' : 'overflow-y-auto'}`}>
+            <div className={isPos ? "w-full flex-1 flex flex-col min-h-0 pb-24 lg:pb-0" : "mx-auto w-full max-w-[1600px] p-4 pb-24 sm:p-6 lg:pb-6"}>
               <PermissionGuard permissionKey={routePermission}>{children}</PermissionGuard>
             </div>
           </main>
@@ -513,7 +528,10 @@ export default function DashboardLayout({
   // ══════════════════════════════════════════════════════════════════════════
   return (
     <AuthGuard>
-      <div className="flex h-screen overflow-hidden bg-slate-50 dark:bg-slate-950 font-sans" dir="rtl">
+      <div className="pharma-workbench flex h-screen overflow-hidden bg-slate-50 dark:bg-slate-950 font-sans" dir="rtl">
+        <a href="#dashboard-main" className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:right-3 focus:z-[250] focus:rounded-lg focus:bg-slate-950 focus:px-4 focus:py-2.5 focus:text-sm focus:font-semibold focus:text-white focus:shadow-lg dark:focus:bg-white dark:focus:text-slate-950">
+          الانتقال إلى المحتوى الرئيسي
+        </a>
         {backButton}
         
         {/* Sidebar */}
@@ -572,17 +590,17 @@ export default function DashboardLayout({
         </aside>
 
         {/* Main Content */}
-        <main className="flex-1 flex flex-col min-h-0 overflow-hidden">
+        <main id="dashboard-main" tabIndex={-1} className="flex-1 flex flex-col min-h-0 overflow-hidden">
           {/* Top Bar */}
           <header className="sticky top-0 z-20 bg-white/95 dark:bg-slate-950/95 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 px-4 sm:px-6 py-3.5">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-4 sm:gap-5">
                 <div>
                   <h1 className="text-lg sm:text-xl font-semibold text-slate-900 dark:text-white truncate max-w-[240px] sm:max-w-none leading-tight">
-                    نظام إدارة الصيدليات الذكي
+                    {pharmacyName}
                   </h1>
                   <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 hidden sm:block mt-1">
-                    إدارة شاملة للصيدلية في مكان واحد
+                    {roleLabel}
                   </p>
                 </div>
               </div>

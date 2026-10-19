@@ -14,7 +14,9 @@ jest.mock('@/lib/auth/local', () => ({
     key === 'can_manage_inventory' ? canManageInventory : true),
 }));
 
-jest.mock('@/lib/env', () => ({ isTauri: true }));
+// This suite verifies historical browser-only SQL projections. Strict desktop
+// settlement uses authenticated native reads, tested separately.
+jest.mock('@/lib/env', () => ({ isTauri: false }));
 jest.mock('@tauri-apps/api/core', () => ({ invoke: jest.fn() }));
 
 import {

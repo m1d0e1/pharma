@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import AddInventoryModal from './AddInventoryModal'
 import { useHotkeys } from 'react-hotkeys-hook'
+import { Plus } from 'lucide-react'
 
 interface Props {
   pharmacyId: string
@@ -32,10 +33,11 @@ export default function InventoryClientWrapper({ pharmacyId, onSuccess, canManag
     <>
       {canManageInventory && (
         <button
+          type="button"
           onClick={() => setIsModalOpen(true)}
-          className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-2xl shadow-lg shadow-blue-500/20 transition-all font-bold flex items-center gap-2 transform active:scale-95"
+          className="bg-primary-700 hover:bg-primary-800 text-white px-4 py-2.5 rounded-lg shadow-sm transition-colors font-semibold flex items-center gap-2"
         >
-          <span>➕</span> إضافة دواء للمخزون (Insert)
+          <Plus className="w-4 h-4" aria-hidden="true" /> إضافة دواء للمخزون (Insert)
         </button>
       )}
 

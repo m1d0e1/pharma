@@ -81,6 +81,16 @@ it('opens and closes add/profile flows and refreshes the list after child succes
   expect(screen.queryByText(/patient-profile-modal:/)).not.toBeInTheDocument();
 });
 
+it('labels unavailable financial provenance as unknown rather than invented zero', () => {
+  const patient = {
+    ...patients[0], points_balance: null, outstanding_balance: null, wallet_balance: null,
+  };
+  render(<PatientListClient initialPatients={[patient]} pharmacyId="pharmacy-a" canDeletePatients={false} />);
+  expect(screen.getByText('النقاط غير متاحة')).toBeInTheDocument();
+  expect(screen.getAllByText('غير متاح')).toHaveLength(2);
+  expect(screen.queryByText('0.00 ج.م')).not.toBeInTheDocument();
+});
+
 it('supports delete cancellation and surfaces a failed delete without removing the patient', async () => {
   const user = userEvent.setup();
   (deletePatientAction as jest.Mock).mockResolvedValue({ success: false, error: 'لا يمكن حذف مريض مرتبط بحركات' });

@@ -79,6 +79,7 @@ const navItems = [
 
   // Patients
   { category: 'المرضى والطبية', href: '/patients', label: 'المرضى', icon: Users, roles: ['owner', 'admin', 'pharmacist'], permission: 'can_view_patients' },
+  { category: 'المرضى والطبية', href: '/interactions', label: 'التفاعلات الدوائية', icon: Activity, roles: ['owner', 'admin', 'pharmacist'], permission: 'can_view_interactions' },
 
   // Administration
   { category: 'الإدارة', href: '/staff', label: 'أداء الموظفين', icon: UserCheck, roles: ['owner', 'admin'], permission: 'rep_can_view_activity' },
@@ -95,16 +96,33 @@ interface Props {
   userPermissions?: any
 }
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, type MouseEvent } from 'react'
 import { hasUserPermissionSync } from '@/lib/auth/local'
 
 export default function SidebarNav({ userRole, userPermissions }: Props) {
   const pathname = usePathname()
   const router = useRouter()
   const [mounted, setMounted] = useState(false)
-  const [permissions, setPermissions] = useState<any>(null)
+  const [permissionSnapshot, setPermissionSnapshot] = useState<{
+    pathname: string | null; role: string; permissions: any
+  } | null>(null)
   const [showMobileMore, setShowMobileMore] = useState(false)
   const permissionsRequestRef = useRef(0)
+  const prefetchedRoutesRef = useRef(new Set<string>())
+  const mobileMoreToggleRef = useRef<HTMLButtonElement>(null)
+  const mobileMorePanelRef = useRef<HTMLDivElement>(null)
+
+  const prefetchOnHover = (event: MouseEvent<HTMLAnchorElement>) => {
+    const href = event.currentTarget.getAttribute('href')
+    if (!href) return
+    if (prefetchedRoutesRef.current.has(href)) return
+    prefetchedRoutesRef.current.add(href)
+    router.prefetch(href)
+  }
+
+  useEffect(() => {
+    if (showMobileMore) mobileMorePanelRef.current?.querySelector('a')?.focus();
+  }, [showMobileMore]);
 
   useEffect(() => {
     setMounted(true)
@@ -113,11 +131,17 @@ export default function SidebarNav({ userRole, userPermissions }: Props) {
       try {
         const { getClientSession } = await import('@/lib/auth/local')
         const userObj = await getClientSession()
-        if (requestId === permissionsRequestRef.current && userObj && userObj.permissions) {
+        if (requestId === permissionsRequestRef.current) {
+          // A missing/changed identity revokes the old navigation grants.
+          if (userObj?.role !== userRole || !userObj.permissions) {
+            setPermissionSnapshot(null)
+            return
+          }
           const parsed = typeof userObj.permissions === 'string' ? JSON.parse(userObj.permissions) : userObj.permissions
-          setPermissions(parsed)
+          setPermissionSnapshot({ pathname, role: userRole, permissions: parsed })
         }
       } catch (e) {
+        if (requestId === permissionsRequestRef.current) setPermissionSnapshot(null)
         console.error('Failed to dynamic check session in sidebar:', e)
       }
     }
@@ -125,9 +149,13 @@ export default function SidebarNav({ userRole, userPermissions }: Props) {
     return () => {
       if (permissionsRequestRef.current === requestId) permissionsRequestRef.current += 1
     }
-  }, [pathname, userPermissions])
+  }, [pathname, userRole, userPermissions])
 
-  const effectivePermissions = userPermissions ?? permissions ?? {}
+  // Do not reuse another route's or role's async snapshot before rechecking.
+  const effectivePermissions = userPermissions ?? (
+    permissionSnapshot?.pathname === pathname && permissionSnapshot.role === userRole
+      ? permissionSnapshot.permissions : {}
+  )
   const userObj = { role: userRole, permissions: effectivePermissions }
 
   const filteredItems = navItems.filter(item => {
@@ -137,6 +165,9 @@ export default function SidebarNav({ userRole, userPermissions }: Props) {
     }
     return item.roles.includes(userRole);
   });
+  const activeHref = filteredItems
+    .filter(item => pathname === item.href || (item.href !== '/' && pathname?.startsWith(`${item.href}/`)))
+    .sort((a, b) => b.href.length - a.href.length)[0]?.href;
 
   const mobileRouteOrder = ['/', '/sales', '/inventory', '/inventory/low-stock', '/patients'];
   const mobileNavItems = [
@@ -148,11 +179,16 @@ export default function SidebarNav({ userRole, userPermissions }: Props) {
    .slice(0, 5);
   const mobileNavHrefs = new Set(mobileNavItems.map(item => item.href));
   const mobileMoreItems = filteredItems.filter(item => !mobileNavHrefs.has(item.href));
+  const mobileMoreIsCurrent = mobileMoreItems.some(item => item.href === activeHref);
+  const mobileMoreGroups = mobileMoreItems.reduce((groups, item) => {
+    (groups[item.category] ??= []).push(item);
+    return groups;
+  }, {} as Record<string, typeof mobileMoreItems>);
 
   return (
     <>
       {/* Desktop Navigation */}
-      <nav className="flex-1 px-3 py-4 space-y-5 overflow-y-auto hidden lg:block">
+      <nav aria-label="التنقل الرئيسي" className="flex-1 px-3 py-4 space-y-5 overflow-y-auto hidden lg:block">
         {(() => {
           const grouped = filteredItems.reduce((acc, item) => {
             const cat = item.category || 'أخرى';
@@ -163,20 +199,20 @@ export default function SidebarNav({ userRole, userPermissions }: Props) {
           
           return Object.entries(grouped).map(([category, items]) => (
             <div key={category} className="space-y-1">
-              <h3 className="px-3 mb-1.5 text-[11px] font-semibold text-slate-500 dark:text-slate-400">{category}</h3>
+              <h3 className="px-3 mb-2 text-xs font-semibold text-slate-600 dark:text-slate-300">{category}</h3>
               {items.map((item) => {
                 const Icon = item.icon
-                const isActive = pathname === item.href || 
-                                 (item.href !== '/' && pathname?.startsWith(item.href))
+                const isActive = activeHref === item.href
                 const isHighPriority = highPriorityRoutes.has(item.href)
                 
                 return (
                   <Link
                     key={item.href}
                     href={item.href}
-                    prefetch={isHighPriority ? true : undefined}
-                    onMouseEnter={!isHighPriority ? () => router.prefetch(item.href) : undefined}
+                    prefetch={isHighPriority}
+                    onMouseEnter={!isHighPriority ? prefetchOnHover : undefined}
                     aria-label={item.label}
+                    aria-current={isActive ? 'page' : undefined}
                     className={cn(
                       "flex min-h-11 items-center gap-3 px-3 py-2.5 rounded-lg transition-colors duration-150 group border border-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-1 dark:focus-visible:ring-offset-slate-950",
                       isActive 
@@ -209,16 +245,16 @@ export default function SidebarNav({ userRole, userPermissions }: Props) {
         <div className="flex justify-around px-2 py-2">
           {mobileNavItems.map((item) => {
               const Icon = item.icon
-              const isActive = pathname === item.href || 
-                               (item.href !== '/' && pathname?.startsWith(item.href))
+              const isActive = activeHref === item.href
               const isHighPriority = highPriorityRoutes.has(item.href)
               return (
                 <Link
                   key={item.href}
                   href={item.href}
-                  prefetch={isHighPriority ? true : undefined}
-                  onMouseEnter={!isHighPriority ? () => router.prefetch(item.href) : undefined}
+                  prefetch={isHighPriority}
+                  onMouseEnter={!isHighPriority ? prefetchOnHover : undefined}
                   aria-label={item.label}
+                  aria-current={isActive ? 'page' : undefined}
                   className={cn(
                     "flex min-h-12 min-w-12 flex-col items-center justify-center px-2 py-1.5 rounded-lg transition-colors duration-150 group",
                     isActive ? "text-primary-700 dark:text-primary-300" : "text-slate-600 dark:text-slate-400"
@@ -238,30 +274,51 @@ export default function SidebarNav({ userRole, userPermissions }: Props) {
             })}
           {mobileMoreItems.length > 0 && (
             <button
+              ref={mobileMoreToggleRef}
               type="button"
               onClick={() => setShowMobileMore(v => !v)}
-              className="flex min-h-12 min-w-12 flex-col items-center justify-center px-2 py-1.5 rounded-lg text-slate-600 dark:text-slate-400 transition-colors hover:bg-slate-100 dark:hover:bg-slate-800"
+              onKeyDown={event => { if (event.key === 'Escape') { setShowMobileMore(false); } }}
+              className={cn('flex min-h-12 min-w-12 flex-col items-center justify-center rounded-lg px-2 py-1.5 transition-colors hover:bg-slate-100 dark:hover:bg-slate-800', mobileMoreIsCurrent ? 'bg-primary-50 text-primary-700 dark:bg-primary-950/40 dark:text-primary-300' : 'text-slate-600 dark:text-slate-300')}
               aria-label="المزيد من الخيارات"
               aria-expanded={showMobileMore}
+              aria-controls={showMobileMore ? 'pharma-mobile-more-menu' : undefined}
+              aria-describedby={mobileMoreIsCurrent ? 'pharma-mobile-more-current' : undefined}
             >
               <div className="w-8 h-8 rounded-lg bg-slate-100 dark:bg-slate-800 flex items-center justify-center">
                 <span className="text-xs font-black">+{mobileMoreItems.length}</span>
               </div>
               <span className="text-[11px] mt-0.5 font-medium">المزيد</span>
+              {mobileMoreIsCurrent && <span id="pharma-mobile-more-current" className="sr-only">الصفحة الحالية داخل المزيد</span>}
             </button>
           )}
         </div>
         {showMobileMore && mobileMoreItems.length > 0 && (
-          <div className="absolute bottom-full left-3 right-3 mb-2 max-h-[60vh] overflow-y-auto rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-xl p-2">
-            {mobileMoreItems.map(item => {
-              const Icon = item.icon
-              return (
-                <Link key={`more-${item.href}`} href={item.href} onClick={() => setShowMobileMore(false)} className="flex min-h-11 items-center gap-3 p-2.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800">
-                  <Icon className="w-4 h-4" />
-                  <span className="text-sm font-medium">{item.label}</span>
-                </Link>
-              )
-            })}
+          <div
+            ref={mobileMorePanelRef}
+            id="pharma-mobile-more-menu"
+            className="absolute bottom-full left-3 right-3 mb-2 max-h-[60vh] overflow-y-auto rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-xl p-3"
+            onKeyDown={event => {
+              if (event.key === 'Escape') {
+                event.preventDefault();
+                setShowMobileMore(false);
+                mobileMoreToggleRef.current?.focus();
+              }
+            }}
+          >
+            {Object.entries(mobileMoreGroups).map(([category, items]) => (
+              <div key={category} className="mb-3 last:mb-0">
+                <h3 className="mb-1 px-2 text-xs font-semibold text-slate-600 dark:text-slate-300">{category}</h3>
+                {items.map(item => {
+                  const Icon = item.icon;
+                  return (
+                    <Link key={`more-${item.href}`} href={item.href} prefetch={highPriorityRoutes.has(item.href)} onMouseEnter={highPriorityRoutes.has(item.href) ? undefined : prefetchOnHover} aria-current={activeHref === item.href ? 'page' : undefined} onClick={() => setShowMobileMore(false)} className={cn('flex min-h-11 items-center gap-3 rounded-lg p-2.5 text-sm font-medium hover:bg-slate-100 dark:hover:bg-slate-800', activeHref === item.href ? 'bg-primary-50 text-primary-700 dark:bg-primary-950/40 dark:text-primary-300' : 'text-slate-800 dark:text-slate-200')}>
+                      <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
+                      <span>{item.label}</span>
+                    </Link>
+                  );
+                })}
+              </div>
+            ))}
           </div>
         )}
       </nav>, document.body)}

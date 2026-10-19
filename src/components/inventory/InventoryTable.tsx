@@ -11,8 +11,41 @@ import { useReactToPrint } from 'react-to-print'
 import { useHotkeys } from 'react-hotkeys-hook'
 import AddInventoryModal from '../AddInventoryModal'
 import { deleteInventoryAction, importInventoryWorkbookAction } from '@/app/actions-client/inventory'
+import { isTauri } from '@/lib/env'
 import { dbSelect } from '@/lib/db/tauri'
+import { assertBoundedDesktopXlsxArchive } from '@/lib/inventory/xlsx-zip-preflight'
 import { Download, Upload, Search, Package, Pill, Banknote, Eye, Pencil, Trash2 } from 'lucide-react'
+
+// A workbook can expand far beyond its compressed file size. Desktop import
+// is deliberately a bounded new-stock workflow, never a wholesale restore.
+const MAX_DESKTOP_IMPORT_BYTES = 2 * 1024 * 1024;
+const MAX_DESKTOP_IMPORT_ROWS = 200;
+const MAX_DESKTOP_IMPORT_COLUMNS = 40;
+
+function assertSafeDesktopSheet(sheet: any): void {
+  const reference = sheet?.['!ref'];
+  if (typeof reference !== 'string' || !/^[A-Z]+[1-9]\d*(?::[A-Z]+[1-9]\d*)?$/.test(reference)) {
+    throw new Error('ملف المخزون لا يحتوي على نطاق خلايا صالح');
+  }
+  const parts = reference.split(':');
+  const parseCell = (cell: string) => {
+    const match = /^([A-Z]+)([1-9]\d*)$/.exec(cell);
+    if (!match) throw new Error('نطاق خلايا المخزون غير صالح');
+    let column = 0;
+    for (const character of match[1]) {
+      column = column * 26 + character.charCodeAt(0) - 64;
+      if (column > MAX_DESKTOP_IMPORT_COLUMNS) break;
+    }
+    return { column, row: Number(match[2]) };
+  };
+  const start = parseCell(parts[0]);
+  const end = parseCell(parts[1] || parts[0]);
+  if (start.column < 1 || end.column > MAX_DESKTOP_IMPORT_COLUMNS ||
+      end.column < start.column || start.row < 1 ||
+      end.row < start.row || end.row - start.row > MAX_DESKTOP_IMPORT_ROWS) {
+    throw new Error('تجاوز الملف الحدود المسموح بها للدفعات أو الأعمدة');
+  }
+}
 
 interface InventoryItem {
   id: string
@@ -60,6 +93,7 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
   const itemsPerPage = 50;
   const printRef = useRef<HTMLDivElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
+  const importingRef = useRef(false);
   const deletingIdsRef = useRef<Set<string>>(new Set());
   const handlePrint = useReactToPrint({
     contentRef: printRef,
@@ -142,7 +176,7 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
     setCurrentPage(1);
   };
   const SortTh = ({ sortKey, children, className = '' }: { sortKey: string; children: React.ReactNode; className?: string }) => (
-    <th className={`px-8 py-5 text-sm font-bold text-slate-500 dark:text-slate-400 ${className}`}>
+    <th className={`px-4 py-3 text-xs font-semibold text-slate-600 dark:text-slate-300 ${className}`}>
       <button type="button" onClick={() => sortBy(sortKey)} className="inline-flex items-center gap-1 hover:text-blue-600">
         {children}
         <span className="text-xs" aria-hidden="true">{sort?.key === sortKey ? (sort.dir === 'asc' ? '▲' : '▼') : '↕'}</span>
@@ -191,8 +225,33 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
   const handleExportAll = async () => {
     try {
       const toastId = toast.loading('جاري تصدير المخزون الحالي...');
-      const exportPharmacyId = pharmacyId || 'local_default';
-      const all = await dbSelect(`
+      const { inventoryRows, drugRows } = isTauri
+        ? await (async () => {
+            const { invoke } = await import('@tauri-apps/api/core');
+            const snapshot = await invoke<unknown>('export_inventory_snapshot_native');
+            if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+              throw new Error('Native inventory export response is invalid');
+            }
+            const rows = (snapshot as { inventoryRows?: unknown }).inventoryRows;
+            const drugs = (snapshot as { drugRows?: unknown }).drugRows;
+            if (!Array.isArray(rows) || !Array.isArray(drugs) ||
+                rows.length > 10000 || drugs.length > 10000 ||
+                rows.some(row => !row || typeof row !== 'object' || Array.isArray(row) ||
+                  typeof row.id !== 'string' || !row.id ||
+                  !Number.isSafeInteger(row.drug_id) || row.drug_id <= 0 ||
+                  typeof row.quantity !== 'number' || !Number.isFinite(row.quantity) ||
+                  typeof row.local_selling_price !== 'number' || !Number.isFinite(row.local_selling_price)) ||
+                drugs.some(drug => !drug || typeof drug !== 'object' || Array.isArray(drug) ||
+                  !Number.isSafeInteger(drug.id) || drug.id <= 0)) {
+              throw new Error('Native inventory snapshot is malformed or exceeds export limits');
+            }
+            return { inventoryRows: rows, drugRows: drugs };
+          })()
+        : await (async () => {
+          // Existing browser branch remains unchanged. Only the native app
+          // accepts the fixed, authorized snapshot, never renderer SQL.
+          const exportPharmacyId = pharmacyId || 'local_default';
+          const all = await dbSelect(`
         SELECT i.*, md.trade_name, md.trade_name_en, COALESCE(NULLIF(i.barcode, ''), NULLIF(md.barcode, ''), (
                  SELECT ii.barcode FROM inventory ii
                  WHERE ii.drug_id = i.drug_id
@@ -203,39 +262,51 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
         FROM inventory i
         JOIN master_drugs md ON i.drug_id = md.id
         WHERE (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
-      `, [exportPharmacyId, exportPharmacyId, exportPharmacyId, exportPharmacyId]);
-      const inventoryRows = all.map((row: any) => {
-        const { resolved_barcode, ...item } = row;
-        return { ...item, barcode: barcodeValue(item.barcode) || barcodeValue(resolved_barcode) };
-      });
-      const drugs = await dbSelect(`
+          `, [exportPharmacyId, exportPharmacyId, exportPharmacyId, exportPharmacyId]);
+          const inventoryRows = all.map((row: any) => {
+            const { resolved_barcode, ...item } = row;
+            return { ...item, barcode: barcodeValue(item.barcode) || barcodeValue(resolved_barcode) };
+          });
+          const drugs = await dbSelect(`
         SELECT md.* FROM master_drugs md
         WHERE EXISTS (
           SELECT 1 FROM inventory i
           WHERE i.drug_id = md.id
             AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
         )
-      `, [exportPharmacyId, exportPharmacyId]);
+          `, [exportPharmacyId, exportPharmacyId]);
+          return { inventoryRows, drugRows: drugs };
+        })();
       
-      const { save } = await import('@tauri-apps/plugin-dialog');
-      const filePath = await save({
-        filters: [{ name: 'Excel', extensions: ['xlsx'] }],
-        defaultPath: 'inventory_export.xlsx'
-      });
-
-      if (!filePath) {
-        toast.dismiss(toastId);
-        return;
-      }
-
       const XLSX = await import('xlsx');
       const workbook = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(inventoryRows), 'inventory');
-      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(drugs), 'master_drugs');
+      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(drugRows), 'master_drugs');
       
       const fileBytes = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
       const { invoke } = await import('@tauri-apps/api/core');
-      await invoke('write_binary_file', { path: filePath, data: Array.from(new Uint8Array(fileBytes)) });
+      const bytes = Array.from(new Uint8Array(fileBytes));
+      if (isTauri) {
+        // The operating-system Save dialog belongs to Rust. No renderer
+        // supplied destination can escape the native permission/non-overwrite
+        // checks, even if the webview itself is compromised.
+        const destination = await invoke<string | null>('save_workbook_export_native', {
+          kind: 'inventory', data: bytes,
+        });
+        if (destination === null) { toast.dismiss(toastId); return; }
+        if (typeof destination !== 'string' || !destination) {
+          throw new Error('Native export did not confirm the saved workbook');
+        }
+      } else {
+        // Preserve the existing non-Tauri browser branch behavior.
+        const { save } = await import('@tauri-apps/plugin-dialog');
+        const filePath = await save({
+          filters: [{ name: 'Excel', extensions: ['xlsx'] }],
+          defaultPath: 'inventory_export.xlsx',
+        });
+        if (!filePath) { toast.dismiss(toastId); return; }
+        await invoke('write_binary_file', { path: filePath, data: bytes });
+      }
 
       toast.success('تم التصدير بنجاح!', { id: toastId });
     } catch (err: any) {
@@ -247,19 +318,48 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
   const handleImportAll = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (importingRef.current) return;
+    if (isTauri && (file.size > MAX_DESKTOP_IMPORT_BYTES || !/\.xlsx$/i.test(file.name))) {
+      toast.error('الاستيراد الآمن يدعم XLSX فقط بحجم لا يتجاوز ٢ ميغابايت');
+      if (importInputRef.current) importInputRef.current.value = '';
+      return;
+    }
+    importingRef.current = true;
     
     const toastId = toast.loading('جاري قراءة ملف المخزون...');
+    const finish = () => {
+      importingRef.current = false;
+      if (importInputRef.current) importInputRef.current.value = '';
+    };
     try {
       const reader = new FileReader();
+      reader.onerror = () => { toast.error('تعذر قراءة ملف المخزون', { id: toastId }); finish(); };
+      reader.onabort = () => { toast.error('تم إلغاء قراءة ملف المخزون', { id: toastId }); finish(); };
       reader.onload = async (evt) => {
         try {
           const bstr = evt.target?.result;
+          if (typeof bstr !== 'string' || (isTauri && bstr.length > MAX_DESKTOP_IMPORT_BYTES)) {
+            throw new Error('ملف المخزون كبير جداً أو لا يمكن قراءته');
+          }
+          // Inspect EVERY real inflated ZIP byte before SheetJS's eager unzip.
+          // Unsupported raw-DEFLATE runtimes fail closed on desktop.
+          if (isTauri) await assertBoundedDesktopXlsxArchive(bstr);
           const XLSX = await import('xlsx');
           const wb = XLSX.read(bstr, { type: 'binary' });
           const inventorySheet = wb.Sheets.inventory || wb.Sheets.Inventory || wb.Sheets[wb.SheetNames[0]];
           const drugsSheet = wb.Sheets.master_drugs || wb.Sheets.Drugs;
+          if (!inventorySheet) throw new Error('لم يتم العثور على ورقة المخزون');
+          if (isTauri) {
+            assertSafeDesktopSheet(inventorySheet);
+            // Catalog ownership remains global and read-only; its master sheet
+            // must not be supplied to the bounded new-lot import command.
+            if (drugsSheet) throw new Error('استيراد الكتالوج العام غير مدعوم؛ أزل ورقة master_drugs من الملف');
+          }
           const data: any[] = XLSX.utils.sheet_to_json(inventorySheet, { raw: true });
           const drugs: any[] = drugsSheet ? XLSX.utils.sheet_to_json(drugsSheet, { raw: true }) : [];
+          if (isTauri && data.length > MAX_DESKTOP_IMPORT_ROWS) {
+            throw new Error('تجاوز الملف حد ٢٠٠ دفعة');
+          }
           
           if (data.length === 0) {
             toast.error('الملف فارغ أو غير صالح', { id: toastId });
@@ -274,20 +374,31 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
           }
           const imported = importResult.data;
 
-          const { secureCache } = await import('@/lib/cache/secure_cache');
-          await secureCache.reload();
+          // Desktop import was committed/authorized in one native transaction.
+          // secureCache.reload() currently uses renderer SQL; never invoke
+          // that legacy path from a native stock mutation.
+          if (!isTauri) {
+            const { secureCache } = await import('@/lib/cache/secure_cache');
+            await secureCache.reload();
+          }
 
-          toast.success(`تم استيراد ${imported.inventoryCount} سجل مخزون لـ ${imported.masterDrugCount} صنف دوائي بنجاح!`, { id: toastId });
+          toast.success(importResult.replayed
+            ? `هذا الملف تمت معالجته من قبل؛ تم التحقق من ${imported.inventoryCount} دفعة دون إضافتها مرتين.`
+            : `تم استيراد ${imported.inventoryCount} سجل مخزون لـ ${imported.masterDrugCount} صنف دوائي بنجاح!`,
+            { id: toastId });
           onRefresh();
         } catch (err: any) {
           console.error(err);
           toast.error(`فشل معالجة البيانات: ${err.message || String(err)}`, { id: toastId });
+        } finally {
+          finish();
         }
       };
       reader.readAsBinaryString(file);
     } catch (err: any) {
       console.error(err);
       toast.error(`فشل قراءة الملف: ${err.message || String(err)}`, { id: toastId });
+      finish();
     }
   };
 
@@ -299,6 +410,7 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
           <span className="absolute inset-y-0 right-3.5 flex items-center text-slate-400" aria-hidden="true"><Search className="h-4 w-4" /></span>
           <input
             type="text"
+            aria-label="بحث في المخزون"
             placeholder="بحث بالاسم، الباركود، أو المادة الفعالة..."
             className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 pr-10 pl-3.5 py-2.5 rounded-lg focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 outline-none transition-colors text-sm font-medium"
             value={searchTerm}
@@ -327,7 +439,7 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
                <input
                  ref={importInputRef}
                  type="file"
-                 accept=".xlsx, .xls"
+                 accept={isTauri ? '.xlsx' : '.xlsx, .xls'}
                  onChange={handleImportAll}
                  className="hidden"
                  tabIndex={-1}
@@ -390,15 +502,7 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
                 <SortTh sortKey="quantity" className="text-center">{'\u0627\u0644\u0643\u0645\u064a\u0629'}</SortTh>
                 <SortTh sortKey="expiry">{'\u062a\u0627\u0631\u064a\u062e \u0627\u0644\u0635\u0644\u0627\u062d\u064a\u0629'}</SortTh>
                 <SortTh sortKey="price">{'\u0627\u0644\u0633\u0639\u0631'}</SortTh>
-                <th className="px-8 py-5 text-sm font-bold text-slate-500 dark:text-slate-400">{'\u0625\u062c\u0631\u0627\u0621\u0627\u062a'}</th>
-              </tr>
-              <tr className="hidden">
-                <th className="px-8 py-5 text-sm font-bold text-slate-500 dark:text-slate-400">اسم الدواء</th>
-                <th className="px-8 py-5 text-sm font-bold text-slate-500 dark:text-slate-400">التصنيف</th>
-                <th className="px-8 py-5 text-sm font-bold text-slate-500 dark:text-slate-400 text-center">الكمية</th>
-                <th className="px-8 py-5 text-sm font-bold text-slate-500 dark:text-slate-400">تاريخ الصلاحية</th>
-                <th className="px-8 py-5 text-sm font-bold text-slate-500 dark:text-slate-400">السعر</th>
-                <th className="px-8 py-5 text-sm font-bold text-slate-500 dark:text-slate-400">إجراءات</th>
+                <th className="px-4 py-3 text-xs font-semibold text-slate-600 dark:text-slate-300">{'\u0625\u062c\u0631\u0627\u0621\u0627\u062a'}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -426,7 +530,7 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
                       setContextMenu({ x, y, item });
                     }}
                   >
-                    <td className="px-8 py-5">
+                    <td className="px-4 py-3">
                       <div className="flex flex-col">
                         <div className="flex items-center gap-2">
                           <span className="font-bold text-slate-900 dark:text-white group-hover:text-blue-600 transition-colors">
@@ -441,12 +545,12 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
                         <span className="text-xs text-slate-400">{item.master_drugs.active_ingredient}</span>
                       </div>
                     </td>
-                    <td className="px-8 py-5">
+                    <td className="px-4 py-3">
                       <span className="px-3 py-1 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 rounded-full text-xs font-medium">
                         {item.master_drugs.category}
                       </span>
                     </td>
-                    <td className="px-8 py-5 text-center">
+                    <td className="px-4 py-3 text-center">
                       <span className={`inline-flex items-center justify-center min-w-[3rem] px-3 py-1.5 rounded-xl font-black text-sm ${
                         isLowStock 
                           ? 'bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400 border border-red-200 dark:border-red-800' 
@@ -455,7 +559,7 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
                         {item.quantity}
                       </span>
                     </td>
-                    <td className="px-8 py-5">
+                    <td className="px-4 py-3">
                       <span className={`text-sm font-medium ${
                         isExpired ? 'text-red-600 font-black' : 
                         isExpiringSoon ? 'text-amber-600 font-bold' : 
@@ -466,12 +570,12 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
                         {isExpiringSoon && <span className="mr-2 text-xs bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">قريب الانتهاء</span>}
                       </span>
                     </td>
-                    <td className="px-8 py-5">
-                      <span className="text-lg font-black text-blue-600 dark:text-blue-400">
+                    <td className="px-4 py-3">
+                      <span className="text-sm font-semibold text-blue-700 dark:text-blue-400 tabular-nums">
                         {(item.local_selling_price ?? 0).toLocaleString('ar-EG')} <span className="text-xs font-bold">ج.م</span>
                       </span>
                     </td>
-                    <td className="px-8 py-5">
+                    <td className="px-4 py-3">
                       <div className="flex gap-2">
                         <button 
                           onClick={() => setDetailsDrugId(item.drug_id)}
@@ -512,7 +616,7 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
                   <td colSpan={6} className="p-16 text-center">
                     <div className="flex flex-col items-center justify-center space-y-3 text-slate-400">
                       <Package className="h-10 w-10 text-slate-300 dark:text-slate-600" />
-                      <p className="text-slate-500 font-medium">لم يتم العثور على نتائج للبحث في المخزون.</p>
+                      <p className="text-slate-500 font-medium">{searchTerm.trim() ? 'لم يتم العثور على نتائج للبحث في المخزون.' : 'لا توجد دفعات مخزون مسجلة حالياً.'}</p>
                     </div>
                   </td>
                 </tr>
@@ -523,23 +627,23 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
 
         {/* Improved Pagination Controls */}
         {totalPages > 1 && (
-          <div className="p-6 border-t border-slate-100 dark:border-slate-800 flex flex-col md:flex-row gap-4 justify-between items-center bg-slate-50/30 dark:bg-slate-800/30">
+          <div className="p-4 border-t border-slate-200 dark:border-slate-800 flex flex-col md:flex-row gap-3 justify-between items-center bg-slate-50/50 dark:bg-slate-800/30">
             {/* Quick jump & Jump actions */}
             <div className="flex items-center gap-2">
               <button 
                 type="button"
                 disabled={currentPage === 1}
                 onClick={() => setCurrentPage(1)}
-                className="px-3 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-bold disabled:opacity-50 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all"
+                className="px-3 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-semibold disabled:opacity-50 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
                 title="الصفحة الأولى"
               >
-                ⏮️ الأولى
+                الأولى
               </button>
               <button 
                 type="button"
                 disabled={currentPage <= 5}
                 onClick={() => setCurrentPage(prev => Math.max(1, prev - 5))}
-                className="px-3 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-bold disabled:opacity-50 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all"
+                className="px-3 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-semibold disabled:opacity-50 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
                 title="رجوع ٥ صفحات"
               >
                 -٥
@@ -548,7 +652,7 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
                 type="button"
                 disabled={currentPage === 1}
                 onClick={() => setCurrentPage(prev => prev - 1)}
-                className="px-4 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl text-sm font-bold disabled:opacity-50 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all"
+                className="px-3 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm font-semibold disabled:opacity-50 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
               >
                 السابق
               </button>
@@ -560,8 +664,9 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
                 صفحة {currentPage} من {totalPages}
               </div>
               <div className="flex items-center gap-2 border-r border-slate-200 dark:border-slate-700 pr-4">
-                <span className="text-xs text-slate-400 font-bold">الانتقال إلى:</span>
+                <label htmlFor="inventory-page-jump" className="text-xs text-slate-500 font-medium">الانتقال إلى:</label>
                 <input 
+                  id="inventory-page-jump"
                   type="number"
                   min="1"
                   max={totalPages}
@@ -583,7 +688,7 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
                 type="button"
                 disabled={currentPage === totalPages}
                 onClick={() => setCurrentPage(prev => prev + 1)}
-                className="px-4 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl text-sm font-bold disabled:opacity-50 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all"
+                className="px-3 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm font-semibold disabled:opacity-50 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
               >
                 التالي
               </button>
@@ -591,7 +696,7 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
                 type="button"
                 disabled={currentPage >= totalPages - 4}
                 onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 5))}
-                className="px-3 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-bold disabled:opacity-50 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all"
+                className="px-3 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-semibold disabled:opacity-50 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
                 title="تقدم ٥ صفحات"
               >
                 +٥
@@ -600,10 +705,10 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
                 type="button"
                 disabled={currentPage === totalPages}
                 onClick={() => setCurrentPage(totalPages)}
-                className="px-3 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-bold disabled:opacity-50 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all"
+                className="px-3 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-semibold disabled:opacity-50 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
                 title="الصفحة الأخيرة"
               >
-                الأخيرة ⏭️
+                الأخيرة
               </button>
             </div>
           </div>
@@ -665,7 +770,7 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
 
       {contextMenu && (
         <div 
-          className="fixed z-[100] bg-white dark:bg-slate-800 shadow-2xl rounded-2xl py-2 w-48 border border-slate-100 dark:border-slate-700 animate-in fade-in zoom-in-95 duration-100"
+          className="fixed z-[100] bg-white dark:bg-slate-800 shadow-lg rounded-lg py-2 w-48 border border-slate-200 dark:border-slate-700"
           style={{ top: contextMenu.y, left: contextMenu.x }}
           onClick={(e) => e.stopPropagation()}
         >
@@ -676,34 +781,37 @@ export default function InventoryTable({ items, searchTerm, setSearchTerm, onRef
             </span>
           </div>
           <button 
+            type="button"
             className="w-full text-right px-4 py-2 text-sm font-bold text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors flex items-center gap-2"
             onClick={() => {
               if (contextMenu.item) setDetailsDrugId(contextMenu.item.drug_id);
               setContextMenu(null);
             }}
           >
-            <span className="w-5 text-center">👁️</span> التفاصيل الشاملة
+            <Eye className="w-4 h-4" aria-hidden="true" /> التفاصيل الشاملة
           </button>
           {canManageInventory && (
             <>
               <button
+                type="button"
                 className="w-full text-right px-4 py-2 text-sm font-bold text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors flex items-center gap-2"
                 onClick={() => {
                   if (contextMenu.item) setEditingItem(contextMenu.item);
                   setContextMenu(null);
                 }}
               >
-                <span className="w-5 text-center">✏️</span> تعديل الرصيد
+                <Pencil className="w-4 h-4" aria-hidden="true" /> تعديل الرصيد
               </button>
               <div className="h-px bg-slate-100 dark:bg-slate-700 my-1"></div>
               <button
+                type="button"
                 className="w-full text-right px-4 py-2 text-sm font-bold text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors flex items-center gap-2"
                 onClick={() => {
                   if (contextMenu.item) handleForceDelete(contextMenu.item.id);
                   setContextMenu(null);
                 }}
               >
-                <span className="w-5 text-center">🗑️</span> حذف الصنف
+                <Trash2 className="w-4 h-4" aria-hidden="true" /> حذف الصنف
               </button>
             </>
           )}

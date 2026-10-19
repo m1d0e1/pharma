@@ -15,6 +15,7 @@ import {
   getAccountsAction,
   getPointsOfSaleAction,
   getBanksAction,
+  getTreasuryDashboardAction,
 } from '@/app/actions-client/finance';
 import {
   getHandoverDetailsAction,
@@ -57,6 +58,11 @@ jest.mock('@/app/actions-client/finance', () => ({
   getAccountsAction: jest.fn(),
   getPointsOfSaleAction: jest.fn(),
   getBanksAction: jest.fn(),
+  // This legacy account-directory fixture has no independently verified native
+  // drawer/bank receipts. Keep liquidity unavailable, not an invented cash 0.
+  getTreasuryDashboardAction: jest.fn().mockResolvedValue({
+    success: false, error: 'Synthetic native treasury receipt unavailable',
+  }),
   getCashMovementsAction: jest.fn().mockResolvedValue({ success: true, data: [] }),
   getExpenseDefinitionsAction: jest.fn().mockResolvedValue({ success: true, data: [] }),
   getPapersAction: jest.fn().mockResolvedValue({ success: true, data: [] }),
@@ -204,6 +210,7 @@ describe('Exhaustive Testing: Financials, Handover, Shift, and Receipt Modules',
       expect(await screen.findByText(/شجرة الحسابات \(Chart of Accounts\)/i)).toBeInTheDocument();
       expect(await screen.findByText('الأصول')).toBeInTheDocument();
       expect(await screen.findByText('النقدية بالصندوق')).toBeInTheDocument();
+      expect(getTreasuryDashboardAction).toHaveBeenCalled();
 
       // Switch tab to POS Management
       const posTabBtn = screen.getByRole('button', { name: /نقط البيع/i });

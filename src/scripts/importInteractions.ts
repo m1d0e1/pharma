@@ -35,9 +35,22 @@ export async function importInteractionsFromCSV(db: any) {
 
     const fileContent = fs.readFileSync(CSV_PATH, 'utf-8');
     const records = parse(fileContent, {
-      columns: true,
+      bom: true,
+      // This file has a fixed schema. Reject attacker-supplied column keys
+      // before csv-parse builds objects, including __proto__/extra headers.
+      columns: (headers: string[]) => {
+        if (JSON.stringify(headers) !== JSON.stringify(['Drug 1', 'Drug 2', 'Interaction Description'])) {
+          throw new Error('Unexpected drug interaction CSV columns');
+        }
+        return headers;
+      },
       skip_empty_lines: true,
     });
+
+    if (!records.length || records.some((row: Record<string, string>) =>
+      !row['Drug 1']?.trim() || !row['Drug 2']?.trim() || !row['Interaction Description']?.trim())) {
+      throw new Error('Drug interaction CSV is empty or contains incomplete rows');
+    }
 
     console.log(`Parsed ${records.length} records. Importing...`);
 
@@ -81,5 +94,20 @@ export async function importInteractionsFromCSV(db: any) {
 if (require.main === module) {
   const DB_PATH = path.join(process.cwd(), 'pharma_local.db');
   const db = new Database(DB_PATH);
-  importInteractionsFromCSV(db).then(() => db.close());
+  importInteractionsFromCSV(db)
+    .then(success => {
+      if (!success) process.exitCode = 1;
+    })
+    .catch(error => {
+      console.error('CSV Import error:', error);
+      process.exitCode = 1;
+    })
+    .finally(() => {
+      try {
+        db.close();
+      } catch (error) {
+        console.error('CSV Database close error:', error);
+        process.exitCode = 1;
+      }
+    });
 }

@@ -87,7 +87,9 @@ describe('rendered customer-return flow', () => {
     fireEvent.click(screen.getByRole('button', { name: 'تنفيذ المرتجع' }));
 
     await waitFor(() => expect(createReturnAction).toHaveBeenCalledWith({
+      request_id: expect.any(String),
       invoice_id: 'invoice-12345678',
+      expected_total_refund: 20,
       refund_method: 'patient_account',
       reason: 'Damaged pack',
       patient_id: 'patient-1',
@@ -101,6 +103,48 @@ describe('rendered customer-return flow', () => {
       }],
     }));
     expect(mockPush).toHaveBeenCalledWith('/returns');
+  });
+
+  it('keeps a rejected native cash refund and its exact error visible for review and retry', async () => {
+    (createReturnAction as jest.Mock).mockResolvedValue({
+      success: false, error: 'Original sale or COGS evidence requires reconciliation',
+    });
+    render(<SalesReturnClient />);
+    fireEvent.change(screen.getByPlaceholderText('امسح الباركود، أو اكتب اسم الدواء، أو رقم الفاتورة...'), {
+      target: { value: 'Return Drug' },
+    });
+    expect(await screen.findByText('Return Drug')).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'تنفيذ المرتجع' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Original sale or COGS evidence requires reconciliation');
+    expect(screen.getByRole('spinbutton')).toHaveValue(1);
+    expect(screen.getByRole('button', { name: 'تنفيذ المرتجع' })).toBeEnabled();
+    expect(mockPush).not.toHaveBeenCalled();
+  });
+
+  it('keeps the valid cash method if the native select emits a display label instead of an option value', async () => {
+    (getInvoiceForReturnAction as jest.Mock).mockResolvedValueOnce({
+      success: true, data: {
+        id: 'invoice-12345678', payment_method: 'cash', total_amount: 30,
+        patient_id: 'patient-1', status: 'completed', already_refunded: 0,
+        items: [{ id: 'sale-item-1', inventory_id: 'batch-1', drug_name: 'Return Drug',
+          quantity_sold: 3, returned_quantity: 0, unit_price: 10,
+          unit: 'large', large_to_medium: 2, medium_to_small: 5 }],
+      },
+    });
+    render(<SalesReturnClient />);
+    fireEvent.change(screen.getByPlaceholderText('امسح الباركود، أو اكتب اسم الدواء، أو رقم الفاتورة...'), {
+      target: { value: 'Return Drug' },
+    });
+    expect(await screen.findByText('Return Drug')).toBeInTheDocument();
+    const method = screen.getAllByRole('combobox').at(-1)!;
+    expect(method).toHaveValue('cash');
+    fireEvent.change(method, { target: { value: 'استرداد نقدي (كاش)' } });
+    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'تنفيذ المرتجع' }));
+    await waitFor(() => expect(createReturnAction).toHaveBeenCalledWith(expect.objectContaining({
+      refund_method: 'cash', items: [expect.objectContaining({ quantity: 1 })],
+    })));
   });
 
   it('resets a stale patient-account refund when switching to a patient cash invoice', async () => {
@@ -147,6 +191,47 @@ describe('rendered customer-return flow', () => {
     fireEvent.change(search, { target: { value: 'cash' } });
     expect(await screen.findByText('Cash Drug')).toBeInTheDocument();
     expect(screen.getAllByRole('combobox').at(-1)).toHaveValue('cash');
+  });
+
+  it('does not switch invoices on a bubbled arrow key from the refund-method selector', async () => {
+    (getSalesInvoicesByDateAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: [
+        { id: 'credit-1', total_amount: 46, payment_method: 'credit', created_at: '2026-10-14T08:00:00Z' },
+        { id: 'cash-2', total_amount: 46, payment_method: 'cash', created_at: '2026-10-14T09:00:00Z' },
+      ],
+    });
+    (getInvoiceForReturnAction as jest.Mock).mockImplementation(async (id: string) => ({
+      success: true,
+      data: {
+        id, patient_id: id === 'credit-1' ? 'patient-1' : null,
+        payment_method: id === 'credit-1' ? 'credit' : 'cash',
+        total_amount: 46, status: 'completed', already_refunded: 0,
+        items: [{
+          id: id + '-item', inventory_id: id + '-lot', drug_name: id + '-drug',
+          quantity_sold: 1, returned_quantity: 0, unit_price: 46,
+          unit: 'large', large_to_medium: 1, medium_to_small: 1,
+        }],
+      },
+    }));
+    render(<SalesReturnClient />);
+    expect(await screen.findByText('credit-1-drug')).toBeInTheDocument();
+    const method = screen.getAllByRole('combobox').at(-1)!;
+    expect(method).toHaveValue('patient_account');
+    const callsBefore = (getInvoiceForReturnAction as jest.Mock).mock.calls.length;
+    // Native select popups can emit a key event targeted to the select while
+    // the document's activeElement is still BODY.
+    const focus = jest.spyOn(document, 'activeElement', 'get').mockReturnValue(document.body);
+    try {
+      await act(async () => {
+        fireEvent.keyDown(method, { key: 'ArrowDown', code: 'ArrowDown', bubbles: true });
+      });
+    } finally {
+      focus.mockRestore();
+    }
+    expect(method).toHaveValue('patient_account');
+    expect(getInvoiceForReturnAction).toHaveBeenCalledTimes(callsBefore);
+    expect(screen.queryByText('cash-2-drug')).not.toBeInTheDocument();
   });
 
   it('can refund a wallet-funded patient sale back to the patient wallet', async () => {

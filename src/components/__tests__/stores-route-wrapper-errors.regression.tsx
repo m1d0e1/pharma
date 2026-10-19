@@ -1,4 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import ItemsPage from '@/app/(dashboard)/stores/items/page';
 import ShortagesPage from '@/app/(dashboard)/stores/shortages/page';
 import StoresPage from '@/app/(dashboard)/stores/page';
@@ -86,6 +88,45 @@ it('shows a retryable stores-dashboard session error instead of false permission
   expect(screen.queryByText('access-denied')).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: 'إعادة المحاولة' }));
   expect(await screen.findByText('إدارة المخازن والإعدادات')).toBeInTheDocument();
+});
+
+it('does not send a view-only stores user into denied cleanup, adjustment, or opening-balance routes', async () => {
+  (getClientSession as jest.Mock).mockResolvedValue({
+    id: 'admin-viewer', role: 'admin', permissions: {
+      can_view_stores: true, can_manage_inventory: false,
+      can_view_opening_balances: false, can_view_restock: false,
+    },
+  });
+
+  render(<StoresPage />);
+  expect((await screen.findByText('الأصناف')).closest('a')).toHaveAttribute('href', '/stores/items');
+  expect(screen.queryByRole('link', { name: /حذف الأصناف/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole('link', { name: /تسوية الكميات/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole('link', { name: /الأرصدة الإفتتاحية/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole('link', { name: /كشكول النواقص/ })).not.toBeInTheDocument();
+});
+
+it('links owner to canonical inventory management routes', async () => {
+  (getClientSession as jest.Mock).mockResolvedValue({ id: 'owner', role: 'owner', permissions: {} });
+  (hasUserPermissionSync as jest.Mock).mockReturnValue(true);
+
+  render(<StoresPage />);
+  expect(await screen.findByRole('link', { name: /حذف الأصناف/ })).toHaveAttribute('href', '/stores/delete-items');
+  expect(screen.getByRole('link', { name: /تسوية الكميات/ })).toHaveAttribute('href', '/stores/adjustments');
+});
+
+it('points each stores hub card, including intentional duplicate aliases, to a real route file', async () => {
+  (getClientSession as jest.Mock).mockResolvedValue({ id: 'owner', role: 'owner', permissions: {} });
+  (hasUserPermissionSync as jest.Mock).mockReturnValue(true);
+
+  render(<StoresPage />);
+  await screen.findByText('إدارة المخازن والإعدادات');
+  const hrefs = screen.getAllByRole('link').map(link => link.getAttribute('href')!);
+  expect(hrefs.filter(href => href === '/stores/alternatives')).toHaveLength(2);
+  expect(hrefs.filter(href => href === '/stores/nature')).toHaveLength(2);
+  for (const href of new Set(hrefs)) {
+    expect(existsSync(join(process.cwd(), 'src', 'app', '(dashboard)', href.slice(1), 'page.tsx'))).toBe(true);
+  }
 });
 
 it('recovers the alternatives auth wrapper after a thrown session load', async () => {

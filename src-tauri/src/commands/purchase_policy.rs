@@ -2,6 +2,157 @@ use std::collections::HashSet;
 
 use super::purchase_dto::{PurchaseItem, PurchasePayload};
 
+/// Native mirror of the UI's single-container override. A purchase must not
+/// turn a bottle, tube or individual liquid preparation into a fictitious
+/// multipack merely because the caller bypassed the browser's unit profile.
+/// Explicit medium/small package levels and preconfigured multipacks win.
+pub(crate) fn inferred_single_container(
+    trade_name: Option<&str>,
+    trade_name_en: Option<&str>,
+    large_unit: Option<&str>,
+    medium_unit: Option<&str>,
+    small_unit: Option<&str>,
+    current_large_to_medium: i64,
+) -> bool {
+    let populated = |name: Option<&str>| name.is_some_and(|name| !name.trim().is_empty());
+    if populated(medium_unit) || populated(small_unit) {
+        return false;
+    }
+    const SINGLE_UNIT: [&str; 23] = [
+        "زجاج",
+        "زجاجة",
+        "كريم",
+        "مرهم",
+        "شراب",
+        "امبول",
+        "أمبول",
+        "حقنة",
+        "حقن",
+        "قطرة",
+        "بخاخ",
+        "جيل",
+        "جل",
+        "بودرة",
+        "بودر",
+        "معجون",
+        "شامبو",
+        "صابون",
+        "لوشن",
+        "لبوس",
+        "فيال",
+        "سيروم",
+        "أنبوبة",
+    ];
+    if let Some(explicit) = large_unit.map(str::trim).filter(|value| !value.is_empty()) {
+        let lower = explicit.to_lowercase();
+        return current_large_to_medium <= 1 && SINGLE_UNIT.iter().any(|term| lower.contains(term));
+    }
+    let name = format!(
+        "{} {}",
+        trade_name.unwrap_or(""),
+        trade_name_en.unwrap_or("")
+    )
+    .to_lowercase();
+    let words: Vec<&str> = name
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    if words.iter().any(|word| {
+        [
+            "sdu", "ud", "single", "dose", "ampoules", "vials", "sachets", "tubes", "bottles",
+        ]
+        .contains(word)
+    }) || name.contains(" x ")
+        || name.contains('×')
+        || name.contains('*')
+    {
+        return false;
+    }
+    const LIQUID: [&str; 12] = [
+        "drops",
+        "drop",
+        "syrup",
+        "susp",
+        "suspension",
+        "solution",
+        "soln",
+        "cream",
+        "ointment",
+        "oint",
+        "gel",
+        "spray",
+    ];
+    words
+        .iter()
+        .any(|word| LIQUID.contains(word) || ["lotion", "shampoo"].contains(word))
+        || [
+            "قطرة",
+            "قطرات",
+            "نقط",
+            "شراب",
+            "معلق",
+            "محلول",
+            "كريم",
+            "مرهم",
+            "جيل",
+            "جل",
+            "بخاخ",
+            "لوشن",
+            "شامبو",
+        ]
+        .iter()
+        .any(|term| name.contains(term))
+}
+
+#[cfg(test)]
+mod native_unit_policy_tests {
+    use super::inferred_single_container as inferred;
+
+    #[test]
+    fn native_single_container_rules_preserve_bottle_tube_and_explicit_multipack() {
+        for name in [
+            "DEXATROL EYE/EAR DROPS 5 ML",
+            "BAMBEDIL 1MG/ML SYRUP 120ML",
+            "TOPICAL CREAM 30 GM",
+            "NASAL SPRAY 15 ML",
+        ] {
+            assert!(inferred(Some(name), None, None, None, None, 5), "{name}");
+        }
+        assert!(!inferred(
+            Some("AQUALARM UD EYE DROPS 30 X 0.5ML SDU"),
+            None,
+            None,
+            None,
+            None,
+            30
+        ));
+        assert!(!inferred(
+            Some("CUSTOM DROPS"),
+            None,
+            Some("زجاجة"),
+            Some("باكيت"),
+            Some("مل"),
+            6
+        ));
+        assert!(!inferred(
+            Some("CONFIGURED LIQUID"),
+            None,
+            Some("زجاجة"),
+            None,
+            None,
+            6
+        ));
+        assert!(inferred(
+            Some("CUSTOM DROPS"),
+            None,
+            Some("زجاجة"),
+            None,
+            None,
+            1
+        ));
+    }
+}
+
 pub(crate) fn normalize_date_ymd(input: Option<&str>) -> Option<String> {
     let value = input?.trim();
     if value.is_empty() {
@@ -35,18 +186,16 @@ pub(crate) fn normalize_valid_date_ymd(input: Option<&str>) -> Result<Option<Str
         return Err(format!("Invalid calendar date '{value}'"));
     }
 
-    let (year_text, month_text, day_text) = if parts.len() == 2
-        && parts[0].len() <= 2
-        && parts[1].len() == 4
-    {
-        (parts[1], parts[0], "1")
-    } else if parts.len() == 3 && parts[0].len() == 4 {
-        (parts[0], parts[1], parts[2])
-    } else if parts.len() == 3 && parts[2].len() == 4 {
-        (parts[2], parts[1], parts[0])
-    } else {
-        return Err(format!("Invalid calendar date '{value}'"));
-    };
+    let (year_text, month_text, day_text) =
+        if parts.len() == 2 && parts[0].len() <= 2 && parts[1].len() == 4 {
+            (parts[1], parts[0], "1")
+        } else if parts.len() == 3 && parts[0].len() == 4 {
+            (parts[0], parts[1], parts[2])
+        } else if parts.len() == 3 && parts[2].len() == 4 {
+            (parts[2], parts[1], parts[0])
+        } else {
+            return Err(format!("Invalid calendar date '{value}'"));
+        };
     if !year_text.chars().all(|c| c.is_ascii_digit())
         || !month_text.chars().all(|c| c.is_ascii_digit())
         || !day_text.chars().all(|c| c.is_ascii_digit())
@@ -104,8 +253,7 @@ pub(crate) fn purchase_inventory_paid_factor(
         return 1.0;
     }
     let invoice_base = items_total + expenses;
-    ((invoice_base - discount_value).max(0.0) / items_total)
-        * (1.0 - discount_percent / 100.0)
+    ((invoice_base - discount_value).max(0.0) / items_total) * (1.0 - discount_percent / 100.0)
 }
 
 pub(crate) fn validate_purchase_payload(payload: &PurchasePayload) -> Result<(f64, f64), String> {
@@ -518,12 +666,8 @@ mod tests {
     fn shared_allocation_vectors_match() {
         for vector in contract().allocation {
             let items: Vec<PurchaseItem> = vector.items.iter().map(item).collect();
-            let mut purchase = payload(
-                Some("completed".into()),
-                Some("credit".into()),
-                None,
-                items,
-            );
+            let mut purchase =
+                payload(Some("completed".into()), Some("credit".into()), None, items);
             purchase.tax_percent = vector.header.tax_percent;
             purchase.expenses = vector.header.expenses;
             purchase.discount_value = vector.header.discount_value;
@@ -544,8 +688,7 @@ mod tests {
                 .cart
                 .iter()
                 .map(|purchase_item| {
-                    purchase_item_total(purchase_item, purchase.tax_percent)
-                        * paid_factor
+                    purchase_item_total(purchase_item, purchase.tax_percent) * paid_factor
                         / (purchase_item.quantity + purchase_item.bonus_quantity)
                 })
                 .collect();
@@ -573,18 +716,14 @@ mod tests {
     #[test]
     fn shared_accounting_vectors_match() {
         for vector in contract().accounting {
-            let plan = build_purchase_accounting_plan(
-                &vector.payment_method,
-                vector.total_amount,
-            )
-            .unwrap_or_else(|error| panic!("accounting vector {}: {error}", vector.name));
+            let plan = build_purchase_accounting_plan(&vector.payment_method, vector.total_amount)
+                .unwrap_or_else(|error| panic!("accounting vector {}: {error}", vector.name));
             let settlement_account = match plan.settlement_account {
                 PurchaseSettlementAccount::Payable => "payable",
                 PurchaseSettlementAccount::Cash => "cash",
             };
             assert_eq!(
-                settlement_account,
-                vector.expected.settlement_account,
+                settlement_account, vector.expected.settlement_account,
                 "accounting settlement vector: {}",
                 vector.name
             );
@@ -605,8 +744,7 @@ mod tests {
                 .zip(vector.expected.supplier_transactions.iter())
             {
                 assert_eq!(
-                    actual.transaction_type,
-                    expected.transaction_type,
+                    actual.transaction_type, expected.transaction_type,
                     "accounting supplier transaction type vector: {}",
                     vector.name
                 );
@@ -621,8 +759,7 @@ mod tests {
                 (None, None) => {}
                 (Some(actual), Some(expected)) => {
                     assert_eq!(
-                        actual.movement_type,
-                        expected.movement_type,
+                        actual.movement_type, expected.movement_type,
                         "accounting cash movement type vector: {}",
                         vector.name
                     );

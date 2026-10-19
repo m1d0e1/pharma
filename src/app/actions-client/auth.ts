@@ -1,6 +1,7 @@
 // Client-side auth actions for Tauri/static mode (no 'use server')
 
 import { dbSelect, dbExecute, dbGet, dbTransaction } from '@/lib/db/tauri';
+import { isTauri } from '@/lib/env';
 
 const db = {
   prepare: (sql) => ({
@@ -46,6 +47,33 @@ export async function loginLocalAction(username: string, password?: string) {
   return loginLocal(username, password);
 }
 
+// On first licensed startup, only the native process may decide whether its
+// canonical seeded owner still requires enrollment. No renderer SQL or owner ID.
+export async function getOwnerEnrollmentStatusAction(): Promise<{ success: boolean; pending: boolean; error?: string }> {
+  if (!isTauri) return { success: true, pending: false };
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const pending = await invoke<boolean>('owner_enrollment_status');
+    if (typeof pending !== 'boolean') throw new Error('Invalid native enrollment status');
+    return { success: true, pending };
+  } catch {
+    return { success: false, pending: true, error: 'تعذر التحقق من إعداد المالك؛ حاول مرة أخرى' };
+  }
+}
+
+export async function enrollInitialOwnerAction(
+  activationCode: string, newPassword: string,
+): Promise<{ success: boolean; error?: string }> {
+  if (!isTauri) return { success: false, error: 'إعداد المالك متاح على سطح المكتب فقط' };
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke<void>('enroll_initial_owner', { activationCode, newPassword });
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 export async function getCurrentUserAction() {
   try {
     const user = await getLocalSession();
@@ -89,7 +117,9 @@ export async function logoutLocalAction() {
 export async function getLocalUsersAction() {
   try {
     if (!isStaffOwner(await getLocalSession())) return { success: false, error: 'غير مصرح - للمالك فقط' };
-    const users = await db.prepare('SELECT id, username, full_name, role, (password_hash IS NOT NULL) as has_password FROM users').all();
+    const users = isTauri
+      ? await (await import('@tauri-apps/api/core')).invoke<any[]>('list_local_staff_summaries')
+      : await db.prepare('SELECT id, username, full_name, role, (password_hash IS NOT NULL) as has_password FROM users').all();
     return { success: true, data: users };
   } catch (error) {
     return { success: false, error: 'Failed to fetch users' };

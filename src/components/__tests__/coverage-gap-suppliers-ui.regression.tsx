@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import SuppliersPage from '@/app/(dashboard)/purchases/suppliers/page';
+import SuppliersManagementClient from '@/components/purchases/SuppliersManagementClient';
 import {
   addSupplierAction,
   addSupplierPaymentAction,
@@ -9,6 +10,8 @@ import {
   updateSupplierAction,
 } from '@/app/actions-client/purchases';
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
+
+jest.mock('@/lib/env', () => ({ isTauri: false }));
 
 jest.mock('@/app/actions-client/purchases', () => ({
   getSuppliersAction: jest.fn(),
@@ -34,6 +37,22 @@ const suppliers = [
   { id: 2, name_ar: 'مورد خالص', name_en: 'Clear Supplier', phone: '01020000000', address: 'Giza', balance: 0 },
 ];
 
+// Exercise pending-write safeguards at the component boundary. The web page
+// deliberately cannot enable supplier CRUD or settlement anymore.
+type DirectoryProps = Parameters<typeof SuppliersManagementClient>[0];
+function renderIsolatedSupplierDirectory(overrides: Partial<DirectoryProps> = {}) {
+  return render(<SuppliersManagementClient
+    initialData={suppliers}
+    onAdd={async () => ({ success: false })}
+    onUpdate={async () => ({ success: false })}
+    onDelete={async () => ({ success: false })}
+    onRefresh={async () => {}}
+    canMutate
+    canPay
+    {...overrides}
+  />);
+}
+
 describe('coverage-gap: supplier management UI permissions and interactions', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -42,6 +61,24 @@ describe('coverage-gap: supplier management UI permissions and interactions', ()
       success: true,
       data: [{ id: 9, type: 'invoice', amount: 200, notes: 'Invoice row', date: '2026-09-20', reference_id: 'invoice-123456' }],
     });
+  });
+
+  it('explains verified-ownership supplier denial, hides supplier actions, and offers a safe retry', async () => {
+    (getClientSession as jest.Mock).mockResolvedValue({
+      id: 'qa-owner', role: 'owner', pharmacy_id: 'local_default', permissions: { can_view_suppliers: true },
+    });
+    (hasUserPermissionSync as jest.Mock).mockImplementation((user: any, key: string) => user?.permissions?.[key] === true);
+    (getSuppliersAction as jest.Mock)
+      .mockResolvedValueOnce({ success: false, error: 'Legacy purchasing ownership needs independent tenant verification' })
+      .mockResolvedValueOnce({ success: true, data: suppliers });
+
+    render(<SuppliersPage />);
+    expect(await screen.findByText(/تعذر التحقق من ملكية بيانات الموردين/)).toBeInTheDocument();
+    expect(screen.queryByText('مورد مدين')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /إضافة مورد جديد/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'إعادة المحاولة' }));
+    expect(await screen.findByText('مورد مدين')).toBeInTheDocument();
+    expect(getSuppliersAction).toHaveBeenCalledTimes(2);
   });
 
   it('keeps delegated supplier viewers read-only while preserving search, filters, and statement access', async () => {
@@ -72,7 +109,7 @@ describe('coverage-gap: supplier management UI permissions and interactions', ()
     expect(await screen.findByText('Invoice row')).toBeInTheDocument();
   });
 
-  it('shows mutation and payment controls only when the corresponding action permissions are present', async () => {
+  it('keeps web admin supplier actions hidden even with supplier and cash-flow permissions, while allowing statements', async () => {
     (getClientSession as jest.Mock).mockResolvedValue({
       id: 'admin-1',
       role: 'admin',
@@ -86,10 +123,37 @@ describe('coverage-gap: supplier management UI permissions and interactions', ()
 
     render(<SuppliersPage />);
     expect(await screen.findByText('مورد مدين')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /إضافة مورد جديد/ })).toBeInTheDocument();
-    expect(screen.getAllByTitle('تعديل')).toHaveLength(2);
-    expect(screen.getAllByTitle('حذف')).toHaveLength(2);
-    expect(screen.getAllByRole('button', { name: 'سداد دفعة' })).toHaveLength(2);
+    expect(screen.queryByRole('button', { name: /إضافة مورد جديد/ })).not.toBeInTheDocument();
+    expect(screen.queryByTitle('تعديل')).not.toBeInTheDocument();
+    expect(screen.queryByTitle('حذف')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'سداد دفعة' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole('button', { name: 'كشف الحساب' })[0]);
+    expect(await screen.findByText('Invoice row')).toBeInTheDocument();
+    expect(addSupplierAction).not.toHaveBeenCalled();
+    expect(updateSupplierAction).not.toHaveBeenCalled();
+    expect(deleteSupplierAction).not.toHaveBeenCalled();
+    expect(addSupplierPaymentAction).not.toHaveBeenCalled();
+  });
+
+  it('treats ambiguous shared supplier balances as unknown and blocks settlement', async () => {
+    (getClientSession as jest.Mock).mockResolvedValue({
+      id: 'admin-1', role: 'admin',
+      permissions: { can_view_suppliers: true, acc_can_process_cash_flow: true },
+    });
+    (hasUserPermissionSync as jest.Mock).mockImplementation((user: any, key: string) => user?.permissions?.[key] === true);
+    (getSuppliersAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: [
+        { id: 1, name_ar: 'مورد مدين', balance: 500 },
+        { id: 2, name_ar: 'مورد غير متحقق', balance: null },
+      ],
+    });
+    render(<SuppliersPage />);
+    expect(await screen.findByText('مورد غير متحقق')).toBeInTheDocument();
+    expect(screen.getByText('يتطلب تحقق ملكية الرصيد')).toBeInTheDocument();
+    expect(screen.getByText(/لا يشمل 1 رصيد غير متحقق/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'سداد دفعة' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'خالصة (0)' })).toBeInTheDocument();
   });
 
   it('keeps a purchase-only admin supplier view read-only when can_view_suppliers is explicitly denied', async () => {
@@ -164,15 +228,10 @@ describe('coverage-gap: supplier management UI permissions and interactions', ()
   });
 
   it('blocks repeated supplier creates while the first write is pending', async () => {
-    (getClientSession as jest.Mock).mockResolvedValue({
-      id: 'admin-1', role: 'admin', permissions: { can_view_suppliers: true },
-    });
-    (hasUserPermissionSync as jest.Mock).mockImplementation((user: any, key: string) => user?.permissions?.[key] === true);
     let resolveAdd: (value: { success: boolean; id?: number; error?: string }) => void = () => {};
-    (addSupplierAction as jest.Mock).mockImplementation(() => new Promise(resolve => { resolveAdd = resolve; }));
+    const onAdd = jest.fn(() => new Promise<{ success: boolean; id?: number; error?: string }>(resolve => { resolveAdd = resolve; }));
 
-    render(<SuppliersPage />);
-    await screen.findByText('مورد مدين');
+    renderIsolatedSupplierDirectory({ onAdd });
     fireEvent.click(screen.getByRole('button', { name: /إضافة مورد جديد/ }));
     fireEvent.change(screen.getByPlaceholderText('مثال: شركة ابن سينا فارما'), { target: { value: 'مورد اختبار' } });
     const saveButton = screen.getByRole('button', { name: 'حفظ البيانات' });
@@ -182,23 +241,37 @@ describe('coverage-gap: supplier management UI permissions and interactions', ()
       fireEvent.click(saveButton);
     });
 
-    expect(addSupplierAction).toHaveBeenCalledTimes(1);
+    expect(onAdd).toHaveBeenCalledTimes(1);
     await act(async () => resolveAdd({ success: false, error: 'supplier write rejected' }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'حفظ البيانات' })).toBeEnabled());
   });
 
+  it('keeps the supplier form open until an in-flight write completes', async () => {
+    let resolveAdd: (value: { success: boolean; error?: string }) => void = () => {};
+    const onAdd = jest.fn(() => new Promise<{ success: boolean; error?: string }>(resolve => { resolveAdd = resolve; }));
+
+    renderIsolatedSupplierDirectory({ onAdd });
+    fireEvent.click(screen.getByRole('button', { name: 'إضافة مورد جديد' }));
+    fireEvent.change(screen.getByPlaceholderText('مثال: شركة ابن سينا فارما'), { target: { value: 'مورد انتظار' } });
+    fireEvent.click(screen.getByRole('button', { name: 'حفظ البيانات' }));
+
+    const close = screen.getByRole('button', { name: 'إغلاق بيانات المورد' });
+    const cancel = screen.getByRole('button', { name: 'إلغاء' });
+    expect(close).toBeDisabled();
+    expect(cancel).toBeDisabled();
+    fireEvent.click(close);
+    fireEvent.click(cancel);
+    expect(screen.getByRole('dialog', { name: 'إضافة مورد جديد' })).toBeInTheDocument();
+
+    await act(async () => resolveAdd({ success: false, error: 'supplier write rejected' }));
+    expect(screen.getByRole('button', { name: 'إلغاء' })).toBeEnabled();
+  });
+
   it('blocks repeated supplier payments while the first payment write is pending', async () => {
-    (getClientSession as jest.Mock).mockResolvedValue({
-      id: 'admin-1',
-      role: 'admin',
-      permissions: { can_view_suppliers: true, acc_can_process_cash_flow: true },
-    });
-    (hasUserPermissionSync as jest.Mock).mockImplementation((user: any, key: string) => user?.permissions?.[key] === true);
     let resolvePayment: (value: { success: boolean; error?: string }) => void = () => {};
     (addSupplierPaymentAction as jest.Mock).mockImplementation(() => new Promise(resolve => { resolvePayment = resolve; }));
 
-    render(<SuppliersPage />);
-    await screen.findByText('مورد مدين');
+    renderIsolatedSupplierDirectory();
     fireEvent.click(screen.getAllByRole('button', { name: 'سداد دفعة' })[0]);
     const paymentForm = screen.getByRole('button', { name: 'تأكيد السداد' }).closest('form') as HTMLFormElement;
 
@@ -213,16 +286,11 @@ describe('coverage-gap: supplier management UI permissions and interactions', ()
   });
 
   it('blocks repeated supplier deletes while the first destructive write is pending', async () => {
-    (getClientSession as jest.Mock).mockResolvedValue({
-      id: 'admin-1', role: 'admin', permissions: { can_view_suppliers: true },
-    });
-    (hasUserPermissionSync as jest.Mock).mockImplementation((user: any, key: string) => user?.permissions?.[key] === true);
     const confirmSpy = jest.spyOn(window, 'confirm').mockReturnValue(true);
     let resolveDelete: (value: { success: boolean; error?: string }) => void = () => {};
-    (deleteSupplierAction as jest.Mock).mockImplementation(() => new Promise(resolve => { resolveDelete = resolve; }));
+    const onDelete = jest.fn(() => new Promise<{ success: boolean; error?: string }>(resolve => { resolveDelete = resolve; }));
 
-    render(<SuppliersPage />);
-    await screen.findByText('مورد مدين');
+    renderIsolatedSupplierDirectory({ onDelete });
     const deleteButton = screen.getAllByTitle('حذف')[0];
 
     act(() => {
@@ -230,35 +298,31 @@ describe('coverage-gap: supplier management UI permissions and interactions', ()
       fireEvent.click(deleteButton);
     });
 
-    expect(deleteSupplierAction).toHaveBeenCalledTimes(1);
+    expect(onDelete).toHaveBeenCalledTimes(1);
     await act(async () => resolveDelete({ success: false, error: 'delete rejected' }));
     confirmSpy.mockRestore();
   });
 
-  it('keeps the last valid supplier view after a committed create when the post-save refresh fails, and allows retry', async () => {
-    (getClientSession as jest.Mock).mockResolvedValue({
-      id: 'admin-1', role: 'admin', permissions: { can_view_suppliers: true },
-    });
-    (hasUserPermissionSync as jest.Mock).mockImplementation((user: any, key: string) => user?.permissions?.[key] === true);
-    (addSupplierAction as jest.Mock).mockResolvedValue({ success: true, id: 3 });
-    (getSuppliersAction as jest.Mock)
-      .mockResolvedValueOnce({ success: true, data: suppliers })
-      .mockResolvedValueOnce({ success: false, error: 'refresh unavailable' })
-      .mockResolvedValueOnce({ success: true, data: [...suppliers, { id: 3, name_ar: 'مورد جديد', balance: 0 }] });
+  it('keeps the last supplier snapshot after a component create refresh fails and permits a later retry', async () => {
+    const onAdd = jest.fn().mockResolvedValue({ success: true, id: 3 });
+    const onRefresh = jest.fn()
+      .mockRejectedValueOnce(new Error('refresh unavailable'))
+      .mockResolvedValueOnce(undefined);
+    renderIsolatedSupplierDirectory({ onAdd, onRefresh });
 
-    render(<SuppliersPage />);
-    expect(await screen.findByText('مورد مدين')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /إضافة مورد جديد/ }));
     fireEvent.change(screen.getByPlaceholderText('مثال: شركة ابن سينا فارما'), { target: { value: 'مورد جديد' } });
     fireEvent.click(screen.getByRole('button', { name: 'حفظ البيانات' }));
 
-    await waitFor(() => expect(addSupplierAction).toHaveBeenCalledTimes(1));
-    expect(await screen.findByText('تعذر تحديث قائمة الموردين')).toBeInTheDocument();
+    await waitFor(() => expect(onRefresh).toHaveBeenCalledTimes(1));
     expect(screen.getByText('مورد مدين')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'إعادة تحميل الموردين' })).toBeInTheDocument();
+    expect(screen.getByText('مورد خالص')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'إضافة مورد جديد' })).not.toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole('button', { name: 'إعادة تحميل الموردين' }));
-    expect(await screen.findByText('مورد جديد')).toBeInTheDocument();
-    expect(getSuppliersAction).toHaveBeenCalledTimes(3);
+    fireEvent.click(screen.getByRole('button', { name: /إضافة مورد جديد/ }));
+    fireEvent.change(screen.getByPlaceholderText('مثال: شركة ابن سينا فارما'), { target: { value: 'مورد آخر' } });
+    fireEvent.click(screen.getByRole('button', { name: 'حفظ البيانات' }));
+    await waitFor(() => expect(onRefresh).toHaveBeenCalledTimes(2));
+    expect(onAdd).toHaveBeenCalledTimes(2);
   });
 });

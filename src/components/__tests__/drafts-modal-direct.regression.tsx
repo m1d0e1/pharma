@@ -20,7 +20,7 @@ describe('DraftsModal direct behavior', () => {
   it('stays unmounted while closed and exposes loading and empty states when open', () => {
     const props = { onClose: jest.fn(), onLoadDraft: jest.fn() };
     const { rerender } = render(<DraftsModal isOpen={false} drafts={[]} isLoadingDrafts={false} {...props} />);
-    expect(screen.queryByText('📁 المسودات المحفوظة')).not.toBeInTheDocument();
+    expect(screen.queryByText('المسودات المحفوظة')).not.toBeInTheDocument();
 
     rerender(<DraftsModal isOpen drafts={[]} isLoadingDrafts {...props} />);
     expect(screen.getByText('جاري تحميل المسودات...')).toBeInTheDocument();
@@ -34,7 +34,7 @@ describe('DraftsModal direct behavior', () => {
     const onLoadDraft = jest.fn();
     render(<DraftsModal isOpen drafts={[draft]} isLoadingDrafts={false} onClose={onClose} onLoadDraft={onLoadDraft} />);
 
-    const dialog = screen.getByRole('dialog', { name: '📁 المسودات المحفوظة' });
+    const dialog = screen.getByRole('dialog', { name: 'المسودات المحفوظة' });
     expect(dialog).toHaveAttribute('aria-modal', 'true');
     await waitFor(() => expect(screen.getByRole('button', { name: 'إغلاق المسودات' })).toHaveFocus());
 

@@ -49,6 +49,31 @@ describe('permission-aware navigation', () => {
     expect(screen.getAllByRole('link', { name: 'المبيعات والتحصيل' }).length).toBeGreaterThan(0);
   });
 
+  it('keeps the clinical interactions link independent from patient-record access', () => {
+    const { rerender } = render(<SidebarNav userRole="pharmacist" userPermissions={{
+      can_view_interactions: true,
+      can_view_patients: false,
+    }} />);
+    const desktop = screen.getByRole('navigation', { name: 'التنقل الرئيسي' });
+    expect(within(desktop).getByRole('link', { name: 'التفاعلات الدوائية' })).toHaveAttribute('href', '/interactions');
+    expect(within(screen.getByRole('navigation', { name: 'التنقل الرئيسي للجوال' }))
+      .getByRole('link', { name: 'التفاعلات الدوائية' })).toHaveAttribute('href', '/interactions');
+    expect(screen.queryByRole('link', { name: 'المرضى' })).not.toBeInTheDocument();
+
+    rerender(<SidebarNav userRole="pharmacist" userPermissions={{
+      can_view_interactions: false,
+      can_view_patients: true,
+    }} />);
+    expect(screen.queryByRole('link', { name: 'التفاعلات الدوائية' })).not.toBeInTheDocument();
+    expect(within(desktop).getByRole('link', { name: 'المرضى' })).toBeInTheDocument();
+
+    rerender(<SidebarNav userRole="pharmacist" userPermissions={{ can_view_patients: true }} />);
+    expect(screen.queryByRole('link', { name: 'التفاعلات الدوائية' })).not.toBeInTheDocument();
+
+    rerender(<SidebarNav userRole="owner" userPermissions={{}} />);
+    expect(within(desktop).getByRole('link', { name: 'التفاعلات الدوائية' })).toHaveAttribute('href', '/interactions');
+  });
+
   it('mounts one mobile nav outside a hidden sidebar and keeps More count deduplicated', async () => {
     const user = userEvent.setup();
     render(

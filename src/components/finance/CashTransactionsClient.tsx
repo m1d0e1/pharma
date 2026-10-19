@@ -73,6 +73,10 @@ export default function CashTransactionsClient({
         setLoadError(movRes.error || 'فشل تحميل حركة النقدية');
       }
       if (shiftRes.success) setCurrentShift(shiftRes.data || null);
+      else {
+        setCurrentShift(null);
+        setLoadError(shiftRes.error || 'فشل التحقق من الوردية الحالية');
+      }
     } catch {
       if (requestId !== loadRequestRef.current) return;
       setMovements([]);
@@ -233,7 +237,7 @@ export default function CashTransactionsClient({
         </div>
       </div>
 
-      {showForm.show && (
+      {showForm.show && !loading && !loadError && (
         <div
           ref={cashMovementDialogRef}
           className="fixed inset-0 bg-slate-950/65 z-[100] flex items-center justify-center p-3 sm:p-6 overflow-y-auto"
@@ -409,6 +413,7 @@ export default function CashTransactionsClient({
 function CashMovementForm({ type, currentShift, onClose }: { type: 'disbursement' | 'receipt', currentShift?: any, onClose: () => void }) {
   const [loading, setLoading] = useState(false);
   const submissionRef = useRef(false);
+  const postingIntentRef = useRef<{ fingerprint: string; requestId: string } | null>(null);
   const [formData, setFormData] = useState({
      amount: 0,
      date: format(new Date(), 'yyyy-MM-dd'),
@@ -457,20 +462,34 @@ function CashMovementForm({ type, currentShift, onClose }: { type: 'disbursement
      setLoading(true);
      try {
        const isExpense = type === 'disbursement' && ['operating_expenses', 'salaries', 'rent', 'electricity'].includes(formData.category);
+       const expenseData = {
+         category: formData.category === 'operating_expenses'
+           ? formData.sub_category || 'operating_expenses'
+           : formData.category,
+         amount: formData.amount,
+         description: formData.notes,
+         date: formData.date,
+         source_type: formData.source_type,
+         shift_id: formData.shift_id,
+       };
+       const postingData = isExpense ? expenseData : { ...formData, type };
+       const fingerprint = JSON.stringify(postingData);
+       if (postingIntentRef.current?.fingerprint !== fingerprint) {
+         postingIntentRef.current = { fingerprint, requestId: crypto.randomUUID() };
+       }
        const res = isExpense
          ? await addExpenseAction({
-             category: formData.category === 'operating_expenses'
-               ? formData.sub_category || 'operating_expenses'
-               : formData.category,
-             amount: formData.amount,
-             description: formData.notes,
-             date: formData.date,
-             source_type: formData.source_type,
-             shift_id: formData.shift_id,
+             ...expenseData,
+             request_id: postingIntentRef.current.requestId,
            })
-         : await createCashMovementAction({ ...formData, type });
+         : await createCashMovementAction({
+             ...formData,
+             type,
+             request_id: postingIntentRef.current.requestId,
+           });
 
        if (res.success) {
+          postingIntentRef.current = null;
           toast.success('تم تسجيل الحركة بنجاح');
           onClose();
        } else {

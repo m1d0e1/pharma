@@ -27,6 +27,7 @@ jest.mock('@/app/actions-client/purchases', () => ({
   addPurchaseInvoiceItemAction: jest.fn(),
   completePurchaseInvoiceAction: jest.fn(),
   checkSupplierPendingInvoiceAction: jest.fn(),
+  getDraftPurchaseInvoicesAction: jest.fn(),
   getPurchaseInvoiceDetailsAction: jest.fn(),
   getPurchaseInvoiceAction: jest.fn(),
   updateCompletedPurchaseInvoiceAction: jest.fn(),
@@ -69,6 +70,8 @@ describe('coverage-gap: purchase invoice keyboard shortcuts', () => {
       data: [{ id: 7, name_ar: 'مورد اختبار', balance: 0 }],
     });
     (checkSupplierPendingInvoiceAction as jest.Mock).mockResolvedValue({ success: true, hasPending: false });
+    const { getDraftPurchaseInvoicesAction } = jest.requireMock('@/app/actions-client/purchases');
+    (getDraftPurchaseInvoicesAction as jest.Mock).mockResolvedValue({ success: true, data: [] });
     (searchMasterDrugsAction as jest.Mock).mockResolvedValue({
       success: true,
       data: [{
@@ -97,6 +100,37 @@ describe('coverage-gap: purchase invoice keyboard shortcuts', () => {
 
     expect(preventDefault).toHaveBeenCalledTimes(1);
     expect(search).toHaveFocus();
+  });
+
+  it('Insert focuses and selects drug search without editing the invoice or submitting it', async () => {
+    render(<PurchaseInvoiceClient />);
+    const search = await screen.findByRole('textbox', { name: 'البحث عن صنف للشراء' }) as HTMLInputElement;
+    fireEvent.change(search, { target: { value: '123456' } });
+    const invoiceNumber = screen.getByLabelText('رقم الفاتورة');
+    invoiceNumber.focus();
+    fireEvent.keyDown(invoiceNumber, { key: 'Insert', code: 'Insert' });
+    expect(search).toHaveFocus();
+    expect(search.selectionStart).toBe(0);
+    expect(search.selectionEnd).toBe(search.value.length);
+    expect(createPurchaseInvoiceAction).not.toHaveBeenCalled();
+  });
+
+  it('ignores Insert during IME composition rather than interrupting purchase form input', async () => {
+    render(<PurchaseInvoiceClient />);
+    const invoiceNumber = await screen.findByLabelText('رقم الفاتورة');
+    invoiceNumber.focus();
+    fireEvent.keyDown(invoiceNumber, { key: 'Insert', code: 'Insert', isComposing: true });
+    expect(invoiceNumber).toHaveFocus();
+    expect(screen.getByLabelText('البحث عن صنف للشراء')).not.toHaveFocus();
+  });
+
+  it('does not steal Insert while a purchase dialog is open', async () => {
+    render(<PurchaseInvoiceClient />);
+    const search = await screen.findByRole('textbox', { name: 'البحث عن صنف للشراء' });
+    fireEvent.click(screen.getByRole('button', { name: 'استرجاع المسودات' }));
+    await screen.findByRole('dialog');
+    fireEvent.keyDown(window, { key: 'Insert', code: 'Insert' });
+    expect(search).not.toHaveFocus();
   });
 
   it('F2 honors the discard confirmation before starting a new purchase invoice', async () => {

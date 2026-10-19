@@ -34,7 +34,9 @@ beforeEach(() => {
 
 it('warns on quick-add barcode conflict, allows correcting a failed authorization, and returns the replacement to purchase', async () => {
   (getUnitsAction as jest.Mock).mockResolvedValue({ success: true, data: [] });
-  (addMasterDrugAction as jest.Mock).mockResolvedValue({ success: false, error: 'Barcode already used' });
+  // Mirror the actual addMasterDrugAction ownership denial, not an arbitrary
+  // message containing "barcode" that could describe a transient service error.
+  (addMasterDrugAction as jest.Mock).mockResolvedValue({ success: false, error: 'Barcode is already assigned to another drug' });
   (findDrugBarcodeConflict as jest.Mock).mockResolvedValue({ id: 10, trade_name: 'Old medicine', barcode: '123' });
   (replaceDrugAction as jest.Mock).mockResolvedValueOnce({ success: false, error: 'Wrong password' }).mockResolvedValueOnce({ success: true, id: 21, backupPath: 'backups/test.db' });
   (getReplacementDrug as jest.Mock).mockResolvedValue({ id: 21, trade_name: 'Correct medicine', large_unit: 'box', large_to_medium: 2, barcode: '123', official_price: 40 });
@@ -356,7 +358,7 @@ it('uses the replacement record already supplied by the child after a committed 
   const old = { id: 10, trade_name: 'Old medicine', barcode: '123' };
   const saved = { id: 21, trade_name: 'Correct medicine', large_unit: 'box', large_to_medium: 2, barcode: '123', official_price: 40 };
   (getUnitsAction as jest.Mock).mockResolvedValue({ success: true, data: [] });
-  (addMasterDrugAction as jest.Mock).mockResolvedValue({ success: false, error: 'Barcode already used' });
+  (addMasterDrugAction as jest.Mock).mockResolvedValue({ success: false, error: 'Barcode is already assigned to another drug' });
   (findDrugBarcodeConflict as jest.Mock).mockResolvedValue(old);
   (replaceDrugAction as jest.Mock).mockResolvedValue({ success: true, id: 21, backupPath: 'backups/test.db' });
   (getReplacementDrug as jest.Mock)

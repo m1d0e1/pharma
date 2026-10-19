@@ -225,9 +225,6 @@ CREATE INDEX IF NOT EXISTS idx_refill_reminders_notified ON refill_reminders(is_
 -- PHARMACIES INDEXES
 -- ============================================
 
--- Index for subscription_status queries
-CREATE INDEX IF NOT EXISTS idx_pharmacies_subscription_status ON pharmacies(subscription_status);
-
 -- Index for last_sync_at queries
 CREATE INDEX IF NOT EXISTS idx_pharmacies_last_sync ON pharmacies(last_sync_at);
 

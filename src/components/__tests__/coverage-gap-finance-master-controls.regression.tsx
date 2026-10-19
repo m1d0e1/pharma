@@ -138,6 +138,7 @@ describe('coverage gap: finance master-data controls', () => {
       account_number: undefined,
       branch: undefined,
       current_balance: 0,
+      request_id: expect.any(String),
     }));
     expect(toast.error).toHaveBeenCalledWith('bank rejected');
     expect(screen.getByRole('heading', { name: 'إضافة حساب بنكي جديد' })).toBeInTheDocument();
@@ -653,6 +654,67 @@ describe('coverage gap: finance master-data controls', () => {
       pending.resolve({ success: false, error: 'rejected' });
       await pending.promise;
     });
+  });
+
+  it('preserves an in-flight expense draft and its nonce when definitions arrive late', async () => {
+    const expenses = await import('@/app/actions-client/expenses');
+    const definitions = deferred<any>();
+    const posting = deferred<any>();
+    (finance.getExpenseDefinitionsAction as jest.Mock).mockReturnValueOnce(definitions.promise);
+    (expenses.addExpenseAction as jest.Mock)
+      .mockReturnValueOnce(posting.promise)
+      .mockResolvedValueOnce({ success: false, error: 'duplicate retry refused natively' });
+    render(<AccountsManagementClient initialTab="expenses" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /إضافة مصروف \(F4\)/ }));
+    const amount = screen.getByRole('spinbutton', { name: 'قيمة المصروف (ج.م) *' });
+    const description = screen.getByPlaceholderText('اكتب بيان أو سبب المصروف...');
+    const category = screen.getByRole('combobox', { name: 'تصنيف المصروف *' });
+    fireEvent.change(amount, { target: { value: '85.25' } });
+    fireEvent.change(description, { target: { value: 'Original pending expense' } });
+    expect(category).toHaveValue('other');
+    fireEvent.click(screen.getByRole('button', { name: 'حفظ المصروف' }));
+    await waitFor(() => expect(expenses.addExpenseAction).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      definitions.resolve({ success: true, data: [
+        { id: 1, code: 'rent', name_ar: 'إيجار' },
+        { id: 2, code: 'other', name_ar: 'مصروفات أخرى' },
+      ] });
+      await definitions.promise;
+    });
+    expect(amount).toHaveValue(85.25);
+    expect(description).toHaveValue('Original pending expense');
+    expect(category).toHaveValue('other');
+
+    await act(async () => {
+      posting.resolve({ success: false, error: 'Native acknowledgement unavailable' });
+      await posting.promise;
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'حفظ المصروف' }));
+    await waitFor(() => expect(expenses.addExpenseAction).toHaveBeenCalledTimes(2));
+    const [first, retry] = (expenses.addExpenseAction as jest.Mock).mock.calls.map(([payload]) => payload);
+    expect(first).toEqual(expect.objectContaining({
+      category: 'other', amount: 85.25, description: 'Original pending expense',
+      request_id: expect.any(String),
+    }));
+    expect(retry).toEqual(first);
+  });
+
+  it('adopts late expense category definitions only while the modal draft is untouched', async () => {
+    const definitions = deferred<any>();
+    (finance.getExpenseDefinitionsAction as jest.Mock).mockReturnValueOnce(definitions.promise);
+    render(<AccountsManagementClient initialTab="expenses" />);
+    fireEvent.click(await screen.findByRole('button', { name: /إضافة مصروف \(F4\)/ }));
+    const category = screen.getByRole('combobox', { name: 'تصنيف المصروف *' });
+    expect(category).toHaveValue('other');
+
+    await act(async () => {
+      definitions.resolve({ success: true, data: [{ id: 1, code: 'rent', name_ar: 'إيجار' }] });
+      await definitions.promise;
+    });
+    expect(category).toHaveValue('rent');
+    expect(screen.getByRole('spinbutton', { name: 'قيمة المصروف (ج.م) *' })).toHaveValue(null);
   });
 
   it('keeps commercial-paper creation open when cancel is clicked while persistence is pending', async () => {

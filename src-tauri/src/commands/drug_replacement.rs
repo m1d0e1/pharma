@@ -1,8 +1,12 @@
+use super::auth::LocalSessionState;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use sqlx::{sqlite::SqliteConnectOptions, Connection, QueryBuilder, Row, Sqlite, SqliteConnection, Transaction};
+use sqlx::{
+    sqlite::SqliteConnectOptions, Connection, QueryBuilder, Row, Sqlite, SqliteConnection,
+    Transaction,
+};
 use std::collections::HashSet;
-use tauri::Manager;
+use tauri::{Manager, State};
 
 #[derive(Deserialize)]
 pub struct Replacement {
@@ -44,8 +48,13 @@ const REFS: &[(&str, &[&str])] = &[
     ("drug_catalog_field_policies", &["master_drug_id"]),
 ];
 
-fn ensure_replacement_permission(role: Option<&str>, permissions: Option<&str>) -> Result<(), String> {
-    if !role.is_some_and(|role| matches!(role.trim().to_ascii_lowercase().as_str(), "admin" | "owner")) {
+fn ensure_replacement_permission(
+    role: Option<&str>,
+    permissions: Option<&str>,
+) -> Result<(), String> {
+    if !role
+        .is_some_and(|role| matches!(role.trim().to_ascii_lowercase().as_str(), "admin" | "owner"))
+    {
         return Err("يلزم حساب مدير أو مالك نشط".into());
     }
     if !crate::commands::critical::user_has_permission(
@@ -55,6 +64,46 @@ fn ensure_replacement_permission(role: Option<&str>, permissions: Option<&str>) 
         false,
     ) {
         return Err("Unauthorized: can_manage_inventory permission required".into());
+    }
+    Ok(())
+}
+
+/// Master-drug reconciliation rewrites foreign keys in *all* historical
+/// tables, not only one branch's records. It is safe for the existing
+/// single-tenant workflow, but cannot be authorized by a branch-level admin
+/// in a mixed-pharmacy SQLite file. Do not pretend filtering one table is
+/// sufficient: it would leave cross-table references pointing to a deleted
+/// master row. A separately approved global-operator policy is required.
+async fn require_single_tenant_catalog_scope(
+    conn: &mut SqliteConnection,
+    actor_id: &str,
+) -> Result<(), String> {
+    let (_, pharmacy_id) = crate::commands::critical::active_generic_actor(conn, actor_id).await?;
+    let foreign: i64 = sqlx::query_scalar(
+        "SELECT CASE WHEN \
+         EXISTS(SELECT 1 FROM users WHERE COALESCE(NULLIF(TRIM(pharmacy_id),''),'local_default')<>?) \
+         OR EXISTS(SELECT 1 FROM inventory WHERE COALESCE(NULLIF(TRIM(pharmacy_id),''),'local_default')<>?) \
+         OR EXISTS(SELECT 1 FROM sales_invoices WHERE COALESCE(NULLIF(TRIM(pharmacy_id),''),'local_default')<>?) \
+         OR EXISTS(SELECT 1 FROM purchase_invoices WHERE COALESCE(NULLIF(TRIM(pharmacy_id),''),'local_default')<>?) \
+         OR EXISTS(SELECT 1 FROM returns WHERE COALESCE(NULLIF(TRIM(pharmacy_id),''),'local_default')<>?) \
+         OR EXISTS(SELECT 1 FROM shortages WHERE COALESCE(NULLIF(TRIM(pharmacy_id),''),'local_default')<>?) \
+         OR EXISTS(SELECT 1 FROM purchase_orders WHERE COALESCE(NULLIF(TRIM(pharmacy_id),''),'local_default')<>?) \
+         OR EXISTS(SELECT 1 FROM shifts WHERE COALESCE(NULLIF(TRIM(pharmacy_id),''),'local_default')<>?) \
+         THEN 1 ELSE 0 END",
+    )
+    .bind(&pharmacy_id)
+    .bind(&pharmacy_id)
+    .bind(&pharmacy_id)
+    .bind(&pharmacy_id)
+    .bind(&pharmacy_id)
+    .bind(&pharmacy_id)
+    .bind(&pharmacy_id)
+    .bind(&pharmacy_id)
+    .fetch_one(conn)
+    .await
+    .map_err(|e| e.to_string())?;
+    if foreign != 0 {
+        return Err("Global drug reconciliation is blocked in a multi-pharmacy database; a separately authorized cross-pharmacy migration is required".into());
     }
     Ok(())
 }
@@ -69,10 +118,12 @@ async fn ensure_unit_conversion_edit_permission(
     let Some(edits) = edits.and_then(Value::as_object) else {
         return Ok(());
     };
-    if !edits.keys().any(|field| matches!(
-        field.as_str(),
-        "large_unit" | "medium_unit" | "small_unit" | "large_to_medium" | "medium_to_small"
-    )) {
+    if !edits.keys().any(|field| {
+        matches!(
+            field.as_str(),
+            "large_unit" | "medium_unit" | "small_unit" | "large_to_medium" | "medium_to_small"
+        )
+    }) {
         return Ok(());
     }
     let current = sqlx::query(
@@ -86,7 +137,9 @@ async fn ensure_unit_conversion_edit_permission(
 
     let mut changed = false;
     for field in ["large_unit", "medium_unit", "small_unit"] {
-        let Some(value) = edits.get(field) else { continue; };
+        let Some(value) = edits.get(field) else {
+            continue;
+        };
         let requested = if value.is_null() {
             "".to_string()
         } else {
@@ -105,7 +158,9 @@ async fn ensure_unit_conversion_edit_permission(
         changed |= requested != existing;
     }
     for field in ["large_to_medium", "medium_to_small"] {
-        let Some(value) = edits.get(field) else { continue; };
+        let Some(value) = edits.get(field) else {
+            continue;
+        };
         let requested = if value.is_null() || value.as_str() == Some("") {
             1.0
         } else {
@@ -162,9 +217,9 @@ async fn ensure_historical_unit_labels_safe(
     let rows = sqlx::query(&format!(
         "SELECT id,medium_unit,small_unit FROM master_drugs WHERE id IN ({id_list})"
     ))
-        .fetch_all(&mut **tx)
-        .await
-        .map_err(|e| e.to_string())?;
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| e.to_string())?;
     if rows.len() != ids.len() {
         return Err("أحد الأصناف تغيّر أو لم يعد موجوداً؛ حدّث شاشة التعارض".into());
     }
@@ -217,7 +272,10 @@ async fn ensure_historical_unit_labels_safe(
     // scan historical sales/returns while holding the write transaction.
     let mut query = QueryBuilder::<Sqlite>::new("WITH candidates(drug_id,field,label) AS (");
     query.push_values(candidates.iter(), |mut values, (drug_id, field, label)| {
-        values.push_bind(*drug_id).push_bind(*field).push_bind(label);
+        values
+            .push_bind(*drug_id)
+            .push_bind(*field)
+            .push_bind(label);
     });
     query.push(
         r#")
@@ -287,13 +345,83 @@ fn quote(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
+// Barcodes are not product identity: a wrong barcode can be reused across
+// different bottle volumes or drug strengths. Destructive catalog replacement
+// must fail closed when the two named identities explicitly disagree on their
+// product-defining numbers (e.g. Vatika 180 bl versus Vatica 45 bl).
+fn name_identity_numbers(arabic: &str, english: &str) -> HashSet<String> {
+    let mut numbers = HashSet::new();
+    let mut digits = String::new();
+    for c in arabic.chars().chain(std::iter::once(' ')).chain(english.chars())
+        .chain(std::iter::once(' '))
+    {
+        let ascii_digit = match c {
+            '0'..='9' => Some(c),
+            '٠'..='٩' => char::from_u32('0' as u32 + (c as u32 - '٠' as u32)),
+            '۰'..='۹' => char::from_u32('0' as u32 + (c as u32 - '۰' as u32)),
+            _ => None,
+        };
+        if let Some(value) = ascii_digit {
+            digits.push(value);
+        } else if !digits.is_empty() {
+            let value = digits.trim_start_matches('0');
+            numbers.insert(if value.is_empty() { "0" } else { value }.to_owned());
+            digits.clear();
+        }
+    }
+    numbers
+}
+
+async fn reject_distinct_named_pack_sizes(
+    tx: &mut Transaction<'_, Sqlite>,
+    source_id: i64,
+    target_id: Option<i64>,
+    new_drug: Option<&Value>,
+    edits: Option<&Value>,
+) -> Result<(), String> {
+    let source = sqlx::query("SELECT trade_name,trade_name_en FROM master_drugs WHERE id=?")
+        .bind(source_id).fetch_one(&mut **tx).await.map_err(|e| e.to_string())?;
+    let source_numbers = name_identity_numbers(
+        source.try_get::<Option<String>, _>("trade_name").unwrap_or(None).as_deref().unwrap_or(""),
+        source.try_get::<Option<String>, _>("trade_name_en").unwrap_or(None).as_deref().unwrap_or(""),
+    );
+    let (target_ar, target_en) = if let Some(id) = target_id {
+        let row = sqlx::query("SELECT trade_name,trade_name_en FROM master_drugs WHERE id=?")
+            .bind(id).fetch_optional(&mut **tx).await.map_err(|e| e.to_string())?
+            .ok_or_else(|| "الصنف البديل غير موجود".to_string())?;
+        (row.try_get::<Option<String>, _>("trade_name").unwrap_or(None).unwrap_or_default(),
+         row.try_get::<Option<String>, _>("trade_name_en").unwrap_or(None).unwrap_or_default())
+    } else {
+        let proposed = new_drug.ok_or("بيانات الصنف البديل غير صحيحة")?;
+        (proposed.get("trade_name").and_then(Value::as_str).unwrap_or("").to_string(),
+         proposed.get("trade_name_en").and_then(Value::as_str).unwrap_or("").to_string())
+    };
+    let candidate_numbers = name_identity_numbers(&target_ar, &target_en);
+    // Final edits are part of the same destructive transaction. A reviewed
+    // 180-ml destination must not become a 45-ml destination after this check.
+    let final_ar = edits.and_then(|e| e.get("trade_name")).and_then(Value::as_str).unwrap_or(&target_ar);
+    let final_en = edits.and_then(|e| e.get("trade_name_en")).and_then(Value::as_str).unwrap_or(&target_en);
+    let final_numbers = name_identity_numbers(final_ar, final_en);
+    let disagree = |a: &HashSet<String>, b: &HashSet<String>| {
+        !a.is_empty() && !b.is_empty() && a != b
+    };
+    if disagree(&source_numbers, &candidate_numbers)
+        || disagree(&source_numbers, &final_numbers)
+        || disagree(&candidate_numbers, &final_numbers) {
+        return Err("حجم العبوة أو رقم التركيز مختلف بين الصنفين؛ لا يمكن نقل روابط المخزون أو حذف القديم. صحح الباركود وأبقِ الأصناف منفصلة".into());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn replace_master_drug(
     app: tauri::AppHandle,
+    session: State<'_, LocalSessionState>,
     user_id: String,
     password: String,
     payload: Replacement,
 ) -> Result<Value, String> {
+    let _actor_guard = session.authorize_actor(&user_id).await?;
     let path = app
         .path()
         .app_data_dir()
@@ -308,17 +436,18 @@ pub async fn replace_master_drug(
     )
     .await
     .map_err(|e| e.to_string())?;
-    let permission_user = sqlx::query(
-        "SELECT role, permissions FROM users WHERE id=? AND is_active=1",
-    )
-    .bind(&user_id)
-    .fetch_optional(&mut permission_conn)
-    .await
-    .map_err(|e| e.to_string())?
-    .ok_or_else(|| "يلزم حساب مدير أو مالك نشط".to_string())?;
+    let permission_user =
+        sqlx::query("SELECT role, permissions FROM users WHERE id=? AND is_active=1")
+            .bind(&user_id)
+            .fetch_optional(&mut permission_conn)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "يلزم حساب مدير أو مالك نشط".to_string())?;
     let role: Option<String> = permission_user.try_get("role").unwrap_or(None);
     let permissions: Option<String> = permission_user.try_get("permissions").unwrap_or(None);
     ensure_replacement_permission(role.as_deref(), permissions.as_deref())?;
+
+    require_single_tenant_catalog_scope(&mut permission_conn, &user_id).await?;
     permission_conn.close().await.map_err(|e| e.to_string())?;
     let backup = crate::database_backup::create_backup(&path).await?;
     let mut conn = SqliteConnection::connect_with(
@@ -344,10 +473,12 @@ pub async fn replace_master_drug(
 #[tauri::command]
 pub async fn reconcile_master_drug_group(
     app: tauri::AppHandle,
+    session: State<'_, LocalSessionState>,
     user_id: String,
     password: String,
     payload: GroupReplacement,
 ) -> Result<Value, String> {
+    let _actor_guard = session.authorize_actor(&user_id).await?;
     let path = app
         .path()
         .app_data_dir()
@@ -359,17 +490,19 @@ pub async fn reconcile_master_drug_group(
     )
     .await
     .map_err(|e| e.to_string())?;
-    let permission_user = sqlx::query(
-        "SELECT role, permissions FROM users WHERE id=? AND is_active=1",
-    )
-    .bind(&user_id)
-    .fetch_optional(&mut permission_conn)
-    .await
-    .map_err(|e| e.to_string())?
-    .ok_or_else(|| "يلزم حساب مدير أو مالك نشط".to_string())?;
+    let permission_user =
+        sqlx::query("SELECT role, permissions FROM users WHERE id=? AND is_active=1")
+            .bind(&user_id)
+            .fetch_optional(&mut permission_conn)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "يلزم حساب مدير أو مالك نشط".to_string())?;
     let role: Option<String> = permission_user.try_get("role").unwrap_or(None);
     let permissions: Option<String> = permission_user.try_get("permissions").unwrap_or(None);
     ensure_replacement_permission(role.as_deref(), permissions.as_deref())?;
+    // Refuse global catalog mutations before creating a full database backup.
+    // The write transaction independently rechecks this scope to close races.
+    require_single_tenant_catalog_scope(&mut permission_conn, &user_id).await?;
     permission_conn.close().await.map_err(|e| e.to_string())?;
     let backup = crate::database_backup::create_backup(&path).await?;
     let mut conn = SqliteConnection::connect_with(
@@ -395,10 +528,12 @@ pub async fn reconcile_master_drug_group(
 #[tauri::command]
 pub async fn correct_drug_barcode_conflict(
     app: tauri::AppHandle,
+    session: State<'_, LocalSessionState>,
     user_id: String,
     password: String,
     payload: BarcodeCorrection,
 ) -> Result<Value, String> {
+    let _actor_guard = session.authorize_actor(&user_id).await?;
     let path = app
         .path()
         .app_data_dir()
@@ -410,17 +545,19 @@ pub async fn correct_drug_barcode_conflict(
     )
     .await
     .map_err(|e| e.to_string())?;
-    let permission_user = sqlx::query(
-        "SELECT role, permissions FROM users WHERE id=? AND is_active=1",
-    )
-    .bind(&user_id)
-    .fetch_optional(&mut permission_conn)
-    .await
-    .map_err(|e| e.to_string())?
-    .ok_or_else(|| "يلزم حساب مدير أو مالك نشط".to_string())?;
+    let permission_user =
+        sqlx::query("SELECT role, permissions FROM users WHERE id=? AND is_active=1")
+            .bind(&user_id)
+            .fetch_optional(&mut permission_conn)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "يلزم حساب مدير أو مالك نشط".to_string())?;
     let role: Option<String> = permission_user.try_get("role").unwrap_or(None);
     let permissions: Option<String> = permission_user.try_get("permissions").unwrap_or(None);
     ensure_replacement_permission(role.as_deref(), permissions.as_deref())?;
+    // A rejected mixed-pharmacy barcode fix must not create a full backup.
+    // Recheck again inside correct_barcode_conflict_tx before touching rows.
+    require_single_tenant_catalog_scope(&mut permission_conn, &user_id).await?;
     permission_conn.close().await.map_err(|e| e.to_string())?;
     let backup = crate::database_backup::create_backup(&path).await?;
     let mut conn = SqliteConnection::connect_with(
@@ -478,14 +615,15 @@ async fn correct_barcode_conflict_tx(
     let permissions: Option<String> = admin.try_get("permissions").unwrap_or(None);
     ensure_replacement_permission(role.as_deref(), permissions.as_deref())?;
 
-    let current_barcode: Option<String> = sqlx::query_scalar(
-        "SELECT barcode FROM master_drugs WHERE id=?",
-    )
-    .bind(payload.drug_id)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(|e| e.to_string())?
-    .ok_or_else(|| "الصنف لم يعد موجوداً؛ حدّث شاشة التعارض".to_string())?;
+    require_single_tenant_catalog_scope(&mut **tx, user_id).await?;
+
+    let current_barcode: Option<String> =
+        sqlx::query_scalar("SELECT barcode FROM master_drugs WHERE id=?")
+            .bind(payload.drug_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "الصنف لم يعد موجوداً؛ حدّث شاشة التعارض".to_string())?;
 
     let selected_owns_old: i64 = sqlx::query_scalar(
         "SELECT (EXISTS(SELECT 1 FROM master_drugs WHERE id=? AND TRIM(COALESCE(barcode,''))=? COLLATE NOCASE) OR EXISTS(SELECT 1 FROM inventory WHERE drug_id=? AND (quantity IS NULL OR quantity != 0) AND TRIM(COALESCE(barcode,''))=? COLLATE NOCASE))",
@@ -593,7 +731,11 @@ async fn replace_group_tx(
     if !payload.confirmed_same_product || payload.target_id <= 0 || payload.source_ids.is_empty() {
         return Err("يلزم تأكيد تطابق كل الأصناف واختيار صنف نهائي واحد".into());
     }
-    if payload.source_ids.iter().any(|id| *id <= 0 || *id == payload.target_id) {
+    if payload
+        .source_ids
+        .iter()
+        .any(|id| *id <= 0 || *id == payload.target_id)
+    {
         return Err("قائمة الأصناف المطلوب دمجها غير صحيحة".into());
     }
     let mut source_ids = payload.source_ids.clone();
@@ -604,7 +746,11 @@ async fn replace_group_tx(
     }
     let mut all_ids = source_ids.clone();
     all_ids.push(payload.target_id);
-    let id_list = all_ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+    let id_list = all_ids
+        .iter()
+        .map(i64::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
     let found: i64 = sqlx::query_scalar(&format!(
         "SELECT COUNT(*) FROM master_drugs WHERE id IN ({id_list})"
     ))
@@ -652,13 +798,8 @@ async fn replace_group_tx(
         return Err("تغيّر تعارض الباركود منذ فتح الشاشة؛ حدّث المراجعة قبل الدمج".into());
     }
 
-    ensure_historical_unit_labels_safe(
-        tx,
-        &all_ids,
-        payload.target_id,
-        payload.edits.as_ref(),
-    )
-    .await?;
+    ensure_historical_unit_labels_safe(tx, &all_ids, payload.target_id, payload.edits.as_ref())
+        .await?;
 
     for source_id in &source_ids {
         replace_tx_with_allowed_collisions(
@@ -694,19 +835,18 @@ async fn replace_tx_with_allowed_collisions(
     allow_reviewed_conversion_edits: bool,
     historical_unit_preflight_done: bool,
 ) -> Result<i64, String> {
-    let admin = sqlx::query(
-        "SELECT role, permissions FROM users WHERE id=? AND is_active=1",
-    )
-    .bind(user_id)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(|e| e.to_string())?;
+    let admin = sqlx::query("SELECT role, permissions FROM users WHERE id=? AND is_active=1")
+        .bind(user_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|e| e.to_string())?;
     let Some(admin) = admin else {
         return Err("يلزم حساب مدير أو مالك نشط".into());
     };
     let role: Option<String> = admin.try_get("role").unwrap_or(None);
     let permissions: Option<String> = admin.try_get("permissions").unwrap_or(None);
     ensure_replacement_permission(role.as_deref(), permissions.as_deref())?;
+    require_single_tenant_catalog_scope(&mut **tx, user_id).await?;
     if !payload.confirmed_same_product
         || payload.source_id <= 0
         || payload.target_id.is_some() == payload.new_drug.is_some()
@@ -722,6 +862,7 @@ async fn replace_tx_with_allowed_collisions(
     if locked.rows_affected() != 1 {
         return Err("الصنف القديم غير موجود؛ حدّث القائمة".into());
     }
+    reject_distinct_named_pack_sizes(tx, payload.source_id, payload.target_id, payload.new_drug.as_ref(), payload.edits.as_ref()).await?;
     let target_id = if let Some(id) = payload.target_id {
         id
     } else {
@@ -937,11 +1078,20 @@ async fn replace_tx_with_allowed_collisions(
     allowed_ids.extend(allowed_collision_ids.iter().copied().filter(|id| *id > 0));
     allowed_ids.sort_unstable();
     allowed_ids.dedup();
-    let allowed = allowed_ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+    let allowed = allowed_ids
+        .iter()
+        .map(i64::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
     let collision_sql = format!("WITH codes AS (SELECT barcode FROM master_drugs WHERE id IN (?,?) UNION SELECT barcode FROM inventory WHERE drug_id IN (?,?) AND (quantity IS NULL OR quantity != 0)), owners AS (SELECT id drug_id,barcode FROM master_drugs UNION SELECT drug_id,barcode FROM inventory WHERE quantity IS NULL OR quantity != 0) SELECT COUNT(*) FROM owners o JOIN codes c ON TRIM(o.barcode)=TRIM(c.barcode) COLLATE NOCASE WHERE TRIM(COALESCE(c.barcode,''))!='' AND o.drug_id NOT IN ({allowed})");
     let collision: i64 = sqlx::query_scalar(&collision_sql)
-        .bind(payload.source_id).bind(target_id).bind(payload.source_id).bind(target_id)
-        .fetch_one(&mut **tx).await.map_err(|e| e.to_string())?;
+        .bind(payload.source_id)
+        .bind(target_id)
+        .bind(payload.source_id)
+        .bind(target_id)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|e| e.to_string())?;
     if collision > 0 {
         return Err("الباركود مرتبط بصنف ثالث؛ يلزم تصحيح التعارض أولاً".into());
     }
@@ -1113,7 +1263,13 @@ async fn replace_tx_with_allowed_collisions(
         if !tables.iter().any(|t| t == table) {
             continue;
         }
-        if matches!(*table, "drug_catalog_links" | "drug_catalog_field_policies" | "drug_indications" | "drug_alternatives") {
+        if matches!(
+            *table,
+            "drug_catalog_links"
+                | "drug_catalog_field_policies"
+                | "drug_indications"
+                | "drug_alternatives"
+        ) {
             continue;
         }
         for column in *columns {
@@ -1349,6 +1505,12 @@ mod tests {
         let mut tx = db.begin().await.unwrap();
         crate::schema::ensure_compatibility(&mut tx).await.unwrap();
         tx.commit().await.unwrap();
+        sqlx::raw_sql(include_str!(
+            "../../migrations/042_purchase_posting_events.sql"
+        ))
+        .execute(&mut db)
+        .await
+        .unwrap();
         sqlx::raw_sql(r#"INSERT INTO users(id,username,role,permissions,is_active) VALUES('admin','replacement-admin','admin','{"can_view_purchases":true,"can_modify_unit_conversion":true,"can_manage_inventory":true}',1),('cashier','replacement-cashier','cashier','{}',1) ON CONFLICT(id) DO UPDATE SET role=excluded.role,permissions=excluded.permissions,is_active=1;
           INSERT INTO master_drugs(id,trade_name,barcode,official_price,large_to_medium,notes) VALUES(10,'Old name','123',20,2,'keep'),(20,'Correct name',NULL,25,2,NULL);
           INSERT INTO inventory(id,drug_id,pharmacy_id,quantity,cost_price,local_selling_price,strips_per_box,barcode,expiry_date,batch_number) VALUES('old-lot',10,'local_default',1.5,10,20,2,'123','2030-01-01','old'),('target-lot',20,'local_default',0.5,11,22,2,NULL,'2030-02-01','other');
@@ -1359,6 +1521,10 @@ mod tests {
           INSERT INTO suppliers(id,name_ar) VALUES(1,'Supplier');
           INSERT INTO shortages(drug_id,requested_quantity,notes) VALUES(10,3,'keep request');
           INSERT INTO cloud_drug_mappings(cloud_id,local_drug_id,last_cloud_name) VALUES(555,10,'Old name');"#).execute(&mut db).await.unwrap();
+        sqlx::query("UPDATE users SET pharmacy_id='local_default' WHERE id='admin'")
+            .execute(&mut db)
+            .await
+            .unwrap();
         db
     }
     fn payload(target: Option<i64>, new_drug: Option<Value>) -> Replacement {
@@ -1369,6 +1535,238 @@ mod tests {
             edits: None,
             confirmed_same_product: true,
         }
+    }
+
+    #[tokio::test]
+    async fn edited_final_45_name_must_not_relabel_existing_180_lots_during_replacement() {
+        let mut db = fixture().await;
+        sqlx::raw_sql("UPDATE master_drugs SET trade_name='Vatika 180 bottle',trade_name_en='Vatika 180 ml' WHERE id IN (10,20);")
+            .execute(&mut db).await.unwrap();
+        let mut request = payload(Some(20), None);
+        request.edits = Some(json!({"trade_name":"Vatica 45 bottle", "trade_name_en":"Vatica 45 ml"}));
+        let mut tx = db.begin().await.unwrap();
+        let error = replace_tx(&mut tx, "admin", request).await.unwrap_err();
+        tx.rollback().await.unwrap();
+        assert!(error.contains("حجم العبوة"), "expected pack identity rejection, got: {error}");
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT drug_id FROM inventory WHERE id='old-lot'")
+            .fetch_one(&mut db).await.unwrap(), 10);
+        assert_eq!(sqlx::query_scalar::<_, String>("SELECT trade_name_en FROM master_drugs WHERE id=20")
+            .fetch_one(&mut db).await.unwrap(), "Vatika 180 ml");
+    }
+
+    #[tokio::test]
+    async fn grouped_180_bottle_reconciliation_must_reject_final_45_bottle_name() {
+        let mut db = fixture().await;
+        sqlx::raw_sql("UPDATE master_drugs SET trade_name='Vatika 180 bottle',trade_name_en='Vatika 180 ml',barcode='123' WHERE id IN (10,20); \
+            INSERT INTO master_drugs(id,trade_name,trade_name_en,barcode,official_price,large_to_medium) VALUES(30,'Vatika 180 bottle','Vatika 180 ml','123',25,2);")
+            .execute(&mut db).await.unwrap();
+        let mut tx = db.begin().await.unwrap();
+        let error = replace_group_tx(&mut tx, "admin", GroupReplacement {
+            source_ids: vec![10,30], target_id: 20,
+            edits: Some(json!({"trade_name":"Vatica 45 bottle", "trade_name_en":"Vatica 45 ml"})),
+            confirmed_same_product: true,
+        }).await.unwrap_err();
+        tx.rollback().await.unwrap();
+        assert!(error.contains("حجم العبوة"), "unexpected group rejection: {error}");
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT drug_id FROM inventory WHERE id='old-lot'")
+            .fetch_one(&mut db).await.unwrap(), 10);
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM master_drugs WHERE id IN (10,20,30)")
+            .fetch_one(&mut db).await.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn same_size_final_spelling_edit_still_preserves_legitimate_lot_transfer() {
+        let mut db = fixture().await;
+        sqlx::raw_sql("UPDATE master_drugs SET trade_name='Vatika 180 bottle',trade_name_en='Vatika 180 ml' WHERE id IN (10,20);")
+            .execute(&mut db).await.unwrap();
+        let mut request = payload(Some(20), None);
+        request.edits = Some(json!({"trade_name":"Vatica 180 bottle", "trade_name_en":"Vatica 180 ml"}));
+        let mut tx = db.begin().await.unwrap();
+        assert_eq!(replace_tx(&mut tx, "admin", request).await.unwrap(), 20);
+        tx.commit().await.unwrap();
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT drug_id FROM inventory WHERE id='old-lot'")
+            .fetch_one(&mut db).await.unwrap(), 20);
+        assert_eq!(sqlx::query_scalar::<_, String>("SELECT trade_name_en FROM master_drugs WHERE id=20")
+            .fetch_one(&mut db).await.unwrap(), "Vatica 180 ml");
+    }
+
+    #[tokio::test]
+    async fn distinct_vatika_180_and_vatica_45_bottle_sizes_cannot_transfer_historical_lots() {
+        let mut db = fixture().await;
+        sqlx::raw_sql("UPDATE master_drugs SET trade_name_en='vatika hair oil 180 bl grgir',barcode='6224007939147',official_price=50 WHERE id=10;\
+            UPDATE master_drugs SET trade_name_en='vatica hair oil 45 bl grger',barcode='6224007939147',official_price=15 WHERE id=20;\
+            UPDATE inventory SET barcode='6224007939161' WHERE id='old-lot';")
+            .execute(&mut db).await.unwrap();
+        let mut tx = db.begin().await.unwrap();
+        let error = replace_tx(&mut tx, "admin", payload(Some(20), None)).await.unwrap_err();
+        tx.rollback().await.unwrap();
+        assert!(error.contains("حجم العبوة"), "unrelated rejection: {error}");
+        let old_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM master_drugs WHERE id=10")
+            .fetch_one(&mut db).await.unwrap();
+        assert_eq!(old_count, 1, "the 180-ml master row must survive");
+        let lot_owner: i64 = sqlx::query_scalar("SELECT drug_id FROM inventory WHERE id='old-lot'")
+            .fetch_one(&mut db).await.unwrap();
+        assert_eq!(lot_owner, 10, "old 180-ml stock must not be relinked to 45-ml master");
+    }
+
+    #[tokio::test]
+    async fn new_custom_vatica_45_must_not_replace_existing_180_even_when_barcode_matches() {
+        let mut db = fixture().await;
+        sqlx::raw_sql("UPDATE master_drugs SET trade_name='فاتكا زيت شعر ١٨٠ بالجرجير',trade_name_en='vatika hair oil 180 bl grgir',barcode='6224007939147',official_price=50 WHERE id=10;\
+            UPDATE inventory SET barcode='6224007939161' WHERE id='old-lot';")
+            .execute(&mut db).await.unwrap();
+        let mut tx = db.begin().await.unwrap();
+        let new_drug = json!({
+            "trade_name": "فاتكا زيت ٤٥ بالجرجير", "trade_name_en": "vatica hair oil 45 bl grger",
+            "barcode": "6224007939147", "official_price": 15.0,
+        });
+        let error = replace_tx(&mut tx, "admin", payload(None, Some(new_drug))).await.unwrap_err();
+        tx.rollback().await.unwrap();
+        assert!(error.contains("حجم العبوة"), "unexpected rejection: {error}");
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM master_drugs")
+            .fetch_one(&mut db).await.unwrap(), 2);
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT drug_id FROM inventory WHERE id='old-lot'")
+            .fetch_one(&mut db).await.unwrap(), 10);
+    }
+
+    #[tokio::test]
+    async fn correct_180_bottle_master_barcode_without_reassigning_180_lots_to_45_bottle() {
+        let mut db = fixture().await;
+        sqlx::raw_sql("UPDATE master_drugs SET trade_name_en='vatika hair oil 180 bl grgir',barcode='6224007939147' WHERE id=10;\
+            UPDATE master_drugs SET trade_name_en='vatica hair oil 45 bl grger',barcode='6224007939147' WHERE id=20;\
+            UPDATE inventory SET barcode='6224007939161' WHERE id='old-lot';")
+            .execute(&mut db).await.unwrap();
+        let mut tx = db.begin().await.unwrap();
+        let result = correct_barcode_conflict_tx(&mut tx, "admin", BarcodeCorrection {
+            drug_id: 10, conflicting_barcode: "6224007939147".to_owned(),
+            replacement_barcode: Some("6224007939161".to_owned()),
+        }).await.unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(result, 10);
+        let old_master_barcode: String = sqlx::query_scalar("SELECT barcode FROM master_drugs WHERE id=10")
+            .fetch_one(&mut db).await.unwrap();
+        let new_master_barcode: String = sqlx::query_scalar("SELECT barcode FROM master_drugs WHERE id=20")
+            .fetch_one(&mut db).await.unwrap();
+        let lot: (i64, String) = sqlx::query_as("SELECT drug_id,barcode FROM inventory WHERE id='old-lot'")
+            .fetch_one(&mut db).await.unwrap();
+        let historical_sale_owner: i64 = sqlx::query_scalar("SELECT drug_id FROM sales_items WHERE id=1")
+            .fetch_one(&mut db).await.unwrap();
+        assert_eq!(old_master_barcode, "6224007939161");
+        assert_eq!(new_master_barcode, "6224007939147");
+        assert_eq!(lot, (10, "6224007939161".to_owned()));
+        assert_eq!(historical_sale_owner, 10);
+    }
+
+    #[tokio::test]
+    async fn a_branch_admin_cannot_rekey_the_other_pharmacys_stock_and_history() {
+        let mut db = fixture().await;
+        sqlx::raw_sql(
+            "INSERT INTO users(id,username,role,permissions,is_active,pharmacy_id) \
+             VALUES('other-owner','other-owner','owner','{}',1,'branch-b'); \
+             INSERT INTO inventory(id,drug_id,pharmacy_id,quantity,local_selling_price) \
+             VALUES('other-pharmacy-lot',10,'branch-b',17,450);",
+        )
+        .execute(&mut db)
+        .await
+        .unwrap();
+        let mut tx = db.begin().await.unwrap();
+        let error = replace_tx(&mut tx, "admin", payload(Some(20), None))
+            .await
+            .unwrap_err();
+        tx.rollback().await.unwrap();
+        assert!(error.contains("multi-pharmacy"));
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT drug_id FROM inventory WHERE id='other-pharmacy-lot'"
+            )
+            .fetch_one(&mut db)
+            .await
+            .unwrap(),
+            10
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT drug_id FROM sales_items WHERE id=1")
+                .fetch_one(&mut db)
+                .await
+                .unwrap(),
+            10
+        );
+    }
+
+    #[tokio::test]
+    async fn group_and_barcode_correction_reject_mixed_tenant_before_mutating() {
+        let mut db = fixture().await;
+        sqlx::raw_sql(
+            "UPDATE master_drugs SET barcode='123' WHERE id=20; \
+             INSERT INTO users(id,username,role,permissions,is_active,pharmacy_id) \
+             VALUES('other-owner','other-owner','owner','{}',1,'branch-b'); \
+             INSERT INTO inventory(id,drug_id,pharmacy_id,quantity,barcode,local_selling_price) \
+             VALUES('other-lot',10,'branch-b',4,'123',700);",
+        )
+        .execute(&mut db)
+        .await
+        .unwrap();
+
+        // Mirrors the read-only permission connection check performed by each
+        // native entrypoint before it creates a backup.
+        let preflight_error = require_single_tenant_catalog_scope(&mut db, "admin")
+            .await
+            .unwrap_err();
+        assert!(preflight_error.contains("multi-pharmacy"));
+
+        let mut tx = db.begin().await.unwrap();
+        let group_error = replace_group_tx(
+            &mut tx,
+            "admin",
+            GroupReplacement {
+                source_ids: vec![10],
+                target_id: 20,
+                edits: None,
+                confirmed_same_product: true,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(group_error.contains("multi-pharmacy"));
+        tx.rollback().await.unwrap();
+
+        let mut tx = db.begin().await.unwrap();
+        let barcode_error = correct_barcode_conflict_tx(
+            &mut tx,
+            "admin",
+            BarcodeCorrection {
+                drug_id: 10,
+                conflicting_barcode: "123".into(),
+                replacement_barcode: Some("456".into()),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(barcode_error.contains("multi-pharmacy"));
+        tx.rollback().await.unwrap();
+
+        let (old_drug, original_price, original_barcode): (i64, f64, String) = sqlx::query_as(
+            "SELECT drug_id, local_selling_price, barcode FROM inventory WHERE id='other-lot'",
+        )
+        .fetch_one(&mut db)
+        .await
+        .unwrap();
+        assert_eq!(
+            (old_drug, original_price, original_barcode.as_str()),
+            (10, 700.0, "123")
+        );
+        let master_barcode: String =
+            sqlx::query_scalar("SELECT barcode FROM master_drugs WHERE id=10")
+                .fetch_one(&mut db)
+                .await
+                .unwrap();
+        assert_eq!(master_barcode, "123");
+        let source_exists: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM master_drugs WHERE id=10")
+                .fetch_one(&mut db)
+                .await
+                .unwrap();
+        assert_eq!(source_exists, 1);
     }
 
     #[tokio::test]
@@ -1454,10 +1852,12 @@ mod tests {
         assert!(error.contains("can_modify_unit_conversion"), "{error}");
         tx.rollback().await.unwrap();
         assert_eq!(
-            sqlx::query_scalar::<_, Option<String>>("SELECT large_unit FROM master_drugs WHERE id=20")
-                .fetch_one(&mut db)
-                .await
-                .unwrap(),
+            sqlx::query_scalar::<_, Option<String>>(
+                "SELECT large_unit FROM master_drugs WHERE id=20"
+            )
+            .fetch_one(&mut db)
+            .await
+            .unwrap(),
             None
         );
         assert_eq!(
@@ -1711,10 +2111,7 @@ mod tests {
         .fetch_one(&mut db)
         .await
         .unwrap();
-        assert_eq!(
-            purchase_return_history,
-            (20, "old-lot".into(), 700, 10.0)
-        );
+        assert_eq!(purchase_return_history, (20, "old-lot".into(), 700, 10.0));
         let drug: (String, String) =
             sqlx::query_as("SELECT barcode,notes FROM master_drugs WHERE id=20")
                 .fetch_one(&mut db)
@@ -1780,10 +2177,12 @@ mod tests {
         tx.commit().await.unwrap();
 
         assert_eq!(
-            sqlx::query_scalar::<_, i64>("SELECT drug_id FROM inventory WHERE id='historical-alias'")
-                .fetch_one(&mut db)
-                .await
-                .unwrap(),
+            sqlx::query_scalar::<_, i64>(
+                "SELECT drug_id FROM inventory WHERE id='historical-alias'"
+            )
+            .fetch_one(&mut db)
+            .await
+            .unwrap(),
             20
         );
         assert_eq!(
@@ -1795,7 +2194,8 @@ mod tests {
         );
     }
     #[tokio::test]
-    async fn group_replacement_resolves_three_barcode_owners_atomically_and_rejects_an_unselected_fourth() {
+    async fn group_replacement_resolves_three_barcode_owners_atomically_and_rejects_an_unselected_fourth(
+    ) {
         let mut db = fixture().await;
         sqlx::raw_sql(
             r#"
@@ -1835,12 +2235,11 @@ mod tests {
         assert_eq!(result, 20);
         tx.commit().await.unwrap();
 
-        let remaining: Vec<i64> = sqlx::query_scalar(
-            "SELECT id FROM master_drugs WHERE id IN (10,20,30) ORDER BY id",
-        )
-        .fetch_all(&mut db)
-        .await
-        .unwrap();
+        let remaining: Vec<i64> =
+            sqlx::query_scalar("SELECT id FROM master_drugs WHERE id IN (10,20,30) ORDER BY id")
+                .fetch_all(&mut db)
+                .await
+                .unwrap();
         assert_eq!(remaining, vec![20]);
         let lots: Vec<(String, i64)> = sqlx::query_as(
             "SELECT id,drug_id FROM inventory WHERE id IN ('old-lot','target-lot','third-lot') ORDER BY id",
@@ -1849,12 +2248,11 @@ mod tests {
         .await
         .unwrap();
         assert!(lots.iter().all(|(_, drug_id)| *drug_id == 20));
-        let sale_drugs: Vec<i64> = sqlx::query_scalar(
-            "SELECT drug_id FROM sales_items WHERE id IN (1,2) ORDER BY id",
-        )
-        .fetch_all(&mut db)
-        .await
-        .unwrap();
+        let sale_drugs: Vec<i64> =
+            sqlx::query_scalar("SELECT drug_id FROM sales_items WHERE id IN (1,2) ORDER BY id")
+                .fetch_all(&mut db)
+                .await
+                .unwrap();
         assert_eq!(sale_drugs, vec![20, 20]);
         let total_stock: f64 = sqlx::query_scalar(
             "SELECT CAST(SUM(quantity) AS REAL) FROM inventory WHERE drug_id=20",
@@ -1932,7 +2330,10 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(error.contains("ثالث") || error.contains("التعارض"), "{error}");
+        assert!(
+            error.contains("ثالث") || error.contains("التعارض"),
+            "{error}"
+        );
         tx.rollback().await.unwrap();
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
@@ -1964,12 +2365,11 @@ mod tests {
         .await
         .unwrap();
 
-        let historical_before: (i64, i64) = sqlx::query_as(
-            "SELECT large_to_medium, medium_to_small FROM sales_items WHERE id=1",
-        )
-        .fetch_one(&mut db)
-        .await
-        .unwrap();
+        let historical_before: (i64, i64) =
+            sqlx::query_as("SELECT large_to_medium, medium_to_small FROM sales_items WHERE id=1")
+                .fetch_one(&mut db)
+                .await
+                .unwrap();
         let lots_before: Vec<(String, i64, i64)> = sqlx::query_as(
             "SELECT id, strips_per_box, medium_to_small FROM inventory WHERE id IN ('old-lot','target-lot') ORDER BY id",
         )
@@ -2006,12 +2406,11 @@ mod tests {
         .unwrap();
         assert_eq!(canonical, ("strip".into(), "tablet".into(), 10, 10));
 
-        let historical_after: (i64, i64) = sqlx::query_as(
-            "SELECT large_to_medium, medium_to_small FROM sales_items WHERE id=1",
-        )
-        .fetch_one(&mut db)
-        .await
-        .unwrap();
+        let historical_after: (i64, i64) =
+            sqlx::query_as("SELECT large_to_medium, medium_to_small FROM sales_items WHERE id=1")
+                .fetch_one(&mut db)
+                .await
+                .unwrap();
         assert_eq!(historical_after, historical_before);
 
         let lots_after: Vec<(String, i64, i64)> = sqlx::query_as(
@@ -2059,7 +2458,10 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(error.contains("الوحدة") || error.contains("السجل"), "{error}");
+        assert!(
+            error.contains("الوحدة") || error.contains("السجل"),
+            "{error}"
+        );
         tx.rollback().await.unwrap();
 
         assert_eq!(
@@ -2114,7 +2516,10 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(error.contains("الوحدة") || error.contains("السجل"), "{error}");
+        assert!(
+            error.contains("الوحدة") || error.contains("السجل"),
+            "{error}"
+        );
         tx.rollback().await.unwrap();
 
         assert_eq!(
@@ -2162,7 +2567,10 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(error.contains("الوحدة") || error.contains("السجل"), "{error}");
+        assert!(
+            error.contains("الوحدة") || error.contains("السجل"),
+            "{error}"
+        );
         tx.rollback().await.unwrap();
 
         assert_eq!(
@@ -2248,7 +2656,10 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(error.contains("large_to_medium") || error.contains("medium_to_small"), "{error}");
+        assert!(
+            error.contains("large_to_medium") || error.contains("medium_to_small"),
+            "{error}"
+        );
         tx.rollback().await.unwrap();
 
         assert_eq!(
@@ -2306,7 +2717,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn group_replacement_revalidates_that_all_reviewed_owners_still_share_an_active_barcode() {
+    async fn group_replacement_revalidates_that_all_reviewed_owners_still_share_an_active_barcode()
+    {
         let mut db = fixture().await;
         sqlx::raw_sql(
             r#"
@@ -2354,7 +2766,8 @@ mod tests {
         );
     }
     #[tokio::test]
-    async fn group_replacement_accepts_an_explicit_pending_barcode_for_the_external_canonical_target() {
+    async fn group_replacement_accepts_an_explicit_pending_barcode_for_the_external_canonical_target(
+    ) {
         let mut db = fixture().await;
         sqlx::raw_sql(
             r#"
@@ -2385,19 +2798,17 @@ mod tests {
         assert_eq!(target, 30);
         tx.commit().await.unwrap();
 
-        let remaining: Vec<i64> = sqlx::query_scalar(
-            "SELECT id FROM master_drugs WHERE id IN (10,20,30) ORDER BY id",
-        )
-        .fetch_all(&mut db)
-        .await
-        .unwrap();
+        let remaining: Vec<i64> =
+            sqlx::query_scalar("SELECT id FROM master_drugs WHERE id IN (10,20,30) ORDER BY id")
+                .fetch_all(&mut db)
+                .await
+                .unwrap();
         assert_eq!(remaining, vec![30]);
-        let target_row: (String, String) = sqlx::query_as(
-            "SELECT trade_name,barcode FROM master_drugs WHERE id=30",
-        )
-        .fetch_one(&mut db)
-        .await
-        .unwrap();
+        let target_row: (String, String) =
+            sqlx::query_as("SELECT trade_name,barcode FROM master_drugs WHERE id=30")
+                .fetch_one(&mut db)
+                .await
+                .unwrap();
         assert_eq!(target_row, ("Reviewed canonical".into(), "123".into()));
         let moved: Vec<i64> = sqlx::query_scalar(
             "SELECT drug_id FROM inventory WHERE id IN ('old-lot','target-lot','second-owner-lot') ORDER BY id",
@@ -2415,10 +2826,12 @@ mod tests {
     #[tokio::test]
     async fn replacement_preserves_catalog_identity_and_policies_after_migration_027() {
         let mut db = fixture().await;
-        sqlx::raw_sql(include_str!("../../migrations/027_drug_catalog_reconciliation.sql"))
-            .execute(&mut db)
-            .await
-            .unwrap();
+        sqlx::raw_sql(include_str!(
+            "../../migrations/027_drug_catalog_reconciliation.sql"
+        ))
+        .execute(&mut db)
+        .await
+        .unwrap();
         sqlx::raw_sql(
             r#"
             INSERT INTO drug_catalog_links(catalog_drug_id,master_drug_id,linked_by) VALUES(10010,10,'test');
@@ -2478,13 +2891,17 @@ mod tests {
         .await
         .unwrap();
         let mut tx = db.begin().await.unwrap();
-        replace_tx(&mut tx, "admin", Replacement {
-            source_id: 30,
-            target_id: Some(20),
-            new_drug: None,
-            edits: None,
-            confirmed_same_product: true,
-        })
+        replace_tx(
+            &mut tx,
+            "admin",
+            Replacement {
+                source_id: 30,
+                target_id: Some(20),
+                new_drug: None,
+                edits: None,
+                confirmed_same_product: true,
+            },
+        )
         .await
         .unwrap();
         tx.commit().await.unwrap();
@@ -2537,27 +2954,39 @@ mod tests {
 
         assert_eq!(
             sqlx::query_scalar::<_, String>("SELECT barcode FROM master_drugs WHERE id=10")
-                .fetch_one(&mut db).await.unwrap(),
+                .fetch_one(&mut db)
+                .await
+                .unwrap(),
             "456"
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>("SELECT barcode FROM inventory WHERE id='old-lot'")
-                .fetch_one(&mut db).await.unwrap(),
+                .fetch_one(&mut db)
+                .await
+                .unwrap(),
             "456"
         );
         assert_eq!(
-            sqlx::query_scalar::<_, String>("SELECT barcode FROM inventory WHERE id='historical-zero'")
-                .fetch_one(&mut db).await.unwrap(),
+            sqlx::query_scalar::<_, String>(
+                "SELECT barcode FROM inventory WHERE id='historical-zero'"
+            )
+            .fetch_one(&mut db)
+            .await
+            .unwrap(),
             "123"
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>("SELECT barcode FROM master_drugs WHERE id=20")
-                .fetch_one(&mut db).await.unwrap(),
+                .fetch_one(&mut db)
+                .await
+                .unwrap(),
             "123"
         );
         assert_eq!(
             sqlx::query_scalar::<_, i64>("SELECT drug_id FROM sales_items WHERE id=1")
-                .fetch_one(&mut db).await.unwrap(),
+                .fetch_one(&mut db)
+                .await
+                .unwrap(),
             10
         );
 
@@ -2575,11 +3004,16 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(error.contains("باركود") || error.contains("barcode"), "{error}");
+        assert!(
+            error.contains("باركود") || error.contains("barcode"),
+            "{error}"
+        );
         tx.rollback().await.unwrap();
         assert_eq!(
             sqlx::query_scalar::<_, String>("SELECT barcode FROM master_drugs WHERE id=10")
-                .fetch_one(&mut db).await.unwrap(),
+                .fetch_one(&mut db)
+                .await
+                .unwrap(),
             "456"
         );
 
@@ -2600,12 +3034,16 @@ mod tests {
         tx.commit().await.unwrap();
         assert_eq!(
             sqlx::query_scalar::<_, String>("SELECT barcode FROM master_drugs WHERE id=10")
-                .fetch_one(&mut db).await.unwrap(),
+                .fetch_one(&mut db)
+                .await
+                .unwrap(),
             "555"
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>("SELECT barcode FROM inventory WHERE id='old-lot'")
-                .fetch_one(&mut db).await.unwrap(),
+                .fetch_one(&mut db)
+                .await
+                .unwrap(),
             "555"
         );
     }

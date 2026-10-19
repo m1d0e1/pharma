@@ -6,6 +6,12 @@ on:
 
 jobs:
   publish-tauri:
+    # Fail closed: no signed production artifact is distributed while the
+    # privacy/authorization and licensing operations acceptance gates remain
+    # open. Security lead must explicitly set this repository variable only
+    # after independently approving the release checklist.
+    if: ${{ vars.PHARMA_SECURITY_RELEASE_APPROVED == 'true' }}
+    environment: pharma-production-release
     permissions:
       contents: write
     strategy:
@@ -23,7 +29,7 @@ jobs:
         with:
           node-version: 22
 
-      - name: Install Windows 7-compatible Rust
+      - name: Install Windows Rust toolchain
         uses: dtolnay/rust-toolchain@1.77.2
         with:
           targets: x86_64-pc-windows-msvc
@@ -34,6 +40,12 @@ jobs:
       - name: Seed database
         run: npm run seed:db
 
+      - name: Block bundled default owner credentials
+        run: node scripts/check-commercial-release-seed.js
+
+      - name: Block high production dependency advisories
+        run: npm audit --omit=dev --audit-level=high
+
       - name: Run Tauri tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
@@ -43,6 +55,10 @@ jobs:
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE) -or
+              [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) {
+            throw 'Authenticode code-signing certificate and password are required for a licensing-protected production release.'
+          }
           if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE) -and
               -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) {
             $certificatePath = Join-Path $env:RUNNER_TEMP 'pharma-code-signing.pfx'
@@ -63,6 +79,11 @@ jobs:
             if ($certificate -and -not [string]::IsNullOrWhiteSpace($certificate.Thumbprint)) {
               "WINDOWS_CERTIFICATE_THUMBPRINT=$($certificate.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
               @{
+                build = @{
+                  # The Tauri builder reseeds through beforeBuildCommand.
+                  # Check that final artifact again before binary packaging.
+                  beforeBuildCommand = 'npm run seed:db && node scripts/check-commercial-release-seed.js && npm run build:tauri'
+                }
                 bundle = @{
                   windows = @{
                     certificateThumbprint = $certificate.Thumbprint
@@ -72,24 +93,31 @@ jobs:
                 }
               } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath 'src-tauri/tauri.signing.conf.json' -Encoding utf8
             } else {
-              '{}' | Set-Content -LiteralPath 'src-tauri/tauri.signing.conf.json' -Encoding utf8
+              throw 'Imported signing certificate has no accessible private key.'
             }
-          } else {
-            Write-Host 'No WINDOWS_CERTIFICATE secret provided, proceeding with standard release build.'
-            '{}' | Set-Content -LiteralPath 'src-tauri/tauri.signing.conf.json' -Encoding utf8
           }
 
       - name: Build and publish Tauri release
         uses: tauri-apps/tauri-action@v1
         env:
+          # PUBLIC Ed25519 verify key only. Issuer PRIVATE signing key stays
+          # exclusively in the offline license authority, never CI binaries.
+          PHARMA_LICENSE_VERIFY_KEY_B64: ${{ vars.PHARMA_LICENSE_VERIFY_KEY_B64 }}
+          # Device-bound release requires a persisted hardware-backed key.
+          PHARMA_LICENSE_DEVICE_MODE: tpm-v2
+          # Only explicit "1" selects manually issued, no-Azure offline grants.
+          PHARMA_LICENSE_OFFLINE_ONLY: ${{ vars.PHARMA_LICENSE_OFFLINE_ONLY }}
+          PHARMA_LICENSE_AUTHORITY_URL: ${{ vars.PHARMA_LICENSE_AUTHORITY_URL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
         with:
           tagName: v__VERSION__
           releaseName: "Pharma App v__VERSION__"
-          releaseBody: "Release v0.2.109 hardens drug identity and barcode reconciliation, protects historical unit labels used by sales and return records, propagates archive/unarchive inventory refreshes across open app windows, and keeps completed purchase snapshots isolated from later catalog edit/archive/delete callbacks. It also includes the reviewed UI/accessibility polish across inventory, purchases, POS, reports, staff, patients, suppliers, settings, returns, settlement, and shared components, with expanded regression coverage for permissions, pharmacy scope, accounting, lifecycle actions, and stale-state races. Includes x64 and x86 installers with signed Tauri updater metadata. Windows Authenticode signing is applied only when the optional certificate secrets are configured. Windows 7 requires UCRT and WebView2 109."
-          releaseDraft: false
+          releaseBody: "Desktop release requires TPM-backed device binding on supported Windows hardware, a separately issued Ed25519-signed lease, and an Authenticode-signed installer. Windows 7 is not supported by the TPM-required licensing tier. A production expiry, signing authority and renewal service remain operator prerequisites."
+          # Keep artifacts non-public until both architectures have passed
+          # local Authenticode checks and combined signed updater validation.
+          releaseDraft: true
           prerelease: false
           uploadUpdaterJson: true
           updaterJsonPreferNsis: true
@@ -102,6 +130,9 @@ jobs:
             Where-Object { $_.Extension -in '.exe', '.msi' }
           if (-not $installers) {
             throw 'No Windows installers were produced.'
+          }
+          if (-not $env:WINDOWS_CERTIFICATE_THUMBPRINT) {
+            throw 'Missing expected signing certificate thumbprint. Refusing unsigned release.'
           }
           if ($env:WINDOWS_CERTIFICATE_THUMBPRINT) {
             foreach ($installer in $installers) {
@@ -116,13 +147,12 @@ jobs:
                 throw "Missing Authenticode timestamp for $($installer.FullName)."
               }
             }
-          } else {
-            Write-Host "Produced $($installers.Count) installer(s) successfully without Authenticode certificate."
           }
 
-  publish-windows7-x86:
-    name: Publish shared Windows x86 installer
+  publish-windows-x86-tpm:
+    name: Publish Windows x86 installer (TPM-required; not Windows 7)
     needs: publish-tauri
+    environment: pharma-production-release
     permissions:
       contents: write
     runs-on: windows-2022
@@ -135,7 +165,7 @@ jobs:
         with:
           node-version: 22
 
-      - name: Install Windows 7-compatible Rust
+      - name: Install Windows x86 Rust toolchain
         uses: dtolnay/rust-toolchain@1.77.2
         with:
           targets: i686-pc-windows-msvc
@@ -145,6 +175,12 @@ jobs:
 
       - name: Seed database
         run: npm run seed:db
+
+      - name: Block bundled default owner credentials
+        run: node scripts/check-commercial-release-seed.js
+
+      - name: Block high production dependency advisories
+        run: npm audit --omit=dev --audit-level=high
 
       - name: Test 32-bit Rust backend
         run: cargo test --manifest-path src-tauri/Cargo.toml --target i686-pc-windows-msvc
@@ -160,7 +196,14 @@ jobs:
         run: |
           $config = Get-Content -LiteralPath 'src-tauri/tauri.windows7.conf.json' -Raw | ConvertFrom-Json
           $config.bundle.createUpdaterArtifacts = $true
+          # This architecture builds its frontend separately. Recheck its seed
+          # immediately before Tauri bundles resources into the installer.
+          $config.build.beforeBuildCommand = 'node scripts/check-commercial-release-seed.js'
 
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE) -or
+              [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) {
+            throw 'Production Windows x86 installer requires Authenticode certificate and password.'
+          }
           if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE) -and
               -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) {
             $certificatePath = Join-Path $env:RUNNER_TEMP 'pharma-code-signing.pfx'
@@ -183,32 +226,40 @@ jobs:
               $config.bundle.windows | Add-Member -NotePropertyName certificateThumbprint -NotePropertyValue $certificate.Thumbprint
               $config.bundle.windows | Add-Member -NotePropertyName digestAlgorithm -NotePropertyValue 'sha256'
               $config.bundle.windows | Add-Member -NotePropertyName timestampUrl -NotePropertyValue 'http://timestamp.digicert.com'
+            } else {
+              throw 'Imported x86 signing certificate has no accessible private key.'
             }
-          } else {
-            Write-Host 'No WINDOWS_CERTIFICATE secret provided for x86 build, proceeding.'
           }
 
           $config | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath 'src-tauri/tauri.windows7.signing.conf.json' -Encoding utf8
 
-      - name: Build and publish Windows 7 x86 installer
+      - name: Build and publish TPM-required Windows x86 installer
         uses: tauri-apps/tauri-action@v1
         env:
+          PHARMA_LICENSE_VERIFY_KEY_B64: ${{ vars.PHARMA_LICENSE_VERIFY_KEY_B64 }}
+          PHARMA_LICENSE_DEVICE_MODE: tpm-v2
+          PHARMA_LICENSE_OFFLINE_ONLY: ${{ vars.PHARMA_LICENSE_OFFLINE_ONLY }}
+          PHARMA_LICENSE_AUTHORITY_URL: ${{ vars.PHARMA_LICENSE_AUTHORITY_URL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
         with:
           tagName: v__VERSION__
+          releaseDraft: true
           uploadUpdaterJson: true
           updaterJsonPreferNsis: true
           args: --bundles nsis --target i686-pc-windows-msvc --config src-tauri/tauri.windows7.signing.conf.json
 
-      - name: Verify Windows 7 x86 installer signature
+      - name: Verify Windows x86 installer signature
         shell: pwsh
         run: |
           $installer = Get-ChildItem -LiteralPath 'src-tauri/target/i686-pc-windows-msvc/release/bundle/nsis' -Filter '*-setup.exe' -File |
             Select-Object -First 1
           if (-not $installer) {
-            throw 'No Windows 7 x86 installer was produced.'
+            throw 'No TPM-required Windows x86 installer was produced.'
+          }
+          if (-not $env:WINDOWS_CERTIFICATE_THUMBPRINT) {
+            throw 'No expected x86 certificate thumbprint; refusing unsigned release.'
           }
           if ($env:WINDOWS_CERTIFICATE_THUMBPRINT) {
             $signature = Get-AuthenticodeSignature -LiteralPath $installer.FullName
@@ -217,8 +268,6 @@ jobs:
                 -not $signature.TimeStamperCertificate) {
               throw "Invalid Authenticode signature for $($installer.FullName)."
             }
-          } else {
-            Write-Host "Produced x86 installer successfully: $($installer.FullName)"
           }
 
       - name: Verify combined x64 and x86 updater manifest
@@ -249,3 +298,12 @@ jobs:
               throw "Updater manifest entry '$key' is incomplete."
             }
           }
+
+      - name: Publish verified signed release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # No release is published when the x64/x86 Authenticode or signed
+          # updater checks fail; the draft stays private to maintainers.
+          gh release edit '${{ github.ref_name }}' --draft=false

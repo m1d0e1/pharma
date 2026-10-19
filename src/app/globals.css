@@ -6,11 +6,13 @@
   --foreground-rgb: 15, 23, 42;
   --background-start-rgb: 248, 250, 252;
   --background-end-rgb: 241, 245, 249;
-  --radius: 0.625rem;
-  --radius-lg: 0.75rem;
-  --radius-xl: 1rem;
+  --radius: 0.5rem;
+  --radius-lg: 0.625rem;
+  --radius-xl: 0.75rem;
   --font-sans: system-ui, sans-serif;
-  --font-arabic: Tahoma, Arial, sans-serif;
+  --font-arabic: Tahoma, "Segoe UI", Arial, sans-serif;
+  --workbench-shadow: 0 1px 2px rgb(15 23 42 / 0.04), 0 2px 6px rgb(15 23 42 / 0.06);
+  --workbench-shadow-dark: 0 1px 2px rgb(0 0 0 / 0.22), 0 2px 7px rgb(0 0 0 / 0.2);
   --line-height-tight: 1.25;
   --line-height-normal: 1.5;
   --line-height-relaxed: 1.75;
@@ -47,15 +49,15 @@
   }
 
   h1 {
-    @apply text-3xl md:text-4xl;
-  }
-
-  h2 {
     @apply text-2xl md:text-3xl;
   }
 
-  h3 {
+  h2 {
     @apply text-xl md:text-2xl;
+  }
+
+  h3 {
+    @apply text-lg md:text-xl;
   }
 
   h4 {
@@ -73,12 +75,16 @@
   }
   
   :dir(rtl) {
-    font-family: 'Cairo', 'Inter', system-ui, sans-serif;
+    font-family: var(--font-arabic);
   }
 
   :where(button, a, input, select, textarea, [tabindex]):focus-visible {
-    outline: 2px solid rgb(14 165 233 / 0.8);
+    outline: 2px solid #0369a1;
     outline-offset: 2px;
+  }
+
+  .dark :where(button, a, input, select, textarea, [tabindex]):focus-visible {
+    outline-color: #7dd3fc;
   }
   
   /* Custom scrollbar */
@@ -112,15 +118,15 @@
 
 @layer components {
   .card {
-    @apply bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm p-5 transition-colors duration-150;
+    @apply bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800 shadow-sm p-5 transition-colors duration-150;
   }
   
   .card-gradient {
-    @apply bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm p-5;
+    @apply bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800 shadow-sm p-5;
   }
   
   .card-elevated {
-    @apply bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-md p-5;
+    @apply bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800 shadow-sm p-5;
   }
   
   .card-interactive {
@@ -128,11 +134,11 @@
   }
 
   .card-glass {
-    @apply bg-white/95 dark:bg-slate-900/95 rounded-xl border border-slate-200 dark:border-slate-800 shadow-md p-5;
+    @apply bg-white/95 dark:bg-slate-900/95 rounded-lg border border-slate-200 dark:border-slate-800 shadow-sm p-5;
   }
   
   .input-primary {
-    @apply w-full min-h-10 px-3.5 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-sm text-slate-900 dark:text-white focus:ring-2 focus:ring-primary-500/30 focus:border-primary-500 dark:focus:border-primary-500 transition-colors duration-150 placeholder:text-slate-400 dark:placeholder:text-slate-500 shadow-sm;
+    @apply w-full min-h-11 px-3.5 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-sm text-slate-900 dark:text-white focus:ring-2 focus:ring-primary-500/30 focus:border-primary-500 dark:focus:border-primary-500 transition-colors duration-150 placeholder:text-slate-500 dark:placeholder:text-slate-400;
   }
   
   .input-error {
@@ -176,11 +182,11 @@
   }
   
   .table-container {
-    @apply overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm;
+    @apply overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm;
   }
   
   .table {
-    @apply w-full text-sm text-left divide-y divide-slate-200/40 dark:divide-slate-700/40;
+    @apply w-full text-sm text-start divide-y divide-slate-200/40 dark:divide-slate-700/40;
   }
   
   .table thead {
@@ -188,11 +194,11 @@
   }
   
   .table th {
-    @apply px-5 py-3.5 font-semibold text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-slate-700 whitespace-nowrap text-xs;
+    @apply px-4 py-3 font-semibold text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-slate-700 whitespace-nowrap text-xs;
   }
   
   .table td {
-    @apply px-5 py-3.5 border-b border-slate-100 dark:border-slate-800;
+    @apply px-4 py-3 border-b border-slate-100 dark:border-slate-800;
   }
   
   .table tbody tr {
@@ -236,7 +242,7 @@
   }
   
   .stat-card {
-    @apply bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5 shadow-sm transition-colors duration-150;
+    @apply bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800 p-4 shadow-sm transition-colors duration-150;
   }
   
   .stat-card-primary {
@@ -260,11 +266,11 @@
   }
   
   .page-header {
-    @apply flex flex-col md:flex-row md:items-center justify-between gap-4 md:gap-6 mb-7 pb-5 border-b border-slate-200 dark:border-slate-800;
+    @apply flex flex-col md:flex-row md:items-center justify-between gap-3 md:gap-5 mb-6 pb-4 border-b border-slate-200 dark:border-slate-800;
   }
   
   .page-title {
-    @apply text-2xl md:text-3xl font-bold text-slate-900 dark:text-white tracking-tight leading-tight;
+    @apply text-xl md:text-2xl font-bold text-slate-900 dark:text-white tracking-tight leading-tight;
   }
   
   .page-subtitle {
@@ -276,7 +282,7 @@
   }
   
   .section-title {
-    @apply text-xl md:text-2xl font-bold text-slate-800 dark:text-white tracking-tight leading-tight;
+    @apply text-lg md:text-xl font-bold text-slate-800 dark:text-white tracking-tight leading-tight;
   }
   
   .section-subtitle {
@@ -304,11 +310,11 @@
   }
   
   .empty-state {
-    @apply flex flex-col items-center justify-center py-12 px-6 text-center rounded-xl border border-dashed border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900;
+    @apply flex flex-col items-center justify-center py-10 px-6 text-center rounded-lg border border-dashed border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900;
   }
   
   .empty-state-icon {
-    @apply text-5xl mb-4 text-slate-300 dark:text-slate-600;
+    @apply text-4xl mb-4 text-slate-300 dark:text-slate-600;
   }
   
   .empty-state-title {
@@ -471,6 +477,104 @@
   to { transform: rotate(360deg); }
 }
 
+/*
+ * Authenticated pharmacy workbench normalization.
+ *
+ * The application grew screen-by-screen and accumulated a mix of oversized
+ * radii, colored shadow halos, extra-heavy typography and scale animations.
+ * Keep those utilities available for non-operational surfaces, but make the
+ * signed-in workbench calmer and more consistent. This layer is deliberately
+ * visual-only: it does not change display, positioning, pointer events or
+ * component state.
+ */
+.pharma-workbench {
+  font-variant-numeric: tabular-nums;
+}
+
+.pharma-workbench [class~="rounded-3xl"],
+.pharma-workbench [class~="rounded-[50px]"],
+.pharma-workbench [class~="rounded-[40px]"],
+.pharma-workbench [class~="rounded-[32px]"],
+.pharma-workbench [class~="rounded-[30px]"],
+.pharma-workbench [class~="rounded-[28px]"],
+.pharma-workbench [class~="rounded-[24px]"],
+.pharma-workbench [class~="rounded-[20px]"] {
+  border-radius: 1rem;
+}
+
+.pharma-workbench [class~="rounded-2xl"] {
+  border-radius: 0.75rem;
+}
+
+.pharma-workbench [class~="shadow-xl"],
+.pharma-workbench [class~="shadow-2xl"],
+.pharma-workbench [class~="shadow-hard"] {
+  box-shadow: var(--workbench-shadow);
+}
+
+.dark .pharma-workbench [class~="shadow-xl"],
+.dark .pharma-workbench [class~="shadow-2xl"],
+.dark .pharma-workbench [class~="shadow-hard"] {
+  box-shadow: var(--workbench-shadow-dark);
+}
+
+.pharma-workbench [class~="font-black"],
+.pharma-workbench [class~="font-extrabold"] {
+  font-weight: 700;
+}
+
+.pharma-workbench [class~="transition-all"] {
+  transition-property: color, background-color, border-color, opacity, box-shadow;
+  transition-duration: 150ms;
+}
+
+.pharma-workbench [class*="hover:scale-"]:hover,
+.pharma-workbench [class*="active:scale-"]:active {
+  transform: none;
+}
+
+.pharma-workbench .group:hover [class*="group-hover:scale-"] {
+  transform: none;
+}
+
+.pharma-workbench .animate-in {
+  animation-duration: 140ms;
+}
+
+.pharma-workbench table {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Older data-entry screens used presentation-sized form controls. Keep the
+ * same fields and hit areas while bringing them back to workbench density. */
+.pharma-workbench input[class*="py-4"],
+.pharma-workbench select[class*="py-4"],
+.pharma-workbench textarea[class*="py-4"] {
+  padding-block: 0.625rem;
+}
+
+.pharma-workbench input[class*="py-5"],
+.pharma-workbench select[class*="py-5"],
+.pharma-workbench textarea[class*="py-5"] {
+  padding-block: 0.75rem;
+}
+
+.pharma-workbench input[class*="px-6"],
+.pharma-workbench select[class*="px-6"],
+.pharma-workbench textarea[class*="px-6"] {
+  padding-inline: 1rem;
+}
+
+.pharma-workbench ::selection {
+  background: rgb(186 230 253);
+  color: rgb(12 74 110);
+}
+
+.dark .pharma-workbench ::selection {
+  background: rgb(7 89 133);
+  color: rgb(240 249 255);
+}
+
 @keyframes ping-large {
   0% { transform: scale(1); opacity: 1; }
   75%, 100% { transform: scale(2.5); opacity: 0; }
@@ -494,6 +598,50 @@
 }
 
 @media print {
+  /* Keep application navigation out of purchase invoices. The mobile nav is
+     portaled outside the native shell, so it must be hidden at body scope. */
+  body:has(.purchase-invoice-workspace) .pharma-workbench > header,
+  body:has(.purchase-invoice-workspace) .pharma-workbench > aside,
+  body:has(.purchase-invoice-workspace) .pharma-workbench > main > header,
+  body:has(.purchase-invoice-workspace) nav[aria-label="التنقل الرئيسي للجوال"] {
+    display: none !important;
+  }
+
+  /* Long purchase receipts must paginate instead of stopping at the app viewport. */
+  body:has(.purchase-invoice-workspace),
+  .pharma-workbench:has(.purchase-invoice-workspace),
+  .pharma-workbench:has(.purchase-invoice-workspace) main,
+  .pharma-workbench:has(.purchase-invoice-workspace) main > div {
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+
+  /* The editable receipt has twelve columns. Keep every column inside the
+     printable sheet without changing its interactive desktop layout. */
+  .purchase-invoice-workspace table {
+    width: 100% !important;
+    table-layout: fixed;
+  }
+  .purchase-invoice-workspace table th,
+  .purchase-invoice-workspace table td {
+    padding: 3px !important;
+    font-size: 10px !important;
+    overflow-wrap: anywhere;
+  }
+  .purchase-invoice-workspace table input {
+    box-sizing: border-box;
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+    padding: 2px !important;
+    font-size: 10px !important;
+  }
+  .purchase-invoice-workspace table td .relative {
+    width: 100% !important;
+    min-width: 0 !important;
+  }
+
   .no-print {
     display: none !important;
   }

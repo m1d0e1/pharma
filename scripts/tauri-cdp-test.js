@@ -34,7 +34,7 @@ function exportedRoutes() {
       if (relative === 'index.html') return '/';
       return `/${relative.slice(0, -'.html'.length)}`;
     })
-    .filter((route) => !['/404', '/login', '/setup', '/subscription', '/unauthorized'].includes(route))
+    .filter((route) => !['/404', '/login', '/setup', '/unauthorized'].includes(route))
     .sort();
 }
 
@@ -170,8 +170,6 @@ async function runPackagedBusinessFlow(client) {
       payload: {
         id: purchaseId,
         supplier_id: supplierId,
-        pharmacy_id: pharmacyId,
-        user_id: 'admin',
         invoice_number: 'CODEX-' + stamp,
         invoice_date: '2026-08-18',
         payment_method: 'cash',
@@ -205,8 +203,6 @@ async function runPackagedBusinessFlow(client) {
     if (!inventory) throw new Error('Completed purchase did not create inventory');
 
     const checkoutPayload = {
-      pharmacy_id: pharmacyId,
-      user_id: 'admin',
       items: [{
         drug_id: drug.id,
         inventory_id: inventory.id,
@@ -254,6 +250,9 @@ async function runPackagedBusinessFlow(client) {
     const wrongPharmacyRejected = await invoke('process_checkout_critical', {
       payload: { ...checkoutPayload, pharmacy_id: 'wrong-pharmacy' }
     }).then(() => false, () => true);
+    const wrongActorRejected = await invoke('process_checkout_critical', {
+      payload: { ...checkoutPayload, user_id: 'another-user' }
+    }).then(() => false, () => true);
 
     const [stock] = await select('SELECT quantity FROM inventory WHERE id = ?', [inventory.id]);
     const [supplier] = await select('SELECT balance FROM suppliers WHERE id = ?', [supplierId]);
@@ -274,7 +273,7 @@ async function runPackagedBusinessFlow(client) {
     );
     return {
       stamp, pharmacyId, shiftId, purchaseId, purchase, sale, returned,
-      duplicateReturnRejected, wrongPharmacyRejected,
+      duplicateReturnRejected, wrongPharmacyRejected, wrongActorRejected,
       stockQuantity: Number(stock.quantity),
       supplierBalance: Number(supplier.balance),
       supplierHistoryRows: Number(supplierHistory.rows),
@@ -412,6 +411,7 @@ async function main() {
     assert(business.unbalancedJournals === 0, 'Packaged workflow created an unbalanced journal');
     assert(business.duplicateReturnRejected, 'Duplicate cumulative return was accepted');
     assert(business.wrongPharmacyRejected, 'Cross-pharmacy checkout was accepted');
+    assert(business.wrongActorRejected, 'Renderer checkout impersonation field was accepted');
     assert(
       ['COMPLETE_PURCHASE', 'COMPLETE_SALE', 'CREATE_RETURN'].every(action => business.auditActions.includes(action)),
       `Packaged critical audit trail is incomplete: ${business.auditActions.join(', ')}`

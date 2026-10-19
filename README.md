@@ -1,9 +1,9 @@
-# Pharma Tech SaaS - نظام إدارة الصيدليات الذكي 🏥💊
+# Pharma Tech Desktop - نظام إدارة الصيدليات الذكي 🏥💊
 
-نظام سحابي متكامل لإدارة الصيدليات، المبيعات، المخزون، وعلاقات المرضى، مصمم خصيصاً للسوق المصري مع واجهة عربية كاملة ودعم RTL.
+تطبيق Windows مكتبي يعمل بقاعدة بيانات SQLite محلية لإدارة الصيدليات والمبيعات والمخزون والمرضى. الاتصال بـ Supabase اختياري ومخصص فقط لقراءة قائمة الأدوية والتفاعلات الدوائية العامة؛ لا تُرسل بيانات المرضى أو الموظفين أو المبيعات أو المخزون إلى Supabase.
 
 ![Pharma Tech SaaS](https://img.shields.io/badge/Next.js-15-black?style=for-the-badge&logo=next.js)
-![Supabase](https://img.shields.io/badge/Supabase-Postgres-3ECF8E?style=for-the-badge&logo=supabase)
+![Tauri](https://img.shields.io/badge/Tauri-Desktop-24C8D8?style=for-the-badge&logo=tauri)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.2-blue?style=for-the-badge&logo=typescript)
 ![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-3.3-38B2AC?style=for-the-badge&logo=tailwind-css)
 
@@ -55,10 +55,11 @@
 
 | التقنية | الغرض |
 |---------|-------|
-| **Next.js 15+** | إطار العمل الرئيسي (App Router + Server Actions) |
+| **Next.js 15+** | واجهة التطبيق المضمنة داخل Tauri |
+| **Tauri + Rust + SQLite** | تطبيق Windows، التخزين المحلي والمعاملات الحرجة |
 | **React 19** | واجهة المستخدم الديناميكية |
 | **TypeScript** | كتابة آمنة وقابلة للصيانة |
-| **Supabase** | قاعدة بيانات Postgres، المصادقة، RLS |
+| **Supabase (اختياري)** | قراءة البيانات المرجعية العامة للأدوية والتفاعلات فقط |
 | **Tailwind CSS** | تصميم سريع ومتجاوب |
 | **Recharts** | تصور البيانات والرسوم البيانية |
 | **Zod** | تحقق من صحة البيانات |
@@ -70,22 +71,23 @@
 ### المتطلبات الأساسية
 - Node.js 22
 - npm أو yarn أو pnpm
-- حساب Supabase (مجاني)
+- أدوات Rust وTauri للبناء؛ Supabase اختياري لتحديث البيانات المرجعية
 
 ### دعم تطبيق Windows
 
-- يستخدم الإصداران `x64` و`x86` نفس الواجهة وقاعدة البيانات ومنطق الأعمال، ويُبنيان باستخدام Rust 1.77.2 ذي خط الأساس المتوافق مع Windows 7 للعمل على Windows 7 SP1 وWindows 10 وWindows 11.
-- استخدم مثبت `x64` على أنظمة 64 بت ومثبت `x86` على أنظمة 32 بت. على Windows 7 يجب تثبيت تحديثات SHA-2 وTLS 1.2 وUniversal C Runtime ‏(KB2999226) قبل التثبيت.
-- يضم المثبت WebView2 bootstrapper ويفرض الإصدار الأدنى `109.0.1518.140`؛ يلزم اتصال بالإنترنت في أول تثبيت على Windows 7. هذا آخر WebView2 متوافق مع Windows 7.
+- **ترخيص الإصدار التجاري يتطلب هوية جهاز مدعومة بـ TPM وWindows 10/11 مدعومين؛ لا يدعم Windows 7.** لا يعني نجاح بناء Rust 1.77.2 أو توافق PE مع محمّل قديم أن ترخيص التطبيق أو WebView2 يعمل على Windows 7.
+- استخدم مثبت `x64` على أنظمة 64 بت ومثبت `x86` على أجهزة Windows 32 بت المدعومة فقط بعد نجاح اختبار TPM والتثبيت الحقيقي عليها. لا يجوز بيع أي إصدار تجاري لأجهزة Windows 7 قبل اعتماد تصميم أمني ودعم مستقل.
+- يضم المثبت WebView2 bootstrapper، لكن يلزم التأكد من تحديثات Windows وWebView2 وشهادات TLS المطلوبة على كل جهاز مستهدف قبل تسليمه.
 - Windows 11 ARM64 يعمل حالياً عبر محاكاة x64 فقط؛ لا يوجد مثبت ARM64 أصلي.
 - تختبر CI بناء MSI على Windows Server 2022، وبناء NSIS على Windows Server 2025، وتشغيل x64 التجريبي على Windows 11 ARM64. كما تبني وتختبر executable بنواة x86 باستخدام Rust 1.77.2، وتتحقق من نوع PE وإصدار Windows subsystem وعدم اعتماده على `VCRUNTIME` أو `MSVCP` ديناميكيين.
-- لأن GitHub لا يوفر runner مستضافاً لنظام Windows 7، يلزم اختبار تثبيت وقبول نهائي لمثبتَي `x64` و`x86` داخل أجهزة Windows 7 SP1 وWindows 10 وWindows 11 نظيفة قبل اعتماد الإصدار. WebView2 109 وWindows 7 منتهيا الدعم الأمني، لذلك يوصى باستخدام Windows 7 فقط للأجهزة القديمة المعزولة.
+- **الإصدار التجاري لم يحصل بعد على موافقة النشر:** يلزم اختبار مثبتَي `x64` و`x86` الموقّعين على أجهزة Windows 10/11 فعلية تدعم TPM، واختبار تفعيل HTTPS والتجديد والمزامنة والأدوار والنسخ الاحتياطي والتحديث. إعدادات CI والتحقق من ملفات PE ليست اختبار قبول للمستخدم النهائي.
 
 لبناء المثبتين محلياً، ثبّت هدفي Rust ثم شغّل:
 
 ```powershell
 rustup toolchain install 1.77.2-x86_64-pc-windows-msvc --profile minimal --target x86_64-pc-windows-msvc,i686-pc-windows-msvc
 npm run tauri:build
+# اسم الأمر التالي تاريخي؛ الناتج لا يدعم Windows 7 عند اشتراط TPM:
 npm run tauri:build:win7-x86
 ```
 
@@ -106,40 +108,28 @@ npm run tauri:build:win7-x86
    pnpm install
    ```
 
-3. **إعداد متغيرات البيئة**
-   أنشئ ملف `.env.local` في المجلد الرئيسي وأضف:
+3. **إعداد التحديث الاختياري للأدوية والتفاعلات**
+   أنشئ ملف `.env.local` إذا أردت تنزيل القائمة العامة من Supabase:
    ```env
    NEXT_PUBLIC_SUPABASE_URL=your_supabase_project_url
    NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
    ```
 
-   عند تشغيل نسخة **standalone** جديدة في بيئة production بقاعدة بيانات خالية من المستخدمين، عرّف بيانات المالك الأول مرة واحدة قبل التشغيل:
-   ```env
-   PHARMA_BOOTSTRAP_OWNER_USERNAME=owner
-   PHARMA_BOOTSTRAP_OWNER_PASSWORD=replace-with-a-strong-unique-password
-   PHARMA_BOOTSTRAP_OWNER_FULL_NAME=Pharmacy Owner
-   PHARMA_BOOTSTRAP_PHARMACY_ID=local_default
-   ```
-   يتم تخزين كلمة المرور كـ bcrypt hash، ولا تُستخدم هذه المتغيرات إذا كان هناك مستخدم موجود بالفعل. مسار Tauri المكتبي لا يعتمد على هذا bootstrap.
+   لا تستخدم service-role key على أجهزة الصيدلية. التطبيق لا يستخدم Supabase للمصادقة أو نسخ بيانات الصيدلية احتياطياً.
 
-4. **تشغيل خادم التطوير**
+4. **تشغيل التطبيق المكتبي للتطوير**
    ```bash
-   npm run dev
-   # أو
-   yarn dev
-   # أو
-   pnpm dev
+   npm run tauri:dev
    ```
 
-5. **فتح المتصفح**
-   انتقل إلى `http://localhost:3000`
+5. **أول تثبيت**
+   يُنشئ ملف SQLite المضمّن حساب المالك `admin` عند التثبيت الأول؛ كلمة مروره الافتراضية `admin`. غيّر هذه الكلمة فوراً من إدارة الموظفين قبل استخدام بيانات حقيقية. لا يستبدل تحديث التطبيق قاعدة البيانات الحالية.
 
-### إعداد قاعدة البيانات
+### البيانات والنسخ الاحتياطية
 
-1. سجل الدخول إلى [Supabase Dashboard](https://supabase.com/dashboard)
-2. أنشئ مشروع جديد أو استخدم مشروع موجود
-3. انسخ `URL` و `anon key` إلى ملف `.env.local`
-4. (اختياري) قم بتشغيل سكربت إعداد قاعدة البيانات من مجلد `scripts/`
+- المرضى، الموظفون، الفواتير، المخزون والحسابات محفوظة في SQLite داخل مجلد بيانات التطبيق.
+- استعمل النسخ الاحتياطي المحلي من إعدادات التطبيق؛ لا توجد مهمة GitHub Actions لنسخ بيانات الصيدلية.
+- يمكن مزامنة جدولَي `cloud_drugs` و`cloud_drug_interactions` فقط باستعمال مفتاح Supabase العام.
 
 ## 📁 هيكل المشروع
 

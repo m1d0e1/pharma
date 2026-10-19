@@ -219,6 +219,7 @@ export function FinancialNoticeForm({
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submissionRef = useRef(false);
+  const noticeIntentRef = useRef<{ fingerprint: string; requestId: string } | null>(null);
   const [patients, setPatients] = useState<any[]>([]);
   const [suppliers, setSuppliers] = useState<any[]>([]);
   const [selectorLoadError, setSelectorLoadError] = useState(false);
@@ -285,10 +286,18 @@ export function FinancialNoticeForm({
 
     if (submissionRef.current) return;
     submissionRef.current = true;
+    const fingerprint = JSON.stringify(formData);
+    if (noticeIntentRef.current?.fingerprint !== fingerprint) {
+      noticeIntentRef.current = { fingerprint, requestId: crypto.randomUUID() };
+    }
     setIsSubmitting(true);
     try {
-      const res = await addFinancialNoticeAction(formData as any);
+      const res = await addFinancialNoticeAction({
+        ...formData,
+        request_id: noticeIntentRef.current.requestId,
+      });
       if (res.success) {
+         noticeIntentRef.current = null;
          toast.success('تم حفظ الإشعار المالي بنجاح');
          setFormData(prev => ({
            ...prev,

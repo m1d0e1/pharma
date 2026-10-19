@@ -6,6 +6,7 @@ import { toast } from 'react-hot-toast';
 import { useRouter } from 'next/navigation';
 import { getClientSession } from '@/lib/auth/local';
 import { isStaffOwner } from '@/lib/auth/staff-policy';
+import { Settings } from 'lucide-react';
 
 export default function LocalUserManagement() {
   const router = useRouter();
@@ -72,7 +73,7 @@ export default function LocalUserManagement() {
   if (!allowed) return null;
 
   return (
-    <div className="bg-white dark:bg-slate-900 p-8 rounded-[2rem] border border-slate-100 dark:border-slate-800 shadow-xl">
+    <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between mb-8">
         <div>
           <h4 className="text-xl font-bold text-slate-900 dark:text-white">إدارة المستخدمين المحليين</h4>
@@ -131,7 +132,7 @@ export default function LocalUserManagement() {
                   className="p-2 rounded-lg text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
                   title="تعديل الموظف وصلاحياته"
                 >
-                  ⚙️
+                  <Settings className="w-4 h-4" aria-hidden="true" />
                 </button>
               </div>
             </div>

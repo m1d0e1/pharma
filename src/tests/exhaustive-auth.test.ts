@@ -450,8 +450,20 @@ describe('1–13: Login Scenarios — Tauri (localStorage)', () => {
       dbExecute: jest.fn(() => Promise.resolve({ rowsAffected: 1 })),
     }));
 
+    let authenticated: any = null;
     jest.doMock('@tauri-apps/api/core', () => ({
       invoke: jest.fn((cmd: string, args: any) => {
+        if (cmd === 'authenticate_local') {
+          const user = users[args.username];
+          if (!user) return Promise.resolve({ success: false, error: 'المستخدم غير موجود' });
+          if (!user.is_active) return Promise.resolve({ success: false, error: 'الحساب غير نشط' });
+          if (!bcrypt.compareSync(args.password, user.password_hash)) return Promise.resolve({ success: false, error: 'كلمة المرور غير صحيحة' });
+          const { password_hash: _hash, is_active: _active, ...publicUser } = user;
+          authenticated = publicUser;
+          return Promise.resolve({ success: true, user: publicUser });
+        }
+        if (cmd === 'current_local_user') return Promise.resolve(authenticated);
+        if (cmd === 'logout_local') { authenticated = null; return Promise.resolve(null); }
         if (cmd === 'bcrypt_compare') {
           return Promise.resolve(bcrypt.compareSync(args.password, args.hash));
         }
@@ -611,7 +623,7 @@ describe('38–43: Session Scenarios', () => {
       dbExecute: jest.fn(() => Promise.resolve({ rowsAffected: 1 })),
     }));
     jest.doMock('@tauri-apps/api/core', () => ({
-      invoke: jest.fn(() => Promise.resolve(true)),
+      invoke: jest.fn(() => Promise.resolve(null)),
     }));
 
     const { getLocalSession } = await import('@/lib/auth/local');
@@ -630,7 +642,7 @@ describe('38–43: Session Scenarios', () => {
       dbExecute: jest.fn(() => Promise.reject(new Error('DB connection lost'))),
     }));
     jest.doMock('@tauri-apps/api/core', () => ({
-      invoke: jest.fn(() => Promise.resolve(true)),
+      invoke: jest.fn(() => Promise.reject(new Error('DB connection lost'))),
     }));
 
     const { getClientSession } = await import('@/lib/auth/local');

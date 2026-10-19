@@ -69,13 +69,12 @@ it.each(['not-a-date','2026-02-30'])('rejects invalid supplier-payment date %s',
   expect(result.success).toBe(false);
 });
 
-it('stores a supplier payment business date separately from its UTC creation instant', async () => {
+it('does not post a supplier payment at any business date without ownership provenance', async () => {
   mockDb.prepare("INSERT INTO suppliers(id,name_ar,balance) VALUES(1,'Audit supplier',100)").run();
   const result = await addSupplierPaymentAction({ supplier_id: 1, amount: 10, payment_method: 'bank', date: '2026-09-01' });
-  expect(result.success).toBe(true);
-  const row = mockDb.prepare("SELECT date,created_at FROM supplier_transactions WHERE type='payment'").get() as any;
-  expect(row.date).toBe('2026-09-01');
-  expect(Math.abs(Date.now() - Date.parse(`${row.created_at.replace(' ', 'T')}Z`))).toBeLessThan(2000);
+  expect(result.success).toBe(false);
+  expect(mockDb.prepare('SELECT balance FROM suppliers WHERE id=1').get()).toEqual({ balance: 100 });
+  expect(mockDb.prepare("SELECT date,created_at FROM supplier_transactions WHERE type='payment'").get()).toBeUndefined();
 });
 
 it.each(['not-a-date','2026-02-30'])('rejects invalid commercial-paper due date %s', async due_date => {

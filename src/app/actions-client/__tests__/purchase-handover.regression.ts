@@ -422,6 +422,9 @@ describe('purchase reports and drawer handover regressions', () => {
   });
 
   it('creates a purchase then lists and opens it from purchase reports', async () => {
+    // This report fixture must have explicit ownership; local_default/null
+    // provenance is intentionally rejected by the browser/native boundaries.
+    mockSession = { ...mockSession, pharmacy_id: 'tenant-report-fixture' };
     const created = await createPurchaseInvoiceAction({
       supplier_id: 1,
       invoice_number: 'PO-REPORT-1',
@@ -575,6 +578,12 @@ describe('purchase reports and drawer handover regressions', () => {
 
       UPDATE sales_invoices SET paid_amount = 30, remaining_amount = 70 WHERE id = 'partial-credit';
       UPDATE sales_invoices SET paid_amount = 50, remaining_amount = 0 WHERE id = 'paid-credit';
+      -- These are newly authored fictional rows for this synthetic pharmacy,
+      -- not legacy NULL-owned financial history. Unlinked rows stay unowned.
+      UPDATE sales_invoices SET pharmacy_id = 'local_default'
+        WHERE shift_id = 'shift-1' AND pharmacy_id IS NULL;
+      UPDATE returns SET pharmacy_id = 'local_default'
+        WHERE shift_id = 'shift-1' AND pharmacy_id IS NULL;
     `);
 
     const openShift = await getOpenShiftHandoverAction();
@@ -920,6 +929,11 @@ describe('purchase reports and drawer handover regressions', () => {
         ('visa-sale', 'admin', 'cash-shift', 99, 'visa', 'completed');
       INSERT INTO returns (id, invoice_id, user_id, shift_id, total_refund, refund_method, status)
       VALUES ('cash-return', 'cash-sale', 'admin', 'cash-shift', 10, 'cash', 'approved');
+      -- Explicitly establish synthetic ownership before the secure drawer read.
+      UPDATE sales_invoices SET pharmacy_id = 'local_default'
+        WHERE shift_id = 'cash-shift';
+      UPDATE returns SET pharmacy_id = 'local_default'
+        WHERE shift_id = 'cash-shift';
     `);
 
     const receipt = await createCashMovementAction({
@@ -976,6 +990,9 @@ describe('purchase reports and drawer handover regressions', () => {
       expected_cash_amount: 6,
       cash_difference: -10,
     });
+    // Reporting requires a tenant claim; this fixture's shift and financial
+    // rows are newly created and explicitly attributed to local_default.
+    mockSession = { ...mockSession, pharmacy_id: 'local_default' };
     expect(await getShiftReportAction('cash-shift')).toMatchObject({
       success: true,
       data: {
@@ -1025,7 +1042,7 @@ describe('purchase reports and drawer handover regressions', () => {
     });
   });
 
-  it('links every user-triggered cash path to the collecting shift', async () => {
+  it('links delivery and expense cash to the collecting shift but rejects an unowned legacy patient wallet', async () => {
     mockDb.exec(`
       INSERT INTO patients (id, full_name, wallet_balance)
       VALUES ('wallet-patient', 'Wallet Patient', 0);
@@ -1038,13 +1055,20 @@ describe('purchase reports and drawer handover regressions', () => {
       ) VALUES (
         'delivery-invoice', 'admin', 'wallet-patient', 'delivery-origin-shift', 20, 'delivery', 'completed'
       );
+      UPDATE sales_invoices SET pharmacy_id = 'local_default'
+        WHERE id = 'delivery-invoice';
     `);
 
-    expect(await updatePatientWalletAction('wallet-patient', 25, 'cash top-up')).toMatchObject({ success: true, balance: 25 });
+    // The raw historical patient ID and sale are not a migration 061 ownership
+    // witness. It must not be possible to record 25 EGP cash and wallet debt
+    // against this shared account merely because the actor has an open shift.
+    expect(await updatePatientWalletAction('wallet-patient', 25, 'cash top-up')).toMatchObject({ success: false });
     expect(mockDb.prepare(
-      "SELECT action FROM activity_log WHERE action = 'PATIENT_WALLET_TOPUP' ORDER BY rowid DESC LIMIT 1"
-    ).get()).toEqual({ action: 'PATIENT_WALLET_TOPUP' });
-    expect(await addSupplierPaymentAction({ supplier_id: 1, amount: 10, payment_method: 'cash' })).toMatchObject({ success: true });
+      "SELECT COUNT(*) AS n FROM activity_log WHERE action = 'PATIENT_WALLET_TOPUP'"
+    ).get()).toEqual({ n: 0 });
+    // Shared supplier balances have no pharmacy ownership witness in browser
+    // mode; this source cannot post a cash supplier payment safely.
+    expect(await addSupplierPaymentAction({ supplier_id: 1, amount: 10, payment_method: 'cash' })).toMatchObject({ success: false });
     expect(await addExpenseAction({ category: 'rent', amount: 3, description: 'cash expense', date: '2026-08-22' })).toMatchObject({ success: true });
     const postedExpense = mockDb.prepare('SELECT id FROM expenses WHERE amount = 3').get() as any;
     expect(await deleteExpenseAction(postedExpense.id)).toMatchObject({ success: false });
@@ -1056,6 +1080,9 @@ describe('purchase reports and drawer handover regressions', () => {
       success: true,
       data: [expect.objectContaining({ id: 'delivery-invoice', status: 'delivered', total_amount: 22 })],
     });
+    // This in-memory shift is explicitly owned by the synthetic local tenant.
+    // No browser/native actor or previously unowned history is being claimed.
+    mockSession = { ...mockSession, pharmacy_id: 'local_default' };
     expect(await getShiftReportAction('delivery-origin-shift')).toMatchObject({
       success: true,
       data: {
@@ -1069,19 +1096,17 @@ describe('purchase reports and drawer handover regressions', () => {
       FROM cash_movements
       ORDER BY category
     `).all()).toEqual([
-      { category: 'accounts_payable', type: 'disbursement', amount: 10, shift_id: 'collecting-shift' },
       { category: 'delivery', type: 'receipt', amount: 22, shift_id: 'collecting-shift' },
       { category: 'operating_expenses', type: 'disbursement', amount: 3, shift_id: 'collecting-shift' },
-      { category: 'patient_wallet', type: 'receipt', amount: 25, shift_id: 'collecting-shift' },
     ]);
 
     expect(await getHandoverDetailsAction('collecting-shift')).toMatchObject({
       success: true,
       data: {
         cash_sales: 0,
-        receipts: 47,
-        disbursements: 13,
-        expected_cash: 34,
+        receipts: 22,
+        disbursements: 3,
+        expected_cash: 19,
       },
     });
   });
@@ -1282,7 +1307,7 @@ describe('purchase reports and drawer handover regressions', () => {
     expect((mockDb.prepare('SELECT COUNT(*) AS total FROM daily_journals').get() as any).total).toBe(journalCount);
   });
 
-  it('requires a check number and keeps supplier checks out of the cash drawer account', async () => {
+  it('requires a check number and refuses unowned shared supplier checks without posting entries', async () => {
     mockDb.prepare('UPDATE suppliers SET balance = 20 WHERE id = 1').run();
 
     expect(await addSupplierPaymentAction({
@@ -1300,24 +1325,16 @@ describe('purchase reports and drawer handover regressions', () => {
       amount: 5,
       payment_method: 'check',
       check_number: 'CHK-001',
-    })).toMatchObject({ success: true, remainingBalance: 15 });
+    })).toMatchObject({ success: false });
 
-    const journal = mockDb.prepare('SELECT id FROM daily_journals ORDER BY rowid DESC LIMIT 1').get() as any;
-    const cashAccount = mockDb.prepare("SELECT account_id FROM trial_balance_settings WHERE category = 'cash_drawer' ORDER BY id LIMIT 1").get() as any;
-    const bankAccount = mockDb.prepare("SELECT account_id FROM trial_balance_settings WHERE category = 'bank_clearing' ORDER BY id LIMIT 1").get() as any;
-    const credit = mockDb.prepare("SELECT account_id, amount FROM journal_entries WHERE journal_id = ? AND type = 'credit'").get(journal.id) as any;
-    expect(credit).toEqual({ account_id: Number(bankAccount?.account_id || 6), amount: 5 });
-    if (cashAccount?.account_id && bankAccount?.account_id && cashAccount.account_id !== bankAccount.account_id) {
-      expect(credit.account_id).not.toBe(cashAccount.account_id);
-    }
+    expect(mockDb.prepare('SELECT balance FROM suppliers WHERE id=1').get()).toEqual({ balance: 20 });
+    expect((mockDb.prepare('SELECT COUNT(*) AS total FROM daily_journals').get() as any).total).toBe(0);
+    expect((mockDb.prepare('SELECT COUNT(*) AS total FROM journal_entries').get() as any).total).toBe(0);
     expect((mockDb.prepare('SELECT COUNT(*) AS total FROM cash_movements').get() as any).total).toBe(0);
-    expect(mockDb.prepare("SELECT payment_method, notes FROM supplier_transactions WHERE type = 'payment' ORDER BY rowid DESC LIMIT 1").get()).toMatchObject({
-      payment_method: 'check',
-      notes: expect.stringContaining('CHK-001'),
-    });
+    expect((mockDb.prepare("SELECT COUNT(*) AS total FROM supplier_transactions WHERE type = 'payment'").get() as any).total).toBe(0);
   });
 
-  it('falls back to canonical account codes when supplier-payment mappings are missing', async () => {
+  it('rejects shared supplier payment even when canonical account mappings are missing', async () => {
     mockDb.prepare('UPDATE suppliers SET balance = 20 WHERE id = 1').run();
     mockDb.prepare("DELETE FROM trial_balance_settings WHERE category IN ('accounts_payable','bank_clearing')").run();
 
@@ -1326,33 +1343,24 @@ describe('purchase reports and drawer handover regressions', () => {
       amount: 5,
       payment_method: 'check',
       check_number: 'CHK-FALLBACK',
-    })).toMatchObject({ success: true });
+    })).toMatchObject({ success: false });
 
-    const journal = mockDb.prepare('SELECT id FROM daily_journals ORDER BY rowid DESC LIMIT 1').get() as any;
-    expect(mockDb.prepare(`
-      SELECT a.code, je.type, je.amount
-      FROM journal_entries je JOIN accounts a ON a.id = je.account_id
-      WHERE je.journal_id = ? ORDER BY je.type
-    `).all(journal.id)).toEqual([
-      { code: '1.1.4', type: 'credit', amount: 5 },
-      { code: '2.1', type: 'debit', amount: 5 },
-    ]);
+    expect(mockDb.prepare('SELECT balance FROM suppliers WHERE id=1').get()).toEqual({ balance: 20 });
+    expect((mockDb.prepare('SELECT COUNT(*) AS total FROM daily_journals').get() as any).total).toBe(0);
     expect((mockDb.prepare('SELECT COUNT(*) AS total FROM cash_movements').get() as any).total).toBe(0);
   });
 
-  it('ignores a corrupted noncanonical core mapping for supplier payment', async () => {
+  it('refuses shared supplier payment regardless of a corrupted account mapping', async () => {
     mockDb.prepare('UPDATE suppliers SET balance = 20 WHERE id = 1').run();
     mockDb.prepare("INSERT INTO accounts(code,name_ar,type,is_group) VALUES('9.8','Wrong AP','liability',0)").run();
     const wrong = mockDb.prepare("SELECT id FROM accounts WHERE code='9.8'").get() as any;
     mockDb.prepare("UPDATE trial_balance_settings SET account_id=? WHERE category='accounts_payable'").run(wrong.id);
 
     expect(await addSupplierPaymentAction({ supplier_id: 1, amount: 5, payment_method: 'check', check_number: 'CHK-CANONICAL' }))
-      .toMatchObject({ success: true });
+      .toMatchObject({ success: false });
 
-    expect(mockDb.prepare(`
-      SELECT a.code FROM journal_entries je JOIN accounts a ON a.id=je.account_id
-      WHERE je.type='debit' ORDER BY je.id DESC LIMIT 1
-    `).get()).toEqual({ code: '2.1' });
+    expect(mockDb.prepare('SELECT balance FROM suppliers WHERE id=1').get()).toEqual({ balance: 20 });
+    expect((mockDb.prepare('SELECT COUNT(*) AS total FROM journal_entries').get() as any).total).toBe(0);
   });
 
   it('rolls back supplier payment when neither mapping nor canonical fallback account exists', async () => {
@@ -2409,8 +2417,8 @@ describe('purchase reports and drawer handover regressions', () => {
 
     // 3. Perform a sale in this shift (100 cash)
     mockDb.prepare(`
-      INSERT INTO sales_invoices (id, shift_id, user_id, payment_method, total_amount, paid_amount, remaining_amount, status)
-      VALUES ('inv-test-1', ?, 'user-cashier', 'cash', 100, 100, 0, 'completed')
+      INSERT INTO sales_invoices (id, shift_id, user_id, payment_method, total_amount, paid_amount, remaining_amount, status, pharmacy_id)
+      VALUES ('inv-test-1', ?, 'user-cashier', 'cash', 100, 100, 0, 'completed', 'local_default')
     `).run(shiftId);
 
     // Expected cash = 50 + 100 = 150
@@ -2501,8 +2509,8 @@ describe('purchase reports and drawer handover regressions', () => {
       VALUES ('user-next-cashier', 'next_cashier', 'hash', 'pharmacist', 'كاشير الوردية التالية');
       INSERT INTO shifts (id, user_id, start_time, starting_cash, status)
       VALUES ('shift-unconfigured-tb', 'admin', '2026-08-26 08:00:00', 100, 'open');
-      INSERT INTO sales_invoices (id, user_id, shift_id, total_amount, payment_method, status)
-      VALUES ('sale-unconfigured', 'admin', 'shift-unconfigured-tb', 200, 'cash', 'completed');
+      INSERT INTO sales_invoices (id, user_id, shift_id, total_amount, payment_method, status, pharmacy_id)
+      VALUES ('sale-unconfigured', 'admin', 'shift-unconfigured-tb', 200, 'cash', 'completed', 'local_default');
     `);
 
     // Expected cash: 100 + 200 = 300

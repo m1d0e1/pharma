@@ -3,6 +3,7 @@ import { dbSelect, dbExecute, dbGet, dbTransaction, generateId } from '@/lib/db/
 import { ensurePermanentShiftForUser, getShiftForPharmacy } from './shifts';
 import { notifyInventoryChanged } from '@/lib/inventory/refresh';
 import { resolveDrugUnitProfile } from '@/lib/inventory/unit-profile';
+import { unitQuantityInLarge } from '@/lib/inventory/unit-quantity';
 
 function normalizeDateToYMD(dateStr: string | null | undefined): string | null {
   if (!dateStr) return null;
@@ -83,12 +84,6 @@ const CheckoutRequestSchema = z.object({
   points_to_redeem: z.coerce.number().int().nonnegative().optional().default(0),
 });
 
-function saleStockQty(quantity: number, unit: string, largeToMedium: number, mediumToSmall: number, mediumUnit?: string, smallUnit?: string) {
-  if (unit === 'medium' || unit === 'strip' || unit === 'شريط' || unit === mediumUnit) return quantity / largeToMedium;
-  if (unit === 'small' || unit === smallUnit) return quantity / (largeToMedium * mediumToSmall);
-  return quantity;
-}
-
 function canUsePos(user: any): boolean {
   return !!user && hasUserPermissionSync(user, 'can_access_pos');
 }
@@ -142,12 +137,14 @@ async function validateCheckoutPrices(items: z.infer<typeof CheckoutItemSchema>[
     if (!priceRow) return false;
     const largeToMedium = Math.max(1, Number(priceRow.large_to_medium) || 1);
     const mediumToSmall = Math.max(1, Number(priceRow.medium_to_small) || 1);
-    let expectedPrice = Number(priceRow.large_price) || 0;
-    if (['medium', 'strip', 'شريط', priceRow.medium_unit].includes(item.selected_unit)) {
-      expectedPrice /= largeToMedium;
-    } else if (['small', priceRow.small_unit].includes(item.selected_unit)) {
-      expectedPrice /= largeToMedium * mediumToSmall;
-    }
+    let expectedPrice = unitQuantityInLarge(
+      Number(priceRow.large_price) || 0,
+      item.selected_unit,
+      largeToMedium,
+      mediumToSmall,
+      priceRow.medium_unit,
+      priceRow.small_unit,
+    );
     expectedPrice *= 1 - (Number(item.item_discount_percent) || 0) / 100;
     if (Math.abs(expectedPrice - Number(item.unit_price)) > 0.011) return false;
   }
@@ -162,6 +159,15 @@ export async function searchDrugsAction(searchTerm: string, limit = 20, searchBy
 
     if (!searchTerm || searchTerm.trim().length === 0) {
       return { success: true, data: [] };
+    }
+
+    // The signed desktop release forbids renderer-selected business SQL.
+    // Never consult a potentially stale cross-tenant catalogue cache or pass a
+    // renderer-claimed pharmacy/user to a native search command.
+    if (isTauri) {
+      return { success: true, data: await nativePosDrugSearch(
+        searchTerm, limit, searchByActiveIngredient,
+      ) };
     }
 
     let exactMatch: any = null;
@@ -357,6 +363,80 @@ export async function searchDrugsAction(searchTerm: string, limit = 20, searchBy
   }
 }
 
+async function nativePosDrugSearch(searchTerm: string, limit: number, ingredient: boolean): Promise<any[]> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  const term = searchTerm.trim().toLowerCase();
+  if (!term || term.length > 128 || term.includes('\0') || !Number.isInteger(limit) || limit < 1 || limit > 100) {
+    throw new Error('Invalid native POS search bounds');
+  }
+  const variants = getSearchVariants(term);
+  const terms = Array.from(new Set([
+    ...variants.searchTerms,
+    ...(variants.compactQuery.length >= 2 ? [variants.compactQuery] : []),
+    term,
+  ])).filter(item => item.length > 0 && item.length <= 128).slice(0, 12);
+  const candidates = new Map<string, any>();
+  for (const search of terms) {
+    // A suggestion search is deliberately bounded, as the legacy path was.
+    // Iterate native pages to avoid arbitrarily discarding relevant matches.
+    for (let offset = 0; offset < 2400; offset += 200) {
+      const page = await invoke<any[]>('db_read_scoped', {
+        queryId: 'pos.search_candidates', recordId: ingredient ? 'ingredient' : 'name',
+        search, drugId: null, limit: 200, offset,
+      });
+      if (!Array.isArray(page) || page.length > 200 || page.some(row =>
+        !row || typeof row !== 'object' || !Number.isSafeInteger(Number(row.id)) || Number(row.id) <= 0
+      )) throw new Error('Invalid native POS search page');
+      for (const row of page) candidates.set(String(row.id), row);
+      if (page.length < 200) break;
+    }
+  }
+
+  const selected = Array.from(candidates.values()).map(drug => ({
+    drug,
+    score: getRelevanceScore(drug, term) + (Number(drug.total_stock) > 0 ? 1000 : 0),
+  })).sort((a, b) => b.score - a.score || Number(a.drug.id) - Number(b.drug.id)).slice(0, limit);
+  const batches = await Promise.all(selected.map(async ({ drug }) => {
+    return nativeBarcodeRows('pos.barcode_batches', null, Number(drug.id));
+  }));
+  const today = format(new Date(), 'yyyy-MM-dd');
+  return selected.map(({ drug }, index) => {
+    const rawLargeToMedium = Number(drug.max_strips) > 1 ? Number(drug.max_strips) : (drug.large_to_medium || 1);
+    const unitProfile = resolveDrugUnitProfile({ ...drug, large_to_medium: rawLargeToMedium });
+    const stock = Number(drug.total_stock) || 0;
+    // Only owners/inventory managers receive cost from Rust; a cashier never
+    // learns it via this response or an unrelated pharmacy's inventory.
+    const cost = Number(drug.avg_cost_price) || 0;
+    const price = Number(drug.min_price) || Number(drug.official_price) || 0;
+    return {
+      id: drug.id,
+      trade_name: drug.trade_name_en || drug.trade_name || 'بدون اسم تجاري',
+      active_ingredient: drug.active_ingredient || drug.generic_name || '---',
+      category: drug.category, official_price: drug.official_price,
+      total_stock: stock, min_price: price, cost_price: cost,
+      nearest_expiry: drug.nearest_expiry,
+      is_expired: drug.nearest_expiry ? (normalizeDateToYMD(drug.nearest_expiry) || '') < today : false,
+      large_unit: unitProfile.largeUnit, medium_unit: unitProfile.mediumUnit,
+      small_unit: unitProfile.smallUnit, large_to_medium: unitProfile.largeToMedium,
+      medium_to_small: unitProfile.mediumToSmall, reorder_point: drug.reorder_point || 0,
+      profit_margin: price > 0 && cost > 0 ? Math.round(((price - cost) / price) * 100) : null,
+      needs_reorder: drug.reorder_point ? stock <= Number(drug.reorder_point) : false,
+      batches: batches[index].map((lot: any) => ({
+        inventory_id: lot.inventory_id, quantity: lot.quantity,
+        expiry_date: lot.expiry_date ? normalizeDateToYMD(lot.expiry_date) : null,
+        unit_price: lot.local_selling_price || drug.official_price,
+        strips_per_box: unitProfile.isSingleContainer ? 1 :
+          (Number(lot.strips_per_box) > 0 ? Number(lot.strips_per_box) : (drug.large_to_medium || 1)),
+        medium_to_small: unitProfile.isSingleContainer ? 1 :
+          (Number(lot.medium_to_small) > 0 ? Number(lot.medium_to_small) : (drug.medium_to_small || 1)),
+      })),
+      units: { large: unitProfile.largeUnit, medium: unitProfile.mediumUnit,
+        small: unitProfile.smallUnit, large_to_medium: unitProfile.largeToMedium,
+        medium_to_small: unitProfile.mediumToSmall },
+    };
+  });
+}
+
 export async function searchPatientsAction(query: string) {
   try {
     const localUser = await getLocalSession();
@@ -390,6 +470,29 @@ export async function searchPatientsAction(query: string) {
   }
 }
 
+async function nativeBarcodeRows(
+  queryId: 'pos.barcode_candidates' | 'pos.barcode_first' | 'pos.barcode_batches',
+  barcode: string | null,
+  drugId: number | null,
+): Promise<any[]> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  const paginated = queryId === 'pos.barcode_batches';
+  const limit = paginated ? 200 : queryId === 'pos.barcode_candidates' ? 2 : 1;
+  const rows: any[] = [];
+  for (let offset = 0; offset <= 50_000; offset += limit) {
+    const page = await invoke<any[]>('db_read_scoped', {
+      queryId, recordId: null, limit, offset,
+      search: barcode, drugId,
+    });
+    if (!Array.isArray(page) || page.length > limit) {
+      throw new Error('Invalid native POS barcode page');
+    }
+    rows.push(...page);
+    if (!paginated || page.length < limit) return rows;
+  }
+  throw new Error('POS stock exceeds native paging bound; refusing truncated batches');
+}
+
 export async function barcodeLookupAction(barcode: string) {
   try {
     const localUser = await getLocalSession();
@@ -402,7 +505,9 @@ export async function barcodeLookupAction(barcode: string) {
     }
 
     const today = format(new Date(), 'yyyy-MM-dd');
-    const matchingDrugs = await db.prepare(`
+    const matchingDrugs = isTauri ? await nativeBarcodeRows(
+      'pos.barcode_candidates', normalizedBarcode, null
+    ) : await db.prepare(`
       SELECT DISTINCT md.id
       FROM master_drugs md
       INNER JOIN inventory i ON md.id = i.drug_id
@@ -420,7 +525,9 @@ export async function barcodeLookupAction(barcode: string) {
       return { success: false, error: 'الباركود مرتبط بأكثر من صنف؛ يرجى تصحيحه من إدارة الأصناف' };
     }
 
-    const drug = await db.prepare(`
+    const drug = isTauri ? (await nativeBarcodeRows(
+      'pos.barcode_first', normalizedBarcode, null
+    ))[0] : await db.prepare(`
       SELECT
         md.id,
         md.trade_name,
@@ -461,7 +568,9 @@ export async function barcodeLookupAction(barcode: string) {
     const unitProfile = resolveDrugUnitProfile({ ...drug, large_to_medium: rawLargeToMedium });
     const actualLargeToMedium = unitProfile.largeToMedium;
 
-    const drugBatches = await db.prepare(`
+    const drugBatches = isTauri ? await nativeBarcodeRows(
+      'pos.barcode_batches', null, Number(drug.id)
+    ) : await db.prepare(`
       SELECT id as inventory_id, quantity, expiry_date, local_selling_price, cost_price, strips_per_box, medium_to_small
       FROM inventory
       WHERE drug_id = ?
@@ -528,8 +637,31 @@ export async function fetchDraftsAction() {
 
     const pharmacyId = localUser.pharmacy_id || 'local_default';
 
+    // All three suspended-invoice reads are fixed native queries in desktop
+    // builds. Never fall back to renderer SQL when native authorization fails.
+    const nativeSuspendedSelect = async (
+      queryId: 'sales.suspended.list' | 'sales.suspended.items' | 'sales.suspended.batches',
+      recordId: string | null = null,
+    ): Promise<any[]> => {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const result: any[] = [];
+      const pageSize = 200;
+      for (let offset = 0; offset <= 50_000; offset += pageSize) {
+        const page = await invoke<any[]>('db_read_scoped', {
+          queryId, recordId, limit: pageSize, offset, search: null, drugId: null,
+        });
+        if (!Array.isArray(page) || page.length > pageSize ||
+            page.some(row => !row || typeof row !== 'object' || Array.isArray(row))) {
+          throw new Error('Invalid native suspended-invoice response');
+        }
+        result.push(...page);
+        if (page.length < pageSize) return result;
+      }
+      throw new Error('Suspended invoices exceed the bounded native read window');
+    };
+
     // Fetch draft invoices with their items and patient info
-    const drafts = await db.prepare(`
+    const drafts = isTauri ? await nativeSuspendedSelect('sales.suspended.list') : await db.prepare(`
       SELECT 
         si.id,
         si.total_amount,
@@ -547,7 +679,7 @@ export async function fetchDraftsAction() {
 
     // For each draft, fetch items
     const draftsWithItems = await Promise.all((drafts as any[]).map(async (draft: any) => {
-      const items = await db.prepare(`
+      const items = isTauri ? await nativeSuspendedSelect('sales.suspended.items', String(draft.id)) : await db.prepare(`
         SELECT 
           si.drug_id,
           si.quantity_sold as qty,
@@ -576,7 +708,9 @@ export async function fetchDraftsAction() {
           .map((item: any) => item.drug_id)
           .filter((drugId: any) => drugId !== null && drugId !== undefined)
       ));
-      const liveBatches = liveDrugIds.length > 0 ? await db.prepare(`
+      const liveBatches = liveDrugIds.length > 0 ? (isTauri
+        ? await nativeSuspendedSelect('sales.suspended.batches', String(draft.id))
+        : await db.prepare(`
         SELECT id as inventory_id, drug_id, quantity, expiry_date, local_selling_price, strips_per_box, medium_to_small
         FROM inventory
         WHERE drug_id IN (${liveDrugIds.map(() => '?').join(',')})
@@ -588,7 +722,7 @@ export async function fetchDraftsAction() {
           )
           AND (expiry_date IS NULL OR expiry_date >= ?)
         ORDER BY CASE WHEN expiry_date IS NULL THEN 1 ELSE 0 END, expiry_date ASC, created_at ASC
-      `).all(...liveDrugIds, pharmacyId, pharmacyId, today) as any[] : [];
+      `).all(...liveDrugIds, pharmacyId, pharmacyId, today) as any[]) : [];
 
       const mappedItems = (items as any[]).map((item: any) => {
         const batches = item.is_negative
@@ -714,10 +848,13 @@ export async function processCheckoutAction(data: any) {
     }
     const combinedDiscount = validatedData.total_discount + loyaltyDiscount;
     const requestedTotalAmount = calculateCheckoutTotal(validatedData.items, combinedDiscount, validatedData.additional_fees || 0);
-    if (!hasUserPermissionSync(localUser, 'can_change_price_sale') && !(await validateCheckoutPrices(validatedData.items, pharmacyId))) {
+    // Native checkout validates pricing and lot ownership INSIDE its writer
+    // transaction. The generic renderer SELECT path is prohibited in the
+    // strict release, and a separate JS preflight would be a TOCTOU race.
+    if (!isTauri && !hasUserPermissionSync(localUser, 'can_change_price_sale') && !(await validateCheckoutPrices(validatedData.items, pharmacyId))) {
       return { success: false, error: 'غير مصرح بتغيير سعر الصنف أثناء البيع' };
     }
-    if (validatedData.source_draft_id) {
+    if (!isTauri && validatedData.source_draft_id) {
       if (!hasUserPermissionSync(localUser, 'show_suspended_invoices')) {
         return { success: false, error: 'غير مصرح باستكمال الفواتير المعلقة' };
       }
@@ -728,21 +865,18 @@ export async function processCheckoutAction(data: any) {
       if (sourceDraftError) return { success: false, error: sourceDraftError };
     }
     const requestedShiftId = validatedData.shift_id ? String(validatedData.shift_id) : null;
-    const requestedShift = requestedShiftId
-      ? await getShiftForPharmacy(requestedShiftId, pharmacyId, true)
-      : null;
-    const permanentShift = requestedShift || await ensurePermanentShiftForUser(userId);
-    const shiftId = permanentShift?.id ? String(permanentShift.id) : null;
 
     if (isTauri) {
       const { invoke } = await import('@tauri-apps/api/core');
       const result = await invoke('process_checkout_critical', {
+        requestId: typeof data.request_id === 'string' && data.request_id
+          ? data.request_id : crypto.randomUUID(),
         payload: {
-          pharmacy_id: pharmacyId,
-          user_id: userId,
           items: validatedData.items,
           patient_id: validatedData.patient_id ? String(validatedData.patient_id) : null,
-          shift_id: shiftId,
+          // The native checkout owns shift resolution inside its sale transaction.
+          // Creating a shift before invoking it would survive a failed sale.
+          shift_id: requestedShiftId,
           source_draft_id: validatedData.source_draft_id ? String(validatedData.source_draft_id) : null,
           payment_method: validatedData.payment_method,
           check_number: normalizedCheckNumber || null,
@@ -752,6 +886,19 @@ export async function processCheckoutAction(data: any) {
           points_to_redeem: validatedData.points_to_redeem || 0,
         }
       }) as any;
+
+      // Do not clear the POS cart or signal a stock change for a missing/invalid
+      // native commit acknowledgment. A retry must keep its original request_id.
+      if (
+        !result ||
+        typeof result.sale_id !== 'string' ||
+        !result.sale_id.trim() ||
+        typeof result.total_amount !== 'number' ||
+        !Number.isFinite(result.total_amount) ||
+        result.total_amount < 0
+      ) {
+        throw new Error('تعذر تأكيد حفظ فاتورة البيع؛ أعد المحاولة بنفس رقم الطلب');
+      }
 
       if (validatedData.status === 'completed') notifyInventoryChanged();
 
@@ -767,6 +914,13 @@ export async function processCheckoutAction(data: any) {
         }
       };
     }
+
+    // Standalone fallback remains unchanged; it is not executed by desktop checkout.
+    const requestedShift = requestedShiftId
+      ? await getShiftForPharmacy(requestedShiftId, pharmacyId, true)
+      : null;
+    const permanentShift = requestedShift || await ensurePermanentShiftForUser(userId);
+    const shiftId = permanentShift?.id ? String(permanentShift.id) : null;
 
     // Patient Financial Validation
     let patientLoyaltyLevel: string | null = null;
@@ -941,7 +1095,7 @@ export async function processCheckoutAction(data: any) {
             const batchMediumToSmall = Number(batch.medium_to_small) > 0
               ? Number(batch.medium_to_small)
               : mediumToSmall;
-            const stockPerSelectedUnit = saleStockQty(
+            const stockPerSelectedUnit = unitQuantityInLarge(
               1,
               item.selected_unit,
               batchLargeToMedium,
@@ -967,7 +1121,7 @@ export async function processCheckoutAction(data: any) {
             const batchMediumToSmall = Number(batch.medium_to_small) > 0
               ? Number(batch.medium_to_small)
               : mediumToSmall;
-            const stockPerSelectedUnit = saleStockQty(
+            const stockPerSelectedUnit = unitQuantityInLarge(
               1,
               item.selected_unit,
               batchLargeToMedium,
@@ -1148,8 +1302,36 @@ export async function getSalesDashboardStatsAction() {
     if (!localUser || !hasUserPermissionSync(localUser, 'rep_can_view_sales')) return { success: false, error: 'غير مصرح' };
     const pharmacyId = localUser.pharmacy_id || 'local_default';
 
+    // Production native reports never accept SQL, user ID, or pharmacy ID
+    // from the renderer. The native session enforces reporting permission.
+    type NativeSalesStats = {
+      today_total: number;
+      yesterday_total: number;
+      delivery_count: number;
+      pending_delivery_count: number;
+      today_average: number;
+      yesterday_average: number;
+    };
+    let nativeStats: NativeSalesStats | null = null;
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const rows = await invoke<NativeSalesStats[]>('db_read_scoped', {
+        queryId: 'sales.dashboard_stats', recordId: null,
+        limit: 1, offset: 0, search: null, drugId: null,
+      });
+      const required = [
+        'today_total', 'yesterday_total', 'delivery_count',
+        'pending_delivery_count', 'today_average', 'yesterday_average',
+      ] as const;
+      if (!Array.isArray(rows) || rows.length !== 1 || !rows[0] ||
+          required.some(key => typeof rows[0][key] !== 'number' || !Number.isFinite(rows[0][key]))) {
+        throw new Error('Invalid native sales dashboard response');
+      }
+      nativeStats = rows[0];
+    }
+
     // Today's Sales
-    const todaySalesRow = await db.prepare(`
+    const todaySalesRow = nativeStats ? { total: nativeStats.today_total } : await db.prepare(`
       SELECT COALESCE(SUM(total_amount), 0) as total 
       FROM sales_invoices 
       WHERE DATE(created_at, 'localtime') = DATE('now', 'localtime')
@@ -1159,7 +1341,7 @@ export async function getSalesDashboardStatsAction() {
     const todaySales = todaySalesRow?.total || 0;
 
     // Yesterday's Sales
-    const yesterdaySalesRow = await db.prepare(`
+    const yesterdaySalesRow = nativeStats ? { total: nativeStats.yesterday_total } : await db.prepare(`
       SELECT COALESCE(SUM(total_amount), 0) as total 
       FROM sales_invoices 
       WHERE DATE(created_at, 'localtime') = DATE('now', '-1 day', 'localtime')
@@ -1181,7 +1363,7 @@ export async function getSalesDashboardStatsAction() {
     }
 
     // Delivery Stats
-    const deliveryCountRow = await db.prepare(`
+    const deliveryCountRow = nativeStats ? { total: nativeStats.delivery_count } : await db.prepare(`
       SELECT COUNT(*) as total 
       FROM sales_invoices 
       WHERE payment_method = 'delivery'
@@ -1191,7 +1373,7 @@ export async function getSalesDashboardStatsAction() {
     `).get(pharmacyId, pharmacyId) as any;
     const deliveryCount = deliveryCountRow?.total || 0;
 
-    const pendingDeliveryRow = await db.prepare(`
+    const pendingDeliveryRow = nativeStats ? { pending: nativeStats.pending_delivery_count } : await db.prepare(`
       SELECT COUNT(*) as pending 
       FROM sales_invoices 
       WHERE payment_method = 'delivery'
@@ -1202,7 +1384,7 @@ export async function getSalesDashboardStatsAction() {
     const pendingDeliveryCountText = `يوجد ${pendingDeliveryCount} طلبات قيد الانتظار`;
 
     // Average Invoice
-    const todayAvgInvoiceRow = await db.prepare(`
+    const todayAvgInvoiceRow = nativeStats ? { avg_val: nativeStats.today_average } : await db.prepare(`
       SELECT COALESCE(AVG(total_amount), 0) as avg_val 
       FROM sales_invoices 
       WHERE DATE(created_at, 'localtime') = DATE('now', 'localtime')
@@ -1211,7 +1393,7 @@ export async function getSalesDashboardStatsAction() {
     `).get(pharmacyId, pharmacyId) as any;
     const averageInvoice = Math.round(todayAvgInvoiceRow?.avg_val || 0);
 
-    const yesterdayAvgInvoiceRow = await db.prepare(`
+    const yesterdayAvgInvoiceRow = nativeStats ? { avg_val: nativeStats.yesterday_average } : await db.prepare(`
       SELECT COALESCE(AVG(total_amount), 0) as avg_val 
       FROM sales_invoices 
       WHERE DATE(created_at, 'localtime') = DATE('now', '-1 day', 'localtime')

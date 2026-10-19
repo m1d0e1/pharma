@@ -602,11 +602,28 @@ describe.each(databaseVariants)('$name deletion invariants', ({ initialize }) =>
   it('edits drug card and synchronizes prices on both fresh and upgraded databases', async () => {
     insertUserAndDrug(3001);
     mockDb.prepare(`
-      INSERT INTO inventory (id, pharmacy_id, drug_id, quantity, local_selling_price, barcode)
-      VALUES ('inv-3001', 'local_default', 3001, 10, 10, 'BAR-OLD')
+      INSERT INTO inventory (id, pharmacy_id, drug_id, quantity, local_selling_price, barcode, updated_at)
+      VALUES ('inv-3001', 'local_default', 3001, 10, 12, 'BAR-OLD', '2026-01-02 03:04:05')
     `).run();
 
-    // 1. Edit drug card with full fields
+    // 1. An unrelated card edit must not normalize an intentionally different
+    // lot selling price or make the lot look newly updated.
+    const metadataOnlyEdit = await updateMasterDrugAction(3001, {
+      trade_name: 'Drug 3001',
+      trade_name_en: 'Drug 3001',
+      official_price: 10,
+      manufacturer: 'Updated Manufacturer',
+      code_2: 'META-ONLY',
+    });
+    expect(metadataOnlyEdit).toEqual({ success: true });
+    expect(mockDb.prepare(`
+      SELECT local_selling_price, updated_at FROM inventory WHERE id = 'inv-3001'
+    `).get()).toEqual({
+      local_selling_price: 12,
+      updated_at: '2026-01-02 03:04:05',
+    });
+
+    // 2. A real master-price edit still synchronizes inventory selling prices.
     const editRes = await updateMasterDrugAction(3001, {
       trade_name: 'بانادول اكسترا معدل',
       trade_name_en: 'Panadol Extra Modified',
@@ -633,11 +650,11 @@ describe.each(databaseVariants)('$name deletion invariants', ({ initialize }) =>
     expect(updated.barcode).toBe('6221234567890');
     expect(updated.active_ingredient).toBe('Paracetamol 500mg + Caffeine 65mg');
 
-    // 2. Verify inventory selling price synchronized
+    // 3. Verify inventory selling price synchronized
     const invRow = mockDb.prepare('SELECT local_selling_price, barcode FROM inventory WHERE id = ?').get('inv-3001') as any;
     expect(invRow.local_selling_price).toBe(25.5);
 
-    // 3. Edit drug card with English name only fallback
+    // 4. Edit drug card with English name only fallback
     const editNameOnly = await updateMasterDrugAction(3001, {
       trade_name_en: 'Panadol Extra Pure EN',
       official_price: 30,

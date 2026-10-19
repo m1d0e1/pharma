@@ -6,9 +6,12 @@ import { getTrialBalanceAction } from '@/app/actions-client/finance';
 import { Card, CardContent } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import TableScrollContainer from '@/components/ui/TableScrollContainer';
-import { Printer, RefreshCw, Download, Calendar, Search, CheckCircle2, AlertCircle, TrendingUp, TrendingDown, Minus } from 'lucide-react';
+import { Printer, RefreshCw, Download, Calendar, Search, CheckCircle2, AlertCircle, TrendingUp, TrendingDown, Minus, BarChart3, ReceiptText, ShoppingCart, Scale } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { hasUserPermissionSync } from '@/lib/auth/local';
+import { isTauri } from '@/lib/env';
+
+const NATIVE_SCOPE_NOTICE = 'هذا الميزان يضم القيود المثبتة باسم الصيدلية الحالية فقط. قيود local_default التاريخية غير منسوبة إلى هذه الصيدلية ومستبعدة، ولا يؤكد هذا التقرير اكتمال الأرصدة التاريخية.';
 
 // ponytail: label map — extend as chart of accounts grows
 const ACCOUNT_TYPE_LABEL: Record<string, string> = {
@@ -49,6 +52,7 @@ export default function TrialBalanceReport({ userRole, user }: { userRole?: stri
     const requestId = ++requestRef.current;
     setLoading(true);
     setLoadError(null);
+    setData([]);
     try {
       const res = await getTrialBalanceAction(s, e);
       if (requestId !== requestRef.current) return;
@@ -119,14 +123,16 @@ export default function TrialBalanceReport({ userRole, user }: { userRole?: stri
   const reportUser = user || (userRole ? { role: userRole } : null);
 
   const handleExport = () => {
-    if (!accounts.length) { toast.error('لا توجد بيانات للتصدير'); return; }
+    if (loading || loadError || !accounts.length) { toast.error('لا توجد بيانات مالية مؤكدة للتصدير'); return; }
     const header = ['الكود', 'اسم الحساب', 'نوع الحساب', 'الرصيد مدين', 'الرصيد دائن', 'حركة الفترة مدين', 'حركة الفترة دائن'];
     const rows = accounts.map(r => [
       r.code || '', r.name_ar || '', ACCOUNT_TYPE_LABEL[r.type] || r.type || '',
       (r.net_debit || 0).toFixed(2), (r.net_credit || 0).toFixed(2),
       (r.period_debit || 0).toFixed(2), (r.period_credit || 0).toFixed(2),
     ]);
-    const csv = '\uFEFF' + [header, ...rows].map(r => r.map(c => `"${c}"`).join(',')).join('\n');
+    const csvRows = [header, ...rows];
+    if (isTauri) csvRows.push(['نطاق التقرير', NATIVE_SCOPE_NOTICE, '', '', '', '', '']);
+    const csv = '\uFEFF' + csvRows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
     Object.assign(document.createElement('a'), { href: url, download: `trial_balance_${startDate || 'all'}.csv` }).click();
     URL.revokeObjectURL(url);
@@ -137,7 +143,7 @@ export default function TrialBalanceReport({ userRole, user }: { userRole?: stri
     { key: 'today', label: 'اليوم' },
     { key: 'month', label: 'هذا الشهر' },
     { key: 'year', label: 'هذا العام' },
-    { key: 'all', label: 'الكل' },
+    { key: 'all', label: isTauri ? 'كل القيود المسندة' : 'الكل' },
   ] as const;
 
   return (
@@ -148,41 +154,47 @@ export default function TrialBalanceReport({ userRole, user }: { userRole?: stri
           <p className="text-slate-500 text-sm mt-1">
             {startDate || endDate
               ? <>من <strong className="text-slate-700 dark:text-slate-300">{startDate || 'البداية'}</strong> إلى <strong className="text-slate-700 dark:text-slate-300">{endDate || 'الآن'}</strong></>
-              : 'عرض الأرصدة وحركات جميع الحسابات (تراكمي)'}
+              : isTauri ? 'حركات القيود المسندة إلى الصيدلية الحالية (تراكمي)' : 'عرض الأرصدة وحركات جميع الحسابات (تراكمي)'}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <button type="button" onClick={() => void fetchData(startDate, endDate)} aria-label="تحديث ميزان المراجعة" title="تحديث" className="p-3 bg-slate-100 dark:bg-slate-800 rounded-xl hover:bg-slate-200 transition-all">
             <RefreshCw className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`} />
           </button>
-          <button type="button" onClick={handleExport} className="flex items-center gap-2 px-4 py-3 bg-slate-100 dark:bg-slate-800 rounded-xl font-bold hover:bg-slate-200 transition-all border border-slate-200 dark:border-slate-700 text-sm">
+          <button type="button" onClick={handleExport} disabled={loading || !!loadError || accounts.length === 0} className="flex items-center gap-2 px-4 py-3 bg-slate-100 dark:bg-slate-800 rounded-xl font-bold hover:bg-slate-200 transition-all border border-slate-200 dark:border-slate-700 text-sm disabled:cursor-not-allowed disabled:opacity-50">
             <Download className="w-4 h-4" /> تصدير CSV
           </button>
-          <button type="button" onClick={() => window.print()} className="flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 shadow-lg shadow-blue-500/20 transition-all text-sm">
+          <button type="button" onClick={() => window.print()} disabled={loading || !!loadError || accounts.length === 0} className="flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 shadow-lg shadow-blue-500/20 transition-all text-sm disabled:cursor-not-allowed disabled:opacity-50">
             <Printer className="w-5 h-5" /> طباعة
           </button>
         </div>
       </div>
 
+      {isTauri && (
+        <div role="note" className="rounded-2xl border border-amber-300 bg-amber-50 p-4 text-sm font-bold text-amber-950 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-100">
+          {NATIVE_SCOPE_NOTICE}
+        </div>
+      )}
+
       <div className="flex border-b border-slate-200 dark:border-slate-800 gap-6 text-sm overflow-x-auto pb-1">
         {hasUserPermissionSync(reportUser, 'rep_can_view_sales') && (
           <Link href="/reports" className="pb-4 border-b-2 border-transparent font-bold text-slate-500 hover:text-slate-800 transition-colors flex items-center gap-2 shrink-0">
-            📊 التحليلات والمخططات
+            <BarChart3 className="w-4 h-4" aria-hidden="true" /> التحليلات والمخططات
           </Link>
         )}
         {hasUserPermissionSync(reportUser, 'rep_can_view_sales') && (
           <Link href="/reports/sales" className="pb-4 border-b-2 border-transparent font-bold text-slate-500 hover:text-slate-800 transition-colors flex items-center gap-2 shrink-0">
-            🧾 تقرير المبيعات
+            <ReceiptText className="w-4 h-4" aria-hidden="true" /> تقرير المبيعات
           </Link>
         )}
         {hasUserPermissionSync(reportUser, 'rep_can_view_purchases') && (
           <Link href="/reports/purchases" className="pb-4 border-b-2 border-transparent font-bold text-slate-500 hover:text-slate-800 transition-colors flex items-center gap-2 shrink-0">
-            🛒 تقارير المشتريات
+            <ShoppingCart className="w-4 h-4" aria-hidden="true" /> تقارير المشتريات
           </Link>
         )}
         {hasUserPermissionSync(reportUser, 'acc_can_view_reports') && (
           <Link href="/reports/trial-balance" className="pb-4 border-b-2 border-blue-600 font-black text-blue-600 dark:text-blue-400 flex items-center gap-2 shrink-0">
-            ⚖️ ميزان المراجعة
+            <Scale className="w-4 h-4" aria-hidden="true" /> ميزان المراجعة
           </Link>
         )}
       </div>
@@ -251,19 +263,19 @@ export default function TrialBalanceReport({ userRole, user }: { userRole?: stri
         </div>
       </div>
 
-      {!loading && !loadError && !isBalanced && (
+      {!loading && !loadError && allAccounts.length > 0 && !isBalanced && (
         <div className="flex items-center gap-3 p-4 rounded-2xl border font-bold text-sm bg-rose-50 dark:bg-rose-900/20 border-rose-200 dark:border-rose-800/40 text-rose-700 dark:text-rose-300">
           <AlertCircle className="w-5 h-5 shrink-0" /> تنبيه مالي: ميزان المراجعة غير متزن — الفارق {fmt(Math.abs(totals.debit - totals.credit))} ج.م (يُرجى مراجعة القيود)
         </div>
       )}
 
-      {!loading && !loadError && isBalanced && (
+      {!loading && !loadError && allAccounts.length > 0 && isBalanced && (
         <div className="flex items-center gap-3 p-4 rounded-2xl border font-bold text-sm bg-emerald-50 dark:bg-emerald-900/20 border-emerald-200 dark:border-emerald-800/40 text-emerald-700 dark:text-emerald-300">
-          <CheckCircle2 className="w-5 h-5 shrink-0" /> الميزان متوازن ✓ — مجموع الأرصدة المدينة مساوٍ للأرصدة الدائنة
+          <CheckCircle2 className="w-5 h-5 shrink-0" /> {isTauri ? 'القيود المسندة متوازنة ✓ — لا يعني ذلك اكتمال السجل التاريخي' : 'الميزان متوازن ✓ — مجموع الأرصدة المدينة مساوٍ للأرصدة الدائنة'}
         </div>
       )}
 
-      {!loading && accounts.length > 0 && (
+      {!loading && !loadError && accounts.length > 0 && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <SummaryCard label="إجمالي الأرصدة المدينة" sublabel="أصول + مصروفات" value={fmt(totals.debit)} color="text-emerald-600" />
           <SummaryCard label="إجمالي الأرصدة الدائنة" sublabel="التزامات + إيرادات" value={fmt(totals.credit)} color="text-rose-600" />
@@ -319,7 +331,7 @@ export default function TrialBalanceReport({ userRole, user }: { userRole?: stri
                     جاري تحميل بيانات الحسابات...
                   </TableCell>
                 </TableRow>
-              ) : loadError && data.length === 0 ? (
+              ) : loadError ? (
                 <TableRow>
                   <TableCell colSpan={5} className="text-center py-16">
                     <div className="flex flex-col items-center gap-3">
@@ -390,7 +402,7 @@ export default function TrialBalanceReport({ userRole, user }: { userRole?: stri
                 })
               )}
 
-              {!loading && accounts.length > 0 && (
+              {!loading && !loadError && accounts.length > 0 && (
                 <TableRow className="bg-slate-100/70 dark:bg-slate-800/80 font-black border-t-2 border-slate-300 dark:border-slate-600">
                   <TableCell colSpan={3} className="py-5 px-6 text-sm text-slate-700 dark:text-slate-200">
                     الإجمالي العام ({accounts.length} حساب)

@@ -1,5 +1,6 @@
 
-import { dbSelect, dbExecute, dbGet, dbTransaction } from '@/lib/db/tauri';
+import { dbSelect, dbExecute, dbGet, dbTransaction, normalizeDatabaseTimestamps } from '@/lib/db/tauri';
+import { isTauri } from '@/lib/env';
 
 const db = {
   prepare: (sql) => ({
@@ -38,26 +39,92 @@ import { localDate } from '@/lib/time';
 import { getShiftForPharmacy } from './shifts';
 const revalidatePath = (...args: any[]) => {}; const unstable_cache = (fn: any, ...args: any[]) => fn;
 
+type NativeSalesReportKey = 'reports.trend' | 'reports.sales_history' |
+  'reports.top_drugs' | 'reports.categories' | 'reports.total_units' | 'reports.kpis';
+
+/** A native query ID, bounded day count, and pagination only. Never send SQL,
+ * a claimed actor, or pharmacy ID over Tauri IPC for financial reporting. */
+async function nativeSalesReportRows(
+  queryId: NativeSalesReportKey,
+  days: number,
+  paginated: boolean,
+): Promise<any[]> {
+  if (!Number.isInteger(days) || days < 1 || days > 366) {
+    throw new Error('Reporting date range must be 1-366 days');
+  }
+  const { invoke } = await import('@tauri-apps/api/core');
+  const pageSize = paginated ? 200 : 1;
+  const rows: any[] = [];
+  // The native policy limits offset to 50,000; fail rather than truncate.
+  for (let offset = 0; offset <= 50_000; offset += pageSize) {
+    const page = await invoke<any[]>('db_read_scoped', {
+      queryId,
+      recordId: null,
+      limit: pageSize,
+      offset,
+      search: String(days),
+      drugId: null,
+    });
+    if (!Array.isArray(page) || page.length > pageSize) {
+      throw new Error('Invalid native reporting result page');
+    }
+    rows.push(...page);
+    if (!paginated || page.length < pageSize) return rows;
+  }
+  throw new Error('Reporting history exceeds native paging capacity; streaming export required');
+}
+
+async function nativeShiftReportRows(
+  queryId: 'reports.shift_header' | 'reports.shift_sales' |
+    'reports.shift_returns' | 'reports.shift_movements',
+  shiftId: string,
+): Promise<any[]> {
+  if (!shiftId || shiftId.length > 128 || shiftId.includes('\0')) {
+    throw new Error('Invalid shift identifier');
+  }
+  const { invoke } = await import('@tauri-apps/api/core');
+  const header = queryId === 'reports.shift_header';
+  const pageSize = header ? 1 : 200;
+  const rows: any[] = [];
+  for (let offset = 0; offset <= 50_000; offset += pageSize) {
+    const page = await invoke<any[]>('db_read_scoped', {
+      queryId,recordId:shiftId,search:null,drugId:null,
+      limit:pageSize,offset,
+    });
+    if (!Array.isArray(page) || page.length > pageSize || page.some(row =>
+      !row || typeof row !== 'object' || Array.isArray(row))) {
+      throw new Error('Invalid native shift report page');
+    }
+    rows.push(...page);
+    if (header || page.length < pageSize) return rows;
+  }
+  throw new Error('Native shift report exceeds bounded pagination');
+}
+
 export async function getShiftReportAction(shiftId: string) {
   try {
     const user = await getLocalSession();
     if (!user || !hasUserPermissionSync(user, 'rep_can_view_shifts')) return { success: false, error: 'غير مصرح' };
-    if (!await getShiftForPharmacy(shiftId, user.pharmacy_id)) {
+    // Web compatibility reports must bind *every* financial row to a verified
+    // tenant, not merely verify the parent shift ID. Legacy NULL owners are
+    // unknown provenance, even when the current tenant is `local_default`.
+    const pharmacyId = typeof user.pharmacy_id === 'string' ? user.pharmacy_id.trim() : '';
+    if (!isTauri && (!pharmacyId || !await getShiftForPharmacy(shiftId, pharmacyId))) {
       return { success: false, error: 'الوردية غير موجودة أو لا تخص هذه الصيدلية' };
     }
 
     // 1. Shift Basic Info
-    const shift = await db.prepare(`
+    const shift = isTauri ? (await nativeShiftReportRows('reports.shift_header',shiftId))[0] : await db.prepare(`
       SELECT s.*, u.full_name as staff_name
       FROM shifts s
       JOIN users u ON s.user_id = u.id
-      WHERE s.id = ?
-    `).get(shiftId) as any;
+      WHERE s.id = ? AND s.pharmacy_id = ?
+    `).get(shiftId, pharmacyId) as any;
 
     if (!shift) return { success: false, error: 'الوردية غير موجودة' };
 
     // 2. Sales Summary by Method
-    const sales = await db.prepare(`
+    const sales = isTauri ? await nativeShiftReportRows('reports.shift_sales',shiftId) : await db.prepare(`
       SELECT 
         payment_method,
         COUNT(*) as count,
@@ -65,34 +132,34 @@ export async function getShiftReportAction(shiftId: string) {
         SUM(COALESCE(paid_amount, total_amount)) as paid,
         SUM(COALESCE(remaining_amount, 0)) as remaining
       FROM sales_invoices
-      WHERE shift_id = ?
+      WHERE shift_id = ? AND pharmacy_id = ?
         AND (status IS NULL OR status = '' OR status IN ('completed', 'approved', 'delivered'))
       GROUP BY payment_method
-    `).all(shiftId) as any[];
+    `).all(shiftId, pharmacyId) as any[];
 
     // 3. Returns Summary
-    const returns = await db.prepare(`
+    const returns = isTauri ? await nativeShiftReportRows('reports.shift_returns',shiftId) : await db.prepare(`
       SELECT 
         refund_method,
         COUNT(*) as count,
         SUM(total_refund) as total
       FROM returns
-      WHERE shift_id = ?
+      WHERE shift_id = ? AND pharmacy_id = ?
         AND (status IS NULL OR status = '' OR LOWER(status) IN ('approved', 'completed'))
       GROUP BY refund_method
-    `).all(shiftId) as any[];
+    `).all(shiftId, pharmacyId) as any[];
 
     // 4. Cash Movements (Manual)
-    const movements = await db.prepare(`
+    const movements = isTauri ? await nativeShiftReportRows('reports.shift_movements',shiftId) : await db.prepare(`
       SELECT 
         type,
         category,
         SUM(amount) as total
       FROM cash_movements
-      WHERE shift_id = ?
+      WHERE shift_id = ? AND pharmacy_id = ?
         AND LOWER(COALESCE(source_type, '')) <> 'main_safe'
       GROUP BY type, category
-    `).all(shiftId) as any[];
+    `).all(shiftId, pharmacyId) as any[];
 
     // 5. Calculate Expected Cash (Only Cash & Delivery)
     const cashSales = sales.filter(s => s.payment_method === 'cash').reduce((sum, s) => sum + (s.total || 0), 0);
@@ -279,7 +346,10 @@ export async function getDashboardKPIsAction() {
 
     const today = localDate();
     const pharmacyId = user.pharmacy_id || 'local_default';
-    const data = await _getDashboardKPIs(today, pharmacyId);
+    const data = isTauri
+      ? (await nativeSalesReportRows('reports.kpis', 1, false))[0]
+      : await _getDashboardKPIs(today, pharmacyId);
+    if (!data) throw new Error('Missing native dashboard KPI aggregate');
     return { success: true, data };
   } catch (error) {
     console.error('KPI error:', error);
@@ -305,7 +375,9 @@ export async function getSalesTrendAction(days: number = 30) {
     if (!user || !hasUserPermissionSync(user, 'rep_can_view_sales')) return { success: false, error: 'غير مصرح' };
 
     const pharmacyId = user.pharmacy_id || 'local_default';
-    const results = await _getSalesTrend('-' + (days - 1) + ' days', pharmacyId);
+    const results = isTauri
+      ? await nativeSalesReportRows('reports.trend', days, true)
+      : await _getSalesTrend('-' + (days - 1) + ' days', pharmacyId);
 
     return { success: true, data: results };
   } catch (error) {
@@ -314,10 +386,53 @@ export async function getSalesTrendAction(days: number = 30) {
   }
 }
 
+type DashboardReadKey = 'dashboard.drug_count' | 'dashboard.trend' | 'dashboard.top_items' |
+  'dashboard.recent_sales' | 'dashboard.audit_logs';
+
+export async function getDashboardReadAction(queryId: DashboardReadKey) {
+  try {
+    const user = await getLocalSession();
+    if (!user ||
+        (queryId === 'dashboard.audit_logs'
+          ? !hasUserPermissionSync(user, 'can_view_audit')
+          : queryId !== 'dashboard.drug_count' && !hasUserPermissionSync(user, 'rep_can_view_sales'))) {
+      return { success: false, error: 'غير مصرح' };
+    }
+    const { invoke } = await import('@tauri-apps/api/core');
+    const limit = queryId === 'dashboard.trend' ? 30 : queryId === 'dashboard.drug_count' ? 1 : 5;
+    const rows = await invoke<any[]>('db_read_scoped', {
+      queryId, recordId: null, limit, offset: 0, search: null, drugId: null,
+    });
+    if (!Array.isArray(rows) || rows.length > limit || rows.some(row =>
+      !row || typeof row !== 'object' || Array.isArray(row))) {
+      throw new Error('Invalid native dashboard read result');
+    }
+    return { success: true, data: rows };
+  } catch (error) {
+    console.error('Dashboard read error:', error);
+    return { success: false, error: 'فشل جلب بيانات لوحة التحكم' };
+  }
+}
+
 export async function getReportsDataAction() {
   try {
     const user = await getLocalSession();
     if (!user || !hasUserPermissionSync(user, 'rep_can_view_sales')) return { success: false, error: 'غير مصرح' };
+
+    if (isTauri) {
+      const [salesHistoryRaw, topDrugsRaw, categoryRaw, totalUnits] = await Promise.all([
+        nativeSalesReportRows('reports.sales_history', 30, true),
+        nativeSalesReportRows('reports.top_drugs', 30, false),
+        nativeSalesReportRows('reports.categories', 30, false),
+        nativeSalesReportRows('reports.total_units', 30, false),
+      ]);
+      return { success: true, data: {
+        salesHistoryRaw: normalizeDatabaseTimestamps(salesHistoryRaw),
+        topDrugsRaw,
+        categoryRaw,
+        totalUnitsSold: Number(totalUnits[0]?.total || 0),
+      } };
+    }
 
     const thirtyDaysAgo = new Date();
     // Inclusive window: today plus the previous 29 calendar days = 30 days.

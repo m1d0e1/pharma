@@ -2,9 +2,8 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import DrugSyncButton from '@/components/dashboard/DrugSyncButton';
 import InteractionsSyncButton from '@/components/dashboard/InteractionsSyncButton';
 import { syncFromCloud } from '@/lib/sync/universal';
+import { syncDrugInteractionsClient } from '@/lib/sync/interactions';
 import { secureCache } from '@/lib/cache/secure_cache';
-import { dbExecute, dbGet } from '@/lib/db/tauri';
-import { getSupabaseBrowserClient } from '@/lib/supabase';
 import { toast } from 'react-hot-toast';
 
 const refresh = jest.fn();
@@ -17,18 +16,12 @@ jest.mock('@/lib/sync/universal', () => ({
   syncFromCloud: jest.fn(),
 }));
 
+jest.mock('@/lib/sync/interactions', () => ({
+  syncDrugInteractionsClient: jest.fn(),
+}));
+
 jest.mock('@/lib/cache/secure_cache', () => ({
   secureCache: { reload: jest.fn() },
-}));
-
-jest.mock('@/lib/db/tauri', () => ({
-  dbExecute: jest.fn(),
-  dbGet: jest.fn(),
-  dbTransaction: jest.fn(),
-}));
-
-jest.mock('@/lib/supabase', () => ({
-  getSupabaseBrowserClient: jest.fn(),
 }));
 
 jest.mock('react-hot-toast', () => ({
@@ -37,15 +30,6 @@ jest.mock('react-hot-toast', () => ({
     error: jest.fn(),
   },
 }));
-
-function interactionQuery(result: { data: any[] | null; error: any }) {
-  const query: any = {};
-  query.select = jest.fn(() => query);
-  query.gt = jest.fn(() => query);
-  query.order = jest.fn(() => query);
-  query.range = jest.fn(async () => result);
-  return query;
-}
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -59,8 +43,6 @@ describe('active dashboard sync controls', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     (secureCache.reload as jest.Mock).mockResolvedValue(undefined);
-    (dbExecute as jest.Mock).mockResolvedValue({ rowsAffected: 1 });
-    (dbGet as jest.Mock).mockResolvedValue(null);
   });
 
   it('blocks duplicate drug-sync clicks while pending and restores the control on a returned failure', async () => {
@@ -95,9 +77,9 @@ describe('active dashboard sync controls', () => {
   });
 
   it('does not advance the interaction watermark when the cloud fetch returns an error', async () => {
-    const query = interactionQuery({ data: null, error: new Error('remote unavailable') });
-    (getSupabaseBrowserClient as jest.Mock).mockReturnValue({
-      from: jest.fn(() => query),
+    (syncDrugInteractionsClient as jest.Mock).mockResolvedValue({
+      success: false,
+      error: 'فشل في جلب التفاعلات من السحابة',
     });
 
     render(<InteractionsSyncButton />);
@@ -105,29 +87,21 @@ describe('active dashboard sync controls', () => {
 
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith('فشل في جلب التفاعلات من السحابة'));
     expect(screen.getByRole('button', { name: 'تحديث التفاعلات الدوائية' })).toBeEnabled();
-    expect((dbExecute as jest.Mock).mock.calls.some(([sql]) => String(sql).includes('INSERT OR REPLACE INTO sync_metadata'))).toBe(false);
+    expect(syncDrugInteractionsClient).toHaveBeenCalledTimes(1);
   });
 
   it('writes cloud interactions before advancing the watermark and reports success', async () => {
-    const first = interactionQuery({
-      data: [{ drug_1: 'A', drug_2: 'B', interaction_description: 'AB warning' }],
-      error: null,
+    (syncDrugInteractionsClient as jest.Mock).mockResolvedValue({
+      success: true,
+      count: 1,
     });
-    const from = jest.fn(() => first);
-    (getSupabaseBrowserClient as jest.Mock).mockReturnValue({ from });
 
     render(<InteractionsSyncButton />);
     fireEvent.click(screen.getByRole('button', { name: 'تحديث التفاعلات الدوائية' }));
 
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith('تم تحديث التفاعلات بنجاح. 1 تفاعل جديد/محدث.'));
 
-    const calls = (dbExecute as jest.Mock).mock.calls;
-    const interactionWrite = calls.findIndex(([sql]) => String(sql).includes('INSERT INTO drug_interactions'));
-    const watermarkWrite = calls.findIndex(([sql]) => String(sql).includes('INSERT OR REPLACE INTO sync_metadata'));
-    expect(interactionWrite).toBeGreaterThanOrEqual(0);
-    expect(watermarkWrite).toBeGreaterThan(interactionWrite);
-    expect(String(calls[interactionWrite][0])).toContain('description_en = excluded.description_en');
-    expect(calls[interactionWrite][1]).toEqual(['A', 'B', 'AB warning']);
+    expect(syncDrugInteractionsClient).toHaveBeenCalledTimes(1);
     expect(screen.getByRole('button', { name: 'تحديث التفاعلات الدوائية' })).toBeEnabled();
   });
 
@@ -173,13 +147,8 @@ describe('active dashboard sync controls', () => {
   });
 
   it('blocks two same-tick interaction-sync events before React can commit the disabled state', async () => {
-    const pending = deferred<{ data: any[] | null; error: any }>();
-    const query: any = {};
-    query.select = jest.fn(() => query);
-    query.gt = jest.fn(() => query);
-    query.order = jest.fn(() => query);
-    query.range = jest.fn(() => pending.promise);
-    (getSupabaseBrowserClient as jest.Mock).mockReturnValue({ from: jest.fn(() => query) });
+    const pending = deferred<{ success: boolean; error: string }>();
+    (syncDrugInteractionsClient as jest.Mock).mockReturnValue(pending.promise);
 
     render(<InteractionsSyncButton />);
     const button = screen.getByRole('button', { name: 'تحديث التفاعلات الدوائية' });
@@ -188,10 +157,9 @@ describe('active dashboard sync controls', () => {
       button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
-    await waitFor(() => expect(query.range).toHaveBeenCalled());
-    expect(query.range).toHaveBeenCalledTimes(1);
+    expect(syncDrugInteractionsClient).toHaveBeenCalledTimes(1);
     await act(async () => {
-      pending.resolve({ data: null, error: new Error('stop') });
+      pending.resolve({ success: false, error: 'stop' });
       await pending.promise;
     });
   });

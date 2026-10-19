@@ -31,15 +31,48 @@ describe('AuthGuard async ordering', () => {
     expect(screen.queryByText('protected-content')).not.toBeInTheDocument();
   });
 
+  it('keeps an already-verified dashboard session visible across route changes without redundant identity rechecks', async () => {
+    (getClientSession as jest.Mock)
+      .mockResolvedValueOnce({ id: 'owner-1', username: 'owner', role: 'owner' })
+      .mockImplementationOnce(() => new Promise(() => {}));
+    const { rerender } = render(<AuthGuard><div>protected-content</div></AuthGuard>);
+    expect(await screen.findByText('protected-content')).toBeInTheDocument();
+    expect(getClientSession).toHaveBeenCalledTimes(1);
+
+    // The shared dashboard layout retains AuthGuard as its child route changes.
+    mockPathname = '/reports/purchases';
+    rerender(<AuthGuard><div>protected-content</div></AuthGuard>);
+
+    expect(screen.getByText('protected-content')).toBeInTheDocument();
+    expect(screen.queryByText('جاري التحقق من الهوية...')).not.toBeInTheDocument();
+    expect(getClientSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not flood the native bridge with debug logging for routine successful identity checks', async () => {
+    const invoke = jest.fn().mockResolvedValue(undefined);
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      configurable: true, value: { invoke },
+    });
+    try {
+      (getClientSession as jest.Mock).mockResolvedValue({ id: 'owner-1', username: 'owner', role: 'owner' });
+      render(<AuthGuard><div>protected-content</div></AuthGuard>);
+      expect(await screen.findByText('protected-content')).toBeInTheDocument();
+      expect(invoke).not.toHaveBeenCalled();
+    } finally {
+      delete (window as any).__TAURI_INTERNALS__;
+    }
+  });
+
   it('does not let an older session check re-authorize content after a newer check denies it', async () => {
     let resolveOlder!: (value: unknown) => void;
     (getClientSession as jest.Mock)
       .mockImplementationOnce(() => new Promise(resolve => { resolveOlder = resolve; }))
       .mockResolvedValueOnce(null);
 
-    const { rerender } = render(<AuthGuard><div>protected-content</div></AuthGuard>);
-    mockPathname = '/dashboard-b';
-    rerender(<AuthGuard><div>protected-content</div></AuthGuard>);
+    const { rerender } = render(<AuthGuard requiredRole="pharmacist"><div>protected-content</div></AuthGuard>);
+    // Unlike a route-only switch, a changed required role must force a new
+    // verification. A stale owner result cannot supersede that newer denial.
+    rerender(<AuthGuard requiredRole="admin"><div>protected-content</div></AuthGuard>);
 
     await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/login'));
     expect(screen.queryByText('protected-content')).not.toBeInTheDocument();

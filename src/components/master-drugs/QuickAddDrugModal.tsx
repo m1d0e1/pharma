@@ -7,17 +7,27 @@ import { Plus, X, Pill, BadgeDollarSign, Factory, Beaker, Box, ChevronDown } fro
 import { useHotkeys } from 'react-hotkeys-hook'
 import { findDrugBarcodeConflict, getReplacementDrug } from '@/app/actions-client/drug-replacement';
 import DrugReplacementDialog from './DrugReplacementDialog';
+import { hasConflictingNamedPackSize } from '@/lib/inventory/drug-pack-identity';
 import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap';
+import { isTauri } from '@/lib/env';
+import { secureCache } from '@/lib/cache/secure_cache';
 
 interface Props {
   onClose: () => void
   onSuccess: (drugId: number, tradeName: string, large_unit: string, official_price: number, large_to_medium?: number | null, barcode?: string) => void
 }
 
+function isBarcodeOwnershipConflict(error?: string | null): boolean {
+  const message = (error || '').trim()
+  return /^Barcode is already assigned to another drug$/i.test(message)
+    || /\bUNIQUE constraint failed:\s*master_drugs\.barcode$/i.test(message)
+}
+
 export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const submissionRef = useRef(false)
   const [replacement, setReplacement] = useState<any>(null);
+  const [barcodeNotice, setBarcodeNotice] = useState<string | null>(null);
   const dialogRef = useDialogFocusTrap<HTMLDivElement>(!replacement);
   const [unitsList, setUnitsList] = useState<{ name_ar: string }[]>([])
   const [formData, setFormData] = useState({
@@ -36,10 +46,24 @@ export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
   useEffect(() => {
     async function fetchUnits() {
       try {
+        if (isTauri) {
+          // Strict Windows builds deny renderer-authored SELECTs on units.
+          // Suggestions are optional free-text hints, not authoritative unit
+          // IDs: derive only from the authenticated public catalog snapshot.
+          // Cache failure must not turn into raw SQL or block a typed create.
+          await secureCache.load();
+          const suggestions = Array.from(new Set(secureCache.getAllDrugs()
+            .map(drug => typeof drug.large_unit === 'string' ? drug.large_unit.trim() : '')
+            .filter(Boolean))).sort((a, b) => a.localeCompare(b, 'ar')).slice(0, 100);
+          setUnitsList(suggestions.map(name_ar => ({ name_ar })));
+          return;
+        }
         const res = await getUnitsAction()
         if (res.success && res.data) setUnitsList(res.data)
       } catch {
-        toast.error('تعذر تحميل الوحدات')
+        // The text field is still usable when the optional suggestions are
+        // missing. This is not a native catalog creation denial.
+        if (!isTauri) toast.error('تعذر تحميل الوحدات')
       }
     }
     void fetchUnits()
@@ -57,13 +81,21 @@ export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
     if (submissionRef.current) return
     submissionRef.current = true
     setIsSubmitting(true)
-    const largeToMediumVal = formData.large_to_medium ? parseInt(formData.large_to_medium) : null
-    const officialPriceVal = parseFloat(formData.official_price) || 0
+    setBarcodeNotice(null)
+    // Preserve the supplied precision: parseInt('2.5') silently creates a
+    // different package than the user entered. The typed native bridge must
+    // receive the exact numeric intent and reject non-whole conversion counts.
+    const largeToMediumVal = formData.large_to_medium ? Number(formData.large_to_medium) : null
+    const officialPriceVal = formData.official_price.trim() === '' ? NaN : Number(formData.official_price)
     let successId: number | null = null
     let conflict: any = null
     let errorMessage: string | null = null
+    let distinctProductNotice: string | null = null
 
     try {
+      if (!Number.isFinite(officialPriceVal) || officialPriceVal < 0) {
+        errorMessage = 'يجب إدخال سعر رسمي صريح وصالح للصنف'
+      } else {
       const res = await addMasterDrugAction({
         ...formData,
         large_unit: formData.unit,
@@ -75,10 +107,24 @@ export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
       if (res.success) {
         successId = res.id as number
       } else {
-        conflict = await findDrugBarcodeConflict(formData.barcode).catch(() => null)
-        if (!conflict) {
-          errorMessage = res.error || 'فشل إضافة الصنف'
+        // An unrelated INSERT/authorization failure must not be relabeled as a
+        // barcode collision just because the entered code has an owner.
+        if (isBarcodeOwnershipConflict(res.error) && formData.barcode.trim() && !isTauri) {
+          conflict = await findDrugBarcodeConflict(formData.barcode).catch(() => null)
+          if (conflict && hasConflictingNamedPackSize(conflict, formData)) {
+            const owner = await getReplacementDrug(Number(conflict.id)).catch(() => null) || conflict
+            const requested = formData.barcode.trim()
+            const masterBarcode = String(owner.barcode || '').trim()
+            const activeBatchBarcodes = String(owner.active_inventory_barcodes || '').trim()
+            const source = masterBarcode.toLowerCase() === requested.toLowerCase()
+              ? 'باركود بطاقة الصنف'
+              : 'باركود دفعة مخزون نشطة'
+            distinctProductNotice = `تعذر إضافة الصنف لأن الباركود ${requested} مستخدم بالفعل في ${source} للصنف #${conflict.id} (${owner.trade_name_en || owner.trade_name || 'غير معروف'}). باركود بطاقة الصنف القديم: ${masterBarcode || '—'}؛ باركود دفعات المخزون النشطة: ${activeBatchBarcodes || 'غير ظاهر'}. العبوة الجديدة مختلفة، لذلك لم يتم دمج أو استبدال أي صنف. راجع باركود العبوتين الفعليين وصحح ملكية الباركود الخاطئة بشكل معتمد، ثم أضف الصنفين منفصلين.`
+            conflict = null
+          }
         }
+        if (!conflict && !distinctProductNotice) errorMessage = res.error || 'فشل إضافة الصنف'
+      }
       }
     } catch {
       errorMessage = 'فشل إضافة الصنف'
@@ -90,6 +136,11 @@ export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
     if (successId !== null) {
       toast.success('تمت إضافة الصنف لقاعدة البيانات بنجاح')
       onSuccess(successId, formData.trade_name_en || formData.trade_name, formData.unit, officialPriceVal, largeToMediumVal, formData.barcode)
+      return
+    }
+
+    if (distinctProductNotice) {
+      setBarcodeNotice(distinctProductNotice)
       return
     }
 
@@ -149,6 +200,8 @@ export default function QuickAddDrugModal({ onClose, onSuccess }: Props) {
         {/* ── Form (no scroll needed) ── */}
         <form onSubmit={handleSubmit}>
           <div className="px-6 py-5 space-y-4">
+
+            {barcodeNotice && <p role="alert" className="rounded-lg border border-red-500 bg-red-50 p-3 text-sm font-semibold text-red-900 dark:bg-red-950 dark:text-red-100">{barcodeNotice}</p>}
 
             {/* Row 1: Arabic + English names */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

@@ -4,7 +4,9 @@ import React, { useRef, useState } from 'react'
 import { Activity, Search, RefreshCcw, AlertTriangle, Package, CheckCircle2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { dbSelect } from '@/lib/db/tauri'
+import { isTauri } from '@/lib/env'
 import { getClientSession } from '@/lib/auth/local'
+import { searchAdjustmentLotsNative } from '@/app/actions-client/stock-adjustment-native-reads'
 import { createStockAdjustmentAction } from '@/app/actions-client/master-drugs'
 import { toast } from 'react-hot-toast'
 
@@ -12,7 +14,7 @@ export default function AdjustmentsClient({ reasons }: { reasons: any[] }) {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<any[]>([])
   const [selectedItem, setSelectedItem] = useState<any>(null)
-  const [newQty, setNewQty] = useState<number>(0)
+  const [newQty, setNewQty] = useState<number | null>(null)
   const [selectedReason, setSelectedReason] = useState<number>(0)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const searchRequestRef = useRef(0)
@@ -23,6 +25,11 @@ export default function AdjustmentsClient({ reasons }: { reasons: any[] }) {
     setQuery(q)
     if (q.length > 2) {
       try {
+        if (isTauri) {
+          const data = await searchAdjustmentLotsNative(q);
+          if (requestId === searchRequestRef.current) setResults(data);
+          return;
+        }
         const searchPattern = `%${q}%`;
         const user = await getClientSession();
         const pharmacyId = user?.pharmacy_id || 'local_default';
@@ -58,6 +65,10 @@ export default function AdjustmentsClient({ reasons }: { reasons: any[] }) {
   const handleSubmit = async () => {
     if (!selectedItem || !selectedReason) {
       toast.error('يرجى اختيار الصنف وسبب التسوية')
+      return
+    }
+    if (newQty === null || !Number.isFinite(newQty) || newQty < 0) {
+      toast.error('يرجى إدخال كمية جديدة صالحة')
       return
     }
     if (submissionRef.current) return
@@ -171,9 +182,10 @@ export default function AdjustmentsClient({ reasons }: { reasons: any[] }) {
                   id="adjustment-new-quantity"
                   type="number"
                   step="any"
+                  min="0"
                   className="w-full p-4 bg-slate-50 dark:bg-slate-800 border-none rounded-2xl font-black text-2xl text-center outline-none ring-2 ring-transparent focus:ring-primary-500/20 transition-all"
-                  value={newQty}
-                  onChange={(e) => setNewQty(parseFloat(e.target.value) || 0)}
+                  value={newQty ?? ''}
+                  onChange={(e) => setNewQty(e.target.value === '' ? null : Number(e.target.value))}
                 />
               </div>
 
@@ -194,14 +206,15 @@ export default function AdjustmentsClient({ reasons }: { reasons: any[] }) {
 
               <div className={cn(
                 "p-4 rounded-2xl border flex items-start gap-3",
-                newQty > (selectedItem?.quantity || 0) 
-                  ? "bg-blue-50 border-blue-100 text-blue-700" 
+                newQty !== null && newQty > (selectedItem?.quantity || 0)
+                  ? "bg-blue-50 border-blue-100 text-blue-700"
                   : "bg-amber-50 border-amber-100 text-amber-700"
               )}>
                 <AlertTriangle className="w-5 h-5 mt-0.5" />
                 <div className="text-xs font-bold leading-relaxed">
-                  سيتم {newQty > (selectedItem?.quantity || 0) ? 'زيادة' : 'تقليل'} الرصيد بمقدار {Math.abs(newQty - (selectedItem?.quantity || 0))} وحدة. 
-                  هذا الإجراء سيؤثر على قيمة المخزون الحالية.
+                  {newQty === null || !Number.isFinite(newQty)
+                    ? 'أدخل الكمية الجديدة لمراجعة أثر التسوية.'
+                    : <>سيتم {newQty > (selectedItem?.quantity || 0) ? 'زيادة' : 'تقليل'} الرصيد بمقدار {Math.abs(newQty - (selectedItem?.quantity || 0))} وحدة. هذا الإجراء سيؤثر على قيمة المخزون الحالية.</>}
                 </div>
               </div>
 

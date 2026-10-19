@@ -332,10 +332,10 @@ describe('active branch UI pharmacy scope', () => {
     render(<DeadStockWidget />);
 
     expect(await screen.findByText('تعذر تحميل تحليل الرواكد')).toBeInTheDocument();
-    expect(screen.queryByText('جميع الأصناف تتحرك بشكل جيد! 🚀')).not.toBeInTheDocument();
+    expect(screen.queryByText('لا توجد أصناف راكدة ضمن الفترة الحالية')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'إعادة المحاولة' }));
 
-    expect(await screen.findByText('جميع الأصناف تتحرك بشكل جيد! 🚀')).toBeInTheDocument();
+    expect(await screen.findByText('لا توجد أصناف راكدة ضمن الفترة الحالية')).toBeInTheDocument();
     expect(dbSelect).toHaveBeenCalledTimes(2);
   });
 
@@ -347,10 +347,10 @@ describe('active branch UI pharmacy scope', () => {
     render(<ExpiryWidget />);
 
     expect(await screen.findByText('تعذر تحميل تنبيهات انتهاء الصلاحية')).toBeInTheDocument();
-    expect(screen.queryByText('لا توجد أصناف قاربت على الانتهاء 👍')).not.toBeInTheDocument();
+    expect(screen.queryByText('لا توجد أصناف قاربت على الانتهاء خلال 30 يوماً')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'إعادة المحاولة' }));
 
-    expect(await screen.findByText('لا توجد أصناف قاربت على الانتهاء 👍')).toBeInTheDocument();
+    expect(await screen.findByText('لا توجد أصناف قاربت على الانتهاء خلال 30 يوماً')).toBeInTheDocument();
     expect(dbSelect).toHaveBeenCalledTimes(2);
   });
 

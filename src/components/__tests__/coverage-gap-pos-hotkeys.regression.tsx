@@ -143,6 +143,28 @@ describe('coverage-gap: POS keyboard shortcuts', () => {
     act(() => usePOSStore.getState().resetPOS());
   });
 
+  it('does not offer report or settings navigation without their individual grants', async () => {
+    (hasUserPermissionSync as jest.Mock).mockImplementation((_, key: string) => key === 'can_access_pos');
+
+    render(<POSPage />);
+
+    expect(await screen.findByRole('button', { name: 'آلة حاسبة' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'تقارير' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'خيارات' })).not.toBeInTheDocument();
+  });
+
+  it('navigates to reports and settings when those grants are present', async () => {
+    const allowed = new Set(['can_access_pos', 'rep_can_view_sales', 'can_view_settings']);
+    (hasUserPermissionSync as jest.Mock).mockImplementation((_, key: string) => allowed.has(key));
+
+    render(<POSPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'تقارير' }));
+    fireEvent.click(screen.getByRole('button', { name: 'خيارات' }));
+    expect(mockPush).toHaveBeenCalledWith('/reports');
+    expect(mockPush).toHaveBeenCalledWith('/settings');
+  });
+
   it('opens patient creation from عميل جديد and selects the newly created patient', async () => {
     render(<POSPage />);
 

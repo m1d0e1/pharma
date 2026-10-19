@@ -80,8 +80,9 @@ export default function ShiftManagement() {
 
   if (loading) {
     return (
-      <div className="card-glass p-8 flex items-center justify-center">
-        <Loader2 className="w-6 h-6 animate-spin text-primary-500" />
+      <div className="card-glass p-8 flex items-center justify-center gap-3" role="status" aria-live="polite" dir="rtl">
+        <Loader2 className="w-6 h-6 animate-spin text-primary-500" aria-hidden="true" />
+        <span className="text-slate-700 dark:text-slate-200">جاري تحميل حالة الوردية...</span>
       </div>
     );
   }
@@ -100,11 +101,10 @@ export default function ShiftManagement() {
   return (
     <>
       <div className="card-glass relative overflow-hidden group">
-        <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-500 to-indigo-600"></div>
         
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
-            <div className={`p-3 rounded-2xl ${currentShift ? 'bg-emerald-100 dark:bg-emerald-900/20 text-emerald-600' : 'bg-blue-100 dark:bg-blue-900/20 text-blue-600'}`}>
+            <div className={`p-2.5 rounded-lg ${currentShift ? 'bg-emerald-100 dark:bg-emerald-900/20 text-emerald-600' : 'bg-blue-100 dark:bg-blue-900/20 text-blue-600'}`}>
               <Clock className="w-6 h-6" />
             </div>
             <div>
@@ -151,7 +151,7 @@ export default function ShiftManagement() {
             
             <Link
               href="/finance/handover"
-              className="w-full bg-slate-900 dark:bg-white text-white dark:text-slate-900 py-4 rounded-2xl font-black text-lg transition-all shadow-lg hover:bg-slate-800 dark:hover:bg-slate-100 flex items-center justify-center gap-2 group-hover:scale-[1.02] transform"
+              className="w-full bg-slate-900 dark:bg-white text-white dark:text-slate-900 py-3 rounded-lg font-semibold text-base transition-colors shadow-sm hover:bg-slate-800 dark:hover:bg-slate-100 flex items-center justify-center gap-2"
             >
               <ArrowRightLeft className="w-5 h-5" />
               تسليم الوردية المشتركة
@@ -164,7 +164,7 @@ export default function ShiftManagement() {
             </p>
             <Link
               href="/shifts"
-              className="w-full bg-blue-600 hover:bg-blue-700 text-white py-4 rounded-2xl font-black text-lg transition-all shadow-lg shadow-blue-500/20 flex items-center justify-center gap-2 group-hover:scale-[1.02] transform"
+              className="w-full bg-primary-700 hover:bg-primary-800 text-white py-3 rounded-lg font-semibold text-base transition-colors shadow-sm flex items-center justify-center gap-2"
             >
               <ArrowRightLeft className="w-5 h-5" />
               إدارة الجلسات النقدية

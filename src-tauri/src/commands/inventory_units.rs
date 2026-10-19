@@ -74,9 +74,11 @@ mod tests {
 
     #[test]
     fn unit_conversion_round_trips_custom_names() {
-        let large = unit_quantity_in_large(120.0, "Tablet", 12.0, 10.0, Some("Blister"), Some("tablet"));
+        let large =
+            unit_quantity_in_large(120.0, "Tablet", 12.0, 10.0, Some("Blister"), Some("tablet"));
         assert!((large - 1.0).abs() < 0.000_001);
-        let tablets = large_quantity_in_unit(large, "Tablet", 12.0, 10.0, Some("Blister"), Some("tablet"));
+        let tablets =
+            large_quantity_in_unit(large, "Tablet", 12.0, 10.0, Some("Blister"), Some("tablet"));
         assert!((tablets - 120.0).abs() < 0.000_001);
         assert!((sale_stock_qty(12.0, "شريط", 12.0, 10.0, None, None) - 1.0).abs() < 0.000_001);
     }

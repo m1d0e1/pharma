@@ -7,9 +7,16 @@ import { getAdjustmentReasonsAction, getUnitsAction, searchMasterDrugsAction } f
 import { toast } from 'react-hot-toast';
 import { useHotkeys } from 'react-hotkeys-hook';
 
+let mockIsTauri = false;
+const mockGenerateId = jest.fn(() => '11111111-1111-4111-8111-111111111111');
+jest.mock('@/lib/env', () => ({ get isTauri() { return mockIsTauri; }, isClient: true }));
+jest.mock('@/lib/db/tauri', () => ({ generateId: () => mockGenerateId() }));
+
 jest.mock('@/app/actions-client/inventory', () => ({
   addInventoryAction: jest.fn(),
   updateInventoryAction: jest.fn(),
+  getPendingInventoryCreationsAction: jest.fn(),
+  acknowledgePendingInventoryCreationAction: jest.fn(),
 }));
 
 jest.mock('@/app/actions-client/master-drugs', () => ({
@@ -42,11 +49,17 @@ describe('inventory modal async/error behavior', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockIsTauri = false;
+    mockGenerateId.mockReset().mockReturnValue('11111111-1111-4111-8111-111111111111');
     (getUnitsAction as jest.Mock).mockReset().mockResolvedValue({ success: true, data: [{ name_ar: 'علبة' }] });
     (searchMasterDrugsAction as jest.Mock).mockReset();
     (getAdjustmentReasonsAction as jest.Mock).mockReset().mockResolvedValue({ success: true, data: [{ id: 1, name_ar: 'جرد' }] });
     (addInventoryAction as jest.Mock).mockReset();
     (updateInventoryAction as jest.Mock).mockReset();
+    (require('@/app/actions-client/inventory').getPendingInventoryCreationsAction as jest.Mock)
+      .mockReset().mockResolvedValue({ success: true, data: [] });
+    (require('@/app/actions-client/inventory').acknowledgePendingInventoryCreationAction as jest.Mock)
+      .mockReset().mockResolvedValue({ success: true });
   });
 
   it('keeps the newest add-inventory search result when an older search resolves afterwards', async () => {
@@ -114,6 +127,9 @@ describe('inventory modal async/error behavior', () => {
       drug_id: 30,
       expiry_date: null,
     })));
+    expect((addInventoryAction as jest.Mock).mock.calls[0][0]).not.toHaveProperty('request_id');
+    expect((addInventoryAction as jest.Mock).mock.calls[0][0]).not.toHaveProperty('expect_null_large_unit');
+    expect(mockGenerateId).not.toHaveBeenCalled();
   });
 
   it('keeps expiry required for expiring drugs', async () => {
@@ -252,6 +268,150 @@ describe('inventory modal async/error behavior', () => {
     fireEvent.submit(form);
     await waitFor(() => expect(addInventoryAction).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith('retry rejected'));
+  });
+
+  it('reuses one native nonce after an ambiguous submission failure and clears it after confirmed success', async () => {
+    mockIsTauri = true;
+    mockGenerateId
+      .mockReturnValueOnce('11111111-1111-4111-8111-111111111111')
+      .mockReturnValueOnce('22222222-2222-4222-8222-222222222222');
+    (searchMasterDrugsAction as jest.Mock).mockResolvedValue({ success: true, data: [drug(50, 'Native Retry Drug')] });
+    (addInventoryAction as jest.Mock)
+      .mockRejectedValueOnce(new Error('ACK lost after native commit'))
+      .mockResolvedValueOnce({ success: true })
+      .mockResolvedValueOnce({ success: false, error: 'new attempt' });
+    const onSuccess = jest.fn();
+
+    render(<AddInventoryModal pharmacyId="ph-1" onClose={jest.fn()} onSuccess={onSuccess} />);
+    fireEvent.change(screen.getByPlaceholderText('ابحث باسم الدواء (مثلاً: Panadol)...'), { target: { value: 'Native Retry Drug' } });
+    fireEvent.click(await screen.findByText('Native Retry Drug'));
+    fireEvent.change(screen.getByPlaceholderText('مثلاً: 20'), { target: { value: '3' } });
+    fireEvent.change(document.querySelector('input[type="date"]') as HTMLInputElement, { target: { value: '2029-12-31' } });
+    const form = screen.getByRole('button', { name: /حفظ في المخزون/ }).closest('form') as HTMLFormElement;
+
+    fireEvent.submit(form);
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('حدث خطأ أثناء الإضافة. يرجى المحاولة مرة أخرى.'));
+    expect((addInventoryAction as jest.Mock).mock.calls[0][0].request_id).toBe('11111111-1111-4111-8111-111111111111');
+
+    fireEvent.submit(form);
+    await waitFor(() => expect(onSuccess).toHaveBeenCalledTimes(1));
+    const first = (addInventoryAction as jest.Mock).mock.calls[0][0];
+    const retry = (addInventoryAction as jest.Mock).mock.calls[1][0];
+    expect(retry).toEqual(first);
+    expect(mockGenerateId).toHaveBeenCalledTimes(1);
+
+    // The modal remains mounted in this test. Success must retire the prior
+    // request witness so a future independent submission cannot replay it.
+    fireEvent.submit(form);
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('new attempt'));
+    expect((addInventoryAction as jest.Mock).mock.calls[2][0].request_id)
+      .toBe('22222222-2222-4222-8222-222222222222');
+    expect(mockGenerateId).toHaveBeenCalledTimes(2);
+  });
+
+  it('after simulated restart blocks fresh nonce until operator acknowledges persisted stock receipt', async () => {
+    mockIsTauri = true;
+    const inventory = require('@/app/actions-client/inventory');
+    const pending = {
+      requestId: 'a1111111-1111-4111-8111-111111111111',
+      inventoryId: 'committed-stock', createdBy: 'first-actor', drugId: 17, quantity: 2,
+      localSellingPrice: 15, expiryDate: '2029-12-31', createdAt: '2026-10-11',
+    };
+    (inventory.getPendingInventoryCreationsAction as jest.Mock)
+      .mockResolvedValueOnce({ success: true, data: [pending] })
+      .mockResolvedValueOnce({ success: true, data: [] });
+    (searchMasterDrugsAction as jest.Mock).mockResolvedValue({ success: true, data: [drug(17, 'Recovered Stock')] });
+
+    const view = render(<AddInventoryModal pharmacyId="ph-1" onClose={jest.fn()} onSuccess={jest.fn()} />);
+    expect(await screen.findByText(/هناك دفعة أضيفت سابقاً/)).toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText('ابحث باسم الدواء (مثلاً: Panadol)...'), { target: { value: 'Recovered Stock' } });
+    fireEvent.click(await screen.findByText('Recovered Stock'));
+    expect(screen.getByRole('button', { name: /حفظ في المخزون/ })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: /تأكدت من وجود الدفعة/ }));
+    await waitFor(() => expect(inventory.acknowledgePendingInventoryCreationAction).toHaveBeenCalledWith(
+      pending.requestId, pending.inventoryId,
+    ));
+    await waitFor(() => expect(screen.queryByText(/هناك دفعة أضيفت سابقاً/)).not.toBeInTheDocument());
+    expect(screen.getByRole('button', { name: /حفظ في المخزون/ })).toBeEnabled();
+    view.unmount();
+  });
+
+  it('shows a specific native recovery failure while keeping stock creation disabled', async () => {
+    mockIsTauri = true;
+    const inventory = require('@/app/actions-client/inventory');
+    (inventory.getPendingInventoryCreationsAction as jest.Mock).mockResolvedValue({
+      success: false,
+      error: 'Native inventory creation ledger could not be verified',
+    });
+    (searchMasterDrugsAction as jest.Mock).mockResolvedValue({
+      success: true, data: [drug(91, 'Blocked QA Stock')],
+    });
+    render(<AddInventoryModal pharmacyId="ph-1" onClose={jest.fn()} onSuccess={jest.fn()} />);
+    expect(await screen.findByText('Native inventory creation ledger could not be verified')).toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText('ابحث باسم الدواء (مثلاً: Panadol)...'), {
+      target: { value: 'Blocked QA Stock' },
+    });
+    fireEvent.click(await screen.findByText('Blocked QA Stock'));
+    expect(screen.getByRole('button', { name: /حفظ في المخزون/ })).toBeDisabled();
+    expect(inventory.acknowledgePendingInventoryCreationAction).not.toHaveBeenCalled();
+  });
+
+  it('allocates a new nonce for changed native inventory intent rather than reusing the failed request', async () => {
+    mockIsTauri = true;
+    mockGenerateId
+      .mockReturnValueOnce('33333333-3333-4333-8333-333333333333')
+      .mockReturnValueOnce('44444444-4444-4444-8444-444444444444');
+    (searchMasterDrugsAction as jest.Mock).mockResolvedValue({ success: true, data: [drug(51, 'Changed Native Drug')] });
+    (addInventoryAction as jest.Mock).mockResolvedValue({ success: false, error: 'failed' });
+
+    render(<AddInventoryModal pharmacyId="ph-1" onClose={jest.fn()} onSuccess={jest.fn()} />);
+    fireEvent.change(screen.getByPlaceholderText('ابحث باسم الدواء (مثلاً: Panadol)...'), { target: { value: 'Changed Native Drug' } });
+    fireEvent.click(await screen.findByText('Changed Native Drug'));
+    fireEvent.change(screen.getByPlaceholderText('مثلاً: 20'), { target: { value: '4' } });
+    fireEvent.change(document.querySelector('input[type="date"]') as HTMLInputElement, { target: { value: '2029-12-31' } });
+    const form = screen.getByRole('button', { name: /حفظ في المخزون/ }).closest('form') as HTMLFormElement;
+
+    fireEvent.submit(form);
+    await waitFor(() => expect(addInventoryAction).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByRole('button', { name: /حفظ في المخزون/ })).toBeEnabled());
+    fireEvent.change(screen.getByPlaceholderText('مثلاً: 20'), { target: { value: '5' } });
+    fireEvent.submit(form);
+    await waitFor(() => expect(addInventoryAction).toHaveBeenCalledTimes(2));
+    const [first, second] = (addInventoryAction as jest.Mock).mock.calls.map(([input]) => input);
+    expect(first.request_id).toBe('33333333-3333-4333-8333-333333333333');
+    expect(second.request_id).toBe('44444444-4444-4444-8444-444444444444');
+    expect(first.quantity).toBe(4);
+    expect(second.quantity).toBe(5);
+  });
+
+  it('passes null for an unmodified inferred native unit but rejects edits to that inferred unit', async () => {
+    mockIsTauri = true;
+    (getUnitsAction as jest.Mock).mockResolvedValue({ success: true, data: [{ name_ar: 'علبة' }, { name_ar: 'شريط' }] });
+    (searchMasterDrugsAction as jest.Mock).mockResolvedValue({
+      success: true, data: [{ ...drug(52, 'No Catalog Unit'), large_unit: null, large_to_medium: null }],
+    });
+    (addInventoryAction as jest.Mock).mockResolvedValue({ success: false, error: 'retryable' });
+
+    render(<AddInventoryModal pharmacyId="ph-1" onClose={jest.fn()} onSuccess={jest.fn()} />);
+    fireEvent.change(screen.getByPlaceholderText('ابحث باسم الدواء (مثلاً: Panadol)...'), { target: { value: 'No Catalog Unit' } });
+    fireEvent.click(await screen.findByText('No Catalog Unit'));
+    fireEvent.change(screen.getByPlaceholderText('مثلاً: 20'), { target: { value: '2' } });
+    fireEvent.change(document.querySelector('input[type="date"]') as HTMLInputElement, { target: { value: '2029-12-31' } });
+    const form = screen.getByRole('button', { name: /حفظ في المخزون/ }).closest('form') as HTMLFormElement;
+
+    fireEvent.submit(form);
+    await waitFor(() => expect(addInventoryAction).toHaveBeenCalledTimes(1));
+    expect((addInventoryAction as jest.Mock).mock.calls[0][0]).toEqual(expect.objectContaining({
+      drug_id: 52, unit: null, expect_null_large_unit: true,
+      request_id: '11111111-1111-4111-8111-111111111111',
+    }));
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /حفظ في المخزون/ })).toBeEnabled());
+    fireEvent.change(screen.getByRole('combobox', { name: 'الوحدة الأساسية للمخزون' }), { target: { value: 'شريط' } });
+    fireEvent.submit(form);
+    expect(addInventoryAction).toHaveBeenCalledTimes(1);
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('لا يمكن تغيير الوحدة'));
+    expect(mockGenerateId).toHaveBeenCalledTimes(1);
   });
 
   it('shows retryable adjustment-reason loading failure instead of an unusable empty required selector', async () => {

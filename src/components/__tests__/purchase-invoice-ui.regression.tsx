@@ -24,6 +24,11 @@ jest.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(window.location.search),
 }));
 jest.mock('react-hotkeys-hook', () => ({ useHotkeys: jest.fn() }));
+// Toggle the imported desktop constant for the strict native purchase test.
+jest.mock('@/lib/env', () => ({
+  get isTauri() { return (globalThis as any).__qaStrictDesktopPurchaseTest === true; },
+  get isClient() { return typeof window !== 'undefined'; },
+}));
 jest.mock('@/lib/db/tauri', () => ({ dbGet: jest.fn().mockResolvedValue(null) }));
 jest.mock('@/lib/auth/local', () => ({
   getClientSession: jest.fn(),
@@ -91,6 +96,7 @@ jest.mock('react-hot-toast', () => ({
 describe('rendered purchase-invoice flow', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    (globalThis as any).__qaStrictDesktopPurchaseTest = false;
     (findDrugBarcodeConflict as jest.Mock).mockResolvedValue(null);
     (findDrugBarcodeOwners as jest.Mock).mockResolvedValue([]);
     sessionStorage.clear();
@@ -125,7 +131,41 @@ describe('rendered purchase-invoice flow', () => {
     (updateCompletedPurchaseInvoiceAction as jest.Mock).mockResolvedValue({ success: true });
   });
 
-  afterEach(() => jest.restoreAllMocks());
+  afterEach(() => {
+    (globalThis as any).__qaStrictDesktopPurchaseTest = false;
+    jest.restoreAllMocks();
+  });
+
+  it('strict native purchase skips forbidden renderer barcode preflight and submits durable request', async () => {
+    (globalThis as any).__qaStrictDesktopPurchaseTest = true;
+    const requestId = '0198ec29-e631-48d1-8ef7-b11a89717d52';
+    jest.spyOn(window.crypto, 'randomUUID').mockReturnValue(requestId);
+    (findDrugBarcodeConflict as jest.Mock).mockRejectedValue(
+      new Error('strict renderer SQL must not reach generic preflight')
+    );
+    render(<PurchaseInvoiceClient />);
+    fireEvent.change(screen.getByPlaceholderText('اسم الصنف أو الباركود...'), {
+      target: { value: '123456' },
+    });
+    fireEvent.click(await screen.findByRole('button', { name: /Purchase Drug/ }));
+    fireEvent.change(await screen.findByRole('combobox'), { target: { value: '7' } });
+    fireEvent.change(screen.getByPlaceholderText('مثلاً: INV-2024-001'), {
+      target: { value: 'QA-NATIVE-STRICT-PURCHASE' },
+    });
+    fireEvent.change(document.querySelectorAll<HTMLInputElement>('input[type="date"]')[1], {
+      target: { value: '2028-12-31' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /حفظ نهائي/ }));
+    await waitFor(() => expect(createPurchaseInvoiceAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        invoice_number: 'QA-NATIVE-STRICT-PURCHASE', supplier_id: 7,
+        request_id: requestId, status: 'completed',
+      })
+    ));
+    expect(findDrugBarcodeConflict).not.toHaveBeenCalled();
+    expect(await screen.findByRole('dialog', { name: 'تم حفظ فاتورة الشراء' })).toBeInTheDocument();
+    expect(sessionStorage.getItem(draftKey + ':pending-native-create-v1')).toBeNull();
+  });
 
   it('exposes labeled header controls and explicit payment selection state', async () => {
     render(<PurchaseInvoiceClient />);
@@ -134,6 +174,9 @@ describe('rendered purchase-invoice flow', () => {
     expect(screen.getByLabelText('رقم الفاتورة')).toBeInTheDocument();
     expect(screen.getByLabelText('تاريخ الفاتورة')).toBeInTheDocument();
     expect(screen.getByLabelText('البحث عن صنف للشراء')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('عدد الأدوية: 0');
+    expect(screen.getByRole('status')).toHaveTextContent('بنود الفاتورة: 0');
+    expect(screen.getByRole('region', { name: 'بنود فاتورة الشراء القابلة للتمرير' })).toHaveAttribute('tabindex', '0');
     expect(screen.getByRole('button', { name: 'إضافة دواء جديد' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'طباعة فاتورة الشراء' })).toBeInTheDocument();
 
@@ -147,6 +190,103 @@ describe('rendered purchase-invoice flow', () => {
     fireEvent.click(check);
     expect(check).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByLabelText('رقم الشيك')).toBeInTheDocument();
+  });
+
+  it('keeps an independently owned supplier selectable when its historical balance is unverified', async () => {
+    (getSuppliersAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: [{ id: 7, name_ar: 'QA supplier with unverified balance', balance: null }],
+    });
+    render(<PurchaseInvoiceClient />);
+    const supplier = await screen.findByLabelText('المورد');
+    await waitFor(() => expect(within(supplier).getByRole('option', {name: 'QA supplier with unverified balance'})).toBeInTheDocument());
+    fireEvent.change(supplier, {target: {value: '7'}});
+    expect(await screen.findByText(/الرصيد الحالي:.*غير متحقق/)).toBeInTheDocument();
+    expect(screen.getByLabelText('رقم الفاتورة')).toBeInTheDocument();
+  });
+
+  it('updates visible drug and line counts when adding and removing a purchase item', async () => {
+    render(<PurchaseInvoiceClient />);
+    fireEvent.change(screen.getByLabelText('البحث عن صنف للشراء'), { target: { value: '123456' } });
+    fireEvent.click(await screen.findByRole('button', { name: /Purchase Drug/ }));
+    expect(screen.getByRole('status')).toHaveTextContent('عدد الأدوية: 1');
+    expect(screen.getByRole('status')).toHaveTextContent('بنود الفاتورة: 1');
+    fireEvent.click(screen.getByRole('button', { name: 'حذف Purchase Drug من فاتورة الشراء' }));
+    expect(screen.getByRole('status')).toHaveTextContent('عدد الأدوية: 0');
+    expect(screen.getByRole('status')).toHaveTextContent('بنود الفاتورة: 0');
+  });
+
+  it('counts two lots of one drug as one medicine and two independent invoice lines', async () => {
+    render(<PurchaseInvoiceClient />);
+    const search = screen.getByLabelText('البحث عن صنف للشراء');
+    fireEvent.change(search, { target: { value: '123456' } });
+    fireEvent.click(await screen.findByRole('button', { name: /^Purchase Drug/ }));
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('بنود الفاتورة: 1'));
+    fireEvent.change(search, { target: { value: '123456' } });
+    fireEvent.click(await screen.findByRole('button', { name: /^Purchase Drug/ }));
+
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('بنود الفاتورة: 2'));
+    expect(screen.getByRole('status')).toHaveTextContent('عدد الأدوية: 1');
+    const removeButtons = screen.getAllByRole('button', { name: 'حذف Purchase Drug من فاتورة الشراء' });
+    expect(removeButtons).toHaveLength(2);
+    fireEvent.click(removeButtons[0]);
+    expect(screen.getByRole('status')).toHaveTextContent('عدد الأدوية: 1');
+    expect(screen.getByRole('status')).toHaveTextContent('بنود الفاتورة: 1');
+  });
+
+  it('renders fifty distinct invoice lines without merging repeated medicines', async () => {
+    const cart = Array.from({ length: 50 }, (_, index) => ({
+      id: 101 + (index % 10),
+      cart_line_id: `visual-fixture-${index}`,
+      trade_name: `دواء اختبار ${index + 1}`,
+      barcode: `TEST-${String(index + 1).padStart(4, '0')}`,
+      quantity: 1 + (index % 6),
+      bonus_quantity: 0,
+      cost_price: 12.5,
+      selling_price: 20,
+      expiry_date: `2029-${String((index % 12) + 1).padStart(2, '0')}-28`,
+      strips_per_box: 2,
+      discount_percent: 0,
+      tax_percent: 0,
+    }));
+    sessionStorage.setItem(draftKey, JSON.stringify({
+      cart,
+      selectedSupplier: { id: 7, name_ar: 'مورد اختبار', balance: 125 },
+      invoiceHeader: {
+        invoice_number: 'ISOLATED-VISUAL-50', invoice_date: '2026-10-09',
+        payment_method: 'credit', notes: '', check_number: '',
+        expenses: 0, discount_value: 0, discount_percent: 0, tax_percent: 0,
+      },
+    }));
+
+    const { container } = render(<PurchaseInvoiceClient />);
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('بنود الفاتورة: 50'));
+    expect(container.querySelector('style')?.textContent).toContain('@page { size: A4 landscape');
+    expect(screen.getByRole('status')).toHaveTextContent('عدد الأدوية: 10');
+    const receipt = screen.getByRole('region', { name: 'بنود فاتورة الشراء القابلة للتمرير' });
+    expect(within(receipt).getAllByRole('row')).toHaveLength(51);
+    expect(within(receipt).getAllByText('دواء اختبار 50').length).toBeGreaterThan(0);
+
+    // Optional read-only browser fixture: only emit to a caller-selected temp folder.
+    // Real rendering/actions above use the production component and mocked data/actions.
+    const outputDir = process.env.PHARMA_VISUAL_SNAPSHOT_DIR;
+    if (outputDir) {
+      const fs = require('node:fs');
+      const path = require('node:path');
+      const { pathToFileURL } = require('node:url');
+      const css = path.resolve(process.cwd(), 'out/_next/static/css');
+      const stylesheet = fs.readdirSync(css).find((file: string) => file.endsWith('.css'));
+      if (!stylesheet) throw new Error('Compiled production CSS missing for visual acceptance');
+      fs.mkdirSync(outputDir, { recursive: true });
+      const cssHref = pathToFileURL(path.join(css, stylesheet)).href;
+      for (const shell of ['desktop', 'native']) {
+        const sidebar = shell === 'desktop' ? '<aside aria-label="التنقل الجانبي" class="hidden lg:block w-72 shrink-0 border-l border-slate-200 bg-white p-5"><h2 class="text-lg">فارما تيك</h2><p>المشتريات</p></aside>' : '';
+        const shellClass = shell === 'desktop' ? 'flex h-screen overflow-hidden' : 'flex flex-col h-screen overflow-hidden';
+        const toolbar = shell === 'native' ? '<header class="h-16 shrink-0 border-b border-slate-200 bg-white p-4">فارما تيك — فاتورة مشتريات</header>' : '';
+        const body = `<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="${cssHref}"><title>Pharma hidden acceptance — 50 lines</title></head><body class="bg-slate-50"><div class="pharma-workbench ${shellClass}">${sidebar}${toolbar}<main class="min-w-0 flex-1 overflow-y-auto"><div class="mx-auto w-full max-w-[1600px] p-4 sm:p-6">${container.innerHTML}</div></main></div></body></html>`;
+        fs.writeFileSync(path.join(outputDir, `purchase-${shell}-50.html`), body, 'utf8');
+      }
+    }
   });
 
   it('warns on completed receipt edits, keeps the original line ID, and asks before saving', async () => {
@@ -361,6 +501,7 @@ describe('rendered purchase-invoice flow', () => {
     fireEvent.change(document.querySelectorAll<HTMLInputElement>('input[type="date"]')[1], { target: { value: '2030-01-01' } });
     (findDrugBarcodeConflict as jest.Mock).mockResolvedValue({ id: 99, trade_name: 'Old drug', barcode: '123456' });
     fireEvent.click(screen.getByRole('button', { name: /حفظ نهائي/ }));
+    await waitFor(() => expect(findDrugBarcodeConflict).toHaveBeenCalledWith('123456', 101));
     const first = await screen.findByRole('dialog');
     expect(within(first).getByText(/Old drug/)).toBeInTheDocument();
     expect(createPurchaseInvoiceAction).not.toHaveBeenCalled();
@@ -484,6 +625,7 @@ describe('rendered purchase-invoice flow', () => {
     if (printBarcodes) {
       fireEvent.click(within(postSaveDialog).getByRole('button', { name: 'طباعة الباركود' }));
       expect(mockPush).not.toHaveBeenCalledWith('/purchases');
+      expect(view.container.innerHTML).not.toContain('@page { size: A4 landscape');
     } else {
       fireEvent.click(within(postSaveDialog).getByRole('button', { name: 'العودة إلى المشتريات' }));
       expect(mockPush).toHaveBeenCalledWith('/purchases');
@@ -630,6 +772,8 @@ describe('rendered purchase-invoice flow', () => {
     render(<PurchaseInvoiceClient />);
     expect(await screen.findByText('Purchase Drug')).toBeInTheDocument();
     expect(screen.getAllByText('Shortage Drug')).toHaveLength(2);
+    expect(screen.getByRole('status')).toHaveTextContent('عدد الأدوية: 2');
+    expect(screen.getByRole('status')).toHaveTextContent('بنود الفاتورة: 2');
     const combined = JSON.parse(sessionStorage.getItem(draftKey)!);
     expect(combined.cart[0]).toEqual(before.cart[0]);
     expect(combined.cart[1]).toMatchObject({ id: 202, quantity: 4 });

@@ -189,4 +189,84 @@ describe('delivery management UI flows', () => {
     expect(closeDeliveryInvoiceAction).toHaveBeenCalledTimes(1);
     expect(toast.success).toHaveBeenCalledWith('تم إغلاق الفاتورة وتأكيد التوصيل');
   });
+
+  it('offers every delivery in a 201-item queue using bounded pages and an honest incomplete status', async () => {
+    const allDeliveries = Array.from({ length: 201 }, (_, i) => ({
+      ...delivery, id: `batch-${String(i).padStart(4, '0')}`,
+      patient_name: `Batch patient ${i}`,
+    }));
+    const cursor100 = { createdAt: delivery.created_at, id: allDeliveries[99].id };
+    const cursor200 = { createdAt: delivery.created_at, id: allDeliveries[199].id };
+    (getPendingDeliveriesAction as jest.Mock)
+      .mockResolvedValueOnce({
+        success: true, data: allDeliveries.slice(0,100),
+        hasMore: true, nextCursor: cursor100,
+      })
+      .mockResolvedValueOnce({
+        success: true, data: allDeliveries.slice(100,200),
+        hasMore: true, nextCursor: cursor200,
+      })
+      .mockResolvedValueOnce({
+        success: true, data: allDeliveries.slice(200),
+        hasMore: false, nextCursor: null,
+      });
+    render(<DeliveryManagementClient />);
+    expect(await screen.findByText('Batch patient 0')).toBeInTheDocument();
+    expect(screen.getByRole('status').textContent).toContain('100');
+    expect(screen.queryByText('Batch patient 200')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'تحميل المزيد من فواتير التوصيل' }));
+    expect(await screen.findByText('Batch patient 199')).toBeInTheDocument();
+    expect(screen.getByRole('status').textContent).toContain('200');
+    expect(getPendingDeliveriesAction).toHaveBeenNthCalledWith(2, cursor100);
+    fireEvent.click(screen.getByRole('button', { name: 'تحميل المزيد من فواتير التوصيل' }));
+    expect(await screen.findByText('Batch patient 200')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'تحميل المزيد من فواتير التوصيل' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(getPendingDeliveriesAction).toHaveBeenNthCalledWith(3, cursor200);
+    expect(screen.getAllByRole('button', { name: 'إغلاق وتأكيد' })).toHaveLength(201);
+  }, 20_000); // Full 201-row DOM stress can exceed Jest's unrelated 5s unit-test default.
+
+  it('keeps already loaded deliveries visible and retryable when the next page fails', async () => {
+    const cursor = { createdAt: delivery.created_at, id: delivery.id };
+    (getPendingDeliveriesAction as jest.Mock)
+      .mockResolvedValueOnce({ success: true, data: [delivery], hasMore: true, nextCursor: cursor })
+      .mockResolvedValueOnce({ success: false, error: 'Failed to load next page' })
+      .mockResolvedValueOnce({ success: true, data: [{ ...delivery, id: 'second-invoice', patient_name: 'Second patient' }], hasMore: false, nextCursor: null });
+    render(<DeliveryManagementClient />);
+    expect(await screen.findByText('عميل التوصيل')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'تحميل المزيد من فواتير التوصيل' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Failed to load next page');
+    expect(screen.getByText('عميل التوصيل')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'تحميل المزيد من فواتير التوصيل' }));
+    expect(await screen.findByText('Second patient')).toBeInTheDocument();
+    expect(getPendingDeliveriesAction).toHaveBeenNthCalledWith(3, cursor);
+  });
+
+  it('discards a stale load-more page after refresh replaces the queue', async () => {
+    const cursor = { createdAt: delivery.created_at, id: delivery.id };
+    const oldPage = deferred<any>();
+    const staleInvoice = { ...delivery, id: 'old-page', patient_name: 'Stale page patient' };
+    const freshInvoice = { ...delivery, id: 'fresh-page', patient_name: 'Fresh queue patient' };
+    (getPendingDeliveriesAction as jest.Mock)
+      .mockResolvedValueOnce({ success: true, data: [delivery], hasMore: true, nextCursor: cursor })
+      .mockImplementationOnce(() => oldPage.promise)
+      .mockResolvedValueOnce({ success: true, data: [freshInvoice], hasMore: false, nextCursor: null });
+    render(<DeliveryManagementClient />);
+    expect(await screen.findByText('عميل التوصيل')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'تحميل المزيد من فواتير التوصيل' }));
+    expect(getPendingDeliveriesAction).toHaveBeenNthCalledWith(2, cursor);
+
+    fireEvent.click(screen.getByRole('button', { name: 'تحديث طلبات التوصيل' }));
+    expect(await screen.findByText('Fresh queue patient')).toBeInTheDocument();
+    await act(async () => {
+      oldPage.resolve({ success: true, data: [staleInvoice], hasMore: true, nextCursor: cursor });
+      await oldPage.promise;
+    });
+    expect(screen.queryByText('Stale page patient')).not.toBeInTheDocument();
+    expect(screen.queryByText('عميل التوصيل')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'تحميل المزيد من فواتير التوصيل' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(getPendingDeliveriesAction).toHaveBeenCalledTimes(3);
+  });
 });

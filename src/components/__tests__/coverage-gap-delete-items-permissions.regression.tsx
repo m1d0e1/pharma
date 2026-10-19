@@ -74,6 +74,31 @@ describe('delete-items permission boundary', () => {
     expect(getUnusedDrugsAction).toHaveBeenCalled();
   });
 
+  it('shows an authorized loading context during a measured 4.2-second slow read, without exposing delete controls', async () => {
+    jest.useFakeTimers();
+    let resolveList!: (value: { success: boolean; data: any[] }) => void;
+    (getClientSession as jest.Mock).mockResolvedValue({
+      id: 'admin-manager', role: 'admin', permissions: { can_manage_inventory: true },
+    });
+    (getUnusedDrugsAction as jest.Mock).mockImplementation(() => new Promise(resolve => { resolveList = resolve; }));
+
+    try {
+      render(<DeleteUnusedItemsPage />);
+      await act(async () => {});
+      expect(getUnusedDrugsAction).toHaveBeenCalledTimes(1);
+      await act(async () => { jest.advanceTimersByTime(4200); });
+
+      expect(screen.getByRole('heading', { name: 'حذف الأصناف التي لم يتم عليها حركات' })).toBeInTheDocument();
+      expect(screen.getByRole('status')).toHaveTextContent('جاري تحميل الأصناف القابلة للحذف');
+      expect(screen.queryByText('DELETE ITEMS CLIENT')).not.toBeInTheDocument();
+
+      await act(async () => resolveList({ success: true, data: [] }));
+      expect(screen.getByText('DELETE ITEMS CLIENT')).toBeInTheDocument();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('keeps the newest post-delete refresh when concurrent item deletions finish out of order', async () => {
     let resolveOlder!: (value: unknown) => void;
     let resolveNewer!: (value: unknown) => void;

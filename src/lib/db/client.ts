@@ -208,17 +208,21 @@ export function generateId(): string {
 }
 
 export function backup(backupPath: string): void {
-  const database = getDatabase();
-  database.backup(backupPath).step(-1);
+  // This legacy helper accepted an arbitrary destination path without a
+  // current native owner or password check. Full financial backups must use
+  // the validated, owner-custodied native snapshot/manifest workflow.
+  void backupPath;
+  throw new Error('Database backup is disabled here; use authenticated native owner backup');
 }
 
 export function restore(backupPath: string): void {
-  closeDatabase();
-  const backupDb = new Database(backupPath);
-  const newDb = new Database(DB_PATH);
-  backupDb.backup(newDb).step(-1);
-  backupDb.close();
-  newDb.close();
+  // This legacy helper previously overwrote the live DB without verifying
+  // authenticated owner authority, signed backup provenance, tenant/history
+  // completeness, foreign keys, WAL state or a restart/rollback recovery plan.
+  // There are no legitimate production call sites. Never reintroduce a
+  // renderer/Node path to replace financial history by arbitrary file.
+  void backupPath;
+  throw new Error('Database restore is disabled until an authenticated native offline recovery workflow is approved');
 }
 
 export function getDatabaseSize(): number {

@@ -108,7 +108,7 @@ export const ROUTE_PERMISSIONS: Record<string, PermissionRequirement> = {
   '/shifts/report': 'rep_can_view_shifts',
   '/shifts': 'can_view_shifts',
   '/patients': 'can_view_patients',
-  '/interactions': 'can_view_patients',
+  '/interactions': 'can_view_interactions',
   '/reports/purchases': 'rep_can_view_purchases',
   '/reports/trial-balance': 'acc_can_view_reports',
   '/reports/sales': 'rep_can_view_sales',

@@ -4,7 +4,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { addExpenseAction, getExpensesAction, getExpenseSummaryAction } from '@/app/actions-client/expenses';
 import { getExpenseDefinitionsAction } from '@/app/actions-client/finance';
 import { toast } from 'react-hot-toast';
-import { Plus, Filter } from 'lucide-react';
+import { Plus, Filter, TrendingUp, TrendingDown, WalletCards, ReceiptText, ChartNoAxesColumnIncreasing } from 'lucide-react';
 
 const FALLBACK_CATEGORIES = [
   { code: 'RENT', name_ar: 'إيجار' },
@@ -33,13 +33,21 @@ export default function ExpensesClient({ canManage = false }: { canManage?: bool
   const [loadError, setLoadError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submissionRef = useRef(false);
+  // A lost IPC response may hide a committed native expense. Retry the same
+  // financial intent with its original nonce, never a fresh posting ID.
+  const expenseIntentRef = useRef<{ fingerprint: string; requestId: string } | null>(null);
+  const formEditedRef = useRef(false);
   const loadRequestRef = useRef(0);
   const toggleForm = () => {
     if (submissionRef.current) return;
-    setShowForm(open => !open);
+    setShowForm(open => {
+      if (open) expenseIntentRef.current = null;
+      return !open;
+    });
   };
   const closeForm = () => {
     if (submissionRef.current) return;
+    expenseIntentRef.current = null;
     setShowForm(false);
   };
   const [form, setForm] = useState({
@@ -56,7 +64,8 @@ export default function ExpensesClient({ canManage = false }: { canManage?: bool
       if (result.success && result.data && result.data.length > 0) {
         setCategories(result.data);
         const firstCat = result.data[0]?.code || 'OTHER';
-        setForm(f => ({ ...f, category: firstCat }));
+        setForm(f => (formEditedRef.current || expenseIntentRef.current
+          ? f : { ...f, category: firstCat }));
       } else {
         setCategories(FALLBACK_CATEGORIES);
       }
@@ -122,16 +131,26 @@ export default function ExpensesClient({ canManage = false }: { canManage?: bool
     if (submissionRef.current) return;
 
     submissionRef.current = true;
+    const expenseData = {
+      category: form.category,
+      amount: parseFloat(form.amount),
+      description: form.description,
+      date: form.date,
+    };
+    const fingerprint = JSON.stringify(expenseData);
+    if (expenseIntentRef.current?.fingerprint !== fingerprint) {
+      expenseIntentRef.current = { fingerprint, requestId: crypto.randomUUID() };
+    }
     setIsSubmitting(true);
     try {
       const result = await addExpenseAction({
-        category: form.category,
-        amount: parseFloat(form.amount),
-        description: form.description,
-        date: form.date,
+        ...expenseData,
+        request_id: expenseIntentRef.current.requestId,
       });
 
       if (result.success) {
+        expenseIntentRef.current = null;
+        formEditedRef.current = false;
         toast.success('تم إضافة المصروف بنجاح');
         const defaultCat = categories[0]?.code || 'OTHER';
         setForm({
@@ -155,42 +174,42 @@ export default function ExpensesClient({ canManage = false }: { canManage?: bool
   };
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       {/* P&L Summary Cards */}
       {!loadError && summary && (
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-          <div className="bg-gradient-to-br from-emerald-500 to-green-600 p-6 rounded-3xl text-white shadow-xl hover:scale-[1.02] transition-transform duration-300">
-            <p className="text-emerald-100 text-xs font-bold uppercase tracking-wider mb-2">إجمالي الإيرادات</p>
-            <h3 className="text-3xl font-black">
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+          <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
+            <div className="flex items-center justify-between gap-3 mb-3"><p className="text-slate-500 dark:text-slate-400 text-xs font-semibold">إجمالي الإيرادات</p><TrendingUp className="w-5 h-5 text-emerald-600" aria-hidden="true" /></div>
+            <h3 className="text-2xl font-bold text-slate-900 dark:text-white tabular-nums">
               {Number(summary.totalRevenue).toLocaleString()} <span className="text-sm">ج.م</span>
             </h3>
           </div>
-          <div className="bg-gradient-to-br from-red-500 to-rose-600 p-6 rounded-3xl text-white shadow-xl hover:scale-[1.02] transition-transform duration-300">
-            <p className="text-red-100 text-xs font-bold uppercase tracking-wider mb-2">إجمالي المصروفات</p>
-            <h3 className="text-3xl font-black">
+          <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
+            <div className="flex items-center justify-between gap-3 mb-3"><p className="text-slate-500 dark:text-slate-400 text-xs font-semibold">إجمالي المصروفات</p><ReceiptText className="w-5 h-5 text-rose-600" aria-hidden="true" /></div>
+            <h3 className="text-2xl font-bold text-slate-900 dark:text-white tabular-nums">
               {Number(summary.totalExpenses).toLocaleString()} <span className="text-sm">ج.م</span>
             </h3>
           </div>
-          <div className="bg-gradient-to-br from-amber-500 to-orange-600 p-6 rounded-3xl text-white shadow-xl hover:scale-[1.02] transition-transform duration-300">
-            <p className="text-amber-100 text-xs font-bold uppercase tracking-wider mb-2">تكلفة المبيعات (COGS)</p>
-            <h3 className="text-3xl font-black">
+          <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
+            <div className="flex items-center justify-between gap-3 mb-3"><p className="text-slate-500 dark:text-slate-400 text-xs font-semibold">تكلفة المبيعات (COGS)</p><WalletCards className="w-5 h-5 text-amber-600" aria-hidden="true" /></div>
+            <h3 className="text-2xl font-bold text-slate-900 dark:text-white tabular-nums">
               {Number(summary.totalCOGS || 0).toLocaleString()} <span className="text-sm">ج.م</span>
             </h3>
           </div>
-          <div className={`bg-gradient-to-br ${summary.netProfit >= 0 ? 'from-blue-600 to-indigo-700' : 'from-red-700 to-red-900'} p-6 rounded-3xl text-white shadow-xl hover:scale-[1.02] transition-transform duration-300`}>
-            <p className="text-blue-100 text-xs font-bold uppercase tracking-wider mb-2">صافي الربح</p>
-            <h3 className="text-3xl font-black">
+          <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
+            <div className="flex items-center justify-between gap-3 mb-3"><p className="text-slate-500 dark:text-slate-400 text-xs font-semibold">صافي الربح</p>{summary.netProfit >= 0 ? <TrendingUp className="w-5 h-5 text-blue-600" aria-hidden="true" /> : <TrendingDown className="w-5 h-5 text-rose-600" aria-hidden="true" />}</div>
+            <h3 className={`text-2xl font-bold tabular-nums ${summary.netProfit >= 0 ? 'text-blue-700 dark:text-blue-400' : 'text-rose-700 dark:text-rose-400'}`}>
               {Number(summary.netProfit).toLocaleString()} <span className="text-sm">ج.م</span>
             </h3>
-            <p className="text-xs mt-2 opacity-80">{summary.netProfit >= 0 ? '📈 ربح' : '📉 خسارة'}</p>
+            <p className="text-xs mt-2 text-slate-500 dark:text-slate-400">{summary.netProfit >= 0 ? 'ربح' : 'خسارة'}</p>
           </div>
         </div>
       )}
 
       {/* Category Breakdown */}
       {summary && summary.byCategory && summary.byCategory.length > 0 && (
-        <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-xl">
-          <h3 className="text-xl font-bold mb-6">📊 توزيع المصروفات حسب الفئة</h3>
+        <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
+          <h3 className="text-lg font-semibold mb-4 flex items-center gap-2"><ChartNoAxesColumnIncreasing className="w-5 h-5 text-primary-700" aria-hidden="true" /> توزيع المصروفات حسب الفئة</h3>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             {summary.byCategory.map((cat: any, idx: number) => {
               const colors = [
@@ -240,7 +259,7 @@ export default function ExpensesClient({ canManage = false }: { canManage?: bool
 
       {/* Add Form */}
       {canManage && showForm && (
-        <form onSubmit={handleSubmit} className="bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-xl space-y-6 animate-in slide-in-from-top-4 duration-300">
+        <form onSubmit={handleSubmit} className="bg-white dark:bg-slate-900 p-5 sm:p-6 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-5">
           <h3 className="text-lg font-bold">إضافة مصروف جديد</h3>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
@@ -248,7 +267,10 @@ export default function ExpensesClient({ canManage = false }: { canManage?: bool
               <select
                 id="expense-category"
                 value={form.category}
-                onChange={e => setForm({...form, category: e.target.value})}
+                onChange={e => {
+                  formEditedRef.current = true;
+                  setForm({...form, category: e.target.value});
+                }}
                 className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-4 py-3 rounded-xl font-bold"
               >
                 {(categories.length > 0 ? categories : FALLBACK_CATEGORIES).map(c => (
@@ -264,7 +286,10 @@ export default function ExpensesClient({ canManage = false }: { canManage?: bool
                 step="0.01"
                 min="0"
                 value={form.amount}
-                onChange={e => setForm({...form, amount: e.target.value})}
+                onChange={e => {
+                  formEditedRef.current = true;
+                  setForm({...form, amount: e.target.value});
+                }}
                 className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-4 py-3 rounded-xl font-bold"
                 placeholder="0.00"
                 required
@@ -276,7 +301,10 @@ export default function ExpensesClient({ canManage = false }: { canManage?: bool
                 id="expense-date"
                 type="date"
                 value={form.date}
-                onChange={e => setForm({...form, date: e.target.value})}
+                onChange={e => {
+                  formEditedRef.current = true;
+                  setForm({...form, date: e.target.value});
+                }}
                 className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-4 py-3 rounded-xl font-bold"
                 required
               />
@@ -287,7 +315,10 @@ export default function ExpensesClient({ canManage = false }: { canManage?: bool
                 id="expense-description"
                 type="text"
                 value={form.description}
-                onChange={e => setForm({...form, description: e.target.value})}
+                onChange={e => {
+                  formEditedRef.current = true;
+                  setForm({...form, description: e.target.value});
+                }}
                 className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-4 py-3 rounded-xl font-bold"
                 placeholder="وصف المصروف..."
               />
@@ -309,7 +340,7 @@ export default function ExpensesClient({ canManage = false }: { canManage?: bool
       )}
 
       {/* Expenses Table */}
-      <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-xl overflow-hidden">
+      <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
         {loadError && !loading && (
           <div className="m-6 p-6 rounded-2xl bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/40 text-center space-y-4">
             <p className="font-black text-rose-600 dark:text-rose-400">{loadError}</p>

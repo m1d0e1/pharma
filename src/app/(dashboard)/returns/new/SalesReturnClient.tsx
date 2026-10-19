@@ -3,7 +3,8 @@ import TableScrollContainer from '@/components/ui/TableScrollContainer';
 
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { getInvoiceForReturnAction, createReturnAction, getSalesInvoicesByDateAction, searchRecentReturnInvoicesAction } from '@/app/actions-client/returns';
+import { getInvoiceForReturnAction, createReturnAction, getSalesInvoicesByDateAction, searchRecentReturnInvoicesAction, confirmPendingSalesReturnAction, nativeSalesReturnRecoveryPending } from '@/app/actions-client/returns';
+import { isTauri } from '@/lib/env';
 import { Search, Save, Trash2, ArrowRight, Calendar, FileText } from 'lucide-react';
 import Link from 'next/link';
 import { toast } from 'react-hot-toast';
@@ -57,11 +58,39 @@ export default function SalesReturnClient() {
   const [isSearching, setIsSearching] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isCommitted, setIsCommitted] = useState(false);
+  const [submitError, setSubmitError] = useState('');
   const submissionRef = React.useRef(false);
+  const nativeReturnNonceRef = React.useRef<string | null>(null);
+  const [recoveryStatus, setRecoveryStatus] = useState<'checking' | 'ready' | 'blocked'>(
+    isTauri ? 'checking' : 'ready',
+  );
+
+  React.useEffect(() => {
+    if (!isTauri) return;
+    let mounted = true;
+    const recover = async () => {
+      if (!nativeSalesReturnRecoveryPending()) {
+        if (mounted) setRecoveryStatus('ready');
+        return;
+      }
+      const result = await confirmPendingSalesReturnAction();
+      if (!mounted) return;
+      if (result.success && !nativeSalesReturnRecoveryPending()) {
+        setRecoveryStatus('ready');
+        if (result.recovered) toast.success('تم التحقق من إيصال المرتجع السابق من السجل الأصلي');
+      } else {
+        setRecoveryStatus('blocked');
+      }
+    };
+    void recover();
+    return () => { mounted = false; };
+  }, []);
 
   const [selectedIndex, setSelectedIndex] = useState<number>(-1);
 
   const invalidatePreparedReturn = () => {
+    nativeReturnNonceRef.current = null;
+    setSubmitError('');
     detailRequestRef.current += 1;
     setInvoiceId('');
     setInvoice(null);
@@ -174,6 +203,7 @@ export default function SalesReturnClient() {
   React.useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       // Ignore keydown if focused on input/textarea/select elements to not interfere with quantity inputs
+      if (e.target instanceof Element && e.target.closest('input, textarea, select, [role="combobox"], [contenteditable="true"]')) return;
       const activeEl = document.activeElement;
       if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'SELECT')) {
         return;
@@ -305,17 +335,25 @@ export default function SalesReturnClient() {
 
   const handleSubmit = async () => {
     if (!invoice) return;
+    if (isTauri && (recoveryStatus !== 'ready' || nativeSalesReturnRecoveryPending())) {
+      setRecoveryStatus('blocked');
+      return toast.error('يوجد طلب مرتجع سابق لم يُتحقق من إيصال اعتماده الأصلي');
+    }
     if (activeReturns.length === 0) {
       return toast.error('يرجى تحديد كمية لمرتجع واحد على الأقل');
     }
 
     if (submissionRef.current) return;
     submissionRef.current = true;
+    setSubmitError('');
     setIsSubmitting(true);
     let committed = false;
     try {
+      if (!nativeReturnNonceRef.current) nativeReturnNonceRef.current = crypto.randomUUID();
       const res = await createReturnAction({
+        request_id: nativeReturnNonceRef.current,
         invoice_id: invoiceId,
+        expected_total_refund: Number(totalRefund.toFixed(2)),
         refund_method: refundMethod,
         reason,
         patient_id: invoice.patient_id || undefined,
@@ -340,9 +378,13 @@ export default function SalesReturnClient() {
           toast.error('تم تسجيل المرتجع بنجاح لكن تعذر فتح قائمة المرتجعات');
         }
       } else {
+        if (isTauri && nativeSalesReturnRecoveryPending()) setRecoveryStatus('blocked');
+        setSubmitError(res.error || 'فشل حفظ المرتجع');
         toast.error('فشل حفظ المرتجع: ' + res.error);
       }
     } catch {
+      if (isTauri && nativeSalesReturnRecoveryPending()) setRecoveryStatus('blocked');
+      setSubmitError('حدث خطأ أثناء حفظ المرتجع');
       toast.error('حدث خطأ أثناء حفظ المرتجع');
     } finally {
       if (!committed) submissionRef.current = false;
@@ -352,6 +394,13 @@ export default function SalesReturnClient() {
 
   return (
     <div className="p-6 space-y-6" dir="rtl">
+      {isTauri && recoveryStatus !== 'ready' && (
+        <p role="alert" className="rounded-xl border border-amber-400 bg-amber-50 p-4 text-sm font-bold text-amber-950">
+          {recoveryStatus === 'checking'
+            ? 'جارٍ التحقق من إيصال المرتجع السابق. يُمنع أي ترحيل جديد حتى اكتمال التحقق.'
+            : 'تعذر تأكيد مرتجع سابق من الإيصال المالي الأصلي. يرجى مراجعة السجل مع المسؤول؛ لا يمكن إنشاء مرتجع آخر تلقائياً.'}
+        </p>
+      )}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-slate-800 dark:text-white">إضافة مرتجع مبيعات</h1>
@@ -591,12 +640,18 @@ export default function SalesReturnClient() {
                   
                   <button
                     onClick={handleSubmit}
-                    disabled={isSubmitting || isCommitted || activeReturns.length === 0}
+                    disabled={isSubmitting || isCommitted || activeReturns.length === 0 ||
+                      (isTauri && recoveryStatus !== 'ready')}
                     className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white p-3.5 rounded-xl font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed mt-6 shadow-md shadow-blue-500/10"
                   >
                     <Save className="w-5 h-5" />
                     {isCommitted ? 'تم حفظ المرتجع' : isSubmitting ? 'جاري الحفظ...' : 'تنفيذ المرتجع'}
                   </button>
+                  {submitError && (
+                    <p role="alert" className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm font-bold text-red-800 dark:border-red-900 dark:bg-red-950/30 dark:text-red-200">
+                      {submitError}
+                    </p>
+                  )}
                 </div>
 
                 {/* Settings panel */}
@@ -609,7 +664,12 @@ export default function SalesReturnClient() {
                       id="sales-return-refund-method"
                       className="w-full p-2.5 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-blue-500 font-bold"
                       value={refundMethod}
-                      onChange={(e) => setRefundMethod(e.target.value as any)}
+                      onChange={(e) => {
+                        const method = e.currentTarget.value;
+                        if (method === 'cash' || method === 'bank' || method === 'patient_account' || method === 'wallet') {
+                          setRefundMethod(method);
+                        }
+                      }}
                     >
                       <option value="cash">استرداد نقدي (كاش)</option>
                       <option value="bank">استرداد بنكي / بطاقة</option>

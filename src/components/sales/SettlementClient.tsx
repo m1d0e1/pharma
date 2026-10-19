@@ -50,6 +50,8 @@ export default function SettlementClient({ initialItems }: { initialItems: Unset
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [isProcessing, setIsProcessing] = useState(false)
   const [isRefreshing, setIsRefreshing] = useState(false)
+  const [hasVerifiedRead, setHasVerifiedRead] = useState(initialItems.length > 0)
+  const [loadError, setLoadError] = useState('')
   const [canManageInventory, setCanManageInventory] = useState(false)
   const batchRequestRef = useRef(0)
   const settlementSubmissionRef = useRef(false)
@@ -67,7 +69,11 @@ export default function SettlementClient({ initialItems }: { initialItems: Unset
   // Keep state synced if parent changes the items (e.g. initial load resolves)
   useEffect(() => {
     if (initialItems.length > 0) {
+      loadRequestRef.current += 1
       setItems(initialItems)
+      setHasVerifiedRead(true)
+      setLoadError('')
+      setIsRefreshing(false)
     } else {
       loadLatest(false)
     }
@@ -76,18 +82,35 @@ export default function SettlementClient({ initialItems }: { initialItems: Unset
   const loadLatest = async (showToast = false) => {
     const requestId = ++loadRequestRef.current
     setIsRefreshing(true)
+    setHasVerifiedRead(false)
+    setLoadError('')
+    // A refreshed source may belong to a new session or tenant. Neither a
+    // previously selected batch nor a pending old batch read is still trusted.
+    if (!settlementSubmissionRef.current) {
+      batchRequestRef.current += 1
+      setIsModalOpen(false)
+      setSelectedItem(null)
+      setBatches([])
+    }
     try {
       const result = await getUnsettledSalesAction()
       if (requestId !== loadRequestRef.current) return
-      if (result.success) {
+      if (result.success && Array.isArray(result.data)) {
         setItems(result.data as UnsettledItem[])
+        setHasVerifiedRead(true)
         if (showToast) toast.success('تم تحديث البيانات')
       } else {
+        setItems([])
+        setLoadError(result.error || 'تعذر التحقق من بيانات التسوية')
         if (showToast) toast.error('فشل تحديث البيانات')
       }
     } catch (err) {
       console.error('Failed to sync data:', err)
-      if (requestId === loadRequestRef.current && showToast) toast.error('حدث خطأ أثناء الاتصال بقاعدة البيانات')
+      if (requestId === loadRequestRef.current) {
+        setItems([])
+        setLoadError('تعذر التحقق من بيانات التسوية')
+        if (showToast) toast.error('حدث خطأ أثناء الاتصال بقاعدة البيانات')
+      }
     } finally {
       if (requestId === loadRequestRef.current) setIsRefreshing(false)
     }
@@ -117,6 +140,7 @@ export default function SettlementClient({ initialItems }: { initialItems: Unset
   )
 
   const handleOpenSettlement = async (item: UnsettledItem) => {
+    if (isRefreshing || !hasVerifiedRead || loadError) return
     const requestId = ++batchRequestRef.current
     setSelectedItem(item)
     setBatches([])
@@ -137,7 +161,7 @@ export default function SettlementClient({ initialItems }: { initialItems: Unset
 
   const handleSettle = async (batchId: string) => {
     if (!selectedItem) return
-    if (settlementSubmissionRef.current) return
+    if (settlementSubmissionRef.current || isRefreshing || !hasVerifiedRead || loadError) return
     const itemToSettle = selectedItem
     settlementSubmissionRef.current = true
     setIsProcessing(true)
@@ -164,6 +188,16 @@ export default function SettlementClient({ initialItems }: { initialItems: Unset
 
   return (
     <div className="space-y-6">
+      {isRefreshing && (
+        <p role="status" className="text-sm font-bold text-slate-600 dark:text-slate-300">
+          جاري التحقق من بيانات التسوية قبل إتاحة الإجراء...
+        </p>
+      )}
+      {loadError && (
+        <p role="alert" className="text-sm font-bold text-rose-700 dark:text-rose-300">
+          تعذر التحقق من التسويات؛ لا يمكن اعتماد قائمة سابقة: {loadError}
+        </p>
+      )}
       {/* Search & Actions Bar */}
       <div className="flex flex-col md:flex-row gap-4 items-center">
         <div className="relative group flex-1 w-full">
@@ -245,6 +279,7 @@ export default function SettlementClient({ initialItems }: { initialItems: Unset
                   {canManageInventory ? (
                     <button
                       onClick={() => handleOpenSettlement(item)}
+                      disabled={isRefreshing || !hasVerifiedRead || Boolean(loadError)}
                       className="bg-purple-700 hover:bg-purple-800 text-white px-4 py-2.5 rounded-lg font-semibold text-sm transition-colors shadow-sm"
                     >
                       تسوية الآن
@@ -255,7 +290,7 @@ export default function SettlementClient({ initialItems }: { initialItems: Unset
                 </td>
               </tr>
             ))}
-            {filteredItems.length === 0 && (
+            {filteredItems.length === 0 && hasVerifiedRead && !isRefreshing && !loadError && (
               <tr>
                 <td colSpan={6} className="p-12 text-center">
                   <div className="flex flex-col items-center">

@@ -2,6 +2,7 @@
 import { dbSelect, dbExecute, dbGet, dbTransaction } from '@/lib/db/tauri';
 import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { isPharmacyIdentityConfigKey, pharmacyIdentityConfigKey } from '@/lib/settings/pharmacy-identity';
+import { isTauri } from '@/lib/env';
 
 const db = {
   prepare: (sql) => ({
@@ -42,6 +43,16 @@ const revalidatePath = (...args: any[]) => {};
  */
 export async function getConfigAction(key: string) {
   try {
+    if (isTauri) {
+      // A renderer-chosen global config key must not bypass native pharmacy
+      // ownership (including internal migration/repair status markers).
+      if (!isPharmacyIdentityConfigKey(key)) {
+        throw new Error('Native configuration read requires an approved scoped key');
+      }
+      const { invoke } = await import('@tauri-apps/api/core');
+      const values = await invoke<Record<string, string>>('read_pharmacy_settings_scoped');
+      return { success: true, value: values[key] || null };
+    }
     const localUser = isPharmacyIdentityConfigKey(key) ? await getLocalSession() : null;
     const scopedKey = isPharmacyIdentityConfigKey(key)
       ? pharmacyIdentityConfigKey(key, localUser?.pharmacy_id)
@@ -61,6 +72,12 @@ export async function updateConfigAction(key: string, value: string) {
     const localUser = await getLocalSession();
     if (!localUser || !hasUserPermissionSync(localUser, 'can_view_settings')) {
       return { success: false, error: 'غير مصرح' };
+    }
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('update_config_value', { userId: localUser.id, key, value });
+      revalidatePath('/');
+      return { success: true };
     }
     const scopedKey = isPharmacyIdentityConfigKey(key)
       ? pharmacyIdentityConfigKey(key, localUser.pharmacy_id)

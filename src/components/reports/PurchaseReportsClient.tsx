@@ -208,11 +208,15 @@ export default function PurchaseReportsClient() {
       const res = await getPurchaseInvoiceDetailsAction(invoice.id);
       if (requestId !== detailsRequestRef.current) return;
       if (res.success && res.data) setSelectedItems(res.data);
-      else toast.error('فشل تحميل تفاصيل فاتورة الشراء');
+      else {
+        toast.error('فشل تحميل تفاصيل فاتورة الشراء');
+        setSelectedInvoice(null);
+      }
     } catch (err) {
       if (requestId !== detailsRequestRef.current) return;
       console.error('Purchase invoice details error:', err);
       toast.error('فشل تحميل تفاصيل فاتورة الشراء');
+      setSelectedInvoice(null);
     } finally {
       if (requestId === detailsRequestRef.current) setDetailsLoading(false);
     }

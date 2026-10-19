@@ -210,8 +210,22 @@ describe('Phase 1b: Tauri (localStorage) Auth — All 7 scenarios', () => {
       dbExecute: jest.fn(() => ({ rowsAffected: 1 })),
     }));
 
+    let authenticated: any = null;
     jest.doMock('@tauri-apps/api/core', () => ({
-      invoke: jest.fn(() => Promise.resolve(true)),
+      invoke: jest.fn((cmd: string, args: any) => {
+        if (cmd === 'authenticate_local') {
+          const user = users[args.username];
+          if (!user) return Promise.resolve({ success: false, error: 'المستخدم غير موجود' });
+          if (!user.is_active) return Promise.resolve({ success: false, error: 'الحساب غير نشط' });
+          if (!bcrypt.compareSync(args.password, user.password_hash)) return Promise.resolve({ success: false, error: 'كلمة المرور غير صحيحة' });
+          const { password_hash: _hash, is_active: _active, ...publicUser } = user;
+          authenticated = publicUser;
+          return Promise.resolve({ success: true, user: publicUser });
+        }
+        if (cmd === 'current_local_user') return Promise.resolve(authenticated);
+        if (cmd === 'logout_local') { authenticated = null; return Promise.resolve(null); }
+        return Promise.resolve(null);
+      }),
     }));
   });
 
@@ -228,7 +242,7 @@ describe('Phase 1b: Tauri (localStorage) Auth — All 7 scenarios', () => {
 
   test('2/7: Wrong password returns Arabic error', async () => {
     const { invoke } = require('@tauri-apps/api/core');
-    invoke.mockResolvedValueOnce(false);
+    invoke.mockResolvedValueOnce({ success: false, error: 'كلمة المرور غير صحيحة' });
     const { loginLocal } = await import('@/lib/auth/local');
     const result = await loginLocal('admin', 'WRONG');
     expect(result.success).toBe(false);
@@ -268,9 +282,9 @@ describe('Phase 1b: Tauri (localStorage) Auth — All 7 scenarios', () => {
     await loginLocal('admin', ADMIN_PW);
     expect(localStorageStore['pharma_session_user']).toBeDefined();
 
-    // Mock the DB to return null (simulate user deleted)
-    const { dbGet } = require('@/lib/db/tauri');
-    dbGet.mockResolvedValue(null);
+    // Native session revalidation rejects a deleted user, independent of localStorage.
+    const { invoke } = require('@tauri-apps/api/core');
+    invoke.mockResolvedValueOnce(null);
 
     const session = await getClientSession();
     expect(session).toBeNull();

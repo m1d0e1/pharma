@@ -50,7 +50,12 @@ export default function ShiftManagementClient({
   canHandover = false,
 }: ShiftManagementClientProps) {
   const [shifts, setShifts] = useState<Shift[]>(initialShifts);
-  useEffect(() => { setShifts(initialShifts); }, [initialShifts]);
+  // The parent supplies only the first 100 rows; a full first page may have
+  // older records. A subsequent native/web page confirms whether there are more.
+  const [nextPage, setNextPage] = useState<number | null>(initialShifts.length >= 100 ? 1 : null);
+  const [isFilteringHistory, setIsFilteringHistory] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [historyPageError, setHistoryPageError] = useState('');
   const [isOpeningShift, setIsOpeningShift] = useState(false);
   const [startingCash, setStartingCash] = useState(() => {
     return suggestedStartingCash > 0 ? String(suggestedStartingCash) : '';
@@ -62,6 +67,8 @@ export default function ShiftManagementClient({
   const [isForceClosing, setIsForceClosing] = useState(false);
   const [viewingReceiptsShift, setViewingReceiptsShift] = useState<{ id: string; title: string } | null>(null);
   const filterRequestRef = useRef(0);
+  const statusFilterRef = useRef('all');
+  const pendingPageRef = useRef<{ requestId: number; page: number } | null>(null);
   const openingShiftRef = useRef(false);
   const forceClosingRef = useRef(false);
   const reloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -69,6 +76,43 @@ export default function ShiftManagementClient({
   const isOwnerOrAdmin = userRole === 'owner' || userRole === 'admin';
   const canForceCloseAllShifts = userRole === 'owner';
   const canViewShiftReport = userRole === 'owner' || canViewShiftReports;
+
+  useEffect(() => {
+    // Focus/shift-update refreshes from the parent always describe 'all'.
+    // They must not overwrite a user's currently filtered history.
+    if (statusFilterRef.current !== 'all') return;
+    filterRequestRef.current += 1;
+    pendingPageRef.current = null;
+    setShifts(initialShifts);
+    setNextPage(initialShifts.length >= 100 ? 1 : null);
+    setIsFilteringHistory(false);
+    setIsLoadingMore(false);
+    setHistoryPageError('');
+  }, [initialShifts]);
+
+  const replaceHistoryFirstPage = (result: {
+    data?: Shift[];
+    has_more?: boolean;
+    next_page?: number | null;
+  }) => {
+    const rows = result.data || [];
+    setShifts(rows);
+    setNextPage(result.has_more === false
+      ? null
+      : result.has_more === true
+        ? (result.next_page ?? 1)
+        : rows.length >= 100 ? 1 : null);
+    setHistoryPageError('');
+  };
+
+  const invalidateHistoryRequests = () => {
+    pendingPageRef.current = null;
+    setIsFilteringHistory(false);
+    setIsLoadingMore(false);
+    setNextPage(null);
+    setHistoryPageError('');
+    return ++filterRequestRef.current;
+  };
 
   useEffect(() => {
     if (!startingCash && suggestedStartingCash > 0 && !hasOpenShift) {
@@ -95,20 +139,68 @@ export default function ShiftManagementClient({
 
   const handleFilterChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
     const status = e.target.value;
-    const requestId = ++filterRequestRef.current;
+    statusFilterRef.current = status;
+    const requestId = invalidateHistoryRequests();
     setStatusFilter(status);
     setError('');
+    setIsFilteringHistory(true);
+    setShifts([]);
     try {
       const result = await getShiftsAction({ status });
       if (requestId !== filterRequestRef.current) return;
       if (result.success) {
-        setShifts(result.data);
+        replaceHistoryFirstPage(result);
       } else {
         setError(result.error || 'فشل جلب الشفتات المفلترة');
       }
     } catch (err) {
       if (requestId !== filterRequestRef.current) return;
       setError('حدث خطأ أثناء تصفية الشفتات');
+    } finally {
+      if (requestId === filterRequestRef.current) setIsFilteringHistory(false);
+    }
+  };
+
+  const handleLoadMore = async () => {
+    if (isFilteringHistory || nextPage === null || nextPage > 500 || pendingPageRef.current) return;
+    const page = nextPage;
+    const requestId = filterRequestRef.current;
+    pendingPageRef.current = { requestId, page };
+    setIsLoadingMore(true);
+    setHistoryPageError('');
+    try {
+      const result = await getShiftsAction({ status: statusFilterRef.current, page });
+      if (requestId !== filterRequestRef.current
+        || pendingPageRef.current?.requestId !== requestId
+        || pendingPageRef.current?.page !== page) return;
+      if (!result.success) {
+        setHistoryPageError(result.error || 'تعذر تحميل المزيد من سجل الورديات');
+        return;
+      }
+      const rows = result.data || [];
+      setShifts(current => {
+        const seen = new Set(current.map(shift => shift.id));
+        return [...current, ...rows.filter(shift => {
+          if (seen.has(shift.id)) return false;
+          seen.add(shift.id);
+          return true;
+        })];
+      });
+      setNextPage(result.has_more === false
+        ? null
+        : result.has_more === true
+          ? (result.next_page ?? page + 1)
+          : rows.length >= 100 ? page + 1 : null);
+    } catch {
+      if (requestId === filterRequestRef.current) {
+        setHistoryPageError('تعذر تحميل المزيد من سجل الورديات');
+      }
+    } finally {
+      if (pendingPageRef.current?.requestId === requestId
+        && pendingPageRef.current?.page === page) {
+        pendingPageRef.current = null;
+        setIsLoadingMore(false);
+      }
     }
   };
 
@@ -124,11 +216,14 @@ export default function ShiftManagementClient({
       if (result.success) {
         setSuccess('تم إغلاق جميع الشفتات المفتوحة بنجاح!');
         try {
-          const shiftsResult = await getShiftsAction({ status: statusFilter });
-          if (shiftsResult.success) {
-            setShifts(shiftsResult.data);
-          } else {
-            setError('تم الإغلاق لكن تعذر تحديث قائمة الورديات');
+          const requestId = invalidateHistoryRequests();
+          const shiftsResult = await getShiftsAction({ status: statusFilterRef.current });
+          if (requestId === filterRequestRef.current) {
+            if (shiftsResult.success) {
+              replaceHistoryFirstPage(shiftsResult);
+            } else {
+              setError('تم الإغلاق لكن تعذر تحديث قائمة الورديات');
+            }
           }
         } catch (refreshError) {
           console.error('Failed to refresh shifts after force close:', refreshError);
@@ -172,11 +267,14 @@ export default function ShiftManagementClient({
         
         // Refresh shifts list
         try {
-          const shiftsResult = await getShiftsAction({ status: 'all' });
-          if (shiftsResult.success) {
-            setShifts(shiftsResult.data);
-          } else {
-            setError('تم فتح الشفت لكن تعذر تحديث قائمة الورديات');
+          const requestId = invalidateHistoryRequests();
+          const shiftsResult = await getShiftsAction({ status: statusFilterRef.current });
+          if (requestId === filterRequestRef.current) {
+            if (shiftsResult.success) {
+              replaceHistoryFirstPage(shiftsResult);
+            } else {
+              setError('تم فتح الشفت لكن تعذر تحديث قائمة الورديات');
+            }
           }
         } catch (refreshError) {
           console.error('Failed to refresh shifts after opening:', refreshError);
@@ -325,7 +423,7 @@ export default function ShiftManagementClient({
                     href="/finance/handover"
                     className="block w-full px-4 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow-sm transition-all text-center flex items-center justify-center gap-2"
                   >
-                    <span>🤝</span>
+                    <ArrowRightLeft className="h-4 w-4" aria-hidden="true" />
                     <span>فتح شاشة تسليم الدرج والمناوبة</span>
                   </Link>
                 )}
@@ -390,7 +488,11 @@ export default function ShiftManagementClient({
           </div>
         </div>
 
-        {shifts.length === 0 ? (
+        {isFilteringHistory ? (
+          <div className="text-center py-12 text-slate-500 dark:text-slate-400" role="status">
+            جاري تحميل سجل الورديات...
+          </div>
+        ) : shifts.length === 0 ? (
           <div className="text-center py-12">
             <div className="text-6xl mb-4">📊</div>
             <p className="text-slate-500 dark:text-slate-400">لا توجد شفتات مسجلة بعد</p>
@@ -529,6 +631,36 @@ export default function ShiftManagementClient({
               </tbody>
             </table>
           </TableScrollContainer>
+        )}
+        {!isFilteringHistory && shifts.length > 0 && (
+          <div className="mt-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-t border-slate-100 dark:border-slate-700 pt-4">
+            <p className="text-xs font-medium text-slate-500 dark:text-slate-400" role="status">
+              المعروض من سجل الورديات: {shifts.length}
+            </p>
+            {nextPage !== null && nextPage <= 500 && (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleLoadMore}
+                disabled={isLoadingMore}
+                aria-label="تحميل المزيد من سجل الورديات"
+                aria-busy={isLoadingMore}
+                className="rounded-xl border-blue-200 text-blue-700 dark:border-blue-800 dark:text-blue-300 font-bold"
+              >
+                {isLoadingMore ? 'جاري تحميل المزيد...' : 'تحميل المزيد من الورديات'}
+              </Button>
+            )}
+            {nextPage !== null && nextPage > 500 && (
+              <p className="text-xs font-medium text-amber-700 dark:text-amber-300" role="status">
+                وصلت إلى الحد الأعلى لصفحات سجل الورديات؛ لا يمكن عرض سجلات أقدم في هذه القائمة.
+              </p>
+            )}
+          </div>
+        )}
+        {historyPageError && !isFilteringHistory && (
+          <p role="alert" className="mt-3 text-sm font-medium text-rose-600 dark:text-rose-400">
+            {historyPageError} — يمكنك إعادة المحاولة دون فقدان الورديات المعروضة.
+          </p>
         )}
       </div>
 

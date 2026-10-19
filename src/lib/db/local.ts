@@ -1546,8 +1546,8 @@ export function initLocalDb() {
     seedDrugInteractions(db);
     
     // Also try to import from CSV if available for a much larger dataset
-    import('@/scripts/importInteractions').then(mod => {
-      mod.importInteractionsFromCSV(db);
+    import('@/scripts/importInteractions').then(mod => mod.importInteractionsFromCSV(db)).then(success => {
+      if (!success) console.warn('Deferred CSV import failed (missing file or invalid data).');
     }).catch(err => {
       console.warn('Deferred CSV import failed (likely missing file or environment):', err);
     });

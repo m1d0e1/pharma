@@ -23,6 +23,16 @@ interface AddPatientModalProps {
   }) => void
 }
 
+function newSecurePatientRequestId(): string | null {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID()
+  if (!globalThis.crypto?.getRandomValues) return null
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16))
+  bytes[6] = (bytes[6] & 0x0f) | 0x40
+  bytes[8] = (bytes[8] & 0x3f) | 0x80
+  const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
 export default function AddPatientModal({ pharmacyId, onClose, onSuccess }: AddPatientModalProps) {
   const [fullName, setFullName] = useState('')
   const [nameEn, setNameEn] = useState('')
@@ -41,7 +51,10 @@ export default function AddPatientModal({ pharmacyId, onClose, onSuccess }: AddP
   const [paymentMethod, setPaymentMethod] = useState('cash')
   const [notes, setNotes] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [isCommitted, setIsCommitted] = useState(false)
   const submittingRef = useRef(false)
+  const committedRef = useRef(false)
+  const creationIntentRef = useRef<{ fingerprint: string; requestId: string } | null>(null)
   const [errors, setErrors] = useState<{ fullName?: boolean }>({})
   const dialogRef = useDialogFocusTrap<HTMLDivElement>(true)
 
@@ -53,7 +66,7 @@ export default function AddPatientModal({ pharmacyId, onClose, onSuccess }: AddP
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (submittingRef.current) return
+    if (submittingRef.current || committedRef.current) return
     
     const newErrors: { fullName?: boolean } = {}
     if (!fullName.trim()) {
@@ -88,23 +101,50 @@ export default function AddPatientModal({ pharmacyId, onClose, onSuccess }: AddP
       payment_method: paymentMethod,
       notes
     }
+    const fingerprint = JSON.stringify(formData)
+    if (creationIntentRef.current?.fingerprint !== fingerprint) {
+      const requestId = newSecurePatientRequestId()
+      if (!requestId) {
+        submittingRef.current = false
+        setIsSubmitting(false)
+        toast.error('تعذر إنشاء معرف آمن لطلب إضافة العميل')
+        return
+      }
+      creationIntentRef.current = { fingerprint, requestId }
+    }
 
     try {
-      const result = await addPatientAction(formData as any)
+      const result = await addPatientAction({
+        ...formData,
+        request_id: creationIntentRef.current.requestId,
+      } as any)
 
       if (result.success) {
+        creationIntentRef.current = null
+        committedRef.current = true
+        setIsCommitted(true)
         toast.success('تمت إضافة العميل بنجاح')
-        onSuccess({
-          id: result.id!,
-          full_name: fullName,
-          phone: phone || null,
-          credit_limit: creditLimit,
-          wallet_balance: 0,
-          opening_balance: openingBalance,
-          outstanding_balance: openingBalance,
-          payment_method: paymentMethod as 'cash' | 'credit' | 'visa' | 'wallet',
-        })
-        onClose()
+        try {
+          onSuccess({
+            id: result.id!,
+            full_name: fullName,
+            phone: phone || null,
+            credit_limit: creditLimit,
+            wallet_balance: 0,
+            opening_balance: openingBalance,
+            outstanding_balance: openingBalance,
+            payment_method: paymentMethod as 'cash' | 'credit' | 'visa' | 'wallet',
+          })
+        } catch (callbackError) {
+          console.error('Patient created but list refresh failed:', callbackError)
+          toast.error('تم حفظ العميل لكن تعذر تحديث القائمة')
+        }
+        try {
+          onClose()
+        } catch (callbackError) {
+          console.error('Patient created but modal close failed:', callbackError)
+          toast.error('تم حفظ العميل لكن تعذر إغلاق النافذة')
+        }
       } else {
         toast.error(result.error || 'حدث خطأ أثناء إضافة العميل')
       }
@@ -234,7 +274,7 @@ export default function AddPatientModal({ pharmacyId, onClose, onSuccess }: AddP
           </div>
 
           <div className="flex gap-4 pt-4 shrink-0">
-            <button type="submit" disabled={isSubmitting} className="flex-[2] bg-gradient-to-r from-blue-600 to-indigo-600 text-white py-5 rounded-3xl font-black text-lg hover:shadow-2xl hover:shadow-blue-500/30 transition-all transform active:scale-[0.98] disabled:opacity-50 flex items-center justify-center gap-3">
+            <button type="submit" disabled={isSubmitting || isCommitted} className="flex-[2] bg-gradient-to-r from-blue-600 to-indigo-600 text-white py-5 rounded-3xl font-black text-lg hover:shadow-2xl hover:shadow-blue-500/30 transition-all transform active:scale-[0.98] disabled:opacity-50 flex items-center justify-center gap-3">
               {isSubmitting ? <Activity className="animate-spin w-6 h-6" /> : <><Save className="w-6 h-6" /> حفظ العميل</>}
             </button>
             <button type="button" onClick={handleClose} disabled={isSubmitting} className="flex-1 bg-white dark:bg-slate-800 text-slate-500 py-5 rounded-3xl font-black text-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 transition-all disabled:opacity-50 disabled:cursor-not-allowed">إغلاق</button>

@@ -26,15 +26,15 @@ const inventoryActions = [
     category: 'عامة',
     items: [
       { href: '/inventory', label: 'المخزون الحالي', icon: Package, description: 'عرض الرصيد الحالي وتواريخ الصلاحية' },
-      { href: '/inventory/opening-balances', label: 'الأرصدة الإفتتاحية', icon: ClipboardList, description: 'إدخال رصيد أول مدة للأصناف' },
-      { href: '/stores/shortages', label: 'كشكول النواقص', icon: FileText, description: 'تسجيل ومتابعة الأصناف الناقصة' },
-      { href: '/stores/delete-items', label: 'حذف الأصناف', icon: Trash2, description: 'حذف أصناف غير نشطة من النظام' },
+      { href: '/inventory/opening-balances', label: 'الأرصدة الإفتتاحية', icon: ClipboardList, description: 'إدخال رصيد أول مدة للأصناف', permission: 'can_view_opening_balances' },
+      { href: '/stores/shortages', label: 'كشكول النواقص', icon: FileText, description: 'تسجيل ومتابعة الأصناف الناقصة', permission: 'can_view_restock' },
+      { href: '/stores/delete-items', label: 'حذف الأصناف', icon: Trash2, description: 'حذف أصناف غير نشطة من النظام', permission: 'can_manage_inventory', roles: ['owner', 'admin'] },
     ]
   },
   {
     category: 'العمليات المخزنية',
     items: [
-      { href: '/stores/adjustments', label: 'تسوية الكميات', icon: Activity, description: 'تعديل أرصدة الأصناف يدوياً' },
+      { href: '/stores/adjustments', label: 'تسوية الكميات', icon: Activity, description: 'تعديل أرصدة الأصناف يدوياً', permission: 'can_manage_inventory' },
       { href: '/stores/alternatives', label: 'البدائل الدوائية', icon: Activity, description: 'ربط الأصناف ببدائلها الدوائية' },
     ]
   },
@@ -135,7 +135,10 @@ export default function InventoryDashboard() {
               {group.category}
             </h2>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-              {group.items.map((item, itemIdx) => {
+              {group.items.filter(item =>
+                (!('permission' in item) || hasUserPermissionSync(user, item.permission))
+                && (!('roles' in item) || item.roles.includes(user.role))
+              ).map((item, itemIdx) => {
                 const Icon = item.icon;
                 return (
                   <Link 

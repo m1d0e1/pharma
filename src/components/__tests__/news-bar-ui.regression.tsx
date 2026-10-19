@@ -23,6 +23,7 @@ describe('dashboard NewsBar', () => {
     render(<NewsBar />);
 
     expect(await screen.findByText('تحديث مرجعي جديد')).toBeInTheDocument();
+    expect(global.fetch).toHaveBeenCalledWith('/news.json', { cache: 'no-store' });
     expect(screen.getByRole('region', { name: 'أخبار النظام' })).toBeInTheDocument();
     await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
 

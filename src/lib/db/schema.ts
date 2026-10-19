@@ -35,8 +35,6 @@ export const PharmacySchema = z.object({
   tax_card: z.string().optional(),
   owner_name: z.string().optional(),
   owner_phone: z.string().optional(),
-  subscription_id: z.string().optional(),
-  subscription_status: z.string().default('active'),
   last_sync_at: z.string().datetime().nullable(),
   created_at: z.string().datetime(),
 });

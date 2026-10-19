@@ -20,10 +20,14 @@ export function getSalesQuantityInLargeSql(options: {
   smallFactor: string;
 }) {
   const normalizedUnit = `LOWER(TRIM(COALESCE(${options.unit}, '')))`;
+  // Match the native stock-unit contract: configured labels are trimmed and
+  // compared case-insensitively (ASCII), including names outside legacy aliases.
+  const configuredMedium = `(${options.mediumUnit} IS NOT NULL AND ${normalizedUnit} = LOWER(TRIM(${options.mediumUnit})))`;
+  const configuredSmall = `(${options.smallUnit} IS NOT NULL AND ${normalizedUnit} = LOWER(TRIM(${options.smallUnit})))`;
   return `CASE
-    WHEN ${normalizedUnit} IN (${sqlStringList(LEGACY_MEDIUM_UNIT_ALIASES)}) OR ${options.unit} = ${options.mediumUnit}
+    WHEN ${normalizedUnit} IN (${sqlStringList(LEGACY_MEDIUM_UNIT_ALIASES)}) OR ${configuredMedium}
       THEN ${options.quantity} / ${options.largeFactor}
-    WHEN ${normalizedUnit} IN (${sqlStringList(LEGACY_SMALL_UNIT_ALIASES)}) OR ${options.unit} = ${options.smallUnit}
+    WHEN ${normalizedUnit} IN (${sqlStringList(LEGACY_SMALL_UNIT_ALIASES)}) OR ${configuredSmall}
       THEN ${options.quantity} / (${options.largeFactor} * ${options.smallFactor})
     ELSE ${options.quantity}
   END`;

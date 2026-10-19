@@ -1,5 +1,6 @@
 import { secureCache } from '@/lib/cache/secure_cache';
-import { dbSelect, dbExecute, dbGet, dbTransaction, generateId, type TransactionDb } from '@/lib/db/tauri';
+import { dbSelect, dbExecute, dbGet, dbTransaction, dbReadScopedAll, generateId, type TransactionDb } from '@/lib/db/tauri';
+import { isTauri } from '@/lib/env';
 const logActivity = async (userId, action, details) => {
   try {
     await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [userId, action, details]);
@@ -150,6 +151,72 @@ async function assertInventoryImportConversionPermission(
 }
 
 export async function importInventoryWorkbookAction(inventoryRows: any[], drugRows: any[]) {
+  if (isTauri) {
+    try {
+      // Desktop imports must not upsert shared master catalog, restore stale
+      // lot IDs or accept spreadsheet pharmacy/cost/account authority.
+      // The bounded native route adds NEW zero-cost lots only to verified
+      // existing catalog drugs; historical restores need a separate workflow.
+      if (!Array.isArray(inventoryRows) || !Array.isArray(drugRows) ||
+          inventoryRows.length < 1 || inventoryRows.length > 200 || drugRows.length > 0) {
+        return { success: false, error: 'الاستيراد الأصلي يدعم 1–200 دفعة لأصناف موجودة فقط، دون تعديل الكتالوج العام' };
+      }
+      const rows = inventoryRows.map((row: Record<string, unknown>) => {
+        if (!row || typeof row !== 'object' || Array.isArray(row) ||
+            ['id', 'pharmacy_id', 'user_id', 'created_by', 'cost_price', 'account_id', 'official_price']
+              .some(key => Object.prototype.hasOwnProperty.call(row, key))) {
+          throw new Error('Existing lot IDs, account, cost and pharmacy fields cannot be imported as new stock');
+        }
+        const drugId = Number(row.drug_id);
+        const quantity = Number(row.quantity);
+        const localSellingPrice = Number(row.local_selling_price);
+        if (!Number.isSafeInteger(drugId) || drugId <= 0 ||
+            !Number.isFinite(quantity) || quantity <= 0 ||
+            !Number.isFinite(localSellingPrice) || localSellingPrice < 0) {
+          throw new Error('Invalid imported stock quantities or authoritative drug reference');
+        }
+        const expiryDate = typeof row.expiry_date === 'string' && row.expiry_date.trim()
+          ? row.expiry_date.trim() : null;
+        const largeToMedium = row.strips_per_box == null || row.strips_per_box === ''
+          ? null : Number(row.strips_per_box);
+        const mediumToSmall = row.medium_to_small == null || row.medium_to_small === ''
+          ? null : Number(row.medium_to_small);
+        if ((largeToMedium !== null && (!Number.isSafeInteger(largeToMedium) || largeToMedium <= 0)) ||
+            (mediumToSmall !== null && (!Number.isSafeInteger(mediumToSmall) || mediumToSmall <= 0))) {
+          throw new Error('Invalid imported unit conversion assertion');
+        }
+        return {
+          drugId, quantity, localSellingPrice, expiryDate,
+          barcode: normalizeInventoryBarcode(row.barcode),
+          unit: typeof row.large_unit === 'string' && row.large_unit.trim() ? row.large_unit.trim() : null,
+          expectNullLargeUnit: false,
+          largeToMedium, mediumToSmall,
+        };
+      });
+      const requestId = generateId();
+      const reply = await (await import('@tauri-apps/api/core')).invoke<unknown>(
+        'import_inventory_lots_native', { input: { requestId, rows } },
+      );
+      if (!reply || typeof reply !== 'object' || Array.isArray(reply) ||
+          (reply as any).success !== true ||
+          typeof (reply as any).requestId !== 'string' ||
+          !addInventorySchema.shape.request_id.safeParse((reply as any).requestId).success ||
+          !Number.isSafeInteger((reply as any).inventoryCount) ||
+          (reply as any).inventoryCount !== rows.length ||
+          !Array.isArray((reply as any).inventoryIds) ||
+          (reply as any).inventoryIds.length !== rows.length ||
+          (reply as any).inventoryIds.some((id: unknown) => typeof id !== 'string' || !id) ||
+          typeof (reply as any).replayed !== 'boolean' ||
+          'error' in reply || 'code' in reply) {
+        throw new Error('Invalid native import acknowledgement');
+      }
+      revalidatePath('/inventory');
+      try { notifyInventoryChanged(); } catch (error) { console.error('Inventory import refresh error:', error); }
+      return { success: true, data: { inventoryCount: rows.length, masterDrugCount: 0 }, replayed: (reply as any).replayed as boolean };
+    } catch {
+      return { success: false, error: 'فشل الاستيراد الأصلي؛ لا يمكن التراجع إلى استعلامات SQL من الواجهة' };
+    }
+  }
   try {
     const user = await getLocalSession();
     if (!user || !hasUserPermissionSync(user, 'can_manage_inventory')) {
@@ -185,6 +252,13 @@ const addInventorySchema = z.object({
   barcode: z.string().optional().nullable(),
   unit: z.string().optional().nullable(),
   large_to_medium: z.coerce.number().int().positive().optional().nullable(),
+  // Optional live-catalog precondition, not a catalog write permission.
+  expect_null_large_unit: z.boolean().optional(),
+  // Keep the exact desktop retry witness; Rust requires a canonical UUIDv4.
+  request_id: z.string().regex(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    'معرف محاولة الإضافة غير صالح',
+  ).optional(),
 });
 
 // Zod schema for updating inventory
@@ -192,8 +266,13 @@ const updateInventorySchema = z.object({
   id: z.string().min(1, 'معرف المخزون غير صالح'),
   quantity: z.coerce.number().min(0, 'الكمية لا يمكن أن تكون سالبة'),
   local_selling_price: z.coerce.number().min(0, 'السعر لا يمكن أن يكون سالباً'),
+  // Desktop updates are compare-and-swap against the original rendered lot.
+  expected_quantity: z.number().finite().nonnegative().optional(),
+  expected_local_selling_price: z.number().finite().nonnegative().optional(),
   reason_id: z.coerce.number().optional().nullable(),
   large_to_medium: z.coerce.number().int().positive().optional().nullable(),
+  barcode: z.string().optional().nullable(),
+  unit: z.string().optional().nullable(),
   expiry_date: z.preprocess(
     val => (typeof val === 'string' && val.trim() === '' ? undefined : val),
     z.string().refine(isBusinessDate, 'تاريخ الصلاحية غير صالح').optional().nullable()
@@ -205,14 +284,145 @@ const deleteInventorySchema = z.object({
   id: z.string().min(1, 'معرف المخزون غير صالح'),
 });
 
+// Zod's numeric coercion maps an empty string, null, false or [] to zero.
+// Desktop inventory permits a *deliberate* zero selling price, but an empty
+// form value must never silently create a free lot or overwrite live pricing.
+// Preserve finite numeric values and nonblank numeric text from HTML inputs.
+function isExplicitNativeSellingPrice(value: unknown): boolean {
+  return (typeof value === 'number' && Number.isFinite(value)) ||
+    (typeof value === 'string' && value.trim().length > 0 && Number.isFinite(Number(value)));
+}
+
 export type AddInventoryInput = z.infer<typeof addInventorySchema>;
 export type UpdateInventoryInput = z.infer<typeof updateInventorySchema>;
 export type DeleteInventoryInput = z.infer<typeof deleteInventorySchema>;
+
+export interface PendingInventoryCreation {
+  requestId: string;
+  inventoryId: string;
+  createdBy: string;
+  drugId: number;
+  quantity: number;
+  localSellingPrice: number;
+  expiryDate: string | null;
+  createdAt: string;
+}
+
+/** Durable recovery is backed by scoped native SQLite receipts, never
+ * sessionStorage/localStorage or an untrusted renderer actor/pharmacy. */
+export async function getPendingInventoryCreationsAction() {
+  if (!isTauri) return { success: true as const, data: [] as PendingInventoryCreation[] };
+  try {
+    const rows = await (await import('@tauri-apps/api/core')).invoke<unknown>(
+      'list_unacknowledged_inventory_creates_native',
+    );
+    if (!Array.isArray(rows) || rows.length > 100 || rows.some(row =>
+      !row || typeof row !== 'object' || Array.isArray(row) ||
+      typeof row.requestId !== 'string' || !addInventorySchema.shape.request_id.safeParse(row.requestId).success ||
+      typeof row.inventoryId !== 'string' || !row.inventoryId ||
+      typeof row.createdBy !== 'string' || !row.createdBy ||
+      !Number.isSafeInteger(row.drugId) || row.drugId <= 0 ||
+      !Number.isFinite(row.quantity) || row.quantity < 0 ||
+      !Number.isFinite(row.localSellingPrice) || row.localSellingPrice < 0 ||
+      (row.expiryDate !== null && typeof row.expiryDate !== 'string') ||
+      typeof row.createdAt !== 'string'
+    )) throw new Error('Malformed native pending inventory recovery records');
+    return { success: true as const, data: rows as PendingInventoryCreation[] };
+  } catch (error) {
+    // A native failure must remain diagnosable to the authorized inventory
+    // manager. The renderer still fails closed: no create/ack fallback occurs.
+    const nativeMessage = typeof error === 'string'
+      ? error.trim()
+      : error instanceof Error ? error.message.trim() : '';
+    return {
+      success: false as const,
+      error: nativeMessage ? nativeMessage.slice(0, 500) : 'تعذر التحقق من عمليات إضافة المخزون السابقة',
+    };
+  }
+}
+
+export async function acknowledgePendingInventoryCreationAction(requestId: string, inventoryId: string) {
+  if (!isTauri) return { success: false as const, error: 'التأكيد الأصلي متاح لتطبيق سطح المكتب فقط' };
+  if (!addInventorySchema.shape.request_id.safeParse(requestId).success ||
+      typeof inventoryId !== 'string' || !inventoryId.trim() || inventoryId.length > 128) {
+    return { success: false as const, error: 'معرف عملية الإضافة غير صالح' };
+  }
+  try {
+    const ack = await (await import('@tauri-apps/api/core')).invoke<unknown>(
+      'acknowledge_inventory_create_native', { payload: { requestId, inventoryId } },
+    );
+    if (!ack || typeof ack !== 'object' || Array.isArray(ack) ||
+        (ack as any).success !== true || (ack as any).requestId !== requestId ||
+        (ack as any).inventoryId !== inventoryId || 'error' in ack || 'code' in ack) {
+      throw new Error('Invalid native inventory acknowledgement');
+    }
+    return { success: true as const };
+  } catch {
+    return { success: false as const, error: 'تعذر تأكيد الإضافة السابقة؛ راجع سجل المخزون' };
+  }
+}
 
 /**
  * Server Action to add a new inventory item (Local Enforcer)
  */
 export async function addInventoryAction(formData: AddInventoryInput) {
+  if (isTauri) {
+    try {
+      if (!isExplicitNativeSellingPrice(formData.local_selling_price)) {
+        return { success: false, error: 'سعر البيع مطلوب ولا يمكن تركه فارغاً' };
+      }
+      const parsed = addInventorySchema.safeParse(formData);
+      if (!parsed.success) {
+        return { success: false, error: `بيانات الإدخال غير صالحة: ${parsed.error.issues.map(i => i.message).join(', ')}` };
+      }
+      const { drug_id, quantity, local_selling_price, expiry_date, barcode, unit, large_to_medium, expect_null_large_unit, request_id } = parsed.data;
+      if (!Number.isSafeInteger(drug_id) || !Number.isFinite(quantity) ||
+          !Number.isFinite(local_selling_price)) {
+        return { success: false, error: 'بيانات الإدخال غير صالحة' };
+      }
+      // Unit/conversion values are assertions against the live native catalog.
+      // Rust rejects changes; this command never mutates shared catalog units.
+      const stableRequestId = request_id ?? generateId();
+      const result = await (await import('@tauri-apps/api/core')).invoke<unknown>(
+        'create_inventory_lot_native', {
+          payload: {
+            drugId: drug_id,
+            quantity,
+            localSellingPrice: local_selling_price,
+            expiryDate: expiry_date ?? null,
+            barcode: normalizeInventoryBarcode(barcode),
+            unit: unit?.trim() || null,
+            largeToMedium: large_to_medium ?? null,
+            expectNullLargeUnit: expect_null_large_unit === true,
+            requestId: stableRequestId,
+          },
+        },
+      );
+      if (!result || typeof result !== 'object' || Array.isArray(result) ||
+          (result as { success?: unknown }).success !== true ||
+          typeof (result as { id?: unknown }).id !== 'string' ||
+          !(result as { id: string }).id.trim() ||
+          (result as { drugId?: unknown }).drugId !== drug_id ||
+          'error' in result || 'code' in result) {
+        throw new Error('Invalid native inventory creation confirmation');
+      }
+      // CRITICAL: do NOT automatically acknowledge the durable receipt.
+      // If the acknowledgement COMMIT succeeds but *its* IPC reply is lost,
+      // the UI cannot know whether it happened; after modal close/restart a
+      // fresh nonce could duplicate a previous stock creation. Only an
+      // explicit operator verification of the original existing lot may
+      // clear the pending receipt via acknowledgePendingInventoryCreationAction.
+      // Until then the native pharmacy-wide new-nonce guard stays closed.
+      revalidatePath('/inventory');
+      revalidatePath('/');
+      try { notifyInventoryChanged(); } catch (error) { console.error('Inventory native refresh error:', error); }
+      return { success: true };
+    } catch (error: any) {
+      console.error('Native add inventory error:', error);
+      return { success: false, error: 'فشل إضافة الصنف' };
+    }
+  }
+
   try {
     const localUser = await getLocalSession();
     if (!localUser) return { success: false, error: 'غير مصرح - لا يوجد جلسة' };
@@ -260,13 +470,11 @@ export async function addInventoryAction(formData: AddInventoryInput) {
     // Step 4: Generate ID
     console.log('[addInventoryAction] Step 4: Generating UUID...');
     const id = generateId();
-    console.log('[addInventoryAction] Step 4 result: id=', id);
 
     // Step 5: Insert the lot and any shared catalog metadata atomically. If a
     // later metadata write fails, the UI must not see a failed action after a
     // lot has already been committed (a retry would otherwise duplicate stock).
     console.log('[addInventoryAction] Step 5: Inserting into inventory...');
-    console.log('[addInventoryAction] Step 5 params:', { id, pharmacy_id: pharmacyId, drug_id, quantity, local_selling_price, expiry_date, barcode: normalizedBarcode, unit, large_to_medium });
     await dbTransaction(async (transactionDb) => {
       const conversion = await transactionDb.prepare(
         'SELECT COALESCE(NULLIF(medium_to_small, 0), 1) AS medium_to_small FROM master_drugs WHERE id = ?'
@@ -330,6 +538,49 @@ export async function addInventoryAction(formData: AddInventoryInput) {
  * Server Action to update an existing inventory item
  */
 export async function updateInventoryAction(formData: UpdateInventoryInput) {
+  if (isTauri) {
+    try {
+      if (!isExplicitNativeSellingPrice(formData.local_selling_price)) {
+        return { success: false, error: 'سعر البيع مطلوب ولا يمكن تركه فارغاً' };
+      }
+      const parsed = updateInventorySchema.safeParse(formData);
+      if (!parsed.success || parsed.data.expected_quantity === undefined ||
+          parsed.data.expected_local_selling_price === undefined ||
+          !Number.isFinite(parsed.data.quantity) ||
+          !Number.isFinite(parsed.data.local_selling_price)) {
+        return { success: false, error: 'بيانات تحديث المخزون غير صالحة أو قديمة؛ أعد فتح شاشة التعديل' };
+      }
+      const row = parsed.data;
+      const result = await (await import('@tauri-apps/api/core')).invoke<unknown>(
+        'update_inventory_lot_native', {
+          payload: {
+            id: row.id,
+            quantity: row.quantity,
+            localSellingPrice: row.local_selling_price,
+            expectedQuantity: row.expected_quantity,
+            expectedLocalSellingPrice: row.expected_local_selling_price,
+            reasonId: row.reason_id ?? null,
+            expiryDate: row.expiry_date,
+            barcode: row.barcode,
+            unit: row.unit ?? null,
+            largeToMedium: row.large_to_medium ?? null,
+          },
+        },
+      );
+      if (!result || typeof result !== 'object' || Array.isArray(result) ||
+          (result as { success?: unknown }).success !== true ||
+          (result as { id?: unknown }).id !== row.id ||
+          'error' in result || 'code' in result) {
+        throw new Error('Invalid native inventory update confirmation');
+      }
+      revalidatePath('/inventory');
+      revalidatePath('/');
+      try { notifyInventoryChanged(); } catch (error) { console.error('Inventory native refresh error:', error); }
+      return { success: true };
+    } catch {
+      return { success: false, error: 'فشل التحديث الأصلي للمخزون؛ أعد تحميل بيانات الصنف قبل المحاولة' };
+    }
+  }
   try {
     const localUser = await getLocalSession();
     if (!localUser) return { success: false, error: 'غير مصرح' };
@@ -479,6 +730,31 @@ export async function updateInventoryAction(formData: UpdateInventoryInput) {
  * Server Action to delete an inventory item
  */
 export async function deleteInventoryAction(formData: DeleteInventoryInput) {
+  if (isTauri) {
+    try {
+      const parsed = deleteInventorySchema.safeParse(formData);
+      if (!parsed.success) return { success: false, error: 'بيانات الحذف غير صالحة.' };
+
+      const result = await (await import('@tauri-apps/api/core')).invoke<unknown>(
+        'delete_inventory_lot_native', { payload: { id: parsed.data.id } },
+      );
+      if (!result || typeof result !== 'object' || Array.isArray(result) ||
+          (result as { success?: unknown }).success !== true ||
+          (result as { id?: unknown }).id !== parsed.data.id ||
+          !['zeroed', 'deleted'].includes(String((result as { disposition?: unknown }).disposition)) ||
+          'error' in result || 'code' in result) {
+        throw new Error('Invalid native inventory deletion confirmation');
+      }
+      revalidatePath('/inventory');
+      revalidatePath('/');
+      try { notifyInventoryChanged(); } catch (error) { console.error('Inventory native refresh error:', error); }
+      return { success: true };
+    } catch (error: any) {
+      console.error('Native delete inventory error:', error);
+      return { success: false, error: 'فشل حذف الصنف.' };
+    }
+  }
+
   try {
     const localUser = await getLocalSession();
     if (!localUser) return { success: false, error: 'غير مصرح' };
@@ -972,6 +1248,51 @@ export async function getInventoryAlertsAction() {
     if (!user) return { success: false, error: 'غير مصرح' };
     const pharmacyId = normalizePharmacyId(user.pharmacy_id);
 
+    if (isTauri) {
+      // The dashboard header mounts on every route. These are private lot
+      // records, not global catalog rows: desktop SQL in the renderer is
+      // deliberately forbidden even for an authenticated session.
+      if (!pharmacyId || pharmacyId === 'local_default') {
+        return { success: false, error: 'ملكية المخزون غير موثقة لهذه الصيدلية' };
+      }
+      const { invoke } = await import('@tauri-apps/api/core');
+      const native = await invoke<unknown>('read_inventory_alerts_native');
+      const row = native && typeof native === 'object' && !Array.isArray(native)
+        ? native as Record<string, unknown> : null;
+      const counts = row?.counts && typeof row.counts === 'object' && !Array.isArray(row.counts)
+        ? row.counts as Record<string, unknown> : null;
+      const alerts = row?.alerts;
+      const safeText = (text: unknown) => text === null || text === undefined ||
+        (typeof text === 'string' && text.length <= 1024 && !/[\u0000-\u001f\u007f]/.test(text));
+      const countKeys = ['lowStock', 'expiring', 'expired', 'total'] as const;
+      if (!row || row.actorId !== String(user.id) || row.pharmacyId !== pharmacyId ||
+          !Array.isArray(alerts) || alerts.length > 30 || !counts ||
+          countKeys.some(key => !Number.isSafeInteger(counts[key]) ||
+            Number(counts[key]) < 0 || Number(counts[key]) > 30) ||
+          Number(counts.total) !== alerts.length ||
+          Number(counts.total) !== Number(counts.lowStock) + Number(counts.expiring) + Number(counts.expired) ||
+          alerts.some(item => {
+            if (!item || typeof item !== 'object' || Array.isArray(item)) return true;
+            const record = item as Record<string, unknown>;
+            return !['low_stock', 'expiring', 'expired'].includes(String(record.alert_type)) ||
+              !['string', 'number'].includes(typeof record.id) || !String(record.id).trim() ||
+              !Number.isSafeInteger(record.drug_id) || Number(record.drug_id) <= 0 ||
+              typeof record.trade_name !== 'string' || !record.trade_name.trim() ||
+              !safeText(record.trade_name) || !safeText(record.trade_name_en) ||
+              !safeText(record.active_ingredient) || !safeText(record.manufacturer) ||
+              (record.quantity !== null && record.quantity !== undefined &&
+                (typeof record.quantity !== 'number' || !Number.isFinite(record.quantity) || record.quantity < 0)) ||
+              (record.alert_type !== 'low_stock' &&
+                (typeof record.expiry_date !== 'string' || !isBusinessDate(record.expiry_date)));
+          }) ||
+          alerts.filter(item => item.alert_type === 'low_stock').length !== Number(counts.lowStock) ||
+          alerts.filter(item => item.alert_type === 'expiring').length !== Number(counts.expiring) ||
+          alerts.filter(item => item.alert_type === 'expired').length !== Number(counts.expired)) {
+        throw new Error('Invalid tenant-scoped native inventory alert projection');
+      }
+      return { success: true, data: { alerts, counts } };
+    }
+
     const today = localDate();
     const threeMonthsLater = new Date();
     threeMonthsLater.setMonth(threeMonthsLater.getMonth() + 3);
@@ -995,7 +1316,9 @@ export async function getInventoryAlertsAction() {
       }
     };
   } catch (error) {
-    console.error('Get inventory alerts error:', error);
+    // The native exception may contain private SQL/lot/tenant data. The UI
+    // already offers an explicit retry; do not emit sensitive payloads.
+    if (!isTauri) console.error('Get inventory alerts error:', error);
     return { success: false, error: 'فشل جلب تنبيهات المخزون' };
   }
 }
@@ -1251,7 +1574,7 @@ export async function getInventoryListAction(search?: string, drugId?: number) {
       const likePattern = `%${trimmed}%`;
 
       let useFts = false;
-      if (ftsQuery) {
+      if (ftsQuery && !isTauri) {
         try {
           await db.prepare('SELECT rowid FROM master_drugs_fts WHERE master_drugs_fts MATCH ? LIMIT 1').get(ftsQuery);
           useFts = true;
@@ -1289,7 +1612,15 @@ export async function getInventoryListAction(search?: string, drugId?: number) {
     // ponytail: client paging needs every matching lot for correct totals; use SQL paging + aggregates if volumes demand it.
     queryStr += ` ORDER BY i.expiry_date ASC`;
 
-    const data = await db.prepare(queryStr).all(...params) as any[];
+    // A release build denies arbitrary renderer reads of inventory. Native
+    // scoped reads use the database-authenticated pharmacy and role instead of
+    // trusting the frontend WHERE predicate or user-provided tenant ID.
+    const data = isTauri
+      ? await dbReadScopedAll('inventory.enriched', {
+          search: drugId === undefined ? search : null,
+          drugId: drugId ?? null,
+        }) as any[]
+      : await db.prepare(queryStr).all(...params) as any[];
 
     // Query already JOINs master_drugs - no cache enrichment needed
     const mapped = data.map((item: any) => ({
@@ -1314,6 +1645,37 @@ export async function getInventoryListAction(search?: string, drugId?: number) {
 }
 
 
+/** No raw renderer SQL, user ID or pharmacy ID crosses this native boundary. */
+async function readNativeInventoryHistory(
+  queryId: 'inventory.movements' | 'inventory.opening_balances'
+): Promise<any[]> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  const pageSize = 200;
+  const rows: any[] = [];
+  let readActor: string | undefined;
+  let readPharmacy: string | undefined;
+  for (let offset = 0; offset <= 50_000; offset += pageSize) {
+    const page = await invoke<{ actorId: string; pharmacyId: string; rows: any[] }>('db_read_inventory_history', {
+      queryId,
+      limit: pageSize,
+      offset,
+    });
+    if (!page || typeof page.actorId !== 'string' || !page.actorId
+        || typeof page.pharmacyId !== 'string' || !page.pharmacyId
+        || !Array.isArray(page.rows) || page.rows.length > pageSize) {
+      throw new Error('Invalid native inventory history page');
+    }
+    if (readActor !== undefined && (page.actorId !== readActor || page.pharmacyId !== readPharmacy)) {
+      throw new Error('Inventory history read scope changed during pagination');
+    }
+    readActor = page.actorId;
+    readPharmacy = page.pharmacyId;
+    rows.push(...page.rows);
+    if (page.rows.length < pageSize) return rows;
+  }
+  throw new Error('Inventory history exceeds the native page window; a streamed export is required');
+}
+
 export async function getMovementsAction() {
   try {
     const user = await getLocalSession();
@@ -1321,7 +1683,9 @@ export async function getMovementsAction() {
       return { success: false, error: 'غير مصرح', data: [] };
     }
     const pharmacyId = user.pharmacy_id || 'local_default';
-    const data = await db.prepare(`
+    const data = isTauri
+      ? await readNativeInventoryHistory('inventory.movements')
+      : await db.prepare(`
       SELECT al.*, COALESCE(u.full_name, u.username, al.user_id, 'غير محدد') AS user_name,
              u.username
       FROM activity_log al
@@ -1348,7 +1712,9 @@ export async function getOpeningBalancesAction() {
     if (!user || !hasUserPermissionSync(user, 'can_view_opening_balances')) return { success: false, error: 'غير مصرح' };
     const pharmacyId = normalizePharmacyId(user.pharmacy_id);
 
-    const data = await db.prepare(`
+    const data = isTauri
+      ? await readNativeInventoryHistory('inventory.opening_balances')
+      : await db.prepare(`
       SELECT i.*, md.trade_name, md.trade_name_en
       FROM inventory i
       JOIN master_drugs md ON i.drug_id = md.id
@@ -1378,6 +1744,25 @@ export async function addOpeningBalanceAction(data: {
         || !Number.isFinite(data.cost_price) || data.cost_price < 0
         || !Number.isFinite(data.unit_price) || data.unit_price < 0) {
       return { success: false, error: 'بيانات الرصيد الافتتاحي غير صالحة' };
+    }
+
+    if (isTauri) {
+      // Native command owns actor, pharmacy, validation and the entire
+      // stock + journal + activity + recovered-shortages transaction.
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('add_opening_balance_critical', {
+        payload: {
+          drug_id: data.drug_id,
+          quantity: data.quantity,
+          cost_price: data.cost_price,
+          unit_price: data.unit_price,
+          expiry_date: data.expiry_date ?? null,
+        },
+      });
+      revalidatePath('/inventory');
+      revalidatePath('/inventory/opening-balances');
+      notifyInventoryChanged();
+      return { success: true };
     }
 
     const batchNumber = 'OPEN-' + generateId().substring(0, 8);

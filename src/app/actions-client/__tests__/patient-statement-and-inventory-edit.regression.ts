@@ -297,7 +297,7 @@ describe('Patient Statement, Inventory Amount Editing, and Credit Returns', () =
     expect((mockDb.prepare('SELECT large_to_medium FROM master_drugs WHERE id = ?').get(101) as any).large_to_medium).toBe(3);
   });
 
-  it('fetches patient statement with credit sales, returns, and notices without crashing', async () => {
+  it('does not turn unowned historical credit sales, payments and notices into a tenant-owned patient statement', async () => {
     // 1. Add credit sale
     mockDb.prepare(`
       INSERT INTO sales_invoices (id, patient_id, total_amount, payment_method, status, user_id, created_at)
@@ -321,20 +321,15 @@ describe('Patient Statement, Inventory Amount Editing, and Credit Returns', () =
       VALUES ('fn-1', 'customer', 'pat-1', 'debit', 20, 'تعديل حساب', '2026-08-06', 'admin')
     `).run();
 
-    // Fetch statement
+    // The historical arithmetic remains independently testable, but a
+    // local_default patient has no immutable prospective ownership witness.
+    // Showing the source rows as this pharmacy's verified statement would
+    // silently adopt legacy money and patient data.
+    expect((mockDb.prepare(patientOutstandingBalanceQuery()).get('pat-1') as any).outstanding_balance).toBe(270);
     const res = await getPatientStatementAction('pat-1');
-    expect(res.success).toBe(true);
-    expect(res.data).toBeDefined();
-    expect(res.data?.patient.full_name).toBe('الحاجه مجده');
-    expect(res.data?.movements.length).toBeGreaterThanOrEqual(2);
-    expect(res.data?.items.length).toBeGreaterThanOrEqual(1);
-
-    // Initial 100 + credit sale 200 - payment 50 + imported debit notice 20.
-    expect(res.data?.currentBalance).toBe(270);
-    expect(res.data?.movements).toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: 'توريد نقدية', notes: 'دفعة من الفرع الرئيسي' }),
-      expect.objectContaining({ type: 'إشعار مدين (إضافة)', balance_effect: 20 }),
-    ]));
+    expect(res.success).toBe(false);
+    expect(res.error).toMatch(/Legacy patient ownership/);
+    expect(res.data).toBeUndefined();
   });
 
   it('deduplicates only one mirrored notice when an identical imported notice also exists', async () => {
@@ -351,12 +346,31 @@ describe('Patient Statement, Inventory Amount Editing, and Credit Returns', () =
     expect(balance.outstanding_balance).toBe(120);
 
     const statement = await getPatientStatementAction('pat-1');
-    expect(statement.success).toBe(true);
-    expect(statement.data?.currentBalance).toBe(120);
-    expect(statement.data?.movements.filter((row: any) => row.payment_method === 'notice')).toHaveLength(1);
+    expect(statement.success).toBe(false);
+    expect(statement.data).toBeUndefined();
   });
 
-  it('keeps the patient ledger chain-wide while hiding foreign-branch statement documents and items', async () => {
+  it('returns an empty zero-balance statement only for a freshly witnessed and uncontaminated tenant-owned patient', async () => {
+    mockDb.prepare(`INSERT INTO users (id,username,role,full_name,pharmacy_id,permissions,is_active)
+      VALUES ('qa-statement-owner','qa-statement-owner','owner','QA owner','qa-statement', '{}',1)`).run();
+    mockDb.prepare(`INSERT INTO patients (id,full_name,opening_balance,wallet_balance)
+      VALUES ('qa-statement-patient','QA Synthetic Statement',0,0)`).run();
+    // This is a newly created patient in a disposable in-memory fixture;
+    // the witness is inserted before any activity, never backfilled over an
+    // existing historical or cross-tenant financial identity.
+    mockDb.prepare(`INSERT INTO native_patient_directory_ownership
+      (patient_id,pharmacy_id,actor_id,intent_sha256) VALUES (?,?,?,?)`)
+      .run('qa-statement-patient','qa-statement','qa-statement-owner','a'.repeat(64));
+    mockSession={id:'qa-statement-owner',role:'owner',pharmacy_id:'qa-statement'};
+    const statement=await getPatientStatementAction('qa-statement-patient');
+    expect(statement.success).toBe(true);
+    expect(statement.data?.patient.id).toBe('qa-statement-patient');
+    expect(statement.data?.currentBalance).toBe(0);
+    expect(statement.data?.movements).toEqual([]);
+    expect(statement.data?.items).toEqual([]);
+  });
+
+  it('refuses mixed-tenant patient ledgers rather than leaking foreign documents or inventing ownership', async () => {
     mockSession = { id: 'admin', role: 'owner', pharmacy_id: 'ph-1' };
     mockDb.exec(`
       INSERT INTO sales_invoices (id, pharmacy_id, patient_id, total_amount, payment_method, status, user_id, created_at) VALUES
@@ -384,46 +398,11 @@ describe('Patient Statement, Inventory Amount Editing, and Credit Returns', () =
     `);
 
     const res = await getPatientStatementAction('pat-1');
-    expect(res.success).toBe(true);
-    expect(res.data?.patient.full_name).toBe('الحاجه مجده');
-
-    const docs = res.data?.movements.map((row: any) => row.doc_no) || [];
-    expect(docs).toEqual(expect.arrayContaining([
-      'stmt-local-sale',
-      'stmt-local-return',
-      'stmt-local-notice',
-      'stmt-shared-ledger',
-      'stmt-shared-adjustment',
-    ]));
-    expect(docs).not.toEqual(expect.arrayContaining([
-      'stmt-foreign-sale',
-      'stmt-foreign-return',
-      'stmt-foreign-notice',
-      'stmt-foreign-enrichment',
-    ]));
-
-    const sharedAdjustment = res.data?.movements.find((row: any) => row.doc_no === 'stmt-shared-adjustment');
-    expect(sharedAdjustment?.notes).toBe('ledger note');
-
-    expect(res.data?.items.map((row: any) => row.invoice_id)).toEqual(expect.arrayContaining([
-      'stmt-local-sale',
-      'stmt-local-return',
-    ]));
-    expect(res.data?.items.map((row: any) => row.invoice_id)).not.toEqual(expect.arrayContaining([
-      'stmt-foreign-sale',
-      'stmt-foreign-return',
-    ]));
-    expect(res.data?.notices.map((row: any) => row.id)).toEqual(['stmt-local-notice']);
-
-    // Outstanding balance deliberately remains the shared patient ledger definition.
-    expect(res.data?.currentBalance).toBe(226);
-
+    expect(res.success).toBe(false);
+    expect(res.data).toBeUndefined();
     const profile = await getPatientProfileAction('pat-1');
-    expect(profile.success).toBe(true);
-    expect(profile.data?.full_name).toBe('الحاجه مجده');
-    expect(profile.data?.purchaseHistory.map((row: any) => row.invoice_id)).toEqual(['stmt-local-sale']);
-    expect(profile.data?.totalSpent).toBe(40);
-    expect(profile.data?.outstandingBalance).toBe(226);
+    expect(profile.success).toBe(false);
+    expect(profile.data).toBeUndefined();
   });
 
   it('keeps receipt drill-down inside the signed-in pharmacy', async () => {
@@ -436,11 +415,13 @@ describe('Patient Statement, Inventory Amount Editing, and Credit Returns', () =
         ('receipt-foreign', 101, 'inv-1', 1, 30, 10, 'large');
     `);
 
-    expect(await getReceiptDetailsAction('receipt-local')).toMatchObject({ success: true, data: { id: 'receipt-local' } });
+    // Even the local_default receipt must not be presented as a witnessed
+    // QA-tenant patient document just because its global patient ID matches.
+    expect(await getReceiptDetailsAction('receipt-local')).toMatchObject({ success: false });
     expect(await getReceiptDetailsAction('receipt-foreign')).toMatchObject({ success: false });
   });
 
-  it('correctly calculates patient balance when returning a drug from a debit/credit sale', async () => {
+  it('reconciles historical credit returns without publishing an unowned patient statement', async () => {
     // 1. Create a credit invoice of 200 EGP (10 units @ 20 EGP)
     mockDb.prepare(`
       INSERT INTO sales_invoices (id, patient_id, total_amount, payment_method, status, user_id, created_at)
@@ -498,18 +479,11 @@ describe('Patient Statement, Inventory Amount Editing, and Credit Returns', () =
     const afterBal = mockDb.prepare(patientOutstandingBalanceQuery()).get('pat-1') as any;
     expect(afterBal.outstanding_balance).toBe(270);
 
-    // 4. The mirrored notice is counted once; return and notices keep their signs.
+    // 4. Arithmetic can be audited directly, but source lacks an immutable
+    // prospective tenant ownership witness, so no statement is shown.
     const statementRes = await getPatientStatementAction('pat-1');
-    expect(statementRes.success).toBe(true);
-    expect(statementRes.data?.currentBalance).toBe(270);
-
-    const returnMovement = statementRes.data?.movements.find((m: any) => m.type === 'مرتجع بيع');
-    expect(returnMovement).toBeDefined();
-    expect(returnMovement.balance_effect).toBe(-40);
-    expect(statementRes.data?.movements).toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: 'إشعار مدين (إضافة)', balance_effect: 15 }),
-      expect.objectContaining({ type: 'إشعار دائن (خصم)', balance_effect: -5, notes: 'خصم إضافي - موافقة الإدارة' }),
-    ]));
+    expect(statementRes.success).toBe(false);
+    expect(statementRes.data).toBeUndefined();
   });
 
   it('works with legacy schema (adjustment_reasons with reason column and cashier permissions)', async () => {
@@ -537,13 +511,14 @@ describe('Patient Statement, Inventory Amount Editing, and Credit Returns', () =
     expect(updateRes).toEqual({ success: true });
     expect(mockDb.prepare('SELECT reason_id FROM stock_adjustments WHERE inventory_id = ?').get('inv-1')).toEqual({ reason_id: 5 });
 
-    // 2. Fetch patient statement as a cashier explicitly allowed to use the POS.
+    // 2. POS permission alone does not establish ownership over a historical
+    // local_default patient, regardless of legacy stock-reason compatibility.
     mockSession = { id: 'cashier-1', role: 'cashier', pharmacy_id: 'local_default', permissions: JSON.stringify({ can_access_pos: true }) };
     mockPermission = false; // doesn't have can_view_patients, but has can_access_pos
 
     const statementRes = await getPatientStatementAction('pat-1');
-    expect(statementRes.success).toBe(true);
-    expect(statementRes.data?.patient.full_name).toBe('الحاجه مجده');
+    expect(statementRes.success).toBe(false);
+    expect(statementRes.data).toBeUndefined();
   });
 
   it('tests all return refund methods and customer ledger separation scenarios', async () => {
@@ -624,28 +599,21 @@ describe('Patient Statement, Inventory Amount Editing, and Credit Returns', () =
     expect(accountRefundTx.amount).toBe(40);
     expect(accountRefundTx.payment_method).toBe('patient_account');
 
-    // Verify getPatientProfileAction returns this refund under payments
+    // The unowned local_default patient must remain invisible to a patient
+    // profile projection despite being present in the old global ledger.
     const profileRes = await getPatientProfileAction('pat-ledger');
-    expect(profileRes.success).toBe(true);
-    expect(profileRes.data.payments).toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: 'refund', amount: 40, payment_method: 'patient_account' })
-    ]));
+    expect(profileRes.success).toBe(false);
+    expect(profileRes.data).toBeUndefined();
 
-    // Verify outstanding balance: 50 (opening) + 100 (credit sale) - 40 (return) = 110
-    expect(profileRes.data.outstandingBalance).toBe(110);
+    // Historical arithmetic is inspectable for migration review only:
+    // 50 opening + 100 credit sale - 40 account return = 110.
     const rawBalance = mockDb.prepare(patientOutstandingBalanceQuery()).get('pat-ledger') as any;
     expect(rawBalance.outstanding_balance).toBe(110);
 
-    // Verify statement shows the return document without duplication
+    // Never expose a statement with that financial interpretation until
+    // the historic source has independent ownership and receipt evidence.
     const statementRes = await getPatientStatementAction('pat-ledger');
-    expect(statementRes.success).toBe(true);
-    const returnDocs = statementRes.data?.movements.filter((m: any) => m.type === 'مرتجع بيع');
-    expect(returnDocs).toHaveLength(2); // one cash return, one account return
-    const accountDoc = returnDocs.find((m: any) => m.payment_method === 'patient_account');
-    expect(accountDoc).toBeDefined();
-    expect(accountDoc.balance_effect).toBe(-40);
-    // Ensure no duplicate refund movement from patient_transactions
-    const ptRefunds = statementRes.data?.movements.filter((m: any) => m.doc_no === accountRefundTx.id);
-    expect(ptRefunds).toHaveLength(0);
+    expect(statementRes.success).toBe(false);
+    expect(statementRes.data).toBeUndefined();
   });
 });

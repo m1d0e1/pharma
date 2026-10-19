@@ -86,6 +86,30 @@ describe('Tauri Configuration', () => {
     expect(config.bundle.resources).toContain('pharma_local.db');
   });
 
+  it('fails closed on unsafe bundled credentials and never automatically reseeds the protected database', () => {
+    expect(config.build.beforeBuildCommand).toBe(
+      'node scripts/check-commercial-release-seed.js && npm run build:tauri',
+    );
+    expect(config.build.beforeBuildCommand).not.toContain('seed:db');
+    const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../package.json'), 'utf-8'));
+    expect(pkg.scripts['tauri:build:win7-x86']).not.toContain('seed:db');
+  });
+
+  it('isolates the unsigned 0.2.110 upgrade QA installer and packages only its sanitized resource', () => {
+    const overlay = JSON.parse(fs.readFileSync(
+      path.resolve(__dirname, '../../src-tauri/tauri.v02110-disposable-upgrade-qa.conf.json'), 'utf-8',
+    ));
+    expect(overlay.identifier).toBe('com.pharma.disposable.upgradeqa20261017');
+    expect(overlay.identifier).not.toBe(config.identifier);
+    expect(overlay.version).toBe('0.2.110');
+    expect(overlay.build.beforeBuildCommand).toBe('');
+    expect(overlay.bundle.createUpdaterArtifacts).toBe(false);
+    expect(overlay.bundle.targets).toEqual(['nsis']);
+    expect(overlay.bundle.resources).toEqual({
+      'qa-resource-v02110/pharma_local.db': 'pharma_local.db',
+    });
+  });
+
   it('bundle has all required icons', () => {
     const icons = config.bundle.icon;
     expect(icons).toContain('icons/32x32.png');

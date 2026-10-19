@@ -30,6 +30,7 @@ import {
   checkSupplierPendingInvoiceAction,
   getPurchasesReportsAction,
   getPurchaseInvoiceDetailsAction,
+  searchPurchaseInvoicesForReturnAction,
 } from '@/app/actions-client/purchases';
 import {
   createReturnAction,
@@ -530,11 +531,12 @@ describe('Exhaustive Frontend UI & Business Logic Test Suite (All Domains & Feat
         success: true,
         data: [{ id: 8, name_ar: 'مورد الفاخر' }],
       });
-      (getPurchasesReportsAction as jest.Mock).mockResolvedValue({
+      (searchPurchaseInvoicesForReturnAction as jest.Mock).mockResolvedValue({
         success: true,
         data: [{
           id: 'PINV-777',
           invoice_number: 'INV-777',
+          supplier_id: 8,
           supplier_name: 'مورد الفاخر',
           status: 'completed',
           total_amount: 1000,
@@ -558,8 +560,11 @@ describe('Exhaustive Frontend UI & Business Logic Test Suite (All Domains & Feat
       render(<PurchaseReturnClient />);
 
       const supplierSelect = await screen.findByRole('combobox');
+      await screen.findByRole('option', { name: 'مورد الفاخر' });
       fireEvent.change(supplierSelect, { target: { value: '8' } });
 
+      await waitFor(() => expect(searchPurchaseInvoicesForReturnAction).toHaveBeenCalledWith('', 8));
+      expect(getPurchasesReportsAction).not.toHaveBeenCalled();
       expect(await screen.findByText(/INV-777/i)).toBeInTheDocument();
     });
   });

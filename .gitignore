@@ -58,4 +58,10 @@ Thumbs.db
 
 # Test files
 test_*
+# These security regression suites are release inputs, not local scratch tests.
+!scripts/licensing/test_authority.py
+!scripts/licensing/test_release_boundary.py
+!scripts/licensing/test_local_qa.py
+!scripts/licensing/test_staging.py
+!scripts/test_qa_background_purchase_stock.py
 tsconfig.tsbuildinfo

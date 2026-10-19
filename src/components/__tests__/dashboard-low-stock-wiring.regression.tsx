@@ -23,7 +23,6 @@ jest.mock('next/dynamic', () => {
         data-purchases={String(!!props.canViewPurchases)}
         data-inventory={String(!!props.canViewInventory)}
       >reorder</div>;
-      if (componentIndex === 5) return <div data-testid="subscription-status-stub">subscription</div>;
       if (props?.invoice?.sales_items) {
         return <div
           data-testid="dynamic-receipt-items"
@@ -153,7 +152,7 @@ describe('dashboard low-stock wiring', () => {
 
     render(<DashboardPage />);
 
-    expect(await screen.findByText('لوحة التحكم الرئيسية (محلي)')).toBeInTheDocument();
+    expect(await screen.findByText('لوحة التحكم الرئيسية')).toBeInTheDocument();
     expect(screen.queryByTestId('expiry-widget-stub')).not.toBeInTheDocument();
     expect(screen.queryByTestId('dead-stock-widget-stub')).not.toBeInTheDocument();
     expect(screen.queryByTestId('reorder-alerts-stub')).not.toBeInTheDocument();
@@ -621,24 +620,6 @@ describe('dashboard low-stock wiring', () => {
     )).toBe(false);
   });
 
-  it('hides the settings mutation card from an admin with explicit settings denial', async () => {
-    (getClientSession as jest.Mock).mockResolvedValueOnce({
-      id: 'admin-settings-denied',
-      username: 'admin',
-      role: 'admin',
-      pharmacy_id: 'pharmacy-1',
-      permissions: { can_view_settings: false },
-    });
-    (hasUserPermissionSync as jest.Mock).mockImplementation((user: any, permission: string) =>
-      user?.role === 'owner' || user?.permissions?.[permission] === true
-    );
-
-    render(<DashboardPage />);
-
-    await waitFor(() => expect(screen.getByText('لوحة التحكم الرئيسية (محلي)')).toBeInTheDocument());
-    expect(screen.queryByTestId('subscription-status-stub')).not.toBeInTheDocument();
-  });
-
   it('shows a retryable dashboard error when its session disappears during load', async () => {
     (getClientSession as jest.Mock).mockResolvedValueOnce(null);
 
@@ -663,10 +644,10 @@ describe('dashboard low-stock wiring', () => {
     render(<DashboardPage />);
 
     expect(await screen.findByText('تعذر تحميل لوحة التحكم')).toBeInTheDocument();
-    expect(screen.queryByText('لوحة التحكم الرئيسية (محلي)')).not.toBeInTheDocument();
+    expect(screen.queryByText('لوحة التحكم الرئيسية')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'إعادة المحاولة' }));
 
-    expect(await screen.findByText('لوحة التحكم الرئيسية (محلي)')).toBeInTheDocument();
+    expect(await screen.findByText('لوحة التحكم الرئيسية')).toBeInTheDocument();
     expect(screen.getByText('50')).toBeInTheDocument();
   });
 

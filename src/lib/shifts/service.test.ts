@@ -85,9 +85,11 @@ describe('Shifts Service', () => {
       expect(result.startingCashAmount).toBe(1000);
     });
 
-    it('should throw error if user already has open shift', () => {
+    it('reuses one active pharmacy shift regardless of which employee opened it', () => {
       const mockOpenShift = {
         id: 'existing-shift',
+        pharmacy_id: 'pharmacy-1',
+        user_id: 'other-cashier',
         status: 'open',
       };
 
@@ -95,11 +97,12 @@ describe('Shifts Service', () => {
         get: jest.fn().mockReturnValue(mockOpenShift),
       });
 
-      expect(() => {
-        startShift('pharmacy-1', 'user-1', {
-          startingCashAmount: 1000,
-        });
-      }).toThrow('User already has an open shift');
+      const existing = startShift('pharmacy-1', 'user-1', {
+        startingCashAmount: 1000,
+      });
+      expect(existing.id).toBe('existing-shift');
+      expect(existing.userId).toBe('other-cashier');
+      expect(execute).not.toHaveBeenCalled();
     });
   });
 
@@ -224,7 +227,7 @@ describe('Shifts Service', () => {
   });
 
   describe('getOpenShift', () => {
-    it('should return open shift for user', () => {
+    it('should return the active pharmacy shift to a different cashier', () => {
       const mockShift = {
         id: 'shift-1',
         status: 'open',
@@ -239,6 +242,10 @@ describe('Shifts Service', () => {
 
       expect(result).toBeDefined();
       expect(result?.status).toBe('open');
+      expect(get).toHaveBeenCalledWith(
+        expect.stringContaining('actor.pharmacy_id=sr.pharmacy_id'),
+        ['user-1']
+      );
     });
 
     it('should return null if no open shift', () => {
@@ -331,6 +338,11 @@ describe('Shifts Service', () => {
       const result = calculateExpectedCash('shift-1');
 
       expect(result).toBe(1500); // 1000 + 500
+      const cashQueries = (get as jest.Mock).mock.calls.filter(([sql]) =>
+        /FROM (sales_invoices|returns|cash_movements)/.test(sql));
+      expect(cashQueries).toHaveLength(3);
+      expect(cashQueries.every(([, params]) => JSON.stringify(params) === '["shift-1"]')).toBe(true);
+      expect(cashQueries.every(([sql]) => !sql.includes('user_id = ?'))).toBe(true);
     });
   });
 

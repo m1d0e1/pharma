@@ -1,7 +1,7 @@
-import { createBrowserClient } from '@supabase/ssr'
+import { createClient } from '@supabase/supabase-js';
 
 // Singleton pattern for Supabase browser client
-let supabaseInstance: ReturnType<typeof createBrowserClient> | null = null
+let supabaseInstance: ReturnType<typeof createClient> | null = null;
 
 /**
  * Get or create a singleton Supabase browser client.
@@ -12,15 +12,14 @@ export function getSupabaseBrowserClient() {
     return supabaseInstance
   }
 
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim();
 
   if (!supabaseUrl || !supabaseAnonKey) {
-    console.warn('Missing Supabase environment variables.');
-    return null as any;
+    throw new Error('Public drug and interaction catalog is not configured.');
   }
 
-  supabaseInstance = createBrowserClient(supabaseUrl, supabaseAnonKey, {
+  supabaseInstance = createClient(supabaseUrl, supabaseAnonKey, {
     auth: {
       persistSession: false,
       autoRefreshToken: false,
@@ -29,6 +28,3 @@ export function getSupabaseBrowserClient() {
   })
   return supabaseInstance
 }
-
-// For backward compatibility
-// export const supabase = getSupabaseBrowserClient() // Removed to avoid throw on module load

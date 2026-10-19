@@ -1,6 +1,14 @@
 const metadata = new Map<string, string>();
 let failInteractionWrite = false;
 
+jest.mock('@/lib/env', () => ({ isTauri: true }));
+
+jest.mock('@/lib/sync/watermark', () => ({
+  setSyncWatermark: jest.fn(async (tableName: string, lastSyncedAt: string) => {
+    metadata.set(tableName, lastSyncedAt);
+  }),
+}));
+
 jest.mock('@/lib/db/tauri', () => ({
   dbExecute: jest.fn(async (sql: string, params: any[] = []) => {
     if (failInteractionWrite && sql.includes('INSERT INTO drug_interactions')) {

@@ -4,13 +4,13 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { addInteractionAction, checkDrugInteractions, getInteractionsAction } from '@/app/actions-client/interactions';
 import { toast } from 'react-hot-toast';
 import { useRouter } from 'next/navigation';
-import { Plus, Search, AlertTriangle, XCircle, AlertCircle, Info, ChevronRight, ChevronLeft, Loader2 } from 'lucide-react';
+import { Plus, Search, AlertTriangle, XCircle, AlertCircle, Info, ChevronRight, ChevronLeft, Loader2, Lightbulb } from 'lucide-react';
 import { useDebounce } from '@/hooks/use-debounce';
 
 const SEVERITY_CONFIG: Record<string, { label: string; color: string; icon: any; bg: string }> = {
-  critical: { label: 'حرجة ⛔', color: 'text-red-700 dark:text-red-300', icon: XCircle, bg: 'bg-red-100 dark:bg-red-900/30 border-red-200 dark:border-red-800' },
-  major: { label: 'خطيرة ⚠️', color: 'text-amber-700 dark:text-amber-300', icon: AlertTriangle, bg: 'bg-amber-100 dark:bg-amber-900/30 border-amber-200 dark:border-amber-800' },
-  moderate: { label: 'متوسطة ℹ️', color: 'text-yellow-700 dark:text-yellow-300', icon: AlertCircle, bg: 'bg-yellow-100 dark:bg-yellow-900/30 border-yellow-200 dark:border-yellow-800' },
+  critical: { label: 'حرجة', color: 'text-red-700 dark:text-red-300', icon: XCircle, bg: 'bg-red-100 dark:bg-red-900/30 border-red-200 dark:border-red-800' },
+  major: { label: 'خطيرة', color: 'text-amber-700 dark:text-amber-300', icon: AlertTriangle, bg: 'bg-amber-100 dark:bg-amber-900/30 border-amber-200 dark:border-amber-800' },
+  moderate: { label: 'متوسطة', color: 'text-yellow-700 dark:text-yellow-300', icon: AlertCircle, bg: 'bg-yellow-100 dark:bg-yellow-900/30 border-yellow-200 dark:border-yellow-800' },
   minor: { label: 'بسيطة', color: 'text-blue-700 dark:text-blue-300', icon: Info, bg: 'bg-blue-100 dark:bg-blue-900/30 border-blue-200 dark:border-blue-800' },
 };
 
@@ -29,6 +29,7 @@ export default function InteractionsClient({ initialInteractions, totalCount, us
   const debouncedSearch = useDebounce(search, 500);
   const [severityFilter, setSeverityFilter] = useState('all');
   const [loading, setLoading] = useState(false);
+  const [listError, setListError] = useState(false);
   
   const [showAddForm, setShowAddForm] = useState(false);
   const [checkerInput, setCheckerInput] = useState('');
@@ -53,6 +54,7 @@ export default function InteractionsClient({ initialInteractions, totalCount, us
 
   const fetchInteractions = useCallback(async (p: number, s: string, sev: string) => {
     const requestId = ++fetchRequestRef.current;
+    setListError(false);
     setLoading(true);
     try {
       const res = await getInteractionsAction(p, 50, s, sev);
@@ -61,10 +63,16 @@ export default function InteractionsClient({ initialInteractions, totalCount, us
         setInteractions(res.data || []);
         setTotal(res.total || 0);
       } else {
+        setInteractions([]);
+        setTotal(0);
+        setListError(true);
         toast.error(res.error || 'فشل تحميل البيانات');
       }
     } catch (error) {
       if (requestId === fetchRequestRef.current) {
+        setInteractions([]);
+        setTotal(0);
+        setListError(true);
         toast.error('حدث خطأ أثناء الاتصال بالخادم');
       }
     } finally {
@@ -75,10 +83,18 @@ export default function InteractionsClient({ initialInteractions, totalCount, us
   }, []);
 
   useEffect(() => {
-    // Skip initial fetch since we have initialInteractions
-    if (page === 1 && debouncedSearch === '' && severityFilter === 'all') return;
+    // The initial set is valid for the default query; reset it and invalidate
+    // any filtered response still pending when a user clears their search.
+    if (page === 1 && debouncedSearch === '' && severityFilter === 'all') {
+      fetchRequestRef.current += 1;
+      setInteractions(initialInteractions);
+      setTotal(totalCount);
+      setListError(false);
+      setLoading(false);
+      return;
+    }
     fetchInteractions(page, debouncedSearch, severityFilter);
-  }, [page, debouncedSearch, severityFilter, fetchInteractions]);
+  }, [page, debouncedSearch, severityFilter, fetchInteractions, initialInteractions, totalCount]);
 
   // Reset page when search or filter changes
   useEffect(() => {
@@ -113,6 +129,7 @@ export default function InteractionsClient({ initialInteractions, totalCount, us
       return;
     }
     const requestId = ++checkerRequestRef.current;
+    setCheckerResults(null);
     setCheckerLoading(true);
     try {
       const result = await checkDrugInteractions(ingredients);
@@ -141,7 +158,7 @@ export default function InteractionsClient({ initialInteractions, totalCount, us
   return (
     <div className="space-y-6">
       {/* Quick Checker */}
-      <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-xl">
+      <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
         <h3 className="text-lg font-bold mb-4 flex items-center gap-2 text-blue-600 dark:text-blue-400">
           <Search className="w-5 h-5" /> فحص سريع للتفاعلات
         </h3>
@@ -150,15 +167,20 @@ export default function InteractionsClient({ initialInteractions, totalCount, us
             type="text"
             aria-label="المواد الفعالة للفحص السريع"
             value={checkerInput}
-            onChange={e => setCheckerInput(e.target.value)}
+            onChange={e => {
+              checkerRequestRef.current += 1;
+              setCheckerInput(e.target.value);
+              setCheckerResults(null);
+              setCheckerLoading(false);
+            }}
             onKeyDown={e => e.key === 'Enter' && handleCheck()}
             placeholder="أدخل المواد الفعالة مفصولة بفاصلة (مثال: warfarin, aspirin)"
-            className="flex-1 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-4 py-3 rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+            className="flex-1 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-4 py-2.5 rounded-lg font-medium focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 outline-none"
           />
           <button
             onClick={handleCheck}
             disabled={checkerLoading}
-            className="bg-blue-600 text-white px-8 py-3 rounded-2xl font-bold hover:bg-blue-700 transition-all flex items-center gap-2 disabled:opacity-50"
+            className="bg-primary-700 text-white px-5 py-2.5 rounded-lg font-semibold hover:bg-primary-800 transition-colors flex items-center gap-2 disabled:opacity-50"
           >
             {checkerLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : 'فحص'}
           </button>
@@ -186,7 +208,7 @@ export default function InteractionsClient({ initialInteractions, totalCount, us
                           </p>
                           <p className="text-sm mt-1">{int.description_ar}</p>
                           {int.recommendation && (
-                            <p className="text-xs mt-2 opacity-80 font-bold text-slate-700 dark:text-slate-300">💡 التوصية: {int.recommendation}</p>
+                            <p className="text-xs mt-2 text-slate-700 dark:text-slate-300 flex items-start gap-1.5"><Lightbulb className="w-3.5 h-3.5 mt-0.5 text-blue-600 shrink-0" aria-hidden="true" /><span><strong>التوصية:</strong> {int.recommendation}</span></p>
                           )}
                         </div>
                       </div>
@@ -200,7 +222,7 @@ export default function InteractionsClient({ initialInteractions, totalCount, us
       </div>
 
       {/* Filter + Actions */}
-      <div className="flex flex-wrap items-center gap-3 bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm">
+      <div className="flex flex-wrap items-center gap-3 bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
         <div className="relative flex-1 min-w-[200px]">
           <Search className="absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
           <input
@@ -209,14 +231,14 @@ export default function InteractionsClient({ initialInteractions, totalCount, us
             value={search}
             onChange={e => setSearch(e.target.value)}
             placeholder="بحث عن مادة فعالة (مثال: warfarin)..."
-            className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 pr-10 pl-4 py-2.5 rounded-xl text-sm font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+            className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 pr-10 pl-4 py-2.5 rounded-lg text-sm font-medium focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 outline-none"
           />
         </div>
 
         {userRole === 'owner' && (
           <button
             onClick={handleToggleAddForm}
-            className="bg-blue-600 text-white px-5 py-2.5 rounded-xl font-bold text-sm hover:bg-blue-700 transition-all flex items-center gap-2"
+            className="bg-primary-700 text-white px-4 py-2.5 rounded-lg font-semibold text-sm hover:bg-primary-800 transition-colors flex items-center gap-2"
           >
             <Plus className="w-4 h-4" /> إضافة تفاعل
           </button>
@@ -225,35 +247,40 @@ export default function InteractionsClient({ initialInteractions, totalCount, us
 
       {/* Add Form */}
       {showAddForm && (
-        <form aria-labelledby="add-interaction-title" onSubmit={handleAdd} className="bg-white dark:bg-slate-900 p-5 sm:p-8 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-xl space-y-4 animate-in slide-in-from-top-4 duration-300">
+        <form aria-labelledby="add-interaction-title" onSubmit={handleAdd} className="bg-white dark:bg-slate-900 p-5 sm:p-6 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
           <h3 id="add-interaction-title" className="text-lg font-bold flex items-center gap-2">
             <Plus className="w-5 h-5 text-emerald-500" /> إضافة تفاعل دوائي جديد
           </h3>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <label className="sr-only" htmlFor="interaction-ingredient-a">المادة الفعالة الأولى</label>
-            <input id="interaction-ingredient-a" type="text" required value={form.ingredient_a} onChange={e => setForm({...form, ingredient_a: e.target.value})} placeholder="المادة الفعالة الأولى" className="bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-4 py-3 rounded-xl font-bold" />
+            <input id="interaction-ingredient-a" type="text" required value={form.ingredient_a} onChange={e => setForm({...form, ingredient_a: e.target.value})} placeholder="المادة الفعالة الأولى" className="bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-4 py-2.5 rounded-lg font-medium" />
             <label className="sr-only" htmlFor="interaction-ingredient-b">المادة الفعالة الثانية</label>
-            <input id="interaction-ingredient-b" type="text" required value={form.ingredient_b} onChange={e => setForm({...form, ingredient_b: e.target.value})} placeholder="المادة الفعالة الثانية" className="bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-4 py-3 rounded-xl font-bold" />
+            <input id="interaction-ingredient-b" type="text" required value={form.ingredient_b} onChange={e => setForm({...form, ingredient_b: e.target.value})} placeholder="المادة الفعالة الثانية" className="bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-4 py-2.5 rounded-lg font-medium" />
 
             <label className="sr-only" htmlFor="interaction-recommendation">التوصية</label>
-            <input id="interaction-recommendation" type="text" value={form.recommendation} onChange={e => setForm({...form, recommendation: e.target.value})} placeholder="التوصية (اختياري)" className="bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-4 py-3 rounded-xl font-bold" />
+            <input id="interaction-recommendation" type="text" value={form.recommendation} onChange={e => setForm({...form, recommendation: e.target.value})} placeholder="التوصية (اختياري)" className="bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-4 py-2.5 rounded-lg font-medium" />
           </div>
           <label className="sr-only" htmlFor="interaction-description">وصف التفاعل بالتفصيل</label>
-          <textarea id="interaction-description" required value={form.description_ar} onChange={e => setForm({...form, description_ar: e.target.value})} placeholder="وصف التفاعل بالتفصيل..." className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-4 py-3 rounded-xl font-bold" rows={2} />
+          <textarea id="interaction-description" required value={form.description_ar} onChange={e => setForm({...form, description_ar: e.target.value})} placeholder="وصف التفاعل بالتفصيل..." className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-4 py-2.5 rounded-lg font-medium" rows={2} />
           <div className="flex gap-3 pt-2">
-            <button type="submit" className="bg-emerald-600 text-white px-10 py-3 rounded-xl font-bold hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-200 dark:shadow-none">حفظ</button>
-            <button type="button" onClick={handleToggleAddForm} className="bg-slate-200 dark:bg-slate-800 px-8 py-3 rounded-xl font-bold hover:bg-slate-300 dark:hover:bg-slate-700 transition-all">إلغاء</button>
+            <button type="submit" className="bg-emerald-700 text-white px-6 py-2.5 rounded-lg font-semibold hover:bg-emerald-800 transition-colors shadow-sm">حفظ</button>
+            <button type="button" onClick={handleToggleAddForm} className="bg-slate-200 dark:bg-slate-800 px-5 py-2.5 rounded-lg font-semibold hover:bg-slate-300 dark:hover:bg-slate-700 transition-colors">إلغاء</button>
           </div>
         </form>
       )}
 
       {/* Interactions Table */}
-      <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-xl overflow-hidden min-h-[400px] flex flex-col">
+      <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden min-h-[400px] flex flex-col">
         <div className="flex-1 divide-y divide-slate-100 dark:divide-slate-800">
           {loading ? (
             <div className="flex flex-col items-center justify-center py-20 gap-4">
               <Loader2 className="w-10 h-10 text-blue-500 animate-spin" />
               <p className="text-slate-400 font-bold">جاري تحميل التفاعلات...</p>
+            </div>
+          ) : listError ? (
+            <div role="alert" className="flex flex-col items-center justify-center gap-4 py-20 text-rose-700 dark:text-rose-300">
+              <p className="font-bold">تعذر تحميل نتائج التفاعلات</p>
+              <button type="button" onClick={() => fetchInteractions(page, debouncedSearch, severityFilter)} className="rounded-lg border px-4 py-2 font-semibold">إعادة المحاولة</button>
             </div>
           ) : interactions.length === 0 ? (
             <div className="text-center py-20 text-slate-400 font-bold">لا توجد تفاعلات مطابقة للبحث</div>
@@ -263,14 +290,14 @@ export default function InteractionsClient({ initialInteractions, totalCount, us
             return (
               <div key={interaction.id} className="px-6 py-5 hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors group">
                 <div className="flex items-start gap-4">
-                  <div className={`p-2.5 rounded-2xl transition-all group-hover:scale-110 ${config.bg}`}>
+                  <div className={`p-2.5 rounded-lg ${config.bg}`}>
                     <Icon className={`w-6 h-6 ${config.color}`} />
                   </div>
                   <div className="flex-1">
                     <div className="flex items-center gap-3 mb-1.5 flex-wrap">
-                      <span className="text-lg font-black text-slate-900 dark:text-white uppercase tracking-tight">{interaction.ingredient_a}</span>
+                      <span className="text-base font-semibold text-slate-900 dark:text-white tracking-tight">{interaction.ingredient_a}</span>
                       <span className="text-slate-300 dark:text-slate-600 font-black">+</span>
-                      <span className="text-lg font-black text-slate-900 dark:text-white uppercase tracking-tight">{interaction.ingredient_b}</span>
+                      <span className="text-base font-semibold text-slate-900 dark:text-white tracking-tight">{interaction.ingredient_b}</span>
                     </div>
                     <p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed max-w-3xl">
                       {interaction.description_ar || interaction.description_en}
@@ -278,7 +305,7 @@ export default function InteractionsClient({ initialInteractions, totalCount, us
                     {interaction.recommendation && (
                       <div className="flex items-center gap-2 mt-2 px-3 py-1.5 bg-blue-50 dark:bg-blue-900/20 rounded-xl border border-blue-100 dark:border-blue-900/40 w-fit">
                         <span className="text-xs text-blue-600 dark:text-blue-400 font-bold flex items-center gap-1.5">
-                          💡 التوصية: {interaction.recommendation}
+                          <Lightbulb className="w-3.5 h-3.5" aria-hidden="true" /> التوصية: {interaction.recommendation}
                         </span>
                       </div>
                     )}

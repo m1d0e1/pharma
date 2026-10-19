@@ -1,4 +1,5 @@
 import { dbSelect, dbExecute, dbGet, dbTransaction } from '@/lib/db/tauri';
+import { isTauri } from '@/lib/env';
 const logActivity = async (userId: any, action: any, details: any) => {
   try {
     await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [userId, action, details]);
@@ -74,7 +75,27 @@ export async function checkDrugInteractions(cartIngredients: string[], patientId
     // Check patient allergies (only against current cart ingredients)
     const allergies: any[] = [];
     if (patientId) {
-      const patientAllergies = await db.prepare('SELECT * FROM patient_allergies WHERE patient_id = ?').all(patientId) as any[];
+      // Global legacy patient IDs are not pharmacy ownership. Tauri must
+      // check the authenticated native actor and forward-only patient witness
+      // before retrieving medical allergies; renderer-authored clinical SQL
+      // is deliberately denied by the SQLite authorizer.
+      const patientAllergies = isTauri
+        ? await (async () => {
+          const { invoke } = await import('@tauri-apps/api/core');
+          const rows = await invoke<any[]>('db_read_scoped', {
+            queryId: 'patients.checkout_allergies',
+            recordId: patientId,
+            search: null,
+            drugId: null,
+            limit: 200,
+            offset: 0,
+          });
+          if (!Array.isArray(rows) || rows.length >= 200) {
+            throw new Error('Unable to certify complete patient allergy history');
+          }
+          return rows;
+        })()
+        : await db.prepare('SELECT * FROM patient_allergies WHERE patient_id = ?').all(patientId) as any[];
       for (const allergy of patientAllergies) {
         for (const ingredient of cartIngs) {
           const cleanIng = ingredient.toLowerCase();

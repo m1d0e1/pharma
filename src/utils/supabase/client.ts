@@ -13,5 +13,11 @@ export function createClient() {
   if (!url || !anonKey) {
     throw new SupabaseConfigurationError();
   }
-  return createSupabaseClient(url, anonKey);
+  return createSupabaseClient(url, anonKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+  });
 }

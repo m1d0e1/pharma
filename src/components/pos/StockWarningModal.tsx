@@ -24,7 +24,7 @@ export default function StockWarningModal({
 }: StockWarningModalProps) {
   const dialogRef = useDialogFocusTrap<HTMLDivElement>(isOpen && Boolean(drug));
   
-  useHotkeys('esc', () => { if(typeof onClose === 'function') onClose(); }, { enableOnFormTags: true });
+  useHotkeys('esc', () => { if(typeof onClose === 'function') onClose(); }, { enabled: isOpen && Boolean(drug), enableOnFormTags: true });
 if (!isOpen || !drug) return null;
 
   return (

@@ -33,6 +33,20 @@ pub(crate) fn user_has_permission(
     if normalized_role == "owner" {
         return true;
     }
+    // Owner-only capabilities are fixed to the owner's live role. Legacy
+    // accounts may still contain old persisted flags after reassignment.
+    if matches!(
+        key,
+        "can_view_staff_manage"
+            | "can_view_staff_roles"
+            | "can_view_staff_performance"
+            | "rep_can_view_activity"
+            | "manage_staff"
+            | "can_manage_users"
+            | "can_view_cogs"
+    ) {
+        return false;
+    }
     let value = decoded_permissions(permissions);
     if let Some(Value::Array(keys)) = value.as_ref() {
         return keys.iter().any(|value| value.as_str() == Some(key));
@@ -83,15 +97,57 @@ pub(crate) fn user_can_view_purchases(role: Option<&str>, permissions: Option<&s
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_pharmacy_id, user_can_view_purchases, user_has_permission, user_permission_number};
+    use super::{
+        normalize_pharmacy_id, user_can_view_purchases, user_has_permission, user_permission_number,
+    };
 
     #[test]
     fn permission_policy_preserves_legacy_and_explicit_denial_rules() {
         assert_eq!(normalize_pharmacy_id(None), "local_default");
-        assert!(user_has_permission(Some("owner"), Some("{}"), "can_access_pos", true));
-        assert!(user_has_permission(Some("pharmacist"), None, "can_access_pos", true));
-        assert!(!user_has_permission(Some("pharmacist"), Some(r#"{"can_access_pos":false}"#), "can_access_pos", true));
-        assert!(user_can_view_purchases(Some("admin"), Some(r#"{"can_view_purchases":true}"#)));
-        assert_eq!(user_permission_number(Some("owner"), None, "max_invoice_discount_percent", 0.0), 100.0);
+        assert!(user_has_permission(
+            Some("owner"),
+            Some("{}"),
+            "can_access_pos",
+            true
+        ));
+        assert!(user_has_permission(
+            Some("pharmacist"),
+            None,
+            "can_access_pos",
+            true
+        ));
+        assert!(!user_has_permission(
+            Some("pharmacist"),
+            Some(r#"{"can_access_pos":false}"#),
+            "can_access_pos",
+            true
+        ));
+        assert!(user_can_view_purchases(
+            Some("admin"),
+            Some(r#"{"can_view_purchases":true}"#)
+        ));
+        assert_eq!(
+            user_permission_number(Some("owner"), None, "max_invoice_discount_percent", 0.0),
+            100.0
+        );
+    }
+
+    #[test]
+    fn stored_owner_only_permissions_never_grant_access_to_restricted_roles() {
+        let stored = r#"{"can_view_staff_manage":true,"can_view_staff_roles":true,"rep_can_view_activity":true,"can_view_cogs":true,"can_view_sales":true}"#;
+        for role in ["admin", "pharmacist", "cashier", ""] {
+            for key in [
+                "can_view_staff_manage", "can_view_staff_roles",
+                "rep_can_view_activity", "can_view_cogs",
+            ] {
+                assert!(!user_has_permission(Some(role), Some(stored), key, false),
+                    "{role} unexpectedly acquired {key}");
+                assert!(!user_has_permission(Some(role),
+                    Some(r#"["can_view_staff_roles","can_view_cogs"]"#), key, false),
+                    "{role} unexpectedly acquired {key} through an array");
+            }
+            assert!(user_has_permission(Some(role), Some(stored), "can_view_sales", false));
+        }
+        assert!(user_has_permission(Some("owner"), Some(stored), "can_view_cogs", false));
     }
 }

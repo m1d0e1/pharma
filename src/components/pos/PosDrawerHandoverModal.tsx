@@ -40,7 +40,7 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
   const creditDialogRef = useDialogFocusTrap<HTMLDivElement>(isOpen && showCreditModal);
 
   const [form, setForm] = useState({
-    actualCash: 0,
+    actualCash: '' as number | '',
     transferAmount: 0,
     transferTargetId: '',
     transferTargetType: 'treasury' as 'treasury' | 'next_shift' | 'bank',
@@ -60,7 +60,7 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
     setLoadError(false);
     setProcessing(false);
     setForm({
-      actualCash: 0,
+      actualCash: '',
       transferAmount: 0,
       transferTargetId: '',
       transferTargetType: 'treasury',
@@ -104,10 +104,6 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
             ...detailsRes.data,
             user_name: activeUserName
           });
-          setForm(prev => ({
-            ...prev,
-            actualCash: prev.actualCash || 0
-          }));
         }
 
         const banksRes = await getBanksAction();
@@ -193,8 +189,20 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    // Native Windows single-option selectors may display the sole receiver
+    // while emitting an empty selection. Do not guess among multiple users;
+    // native Rust still verifies this exact receiver's password and tenant.
+    const receiverUsername = staff.some(s => s.username === form.receiverUsername)
+      ? form.receiverUsername
+      : staff.length === 1 ? staff[0].username : '';
     if (!shiftId) {
       toast.error('لا توجد وردية مفتوحة');
+      return;
+    }
+    if (form.actualCash === '' || !Number.isFinite(form.actualCash) ||
+      form.actualCash < 0 || form.actualCash > 1_000_000_000 ||
+      Math.abs(form.actualCash * 100 - Math.round(form.actualCash * 100)) > 0.000001) {
+      toast.error('يجب إدخال النقدية المعدودة فعليًا بدقة القرش قبل تسليم الدرج');
       return;
     }
     if (form.transferAmount < 0) {
@@ -205,7 +213,7 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
       toast.error('مبلغ التحويل أكبر من النقدية الفعلية في الدرج');
       return;
     }
-    if (!form.receiverUsername) {
+    if (!receiverUsername) {
       toast.error('يرجى اختيار المستلم');
       return;
     }
@@ -220,7 +228,7 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
         transferAmount: form.transferAmount,
         transferTargetId: form.transferTargetId,
         transferTargetType: form.transferTargetType,
-        receiverUsername: form.receiverUsername,
+        receiverUsername,
         receiverPasswordHash: form.receiverPassword,
         notes: form.notes,
         autoOpenNewShift: true
@@ -370,8 +378,11 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
                     type="number" 
                     step="0.01" 
                     min="0"
+                    required
+                    aria-required="true"
                     value={form.actualCash} 
-                    onChange={(e) => setForm({ ...form, actualCash: parseFloat(e.target.value) || 0 })}
+                    onChange={(e) => setForm({ ...form,
+                      actualCash: e.target.value.trim() === '' ? '' : Number(e.target.value) })}
                     placeholder="أدخل النقدية المعدودة في درج الوردية..."
                     className="col-span-2 px-3 py-1.5 bg-white dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded font-black text-slate-900 dark:text-white text-center focus:ring-2 focus:ring-blue-500 outline-none"
                   />
@@ -445,7 +456,11 @@ export default function PosDrawerHandoverModal({ isOpen, onClose }: PosDrawerHan
                   <select 
                     id="handover-receiver"
                     value={form.receiverUsername}
-                    onChange={(e) => setForm({ ...form, receiverUsername: e.target.value })}
+                    onChange={(e) => {
+                      if (staff.some(s => s.username === e.target.value)) {
+                        setForm(prev => ({ ...prev, receiverUsername: e.target.value }));
+                      }
+                    }}
                     className="col-span-2 px-3 py-1.5 bg-white dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded font-black text-red-600 dark:text-red-400 text-center uppercase"
                   >
                     {staff.map(s => (

@@ -33,6 +33,12 @@ describe('Supabase client configuration', () => {
     createSupabaseClient.mockReturnValue(sentinel);
 
     expect(createClient()).toBe(sentinel);
-    expect(createSupabaseClient).toHaveBeenCalledWith('https://example.supabase.co', 'anon-key');
+    expect(createSupabaseClient).toHaveBeenCalledWith('https://example.supabase.co', 'anon-key', {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+        detectSessionInUrl: false,
+      },
+    });
   });
 });

@@ -67,7 +67,10 @@ export function getSession(refreshToken: string): Session | null {
   const db = getDatabase();
 
   const row = get<Session>(
-    `SELECT * FROM sessions WHERE refresh_token = ? AND expires_at > datetime('now')`,
+    `SELECT id, user_id AS userId, refresh_token AS refreshToken,
+            expires_at AS expiresAt, created_at AS createdAt, last_accessed_at AS lastAccessedAt,
+            ip_address AS ipAddress, user_agent AS userAgent
+     FROM sessions WHERE refresh_token = ? AND datetime(expires_at) > datetime('now')`,
     [refreshToken]
   );
 
@@ -113,7 +116,7 @@ export function deleteAllUserSessions(userId: string): void {
 export function deleteExpiredSessions(): void {
   const db = getDatabase();
 
-  execute(`DELETE FROM sessions WHERE expires_at <= datetime('now')`);
+  execute(`DELETE FROM sessions WHERE datetime(expires_at) <= datetime('now')`);
 }
 
 /**
@@ -174,7 +177,11 @@ export function getUserSessions(userId: string): Session[] {
   const db = getDatabase();
 
   return query<Session>(
-    `SELECT * FROM sessions WHERE user_id = ? AND expires_at > datetime('now') ORDER BY last_accessed_at DESC`,
+    `SELECT id, user_id AS userId, refresh_token AS refreshToken,
+            expires_at AS expiresAt, created_at AS createdAt, last_accessed_at AS lastAccessedAt,
+            ip_address AS ipAddress, user_agent AS userAgent
+     FROM sessions WHERE user_id = ? AND datetime(expires_at) > datetime('now')
+     ORDER BY datetime(last_accessed_at) DESC`,
     [userId]
   );
 }
@@ -188,7 +195,7 @@ export function getActiveSessionCount(userId: string): number {
   const db = getDatabase();
 
   const result = get<{ count: number }>(
-    `SELECT COUNT(*) as count FROM sessions WHERE user_id = ? AND expires_at > datetime('now')`,
+    `SELECT COUNT(*) as count FROM sessions WHERE user_id = ? AND datetime(expires_at) > datetime('now')`,
     [userId]
   );
 
@@ -202,7 +209,7 @@ export function cleanupOldSessions(): void {
   const db = getDatabase();
 
   execute(
-    `DELETE FROM sessions WHERE created_at < datetime('now', '-30 days')`
+    `DELETE FROM sessions WHERE datetime(created_at) < datetime('now', '-30 days')`
   );
 }
 

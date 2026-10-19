@@ -1,5 +1,6 @@
 
 import { dbSelect, dbExecute, dbGet, dbTransaction, generateId } from '@/lib/db/tauri';
+import { isTauri } from '@/lib/env';
 
 const db = {
   prepare: (sql) => ({
@@ -34,7 +35,6 @@ const db = {
 
 import { z } from 'zod';
 import { format } from 'date-fns';
-import { localDate } from '@/lib/time';
 
 const revalidatePath = (...args: any[]) => {};
 
@@ -85,10 +85,81 @@ function canSearchPatientsForPos(user: any): boolean {
   return canManagePatients(user) || (!!user && hasUserPermissionSync(user, 'can_access_pos'));
 }
 
+const PATIENT_OWNERSHIP_ERROR = 'Legacy patient ownership needs independent tenant verification';
+
+function patientTenant(user: any): string | null {
+  const pharmacyId = typeof user?.pharmacy_id === 'string' ? user.pharmacy_id.trim() : '';
+  return pharmacyId && pharmacyId !== 'local_default' ? pharmacyId : null;
+}
+
+// The patient table itself is global and has no pharmacy column. Only a
+// prospective native creation witness can establish independent ownership.
+// Global patient transactions/notices and other-branch sales make balances
+// ambiguous, so exclude those records until a scoped ledger can prove them.
+function ownedPatientSql(alias = 'p'): string {
+  return `EXISTS (SELECT 1 FROM native_patient_directory_ownership owner
+                 WHERE owner.patient_id = ${alias}.id AND owner.pharmacy_id = ?)
+    AND NOT EXISTS (SELECT 1 FROM sales_invoices other
+       WHERE other.patient_id = ${alias}.id
+         AND COALESCE(NULLIF(TRIM(other.pharmacy_id),''),'local_default') <> ?)
+    AND NOT EXISTS (SELECT 1 FROM patient_transactions pt WHERE pt.patient_id = ${alias}.id)
+    AND NOT EXISTS (SELECT 1 FROM financial_notices fn
+       WHERE fn.target_type='customer' AND fn.target_id = ${alias}.id)`;
+}
+
+async function ownedPatientExists(patientId: string, pharmacyId: string): Promise<boolean> {
+  const owned = await db.prepare(`SELECT 1 AS owned FROM patients p
+    WHERE p.id = ? AND ${ownedPatientSql('p')} LIMIT 1`)
+    .get(patientId, pharmacyId, pharmacyId) as any;
+  return Boolean(owned);
+}
+
+async function assertPatientFinancialProvenance(pharmacyId: string, patientId?: string): Promise<void> {
+  const uncertain = await db.prepare(`SELECT 1 AS uncertain
+    FROM native_patient_directory_ownership owned
+    WHERE owned.pharmacy_id = ?
+      AND (? IS NULL OR owned.patient_id = ?)
+      AND (
+        EXISTS (SELECT 1 FROM sales_invoices si WHERE si.patient_id = owned.patient_id
+          AND COALESCE(NULLIF(TRIM(si.pharmacy_id), ''),'local_default') <> ?)
+        OR EXISTS (SELECT 1 FROM patient_transactions pt WHERE pt.patient_id = owned.patient_id)
+        OR EXISTS (SELECT 1 FROM financial_notices fn WHERE fn.target_type='customer'
+          AND fn.target_id = owned.patient_id)
+      ) LIMIT 1`)
+    .get(pharmacyId, patientId ?? null, patientId ?? null, pharmacyId);
+  if (uncertain) throw new Error('Owned patient financial provenance is incomplete');
+}
+
+async function nativePatientRead(
+  queryId: 'patients.directory' | 'patients.pos_search' | 'patients.pos_get' | 'patients.profile',
+  options: { recordId?: string; search?: string; limit?: number } = {},
+): Promise<any[]> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  const rows: any[] = [];
+  const pageSize = options.limit ?? 200;
+  for (let offset = 0; offset <= 50_000; offset += pageSize) {
+    const page = await invoke<any[]>('db_read_scoped', {
+      queryId,
+      recordId: options.recordId ?? null,
+      search: options.search ?? null,
+      drugId: null,
+      limit: pageSize,
+      offset,
+    });
+    if (!Array.isArray(page) || page.length > pageSize
+      || page.some(row => !row || typeof row !== 'object' || Array.isArray(row))) {
+      throw new Error('Invalid native patient read response');
+    }
+    rows.push(...page);
+    if (page.length < pageSize || options.recordId) return rows;
+  }
+  throw new Error('Native patient directory exceeds bounded paging capacity');
+}
+
 /**
  * Server Action to add a new patient (Local Enforcer)
  */
-export async function addPatientAction(formData: AddPatientInput) {
+export async function addPatientAction(formData: AddPatientInput & { request_id?: string }, requestId?: string) {
   try {
     // 1. Validate input with Zod
     const validationResult = patientSchema.safeParse(formData);
@@ -108,59 +179,49 @@ export async function addPatientAction(formData: AddPatientInput) {
     if (!localUser) {
       return { success: false, error: 'غير مصرح. يرجى تسجيل الدخول محلياً.' };
     }
+    const pharmacyId = patientTenant(localUser);
+    if (!pharmacyId) return { success: false, error: PATIENT_OWNERSHIP_ERROR };
 
     const data = validationResult.data;
-    const id = generateId();
-
-    // 3. Insert the patient and opening receivable as one atomic operation.
-    await dbTransaction(async (db) => {
-      await db.prepare(`
-        INSERT INTO patients (
-          id, full_name, name_en, phone, mobile, address, area, birth_date,
-          gender, insurance_number, car_number, credit_limit, opening_balance,
-          points_balance, point_value, customer_type, payment_method, notes
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        id, data.full_name, data.name_en || null, data.phone || null, data.mobile || null,
-        data.address || null, data.area || null, data.birth_date || null,
-        data.gender || null, data.insurance_number || null, data.car_number || null,
-        data.credit_limit, data.opening_balance, 0,
-        data.point_value, data.customer_type, data.payment_method, data.notes || null
-      );
-
-      if (Math.abs(data.opening_balance) > 0.000001) {
-        const receivable = await db.prepare(
-          "SELECT account_id FROM trial_balance_settings WHERE category = 'accounts_receivable' LIMIT 1"
-        ).get() as any;
-        const openingEquity = await db.prepare(
-          "SELECT account_id FROM trial_balance_settings WHERE category = 'opening_balance_equity' LIMIT 1"
-        ).get() as any;
-        const receivableAccountId = Number(receivable?.account_id || 8);
-        const equityAccountId = Number(openingEquity?.account_id || 15);
-        const amount = Math.abs(data.opening_balance);
-        const journalId = generateId();
-        const date = localDate();
-
-        await db.prepare(`
-          INSERT INTO daily_journals (id, date, description, created_by, total_amount)
-          VALUES (?, ?, ?, ?, ?)
-        `).run(journalId, date, `رصيد افتتاحي للمريض: ${data.full_name}`, localUser.id, amount);
-
-        const debitAccount = data.opening_balance > 0 ? receivableAccountId : equityAccountId;
-        const creditAccount = data.opening_balance > 0 ? equityAccountId : receivableAccountId;
-        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
-          .run(journalId, debitAccount, 'debit', amount);
-        await db.prepare('INSERT INTO journal_entries (journal_id, account_id, type, amount) VALUES (?, ?, ?, ?)')
-          .run(journalId, creditAccount, 'credit', amount);
+    const id = requestId || formData.request_id || generateId();
+    if (!/^[a-zA-Z0-9-]{16,128}$/.test(id)) {
+      return { success: false, error: 'معرف طلب إنشاء المريض غير صالح' };
+    }
+    if (isTauri) {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const receipt = await invoke<{ id: string }>('create_patient_owned_native', {
+          payload: {
+            requestId: id,
+            fullName: data.full_name,
+            nameEn: data.name_en || null,
+            phone: data.phone || null,
+            mobile: data.mobile || null,
+            address: data.address || null,
+            area: data.area || null,
+            birthDate: data.birth_date || null,
+            gender: data.gender || null,
+            insuranceNumber: data.insurance_number || null,
+            carNumber: data.car_number || null,
+            creditLimit: data.credit_limit,
+            openingBalance: data.opening_balance,
+            pointValue: data.point_value,
+            customerType: data.customer_type,
+            paymentMethod: data.payment_method,
+            notes: data.notes || null,
+          },
+        });
+        if (!receipt || receipt.id !== id) throw new Error('Native patient creation receipt mismatch');
+        revalidatePath('/patients');
+        revalidatePath('/pos');
+        return { success: true, id };
+      } catch {
+        return { success: false, error: 'تعذر إنشاء المريض مع إثبات ملكية الصيدلية' };
       }
-    });
+    }
 
-    // 4. Revalidate pages
-    revalidatePath('/patients');
-    revalidatePath('/pos');
-
-    return { success: true, id };
+    // Browser fallback must not create globally unowned patient records.
+    return { success: false, error: 'إنشاء المرضى يتطلب التحقق الأصلي من ملكية الصيدلية' };
   } catch (error: any) {
     console.error('Local Patient Error:', error);
     return {
@@ -174,8 +235,21 @@ export async function searchPatientsAction(query: string, fetchAll: boolean = fa
   try {
     const localUser = await getLocalSession();
     if (!canSearchPatientsForPos(localUser)) return { success: false, error: 'Unauthorized' };
+    const pharmacyId = patientTenant(localUser);
+    if (!pharmacyId) return { success: false, error: PATIENT_OWNERSHIP_ERROR };
 
     if (!fetchAll && (!query || query.length < 2)) return { success: true, data: [] };
+    if (isTauri) {
+      try {
+        const patients = await nativePatientRead('patients.pos_search', {
+          search: fetchAll ? undefined : query,
+        });
+        return { success: true, data: fetchAll ? patients.slice(0, 100) : patients.slice(0, 25) };
+      } catch {
+        return { success: false, error: 'تعذر إثبات ملكية سجلات المرضى' };
+      }
+    }
+    await assertPatientFinancialProvenance(pharmacyId);
 
     if (fetchAll || !query || query.trim() === '') {
       const patients = await db.prepare(`
@@ -183,9 +257,10 @@ export async function searchPatientsAction(query: string, fetchAll: boolean = fa
                CAST(COALESCE(p.points_balance, 0) AS REAL) AS points_balance,
                CAST(${patientOutstandingBalanceExpression('p')} AS REAL) AS outstanding_balance
         FROM patients p
+        WHERE ${ownedPatientSql('p')}
         ORDER BY p.full_name ASC
         LIMIT 100
-      `).all() as any[];
+      `).all(pharmacyId, pharmacyId) as any[];
       return { success: true, data: patients };
     }
 
@@ -195,10 +270,11 @@ export async function searchPatientsAction(query: string, fetchAll: boolean = fa
              CAST(COALESCE(p.points_balance, 0) AS REAL) AS points_balance,
              CAST(${patientOutstandingBalanceExpression('p')} AS REAL) AS outstanding_balance
       FROM patients p
-      WHERE (full_name LIKE ? OR phone LIKE ?)
+      WHERE ${ownedPatientSql('p')}
+        AND (p.full_name LIKE ? OR p.phone LIKE ?)
       ORDER BY p.full_name ASC
       LIMIT 25
-    `).all(searchPattern, searchPattern) as any[];
+    `).all(pharmacyId, pharmacyId, searchPattern, searchPattern) as any[];
     
     return { success: true, data: patients };
   } catch (error) {
@@ -218,15 +294,28 @@ export async function getPatientForPosAction(patientId: string) {
   try {
     const localUser = await getLocalSession();
     if (!canSearchPatientsForPos(localUser)) return { success: false, error: 'Unauthorized' };
+    const pharmacyId = patientTenant(localUser);
+    if (!pharmacyId) return { success: false, error: PATIENT_OWNERSHIP_ERROR };
+    if (isTauri) {
+      try {
+        const result = await nativePatientRead('patients.pos_get', { recordId: patientId, limit: 1 });
+        return result.length === 1
+          ? { success: true, data: result[0] }
+          : { success: false, error: 'المريض غير موجود أو لا يمكن إثبات ملكيته' };
+      } catch {
+        return { success: false, error: 'تعذر إثبات ملكية ملف المريض' };
+      }
+    }
+    await assertPatientFinancialProvenance(pharmacyId, patientId);
 
     const patient = await db.prepare(`
       SELECT p.id, p.full_name, p.phone, p.credit_limit, p.wallet_balance, p.opening_balance, p.payment_method,
              CAST(COALESCE(p.points_balance, 0) AS REAL) AS points_balance,
              CAST(${patientOutstandingBalanceExpression('p')} AS REAL) AS outstanding_balance
       FROM patients p
-      WHERE p.id = ?
+      WHERE p.id = ? AND ${ownedPatientSql('p')}
       LIMIT 1
-    `).get(patientId) as any;
+    `).get(patientId, pharmacyId, pharmacyId) as any;
 
     if (!patient) return { success: false, error: 'المريض غير موجود' };
     return { success: true, data: patient };
@@ -243,9 +332,39 @@ export async function getPatientProfileAction(patientId: string) {
   try {
     const user = await getLocalSession();
     if (!canManagePatients(user)) return { success: false, error: 'غير مصرح' };
-    const pharmacyId = user.pharmacy_id || 'local_default';
+    const pharmacyId = patientTenant(user);
+    if (!pharmacyId) return { success: false, error: PATIENT_OWNERSHIP_ERROR };
+    if (isTauri) {
+      try {
+        const rows = await nativePatientRead('patients.profile', { recordId: patientId, limit: 1 });
+        if (rows.length !== 1 || rows[0]?.id !== patientId ||
+            typeof rows[0].full_name !== 'string' || !rows[0].full_name.trim()) {
+          return { success: false, error: 'المريض غير موجود أو لا يمكن إثبات ملكيته' };
+        }
+        // patients.profile is tenant-witnessed by 061 but has no authenticated
+        // complete medical or finance history. Show only owned identity fields;
+        // never infer the wallet, debt or old clinical record from p.*.
+        const { id, full_name, name_en, phone, mobile, address, area, birth_date,
+          gender, insurance_number, car_number, credit_limit, customer_type,
+          payment_method, notes } = rows[0];
+        return { success: true, data: {
+          id, full_name, name_en, phone, mobile, address, area, birth_date,
+          gender, insurance_number, car_number,
+          credit_limit: typeof credit_limit === 'number' && Number.isFinite(credit_limit) && credit_limit >= 0 ? credit_limit : null,
+          customer_type, payment_method, notes,
+          wallet_balance: null, opening_balance: null, points_balance: null,
+          outstandingBalance: null, availableCredit: null,
+          profileScope: 'owned_basics_only',
+        } };
+      } catch {
+        return { success: false, error: 'تعذر إثبات ملكية ملف المريض' };
+      }
+    }
+    await assertPatientFinancialProvenance(pharmacyId, patientId);
 
-    const patient = await db.prepare('SELECT * FROM patients WHERE id = ?').get(patientId) as any;
+    const patient = await db.prepare(`SELECT p.* FROM patients p
+      WHERE p.id = ? AND ${ownedPatientSql('p')}`)
+      .get(patientId, pharmacyId, pharmacyId) as any;
     if (!patient) return { success: false, error: 'المريض غير موجود' };
 
     const allergies = await db.prepare('SELECT * FROM patient_allergies WHERE patient_id = ? ORDER BY created_at DESC').all(patientId);
@@ -324,6 +443,10 @@ export async function addPatientAllergyAction(data: { patient_id: string; allerg
       return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
     }
     if (!user) return { success: false, error: 'غير مصرح' };
+    const pharmacyId = patientTenant(user);
+    if (!pharmacyId || isTauri || !await ownedPatientExists(data.patient_id, pharmacyId)) {
+      return { success: false, error: PATIENT_OWNERSHIP_ERROR };
+    }
 
     await db.prepare('INSERT INTO patient_allergies (patient_id, allergen, severity, notes) VALUES (?, ?, ?, ?)').run(data.patient_id, data.allergen, data.severity, data.notes || null);
 
@@ -344,6 +467,10 @@ export async function addPatientConditionAction(data: { patient_id: string; cond
       return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
     }
     if (!user) return { success: false, error: 'غير مصرح' };
+    const pharmacyId = patientTenant(user);
+    if (!pharmacyId || isTauri || !await ownedPatientExists(data.patient_id, pharmacyId)) {
+      return { success: false, error: PATIENT_OWNERSHIP_ERROR };
+    }
 
     await db.prepare('INSERT INTO patient_conditions (patient_id, condition_name, medications, notes) VALUES (?, ?, ?, ?)').run(data.patient_id, data.condition_name, data.medications || null, data.notes || null);
 
@@ -364,6 +491,12 @@ export async function deletePatientAllergyAction(id: number) {
       return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
     }
     if (!user) return { success: false, error: 'غير مصرح' };
+    const pharmacyId = patientTenant(user);
+    if (!pharmacyId || isTauri) return { success: false, error: PATIENT_OWNERSHIP_ERROR };
+    const owned = await db.prepare(`SELECT 1 FROM patient_allergies allergy
+       JOIN patients p ON p.id=allergy.patient_id
+       WHERE allergy.id=? AND ${ownedPatientSql('p')}`).get(id, pharmacyId, pharmacyId);
+    if (!owned) return { success: false, error: PATIENT_OWNERSHIP_ERROR };
 
     await db.prepare('DELETE FROM patient_allergies WHERE id = ?').run(id);
     return { success: true };
@@ -393,6 +526,10 @@ export async function updatePatientAction(id: string, formData: AddPatientInput)
     }
     if (!localUser) {
       return { success: false, error: 'غير مصرح. يرجى تسجيل الدخول محلياً.' };
+    }
+    const pharmacyId = patientTenant(localUser);
+    if (!pharmacyId || isTauri || !await ownedPatientExists(id, pharmacyId)) {
+      return { success: false, error: PATIENT_OWNERSHIP_ERROR };
     }
 
     const {
@@ -449,12 +586,45 @@ export async function getPatientStatementAction(patientId: string) {
   try {
     const user = await getLocalSession();
     if (!user) return { success: false, error: 'غير مصرح' };
-    const pharmacyId = user.pharmacy_id || 'local_default';
+    const pharmacyId = patientTenant(user);
+    if (!pharmacyId) return { success: false, error: PATIENT_OWNERSHIP_ERROR };
 
     const { hasUserPermissionSync } = await import('@/lib/auth/local');
     const allowed = hasUserPermissionSync(user, 'can_view_patients') ||
       hasUserPermissionSync(user, 'can_access_pos');
     if (!allowed) return { success: false, error: 'ليس لديك صلاحية عرض كشف الحساب' };
+    if (typeof patientId !== 'string' || !/^[a-zA-Z0-9-]{1,128}$/.test(patientId)) {
+      return { success: false, error: 'معرف المريض غير صالح' };
+    }
+    if (isTauri) {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const native = await invoke<any>('read_patient_statement_native', { patientId });
+        if (!native || Array.isArray(native) || typeof native !== 'object' ||
+          native.scope !== 'verified_subset' ||
+          !native.patient || native.patient.id !== patientId ||
+          typeof native.patient.full_name !== 'string' ||
+          native.patient.opening_balance !== null || native.currentBalance !== null ||
+          !Array.isArray(native.movements) || native.movements.length > 200 ||
+          !Array.isArray(native.unsupported_categories) || native.unsupported_categories.length === 0 ||
+          !Array.isArray(native.items) || native.items.length !== 0 ||
+          !Array.isArray(native.notices) || native.notices.length !== 0 ||
+          native.movements.some((movement: any) =>
+            !movement || typeof movement.doc_no !== 'string' || !movement.doc_no ||
+            typeof movement.date !== 'string' || !movement.date ||
+            typeof movement.value !== 'number' || !Number.isFinite(movement.value) ||
+            movement.balance_effect !== null ||
+            !['فاتورة بيع', 'مرتجع بيع', 'شحن محفظة'].includes(movement.type))) {
+          throw new Error('Native patient statement projection is invalid');
+        }
+        return { success: true, data: native };
+      } catch {
+        return { success: false, error: 'تعذر التحقق من مصادر كشف حساب المريض أو ملكيته' };
+      }
+    }
+    if (!await ownedPatientExists(patientId, pharmacyId)) {
+      return { success: false, error: 'تعذر إثبات ملكية كشف حساب المريض' };
+    }
 
     // 1. Get Patient Details
     const patient = await db.prepare('SELECT * FROM patients WHERE id = ?').get(patientId) as any;
@@ -674,14 +844,197 @@ export async function getPatientStatementAction(patientId: string) {
   }
 }
 
-export async function updatePatientWalletAction(patientId: string, amount: number, notes?: string) {
+// This is a NON-AUTHORITATIVE, opaque renderer recovery hint, not a wallet
+// balance or a patient/actor/tenant ownership claim. A single unresolved wallet
+// intent blocks all new top-ups in this renderer profile until its ORIGINAL
+// request is confirmed by the authenticated native read-only command.
+// Store no patient identifier, patient name, staff identifier or tenant name.
+const NATIVE_WALLET_PENDING_KEY = 'pharma.patient.wallet.pending.v1';
+const NATIVE_WALLET_UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+type PendingWalletTopUp = {
+  version: 1;
+  requestId: string;
+  scopeSha256: string;
+  amountCents: number;
+};
+let walletTopUpInFlight = false;
+
+function nativeWalletStorage(): Storage {
+  // Access to localStorage itself may throw when browser storage is disabled.
+  // A volatile nonce is not adequate proof of an unacknowledged cash payment.
+  if (typeof globalThis.localStorage === 'undefined') {
+    throw new Error('Wallet recovery storage unavailable; no cash top-up was attempted');
+  }
+  return globalThis.localStorage;
+}
+
+function storedWalletIntent(): PendingWalletTopUp | null {
+  const raw = nativeWalletStorage().getItem(NATIVE_WALLET_PENDING_KEY);
+  if (raw === null) return null;
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch {
+    throw new Error('Stored wallet cash intent is invalid; reconcile the original receipt manually');
+  }
+  const value = parsed as Partial<PendingWalletTopUp> | null;
+  if (!value || typeof value !== 'object' || Array.isArray(value) ||
+      Object.keys(value).sort().join(',') !== 'amountCents,requestId,scopeSha256,version' ||
+      value.version !== 1 || typeof value.requestId !== 'string' ||
+      !NATIVE_WALLET_UUID_V4.test(value.requestId) ||
+      typeof value.scopeSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(value.scopeSha256) ||
+      !Number.isSafeInteger(value.amountCents) || (value.amountCents as number) <= 0) {
+    throw new Error('Stored wallet cash intent is invalid; reconcile the original receipt manually');
+  }
+  return value as PendingWalletTopUp;
+}
+
+async function walletIntentScope(
+  actor: string, pharmacy: string, patientId: string, cents: number,
+): Promise<string> {
+  if (!globalThis.crypto?.subtle) {
+    throw new Error('Secure wallet intent recovery is unavailable; no cash top-up was attempted');
+  }
+  const bytes = new TextEncoder().encode(JSON.stringify([actor, pharmacy, patientId, cents]));
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function saveWalletIntent(value: PendingWalletTopUp): void {
+  const storage = nativeWalletStorage();
+  if (storedWalletIntent()) {
+    throw new Error('Unresolved wallet cash intent exists; verify the original receipt first');
+  }
+  storage.setItem(NATIVE_WALLET_PENDING_KEY, JSON.stringify(value));
+  const saved = storedWalletIntent();
+  if (saved?.requestId !== value.requestId || saved.scopeSha256 !== value.scopeSha256 ||
+      saved.amountCents !== value.amountCents) {
+    throw new Error('Wallet cash intent could not be durably saved; no top-up was attempted');
+  }
+}
+
+function clearWalletIntent(value: PendingWalletTopUp): void {
+  // Once the real native writer/reader has confirmed a receipt, a failed
+  // cleanup leaves the original nonce for read-only recovery on next reload.
   try {
+    if (storedWalletIntent()?.requestId === value.requestId) {
+      nativeWalletStorage().removeItem(NATIVE_WALLET_PENDING_KEY);
+    }
+  } catch { /* independently verified receipt is already final */ }
+}
+
+export async function updatePatientWalletAction(patientId: string, amount: number, notes?: string, requestId?: string) {
+  try {
+    if (isTauri) {
+      // Patient identities are historically global. Only the native command
+      // can certify tenant-owned sales, reconcile wallet provenance, and post
+      // the cash receipt, wallet liability and balance atomically.
+      if (walletTopUpInFlight) {
+        throw new Error('Wallet cash intent is already being verified; no second top-up was attempted');
+      }
+      walletTopUpInFlight = true;
+      try {
+      const cents = Math.round(amount * 100);
+      if (typeof patientId !== 'string' || !patientId.trim() || patientId.length > 128 ||
+          !Number.isFinite(amount) || amount <= 0 || amount > 1e12 ||
+          !Number.isSafeInteger(cents) || Math.abs(amount * 100 - cents) > 0.0000001) {
+        throw new Error('Invalid native wallet top-up amount or patient');
+      }
+      // Reauthenticate against the NATIVE session, not cached localStorage
+      // identity. This is an early UI guard; native writer/read reauthorize too.
+      const nativeActor = await getLocalSession();
+      const actor = String(nativeActor?.id ?? '');
+      const pharmacy = String(nativeActor?.pharmacy_id ?? '');
+      if (!actor || !pharmacy || pharmacy === 'local_default' ||
+          !canManagePatients(nativeActor) ||
+          !hasUserPermissionSync(nativeActor, 'acc_can_process_cash_flow')) {
+        throw new Error('Native wallet cash permission or tenant authentication required');
+      }
+      const scopeSha256 = await walletIntentScope(actor, pharmacy, patientId, cents);
+      const pending = storedWalletIntent();
+      if (pending && (pending.scopeSha256 !== scopeSha256 || pending.amountCents !== cents)) {
+        throw new Error('Different actor, pharmacy, patient or amount has unresolved wallet cash; verify original receipt');
+      }
+      const id = pending?.requestId ?? requestId ?? generateId();
+      if (!NATIVE_WALLET_UUID_V4.test(id)) {
+        throw new Error('Wallet top-up requires a canonical original UUIDv4 request ID');
+      }
+      const intent: PendingWalletTopUp = pending ?? { version: 1, requestId: id, scopeSha256, amountCents: cents };
+      const payload = { patientId, amount, notes: notes || null, requestId: intent.requestId };
+      type WalletReceipt = { id: string; balance: number };
+      type WalletConfirmation = WalletReceipt & {
+        patientId: string; actorId: string; pharmacyId: string; amountCents: number;
+      };
+      const validWrite = (value: WalletReceipt | null): value is WalletReceipt =>
+        value?.id === intent.requestId && Number.isFinite(value.balance) && value.balance >= 0;
+      const validConfirmation = (value: WalletConfirmation | null): value is WalletConfirmation =>
+        validWrite(value) && value.patientId === patientId &&
+        value.actorId === actor && value.pharmacyId === pharmacy && value.amountCents === cents;
+      const { invoke } = await import('@tauri-apps/api/core');
+      if (pending) {
+        // This may already have committed before a reload. Confirm the ORIGINAL
+        // nonce, actor, tenant, patient and exact cents FIRST. A null/malformed
+        // reply never licenses a new financial write or a new request nonce.
+        let existing: WalletConfirmation | null;
+        try {
+          existing = await invoke<WalletConfirmation | null>('confirm_patient_wallet_top_up_native', { payload });
+        } catch {
+          throw new Error('Original wallet cash receipt could not be confirmed; no new top-up was attempted');
+        }
+        if (!validConfirmation(existing)) {
+          throw new Error('Original wallet cash receipt remains unverified; do not repost or change the request ID');
+        }
+        clearWalletIntent(intent);
+        return { success: true, balance: existing.balance };
+      }
+      // Block if account or permission changed while waiting for crypto/module
+      // imports. The native action independently owns final authorization.
+      const latestActor = await getLocalSession();
+      if (String(latestActor?.id ?? '') !== actor ||
+          String(latestActor?.pharmacy_id ?? '') !== pharmacy ||
+          !canManagePatients(latestActor) ||
+          !hasUserPermissionSync(latestActor, 'acc_can_process_cash_flow')) {
+        throw new Error('Native wallet actor or permissions changed before cash posting');
+      }
+      saveWalletIntent(intent);
+      let writeError: unknown;
+      try {
+        const result = await invoke<WalletReceipt>('top_up_patient_wallet_native', { payload });
+        if (validWrite(result)) {
+          clearWalletIntent(intent);
+          return { success: true, balance: result.balance };
+        }
+        writeError = new Error('Native wallet top-up receipt was incomplete');
+      } catch (error) {
+        writeError = error;
+      }
+      // The write may have committed before IPC failed. Only an independently
+      // authenticated native, read-only lookup can resolve this uncertainty.
+      // Never retry the money-bearing command or treat "already processed" as success.
+      try {
+        const confirmed = await invoke<WalletConfirmation | null>(
+          'confirm_patient_wallet_top_up_native', { payload }
+        );
+        if (validConfirmation(confirmed)) {
+          clearWalletIntent(intent);
+          return { success: true, balance: confirmed.balance };
+        }
+      } catch {
+        // Denial, missing witness and transport failures all preserve uncertainty.
+      }
+      throw writeError;
+      } finally {
+        walletTopUpInFlight = false;
+      }
+    }
     const user = await getLocalSession();
     if (!canManagePatients(user) || !hasUserPermissionSync(user, 'acc_can_process_cash_flow')) {
       return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
     }
     if (!Number.isFinite(amount) || amount <= 0) {
       return { success: false, error: 'يجب أن يكون مبلغ شحن المحفظة أكبر من صفر' };
+    }
+    const pharmacyId = patientTenant(user);
+    if (!pharmacyId || !await ownedPatientExists(patientId, pharmacyId)) {
+      return { success: false, error: PATIENT_OWNERSHIP_ERROR };
     }
 
     let newBalance = 0;
@@ -731,7 +1084,9 @@ export async function updatePatientWalletAction(patientId: string, amount: numbe
     revalidatePath('/pos');
     return { success: true, balance: newBalance };
   } catch (error: any) {
-    return { success: false, error: error?.message || 'فشل شحن محفظة المريض' };
+    return { success: false, error:
+      typeof error === 'string' && error.trim() ? error
+        : error instanceof Error && error.message ? error.message : 'فشل شحن محفظة المريض' };
   }
 }
 
@@ -745,24 +1100,53 @@ export async function getPatientsAction(options: { reportScope?: boolean } = {})
       )) {
         return { success: false, error: 'غير مصرح' };
       }
-      const pharmacyId = localUser.pharmacy_id || 'local_default';
+      const pharmacyId = patientTenant(localUser);
+      if (!pharmacyId) return { success: false, error: PATIENT_OWNERSHIP_ERROR };
+      if (isTauri) {
+        // Only names already linked to a completed sale in the current
+        // native tenant are eligible. This is NOT an assertion that the
+        // historical patient record belongs exclusively to that branch.
+        const { invoke } = await import('@tauri-apps/api/core');
+        const patients: any[] = [];
+        for (let offset = 0; offset <= 50_000; offset += 200) {
+          const page = await invoke<any[]>('db_read_scoped', {
+            queryId: 'patients.report_picker', recordId: null,
+            search: null, drugId: null, limit: 200, offset,
+          });
+          if (!Array.isArray(page) || page.length > 200) throw new Error('Invalid native patient page');
+          patients.push(...page);
+          if (page.length < 200) return { success: true, data: patients };
+        }
+        throw new Error('Patient picker exceeds bounded native paging capacity');
+      }
       const patients = await db.prepare(`
         SELECT DISTINCT p.id, p.full_name, p.name_en
         FROM patients p
         JOIN sales_invoices si ON si.patient_id = p.id
-        WHERE (si.pharmacy_id = ? OR (si.pharmacy_id IS NULL AND ? = 'local_default'))
+        WHERE si.pharmacy_id = ?
           AND (si.status IS NULL OR si.status = '' OR si.status IN ('completed', 'approved', 'delivered'))
         ORDER BY p.full_name ASC
-      `).all(pharmacyId, pharmacyId) as any[];
+      `).all(pharmacyId) as any[];
       return { success: true, data: patients };
     }
     if (!canManagePatients(localUser)) return { success: false, error: 'غير مصرح' };
+    const pharmacyId = patientTenant(localUser);
+    if (!pharmacyId) return { success: false, error: PATIENT_OWNERSHIP_ERROR };
+    if (isTauri) {
+      try {
+        return { success: true, data: await nativePatientRead('patients.directory') };
+      } catch {
+        return { success: false, error: 'تعذر إثبات ملكية سجلات المرضى' };
+      }
+    }
+    await assertPatientFinancialProvenance(pharmacyId);
 
     const patients = await db.prepare(`
       SELECT p.*, CAST(${patientOutstandingBalanceExpression('p')} AS REAL) AS outstanding_balance
       FROM patients p
+      WHERE ${ownedPatientSql('p')}
       ORDER BY p.full_name ASC
-    `).all() as any[];
+    `).all(pharmacyId, pharmacyId) as any[];
     return { success: true, data: patients };
   } catch (error) {
     return { success: false, error: 'فشل جلب قائمة المرضى' };
@@ -775,45 +1159,13 @@ export async function deletePatientAction(patientId: string) {
     if (!canDeletePatients(user)) {
       return { success: false, error: 'غير مصرح - للمالك والمدير فقط' };
     }
-
-    await dbTransaction(async (db) => {
-      // ponytail: validate and delete under the same BEGIN IMMEDIATE lock.
-      const linked = await db.prepare(`
-        SELECT
-          p.id,
-          CAST(COALESCE(p.opening_balance, 0) AS REAL) AS opening_balance,
-          CAST(COALESCE(p.wallet_balance, 0) AS REAL) AS wallet_balance,
-          CAST(COALESCE(p.points_balance, 0) AS REAL) AS points_balance,
-          (SELECT COUNT(*) FROM sales_invoices WHERE patient_id = ?) +
-          (SELECT COUNT(*) FROM patient_transactions WHERE patient_id = ?) +
-          (SELECT COUNT(*) FROM refill_reminders WHERE patient_id = ?) +
-          (SELECT COUNT(*) FROM financial_notices WHERE target_type = 'customer' AND target_id = ?) +
-          (SELECT COUNT(*) FROM cash_movements WHERE target_name = ? AND source_type IN ('patient_wallet', 'patient_payment')) AS linked_count
-        FROM patients p
-        WHERE p.id = ?
-      `).get(patientId, patientId, patientId, patientId, patientId, patientId) as any;
-
-      if (!linked) throw new Error('المريض غير موجود');
-      if (
-        (Number(linked.linked_count) || 0) > 0 ||
-        Math.abs(Number(linked.opening_balance) || 0) > 0.000001 ||
-        Math.abs(Number(linked.wallet_balance) || 0) > 0.000001 ||
-        Math.abs(Number(linked.points_balance) || 0) > 0.000001
-      ) {
-        throw new Error('لا يمكن حذف مريض له فواتير أو معاملات مرتبطة');
-      }
-
-      await db.prepare('DELETE FROM patient_allergies WHERE patient_id = ?').run(patientId);
-      await db.prepare('DELETE FROM patient_conditions WHERE patient_id = ?').run(patientId);
-      const deleted = await db.prepare('DELETE FROM patients WHERE id = ?').run(patientId);
-      if (deleted.changes !== 1) throw new Error('المريض غير موجود');
-      await db.prepare('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)')
-        .run(user.id, 'PATIENT_DELETED', JSON.stringify({ patient_id: patientId }));
-    });
-
-    revalidatePath('/patients');
-    revalidatePath('/pos');
-    return { success: true };
+    const pharmacyId = patientTenant(user);
+    if (!pharmacyId || isTauri || !await ownedPatientExists(patientId, pharmacyId)) {
+      return { success: false, error: PATIENT_OWNERSHIP_ERROR };
+    }
+    // Witnessed IDs are immutable by migration 061. Deletion requires an
+    // independently reviewed native lifecycle command, not generic SQL.
+    return { success: false, error: 'لا يمكن حذف المريض قبل مراجعة إثبات ملكيته' };
   } catch (error: any) {
     return { success: false, error: error?.message || 'فشل حذف المريض' };
   }
@@ -825,17 +1177,19 @@ export async function getReceiptDetailsAction(invoiceId: string) {
     if (!user || (!hasUserPermissionSync(user, 'can_view_patients') && !hasUserPermissionSync(user, 'can_view_receipts'))) {
       return { success: false, error: 'غير مصرح' };
     }
-    const pharmacyId = user.pharmacy_id || 'local_default';
+    const pharmacyId = patientTenant(user);
+    if (!pharmacyId) return { success: false, error: PATIENT_OWNERSHIP_ERROR };
+    if (isTauri) return { success: false, error: 'تعذر إثبات ملكية تفاصيل الإيصال' };
 
     const inv = await db.prepare(`
       SELECT si.id, si.total_amount, si.created_at, si.payment_method,
              u.full_name as user_name, p.full_name as patient_name, p.phone as patient_phone
       FROM sales_invoices si
       LEFT JOIN users u ON si.user_id = u.id
-      LEFT JOIN patients p ON si.patient_id = p.id
+      LEFT JOIN patients p ON si.patient_id = p.id AND ${ownedPatientSql('p')}
       WHERE si.id = ?
-        AND (si.pharmacy_id = ? OR (si.pharmacy_id IS NULL AND ? = 'local_default'))
-    `).get(invoiceId, pharmacyId, pharmacyId) as any;
+        AND si.pharmacy_id = ?
+    `).get(pharmacyId, pharmacyId, invoiceId, pharmacyId) as any;
 
     if (!inv) return { success: false, error: 'الفاتورة غير موجودة' };
 

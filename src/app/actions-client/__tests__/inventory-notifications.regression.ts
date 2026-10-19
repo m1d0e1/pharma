@@ -76,31 +76,45 @@ it('forwards a loaded source draft id to the native checkout transaction', async
 
   expect(result).toMatchObject({ success: true });
   expect(mockInvoke).toHaveBeenCalledWith('process_checkout_critical', {
+    requestId: expect.any(String),
     payload: expect.objectContaining({
-      pharmacy_id: 'pharmacy-1',
-      user_id: 'user-1',
       source_draft_id: 'source-draft-1',
       status: 'completed',
     }),
   });
+  const checkoutPayload = mockInvoke.mock.calls.find(([command]) => command === 'process_checkout_critical')?.[1]?.payload;
+  expect(checkoutPayload).not.toHaveProperty('pharmacy_id');
+  expect(checkoutPayload).not.toHaveProperty('user_id');
 });
 
 it('notifies after successful inventory imports but not failed imports', async () => {
-  (importInventoryWorkbookRows as jest.Mock).mockResolvedValueOnce({ imported: 1 });
-  const imported = await countInventoryChanges(() => importInventoryWorkbookAction([], []));
+  const requestId = 'a1111111-1111-4111-8111-111111111111';
+  const { generateId } = jest.requireMock('@/lib/db/tauri');
+  (generateId as jest.Mock).mockReturnValue(requestId);
+  const newLot = { drug_id: 101, quantity: 1, local_selling_price: 12 };
+  mockInvoke.mockResolvedValueOnce({
+    success: true, requestId, inventoryIds: ['native-lot-id'],
+    inventoryCount: 1, replayed: false,
+  });
+  const imported = await countInventoryChanges(() => importInventoryWorkbookAction([newLot], []));
   expect(imported.result).toMatchObject({ success: true });
   expect(imported.listener).toHaveBeenCalledTimes(1);
 
-  (importInventoryWorkbookRows as jest.Mock).mockRejectedValueOnce(new Error('import failed'));
-  const failed = await countInventoryChanges(() => importInventoryWorkbookAction([], []));
+  mockInvoke.mockRejectedValueOnce(new Error('Native batch rollback'));
+  const failed = await countInventoryChanges(() => importInventoryWorkbookAction([newLot], []));
   expect(failed.result).toMatchObject({ success: false });
   expect(failed.listener).not.toHaveBeenCalled();
+  expect(importInventoryWorkbookRows).not.toHaveBeenCalled(); // Native never opens renderer SQL.
 });
 
 it('notifies after native negative-sale settlement only when the command succeeds', async () => {
   const settled = await countInventoryChanges(() => settleSaleItemAction(4, 'inventory-1'));
   expect(settled.result).toMatchObject({ success: true });
   expect(settled.listener).toHaveBeenCalledTimes(1);
+  const nativeArgs = mockInvoke.mock.calls.find(([command]) => command === 'settle_negative_sale_item_critical')?.[1];
+  expect(nativeArgs?.payload).toEqual({ sale_item_id: 4, inventory_id: 'inventory-1' });
+  expect(nativeArgs?.payload).not.toHaveProperty('user_id');
+  expect(nativeArgs?.payload).not.toHaveProperty('pharmacy_id');
 
   mockInvoke.mockRejectedValueOnce(new Error('settlement failed'));
   const failed = await countInventoryChanges(() => settleSaleItemAction(4, 'inventory-1'));
@@ -109,6 +123,16 @@ it('notifies after native negative-sale settlement only when the command succeed
 });
 
 it('notifies after completed purchase writes but not draft or failed writes', async () => {
+  // The native purchase create protocol first reads immutable 044 evidence and
+  // then expects a concrete new invoice ID. A generic sale-shaped IPC mock
+  // does not constitute a successful purchase and must not emit this event.
+  mockInvoke.mockImplementation(async (command: string) => {
+    if (command === 'confirm_purchase_creation_native') return null;
+    if (command === 'save_purchase_invoice_critical') {
+      return { id: 'purchase-1', total_amount: 5 };
+    }
+    return { sale_id: 'sale-1', total_amount: 10, created_at: '2026-09-24' };
+  });
   const completed = await countInventoryChanges(() => createPurchaseInvoiceAction({
     supplier_id: 1,
     status: 'completed',
@@ -125,7 +149,11 @@ it('notifies after completed purchase writes but not draft or failed writes', as
   expect(draft.result).toMatchObject({ success: true });
   expect(draft.listener).not.toHaveBeenCalled();
 
-  mockInvoke.mockRejectedValueOnce(new Error('write failed'));
+  mockInvoke.mockImplementation(async (command: string) => {
+    if (command === 'confirm_purchase_creation_native') return null;
+    if (command === 'save_purchase_invoice_critical') throw new Error('write failed');
+    return { sale_id: 'sale-1', total_amount: 10, created_at: '2026-09-24' };
+  });
   const failed = await countInventoryChanges(() => createPurchaseInvoiceAction({
     supplier_id: 1,
     status: 'completed',

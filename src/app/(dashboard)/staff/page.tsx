@@ -7,6 +7,7 @@ import { getClientSession, hasUserPermissionSync, isOwnerOrAdmin } from '@/lib/a
 import { getStaffPerformanceAction } from '@/app/actions-client/users';
 import AccessDenied from '@/components/AccessDenied';
 import { isStaffOwner } from '@/lib/auth/staff-policy';
+import { CalendarDays, ShieldCheck } from 'lucide-react';
 
 export default function StaffPage() {
   const [user, setUser] = useState<any>(null);
@@ -75,21 +76,21 @@ export default function StaffPage() {
   }
 
   return (
-    <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700" dir="rtl">
+    <div className="space-y-6" dir="rtl">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
         <div>
-          <h1 className="text-3xl font-bold text-slate-900 dark:text-white">أداء طاقم العمل</h1>
-          <p className="text-slate-500 mt-1">تقارير وتحليلات أداء المبيعات والشفتات للموظفين.</p>
+          <h1 className="text-2xl font-bold text-slate-900 dark:text-white">أداء طاقم العمل</h1>
+          <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">أداء المبيعات والشفتات للموظفين.</p>
         </div>
         <div className="flex gap-3">
           {isStaffOwner(user) && (
-            <Link href="/staff/manage" className="bg-slate-900 dark:bg-slate-800 text-white px-6 py-3 rounded-2xl font-bold text-sm shadow-lg hover:bg-slate-800 transition-all">
-              🛡️ إدارة الموظفين
+            <Link href="/staff/manage" className="bg-slate-900 dark:bg-slate-800 text-white px-4 py-2.5 rounded-lg font-semibold text-sm shadow-sm hover:bg-slate-800 transition-colors flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4" aria-hidden="true" /> إدارة الموظفين
             </Link>
           )}
           {(isOwnerOrAdmin(user) || hasUserPermissionSync(user, 'can_view_shifts')) && (
-            <Link href="/shifts" className="bg-blue-600 text-white px-6 py-3 rounded-2xl font-bold text-sm shadow-lg hover:bg-blue-700 transition-all">
-              📅 إدارة الشفتات
+            <Link href="/shifts" className="bg-primary-700 text-white px-4 py-2.5 rounded-lg font-semibold text-sm shadow-sm hover:bg-primary-800 transition-colors flex items-center gap-2">
+              <CalendarDays className="w-4 h-4" aria-hidden="true" /> إدارة الشفتات
             </Link>
           )}
         </div>

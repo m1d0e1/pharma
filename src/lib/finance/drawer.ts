@@ -15,12 +15,14 @@ const HANDOVER_DETAILS_SQL = `
       FROM sales_invoices si
       WHERE (si.status IS NULL OR si.status = '' OR si.status = 'completed' OR si.status = 'approved')
         AND si.shift_id = s.id
+        AND NULLIF(TRIM(si.pharmacy_id), '') = NULLIF(TRIM(s.pharmacy_id), '')
     ) AS cash_sales,
     (
       SELECT COALESCE(SUM(CASE WHEN si.payment_method = 'visa' THEN CAST(si.total_amount AS REAL) ELSE 0 END), 0)
       FROM sales_invoices si
       WHERE (si.status IS NULL OR si.status = '' OR si.status = 'completed' OR si.status = 'approved')
         AND si.shift_id = s.id
+        AND NULLIF(TRIM(si.pharmacy_id), '') = NULLIF(TRIM(s.pharmacy_id), '')
     ) AS visa_sales,
     (
       SELECT COALESCE(SUM(
@@ -33,6 +35,7 @@ const HANDOVER_DETAILS_SQL = `
       FROM sales_invoices si
       WHERE (si.status IS NULL OR si.status = '' OR si.status = 'completed' OR si.status = 'approved')
         AND si.shift_id = s.id
+        AND NULLIF(TRIM(si.pharmacy_id), '') = NULLIF(TRIM(s.pharmacy_id), '')
     ) AS credit_sales,
     (
       SELECT COALESCE(SUM(CAST(r.total_refund AS REAL)), 0)
@@ -40,33 +43,38 @@ const HANDOVER_DETAILS_SQL = `
       WHERE r.refund_method = 'cash'
         AND (r.status IS NULL OR r.status = '' OR LOWER(r.status) IN ('approved', 'completed'))
         AND r.shift_id = s.id
+        AND NULLIF(TRIM(r.pharmacy_id), '') = NULLIF(TRIM(s.pharmacy_id), '')
     ) AS returns,
     (
       SELECT COALESCE(SUM(CASE WHEN cm.type IN ('receipt', 'in') THEN CAST(cm.amount AS REAL) ELSE 0 END), 0)
       FROM cash_movements cm
       WHERE cm.shift_id = s.id
+        AND NULLIF(TRIM(cm.pharmacy_id), '') = NULLIF(TRIM(s.pharmacy_id), '')
         AND LOWER(COALESCE(cm.source_type, '')) <> 'main_safe'
     ) AS receipts,
     (
       SELECT COALESCE(SUM(CASE WHEN cm.type IN ('disbursement', 'out') THEN CAST(cm.amount AS REAL) ELSE 0 END), 0)
       FROM cash_movements cm
       WHERE cm.shift_id = s.id
+        AND NULLIF(TRIM(cm.pharmacy_id), '') = NULLIF(TRIM(s.pharmacy_id), '')
         AND LOWER(COALESCE(cm.source_type, '')) <> 'main_safe'
     ) AS disbursements,
     (
       SELECT COALESCE(SUM(CASE WHEN cm.type IN ('disbursement', 'out') AND cm.category = 'handover' THEN CAST(cm.amount AS REAL) ELSE 0 END), 0)
       FROM cash_movements cm
       WHERE cm.shift_id = s.id
+        AND NULLIF(TRIM(cm.pharmacy_id), '') = NULLIF(TRIM(s.pharmacy_id), '')
         AND LOWER(COALESCE(cm.source_type, '')) <> 'main_safe'
     ) AS handover_movements
   FROM shifts s
   LEFT JOIN users u ON (CAST(u.id AS TEXT) = CAST(s.user_id AS TEXT) OR LOWER(u.username) = LOWER(s.user_id))
+    AND NULLIF(TRIM(u.pharmacy_id), '') = NULLIF(TRIM(s.pharmacy_id), '')
 `;
 
 export async function loadHandoverDetails(shiftId: string, scopedDb?: Pick<TransactionDb, 'get'>) {
   const row = scopedDb
-    ? await scopedDb.get(`${HANDOVER_DETAILS_SQL} WHERE s.id = ?`, [shiftId]) as any
-    : await dbGet(`${HANDOVER_DETAILS_SQL} WHERE s.id = ?`, [shiftId]) as any;
+    ? await scopedDb.get(`${HANDOVER_DETAILS_SQL} WHERE s.id = ? AND NULLIF(TRIM(s.pharmacy_id), '') IS NOT NULL`, [shiftId]) as any
+    : await dbGet(`${HANDOVER_DETAILS_SQL} WHERE s.id = ? AND NULLIF(TRIM(s.pharmacy_id), '') IS NOT NULL`, [shiftId]) as any;
   if (!row) throw new Error('الوردية غير موجودة');
   return calculateDrawer(row);
 }
@@ -108,7 +116,7 @@ export async function getOpenDrawerSnapshot(pharmacyId: string) {
   // Select the open shift and all of its balances in one SQLite snapshot.
   const shifts = await dbSelect(`${HANDOVER_DETAILS_SQL}
     WHERE LOWER(COALESCE(s.status, '')) = 'open'
-      AND COALESCE(NULLIF(TRIM(s.pharmacy_id), ''), 'local_default') = ?
+      AND NULLIF(TRIM(s.pharmacy_id), '') = ?
     LIMIT 2
   `, [pharmacyId]);
   if (shifts.length > 1) throw new Error('توجد أكثر من وردية مفتوحة؛ راجع إدارة الورديات قبل حساب رصيد الدرج');

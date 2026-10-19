@@ -74,6 +74,29 @@ describe('rendered purchase-return flow', () => {
     });
   });
 
+  it('uses completed, returnable, supplier-scoped invoice picker instead of the generic purchase report', async () => {
+    (getPurchasesReportsAction as jest.Mock).mockClear();
+    (getSuppliersAction as jest.Mock).mockResolvedValueOnce({
+      success: true, data: [{ id: 1, name_ar: 'Supplier One' }],
+    });
+    (searchPurchaseInvoicesForReturnAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: [
+        { id: 'eligible', invoice_number: 'ELIGIBLE', supplier_id: 1, status: 'completed' },
+        { id: 'draft', invoice_number: 'DRAFT', supplier_id: 1, status: 'draft' },
+        { id: 'other-supplier', invoice_number: 'OTHER', supplier_id: 2, status: 'completed' },
+      ],
+    });
+    render(<PurchaseReturnClient />);
+    await screen.findByRole('option', { name: 'Supplier One' });
+    fireEvent.change(screen.getByLabelText('أو اختر المورد'), { target: { value: '1' } });
+    await waitFor(() => expect(searchPurchaseInvoicesForReturnAction).toHaveBeenCalledWith('', 1));
+    expect(await screen.findByRole('button', { name: /رقم الفاتورة: ELIGIBLE/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /رقم الفاتورة: DRAFT/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /رقم الفاتورة: OTHER/i })).not.toBeInTheDocument();
+    expect(getPurchasesReportsAction).not.toHaveBeenCalled();
+  });
+
   it('searches purchase invoice by barcode and executes return successfully', async () => {
     render(<PurchaseReturnClient />);
 
@@ -160,6 +183,40 @@ describe('rendered purchase-return flow', () => {
         unit: 'medium',
       })],
     })));
+  });
+
+  it('explains invoice-returnable remainder and warns that posting checks actual lot stock', async () => {
+    (getPurchaseInvoiceDetailsAction as jest.Mock).mockResolvedValueOnce({
+      success: true,
+      data: [{
+        id: 'line-with-consumed-stock',
+        drug_id: 101,
+        trade_name: 'Panadol Extra',
+        quantity: 4,
+        remaining_large_quantity: 4,
+        refundable_large_unit_price: 115.5,
+        large_to_medium: 1,
+        medium_to_small: 1,
+        inventory_quantity: 2,
+      }],
+    });
+
+    render(<PurchaseReturnClient />);
+    fireEvent.change(screen.getByLabelText(/البحث بالباركود أو اسم الصنف أو رقم الفاتورة/), {
+      target: { value: 'PINV-101' },
+    });
+    expect(await screen.findByText('Panadol Extra')).toBeInTheDocument();
+    expect(screen.getByText(/المتبقي القابل للإرجاع من فاتورة الشراء: 4\.00 علبة/)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'كمية مرتجع Panadol Extra' }), {
+      target: { value: '1' },
+    });
+    const submit = screen.getByRole('button', { name: 'تنفيذ المرتجع' });
+    const notice = screen.getByRole('note');
+    expect(notice).toHaveTextContent('يتم التحقق من الكمية المتاحة فعليًا في تشغيلة المخزون عند تنفيذ المرتجع');
+    expect(notice.compareDocumentPosition(submit) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(submit).toBeEnabled();
+    expect(createPurchaseReturnAction).not.toHaveBeenCalled();
   });
 
   it('preserves the prepared purchase quantity when return units round-trip large to small to medium', async () => {

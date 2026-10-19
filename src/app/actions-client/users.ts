@@ -43,8 +43,18 @@ const db = {
 import { isStaffOwner } from '@/lib/auth/staff-policy';
 import { sanitizeStaffPermissions } from '@/lib/auth/permission-catalog';
 import { getLocalSession } from '@/lib/auth/local';
+import { isTauri } from '@/lib/env';
 import { ROLE_PERMISSIONS } from '@/lib/auth/roles';
 const revalidatePath = (...args: any[]) => {};
+
+async function invokeStaffMutation(command: string, payload: Record<string, unknown>) {
+  const result = await (await import('@tauri-apps/api/core')).invoke<unknown>(command, { payload });
+  if (!result || typeof result !== 'object' || Array.isArray(result) ||
+      (result as { success?: unknown }).success !== true || Object.keys(result).length !== 1) {
+    throw new Error(`Invalid ${command} response`);
+  }
+  return { success: true };
+}
 
 const defaultOwnerPerms = {
   national_id: '', address: '', birth_date: '', qualification: '', mobile: '', gender: 'ذكر', social_status: 'أعزب', is_delivery_rep: false,
@@ -131,6 +141,12 @@ const defaultOwnerPerms = {
 
 export async function updateUserPermissionsAction(userId: string, permissions: any) {
   try {
+    if (isTauri) {
+      return await invokeStaffMutation('update_staff_permissions_native', {
+        userId,
+        permissions: sanitizeStaffPermissions(permissions),
+      });
+    }
     const localUser = await getLocalSession();
     if (!isStaffOwner(localUser)) {
       return { success: false, error: 'غير مصرح - للمالك فقط' };
@@ -186,31 +202,7 @@ export async function addUserAction(formData: {
   code?: string;
 }) {
   try {
-    const localUser = await getLocalSession();
-    if (!isStaffOwner(localUser)) {
-      return { success: false, error: 'غير مصرح - للمالك فقط' };
-    }
-
     const { username, full_name, role, password, job_id, qualification, hire_date, shift, code } = formData;
-    const pharmacyId = localUser.pharmacy_id || 'local_default';
-    
-    // Check if user exists
-    const existing = await db.prepare('SELECT id FROM users WHERE username = ?').get(username);
-    if (existing) return { success: false, error: 'اسم المستخدم موجود مسبقاً' };
-
-    const id = generateId();
-    const bcrypt = {
-      hash: async (pw: any, ...args: any[]) => {
-        const { hashPassword } = await import('@/lib/auth/local');
-        return await hashPassword(pw);
-      },
-      compare: async (pw, hash) => {
-        const { verifyPassword } = await import('@/lib/auth/local');
-        return await verifyPassword(pw, hash);
-      }
-    };
-    const passwordHash = password ? await bcrypt.hash(password, 10) : null;
-    
     // Default permissions based on role
     const defaultPerms = role === 'pharmacist' ? {
       national_id: '', address: '', birth_date: '', qualification: '', mobile: '', gender: 'ذكر', social_status: 'أعزب', is_delivery_rep: false,
@@ -319,7 +311,34 @@ export async function addUserAction(formData: {
     } : role === 'cashier' ? Object.fromEntries(
       ROLE_PERMISSIONS.cashier.permissions.map(permission => [permission, true])
     ) : (role === 'owner' || role === 'admin') ? { ...defaultOwnerPerms } : {};
-    if (role !== 'owner') delete defaultPerms.can_view_cogs;
+    if (role !== 'owner') {
+      delete defaultPerms.can_view_staff_manage;
+      delete defaultPerms.can_view_staff_roles;
+      delete defaultPerms.rep_can_view_activity;
+      delete defaultPerms.can_view_cogs;
+    }
+
+    if (isTauri) {
+      const result = await invokeStaffMutation('add_staff_user_native', {
+        username, fullName: full_name, role, password: password || null,
+        permissions: defaultPerms, jobId: job_id || null, qualification: qualification || null,
+        hireDate: hire_date || null, shift: shift || null, code: code || null,
+      });
+      revalidatePath('/staff/manage');
+      revalidatePath('/staff');
+      return result;
+    }
+
+    const localUser = await getLocalSession();
+    if (!isStaffOwner(localUser)) {
+      return { success: false, error: 'غير مصرح - للمالك فقط' };
+    }
+    const pharmacyId = localUser.pharmacy_id || 'local_default';
+    const existing = await db.prepare('SELECT id FROM users WHERE username = ?').get(username);
+    if (existing) return { success: false, error: 'اسم المستخدم موجود مسبقاً' };
+    const id = generateId();
+    const { hashPassword } = await import('@/lib/auth/local');
+    const passwordHash = password ? await hashPassword(password) : null;
 
     await db.prepare(`
       INSERT INTO users (id, username, full_name, role, password_hash, permissions, job_id, qualification, hire_date, shift, code, pharmacy_id)
@@ -339,6 +358,52 @@ export async function addUserAction(formData: {
 }
 
 export async function deleteUserAction(userId: string) {
+  if (isTauri) {
+    try {
+      const result = await (await import('@tauri-apps/api/core')).invoke<unknown>(
+        'deactivate_staff_native', { payload: { userId } },
+      );
+      if (result && typeof result === 'object' && !Array.isArray(result)) {
+        const reply = result as {
+          success?: unknown;
+          code?: unknown;
+          openShift?: { id?: unknown; start_time?: unknown; expected_cash?: unknown };
+        };
+        if (reply.success === true && Object.keys(reply).length === 1) {
+          revalidatePath('/staff/manage');
+          revalidatePath('/staff');
+          return { success: true };
+        }
+        if (reply.success === false && reply.code === 'OPEN_SHIFT') {
+          const shift = reply.openShift;
+          if (shift && typeof shift === 'object' && !Array.isArray(shift) &&
+              typeof shift.id === 'string' && shift.id.length > 0 &&
+              typeof shift.start_time === 'string' && shift.start_time.length > 0 &&
+              typeof shift.expected_cash === 'number' && Number.isFinite(shift.expected_cash)) {
+            return {
+              success: false,
+              code: 'OPEN_SHIFT' as const,
+              error: 'لدى الموظف وردية مفتوحة ويجب تسويتها قبل تعطيل الحساب',
+              openShift: {
+                id: shift.id,
+                start_time: shift.start_time,
+                expected_cash: shift.expected_cash,
+              },
+            };
+          }
+          return {
+            success: false,
+            error: 'تعذر قراءة تفاصيل الوردية المفتوحة؛ يرجى مراجعة الوردية قبل تعطيل الحساب',
+          };
+        }
+      }
+      throw new Error('Invalid native staff deactivation response');
+    } catch (error) {
+      console.error('Delete user native error:', error);
+      return { success: false, error: 'فشل حذف المستخدم' };
+    }
+  }
+
   try {
     const localUser = await getLocalSession();
     if (!isStaffOwner(localUser)) {
@@ -421,6 +486,59 @@ export async function closeUserShiftAndDeactivateAction(data: {
   authorizerPassword: string;
   notes?: string;
 }) {
+  if (isTauri) {
+    try {
+      if (typeof data.userId !== 'string' || !data.userId.trim() ||
+          typeof data.shiftId !== 'string' || !data.shiftId.trim() ||
+          typeof data.authorizerPassword !== 'string' || !data.authorizerPassword ||
+          !Number.isFinite(data.actualCash) || data.actualCash < 0) {
+        return { success: false, error: 'بيانات إغلاق الوردية غير صالحة' };
+      }
+      const result = await (await import('@tauri-apps/api/core')).invoke<unknown>(
+        'close_staff_shift_and_deactivate_native', {
+          payload: {
+            userId: data.userId,
+            shiftId: data.shiftId,
+            actualCash: data.actualCash,
+            authorizerPassword: data.authorizerPassword,
+            notes: data.notes ?? null,
+            requestId: generateId(),
+          },
+        },
+      );
+      if (!result || typeof result !== 'object' || Array.isArray(result)) {
+        throw new Error('Invalid native managed shift closure response');
+      }
+      const confirmation = result as {
+        success?: unknown;
+        userId?: unknown;
+        shiftId?: unknown;
+        actualCash?: unknown;
+        difference?: unknown;
+        status?: unknown;
+      };
+      if (confirmation.success !== true ||
+          confirmation.userId !== data.userId ||
+          confirmation.shiftId !== data.shiftId ||
+          confirmation.actualCash !== data.actualCash ||
+          typeof confirmation.difference !== 'number' || !Number.isFinite(confirmation.difference) ||
+          (confirmation.status !== 'closed' && confirmation.status !== 'discrepancy') ||
+          'error' in result || 'code' in result) {
+        throw new Error('Invalid native managed shift closure response');
+      }
+      if (typeof window !== 'undefined') {
+        try {
+          window.dispatchEvent(new Event('shift-updated'));
+          localStorage.setItem('pharma:shift-updated', data.shiftId);
+        } catch { /* A notification failure cannot roll back a confirmed native transaction. */ }
+      }
+      return { success: true };
+    } catch (error) {
+      console.error('Close user shift native error:', error);
+      return { success: false, error: 'فشل إتمام عملية التسليم' };
+    }
+  }
+
   const { processHandoverAction } = await import('./handover');
   return processHandoverAction({
     shiftId: data.shiftId,
@@ -450,6 +568,16 @@ export async function updateUserAction(userId: string, data: {
   code?: string;
 }) {
   try {
+    if (isTauri) {
+      const result = await invokeStaffMutation('update_staff_user_native', {
+        userId, username: data.username, fullName: data.full_name, role: data.role,
+        password: data.password || null, jobId: data.job_id || null,
+        qualification: data.qualification || null, hireDate: data.hire_date || null,
+        shift: data.shift || null, code: data.code || null,
+      });
+      revalidatePath('/staff/manage');
+      return result;
+    }
     const localUser = await getLocalSession();
     if (!isStaffOwner(localUser)) {
       return { success: false, error: 'غير مصرح - للمالك فقط' };
@@ -537,6 +665,12 @@ export async function getStaffAction() {
     const user = await getLocalSession();
     if (!user) return { success: false, error: 'Unauthorized' };
 
+    if (isTauri) {
+      const staff = await (await import('@tauri-apps/api/core')).invoke<any[]>('list_staff_directory');
+      if (!Array.isArray(staff)) throw new Error('Invalid native staff directory response');
+      return { success: true, data: staff };
+    }
+
     const pharmacyId = user.pharmacy_id || 'local_default';
     const staff = await db.prepare(`
       SELECT 
@@ -604,6 +738,12 @@ export async function deleteJobAction(jobId: number) {
  */
 export async function resetUserPasswordAction(userId: string, newPassword: string) {
   try {
+    if (isTauri) {
+      if (!newPassword || newPassword.length < 6) {
+        return { success: false, error: 'يجب أن تكون كلمة المرور 6 أحرف على الأقل' };
+      }
+      return await invokeStaffMutation('reset_staff_password_native', { userId, newPassword });
+    }
     const localUser = await getLocalSession();
     // Only Owners can reset passwords for others
     if (!isStaffOwner(localUser)) {
@@ -653,6 +793,15 @@ export async function resetUserPasswordAction(userId: string, newPassword: strin
 
 export async function getStaffManagementDataAction() {
   try {
+    if (isTauri) {
+      const result = await (await import('@tauri-apps/api/core')).invoke<unknown>('get_staff_management_data_native');
+      if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error('Invalid native staff management response');
+      const data = result as { users?: unknown; jobs?: unknown };
+      if (!Array.isArray(data.users) || !Array.isArray(data.jobs) || Object.keys(data).some(key => key !== 'users' && key !== 'jobs')) {
+        throw new Error('Invalid native staff management response');
+      }
+      return { success: true, users: data.users, jobs: data.jobs };
+    }
     const user = await getLocalSession();
     if (!isStaffOwner(user)) {
       return { success: false, error: 'غير مصرح - للمالك فقط' };

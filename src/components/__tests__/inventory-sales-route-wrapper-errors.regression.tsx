@@ -1,4 +1,5 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import React, { useState } from 'react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import LowStockPage from '@/app/(dashboard)/inventory/low-stock/page';
 import InventorySettlementPage from '@/app/(dashboard)/inventory/settlement/page';
 import InventoryPage from '@/app/(dashboard)/inventory/page';
@@ -30,7 +31,10 @@ jest.mock('@/components/sales/SettlementClient', () => function MockSettlementCl
 jest.mock('@/components/inventory/InventoryTable', () => function MockInventoryTable({ items, searchTerm, onRefresh }: any) {
   return <div>inventory:{searchTerm}:{items.map((item: any) => item.id).join(',')}<button onClick={onRefresh}>mock inventory refresh</button></div>;
 });
-jest.mock('@/components/InventoryClientWrapper', () => function MockInventoryClientWrapper() { return <div>inventory-actions</div>; });
+jest.mock('@/components/InventoryClientWrapper', () => function MockInventoryClientWrapper() {
+  const [open, setOpen] = useState(false);
+  return <div>inventory-actions<button onClick={() => setOpen(true)}>open inventory editor</button>{open && <div role="dialog">stock editor</div>}</div>;
+});
 jest.mock('@/components/sales/CogsAdjustmentClient', () => function MockCogsAdjustmentClient() { return <div>cogs-client</div>; });
 jest.mock('@/components/sales/DeliveryManagementClient', () => function MockDeliveryManagementClient() { return <div>delivery-client</div>; });
 
@@ -113,6 +117,24 @@ it('keeps the last valid inventory visible when a later refresh fails, then retr
   fireEvent.click(screen.getByRole('button', { name: 'إعادة تحميل المخزون' }));
   expect(await screen.findByText(/inventory::inventory-new/)).toBeInTheDocument();
   expect(getInventoryListAction).toHaveBeenCalledTimes(3);
+});
+
+it('keeps an open stock editor mounted when an empty inventory refreshes on window focus', async () => {
+  let finishRefresh!: (value: unknown) => void;
+  (getInventoryListAction as jest.Mock)
+    .mockResolvedValueOnce({ success: true, data: [] })
+    .mockImplementationOnce(() => new Promise(resolve => { finishRefresh = resolve; }));
+
+  render(<InventoryPage />);
+  expect(await screen.findByText('inventory::')).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'open inventory editor' }));
+  expect(screen.getByRole('dialog')).toHaveTextContent('stock editor');
+
+  fireEvent.focus(window);
+  await waitFor(() => expect(getInventoryListAction).toHaveBeenCalledTimes(2));
+  expect(screen.getByRole('dialog')).toHaveTextContent('stock editor');
+
+  await act(async () => finishRefresh({ success: true, data: [] }));
 });
 
 it('shows a retryable COGS session error instead of false permission denial', async () => {

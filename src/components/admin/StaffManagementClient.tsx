@@ -119,6 +119,7 @@ interface PermissionSet {
   can_view_settlement: boolean;
   can_view_stores: boolean;
   can_view_patients: boolean;
+  can_view_interactions: boolean;
   can_delete_patients: boolean;
   can_view_delivery: boolean;
   can_view_cogs: boolean;
@@ -213,6 +214,7 @@ const defaultPermissions: PermissionSet = {
   can_view_settlement: true,
   can_view_stores: false,
   can_view_patients: true,
+  can_view_interactions: false,
   can_delete_patients: false,
   can_view_delivery: true,
   can_view_cogs: false,
@@ -286,6 +288,13 @@ interface Props {
   onUpdateUser: (userId: string, data: any) => Promise<{ success: boolean; error?: string }>;
   onResetPassword: (userId: string, newPassword: string) => Promise<{ success: boolean; error?: string }>;
 }
+
+const isValidStaffPassword = (password: string) =>
+  password.length >= 8 &&
+  /[A-Z]/.test(password) &&
+  /[a-z]/.test(password) &&
+  /[0-9]/.test(password) &&
+  /[^A-Za-z0-9]/.test(password);
 
 export default function StaffManagementClient({ users, jobs, onUpdatePermissions, onAddUser, onDeleteUser, onCloseShiftAndDelete, onUpdateUser, onResetPassword }: Props) {
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
@@ -538,7 +547,7 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
   };
 
   const handleResetPassword = async () => {
-    if (!showResetModal || !newTempPassword) return;
+    if (!showResetModal || !isValidStaffPassword(newTempPassword)) return;
     if (!beginSaving()) return;
     try {
       const res = await onResetPassword(showResetModal.id, newTempPassword);
@@ -833,9 +842,9 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
 
                 {activeTab === 'personal' && (
                   <div className="max-w-4xl mx-auto space-y-10 animate-in slide-in-from-left-4 duration-500">
-                    <div className="bg-emerald-50/50 dark:bg-emerald-900/10 p-8 rounded-[32px] border border-emerald-100/50 dark:border-emerald-800/20 flex items-center gap-6 mb-8">
-                       <div className="w-16 h-16 bg-white dark:bg-slate-800 rounded-2xl flex items-center justify-center text-emerald-600 shadow-sm">
-                          <UserIcon className="w-8 h-8" />
+                    <div className="bg-emerald-50/50 dark:bg-emerald-900/10 p-5 rounded-xl border border-emerald-100 dark:border-emerald-800/30 flex items-center gap-4 mb-6">
+                       <div className="w-10 h-10 bg-white dark:bg-slate-800 rounded-lg flex items-center justify-center text-emerald-600 border border-emerald-100 dark:border-emerald-800/30">
+                          <UserIcon className="w-5 h-5" />
                        </div>
                        <div>
                           <h4 className="font-black text-slate-900 dark:text-white text-lg">البيانات الشخصية والوظيفية</h4>
@@ -843,7 +852,7 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
                        </div>
                     </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
                       <div className="space-y-2">
                         <label htmlFor="edit-staff-national-id" className="text-xs font-black text-slate-500 mr-4">الرقم القومي</label>
                         <input 
@@ -988,30 +997,30 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
         </div>
       )}
 
-      {/* Add User Modal - Updated with Premium Styling */}
+      {/* Add User Modal */}
       {showAddModal && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-[100] p-4 animate-in fade-in duration-300">
-          <div ref={addDialogRef} role="dialog" aria-modal="true" aria-labelledby="add-staff-dialog-title" tabIndex={-1} className="bg-white dark:bg-slate-900 w-full max-w-md max-h-[calc(100vh-2rem)] rounded-[50px] shadow-hard border border-slate-100 dark:border-slate-800 flex flex-col overflow-y-auto animate-in zoom-in duration-500">
-            <div className="p-10 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/30 flex justify-between items-center">
+        <div className="fixed inset-0 bg-slate-900/60 flex items-center justify-center z-[100] p-4">
+          <div ref={addDialogRef} role="dialog" aria-modal="true" aria-labelledby="add-staff-dialog-title" tabIndex={-1} className="bg-white dark:bg-slate-900 w-full max-w-md max-h-[calc(100vh-2rem)] rounded-xl shadow-xl border border-slate-200 dark:border-slate-800 flex flex-col overflow-y-auto">
+            <div className="p-5 border-b border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/30 flex justify-between items-center">
               <div className="flex items-center gap-4">
-                <div className="p-4 bg-primary-600 rounded-2xl text-white">
-                  <UserPlus className="w-6 h-6" />
+                <div className="p-2.5 bg-primary-700 rounded-lg text-white">
+                  <UserPlus className="w-5 h-5" />
                 </div>
-                <h2 id="add-staff-dialog-title" className="text-2xl font-black text-slate-900 dark:text-white tracking-tight">إضافة موظف</h2>
+                <h2 id="add-staff-dialog-title" className="text-xl font-semibold text-slate-900 dark:text-white tracking-tight">إضافة موظف</h2>
               </div>
-              <button type="button" aria-label="إغلاق إضافة موظف" onClick={() => setShowAddModal(false)} className="p-2 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-xl transition-all">
+              <button type="button" aria-label="إغلاق إضافة موظف" onClick={() => setShowAddModal(false)} className="inline-flex h-11 w-11 items-center justify-center hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition-colors">
                 <X className="w-6 h-6 text-slate-400" />
               </button>
             </div>
-            <div className="p-10 space-y-6">
+            <div className="p-5 space-y-4">
               <div className="space-y-2">
                 <label htmlFor="new-staff-full-name" className="text-sm font-black text-slate-500 mr-2">الاسم الكامل</label>
                 <input 
-                  type="text" 
+                  type="text"
                   id="new-staff-full-name"
                   value={newUser.full_name}
                   onChange={(e) => setNewUser(p => ({ ...p, full_name: e.target.value }))}
-                  className="w-full px-6 py-4 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500 rounded-[20px] font-bold outline-none transition-all dark:text-white"
+                  className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20 rounded-lg font-medium outline-none transition-colors dark:text-white"
                   placeholder="مثال: د. محمد علي"
                 />
               </div>
@@ -1022,7 +1031,7 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
                   id="new-staff-username"
                   value={newUser.username}
                   onChange={(e) => setNewUser(p => ({ ...p, username: e.target.value }))}
-                  className="w-full px-6 py-4 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500 rounded-[20px] font-bold outline-none transition-all dark:text-white"
+                  className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20 rounded-lg font-medium outline-none transition-colors dark:text-white"
                   placeholder="m_ali"
                 />
               </div>
@@ -1033,7 +1042,7 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
                   id="new-staff-password"
                   value={newUser.password}
                   onChange={(e) => setNewUser(p => ({ ...p, password: e.target.value }))}
-                  className="w-full px-6 py-4 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500 rounded-[20px] font-bold outline-none transition-all dark:text-white"
+                  className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20 rounded-lg font-medium outline-none transition-colors dark:text-white"
                   placeholder="••••••••"
                 />
               </div>
@@ -1043,7 +1052,7 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
                   id="new-staff-role"
                   value={newUser.role}
                   onChange={(e) => setNewUser(p => ({ ...p, role: e.target.value }))}
-                  className="w-full px-6 py-4 bg-slate-50 dark:bg-slate-800 border-2 border-transparent focus:border-primary-500 rounded-[20px] font-bold outline-none transition-all dark:text-white appearance-none"
+                  className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20 rounded-lg font-medium outline-none transition-colors dark:text-white appearance-none"
                 >
                   <option value="pharmacist">صيدلي (Pharmacist)</option>
                   <option value="cashier">كاشير (Cashier)</option>
@@ -1052,17 +1061,17 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
                 </select>
               </div>
             </div>
-            <div className="p-10 bg-slate-50/50 dark:bg-slate-800/30 border-t border-slate-100 dark:border-slate-800 flex gap-4">
+            <div className="p-5 bg-slate-50/50 dark:bg-slate-800/30 border-t border-slate-200 dark:border-slate-800 flex gap-3">
               <button 
                 onClick={() => setShowAddModal(false)}
-                className="flex-1 py-5 bg-white dark:bg-slate-800 border-2 border-slate-200 dark:border-slate-700 rounded-[24px] font-black transition-all active:scale-95 dark:text-white"
+                className="flex-1 py-2.5 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg font-semibold transition-colors hover:bg-slate-100 dark:hover:bg-slate-700 dark:text-white"
               >
                 إلغاء
               </button>
               <button 
                 onClick={handleAddUser}
                 disabled={isSaving}
-                className="flex-1 py-5 bg-primary-600 text-white rounded-[24px] font-black shadow-xl shadow-primary-500/20 hover:bg-primary-700 disabled:bg-slate-400 transition-all active:scale-95"
+                className="flex-1 py-2.5 bg-primary-700 text-white rounded-lg font-semibold shadow-sm hover:bg-primary-800 disabled:bg-slate-400 transition-colors"
               >
                 {isSaving ? 'جاري الحفظ...' : 'حفظ الموظف'}
               </button>
@@ -1134,7 +1143,7 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
               <div className="space-y-2">
                 <label htmlFor="reset-staff-password" className="text-sm font-black text-slate-500 mr-4">كلمة المرور الجديدة</label>
                 <input 
-                  type="text" 
+                  type="password"
                   id="reset-staff-password"
                   value={newTempPassword}
                   onChange={(e) => setNewTempPassword(e.target.value)}
@@ -1142,13 +1151,13 @@ export default function StaffManagementClient({ users, jobs, onUpdatePermissions
                   className="w-full px-6 py-4 bg-slate-50 dark:bg-slate-800/50 border-2 border-transparent focus:border-amber-500 rounded-2xl font-bold dark:text-white transition-all outline-none"
                   autoFocus
                 />
-                <p className="text-xs text-slate-500 font-bold px-4 mt-2">يجب أن تكون كلمة المرور 6 أحرف على الأقل وتكون قوية.</p>
+                <p className="text-xs text-slate-500 font-bold px-4 mt-2">يجب أن تكون كلمة المرور 8 أحرف على الأقل وتحتوي على حرف كبير وحرف صغير ورقم ورمز خاص.</p>
               </div>
 
               <div className="flex gap-4">
                 <button 
                   onClick={handleResetPassword}
-                  disabled={isSaving || newTempPassword.length < 6}
+                  disabled={isSaving || !isValidStaffPassword(newTempPassword)}
                   className="flex-1 py-4 bg-amber-600 text-white rounded-[20px] font-black hover:bg-amber-700 shadow-lg shadow-amber-500/20 disabled:opacity-50 transition-all active:scale-95"
                 >
                   {isSaving ? 'جاري الحفظ...' : 'تأكيد التغيير'}

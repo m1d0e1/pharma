@@ -113,10 +113,98 @@ it.each([
   (finance.getPointsOfSaleAction as jest.Mock).mockResolvedValue({ success: true, data: [{ id: 1, name_ar: 'POS', current_balance: pos }] });
   (finance.getBanksAction as jest.Mock).mockResolvedValue({ success: true, data: [{ id: 2, name_ar: 'Bank', current_balance: bank }] });
   render(<AccountsManagementClient initialTab="treasury" />);
-  await waitFor(() => expect(screen.getByRole('heading', { name: 'إجمالي السيولة' }).parentElement).toHaveTextContent((ledgerCash + bank).toFixed(2)));
+  // The first heavy full-suite mount can take longer than RTL's default 1s
+  // observation window. Preserve the exact accounting assertion (never
+  // accept the initial 0.00 placeholder) while allowing the async reads to
+  // settle under a 41-file QA partition.
+  await waitFor(
+    () => expect(screen.getByRole('heading', { name: 'إجمالي السيولة' }).parentElement)
+      .toHaveTextContent((ledgerCash + bank).toFixed(2)),
+    { timeout: 5000 },
+  );
   expect(screen.getByRole('button', { name: 'عرض تفاصيل رصيد الخزنة' })).toHaveTextContent(String(treasury));
   expect(screen.getByText(/رصيد درج الوردية المفتوحة حاليًا/)).toHaveTextContent(`${drawer} ج.م`);
   expect(screen.getByText(/يختلف عن نقدية الدرج الفعلية/)).toBeInTheDocument();
+});
+
+it('displays verified journal cash without manufacturing physical treasury or drawer cash', async () => {
+  (finance.getTreasuryDashboardAction as jest.Mock).mockResolvedValue({
+    success: true,
+    data: {
+      ledgerCashBalance: 150,
+      treasuryBalance: null, drawerBalance: null, drawerShiftId: null,
+      todayReceipts: null, todayExpenses: null, totalShiftHandovers: null,
+      counts: { treasury: null, receipts: null, expenses: null, handovers: null },
+      detailCount: null, details: [],
+    },
+  });
+  (finance.getBanksAction as jest.Mock).mockResolvedValue({ success: true, data: [] });
+  render(<AccountsManagementClient initialTab="treasury" />);
+
+  await waitFor(() => expect(screen.getByRole('heading', { name: 'إجمالي السيولة' }).parentElement)
+    .toHaveTextContent('150.00'));
+  const treasuryCard = screen.getByRole('button', { name: 'رصيد الخزنة غير متاح' });
+  expect(treasuryCard).toHaveTextContent('غير متاح');
+  expect(treasuryCard).not.toHaveTextContent('0 ج.م');
+  expect(treasuryCard).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'توريدات اليوم غير متاح' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'المصروفات اليومية غير متاح' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'تسليمات الورديات هذا الشهر غير متاح' })).toBeDisabled();
+  expect(screen.getByText(/رصيد درج الوردية المفتوحة حاليًا/)).toHaveTextContent('غير متاح');
+  expect(screen.getByText(/رصيد قيود النقدية ذات الملكية المثبتة/)).toHaveTextContent('150');
+  expect(screen.getByRole('button', { name: 'طباعة سجل النقدية' })).toBeDisabled();
+});
+
+it('keeps total liquidity unavailable if the ledger source cannot be certified even when bank data exists', async () => {
+  (finance.getTreasuryDashboardAction as jest.Mock).mockResolvedValue({
+    success: true,
+    data: {
+      ledgerCashBalance: null, treasuryBalance: null, drawerBalance: null,
+      todayReceipts: null, todayExpenses: null, totalShiftHandovers: null,
+      counts: { treasury: null, receipts: null, expenses: null, handovers: null },
+      detailCount: null, details: [],
+    },
+  });
+  (finance.getBanksAction as jest.Mock).mockResolvedValue({ success: true, data: [{ id: 1, current_balance: 750 }] });
+  render(<AccountsManagementClient initialTab="treasury" />);
+  await waitFor(() => expect(finance.getBanksAction).toHaveBeenCalled());
+  await waitFor(() => expect(screen.getByRole('heading', { name: 'إجمالي السيولة' }).parentElement)
+    .toHaveTextContent('غير متاح'));
+  expect(screen.getByRole('heading', { name: 'إجمالي السيولة' }).parentElement).not.toHaveTextContent('750.00');
+});
+
+it('does not silently treat a missing bank balance as zero liquidity', async () => {
+  (finance.getTreasuryDashboardAction as jest.Mock).mockResolvedValue({
+    success: true,
+    data: { ledgerCashBalance: 150, treasuryBalance: null, drawerBalance: null,
+      todayReceipts: null, todayExpenses: null, totalShiftHandovers: null },
+  });
+  (finance.getBanksAction as jest.Mock).mockResolvedValue({ success: true, data: [{ id: 1, current_balance: null, balance: null }] });
+  render(<AccountsManagementClient initialTab="treasury" />);
+  await waitFor(() => expect(screen.getByRole('heading', { name: 'إجمالي السيولة' }).parentElement)
+    .toHaveTextContent('غير متاح'));
+  expect(screen.getByRole('heading', { name: 'إجمالي السيولة' }).parentElement).not.toHaveTextContent('150.00');
+});
+
+it('refreshes ledger liquidity after a cash expense while navigating between authorized finance tabs', async () => {
+  const treasury = (ledgerCashBalance: number) => ({
+    success: true, data: {
+      treasuryBalance: 0, drawerBalance: 0, ledgerCashBalance,
+      todayReceipts: 0, todayExpenses: 0, totalShiftHandovers: 0,
+      counts: { treasury: 0, receipts: 0, expenses: 0, handovers: 0 },
+    },
+  });
+  (finance.getTreasuryDashboardAction as jest.Mock)
+    .mockResolvedValueOnce(treasury(48))
+    .mockResolvedValue(treasury(43));
+  (finance.getBanksAction as jest.Mock).mockResolvedValue({ success: true, data: [] });
+  render(<AccountsManagementClient initialTab="treasury" />);
+  const heading = (await screen.findByRole('heading', { name: 'إجمالي السيولة' })).parentElement;
+  await waitFor(() => expect(heading).toHaveTextContent('48.00'));
+
+  fireEvent.click(screen.getByRole('button', { name: 'المصاريف التشغيلية' }));
+  await waitFor(() => expect(getExpensesAction).toHaveBeenCalled());
+  await waitFor(() => expect(heading).toHaveTextContent('43.00'));
 });
 
 it('keeps treasury read-only for a user who can view finance but cannot process cash', async () => {
@@ -804,7 +892,7 @@ it('renders operational expenses tab with stats, live search, add expense modal,
   render(<AccountsManagementClient initialTab="expenses" />);
 
   // Check stats and headers
-  expect(await screen.findByText('المصاريف التشغيلية')).toBeInTheDocument();
+  expect(await screen.findByRole('heading', { name: 'المصاريف التشغيلية' })).toBeInTheDocument();
   expect(screen.getByText('إجمالي الشهر')).toBeInTheDocument();
   expect(screen.getByText('أكبر تصنيف')).toBeInTheDocument();
   expect(screen.getByText('عدد العمليات')).toBeInTheDocument();
@@ -841,6 +929,7 @@ it('renders operational expenses tab with stats, live search, add expense modal,
       expect.objectContaining({
         amount: 120,
         description: 'مستلزمات نظافة',
+        request_id: expect.any(String),
       })
     );
   });
@@ -873,7 +962,7 @@ it('lets a cash-flow operator record an operational expense without expense-defi
 
   render(<AccountsManagementClient initialTab="expenses" />);
 
-  expect(await screen.findByText('المصاريف التشغيلية')).toBeInTheDocument();
+  expect(await screen.findByRole('heading', { name: 'المصاريف التشغيلية' })).toBeInTheDocument();
   expect(screen.getByRole('button', { name: /إضافة مصروف \(F4\)/i })).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'تعريف المصروفات' })).not.toBeInTheDocument();
 });

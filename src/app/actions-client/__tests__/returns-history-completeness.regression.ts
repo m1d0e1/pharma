@@ -43,6 +43,8 @@ describe('returns history completeness', () => {
       CREATE TABLE sales_invoices (
         id TEXT PRIMARY KEY, patient_id TEXT, total_amount REAL, created_at TEXT
       );
+      -- Return history joins sold-line lineage even when paging headers with no items.
+      CREATE TABLE sales_items (id INTEGER PRIMARY KEY, invoice_id TEXT, drug_id INTEGER);
       CREATE TABLE returns (
         id TEXT PRIMARY KEY, invoice_id TEXT, user_id TEXT, pharmacy_id TEXT,
         total_refund REAL, refund_method TEXT, status TEXT, created_at TEXT

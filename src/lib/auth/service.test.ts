@@ -12,6 +12,7 @@ import {
   getCurrentUser,
 } from '@/lib/auth/service';
 import { getDatabase, execute, get } from '@/lib/db/client';
+import { startShift, closeShift, getOpenShift } from '@/lib/shifts/service';
 
 // Mock database and uuid
 jest.mock('uuid', () => ({
@@ -125,6 +126,24 @@ describe('Auth Service', () => {
       expect(result.user?.username).toBe('testuser');
     });
 
+    it('lets staff log in while the one pharmacy shift is already open', async () => {
+      const user = {
+        id: 'user-1', username: 'testuser', password_hash: 'hashed_password123',
+        pharmacy_id: 'pharmacy-1', role: 'cashier',
+        permissions: '[]', full_name: 'Cashier', is_active: 1,
+      };
+      mockDb.prepare.mockReturnValue({ get: jest.fn().mockReturnValue(user) });
+      (getOpenShift as jest.Mock).mockReturnValue({ id: 'existing-shared-drawer', user_id: 'owner-1' });
+      const result = await login({
+        username: 'testuser', password: 'password123', startingCashAmount: 999,
+      });
+      expect(result.success).toBe(true);
+      expect(result.shiftId).toBe('mock-shift-123');
+      expect(startShift).toHaveBeenCalledWith('pharmacy-1', 'user-1',
+        expect.objectContaining({ startingCashAmount: 999 }));
+      expect(closeShift).not.toHaveBeenCalled();
+    });
+
     it('should fail with invalid username', async () => {
       mockDb.prepare.mockReturnValue({
         get: jest.fn().mockReturnValue(undefined),
@@ -206,6 +225,23 @@ describe('Auth Service', () => {
       });
 
       expect(result.success).toBe(true);
+    });
+
+    it('never closes the shared drawer when a cashier logs out with old end-cash arguments', async () => {
+      mockDb.prepare.mockReturnValue({
+        get: jest.fn().mockReturnValue({
+          id: 'user-1', role: 'cashier', pharmacy_id: 'pharmacy-1',
+        }),
+      });
+      (getOpenShift as jest.Mock).mockReturnValue({ id: 'shared-drawer' });
+      const result = await logout({
+        refreshToken: 'valid-refresh-token',
+        endingCashAmount: 1500,
+        closingNotes: 'outdated per-employee closing request',
+      });
+      expect(result.success).toBe(true);
+      expect(result.shiftClosed).toBe(false);
+      expect(closeShift).not.toHaveBeenCalled();
     });
 
     it('should fail with invalid refresh token', async () => {

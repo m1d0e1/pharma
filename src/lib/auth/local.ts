@@ -4,6 +4,121 @@ import { dbGet, dbExecute } from '@/lib/db/tauri';
 import { isTauri, isClient } from '@/lib/env';
 
 const SESSION_COOKIE = 'pharma_session';
+const SESSION_USER_KEY = 'pharma_session_user';
+
+// Coalesce only simultaneous identity checks. A completed session (especially
+// its role/permissions) is never cached: the next call must revalidate against
+// the database or native authenticated session, including staff revocation.
+let sessionGeneration = 0;
+let logoutInProgress = false;
+let webSessionInFlight: { stored: string; generation: number; promise: Promise<any | null> } | null = null;
+let nativeSessionInFlight: { generation: number; promise: Promise<any | null> } | null = null;
+
+function invalidateSessionReads() {
+  sessionGeneration++;
+  webSessionInFlight = null;
+  nativeSessionInFlight = null;
+}
+
+function listenForSessionChanges() {
+  if (typeof window === 'undefined') return;
+  const listenerKey = '__pharmaLocalSessionStorageListener';
+  const prior = (window as any)[listenerKey] as ((event: StorageEvent) => void) | undefined;
+  if (prior === handleSessionStorageChange) return;
+  if (prior) window.removeEventListener('storage', prior);
+  (window as any)[listenerKey] = handleSessionStorageChange;
+  window.addEventListener('storage', handleSessionStorageChange);
+}
+
+function handleSessionStorageChange(event: StorageEvent) {
+  // key=null is localStorage.clear(). A different tab's login/logout is not
+  // guaranteed to change the *value* (the same actor can sign in again).
+  if (event.key === SESSION_USER_KEY || event.key === null) invalidateSessionReads();
+}
+
+function currentWebSession(stored: string, generation: number) {
+  return !logoutInProgress && sessionGeneration === generation
+    && localStorage.getItem(SESSION_USER_KEY) === stored;
+}
+
+async function readWebClientSession(): Promise<any | null> {
+  listenForSessionChanges();
+  if (logoutInProgress) return null;
+  const stored = localStorage.getItem(SESSION_USER_KEY);
+  if (!stored) return null;
+
+  const generation = sessionGeneration;
+  if (webSessionInFlight?.stored === stored && webSessionInFlight.generation === generation) {
+    return webSessionInFlight.promise;
+  }
+  let id: string | number;
+  try {
+    const value = JSON.parse(stored);
+    id = value?.id;
+    if ((typeof id !== 'string' || !id.trim()) && (typeof id !== 'number' || !Number.isFinite(id))) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+
+  const promise = (async () => {
+    try {
+      const dbUser = await dbGet(
+        'SELECT id, username, role, full_name, pharmacy_id, permissions FROM users WHERE id = ? AND is_active = 1',
+        [id]
+      );
+      if (!currentWebSession(stored, generation)) return null;
+      if (!dbUser) {
+        // Explicit deactivation/deletion revokes the stale local snapshot too.
+        localStorage.removeItem(SESSION_USER_KEY);
+        return null;
+      }
+      if (String(dbUser.id) !== String(id)) return null;
+      const user = {
+        id: dbUser.id,
+        username: dbUser.username,
+        role: dbUser.role,
+        full_name: dbUser.full_name,
+        pharmacy_id: dbUser.pharmacy_id,
+        permissions: dbUser.permissions,
+      };
+      localStorage.setItem(SESSION_USER_KEY, JSON.stringify(user));
+      return user;
+    } catch {
+      return null;
+    }
+  })();
+  webSessionInFlight = { stored, generation, promise };
+  void promise.finally(() => {
+    if (webSessionInFlight?.promise === promise) webSessionInFlight = null;
+  });
+  return promise;
+}
+
+async function readNativeClientSession(): Promise<any | null> {
+  listenForSessionChanges();
+  if (logoutInProgress) return null;
+  const generation = sessionGeneration;
+  if (nativeSessionInFlight?.generation === generation) return nativeSessionInFlight.promise;
+  const promise = (async () => {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const user = await invoke<any | null>('current_local_user');
+      if (logoutInProgress || sessionGeneration !== generation) return null;
+      if (user) localStorage.setItem(SESSION_USER_KEY, JSON.stringify(user));
+      else localStorage.removeItem(SESSION_USER_KEY);
+      return user;
+    } catch {
+      return null;
+    }
+  })();
+  nativeSessionInFlight = { generation, promise };
+  void promise.finally(() => {
+    if (nativeSessionInFlight?.promise === promise) nativeSessionInFlight = null;
+  });
+  return promise;
+}
 
 export async function hashPassword(password: string): Promise<string> {
   if (isTauri) {
@@ -31,51 +146,16 @@ export async function loginLocal(username: string, password?: string) {
   }
 
   if (isTauri) {
-    const cleanUsername = username.trim();
-    const user = await dbGet('SELECT * FROM users WHERE username = ?', [cleanUsername]);
-
-    if (!user) {
-      await dbExecute("INSERT INTO activity_log (user_id, action, details) VALUES (?, 'LOGIN_FAILED', ?)", [null, `محاولة دخول فاشلة: المستخدم ${cleanUsername} غير موجود`]);
-      return { success: false, error: 'المستخدم غير موجود' };
+    const { invoke } = await import('@tauri-apps/api/core');
+    const result = await invoke<{ success: boolean; user?: any; error?: string }>('authenticate_local', {
+      username: username.trim(), password,
+    });
+    if (result.success && result.user) {
+      invalidateSessionReads();
+      localStorage.setItem(SESSION_USER_KEY, JSON.stringify(result.user));
+      return { success: true, user: result.user };
     }
-
-    if (!user.is_active) {
-      await dbExecute("INSERT INTO activity_log (user_id, action, details) VALUES (?, 'LOGIN_FAILED', ?)", [user.id, `محاولة دخول فاشلة: الحساب غير نشط`]);
-      return { success: false, error: 'الحساب غير نشط' };
-    }
-
-    if (password) {
-      if (user.password_hash) {
-        const valid = await verifyPassword(password, user.password_hash);
-        if (!valid) {
-          await dbExecute("INSERT INTO activity_log (user_id, action, details) VALUES (?, 'LOGIN_FAILED', ?)", [user.id, 'محاولة دخول فاشلة: كلمة مرور خاطئة']);
-          return { success: false, error: 'كلمة المرور غير صحيحة' };
-        }
-      } else {
-        const hashed = await hashPassword(password);
-        await dbExecute('UPDATE users SET password_hash = ? WHERE id = ?', [hashed, user.id]);
-      }
-    }
-
-    const sessionUser = {
-      id: user.id,
-      username: user.username,
-      role: user.role,
-      full_name: user.full_name,
-      pharmacy_id: user.pharmacy_id,
-      permissions: user.permissions
-    };
-
-    localStorage.setItem('pharma_session_user', JSON.stringify(sessionUser));
-    try {
-      await dbExecute("INSERT INTO activity_log (user_id, action, details) VALUES (?, 'LOGIN', ?)", [
-        user.id,
-        `تسجيل دخول للمستخدم: ${user.full_name || user.username}`
-      ]);
-    } catch (e) {
-      console.error('Failed to log login activity:', e);
-    }
-    return { success: true, user: sessionUser };
+    return { success: false, error: result.error || 'فشلت عملية تسجيل الدخول' };
   }
 
   if (isClient) {
@@ -97,7 +177,8 @@ export async function loginLocal(username: string, password?: string) {
         pharmacy_id: result.user.pharmacyId,
         permissions: JSON.stringify(result.user.permissions)
       };
-      localStorage.setItem('pharma_session_user', JSON.stringify(sessionUser));
+      invalidateSessionReads();
+      localStorage.setItem(SESSION_USER_KEY, JSON.stringify(sessionUser));
       return { success: true, user: sessionUser };
     }
     return { success: false, error: result.error || 'فشلت عملية تسجيل الدخول' };
@@ -117,17 +198,13 @@ export async function loginLocal(username: string, password?: string) {
     return { success: false, error: 'الحساب غير نشط' };
   }
 
-  if (password) {
-    if (user.password_hash) {
-      const valid = await verifyPassword(password, user.password_hash);
-      if (!valid) {
-        await dbExecute("INSERT INTO activity_log (user_id, action, details) VALUES (?, 'LOGIN_FAILED', ?)", [user.id, 'محاولة دخول فاشلة: كلمة مرور خاطئة']);
-        return { success: false, error: 'كلمة المرور غير صحيحة' };
-      }
-    } else {
-      const hashed = await hashPassword(password);
-      await dbExecute('UPDATE users SET password_hash = ? WHERE id = ?', [hashed, user.id]);
-    }
+  if (!user.password_hash) {
+    return { success: false, error: 'الحساب غير مهيأ. اطلب من المالك تعيين كلمة مرور.' };
+  }
+  const valid = await verifyPassword(password, user.password_hash);
+  if (!valid) {
+    await dbExecute("INSERT INTO activity_log (user_id, action, details) VALUES (?, 'LOGIN_FAILED', ?)", [user.id, 'محاولة دخول فاشلة: كلمة مرور خاطئة']);
+    return { success: false, error: 'كلمة المرور غير صحيحة' };
   }
 
   const { cookies } = await import('next/headers');
@@ -152,14 +229,6 @@ export async function loginLocal(username: string, password?: string) {
 
   cookieStore.set('userRole', user.role || 'pharmacist', {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    path: '/',
-    maxAge: 60 * 60 * 8
-  });
-
-  cookieStore.set('subscriptionActivated', 'true', {
-    httpOnly: false,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',
     path: '/',
@@ -191,12 +260,26 @@ export async function loginLocal(username: string, password?: string) {
 
 export async function logoutLocal() {
   if (isTauri || isClient) {
-    localStorage.removeItem('pharma_session_user');
-    
-    if (isClient && !isTauri) {
-      // Clear cookies by calling the Server Action
+    invalidateSessionReads();
+    logoutInProgress = true;
+    localStorage.removeItem(SESSION_USER_KEY);
+    if (isTauri) {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        await invoke('logout_local');
+      } finally {
+        localStorage.removeItem(SESSION_USER_KEY);
+        logoutInProgress = false;
+      }
+      return;
+    }
+    try {
+      // Clear cookies by calling the Server Action.
       const { logoutLocalAction } = await import('@/app/actions-client/auth');
       await logoutLocalAction();
+    } finally {
+      localStorage.removeItem(SESSION_USER_KEY);
+      logoutInProgress = false;
     }
     return;
   }
@@ -207,7 +290,6 @@ export async function logoutLocal() {
   cookieStore.delete(SESSION_COOKIE);
   cookieStore.delete('token');
   cookieStore.delete('userRole');
-  cookieStore.delete('subscriptionActivated');
 }
 
 export async function getLocalSession() {
@@ -215,29 +297,12 @@ export async function getLocalSession() {
     return (globalThis as any).__MOCK_SESSION__;
   }
 
-  if (isTauri || isClient) {
-    const stored = localStorage.getItem('pharma_session_user');
-    if (!stored) return null;
-    try {
-      const parsed = JSON.parse(stored);
-      // Query the database to get the latest permissions/role for this user
-      const dbUser = await dbGet('SELECT id, username, role, full_name, pharmacy_id, permissions FROM users WHERE id = ? AND is_active = 1', [parsed.id]);
-      if (dbUser) {
-        const updatedUser = {
-          id: dbUser.id,
-          username: dbUser.username,
-          role: dbUser.role,
-          full_name: dbUser.full_name,
-          pharmacy_id: dbUser.pharmacy_id,
-          permissions: dbUser.permissions
-        };
-        localStorage.setItem('pharma_session_user', JSON.stringify(updatedUser));
-        return updatedUser;
-      }
-      return null;
-    } catch (e) {
-      return null;
-    }
+  if (isTauri) {
+    return readNativeClientSession();
+  }
+
+  if (isClient) {
+    return readWebClientSession();
   }
 
   if (process.env.TAURI_BUILD === '1') {
@@ -355,37 +420,6 @@ export function hasUserPermissionSync(user: any, permissionKey: string): boolean
  */
 export async function getClientSession() {
   if (typeof window === 'undefined') return null;
-
-  const stored = localStorage.getItem('pharma_session_user');
-  if (!stored) return null;
-
-  try {
-    const parsed = JSON.parse(stored);
-    const attempts = isTauri ? 3 : 1;
-    for (let attempt = 0; attempt < attempts; attempt++) {
-      try {
-        const dbUser = await dbGet(
-          'SELECT id, username, role, full_name, pharmacy_id, permissions FROM users WHERE id = ? AND is_active = 1',
-          [parsed.id]
-        );
-        if (!dbUser) return null;
-        const updatedUser = {
-          id: dbUser.id,
-          username: dbUser.username,
-          role: dbUser.role,
-          full_name: dbUser.full_name,
-          pharmacy_id: dbUser.pharmacy_id,
-          permissions: dbUser.permissions,
-        };
-        localStorage.setItem('pharma_session_user', JSON.stringify(updatedUser));
-        return updatedUser;
-      } catch (_) {
-        if (attempt + 1 >= attempts) return null;
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
-    }
-    return null;
-  } catch (_) {
-    return null;
-  }
+  if (isTauri) return getLocalSession();
+  return readWebClientSession();
 }

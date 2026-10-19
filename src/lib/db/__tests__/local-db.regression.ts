@@ -23,6 +23,31 @@ function weakenSalesItemsConstraints(database: any) {
   database.pragma('foreign_keys = ON');
 }
 
+function rebuildTableWithSqlTransform(
+  database: any,
+  table: string,
+  transform: (sql: string) => string,
+) {
+  const row = database.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+  ).get(table) as { sql: string };
+  const temporary = `__weaken_copy_${table}`;
+  const weakened = transform(row.sql);
+  if (weakened === row.sql) throw new Error(`Test did not weaken ${table}`);
+
+  const columns = database.prepare(`PRAGMA table_info("${table}")`).all()
+    .map((column: any) => `"${String(column.name).replace(/"/g, '""')}"`)
+    .join(', ');
+  database.pragma('foreign_keys = OFF');
+  database.exec(`DROP TABLE IF EXISTS temp."${temporary}"`);
+  database.exec(`CREATE TEMP TABLE "${temporary}" AS SELECT ${columns} FROM "${table}"`);
+  database.exec(`DROP TABLE "${table}"`);
+  database.exec(weakened);
+  database.exec(`INSERT INTO "${table}" (${columns}) SELECT ${columns} FROM temp."${temporary}"`);
+  database.exec(`DROP TABLE temp."${temporary}"`);
+  database.pragma('foreign_keys = ON');
+}
+
 describe('fresh local database bootstrap', () => {
   it('creates the current purchasing, inventory, sales, and return schema', () => {
     process.env.PHARMA_DB_PATH = ':memory:';
@@ -257,6 +282,69 @@ describe('fresh local database bootstrap', () => {
     for (const suffix of ['', '-wal', '-shm']) {
       try { unlinkSync(`${dbPath}${suffix}`); } catch {}
     }
+  });
+
+  it('repairs weakened NOT NULL, primary-key, UNIQUE, and CHECK constraints even when defaults and foreign keys still match', () => {
+    process.env.PHARMA_DB_PATH = ':memory:';
+    delete (global as any).__db_initialized;
+    jest.resetModules();
+    const { getDatabase, closeDatabase } = require('../client');
+    const { ensureCanonicalLocalSchema } = require('../canonical-local-schema');
+    const database = getDatabase();
+    database.exec(`
+      INSERT INTO employee_jobs(id, name_ar) VALUES (61001, 'Constraint sentinel');
+      INSERT INTO master_drugs(id, trade_name) VALUES (61001, 'Constraint Drug');
+      INSERT INTO drug_catalog_links(catalog_drug_id, master_drug_id, linked_by)
+      VALUES (61001, 61001, 'test');
+      INSERT INTO drug_catalog_field_policies(master_drug_id, field_name, policy, updated_by)
+      VALUES (61001, 'trade_name', 'local', 'test');
+    `);
+
+    rebuildTableWithSqlTransform(database, 'employee_jobs', sql => sql
+      .replace(/id INTEGER PRIMARY KEY AUTOINCREMENT/i, 'id INTEGER')
+      .replace(/name_ar TEXT NOT NULL/i, 'name_ar TEXT'));
+    rebuildTableWithSqlTransform(database, 'drug_catalog_links', sql => sql
+      .replace(/master_drug_id INTEGER NOT NULL UNIQUE/i, 'master_drug_id INTEGER NOT NULL'));
+    rebuildTableWithSqlTransform(database, 'drug_catalog_field_policies', sql => sql
+      .replace(/policy TEXT NOT NULL CHECK\s*\(policy IN \('local', 'catalog', 'ask'\)\)/i, 'policy TEXT NOT NULL'));
+
+    const weakJobColumns = database.prepare('PRAGMA table_info(employee_jobs)').all() as any[];
+    expect(weakJobColumns.find(column => column.name === 'id')?.pk).toBe(0);
+    expect(weakJobColumns.find(column => column.name === 'name_ar')?.notnull).toBe(0);
+    expect((database.prepare('PRAGMA index_list(drug_catalog_links)').all() as any[])
+      .some(index => index.unique === 1 && index.origin === 'u')).toBe(false);
+    expect((database.prepare(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='drug_catalog_field_policies'",
+    ).get() as any).sql).not.toMatch(/CHECK\s*\(policy IN/i);
+
+    ensureCanonicalLocalSchema(database);
+
+    const repairedJobColumns = database.prepare('PRAGMA table_info(employee_jobs)').all() as any[];
+    expect(repairedJobColumns.find(column => column.name === 'id')?.pk).toBe(1);
+    expect(repairedJobColumns.find(column => column.name === 'name_ar')?.notnull).toBe(1);
+    const uniqueIndexes = (database.prepare('PRAGMA index_list(drug_catalog_links)').all() as any[])
+      .filter(index => index.unique === 1 && index.origin === 'u');
+    expect(uniqueIndexes.some(index => (
+      database.prepare(`PRAGMA index_info("${index.name}")`).all() as any[]
+    ).map(column => column.name).join(',') === 'master_drug_id')).toBe(true);
+    expect((database.prepare(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='drug_catalog_field_policies'",
+    ).get() as any).sql).toMatch(/CHECK\s*\(policy IN \('local', 'catalog', 'ask'\)\)/i);
+    expect(database.prepare("SELECT id, name_ar FROM employee_jobs WHERE id=61001").get()).toEqual({
+      id: 61001,
+      name_ar: 'Constraint sentinel',
+    });
+    expect(database.prepare(
+      'SELECT catalog_drug_id, master_drug_id FROM drug_catalog_links WHERE catalog_drug_id=61001',
+    ).get()).toEqual({ catalog_drug_id: 61001, master_drug_id: 61001 });
+    expect(database.prepare(
+      "SELECT policy FROM drug_catalog_field_policies WHERE master_drug_id=61001 AND field_name='trade_name'",
+    ).get()).toEqual({ policy: 'local' });
+    expect(database.prepare('PRAGMA integrity_check').get()).toEqual({ integrity_check: 'ok' });
+    expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+    closeDatabase();
+    delete (global as any).__db_initialized;
+    delete process.env.PHARMA_DB_PATH;
   });
 
   it('rolls back canonical constraint repair instead of deleting orphan legacy data', () => {

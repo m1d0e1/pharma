@@ -21,6 +21,54 @@ function errorMessage(error: unknown, fallback: string) {
   return fallback;
 }
 
+type NativeSettlementKind = 'unsettled_sales' | 'drug_batches';
+const settlementNumber = (value: unknown) =>
+  typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1_000_000_000;
+
+async function verifiedNativeSettlementRows(kind: NativeSettlementKind, pharmacyId: string, actorId: unknown, drugId?: number) {
+  if (!pharmacyId || pharmacyId === 'local_default' || !String(actorId ?? '').trim()) {
+    throw new Error('Native settlement requires an independently verified tenant');
+  }
+  const { invoke } = await import('@tauri-apps/api/core');
+  const native = await invoke<unknown>('read_settlement_native', {
+    queryId: kind, drugId: kind === 'drug_batches' ? drugId : null,
+  });
+  if (!native || typeof native !== 'object' || Array.isArray(native)) {
+    throw new Error('Missing authenticated native settlement response');
+  }
+  const result = native as Record<string, unknown>;
+  if (result.actorId !== String(actorId) || result.pharmacyId !== pharmacyId ||
+      !Array.isArray(result.rows) || result.rows.length > 100) {
+    throw new Error('Foreign or oversized native settlement response');
+  }
+  const rows = result.rows as Record<string, unknown>[];
+  const safeString = (value: unknown, max = 512) =>
+    typeof value === 'string' && value.length > 0 && value.length <= max &&
+    !/[\u0000-\u001f\u007f]/.test(value);
+  if (rows.some(row => {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) return true;
+    if (kind === 'drug_batches') {
+      return !safeString(row.id,128) || row.inventory_id !== row.id ||
+        (row.batch_number != null && !safeString(row.batch_number,128)) ||
+        (row.expiry_date != null && !safeString(row.expiry_date,40)) ||
+        !settlementNumber(row.quantity) || Number(row.quantity) <= 0 ||
+        !settlementNumber(row.cost_price);
+    }
+    return !Number.isSafeInteger(row.item_id) || Number(row.item_id) <= 0 ||
+      !Number.isSafeInteger(row.drug_id) || Number(row.drug_id) <= 0 ||
+      !safeString(row.invoice_id,128) || !safeString(row.trade_name) ||
+      (row.trade_name_en != null && !safeString(row.trade_name_en)) ||
+      !safeString(row.unit,64) ||
+      !settlementNumber(row.quantity_sold) || Number(row.quantity_sold) <= 0 ||
+      !settlementNumber(row.returned_quantity) ||
+      !settlementNumber(row.net_unreturned_quantity) ||
+      Math.abs(Number(row.net_unreturned_quantity) -
+        (Number(row.quantity_sold) - Number(row.returned_quantity))) > 0.000001 ||
+      !settlementNumber(row.unit_price) || !settlementNumber(row.current_stock_balance);
+  })) throw new Error('Malformed or uncertified settlement row');
+  return rows;
+}
+
 const APPROVED_RETURNS_CTES = `
   approved_return_rows AS (
     SELECT
@@ -91,6 +139,13 @@ export async function getNegativeStockInvoicesAction() {
     const context = await getSettlementContext();
     if (!context) return { success: false, error: 'Unauthorized' };
 
+    if (isTauri) {
+      const rows = await verifiedNativeSettlementRows('unsettled_sales', context.pharmacyId, context.user.id);
+      return { success: true, data: rows.map(row => ({
+        ...row, id: row.item_id,
+      })) };
+    }
+
     const items = await dbSelect(
       `
         WITH ${APPROVED_RETURNS_CTES}
@@ -147,6 +202,10 @@ export async function getUnsettledSalesAction() {
   try {
     const context = await getSettlementContext();
     if (!context) return { success: false, error: 'Unauthorized' };
+
+    if (isTauri) {
+      return { success: true, data: await verifiedNativeSettlementRows('unsettled_sales', context.pharmacyId, context.user.id) };
+    }
 
     const items = await dbSelect(
       `
@@ -212,6 +271,11 @@ export async function getDrugBatchesAction(drugId: number) {
       return { success: false, error: 'Invalid drug' };
     }
 
+    if (isTauri) {
+      return { success: true, data: await verifiedNativeSettlementRows('drug_batches', context.pharmacyId,
+        context.user.id, normalizedDrugId) };
+    }
+
     const batches = await dbSelect(
       `
         SELECT
@@ -264,8 +328,6 @@ export async function settleSaleItemAction(itemId: number, inventoryId: string) 
       payload: {
         sale_item_id: saleItemId,
         inventory_id: selectedInventoryId,
-        pharmacy_id: context.pharmacyId,
-        user_id: String(context.user.id),
       },
     });
 

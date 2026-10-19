@@ -92,10 +92,23 @@ export default function DeleteUnusedItemsPage() {
     }
   }
 
+  const pageHeader = (
+    <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl shadow-soft border border-slate-100 dark:border-slate-800 flex justify-between items-center">
+      <div>
+        <h1 className="text-3xl font-black text-slate-900 dark:text-white">حذف الأصناف التي لم يتم عليها حركات</h1>
+        <p className="text-slate-500 font-bold mt-1">تنظيف قاعدة البيانات من الأصناف غير المستخدمة والقديمة.</p>
+      </div>
+    </div>
+  );
+
   if (loading) {
     return (
-      <div className="flex justify-center items-center py-12">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+      <div className="space-y-8" dir="rtl">
+        {isAuthorized && pageHeader}
+        <div role="status" aria-live="polite" className="flex justify-center items-center gap-3 py-12 text-slate-500 dark:text-slate-400">
+          <div aria-hidden="true" className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+          <span>{isAuthorized ? 'جاري تحميل الأصناف القابلة للحذف...' : 'جاري التحقق من الصلاحيات...'}</span>
+        </div>
       </div>
     );
   }
@@ -126,12 +139,7 @@ export default function DeleteUnusedItemsPage() {
   return (
     <div className="space-y-8 animate-in slide-in-up" dir="rtl">
       {replacement && <DrugReplacementDialog source={replacement} onClose={() => setReplacement(null)} onArchived={async () => { setReplacement(null); await loadData(); }} onSuccess={async () => { setReplacement(null); await loadData(); }} />}
-      <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl shadow-soft border border-slate-100 dark:border-slate-800 flex justify-between items-center">
-        <div>
-          <h1 className="text-3xl font-black text-slate-900 dark:text-white">حذف الأصناف التي لم يتم عليها حركات</h1>
-          <p className="text-slate-500 font-bold mt-1">تنظيف قاعدة البيانات من الأصناف غير المستخدمة والقديمة.</p>
-        </div>
-      </div>
+      {pageHeader}
 
       <DeleteUnusedItemsClient initialItems={items} onDelete={handleDelete} />
     </div>

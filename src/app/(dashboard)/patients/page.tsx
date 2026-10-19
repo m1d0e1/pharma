@@ -82,7 +82,7 @@ export default function PatientsPage() {
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-3xl font-bold text-slate-900 dark:text-white">دليل المرضى</h1>
-          <p className="text-slate-500 mt-1">إدارة بيانات المرضى وتاريخهم الصحي.</p>
+          <p className="text-slate-500 mt-1">عرض بيانات المرضى الموثقة للصيدلية؛ لا تُعرض السجلات التاريخية غير المثبتة.</p>
         </div>
       </div>
 

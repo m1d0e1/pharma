@@ -58,6 +58,7 @@ import {
 import { format, isValid } from 'date-fns';
 import { toast } from 'react-hot-toast';
 import { isBusinessDate, localDate, parseBusinessDate } from '@/lib/time';
+import { isTauri } from '@/lib/env';
 
 const safeFormat = (dateStr: string | null | undefined, fmt: string) => {
   if (!dateStr) return '-';
@@ -115,15 +116,24 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
   const [showCashForm, setShowCashForm] = useState<{ show: boolean, type: 'disbursement' | 'receipt' }>({ show: false, type: 'disbursement' });
   const [treasurySearch, setTreasurySearch] = useState('');
   const [treasuryView, setTreasuryView] = useState<'all' | 'handovers' | 'disbursements' | 'receipts'>('all');
-  const [treasurySummary, setTreasurySummary] = useState({
-    treasuryBalance: 0,
-    drawerBalance: 0,
-    ledgerCashBalance: 0,
-    todayReceipts: 0,
-    todayExpenses: 0,
-    totalShiftHandovers: 0,
-    counts: { treasury: 0, receipts: 0, expenses: 0, handovers: 0 },
+  const [treasurySummary, setTreasurySummary] = useState<{
+    treasuryBalance: number | null;
+    drawerBalance: number | null;
+    ledgerCashBalance: number | null;
+    todayReceipts: number | null;
+    todayExpenses: number | null;
+    totalShiftHandovers: number | null;
+    counts: Record<TreasuryMetricKey, number | null>;
+  }>({
+    treasuryBalance: null,
+    drawerBalance: null,
+    ledgerCashBalance: null,
+    todayReceipts: null,
+    todayExpenses: null,
+    totalShiftHandovers: null,
+    counts: { treasury: null, receipts: null, expenses: null, handovers: null },
   });
+  const [liquidityReady, setLiquidityReady] = useState(false);
   const [selectedTreasuryMetric, setSelectedTreasuryMetric] = useState<TreasuryMetricKey | null>(null);
   const [treasuryDetails, setTreasuryDetails] = useState<any[]>([]);
   const [treasuryDetailCount, setTreasuryDetailCount] = useState(0);
@@ -389,6 +399,8 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
      const tab = activeTab;
      setLoadingData(true);
      setLoadError(null);
+     setLiquidityReady(false);
+     if (tab === 'chart_of_accounts') setAccounts([]);
      try {
         if (tab === 'treasury') {
            const [summaryRes, movementsRes, posRes, banksRes] = await Promise.all([
@@ -398,7 +410,10 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
              getBanksAction(),
            ]);
            if (requestId !== loadTabRequestRef.current) return;
-           if (summaryRes.success && summaryRes.data) setTreasurySummary(summaryRes.data as typeof treasurySummary);
+           if (summaryRes.success && summaryRes.data) {
+             setTreasurySummary(summaryRes.data as typeof treasurySummary);
+             if (banksRes.success) setLiquidityReady(true);
+           }
            else setLoadError(summaryRes.error || 'تعذر تحميل رصيد الخزنة؛ لا تعتمد على الرصيد السابق');
            if (movementsRes.success) setMovements(movementsRes.data as any[]);
            if (posRes.success) setPointsOfSale(posRes.data as any[]);
@@ -441,6 +456,10 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
            const res = await getAccountsAction();
            if (requestId !== loadTabRequestRef.current) return;
            if (res.success) setAccounts(res.data as any[]);
+           else {
+             setAccounts([]);
+             setLoadError(res.error || 'تعذر التحقق من أرصدة شجرة الحسابات');
+           }
         } else if (tab === 'daily_journals') {
            const [journalsRes, accountsRes] = await Promise.all([getJournalsAction(), getAccountsAction()]);
            if (requestId !== loadTabRequestRef.current) return;
@@ -479,6 +498,24 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
            if (requestId !== loadTabRequestRef.current) return;
            if (res.success) setActivityLogs(res.data as any[]);
         }
+        // The liquidity figure is displayed on every finance tab. Refresh its
+        // native-owned cash and bank sources after non-treasury writes/navigation,
+        // but only for users permitted to view finance cash data.
+        if (tab !== 'treasury' && sessionUser && (
+          hasConfiguredPermission(sessionUser, 'acc_can_view_general') ||
+          hasConfiguredPermission(sessionUser, 'acc_can_process_cash_flow')
+        )) {
+          const [summaryRes, banksRes] = await Promise.all([
+            getTreasuryDashboardAction(),
+            ['banks', 'papers', 'cards'].includes(tab) ? Promise.resolve(null) : getBanksAction(),
+          ]);
+          if (requestId !== loadTabRequestRef.current) return;
+          if (summaryRes.success && summaryRes.data && (banksRes === null || banksRes.success)) {
+            setTreasurySummary(summaryRes.data as typeof treasurySummary);
+            if (banksRes) setBanks(banksRes.data as any[]);
+            setLiquidityReady(true);
+          }
+        }
      } catch (error) {
         if (requestId !== loadTabRequestRef.current) return;
         console.error('Load data error:', error);
@@ -489,9 +526,11 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
           papers: 'تعذر تحميل بيانات الأوراق المالية',
           cards: 'تعذر تحميل بيانات ماكينات وبطاقات الائتمان',
           expense_definitions: 'تعذر تحميل تعريفات المصروفات',
+          chart_of_accounts: 'تعذر التحقق من أرصدة شجرة الحسابات',
           daily_journals: 'تعذر تحميل القيود اليومية',
           expenses: 'تعذر تحميل سجل المصروفات',
         };
+        if (tab === 'chart_of_accounts') setAccounts([]);
         if (messages[tab]) setLoadError(messages[tab]);
      } finally {
         if (requestId === loadTabRequestRef.current) {
@@ -508,6 +547,8 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
     todayExpenses,
     totalShiftHandovers,
   } = treasurySummary;
+  const verifiedAmount = (value: number | null) =>
+    value !== null && Number.isFinite(value) ? value.toLocaleString('en-US') : 'غير متاح';
 
   const openTreasuryMetric = async (metric: TreasuryMetricKey) => {
     const requestId = ++treasuryMetricRequestRef.current;
@@ -538,8 +579,11 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
   };
 
   // POS handovers move cash within the cash account, so their balances are not extra liquidity.
-  const totalLiquidity = ledgerCashBalance +
-     banks.reduce((sum, b) => sum + (Number(b.current_balance ?? b.balance) || 0), 0);
+  const verifiedBankBalances = banks.map(bank => bank.current_balance ?? bank.balance);
+  const totalLiquidity = ledgerCashBalance !== null && Number.isFinite(ledgerCashBalance)
+    && verifiedBankBalances.every(balance => balance !== null && balance !== undefined && balance !== '' && Number.isFinite(Number(balance)))
+    ? ledgerCashBalance + verifiedBankBalances.reduce((sum, balance) => sum + Number(balance), 0)
+    : null;
 
   const filteredTreasuryMovements = movements.filter(m => {
      if (treasuryView === 'handovers' && m.category !== 'handover') return false;
@@ -625,7 +669,10 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
     );
   });
 
-  if (!isMounted) return null;
+  // The requested initial tab can be forbidden before the async local session
+  // resolves. Never mount its child forms (and their source-read effects) before
+  // the same permission check used for the visible accounting navigation.
+  if (!isMounted || !visibleAccountTabs.some(group => group.items.some(tab => tab.id === activeTab))) return null;
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 lg:gap-6" dir="rtl">
@@ -668,8 +715,10 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
              <TrendingUp className="w-9 h-9 mb-4 opacity-60" />
              <h4 className="text-xl font-black mb-2">إجمالي السيولة</h4>
              <p className="text-3xl font-black mb-1">
-                {activeTab === 'treasury' && loadError ? '—' : totalLiquidity.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                <span className="text-sm opacity-70"> ج.م</span>
+                {(!liquidityReady || (activeTab === 'treasury' && loadError)) ? '—'
+                   : totalLiquidity === null ? 'غير متاح'
+                   : totalLiquidity.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                {totalLiquidity !== null && <span className="text-sm opacity-70"> ج.م</span>}
              </p>
              <p className="text-sm font-bold text-slate-300">رصيد النقدية الدفتري + أرصدة البنوك المسجلة؛ يختلف عن نقدية الدرج الفعلية</p>
           </div>
@@ -698,7 +747,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                      >
                        تسليم الدرج
                      </Link>}
-                     <button type="button" aria-label="طباعة سجل النقدية" onClick={() => window.print()} className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl hover:bg-slate-200 transition-colors no-print focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500">
+                     <button type="button" aria-label="طباعة سجل النقدية" disabled={treasuryBalance === null || drawerBalance === null || ledgerCashBalance === null} title={treasuryBalance === null || drawerBalance === null || ledgerCashBalance === null ? 'أرصدة الخزنة والدرج غير متحققة' : undefined} onClick={() => window.print()} className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl hover:bg-slate-200 transition-colors no-print focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500 disabled:opacity-40 disabled:cursor-not-allowed">
                        <Printer className="w-5 h-5" />
                      </button>
                       {canProcessCash && <button
@@ -726,14 +775,15 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                    {loadError}
                    <button type="button" className="mr-4 underline" onClick={() => void loadTabData()}>إعادة المحاولة</button>
                  </div> : <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
-                    <StatCard label="رصيد الخزنة" value={treasuryBalance.toLocaleString('en-US')} color="emerald" icon={Wallet} onClick={() => openTreasuryMetric('treasury')} active={selectedTreasuryMetric === 'treasury'} />
-                    <StatCard label="توريدات اليوم" value={todayReceipts.toLocaleString('en-US')} color="blue" icon={ArrowRightLeft} onClick={() => openTreasuryMetric('receipts')} active={selectedTreasuryMetric === 'receipts'} />
-                    <StatCard label="المصروفات اليومية" value={todayExpenses.toLocaleString('en-US')} color="rose" icon={Receipt} onClick={() => openTreasuryMetric('expenses')} active={selectedTreasuryMetric === 'expenses'} />
-                    <StatCard label="تسليمات الورديات هذا الشهر" value={totalShiftHandovers.toLocaleString('en-US')} color="blue" icon={ShieldCheck} onClick={() => openTreasuryMetric('handovers')} active={selectedTreasuryMetric === 'handovers'} />
+                    <StatCard label="رصيد الخزنة" value={verifiedAmount(treasuryBalance)} color="emerald" icon={Wallet} onClick={treasuryBalance !== null ? () => openTreasuryMetric('treasury') : undefined} active={selectedTreasuryMetric === 'treasury'} />
+                    <StatCard label="توريدات اليوم" value={verifiedAmount(todayReceipts)} color="blue" icon={ArrowRightLeft} onClick={todayReceipts !== null ? () => openTreasuryMetric('receipts') : undefined} active={selectedTreasuryMetric === 'receipts'} />
+                    <StatCard label="المصروفات اليومية" value={verifiedAmount(todayExpenses)} color="rose" icon={Receipt} onClick={todayExpenses !== null ? () => openTreasuryMetric('expenses') : undefined} active={selectedTreasuryMetric === 'expenses'} />
+                    <StatCard label="تسليمات الورديات هذا الشهر" value={verifiedAmount(totalShiftHandovers)} color="blue" icon={ShieldCheck} onClick={totalShiftHandovers !== null ? () => openTreasuryMetric('handovers') : undefined} active={selectedTreasuryMetric === 'handovers'} />
                  </div>}
 
                  <p className="text-sm text-slate-500 leading-relaxed">
-                   رصيد الخزنة هو النقد المحتفظ به خارج درج الوردية بعد التسليم. عند عدّ 9000 ج.م ووضع 3000 ج.م في درج الوردية التالية، يُضاف 6000 ج.م إلى الخزنة. رصيد درج الوردية المفتوحة حاليًا: <strong>{Number(drawerBalance || 0).toLocaleString('en-US')} ج.م</strong>.
+                   رصيد الخزنة هو النقد المحتفظ به خارج درج الوردية بعد التسليم. عند عدّ 9000 ج.م ووضع 3000 ج.م في درج الوردية التالية، يُضاف 6000 ج.م إلى الخزنة. رصيد درج الوردية المفتوحة حاليًا: <strong>{verifiedAmount(drawerBalance)}{drawerBalance !== null ? ' ج.م' : ''}</strong>.
+                   {' '}رصيد قيود النقدية ذات الملكية المثبتة: <strong>{verifiedAmount(ledgerCashBalance)}{ledgerCashBalance !== null ? ' ج.م' : ''}</strong>؛ لا يثبت اكتمال الحركات التاريخية أو رصيد الدرج أو الخزنة الفعلي.
                  </p>
                  {selectedTreasuryMetric && !loadError && (
                     <TreasuryMetricDetails
@@ -1649,7 +1699,18 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
                     </div>
                  </div>
 
-                 {coaViewMode === 'table' ? (
+                 {isTauri && (
+                    <div role="note" className="rounded-2xl border border-amber-300 bg-amber-50 p-4 text-sm font-bold text-amber-950 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-100">
+                       الأرصدة المعروضة تخص القيود المثبتة باسم الصيدلية الحالية فقط. لا نُنسِب قيود local_default التاريخية إلى هذه الصيدلية، ولا تُثبت هذه الأرصدة اكتمال السجل المحاسبي التاريخي.
+                    </div>
+                 )}
+
+                 {loadError ? (
+                    <div role="alert" className="rounded-2xl border border-rose-300 bg-rose-50 p-6 text-rose-800 dark:border-rose-800 dark:bg-rose-950/40 dark:text-rose-200">
+                       <p className="font-black">{loadError}</p>
+                       <button type="button" onClick={() => void loadTabData()} className="mt-3 rounded-xl bg-rose-800 px-4 py-2 text-sm font-bold text-white">إعادة المحاولة</button>
+                    </div>
+                 ) : coaViewMode === 'table' ? (
                     <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-x-auto shadow-sm">
                        <table className="w-full min-w-[720px] text-right">
                           <thead className="bg-slate-50 dark:bg-slate-800/50">
@@ -1887,6 +1948,7 @@ export default function AccountsManagementClient({ initialTab = 'treasury' }: { 
 
 
 function StatCard({ label, value, color, icon: Icon, onClick, active }: any) {
+  const unavailable = value === 'غير متاح';
   const colorMap = {
     emerald: 'text-emerald-600 bg-emerald-50 border-emerald-100 dark:bg-emerald-900/10 dark:border-emerald-900/20',
     blue: 'text-blue-600 bg-blue-50 border-blue-100 dark:bg-blue-900/10 dark:border-blue-900/20',
@@ -1897,8 +1959,9 @@ function StatCard({ label, value, color, icon: Icon, onClick, active }: any) {
     <button
       type="button"
       onClick={onClick}
+      disabled={!onClick || unavailable}
       aria-expanded={active}
-      aria-label={`عرض تفاصيل ${label}`}
+      aria-label={unavailable ? `${label} غير متاح` : `عرض تفاصيل ${label}`}
       className={cn(
         "w-full p-4 sm:p-6 rounded-3xl border transition-colors hover:border-current text-right focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current focus-visible:ring-offset-2",
         (colorMap as any)[color],
@@ -1913,8 +1976,8 @@ function StatCard({ label, value, color, icon: Icon, onClick, active }: any) {
           <span className="text-xs font-black uppercase tracking-widest opacity-60">تقرير مباشر</span>
        </div>
        <p className="text-sm font-black opacity-70 mb-2">{label}</p>
-       <p className="text-4xl font-black">{value} <span className="text-sm">ج.م</span></p>
-       <p className="text-xs font-bold opacity-60 mt-3">اضغط لعرض التفاصيل</p>
+       <p className="text-4xl font-black">{value} {!unavailable && <span className="text-sm">ج.م</span>}</p>
+       <p className="text-xs font-bold opacity-60 mt-3">{unavailable ? 'المصدر غير متحقق' : 'اضغط لعرض التفاصيل'}</p>
     </button>
   );
 }
@@ -2772,6 +2835,9 @@ function RecordExpenseModal({
   });
   const [loading, setLoading] = useState(false);
   const submittingRef = useRef(false);
+  const expenseIntentRef = useRef<{ fingerprint: string; requestId: string } | null>(null);
+  const shownRef = useRef(false);
+  const formEditedRef = useRef(false);
   const dialogRef = useDialogFocusTrap<HTMLDivElement>(show);
   const handleClose = () => {
     if (submittingRef.current) return;
@@ -2779,13 +2845,26 @@ function RecordExpenseModal({
   };
 
   useEffect(() => {
-    if (show) {
+    if (!show) {
+      shownRef.current = false;
+      return;
+    }
+    const defaultCategory = categories.length > 0 ? (categories[0].code || categories[0].name_ar) : 'other';
+    if (!shownRef.current) {
+      shownRef.current = true;
+      formEditedRef.current = false;
+      expenseIntentRef.current = null;
       setFormData({
-        category: categories.length > 0 ? (categories[0].code || categories[0].name_ar) : 'other',
+        category: defaultCategory,
         amount: '',
         description: '',
         date: localDate(),
       });
+    } else if (!formEditedRef.current && !submittingRef.current && !expenseIntentRef.current) {
+      // Definitions can finish loading after the dialog opens. Only update a
+      // pristine default; never reset a submitted or user-edited expense.
+      setFormData(current => current.category === defaultCategory
+        ? current : { ...current, category: defaultCategory });
     }
   }, [show, categories]);
 
@@ -2809,14 +2888,23 @@ function RecordExpenseModal({
     submittingRef.current = true;
     setLoading(true);
     try {
-      const res = await addExpenseAction({
+      const expenseData = {
         category: formData.category,
         amount: amt,
         description: formData.description.trim(),
         date: formData.date || localDate(),
+      };
+      const fingerprint = JSON.stringify(expenseData);
+      if (expenseIntentRef.current?.fingerprint !== fingerprint) {
+        expenseIntentRef.current = { fingerprint, requestId: crypto.randomUUID() };
+      }
+      const res = await addExpenseAction({
+        ...expenseData,
+        request_id: expenseIntentRef.current.requestId,
       });
 
       if (res.success) {
+        expenseIntentRef.current = null;
         toast.success('تم تسجيل المصروف وحركته النقدية بنجاح');
         onSuccess();
         onClose();
@@ -2851,7 +2939,10 @@ function RecordExpenseModal({
             <select
               id="record-expense-category"
               value={formData.category}
-              onChange={e => setFormData({ ...formData, category: e.target.value })}
+              onChange={e => {
+                formEditedRef.current = true;
+                setFormData({ ...formData, category: e.target.value });
+              }}
               className="w-full p-4 bg-slate-50 dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 outline-none font-bold text-sm text-slate-900 dark:text-white focus:border-rose-500 transition-all"
             >
               {categories.map((cat: any) => (
@@ -2882,7 +2973,10 @@ function RecordExpenseModal({
                 required
                 placeholder="0.00"
                 value={formData.amount}
-                onChange={e => setFormData({ ...formData, amount: e.target.value })}
+                onChange={e => {
+                  formEditedRef.current = true;
+                  setFormData({ ...formData, amount: e.target.value });
+                }}
                 className="w-full p-4 bg-slate-50 dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 outline-none font-black text-lg text-rose-600 focus:border-rose-500 transition-all font-mono"
               />
             </div>
@@ -2893,7 +2987,10 @@ function RecordExpenseModal({
                 type="date"
                 required
                 value={formData.date}
-                onChange={e => setFormData({ ...formData, date: e.target.value })}
+                onChange={e => {
+                  formEditedRef.current = true;
+                  setFormData({ ...formData, date: e.target.value });
+                }}
                 className="w-full p-4 bg-slate-50 dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 outline-none font-bold text-sm text-slate-900 dark:text-white focus:border-rose-500 transition-all font-mono"
               />
             </div>
@@ -2906,7 +3003,10 @@ function RecordExpenseModal({
               rows={3}
               placeholder="اكتب بيان أو سبب المصروف..."
               value={formData.description}
-              onChange={e => setFormData({ ...formData, description: e.target.value })}
+              onChange={e => {
+                formEditedRef.current = true;
+                setFormData({ ...formData, description: e.target.value });
+              }}
               className="w-full p-4 bg-slate-50 dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 outline-none font-bold text-sm text-slate-900 dark:text-white focus:border-rose-500 transition-all resize-none"
             />
           </div>
@@ -2955,13 +3055,16 @@ function BankModal({ show, initialData, onClose, onSuccess }: BankModalProps) {
   });
   const [loading, setLoading] = useState(false);
   const submittingRef = useRef(false);
+  const createIntentRef = useRef<{ fingerprint: string; requestId: string } | null>(null);
   const dialogRef = useDialogFocusTrap<HTMLDivElement>(show);
   const handleClose = () => {
     if (submittingRef.current) return;
+    createIntentRef.current = null;
     onClose();
   };
 
   useEffect(() => {
+    createIntentRef.current = null;
     if (initialData) {
       setFormData({
         name_ar: initialData.name_ar || '',
@@ -2988,6 +3091,19 @@ function BankModal({ show, initialData, onClose, onSuccess }: BankModalProps) {
     submittingRef.current = true;
     setLoading(true);
     try {
+      const createData = {
+        name_ar: formData.name_ar.trim(),
+        name_en: formData.name_en.trim() || undefined,
+        account_number: formData.account_number.trim() || undefined,
+        branch: formData.branch.trim() || undefined,
+        current_balance: formData.current_balance ? parseFloat(formData.current_balance) : 0
+      };
+      if (!initialData?.id) {
+        const fingerprint = JSON.stringify(createData);
+        if (createIntentRef.current?.fingerprint !== fingerprint) {
+          createIntentRef.current = { fingerprint, requestId: crypto.randomUUID() };
+        }
+      }
       const res = initialData?.id
         ? await updateBankAction(initialData.id, {
             name_ar: formData.name_ar.trim(),
@@ -2995,15 +3111,10 @@ function BankModal({ show, initialData, onClose, onSuccess }: BankModalProps) {
             account_number: formData.account_number.trim() || undefined,
             branch: formData.branch.trim() || undefined
           })
-        : await addBankAction({
-            name_ar: formData.name_ar.trim(),
-            name_en: formData.name_en.trim() || undefined,
-            account_number: formData.account_number.trim() || undefined,
-            branch: formData.branch.trim() || undefined,
-            current_balance: formData.current_balance ? parseFloat(formData.current_balance) : 0
-          });
+        : await addBankAction({ ...createData, request_id: createIntentRef.current!.requestId });
 
       if (res.success) {
+        createIntentRef.current = null;
         toast.success(initialData ? 'تم تعديل الحساب البنكي بنجاح' : 'تمت إضافة الحساب البنكي بنجاح');
         onSuccess();
         onClose();
@@ -3132,13 +3243,16 @@ function CardModal({ show, initialData, banks, onClose, onSuccess }: CardModalPr
   });
   const [loading, setLoading] = useState(false);
   const submittingRef = useRef(false);
+  const createIntentRef = useRef<{ fingerprint: string; requestId: string } | null>(null);
   const dialogRef = useDialogFocusTrap<HTMLDivElement>(show);
   const handleClose = () => {
     if (submittingRef.current) return;
+    createIntentRef.current = null;
     onClose();
   };
 
   useEffect(() => {
+    createIntentRef.current = null;
     if (initialData) {
       setFormData({
         name_ar: initialData.name_ar || '',
@@ -3165,6 +3279,19 @@ function CardModal({ show, initialData, banks, onClose, onSuccess }: CardModalPr
     submittingRef.current = true;
     setLoading(true);
     try {
+      const createData = {
+        name_ar: formData.name_ar.trim(),
+        name_en: formData.name_en.trim() || undefined,
+        bank_id: formData.bank_id ? parseInt(formData.bank_id) : null,
+        commission_pct: parseFloat(formData.commission_pct) || 0,
+        current_balance: parseFloat(formData.current_balance) || 0
+      };
+      if (!initialData?.id) {
+        const fingerprint = JSON.stringify(createData);
+        if (createIntentRef.current?.fingerprint !== fingerprint) {
+          createIntentRef.current = { fingerprint, requestId: crypto.randomUUID() };
+        }
+      }
       const res = initialData?.id
         ? await updateCardAction(initialData.id, {
             name_ar: formData.name_ar.trim(),
@@ -3172,15 +3299,10 @@ function CardModal({ show, initialData, banks, onClose, onSuccess }: CardModalPr
             bank_id: formData.bank_id ? parseInt(formData.bank_id) : null,
             commission_pct: parseFloat(formData.commission_pct) || 0
           })
-        : await addCardAction({
-            name_ar: formData.name_ar.trim(),
-            name_en: formData.name_en.trim() || undefined,
-            bank_id: formData.bank_id ? parseInt(formData.bank_id) : null,
-            commission_pct: parseFloat(formData.commission_pct) || 0,
-            current_balance: parseFloat(formData.current_balance) || 0
-          });
+        : await addCardAction({ ...createData, request_id: createIntentRef.current!.requestId });
 
       if (res.success) {
+        createIntentRef.current = null;
         toast.success(initialData ? 'تم تعديل ماكينة الدفع بنجاح' : 'تمت إضافة ماكينة الدفع بنجاح');
         onSuccess();
         onClose();
@@ -3474,14 +3596,17 @@ function PaperModal({ show, type, direction, banks, onClose, onSuccess }: PaperM
   });
   const [loading, setLoading] = useState(false);
   const submittingRef = useRef(false);
+  const createIntentRef = useRef<{ fingerprint: string; requestId: string } | null>(null);
   const dialogRef = useDialogFocusTrap<HTMLDivElement>(show);
   const handleClose = () => {
     if (submittingRef.current) return;
+    createIntentRef.current = null;
     onClose();
   };
 
   useEffect(() => {
     if (show) {
+      createIntentRef.current = null;
       setFormData({
         paper_number: '',
         target_name: '',
@@ -3506,7 +3631,7 @@ function PaperModal({ show, type, direction, banks, onClose, onSuccess }: PaperM
     submittingRef.current = true;
     setLoading(true);
     try {
-      const res = await addPaperAction({
+      const paperData = {
         type: type || 'check',
         direction: direction || 'in',
         paper_number: formData.paper_number.trim(),
@@ -3515,9 +3640,18 @@ function PaperModal({ show, type, direction, banks, onClose, onSuccess }: PaperM
         due_date: formData.due_date,
         target_name: formData.target_name.trim(),
         notes: formData.notes.trim() || undefined
+      };
+      const fingerprint = JSON.stringify(paperData);
+      if (createIntentRef.current?.fingerprint !== fingerprint) {
+        createIntentRef.current = { fingerprint, requestId: crypto.randomUUID() };
+      }
+      const res = await addPaperAction({
+        ...paperData,
+        request_id: createIntentRef.current.requestId,
       });
 
       if (res.success) {
+        createIntentRef.current = null;
         toast.success('تم تسجيل الورقة المالية بنجاح');
         onSuccess();
         onClose();

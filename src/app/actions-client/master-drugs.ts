@@ -1,5 +1,6 @@
 
 import { dbSelect, dbExecute, dbGet, dbTransaction, generateId, type TransactionDb } from '@/lib/db/tauri';
+import { isTauri } from '@/lib/env';
 import { assertBarcodeOwnershipAvailable, normalizeBarcode } from '@/lib/inventory/barcode-ownership';
 import { notifyDrugCatalogChanged, notifyInventoryChanged } from '@/lib/inventory/refresh';
 import { resolveRecoveredShortages } from '@/lib/inventory/reorder-state';
@@ -240,14 +241,55 @@ export async function getMasterDrugAction(id: number) {
     const user = await getLocalSession();
     if (!user || !hasUserPermissionSync(user, 'can_manage_inventory')) return { success: false, error: 'غير مصرح' };
 
+    if (isTauri) {
+      if (!Number.isSafeInteger(id) || id <= 0) {
+        return { success: false, error: 'معرف الصنف غير صالح' };
+      }
+      // Used by purchase-invoice ?drugId=... deep links. The old SELECT * was
+      // forbidden under strict renderer SQL and could reveal unreviewed global
+      // catalog columns. This native cache contains only independently checked
+      // public reference metadata, never tenant-private acquisition cost.
+      await secureCache.load();
+      const drug = secureCache.getDrug(id);
+      return { success: true, data: drug ? {
+        ...drug, purchase_price: null, base_price: null,
+      } : null };
+    }
     const item = await db.prepare('SELECT * FROM master_drugs WHERE id = ?').get(id) as any;
     return { success: true, data: item };
   } catch (error: any) {
+    if (isTauri) return { success: false, error: 'تعذر تحميل بيانات الصنف الموثقة' };
     return { success: false, error: error.message };
   }
 }
 
 export async function addMasterDrugAction(data: any) {
+  if (isTauri) {
+    const { createNativeMasterDrug } = await import('./native-master-drug-create');
+    const result = await createNativeMasterDrug(data);
+    if (!result.success || !result.id) return result;
+    // Native receipt/actor/tenant is authoritative. Cache or UI refresh
+    // failure must not turn a committed catalog create into a second request.
+    try {
+      secureCache.addDrug({
+        id: result.id, trade_name: String(data.trade_name || ''),
+        trade_name_en: String(data.trade_name_en || data.trade_name || ''),
+        generic_name: String(data.generic_name || ''), strength: '', unit: '',
+        category: String(data.category || ''), manufacturer: String(data.manufacturer || ''),
+        base_price: 0, active_ingredient: String(data.active_ingredient || ''),
+        official_price: Number(data.official_price), barcode: String(data.barcode || ''),
+        large_unit: data.large_unit || undefined, medium_unit: data.medium_unit || undefined,
+        small_unit: data.small_unit || undefined,
+        large_to_medium: data.large_to_medium ? Number(data.large_to_medium) : undefined,
+        medium_to_small: data.medium_to_small ? Number(data.medium_to_small) : undefined,
+        stop_dealing: 0, is_medicine: Number(data.is_medicine ?? 1),
+        is_service: Number(data.is_service ?? 0), has_expiry: Number(data.has_expiry ?? 1),
+      });
+    } catch { /* Native creation succeeded; cache may reload on next search. */ }
+    try { notifyDrugCatalogChanged(); } catch { /* No money is affected. */ }
+    revalidatePath('/stores/items');
+    return result;
+  }
   try {
     const localUser = await getLocalSession();
     if (!localUser || !hasUserPermissionSync(localUser, 'can_manage_inventory')) return { success: false, error: 'غير مصرح' };
@@ -361,7 +403,25 @@ export async function addMasterDrugAction(data: any) {
 
 export async function searchInventoryAction(query: string) {
   try {
-    if (!query || query.length < 2) return { success: true, data: [] };
+    if (!query || query.trim().length < 2) return { success: true, data: [] };
+
+    if (isTauri) {
+      // Inventory is tenant-private. Searching public catalog metadata never
+      // authorizes the old unscoped SELECT i.* FROM inventory. The native
+      // projection authenticates the actor, tenant and store permission,
+      // and redacts acquisition cost unless can_manage_inventory is granted.
+      const { invoke } = await import('@tauri-apps/api/core');
+      const rows = await invoke<any[]>('db_read_scoped', {
+        queryId: 'inventory.enriched', recordId: null,
+        search: query.trim(), drugId: null, limit: 20, offset: 0,
+      });
+      if (!Array.isArray(rows) || rows.length > 20 ||
+          rows.some(row => !row || typeof row !== 'object' || Array.isArray(row) ||
+            typeof row.id !== 'string' || !Number.isSafeInteger(row.drug_id))) {
+        throw new Error('Invalid authenticated inventory search response');
+      }
+      return { success: true, data: rows };
+    }
 
     const searchLower = query.toLowerCase().trim();
     
@@ -463,7 +523,7 @@ export async function updateMasterDrugAction(id: number, data: any) {
 
     const update = db.transaction(async (db) => {
       const transactionalCurrent = await db.prepare(`
-        SELECT has_expiry, large_unit, medium_unit, small_unit, large_to_medium, medium_to_small
+        SELECT official_price, has_expiry, large_unit, medium_unit, small_unit, large_to_medium, medium_to_small
         FROM master_drugs WHERE id = ?
       `).get(id) as any;
       if (!transactionalCurrent) throw new Error('الصنف غير موجود');
@@ -536,13 +596,17 @@ export async function updateMasterDrugAction(id: number, data: any) {
       data.side_effects || null,
         id
       );
-      // ponytail: one selling price source keeps inventory, POS and purchase entry aligned.
-      await db.prepare(`
-        UPDATE inventory
-        SET local_selling_price = ?,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE drug_id = ?
-      `).run(officialPrice, id);
+      // Keep inventory selling prices aligned when the master selling price is
+      // intentionally changed. Unrelated card edits must not rewrite existing
+      // lot-specific prices or touch their updated_at timestamps.
+      if (Number(transactionalCurrent.official_price ?? 0) !== officialPrice) {
+        await db.prepare(`
+          UPDATE inventory
+          SET local_selling_price = ?,
+              updated_at = CURRENT_TIMESTAMP
+          WHERE drug_id = ?
+        `).run(officialPrice, id);
+      }
     });
     await update();
 
@@ -600,6 +664,10 @@ export async function searchMasterDrugsAction(queryOrOptions: string | {
       await secureCache.load();
       allDrugs = secureCache.getAllDrugs();
     } catch (cacheErr) {
+      // The native reference catalog has a fixed, independently authenticated
+      // projection. An unavailable/oversized cache is an error, never permission
+      // to fall back to renderer-authored SELECT * under strict SQL enforcement.
+      if (isTauri) throw new Error('تعذر تحميل دليل الأدوية الموثق');
       console.warn('secureCache unavailable in searchMasterDrugsAction, searching DB only:', cacheErr);
     }
 
@@ -634,7 +702,7 @@ export async function searchMasterDrugsAction(queryOrOptions: string | {
     // stale after another window adds a matching custom drug, which otherwise makes
     // both the requested page and its total inaccurate. Non-paged autocomplete keeps
     // the existing small-cache fallback to avoid routinely querying SQLite.
-    if (pagedRequest || allDrugs.length === 0 || cacheMatched.length < 20) {
+    if (!isTauri && (pagedRequest || allDrugs.length === 0 || cacheMatched.length < 20)) {
       const whereClauses: string[] = [
         "(trade_name IS NULL OR trade_name != 'SECURE')",
         "(trade_name_en IS NULL OR trade_name_en != 'SECURE')"
@@ -743,7 +811,12 @@ export async function searchMasterDrugsAction(queryOrOptions: string | {
       : sortedMerged.slice(0, 100);
 
     const ids = merged.map(drug => drug.id);
-    const costs = ids.length ? await db.prepare(`
+    // Inventory acquisition costs belong to a pharmacy, not the shared drug
+    // catalog. Native renderer-authored SELECTs are intentionally prohibited
+    // from reading inventory: this old global aggregate could disclose another
+    // tenant's stock cost and used to make every public catalog search fail.
+    // A missing price is unknown, never an inferred zero from foreign lots.
+    const costs = !isTauri && ids.length ? await db.prepare(`
       SELECT drug_id, SUM(quantity * cost_price) / NULLIF(SUM(quantity), 0) AS purchase_price
       FROM inventory
       WHERE drug_id IN (${ids.map(() => '?').join(',')}) AND quantity > 0
@@ -1169,6 +1242,10 @@ export async function deleteUsageMethodAction(id: number) {
 // Adjustment Reasons
 export async function getAdjustmentReasonsAction() {
   try {
+    if (isTauri) {
+      const { readAdjustmentReasonsNative } = await import('./stock-adjustment-native-reads');
+      return { success: true, data: await readAdjustmentReasonsNative() };
+    }
     const items = await db.prepare('SELECT * FROM adjustment_reasons ORDER BY id ASC').all();
     return { success: true, data: items };
   } catch (error: any) {
@@ -1299,7 +1376,9 @@ export async function getUnusedItemsAction() {
     }
 
     const items = await db.prepare(`
-      SELECT m.* FROM master_drugs m
+      SELECT m.id, m.trade_name, m.trade_name_en, m.manufacturer,
+             m.official_price, m.is_medicine
+      FROM master_drugs m
       WHERE NOT (${MASTER_DRUG_REFERENCE_PREDICATE})
       ORDER BY m.trade_name ASC
     `).all() as any[];
@@ -1540,6 +1619,37 @@ export async function completeOpeningBalanceAction(obId: string) {
 
 // Stock Adjustments
 export async function createStockAdjustmentAction(inventoryId: string, data: { reason_id: number, old_quantity: number, new_quantity: number, notes?: string }) {
+  if (isTauri) {
+    try {
+      if (!inventoryId || typeof inventoryId !== 'string' ||
+          !Number.isFinite(data.old_quantity) || data.old_quantity < 0 ||
+          !Number.isFinite(data.new_quantity) || data.new_quantity < 0 ||
+          !Number.isSafeInteger(data.reason_id) || data.reason_id <= 0) {
+        return { success: false, error: 'بيانات تسوية المخزون غير صالحة' };
+      }
+      const result = await (await import('@tauri-apps/api/core')).invoke<unknown>(
+        'adjust_inventory_lot_native', {
+          payload: {
+            id: inventoryId,
+            expectedQuantity: data.old_quantity,
+            quantity: data.new_quantity,
+            reasonId: data.reason_id,
+          },
+        },
+      );
+      if (!result || typeof result !== 'object' || Array.isArray(result) ||
+          (result as { success?: unknown }).success !== true ||
+          (result as { id?: unknown }).id !== inventoryId ||
+          'error' in result || 'code' in result) {
+        throw new Error('Invalid native adjustment acknowledgement');
+      }
+      revalidatePath('/inventory');
+      try { notifyInventoryChanged(); } catch (error) { console.error('Native adjustment refresh failed:', error); }
+      return { success: true };
+    } catch {
+      return { success: false, error: 'فشل التسوية الأصلية؛ لا يُسمح بالتراجع إلى SQL من الواجهة' };
+    }
+  }
   try {
     const session = await getLocalSession();
     if (!session || !hasUserPermissionSync(session, 'can_manage_inventory')) return { success: false, error: 'Unauthorized' };

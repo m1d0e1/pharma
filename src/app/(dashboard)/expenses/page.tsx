@@ -4,6 +4,7 @@ import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { useRouter } from 'next/navigation';
 import AccessDenied from '@/components/AccessDenied';
 import ExpensesClient from '@/components/expenses/ExpensesClient';
+import { LockKeyhole } from 'lucide-react';
 
 export default function ExpensesPage() {
   const router = useRouter();
@@ -61,7 +62,7 @@ export default function ExpensesPage() {
   if (!hasUserPermissionSync(user, 'can_view_expenses')) {
     return (
       <div className="flex flex-col items-center justify-center h-[60vh] text-center space-y-4" dir="rtl">
-        <div className="text-6xl">🔐</div>
+        <LockKeyhole className="w-12 h-12 text-slate-400" aria-hidden="true" />
         <h2 className="text-2xl font-bold text-slate-800 dark:text-white">غير مصرح لك بالوصول</h2>
         <p className="text-slate-500">ليس لديك صلاحية عرض المصروفات.</p>
       </div>
@@ -69,10 +70,10 @@ export default function ExpensesPage() {
   }
 
   return (
-    <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700" dir="rtl">
+    <div className="space-y-6" dir="rtl">
       <div>
-        <h1 className="text-3xl font-bold text-slate-900 dark:text-white">المصروفات والأرباح</h1>
-        <p className="text-slate-500 mt-1">تتبع المصروفات وحساب صافي الأرباح الفعلي</p>
+        <h1 className="text-2xl font-bold text-slate-900 dark:text-white">المصروفات والأرباح</h1>
+        <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">تتبع المصروفات وصافي الأرباح الفعلي</p>
       </div>
 
       <ExpensesClient

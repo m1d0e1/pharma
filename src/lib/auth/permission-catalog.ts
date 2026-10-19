@@ -85,6 +85,7 @@ export const PERMISSION_MODULES: readonly PermissionModule[] = [
     description: 'دليل المرضى وحساباتهم والتفاعلات الدوائية',
     permissions: [
       { key: 'can_view_patients', label: 'عرض وإدارة المرضى وحساباتهم' },
+      { key: 'can_view_interactions', label: 'عرض وفحص التفاعلات الدوائية' },
       { key: 'can_delete_patients', label: 'حذف أو تعطيل سجل مريض' },
     ],
   },

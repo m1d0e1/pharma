@@ -15,6 +15,8 @@ describe('secure cache auto-preload boundary', () => {
     jest.useRealTimers();
     jest.unmock('@/lib/db/tauri');
     jest.unmock('@/lib/env');
+    jest.unmock('@/lib/auth/local');
+    jest.unmock('@tauri-apps/api/core');
   });
 
   test('does not start SQLite cache loading merely because a browser-like window exists', async () => {
@@ -30,17 +32,27 @@ describe('secure cache auto-preload boundary', () => {
     expect(dbSelect).not.toHaveBeenCalled();
   });
 
-  test('keeps the intended eager preload in the Tauri runtime', async () => {
+  test('skips Tauri preload while logged out and loads after native login', async () => {
     const dbSelect = jest.fn().mockResolvedValue([]);
+    const invoke = jest.fn().mockResolvedValue([]);
+    const getLocalSession = jest.fn().mockResolvedValue(null);
     jest.doMock('@/lib/db/tauri', () => ({ dbSelect }));
+    jest.doMock('@tauri-apps/api/core', () => ({ invoke }));
     jest.doMock('@/lib/env', () => ({ isClient: true, isTauri: true }));
+    jest.doMock('@/lib/auth/local', () => ({ getLocalSession }));
 
-    require('@/lib/cache/secure_cache');
+    const { secureCache } = require('@/lib/cache/secure_cache');
     jest.advanceTimersByTime(501);
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(dbSelect).toHaveBeenCalledTimes(1);
+    expect(getLocalSession).toHaveBeenCalledTimes(1);
+    expect(dbSelect).not.toHaveBeenCalled();
+
+    getLocalSession.mockResolvedValue({ id: 'owner' });
+    await secureCache.load();
+    expect(dbSelect).not.toHaveBeenCalled();
+    expect(invoke).toHaveBeenCalledWith('read_master_catalog_cache_native');
   });
 
   test('hydrates has_expiry into cached master drugs used by downstream purchase search', async () => {
@@ -85,23 +97,27 @@ describe('secure cache auto-preload boundary', () => {
     const dbSelect = jest.fn()
       .mockResolvedValueOnce([oldDrug])
       .mockResolvedValueOnce([canonicalDrug]);
+    const invoke = jest.fn()
+      .mockResolvedValueOnce([oldDrug])
+      .mockResolvedValueOnce([canonicalDrug]);
+    jest.doMock('@/lib/auth/local', () => ({ getLocalSession: jest.fn().mockResolvedValue({ id: 'owner' }) }));
     jest.doMock('@/lib/db/tauri', () => ({ dbSelect }));
+    jest.doMock('@tauri-apps/api/core', () => ({ invoke }));
     jest.doMock('@/lib/env', () => ({ isClient: true, isTauri: true }));
 
     const { secureCache } = require('@/lib/cache/secure_cache');
     jest.advanceTimersByTime(501);
-    await Promise.resolve();
-    await Promise.resolve();
+    await secureCache.load();
     expect(secureCache.getDrug(10)).toMatchObject({ id: 10 });
 
     window.dispatchEvent(new StorageEvent('storage', {
       key: 'pharma:drug-identity-updated',
       newValue: JSON.stringify({ sourceIds: [10], targetId: 20, nonce: 'other-window' }),
     }));
-    await Promise.resolve();
-    await Promise.resolve();
+    await secureCache.load();
 
-    expect(dbSelect).toHaveBeenCalledTimes(2);
+    expect(dbSelect).not.toHaveBeenCalled();
+    expect(invoke).toHaveBeenCalledTimes(2);
     expect(secureCache.getDrug(10)).toBeUndefined();
     expect(secureCache.getDrug(20)).toMatchObject({ id: 20, trade_name: 'Canonical' });
   });
@@ -117,23 +133,27 @@ describe('secure cache auto-preload boundary', () => {
     const dbSelect = jest.fn()
       .mockResolvedValueOnce([before])
       .mockResolvedValueOnce([after]);
+    const invoke = jest.fn()
+      .mockResolvedValueOnce([before])
+      .mockResolvedValueOnce([after]);
+    jest.doMock('@/lib/auth/local', () => ({ getLocalSession: jest.fn().mockResolvedValue({ id: 'owner' }) }));
     jest.doMock('@/lib/db/tauri', () => ({ dbSelect }));
+    jest.doMock('@tauri-apps/api/core', () => ({ invoke }));
     jest.doMock('@/lib/env', () => ({ isClient: true, isTauri: true }));
 
     const { secureCache } = require('@/lib/cache/secure_cache');
     jest.advanceTimersByTime(501);
-    await Promise.resolve();
-    await Promise.resolve();
+    await secureCache.load();
     expect(secureCache.getDrug(101)).toMatchObject({ manufacturer: 'Old Manufacturer', official_price: 20 });
 
     window.dispatchEvent(new StorageEvent('storage', {
       key: 'pharma:drug-catalog-updated',
       newValue: 'other-window-catalog-update',
     }));
-    await Promise.resolve();
-    await Promise.resolve();
+    await secureCache.load();
 
-    expect(dbSelect).toHaveBeenCalledTimes(2);
+    expect(dbSelect).not.toHaveBeenCalled();
+    expect(invoke).toHaveBeenCalledTimes(2);
     expect(secureCache.getDrug(101)).toMatchObject({ manufacturer: 'Updated Manufacturer', official_price: 25 });
   });
 

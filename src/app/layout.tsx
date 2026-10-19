@@ -15,6 +15,7 @@ export const viewport: Viewport = {
 }
 
 import AppInitializer from '@/components/AppInitializer'
+import LicenseBoundary from '@/components/LicenseBoundary'
 
 export default function RootLayout({
   children,
@@ -39,9 +40,11 @@ export default function RootLayout({
         ` }} />
       </head>
       <body className="antialiased" suppressHydrationWarning>
-        <AppInitializer>
-          {children}
-        </AppInitializer>
+        <LicenseBoundary>
+          <AppInitializer>
+            {children}
+          </AppInitializer>
+        </LicenseBoundary>
         <Toaster position="top-center" />
       </body>
     </html>

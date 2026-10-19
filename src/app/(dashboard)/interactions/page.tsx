@@ -4,6 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { getClientSession } from '@/lib/auth/local';
 import InteractionsClient from '@/components/interactions/InteractionsClient';
 import { dbSelect, dbGet } from '@/lib/db/tauri';
+import { AlertTriangle, ShieldCheck } from 'lucide-react';
 
 export default function InteractionsPage() {
   const [user, setUser] = useState<any>(null);
@@ -29,16 +30,22 @@ export default function InteractionsPage() {
         const majorRow = await dbGet("SELECT COUNT(*) as count FROM drug_interactions WHERE severity = 'major'");
         const moderateRow = await dbGet("SELECT COUNT(*) as count FROM drug_interactions WHERE severity = 'moderate'");
 
+        const countRows = [totalRow, criticalRow, majorRow, moderateRow];
+        if (countRows.some(row => !row || !Number.isSafeInteger(row.count) || row.count < 0)) {
+          throw new Error('Drug interaction counts unavailable');
+        }
+
         if (!active) return;
         setStats({
-          total: totalRow?.count || 0,
-          critical: criticalRow?.count || 0,
-          major: majorRow?.count || 0,
-          moderate: moderateRow?.count || 0,
+          total: totalRow.count,
+          critical: criticalRow.count,
+          major: majorRow.count,
+          moderate: moderateRow.count,
         });
 
         const initial = await dbSelect('SELECT * FROM drug_interactions ORDER BY severity DESC, ingredient_a ASC LIMIT 50');
-        if (active) setInitialData(initial || []);
+        if (!Array.isArray(initial)) throw new Error('Drug interaction list unavailable');
+        if (active) setInitialData(initial);
       } catch (err) {
         console.error('Failed to load interactions:', err);
         if (active) setLoadError('تعذر تحميل بيانات التفاعلات');
@@ -75,31 +82,31 @@ export default function InteractionsPage() {
   }
 
   return (
-    <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700" dir="rtl">
+    <div className="space-y-6" dir="rtl">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
         <div>
-          <h1 className="text-3xl font-bold text-slate-900 dark:text-white">فحص التفاعلات الدوائية</h1>
-          <p className="text-slate-500 mt-1">نظام ذكي لحماية المريض من التفاعلات الدوائية الخطيرة</p>
+          <h1 className="text-2xl font-bold text-slate-900 dark:text-white">فحص التفاعلات الدوائية</h1>
+          <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">قاعدة التفاعلات الدوائية والتنبيهات السريرية</p>
         </div>
       </div>
 
       {/* Safety Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-xl">
-          <p className="text-slate-500 text-xs font-bold uppercase tracking-wider mb-2">إجمالي التفاعلات</p>
-          <h3 className="text-3xl font-black text-slate-900 dark:text-white">{stats.total}</h3>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
+          <p className="text-slate-500 dark:text-slate-400 text-xs font-semibold mb-2">إجمالي التفاعلات</p>
+          <h3 className="text-2xl font-bold text-slate-900 dark:text-white tabular-nums">{stats.total}</h3>
           <p className="text-xs mt-2 text-slate-400">في قاعدة البيانات</p>
         </div>
-        <div className="bg-gradient-to-br from-amber-500 to-orange-600 p-6 rounded-3xl text-white shadow-xl">
-          <p className="text-amber-100 text-xs font-bold uppercase tracking-wider mb-2">⚠️ خطيرة</p>
-          <h3 className="text-3xl font-black">{stats.major}</h3>
-          <p className="text-xs mt-2 text-amber-200">تحتاج تأكيد الصيدلي</p>
+        <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-amber-200 dark:border-amber-900/60 shadow-sm">
+          <div className="flex items-center justify-between gap-3 mb-2"><p className="text-amber-700 dark:text-amber-300 text-xs font-semibold">تفاعلات خطيرة</p><AlertTriangle className="w-5 h-5 text-amber-600" aria-hidden="true" /></div>
+          <h3 className="text-2xl font-bold text-slate-900 dark:text-white tabular-nums">{stats.major}</h3>
+          <p className="text-xs mt-2 text-slate-500 dark:text-slate-400">تحتاج تأكيد الصيدلي</p>
         </div>
       </div>
 
       {/* How it works */}
-      <div className="bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 p-8 rounded-3xl border-2 border-dashed border-blue-200 dark:border-blue-800">
-        <h3 className="text-lg font-bold text-blue-800 dark:text-blue-300 mb-4">🛡️ كيف يعمل نظام الحماية الدوائية</h3>
+      <div className="bg-blue-50/70 dark:bg-blue-950/20 p-5 rounded-xl border border-blue-200 dark:border-blue-900/60">
+        <h3 className="text-base font-semibold text-blue-900 dark:text-blue-200 mb-4 flex items-center gap-2"><ShieldCheck className="w-5 h-5" aria-hidden="true" /> كيف يعمل فحص التفاعلات</h3>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <div className="space-y-2">
             <div className="w-10 h-10 bg-blue-200 dark:bg-blue-800 rounded-xl flex items-center justify-center text-lg font-black text-blue-700">1</div>

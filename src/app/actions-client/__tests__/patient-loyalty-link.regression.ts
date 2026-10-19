@@ -36,9 +36,12 @@ const { addPatientAction, getPatientForPosAction, searchPatientsAction, updatePa
 
 describe('patient profile and loyalty linkage', () => {
   beforeEach(() => {
-    mockSession = { id: 'owner-1', role: 'owner', pharmacy_id: 'local_default' };
+    mockSession = { id: 'owner-1', role: 'owner', pharmacy_id: 'tenant-a' };
     mockDb = new Database(':memory:');
     mockDb.exec(`
+      CREATE TABLE native_patient_directory_ownership (
+        patient_id TEXT PRIMARY KEY, pharmacy_id TEXT NOT NULL
+      );
       CREATE TABLE patients (
         id TEXT PRIMARY KEY,
         full_name TEXT NOT NULL,
@@ -63,6 +66,7 @@ describe('patient profile and loyalty linkage', () => {
       CREATE TABLE sales_invoices (
         id TEXT PRIMARY KEY,
         patient_id TEXT,
+        pharmacy_id TEXT,
         total_amount REAL DEFAULT 0,
         payment_method TEXT,
         status TEXT
@@ -98,6 +102,8 @@ describe('patient profile and loyalty linkage', () => {
       ) VALUES (
         'pos-patient', 'POS Loyalty Patient', '01099999999', 500, 385, 180, 1
       );
+      INSERT INTO native_patient_directory_ownership (patient_id, pharmacy_id) VALUES
+        ('patient-1', 'tenant-a'), ('pos-patient', 'tenant-a');
     `);
   });
 
@@ -125,7 +131,7 @@ describe('patient profile and loyalty linkage', () => {
   });
 
   it('refreshes checkout-safe patient data for a POS-only role without granting profile access', async () => {
-    mockSession = { id: 'cashier-1', role: 'cashier', pharmacy_id: 'local_default', permissions: { can_access_pos: true } };
+    mockSession = { id: 'cashier-1', role: 'cashier', pharmacy_id: 'tenant-a', permissions: { can_access_pos: true } };
 
     expect(await getPatientForPosAction('pos-patient')).toMatchObject({
       success: true,
@@ -201,7 +207,7 @@ describe('patient profile and loyalty linkage', () => {
     });
   });
 
-  it('does not trust caller-supplied loyalty points when creating a patient', async () => {
+  it('rejects browser creation entirely rather than writing unowned patients or caller-supplied points', async () => {
     expect(await addPatientAction({
       full_name: 'New Patient',
       name_en: '',
@@ -220,10 +226,37 @@ describe('patient profile and loyalty linkage', () => {
       customer_type: 'individual',
       payment_method: 'cash',
       notes: '',
-    })).toMatchObject({ success: true });
+    }, '11111111-1111-4111-8111-111111111111')).toMatchObject({
+      success: false,
+      error: 'إنشاء المرضى يتطلب التحقق الأصلي من ملكية الصيدلية',
+    });
 
-    expect(mockDb.prepare("SELECT points_balance FROM patients WHERE id = 'patient-id'").get()).toEqual({
-      points_balance: 0,
+    expect(mockDb.prepare("SELECT COUNT(*) AS count FROM patients WHERE full_name = 'New Patient'").get()).toEqual({ count: 0 });
+  });
+
+  it('fails closed when an otherwise witnessed patient has another tenant\'s history', async () => {
+    mockDb.prepare('INSERT INTO sales_invoices (id, patient_id, pharmacy_id, total_amount) VALUES (?, ?, ?, ?)')
+      .run('foreign-sale', 'pos-patient', 'tenant-b', 200);
+
+    const found = await searchPatientsAction('POS Loyalty');
+    expect(found.success).toBe(false);
+    expect(found.data).toBeUndefined();
+    const forPos = await getPatientForPosAction('pos-patient');
+    expect(forPos.success).toBe(false);
+    expect(forPos.data).toBeUndefined();
+    expect(mockDb.prepare("SELECT points_balance FROM patients WHERE id = 'pos-patient'").get())
+      .toEqual({ points_balance: 180 });
+  });
+
+  it('never treats a legacy local_default session as a current tenant witness', async () => {
+    mockSession.pharmacy_id = 'local_default';
+    expect(await searchPatientsAction('POS Loyalty')).toMatchObject({
+      success: false,
+      error: 'Legacy patient ownership needs independent tenant verification',
+    });
+    expect(await getPatientForPosAction('pos-patient')).toMatchObject({
+      success: false,
+      error: 'Legacy patient ownership needs independent tenant verification',
     });
   });
 });

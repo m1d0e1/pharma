@@ -5,6 +5,7 @@ import { dbSelect } from '@/lib/db/tauri';
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { localDate } from '@/lib/time';
 import { subscribeInventoryChanges } from '@/lib/inventory/refresh';
+import { Hourglass, Pill } from 'lucide-react';
 
 export default function ExpiryWidget() {
   const [items, setItems] = useState<any[]>([]);
@@ -83,7 +84,7 @@ export default function ExpiryWidget() {
 
   if (loading) {
     return (
-      <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-xl h-full flex items-center justify-center">
+      <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm h-full flex items-center justify-center">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
       </div>
     );
@@ -91,7 +92,7 @@ export default function ExpiryWidget() {
 
   if (accessDenied) {
     return (
-      <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-xl h-full flex items-center justify-center">
+      <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm h-full flex items-center justify-center">
         <p className="font-black text-slate-500 dark:text-slate-300">غير مصرح بعرض بيانات المخزون</p>
       </div>
     );
@@ -99,12 +100,12 @@ export default function ExpiryWidget() {
 
   if (loadError) {
     return (
-      <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-xl h-full flex flex-col items-center justify-center gap-4 text-center">
+      <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm h-full flex flex-col items-center justify-center gap-4 text-center">
         <p className="font-black text-slate-800 dark:text-slate-100">تعذر تحميل تنبيهات انتهاء الصلاحية</p>
         <button
           type="button"
           onClick={() => setLoadAttempt(attempt => attempt + 1)}
-          className="px-4 py-2 rounded-xl bg-blue-600 text-white text-xs font-black hover:bg-blue-700"
+          className="px-4 py-2 rounded-lg bg-primary-700 text-white text-xs font-semibold hover:bg-primary-800 transition-colors"
         >
           إعادة المحاولة
         </button>
@@ -113,17 +114,17 @@ export default function ExpiryWidget() {
   }
 
   return (
-    <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-xl h-full">
-      <div className="flex items-center justify-between mb-6">
-        <h3 className="text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
-          <span className="text-2xl">⏳</span> تنبيهات انتهاء الصلاحية
+    <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm h-full">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-lg font-semibold text-slate-900 dark:text-white flex items-center gap-2">
+          <Hourglass className="w-5 h-5 text-amber-600" aria-hidden="true" /> تنبيهات انتهاء الصلاحية
         </h3>
         <span className="bg-amber-100 text-amber-700 px-3 py-1 rounded-full text-xs font-bold">30 يوم</span>
       </div>
 
-      <div className="space-y-4">
+      <div className="space-y-3">
         {items.length === 0 ? (
-          <p className="text-slate-400 text-center py-8">لا توجد أصناف قاربت على الانتهاء 👍</p>
+          <p className="text-slate-500 dark:text-slate-400 text-center py-8">لا توجد أصناف قاربت على الانتهاء خلال 30 يوماً</p>
         ) : (
           items.map(item => {
             const daysLeft = Math.ceil(item.days_left);
@@ -133,10 +134,10 @@ export default function ExpiryWidget() {
               : 'bg-yellow-50 dark:bg-yellow-900/10 border-yellow-100 dark:border-yellow-800/30 text-yellow-700 dark:text-yellow-400';
             return (
               <div key={item.id} className={`flex items-center justify-between p-4 rounded-2xl border ${urgencyClass}`}>
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-white dark:bg-slate-800 rounded-xl flex items-center justify-center shadow-sm">💊</div>
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-9 h-9 bg-white dark:bg-slate-800 rounded-lg flex items-center justify-center border border-current/10 shrink-0"><Pill className="w-4 h-4" aria-hidden="true" /></div>
                   <div>
-                    <p className="font-bold text-slate-900 dark:text-white text-sm">{item.drug_name}</p>
+                    <p className="font-semibold text-slate-900 dark:text-white text-sm truncate">{item.drug_name}</p>
                     <p className="text-xs text-slate-500">{item.expiry_date}</p>
                   </div>
                 </div>

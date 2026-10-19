@@ -17,6 +17,24 @@ describe('unified shift navigation', () => {
     (getCurrentShiftStatsAction as jest.Mock).mockResolvedValue({ success: true, data: null });
   });
 
+  it('announces which data is loading until the shift request completes', async () => {
+    let resolveShift!: (value: unknown) => void;
+    (getCurrentShiftAction as jest.Mock).mockImplementationOnce(
+      () => new Promise(resolve => { resolveShift = resolve; }),
+    );
+    render(<ShiftManagement />);
+
+    const status = screen.getByRole('status');
+    expect(status).toHaveTextContent('جاري تحميل حالة الوردية...');
+    expect(status).toHaveAttribute('aria-live', 'polite');
+    expect(status).toHaveAttribute('dir', 'rtl');
+    expect(status.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
+
+    await act(async () => { resolveShift({ success: true, data: null }); });
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'إدارة الجلسات النقدية' })).toHaveAttribute('href', '/shifts');
+  });
+
   it('opens the canonical shift-management page from the dashboard', async () => {
     (getCurrentShiftAction as jest.Mock).mockResolvedValue({ success: true, data: null });
 

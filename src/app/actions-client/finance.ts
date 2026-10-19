@@ -1,5 +1,5 @@
 
-import { dbSelect, dbExecute, dbGet, dbTransaction, generateId, type TransactionDb } from '@/lib/db/tauri';
+import { dbSelect, dbExecute, dbGet, dbTransaction, generateId, normalizeDatabaseTimestamps, type TransactionDb } from '@/lib/db/tauri';
 const logActivity = async (userId, action, details) => {
   try {
     await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [userId, action, details]);
@@ -48,9 +48,133 @@ import { z } from 'zod';
 import { patientOutstandingBalanceQuery } from '@/lib/patients/balance';
 import { isBusinessDate, localDate } from '@/lib/time';
 import { getOpenDrawerSnapshot } from '@/lib/finance/drawer';
+import { isTauri } from '@/lib/env';
 
 const hasAnyFinancePermission = (user: any, ...permissions: string[]) =>
   !!user && permissions.some(permission => hasUserPermissionSync(user, permission));
+
+const nativeRequestIdSchema = z.string().regex(
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  'معرف محاولة العملية غير صالح',
+).optional();
+
+type NativeLedgerProjection = 'cash_movements' | 'journals' | 'journal_entries';
+type NativeFinanceProjection = NativeLedgerProjection | 'accounts_chart' | 'trial_balance' | 'treasury_cash_ledger';
+
+// Web/database-backed development remains a distinct supported transport.
+// Crucially, this path is NEVER used after native IPC fails in the desktop app.
+async function webFinanceRows(queryId: NativeLedgerProjection, pharmacyId: string, filters: {
+  movementType?: string; category?: string; dateFrom?: string; dateTo?: string; journalId?: string;
+} = {}): Promise<any[]> {
+  if (queryId === 'cash_movements') {
+    return db.prepare(`
+      SELECT cm.*, COALESCE(u.full_name, u.username, cm.user_id) AS user_name,
+             s.status AS shift_status
+      FROM cash_movements cm
+      LEFT JOIN users u ON u.id = cm.user_id
+      LEFT JOIN shifts s ON s.id = cm.shift_id
+      WHERE (cm.pharmacy_id = ? OR (cm.pharmacy_id IS NULL AND ? = 'local_default'))
+        AND (? IS NULL OR cm.type = ?)
+        AND (? IS NULL OR cm.category = ?)
+        AND (? IS NULL OR date(cm.date) >= date(?))
+        AND (? IS NULL OR date(cm.date) <= date(?))
+      ORDER BY cm.created_at DESC, cm.id DESC
+    `).all(pharmacyId, pharmacyId,
+      filters.movementType ?? null, filters.movementType ?? null,
+      filters.category ?? null, filters.category ?? null,
+      filters.dateFrom ?? null, filters.dateFrom ?? null,
+      filters.dateTo ?? null, filters.dateTo ?? null);
+  }
+  if (queryId === 'journals') {
+    return db.prepare(`
+      SELECT dj.* FROM daily_journals dj
+      WHERE (dj.pharmacy_id = ? OR (dj.pharmacy_id IS NULL AND ? = 'local_default'))
+        AND (? IS NULL OR date(dj.date) >= date(?))
+        AND (? IS NULL OR date(dj.date) <= date(?))
+      ORDER BY dj.date DESC, dj.created_at DESC, dj.id DESC
+    `).all(pharmacyId, pharmacyId,
+      filters.dateFrom ?? null, filters.dateFrom ?? null,
+      filters.dateTo ?? null, filters.dateTo ?? null);
+  }
+  return db.prepare(`
+    SELECT e.*, a.name_ar AS account_name, a.code AS account_code,
+           dj.description, dj.date,
+           CASE WHEN e.type = 'debit' THEN e.amount ELSE 0 END AS debit,
+           CASE WHEN e.type = 'credit' THEN e.amount ELSE 0 END AS credit
+    FROM journal_entries e
+    JOIN daily_journals dj ON e.journal_id = dj.id
+    JOIN accounts a ON e.account_id = a.id
+    WHERE e.journal_id = ?
+      AND (dj.pharmacy_id = ? OR (dj.pharmacy_id IS NULL AND ? = 'local_default'))
+    ORDER BY e.type DESC, e.amount DESC
+  `).all(filters.journalId, pharmacyId, pharmacyId);
+}
+
+// The native command owns all SQL, pharmacy scoping and live role checks. Each
+// page is bounded; exceeding the overall UI budget fails rather than showing a
+// partial financial ledger or falling back to renderer-supplied SQL.
+async function nativeFinanceRows(queryId: NativeFinanceProjection, filters: {
+  movementType?: 'receipt' | 'disbursement';
+  category?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  journalId?: string;
+} = {}, expectedActorId?: string): Promise<any[]> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  const pageSize = 200;
+  const maxRows = 10_000;
+  const rows: any[] = [];
+  let readScope: string | undefined;
+  let readActor: string | undefined;
+  for (let offset = 0; offset <= maxRows; offset += pageSize) {
+    // The last probe detects overflow without silently truncating a list.
+    const page = await invoke<{ actorId: string; pharmacyId: string; rows: any[] }>('finance_read_projection', {
+      queryId, ...filters, limit: offset === maxRows ? 1 : pageSize, offset,
+    });
+    if (!page || !Array.isArray(page.rows) || page.rows.length > (offset === maxRows ? 1 : pageSize)
+      || !page.actorId || !page.pharmacyId) {
+      throw new Error('Invalid native finance response');
+    }
+    if (expectedActorId && (page.actorId !== expectedActorId || page.pharmacyId === 'local_default')) {
+      throw new Error('Native accounting report lacks verified actor or tenant ownership');
+    }
+    if (readScope !== undefined && (page.pharmacyId !== readScope || page.actorId !== readActor)) {
+      throw new Error('Finance read scope changed during pagination');
+    }
+    readScope = page.pharmacyId;
+    readActor = page.actorId;
+    if (offset === maxRows && page.rows.length > 0) throw new Error('Finance ledger exceeds safe read budget');
+    if (offset === maxRows) break;
+    rows.push(...page.rows);
+    if (page.rows.length < pageSize) break;
+  }
+  return normalizeDatabaseTimestamps(rows);
+}
+
+function verifiedNativeAccounts(rows: any[], trialBalance: boolean): any[] {
+  if (!rows.length) throw new Error('Native finance account chart is missing');
+  const ids = new Set<number>();
+  const codes = new Set<string>();
+  const metrics = trialBalance
+    ? ['opening_debit', 'opening_credit', 'period_debit', 'period_credit', 'total_debit', 'total_credit']
+    : ['debit', 'credit', 'balance'];
+  for (const row of rows) {
+    if (!row || typeof row !== 'object' || Array.isArray(row)
+      || !Number.isSafeInteger(row.id) || row.id <= 0
+      || typeof row.code !== 'string' || !row.code.trim()
+      || typeof row.name_ar !== 'string' || !row.name_ar.trim()
+      || !['asset', 'expense', 'liability', 'equity', 'revenue', 'income'].includes(row.type)
+      || (row.is_group !== 0 && row.is_group !== 1)
+      || (row.parent_id != null && (!Number.isSafeInteger(row.parent_id) || row.parent_id <= 0))
+      || metrics.some(metric => typeof row[metric] !== 'number' || !Number.isFinite(row[metric]))) {
+      throw new Error('Incomplete native accounting source response');
+    }
+    if (ids.has(row.id) || codes.has(row.code)) throw new Error('Duplicate native accounting account');
+    ids.add(row.id);
+    codes.add(row.code);
+  }
+  return rows;
+}
 
 type FinanceDb = Pick<TransactionDb, 'prepare'>;
 
@@ -121,11 +245,26 @@ const noticeSchema = z.object({
   reason: z.string().min(1),
   notes: z.string().optional(),
   date: z.string().refine(isBusinessDate, { message: 'تاريخ غير صالح' }),
+  request_id: nativeRequestIdSchema,
 });
 
 export async function addFinancialNoticeAction(rawData: z.infer<typeof noticeSchema>) {
   try {
     const data = noticeSchema.parse(rawData);
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const result = await invoke<{ id: string }>('create_financial_notice_native', {
+        payload: {
+          targetType: data.target_type, targetId: data.target_id || null,
+          noticeType: data.type, amount: data.amount, reason: data.reason,
+          notes: data.notes ?? null, date: data.date, requestId: data.request_id ?? generateId(),
+        },
+      });
+      if (typeof result?.id !== 'string' || !result.id) {
+        throw new Error('Incomplete native financial notice acknowledgement');
+      }
+      return { success: true, id: result.id };
+    }
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_view_notifications')) return { success: false, error: 'غير مصرح' };
 
@@ -214,11 +353,193 @@ const paymentSchema = z.object({
   payment_method: z.enum(['cash', 'bank']),
   notes: z.string().optional(),
   date: z.string().refine(isBusinessDate, { message: 'تاريخ غير صالح' }),
+  request_id: nativeRequestIdSchema,
 });
+
+// Never infer whether an ambiguous cash/bank write committed from a refreshed
+// balance. The original UUID is the only permitted input to read-only native
+// 051/055 source+ledger confirmation. The local hint is not money evidence.
+const PATIENT_PAYMENT_PENDING_KEY = 'pharma.patient.credit.payment.pending.v1';
+const PAYMENT_UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+type PendingPatientPayment = { version: 1; requestId: string; scopeSha256: string; amountCents: number };
+let nativePatientPaymentInFlight = false;
+
+function patientPaymentStorage(): Storage {
+  if (typeof globalThis.localStorage === 'undefined') {
+    throw new Error('Patient payment recovery storage unavailable; no payment was attempted');
+  }
+  return globalThis.localStorage;
+}
+function readPatientPaymentIntent(): PendingPatientPayment | null {
+  const raw = patientPaymentStorage().getItem(PATIENT_PAYMENT_PENDING_KEY);
+  if (raw === null) return null;
+  let value: Partial<PendingPatientPayment> | null;
+  try { value = JSON.parse(raw); } catch { value = null; }
+  if (!value || typeof value !== 'object' || Array.isArray(value) ||
+      Object.keys(value).sort().join(',') !== 'amountCents,requestId,scopeSha256,version' ||
+      value.version !== 1 || typeof value.requestId !== 'string' ||
+      !PAYMENT_UUID_V4.test(value.requestId) ||
+      typeof value.scopeSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(value.scopeSha256) ||
+      !Number.isSafeInteger(value.amountCents) || (value.amountCents as number) <= 0) {
+    throw new Error('Stored patient payment intent is invalid; reconcile the original transaction');
+  }
+  return value as PendingPatientPayment;
+}
+async function hashPatientPaymentIntent(values: unknown[]): Promise<string> {
+  if (!globalThis.crypto?.subtle) {
+    throw new Error('Secure patient payment recovery is unavailable; no payment was attempted');
+  }
+  const digest = await globalThis.crypto.subtle.digest(
+    'SHA-256', new TextEncoder().encode(JSON.stringify(values)),
+  );
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+function savePatientPaymentIntent(intent: PendingPatientPayment): void {
+  const store = patientPaymentStorage();
+  if (readPatientPaymentIntent()) {
+    throw new Error('Unresolved patient payment exists; original receipt must be reviewed');
+  }
+  store.setItem(PATIENT_PAYMENT_PENDING_KEY, JSON.stringify(intent));
+  const saved = readPatientPaymentIntent();
+  if (saved?.requestId !== intent.requestId || saved.scopeSha256 !== intent.scopeSha256 ||
+      saved.amountCents !== intent.amountCents) {
+    throw new Error('Patient payment intent was not durably saved; no payment was attempted');
+  }
+}
+function clearPatientPaymentIntent(intent: PendingPatientPayment): void {
+  try {
+    if (readPatientPaymentIntent()?.requestId === intent.requestId) {
+      patientPaymentStorage().removeItem(PATIENT_PAYMENT_PENDING_KEY);
+    }
+  } catch { /* successful native ACK is final; stale hint blocks next payment */ }
+}
 
 export async function addPatientPaymentAction(rawData: z.infer<typeof paymentSchema>) {
   try {
     const data = paymentSchema.parse(rawData);
+    if (isTauri) {
+      // The historical patients table has no branch owner. Rust settles only
+      // proven invoice-linked same-pharmacy debt, rejects ambiguous legacy
+      // balances, and posts payment+cash+ledger atomically under BEGIN IMMEDIATE.
+      if (nativePatientPaymentInFlight) {
+        throw new Error('Patient payment already in progress; no duplicate posting was attempted');
+      }
+      nativePatientPaymentInFlight = true;
+      try {
+      const cents = Math.round(data.amount * 100);
+      if (!Number.isFinite(data.amount) || data.amount > 1e12 ||
+          !Number.isSafeInteger(cents) || cents <= 0 ||
+          Math.abs(data.amount * 100 - cents) > 0.0000001) {
+        throw new Error('Patient payment must be an exact positive cent amount');
+      }
+      const user = await getLocalSession();
+      const actor = String(user?.id ?? '');
+      const tenant = String(user?.pharmacy_id ?? '');
+      if (!actor || !tenant || tenant === 'local_default' ||
+          !hasUserPermissionSync(user, 'can_view_patients') ||
+          !hasUserPermissionSync(user, 'acc_can_process_cash_flow')) {
+        throw new Error('Native patient payment actor/tenant permissions required');
+      }
+      const scopeSha256 = await hashPatientPaymentIntent([
+        actor, tenant, data.patient_id, cents,
+        data.payment_method, data.date, data.shift_id || null,
+      ]);
+      const previous = readPatientPaymentIntent();
+      if (previous && (previous.scopeSha256 !== scopeSha256 || previous.amountCents !== cents)) {
+        throw new Error('Another actor, tenant or patient has an unresolved payment; verify its original receipt');
+      }
+      const requestId = previous?.requestId ?? data.request_id ?? generateId();
+      if (!PAYMENT_UUID_V4.test(requestId)) {
+        throw new Error('Patient payment requires a canonical UUIDv4 request ID');
+      }
+      const intent: PendingPatientPayment = previous ?? { version: 1, requestId, scopeSha256, amountCents: cents };
+      const payload = {
+        patientId: data.patient_id,
+        shiftId: data.shift_id || null,
+        amount: data.amount,
+        paymentMethod: data.payment_method,
+        notes: data.notes || null,
+        date: data.date,
+        requestId,
+      };
+      type PaymentConfirmation = {
+        id: string; requestId: string; patientId: string; actorId: string;
+        pharmacyId: string; amountCents: number; paymentMethod: string; date: string;
+      };
+      const verifiedPayment = (receipt: PaymentConfirmation | null): receipt is PaymentConfirmation =>
+        !!receipt && typeof receipt.id === 'string' && receipt.id.trim().length > 0 &&
+        receipt.requestId === requestId && receipt.patientId === data.patient_id &&
+        receipt.actorId === actor && receipt.pharmacyId === tenant &&
+        receipt.amountCents === cents && receipt.paymentMethod === data.payment_method &&
+        receipt.date === data.date;
+      const { invoke } = await import('@tauri-apps/api/core');
+      if (previous) {
+        // Persisted original intent means a prior IPC may have committed.
+        // NEVER resubmit money, including when native read reports null.
+        let confirmed: PaymentConfirmation | null;
+        try {
+          confirmed = await invoke<PaymentConfirmation | null>(
+            'confirm_patient_payment_native', { payload },
+          );
+        } catch {
+          throw new Error('Original 051/055 payment receipt could not be checked; no repost was attempted');
+        }
+        if (!verifiedPayment(confirmed)) {
+          throw new Error('Original 051/055 payment is not independently verified; no repost was attempted');
+        }
+        clearPatientPaymentIntent(intent);
+        revalidatePath('/patients');
+        revalidatePath('/pos');
+        // Never invent a remaining balance from an old/new patient statement.
+        return { success: true, id: confirmed.id, remainingBalance: null };
+      }
+      const refreshed = await getLocalSession();
+      if (String(refreshed?.id ?? '') !== actor ||
+          String(refreshed?.pharmacy_id ?? '') !== tenant ||
+          !hasUserPermissionSync(refreshed, 'can_view_patients') ||
+          !hasUserPermissionSync(refreshed, 'acc_can_process_cash_flow')) {
+        throw new Error('Native patient payment actor/permissions changed before posting');
+      }
+      savePatientPaymentIntent(intent);
+      let writeError: unknown;
+      try {
+        const posted = await invoke<{ id: string; remainingBalance: number }>(
+          'post_patient_payment_native', { payload },
+        );
+        if (typeof posted?.id === 'string' && posted.id.trim() &&
+            Number.isFinite(posted.remainingBalance) && posted.remainingBalance >= 0) {
+          clearPatientPaymentIntent(intent);
+          revalidatePath('/patients');
+          revalidatePath('/pos');
+          return { success: true, id: posted.id, remainingBalance: posted.remainingBalance };
+        }
+        writeError = new Error('Native patient payment confirmation was incomplete');
+      } catch (error) {
+        writeError = error;
+      }
+      // A lost/invalid write ACK can be independently confirmed in the same
+      // invocation. Only a *typed* original nonce+actor+tenant+amount+method+
+      // date witness is success. A missing/unregistered native confirmation
+      // must preserve uncertainty and the durable original request ID.
+      let confirmed: PaymentConfirmation | null = null;
+      try {
+        confirmed = await invoke<PaymentConfirmation | null>(
+          'confirm_patient_payment_native', { payload },
+        );
+      } catch {
+        // Do not interpret an inaccessible receipt as permission to reissue.
+      }
+      if (verifiedPayment(confirmed)) {
+        clearPatientPaymentIntent(intent);
+        revalidatePath('/patients');
+        revalidatePath('/pos');
+        return { success: true, id: confirmed.id, remainingBalance: null };
+      }
+      throw writeError;
+      } finally {
+        nativePatientPaymentInFlight = false;
+      }
+    }
     const user = await getLocalSession();
     if (!user) return { success: false, error: 'غير مصرح' };
     if (!hasUserPermissionSync(user, 'can_view_patients') || !hasUserPermissionSync(user, 'acc_can_process_cash_flow')) {
@@ -276,7 +597,14 @@ export async function addPatientPaymentAction(rawData: z.infer<typeof paymentSch
     return { success: true, id, remainingBalance };
   } catch (error) {
     console.error('Add payment error:', error);
-    return { success: false, error: error instanceof Error ? error.message : 'فشل إضافة الدفعة' };
+    return {
+      success: false,
+      error: typeof error === 'string' && error.trim()
+        ? error
+        : error instanceof Error && error.message
+          ? error.message
+          : 'فشل إضافة الدفعة',
+    };
   }
 }
 
@@ -291,6 +619,7 @@ const cashMovementSchema = z.object({
   date: z.string().refine(isBusinessDate, { message: 'تاريخ غير صالح' }),
   actual_date: z.string().optional(),
   shift_id: z.string().optional(),
+  request_id: nativeRequestIdSchema,
 });
 
 export async function createCashMovementAction(rawData: z.infer<typeof cashMovementSchema>, transactionDb?: TransactionDb) {
@@ -303,6 +632,30 @@ export async function createCashMovementAction(rawData: z.infer<typeof cashMovem
       && hasUserPermissionSync(user, 'acc_can_define_expenses');
     if (!hasUserPermissionSync(user, 'acc_can_process_cash_flow') && !expenseEntryAllowed) {
       return { success: false, error: 'غير مصرح' };
+    }
+
+    if (isTauri) {
+      // A renderer-provided transaction might have other posting legs; do not
+      // commit a detached native cash journal while that transaction is open.
+      if (transactionDb) {
+        return { success: false, error: 'تعذر تنفيذ حركة نقدية داخل معاملة خارجية؛ يلزم ترحيل العملية بالكامل إلى معاملة أصلية' };
+      }
+      const { invoke } = await import('@tauri-apps/api/core');
+      const posted = await invoke<{ id: string; journalId: string; shiftId: string }>('create_cash_movement_native', {
+        payload: {
+          movementType: data.type, category: data.category,
+          subCategory: data.sub_category ?? null, amount: data.amount,
+          sourceType: data.source_type ?? null, targetName: data.target_name ?? null,
+          notes: data.notes ?? null, date: data.date,
+          actualDate: data.actual_date ?? null, shiftId: data.shift_id ?? null,
+        },
+      });
+      if (!posted?.id || !posted.journalId || !posted.shiftId) {
+        throw new Error('استجابة ترحيل النقدية الأصلية غير صالحة');
+      }
+      revalidatePath('/finance');
+      revalidatePath('/accounts');
+      return { success: true, id: posted.id };
     }
 
     const cashMovementId = generateId();
@@ -416,37 +769,15 @@ export async function getCashMovementsAction(filters?: {
     if (!hasAnyFinancePermission(user, 'acc_can_process_cash_flow', 'acc_can_view_general')) {
       return { success: false, error: 'غير مصرح' };
     }
-    const pharmacyId = user.pharmacy_id || 'local_default';
-
-    let query = `
-      SELECT cm.*, COALESCE(u.full_name, u.username, cm.user_id) AS user_name,
-             s.status AS shift_status
-      FROM cash_movements cm
-      LEFT JOIN users u ON u.id = cm.user_id
-      LEFT JOIN shifts s ON s.id = cm.shift_id
-      WHERE (cm.pharmacy_id = ? OR (cm.pharmacy_id IS NULL AND ? = 'local_default'))
-    `;
-    const params: any[] = [pharmacyId, pharmacyId];
-
-    if (filters?.type) {
-      query += ` AND cm.type = ?`;
-      params.push(filters.type);
-    }
-    if (filters?.category) {
-      query += ` AND cm.category = ?`;
-      params.push(filters.category);
-    }
-    if (filters?.dateFrom) {
-      query += ` AND date(cm.date) >= date(?)`;
-      params.push(filters.dateFrom);
-    }
-    if (filters?.dateTo) {
-      query += ` AND date(cm.date) <= date(?)`;
-      params.push(filters.dateTo);
-    }
-
-    query += ` ORDER BY cm.created_at DESC`;
-    const results = await db.prepare(query).all(...params);
+    const readFilters = {
+      movementType: filters?.type,
+      category: filters?.category,
+      dateFrom: filters?.dateFrom,
+      dateTo: filters?.dateTo,
+    };
+    const results = isTauri
+      ? await nativeFinanceRows('cash_movements', readFilters)
+      : await webFinanceRows('cash_movements', user.pharmacy_id || 'local_default', readFilters);
     return { success: true, data: results };
   } catch (error) {
     console.error('Get cash movements error:', error);
@@ -464,6 +795,30 @@ export async function getTreasuryDashboardAction(detail?: TreasuryMetricKey) {
     }
     if (detail && !['treasury', 'receipts', 'expenses', 'handovers'].includes(detail)) {
       return { success: false, error: 'نوع التفاصيل غير صالح' };
+    }
+    if (isTauri) {
+      // Only the posted ledger has an immutable, verifiable source today. A
+      // retained safe balance or open drawer needs independent verification of
+      // shift, invoice, return and cash-movement provenance before being shown.
+      // Null means unavailable: physical cash is not an accounting balance.
+      if (detail) return { success: false, error: 'تفاصيل الخزينة غير متاحة حتى يكتمل التحقق من مصدرها' };
+      if (typeof user.id !== 'string' || !user.id) throw new Error('Missing finance actor identity');
+      const rows = await nativeFinanceRows('treasury_cash_ledger', {}, user.id);
+      if (rows.length !== 1 || !rows[0] || typeof rows[0] !== 'object'
+        || Array.isArray(rows[0]) || !Object.prototype.hasOwnProperty.call(rows[0], 'ledger_cash_balance')
+        || (rows[0].ledger_cash_balance !== null
+          && (typeof rows[0].ledger_cash_balance !== 'number' || !Number.isFinite(rows[0].ledger_cash_balance)))) {
+        throw new Error('Incomplete native treasury cash ledger');
+      }
+      return {
+        success: true,
+        data: {
+          treasuryBalance: null, drawerBalance: null, ledgerCashBalance: rows[0].ledger_cash_balance,
+          drawerShiftId: null, todayReceipts: null, todayExpenses: null, totalShiftHandovers: null,
+          counts: { treasury: null, receipts: null, expenses: null, handovers: null },
+          detailCount: null, details: [],
+        },
+      };
     }
     const pharmacyId = user.pharmacy_id || 'local_default';
 
@@ -686,6 +1041,15 @@ export async function getTreasuryDashboardAction(detail?: TreasuryMetricKey) {
 
 export async function getPointsOfSaleAction() {
   try {
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const rows = await invoke<any[]>('list_pos_devices_native');
+      if (!Array.isArray(rows) || rows.length > 1000 || rows.some(row =>
+        !row || !Number.isInteger(row.id) || typeof row.name_ar !== 'string')) {
+        throw new Error('Incomplete native POS terminal list');
+      }
+      return { success: true, data: rows };
+    }
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_view_pos', 'acc_can_view_general', 'can_select_pos_financial')) return { success: false, error: 'غير مصرح' };
     const pharmacyId = user.pharmacy_id || 'local_default';
@@ -852,8 +1216,50 @@ export async function deleteExpenseDefinitionAction(id: number) {
   }
 }
 
+// The exact actor/pharmacy must remain stable across every bounded directory
+// page. Never merge rows from different live sessions or silently truncate a
+// financial device directory. Read commands alone choose the SQL and tenant.
+async function nativeFinanceDirectoryRows(command: 'list_banks_native' | 'list_cards_native') {
+  const { invoke } = await import('@tauri-apps/api/core');
+  const rows: any[] = [];
+  const seen = new Set<number>();
+  let actor: string | undefined;
+  let pharmacy: string | undefined;
+  for (let page = 0; page < 500; page++) {
+    const response = await invoke<{
+      rows: any[]; hasMore: boolean; page: number; actorId: string; pharmacyId: string;
+    }>(command, { payload: { page } });
+    if (!response || !Array.isArray(response.rows) || response.rows.length > 100 ||
+        typeof response.hasMore !== 'boolean' || response.page !== page ||
+        typeof response.actorId !== 'string' || !response.actorId ||
+        typeof response.pharmacyId !== 'string' || !response.pharmacyId ||
+        (response.hasMore && response.rows.length !== 100)) {
+      throw new Error('Invalid native finance directory response');
+    }
+    if (actor !== undefined && (actor !== response.actorId || pharmacy !== response.pharmacyId)) {
+      throw new Error('Finance directory actor or pharmacy changed between pages');
+    }
+    actor = response.actorId;
+    pharmacy = response.pharmacyId;
+    for (const row of response.rows) {
+      if (!row || !Number.isInteger(row.id) || row.id <= 0 ||
+          typeof row.name_ar !== 'string' || seen.has(row.id) ||
+          row.pharmacy_id !== pharmacy) {
+        throw new Error('Finance directory contains duplicate or foreign records');
+      }
+      seen.add(row.id);
+      rows.push(row);
+    }
+    if (!response.hasMore) return normalizeDatabaseTimestamps(rows);
+  }
+  throw new Error('Finance directory exceeds safe native page window');
+}
+
 export async function getBanksAction() {
   try {
+    if (isTauri) {
+      return { success: true, data: await nativeFinanceDirectoryRows('list_banks_native') };
+    }
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_view_bank_accounts', 'acc_can_view_handover', 'acc_can_view_general')) return { success: false, error: 'غير مصرح' };
     const pharmacyId = user.pharmacy_id || 'local_default';
@@ -871,6 +1277,23 @@ export async function getBanksAction() {
 
 export async function getPapersAction() {
   try {
+    if (isTauri) {
+      // Only fixed native projections, no renderer identity or arbitrary SQL.
+      const { invoke } = await import('@tauri-apps/api/core');
+      const all: any[] = [];
+      for (let page = 0; page < 500; page++) {
+        const batch = await invoke<{ rows: any[]; hasMore: boolean }>('list_papers_native', {
+          payload: { page },
+        });
+        if (!Array.isArray(batch?.rows) || batch.rows.length > 100 || typeof batch?.hasMore !== 'boolean') {
+          throw new Error('Incomplete native commercial paper page');
+        }
+        all.push(...batch.rows);
+        if (!batch.hasMore) return { success: true, data: all };
+        if (batch.rows.length !== 100) throw new Error('Inconsistent native commercial paper page');
+      }
+      throw new Error('Commercial paper history exceeds native page window; use a bounded export');
+    }
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_view_securities')) return { success: false, error: 'غير مصرح' };
     const pharmacyId = user.pharmacy_id || 'local_default';
@@ -888,6 +1311,9 @@ export async function getPapersAction() {
 
 export async function getCardsAction() {
   try {
+    if (isTauri) {
+      return { success: true, data: await nativeFinanceDirectoryRows('list_cards_native') };
+    }
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_collect_credit_cards')) return { success: false, error: 'غير مصرح' };
     const pharmacyId = user.pharmacy_id || 'local_default';
@@ -907,6 +1333,20 @@ export async function getAccountsAction() {
   try {
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_view_general', 'acc_can_make_daily_entries')) return { success: false, error: 'غير مصرح' };
+    if (isTauri) {
+      const accounts = verifiedNativeAccounts(await nativeFinanceRows('accounts_chart', {}, String(user.id)), false);
+      const accountsMap = new Map(accounts.map(acc => [acc.id, acc]));
+      const codeMap = new Map(accounts.map(acc => [acc.code, acc]));
+      for (const acc of [...accounts].sort((a, b) => b.code.length - a.code.length)) {
+        let parent = acc.parent_id ? accountsMap.get(acc.parent_id) : null;
+        if (!parent) {
+          if (acc.code.includes('.')) parent = codeMap.get(acc.code.split('.').slice(0, -1).join('.'));
+          else if (acc.code.length > 1) parent = codeMap.get(acc.code.slice(0, -1)) || codeMap.get(acc.code.charAt(0));
+        }
+        if (parent && parent.id !== acc.id) parent.balance = (parent.balance || 0) + acc.balance;
+      }
+      return { success: true, data: accounts };
+    }
     const pharmacyId = user.pharmacy_id || 'local_default';
 
     const accounts = await db.prepare(`SELECT * FROM accounts ORDER BY code ASC`).all() as any[];
@@ -1102,25 +1542,9 @@ export async function getJournalsAction(filters?: { dateFrom?: string; dateTo?: 
   try {
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_make_daily_entries', 'acc_can_view_reports')) return { success: false, error: 'غير مصرح' };
-    const pharmacyId = user.pharmacy_id || 'local_default';
-
-    let sql = `
-      SELECT dj.*
-      FROM daily_journals dj
-      LEFT JOIN users u ON u.id = dj.created_by
-      WHERE (dj.pharmacy_id = ? OR (dj.pharmacy_id IS NULL AND ? = 'local_default'))
-    `;
-    const params: any[] = [pharmacyId, pharmacyId];
-    if (filters?.dateFrom) {
-      sql += ` AND date(dj.date) >= date(?)`;
-      params.push(filters.dateFrom);
-    }
-    if (filters?.dateTo) {
-      sql += ` AND date(dj.date) <= date(?)`;
-      params.push(filters.dateTo);
-    }
-    sql += ` ORDER BY dj.date DESC, dj.created_at DESC`;
-    const results = await db.prepare(sql).all(...params);
+    const results = isTauri
+      ? await nativeFinanceRows('journals', filters)
+      : await webFinanceRows('journals', user.pharmacy_id || 'local_default', filters);
     return { success: true, data: results };
   } catch (error) {
     console.error('Get journals error:', error);
@@ -1132,20 +1556,9 @@ export async function getJournalDetailsAction(journalId: string) {
   try {
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_make_daily_entries', 'acc_can_view_reports')) return { success: false, error: 'غير مصرح' };
-    const pharmacyId = user.pharmacy_id || 'local_default';
-    const entries = await db.prepare(`
-      SELECT e.*, a.name_ar as account_name, a.code as account_code,
-             dj.description, dj.date,
-             CASE WHEN e.type = 'debit' THEN e.amount ELSE 0 END as debit,
-             CASE WHEN e.type = 'credit' THEN e.amount ELSE 0 END as credit
-      FROM journal_entries e
-      JOIN daily_journals dj ON e.journal_id = dj.id
-      JOIN accounts a ON e.account_id = a.id
-      LEFT JOIN users u ON u.id = dj.created_by
-      WHERE e.journal_id = ?
-        AND (dj.pharmacy_id = ? OR (dj.pharmacy_id IS NULL AND ? = 'local_default'))
-      ORDER BY e.type DESC, e.amount DESC
-    `).all(journalId, pharmacyId, pharmacyId);
+    const entries = isTauri
+      ? await nativeFinanceRows('journal_entries', { journalId })
+      : await webFinanceRows('journal_entries', user.pharmacy_id || 'local_default', { journalId });
     return { success: true, data: entries };
   } catch (error) {
     console.error('Get journal details error:', error);
@@ -1268,10 +1681,27 @@ export async function getTrialBalanceAction(startDate?: string, endDate?: string
   try {
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_view_reports')) return { success: false, error: 'غير مصرح' };
-    const pharmacyId = user.pharmacy_id || 'local_default';
 
     const cleanStart = startDate && startDate.trim().length > 0 ? startDate.trim() : null;
     const cleanEnd = endDate && endDate.trim().length > 0 ? endDate.trim() : null;
+    if (isTauri) {
+      if ((cleanStart && !isBusinessDate(cleanStart)) || (cleanEnd && !isBusinessDate(cleanEnd))
+        || (cleanStart && cleanEnd && cleanStart > cleanEnd)) {
+        return { success: false, error: 'نطاق تاريخ ميزان المراجعة غير صحيح' };
+      }
+      const balances = verifiedNativeAccounts(await nativeFinanceRows('trial_balance', {
+        ...(cleanStart ? { dateFrom: cleanStart } : {}),
+        ...(cleanEnd ? { dateTo: cleanEnd } : {}),
+      }, String(user.id)), true);
+      return { success: true, data: balances.map(acc => ({
+        ...acc,
+        opening_net_debit: Math.max(acc.opening_debit - acc.opening_credit, 0),
+        opening_net_credit: Math.max(acc.opening_credit - acc.opening_debit, 0),
+        net_debit: Math.max(acc.total_debit - acc.total_credit, 0),
+        net_credit: Math.max(acc.total_credit - acc.total_debit, 0),
+      })) };
+    }
+    const pharmacyId = user.pharmacy_id || 'local_default';
 
     const balances = await db.prepare(`
       WITH RawEntries AS (
@@ -1347,6 +1777,22 @@ export async function getTrialBalanceAction(startDate?: string, endDate?: string
 
 export async function getFinancialNoticesAction() {
   try {
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const result: any[] = [];
+      for (let page = 0; page < 500; page++) {
+        const batch = await invoke<{ rows: any[]; hasMore: boolean }>('list_financial_notices_native', {
+          payload: { page },
+        });
+        if (!Array.isArray(batch?.rows) || batch.rows.length > 100 || typeof batch?.hasMore !== 'boolean') {
+          throw new Error('Incomplete native financial-notice history page');
+        }
+        result.push(...batch.rows);
+        if (!batch.hasMore) return { success: true, data: result };
+        if (batch.rows.length !== 100) throw new Error('Inconsistent native financial-notice page');
+      }
+      throw new Error('Financial-notice history exceeds native page window');
+    }
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_view_notifications')) return { success: false, error: 'غير مصرح' };
     const pharmacyId = user.pharmacy_id || 'local_default';
@@ -1393,8 +1839,19 @@ export async function getActivityLogsAction() {
 // -------------------------------------------------------------
 // 1. Bank Accounts CRUD
 // -------------------------------------------------------------
-export async function addBankAction(data: { name_ar: string; name_en?: string; account_number?: string; branch?: string; current_balance?: number }) {
+export async function addBankAction(data: { name_ar: string; name_en?: string; account_number?: string; branch?: string; current_balance?: number; request_id?: string }) {
   try {
+    if (isTauri) {
+      const requestId = nativeRequestIdSchema.parse(data.request_id) ?? generateId();
+      const { invoke } = await import('@tauri-apps/api/core');
+      const result = await invoke<{ id: number }>('create_bank_native', {payload:{
+        requestId, nameAr: data.name_ar, nameEn: data.name_en ?? null,
+        accountNumber: data.account_number ?? null, branch: data.branch ?? null,
+        currentBalance: data.current_balance ?? null,
+      }});
+      if (!Number.isInteger(result?.id) || result.id <= 0) throw new Error('Invalid native bank acknowledgement');
+      return {success:true,id:result.id};
+    }
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_view_bank_accounts')) return { success: false, error: 'غير مصرح' };
     const pharmacyId = user.pharmacy_id || 'local_default';
@@ -1429,6 +1886,12 @@ export async function addBankAction(data: { name_ar: string; name_en?: string; a
 
 export async function updateBankAction(id: number, data: { name_ar: string; name_en?: string; account_number?: string; branch?: string; current_balance?: number }) {
   try {
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('update_bank_native',{payload:{id,nameAr:data.name_ar,nameEn:data.name_en ?? null,
+        accountNumber:data.account_number ?? null,branch:data.branch ?? null}});
+      return {success:true};
+    }
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_view_bank_accounts')) return { success: false, error: 'غير مصرح' };
     const pharmacyId = user.pharmacy_id || 'local_default';
@@ -1459,6 +1922,11 @@ export async function updateBankAction(id: number, data: { name_ar: string; name
 
 export async function deleteBankAction(id: number) {
   try {
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('delete_bank_native',{payload:{id}});
+      return {success:true};
+    }
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_view_bank_accounts')) return { success: false, error: 'غير مصرح' };
     const pharmacyId = user.pharmacy_id || 'local_default';
@@ -1506,8 +1974,24 @@ export async function deleteBankAction(id: number) {
 // -------------------------------------------------------------
 // 2. Credit Cards / Terminals CRUD
 // -------------------------------------------------------------
-export async function addCardAction(data: { name_ar: string; name_en?: string; bank_id?: number | null; commission_pct?: number; current_balance?: number }) {
+export async function addCardAction(data: { name_ar: string; name_en?: string; bank_id?: number | null; commission_pct?: number; current_balance?: number; request_id?: string }) {
   try {
+    if (isTauri) {
+      const requestId = nativeRequestIdSchema.parse(data.request_id) ?? generateId();
+      const { invoke } = await import('@tauri-apps/api/core');
+      const amount = data.current_balance ?? 0;
+      if (!Number.isFinite(amount) || Math.abs(amount) > 1e9 ||
+          Math.abs(amount * 100 - Math.round(amount * 100)) > 1e-7) {
+        throw new Error('Card opening balance must be a finite amount in cents');
+      }
+      const result=await invoke<{id:number}>('create_card_native',{payload:{
+        requestId,nameAr:data.name_ar,nameEn:data.name_en ?? null,
+        bankId:data.bank_id ?? null,commissionPct:data.commission_pct ?? null,
+        openingBalance:amount.toFixed(2),
+      }});
+      if (!Number.isInteger(result?.id) || result.id<=0) throw new Error('Invalid native card acknowledgement');
+      return {success:true,id:result.id};
+    }
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_collect_credit_cards')) return { success: false, error: 'غير مصرح' };
     const pharmacyId = user.pharmacy_id || 'local_default';
@@ -1553,6 +2037,12 @@ export async function addCardAction(data: { name_ar: string; name_en?: string; b
 
 export async function updateCardAction(id: number, data: { name_ar: string; name_en?: string; bank_id?: number | null; commission_pct?: number; current_balance?: number }) {
   try {
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('update_card_native',{payload:{id,nameAr:data.name_ar,nameEn:data.name_en ?? null,
+        bankId:data.bank_id ?? null,commissionPct:data.commission_pct ?? null}});
+      return {success:true};
+    }
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_collect_credit_cards')) return { success: false, error: 'غير مصرح' };
     const pharmacyId = user.pharmacy_id || 'local_default';
@@ -1594,6 +2084,11 @@ export async function updateCardAction(id: number, data: { name_ar: string; name
 
 export async function deleteCardAction(id: number) {
   try {
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('delete_card_native',{payload:{id}});
+      return {success:true};
+    }
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_collect_credit_cards')) return { success: false, error: 'غير مصرح' };
     const pharmacyId = user.pharmacy_id || 'local_default';
@@ -1624,6 +2119,23 @@ export async function deleteCardAction(id: number) {
 // -------------------------------------------------------------
 export async function addPointOfSaleAction(data: { name_ar: string; name_en?: string; location?: string; computer_name?: string; current_balance?: number }) {
   try {
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const response = await invoke<{ id: number }>('create_pos_device_native', {
+        payload: {
+          requestId: generateId(),
+          details: {
+            nameAr: data.name_ar, nameEn: data.name_en ?? null,
+            location: data.location ?? null, computerName: data.computer_name ?? null,
+            status: null,
+          },
+        },
+      });
+      if (!Number.isInteger(response?.id) || response.id <= 0) {
+        throw new Error('Invalid native POS create acknowledgement');
+      }
+      return { success: true, id: response.id };
+    }
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_view_pos')) return { success: false, error: 'غير مصرح' };
     const pharmacyId = user.pharmacy_id || 'local_default';
@@ -1650,6 +2162,15 @@ export async function addPointOfSaleAction(data: { name_ar: string; name_en?: st
 
 export async function updatePointOfSaleAction(id: number, data: { name_ar: string; name_en?: string; location?: string; computer_name?: string; current_balance?: number; status?: string }) {
   try {
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('update_pos_device_native', { payload: {
+        id, details: { nameAr: data.name_ar, nameEn: data.name_en ?? null,
+          location: data.location ?? null, computerName: data.computer_name ?? null,
+          status: data.status ?? null },
+      } });
+      return { success: true };
+    }
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_view_pos')) return { success: false, error: 'غير مصرح' };
     const pharmacyId = user.pharmacy_id || 'local_default';
@@ -1681,6 +2202,11 @@ export async function updatePointOfSaleAction(id: number, data: { name_ar: strin
 
 export async function deletePointOfSaleAction(id: number) {
   try {
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('delete_pos_device_native', { payload: { id } });
+      return { success: true };
+    }
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_view_pos')) return { success: false, error: 'غير مصرح' };
     const pharmacyId = user.pharmacy_id || 'local_default';
@@ -1720,8 +2246,24 @@ export async function addPaperAction(data: {
   due_date: string;
   target_name: string;
   notes?: string;
+  request_id?: string;
 }) {
   try {
+    if (isTauri) {
+      const requestId = nativeRequestIdSchema.parse(data.request_id) ?? generateId();
+      const { invoke } = await import('@tauri-apps/api/core');
+      const response = await invoke<{ id: string }>('create_paper_native', {
+        payload: {
+          paperType: data.type, direction: data.direction, paperNumber: data.paper_number,
+          bankId: data.bank_id ?? null, amount: data.amount, dueDate: data.due_date,
+          targetName: data.target_name, notes: data.notes ?? null, requestId,
+        },
+      });
+      if (!response?.id || typeof response.id !== 'string') {
+        throw new Error('Incomplete native commercial paper creation acknowledgement');
+      }
+      return { success: true, id: response.id };
+    }
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_view_securities')) return { success: false, error: 'غير مصرح' };
     if (!data.paper_number?.trim()) return { success: false, error: 'رقم الورقة / الشيك مطلوب' };
@@ -1764,6 +2306,17 @@ export async function addPaperAction(data: {
 
 export async function updatePaperStatusAction(id: string, newStatus: 'pending' | 'cashed' | 'bounced' | 'cancelled', actionDate?: string) {
   try {
+    if (isTauri) {
+      // A paper's lifecycle and its cash/ledger postings must use ONE native
+      // BEGIN IMMEDIATE transaction: no detached renderer-owned nested cash.
+      const { invoke } = await import('@tauri-apps/api/core');
+      const date = actionDate || localDate();
+      const result = await invoke<{ changed: boolean }>('update_paper_status_native', {
+        payload: { id, newStatus, actionDate: date },
+      });
+      if (typeof result?.changed !== 'boolean') throw new Error('Native paper lifecycle acknowledgement incomplete');
+      return { success: true };
+    }
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_view_securities')) return { success: false, error: 'غير مصرح' };
     const pharmacyId = user.pharmacy_id || 'local_default';
@@ -1829,6 +2382,11 @@ export async function updatePaperStatusAction(id: string, newStatus: 'pending' |
 
 export async function deletePaperAction(id: string) {
   try {
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('delete_paper_native', { payload: { id } });
+      return { success: true };
+    }
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_view_securities')) return { success: false, error: 'غير مصرح' };
     const pharmacyId = user.pharmacy_id || 'local_default';
@@ -1862,6 +2420,33 @@ export async function createManualJournalAction(data: {
   entries: Array<{ account_id: number; type: 'debit' | 'credit'; amount: number; notes?: string }>;
 }) {
   try {
+    if (isTauri) {
+      // Manual vouchers must be a single native ledger + audit transaction.
+      // No renderer-selected SQL, actor, pharmacy or journal ID is accepted.
+      const { invoke } = await import('@tauri-apps/api/core');
+      if (!data || !Array.isArray(data.entries) || data.entries.length < 2 || data.entries.length > 100) {
+        throw new Error('Manual journal needs between 2 and 100 entries');
+      }
+      const entries = data.entries.map(entry => {
+        const cents = Math.round(entry.amount * 100);
+        if (!Number.isFinite(entry.amount) || entry.amount <= 0 ||
+            Math.abs(entry.amount * 100 - cents) > 1e-7 ||
+            !Number.isInteger(entry.account_id) || entry.account_id <= 0) {
+          throw new Error('Invalid manual journal amount or account');
+        }
+        return { accountId: entry.account_id, type: entry.type,
+          amount: (cents / 100).toFixed(2), notes: entry.notes ?? null };
+      });
+      const response = await invoke<{ id: string; totalAmount: number }>('create_manual_journal_native', {
+        payload: { requestId: generateId(), date: data.date,
+          description: data.description || '', entries },
+      });
+      if (!response?.id || typeof response.id !== 'string' ||
+          !Number.isFinite(response.totalAmount)) {
+        throw new Error('Incomplete native manual journal acknowledgement');
+      }
+      return { success: true, id: response.id };
+    }
     const user = await getLocalSession();
     if (!hasAnyFinancePermission(user, 'acc_can_make_daily_entries')) return { success: false, error: 'غير مصرح' };
 

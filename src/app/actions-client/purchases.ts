@@ -1,5 +1,5 @@
 import { secureCache } from '@/lib/cache/secure_cache';
-import { dbSelect, dbExecute, dbGet, dbTransaction, generateId, type TransactionDb } from '@/lib/db/tauri';
+import { dbSelect, dbExecute, dbGet, dbTransaction, generateId, normalizeDatabaseTimestamps, type TransactionDb } from '@/lib/db/tauri';
 import { isTauri } from '@/lib/env';
 import {
   normalizePurchaseReturnUnit,
@@ -31,15 +31,6 @@ const logActivity = async (userId, action, details) => {
   }
 };
 const initLocalDb = () => {};
-const clearAuditLogs = async () => {
-  try {
-    await dbExecute('DELETE FROM activity_log');
-    return true;
-  } catch (e) {
-    console.error('Failed to clear activity logs:', e);
-    return false;
-  }
-};
 
 const db = {
   prepare: (sql) => ({
@@ -400,11 +391,48 @@ type SupplierInput = {
   name_en?: string;
   phone?: string;
   address?: string;
+  // The caller must retain this value when retrying after an uncertain IPC reply.
+  request_id?: string;
 };
 
 const SUPPLIER_PERMISSION_ERROR = 'غير مصرح لك بإدارة الموردين';
 const SUPPLIER_NAME_ERROR = 'يجب إدخال اسم المورد';
 const SUPPLIER_LINKED_RECORDS_ERROR = 'لا يمكن حذف المورد لوجود فواتير شراء أو مرتجعات أو حركات مالية مرتبطة به';
+// Supplier directory rows have no independently verified tenant owner. Native
+// releases deny renderer-authored SQL writes; non-release generic SQL must not
+// become an alternate route around a future native-owned supplier CRUD API.
+const SUPPLIER_NATIVE_MUTATION_UNAVAILABLE = 'إدارة بيانات الموردين غير متاحة حالياً في تطبيق سطح المكتب';
+const SUPPLIER_WEB_OWNERSHIP_UNAVAILABLE = 'تعذر إثبات ملكية بيانات المورد للصيدلية؛ لا يمكن تعديل دليل الموردين أو الأرصدة المشتركة';
+
+async function nativePurchasingPage(
+  queryId: string,
+  options: { recordId?: string | null; search?: string | null; limit?: number; offset?: number } = {},
+): Promise<any[]> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  const rows = await invoke<any[]>('db_read_scoped', {
+    queryId,
+    recordId: options.recordId ?? null,
+    search: options.search ?? null,
+    limit: options.limit ?? 200,
+    offset: options.offset ?? 0,
+    drugId: null,
+  });
+  if (!Array.isArray(rows) || rows.length > (options.limit ?? 200)
+    || rows.some(row => !row || typeof row !== 'object' || Array.isArray(row))) {
+    throw new Error('Invalid native purchasing read response');
+  }
+  return rows;
+}
+
+async function nativePurchasingAll(queryId: string, recordId: string | null = null, search: string | null = null) {
+  const rows: any[] = [];
+  for (let offset = 0; offset <= 50_000; offset += 200) {
+    const page = await nativePurchasingPage(queryId, { recordId, search, offset });
+    rows.push(...page);
+    if (page.length < 200) return normalizeDatabaseTimestamps(rows);
+  }
+  throw new Error('Native purchasing history exceeds the safe read limit');
+}
 
 function canViewSuppliers(session: any): boolean {
   return !!session && (
@@ -440,6 +468,11 @@ function normalizeSupplierInput(data: SupplierInput) {
 export async function getSuppliersAction(options: { reportScope?: boolean } = {}) {
   try {
     const session = await getLocalSession();
+    // Legacy supplier rows have no owner. The local_default alias alone does
+    // not prove that historical NULL-pharmacy invoices belong to this actor.
+    if (session && (!session.pharmacy_id || session.pharmacy_id === 'local_default')) {
+      return { success: false, error: 'Legacy purchasing ownership needs independent tenant verification' };
+    }
     if (options.reportScope) {
       if (!session || (
         !hasUserPermissionSync(session, 'rep_can_view_purchases')
@@ -447,30 +480,46 @@ export async function getSuppliersAction(options: { reportScope?: boolean } = {}
       )) {
         return { success: false, error: SUPPLIER_PERMISSION_ERROR };
       }
-      const pharmacyId = session.pharmacy_id || 'local_default';
+      if (isTauri) {
+        return { success: true, data: await nativePurchasingAll('purchases.suppliers_report') };
+      }
+      const pharmacyId = session.pharmacy_id;
       const items = await db.prepare(`
         SELECT DISTINCT s.id, s.name_ar, s.name_en
         FROM suppliers s
         JOIN purchase_invoices i ON i.supplier_id = s.id
-        WHERE i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default')
+        WHERE i.pharmacy_id = ?
         ORDER BY s.name_ar ASC
-      `).all(pharmacyId, pharmacyId);
+      `).all(pharmacyId);
       return { success: true, data: items };
     }
     if (!canViewSuppliers(session)) return { success: false, error: SUPPLIER_PERMISSION_ERROR };
 
+    if (isTauri) {
+      return { success: true, data: await nativePurchasingAll('purchases.suppliers_list') };
+    }
+    // Global supplier contact/balance fields can reflect another tenant's
+    // activity. A verified invoice association attests only identity/name,
+    // not private contact data or the financial balance. Do not fabricate a
+    // zero balance or count unscoped transactions.
     const items = await db.prepare(`
-      SELECT 
-        s.*,
-        COALESCE(s.balance, 0) AS balance,
-        (SELECT COUNT(*) FROM purchase_invoices WHERE supplier_id = s.id) AS purchase_count,
-        (SELECT COUNT(*) FROM supplier_transactions WHERE supplier_id = s.id) AS transaction_count
+      SELECT s.id, s.name_ar, s.name_en, NULL AS balance,
+             COUNT(i.id) AS purchase_count
       FROM suppliers s
-      ORDER BY s.name_ar ASC
-    `).all();
+      JOIN purchase_invoices i ON i.supplier_id = s.id AND i.pharmacy_id = ?
+      GROUP BY s.id, s.name_ar, s.name_en
+      ORDER BY s.name_ar ASC, s.id ASC
+    `).all(session.pharmacy_id);
     return { success: true, data: items };
   } catch (error: any) {
-    return { success: false, error: error.message };
+    // Native Tauri IPC rejects with a string, not necessarily an Error. Never
+    // turn a denied purchasing read into a successful empty supplier directory,
+    // and preserve only the recognized ownership denial (not raw SQL details).
+    const reason = typeof error === 'string' ? error : error?.message;
+    if (String(reason || '').includes('Legacy purchasing ownership needs independent tenant verification')) {
+      return { success: false, error: 'Legacy purchasing ownership needs independent tenant verification' };
+    }
+    return { success: false, error: typeof error === 'string' ? 'فشل تحميل الموردين' : (reason || 'فشل تحميل الموردين') };
   }
 }
 
@@ -478,20 +527,55 @@ export async function getSupplierTransactionsAction(supplierId: number) {
   try {
     const session = await getLocalSession();
     if (!canViewSuppliers(session)) return { success: false, error: SUPPLIER_PERMISSION_ERROR };
+    if (!session.pharmacy_id || session.pharmacy_id === 'local_default') {
+      return { success: false, error: 'Legacy purchasing ownership needs independent tenant verification' };
+    }
 
     const id = Number(supplierId);
     if (!Number.isInteger(id) || id <= 0) return { success: false, error: 'معرف المورد غير صحيح' };
 
+    if (isTauri) {
+      // Financial statements must not silently omit entries beyond the first
+      // page. The native read checks actor/tenant ownership on every page and
+      // nativePurchasingAll enforces the same bounded history cap as reports.
+      return { success: true, data: await nativePurchasingAll('purchases.supplier_transactions', String(id)) };
+    }
+    const pharmacyId = session.pharmacy_id || 'local_default';
+    // A supplier directory row is shared across pharmacies. Web fallback can
+    // attest invoice-linked entries and linked returns, but not payments
+    // with no tenant-owned original invoice or immutable payment receipt:
+    // never expose another tenant's statement by filtering on supplier_id alone.
     const items = await db.prepare(`
-      SELECT * FROM supplier_transactions 
-      WHERE supplier_id = ? 
-      ORDER BY datetime(COALESCE(created_at, CURRENT_TIMESTAMP)) DESC, id DESC
+      SELECT st.* FROM supplier_transactions st
+      WHERE st.supplier_id = ?
+        AND (
+          (st.type IN ('invoice', 'payment') AND EXISTS (
+            SELECT 1 FROM purchase_invoices pi
+            WHERE pi.id = st.reference_id AND pi.supplier_id = st.supplier_id
+              AND (pi.pharmacy_id = ? OR (pi.pharmacy_id IS NULL AND ? = 'local_default'))
+          ))
+          OR (st.type = 'return' AND EXISTS (
+            SELECT 1 FROM purchase_returns pr
+            JOIN purchase_invoices pi ON pi.id = pr.purchase_invoice_id
+            WHERE pr.id = st.reference_id AND pr.supplier_id = st.supplier_id
+              AND pi.supplier_id = st.supplier_id
+              AND (pi.pharmacy_id = ? OR (pi.pharmacy_id IS NULL AND ? = 'local_default'))
+          ))
+        )
+      ORDER BY datetime(COALESCE(st.created_at, CURRENT_TIMESTAMP)) DESC, st.id DESC
       LIMIT 100
-    `).all(id);
+    `).all(id, pharmacyId, pharmacyId, pharmacyId, pharmacyId);
 
     return { success: true, data: items };
   } catch (error: any) {
-    return { success: false, error: error.message };
+    const reason = typeof error === 'string' ? error : error?.message;
+    if (String(reason || '').includes('Legacy purchasing ownership needs independent tenant verification')) {
+      return { success: false, error: 'Legacy purchasing ownership needs independent tenant verification' };
+    }
+    return {
+      success: false,
+      error: typeof error === 'string' ? 'فشل تحميل كشف حساب المورد' : (reason || 'فشل تحميل كشف حساب المورد'),
+    };
   }
 }
 
@@ -502,6 +586,7 @@ export async function addSupplierPaymentAction(rawData: {
   check_number?: string;
   notes?: string;
   date?: string;
+  request_id?: string;
 }) {
   try {
     const session = await getLocalSession();
@@ -520,6 +605,26 @@ export async function addSupplierPaymentAction(rawData: {
     const paymentDate = rawData.date || localDate();
     if (!isBusinessDate(paymentDate)) return { success: false, error: 'تاريخ سداد المورد غير صالح' };
     const notes = rawData.notes ? String(rawData.notes).trim() : '';
+
+    if (isTauri) {
+      if (paymentMethod === 'check') return { success: false, error: 'سداد المورد بشيك يحتاج ترحيل الورقة التجارية والتحقق من صرفها أولاً' };
+      if (!rawData.request_id) return { success: false, error: 'معرف طلب سداد المورد مطلوب لإعادة المحاولة الآمنة' };
+      const { invoke } = await import('@tauri-apps/api/core');
+      const receipt = await invoke<{ id: string; remainingBalance: number }>('post_supplier_payment_native', {
+        payload: { supplierId, amount, paymentMethod, date: paymentDate, requestId: rawData.request_id, notes: notes || null },
+      });
+      if (!receipt?.id || !Number.isFinite(receipt.remainingBalance)) {
+        throw new Error('تأكيد دفعة المورد الأصلية غير مكتمل');
+      }
+      revalidatePath('/purchases/suppliers');
+      revalidatePath('/purchases');
+      return { success: true, remainingBalance: receipt.remainingBalance };
+    }
+
+    // Browser fallback has no authoritative supplier tenant ownership. The
+    // global balance and ledger belong to a shared supplier ID, so posting a
+    // payment here could settle another pharmacy's payable. Stay fail-closed.
+    return { success: false, error: SUPPLIER_WEB_OWNERSHIP_UNAVAILABLE };
 
     let remainingBalance = 0;
     const refId = `sup-pay-${Date.now()}`;
@@ -595,8 +700,18 @@ export async function addSupplierPaymentAction(rawData: {
     revalidatePath('/purchases');
     return { success: true, remainingBalance };
   } catch (error: any) {
-    console.error('Supplier payment error:', error?.message || error);
-    return { success: false, error: error.message || 'فشل تسجيل الدفعة للمورد' };
+    const reason = typeof error === 'string' ? error : error?.message;
+    console.error('Supplier payment error:', reason || error);
+    const recognizedOwnershipDenial = typeof reason === 'string' && (
+      reason.includes('Supplier ownership is unverifiable')
+      || reason.includes('Legacy purchasing ownership needs independent tenant verification')
+    );
+    return {
+      success: false,
+      error: typeof error === 'string' && !recognizedOwnershipDenial
+        ? 'فشل تسجيل الدفعة للمورد'
+        : (reason || 'فشل تسجيل الدفعة للمورد'),
+    };
   }
 }
 
@@ -604,15 +719,36 @@ export async function addSupplierAction(data: SupplierInput) {
   try {
     const session = await getLocalSession();
     if (!canMutateSuppliers(session)) return { success: false, error: SUPPLIER_PERMISSION_ERROR };
-    const supplier = normalizeSupplierInput(data);
-    if (!supplier) return { success: false, error: SUPPLIER_NAME_ERROR };
-
-    const stmt = await db.prepare('INSERT INTO suppliers (name_ar, name_en, phone, address) VALUES (?, ?, ?, ?)');
-    const result = await stmt.run(supplier.name_ar, supplier.name_en, supplier.phone, supplier.address);
-    revalidatePath('/purchases/suppliers');
-    return { success: true, id: result.lastInsertRowid };
-  } catch (error: any) {
-    return { success: false, error: error.message };
+    if (isTauri) {
+      const supplier = normalizeSupplierInput(data);
+      if (!supplier) return { success: false, error: SUPPLIER_NAME_ERROR };
+      // Native replay binds this exact UUID to the actor, tenant, and normalized
+      // supplier details. Never generate another nonce after a failed invoke.
+      const requestId = data.request_id === undefined ? generateId() : data.request_id;
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(requestId)) {
+        return { success: false, error: 'معرف طلب المورد غير صالح' };
+      }
+      const { invoke } = await import('@tauri-apps/api/core');
+      const created = await invoke<{ id: number; requestId: string }>('create_supplier_native', {
+        payload: {
+          requestId,
+          nameAr: supplier.name_ar,
+          nameEn: supplier.name_en,
+          phone: supplier.phone,
+          address: supplier.address,
+        },
+      });
+      if (!created || !Number.isSafeInteger(created.id) || created.id <= 0 || created.requestId !== requestId) {
+        return { success: false, error: 'تعذر التحقق من نتيجة تسجيل المورد؛ أعد المحاولة بنفس معرف الطلب' };
+      }
+      revalidatePath('/purchases/suppliers');
+      return { success: true, id: created.id, requestId };
+    }
+    return { success: false, error: SUPPLIER_WEB_OWNERSHIP_UNAVAILABLE };
+  } catch {
+    // Tauri may reject with a bare string or lose its acknowledgement after
+    // the native transaction commits. The UI retains its original nonce.
+    return { success: false, error: 'تعذر التأكد من إضافة المورد؛ أعد المحاولة بنفس بيانات الطلب' };
   }
 }
 
@@ -620,6 +756,8 @@ export async function updateSupplierAction(id: number, data: SupplierInput) {
   try {
     const session = await getLocalSession();
     if (!canMutateSuppliers(session)) return { success: false, error: SUPPLIER_PERMISSION_ERROR };
+    if (isTauri) return { success: false, error: SUPPLIER_NATIVE_MUTATION_UNAVAILABLE };
+    return { success: false, error: SUPPLIER_WEB_OWNERSHIP_UNAVAILABLE };
 
     const supplierId = Number(id);
     if (!Number.isInteger(supplierId) || supplierId <= 0) {
@@ -658,6 +796,8 @@ export async function deleteSupplierAction(id: number) {
   try {
     const session = await getLocalSession();
     if (!canMutateSuppliers(session)) return { success: false, error: SUPPLIER_PERMISSION_ERROR };
+    if (isTauri) return { success: false, error: SUPPLIER_NATIVE_MUTATION_UNAVAILABLE };
+    return { success: false, error: SUPPLIER_WEB_OWNERSHIP_UNAVAILABLE };
 
     const supplierId = Number(id);
     if (!Number.isInteger(supplierId) || supplierId <= 0) {
@@ -717,10 +857,81 @@ export async function deleteSupplierAction(id: number) {
 }
 
 // Purchase Invoices
+type NativePurchasingListKey = 'purchases.invoices_list' | 'purchases.drafts_list';
+
+// Unlike the legacy db_read_scoped Vec, this native response binds each page's
+// actor and pharmacy to the same authenticated database connection that ran
+// the query. Never combine pages unless that native identity matches the
+// initial authenticated UI session and all previous pages.
+async function nativeOwnedPurchasingListPage(
+  queryId: NativePurchasingListKey,
+  cursor: string | null,
+  limit: number,
+  expected: { actorId: string; pharmacyId: string },
+): Promise<any[]> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  const response = await invoke<{
+    actorId: string; pharmacyId: string; rows: any[];
+  }>('db_read_purchasing_page', { queryId, cursor, limit });
+  if (!response || typeof response !== 'object' || Array.isArray(response)
+    || typeof response.actorId !== 'string' || !response.actorId.trim()
+    || typeof response.pharmacyId !== 'string' || !response.pharmacyId.trim()
+    || !Array.isArray(response.rows) || response.rows.length > limit) {
+    throw new Error('Invalid native purchasing page envelope');
+  }
+  if (!expected.actorId || response.actorId !== expected.actorId
+    || response.pharmacyId !== expected.pharmacyId) {
+    throw new Error('Native purchasing read scope changed during pagination');
+  }
+  return response.rows;
+}
+
 export async function getPurchaseInvoicesAction() {
   try {
     const session = await getLocalSession();
     if (!session || !hasUserPermissionSync(session, 'can_view_purchases')) return { success: false, error: 'Unauthorized' };
+
+    if (isTauri) {
+      const pageSize = 200;
+      const readScope = {
+        actorId: String(session.id ?? ''),
+        pharmacyId: String(session.pharmacy_id || 'local_default'),
+      };
+      const maxInvoices = 100_000;
+      const invoices: any[] = [];
+      let cursor: string | null = null;
+      const seenCursors = new Set<string>();
+      while (true) {
+        const page = await nativeOwnedPurchasingListPage(
+          'purchases.invoices_list', cursor, pageSize, readScope,
+        );
+        if (!Array.isArray(page) || page.length > pageSize ||
+            page.some(row => !row || typeof row !== 'object' || Array.isArray(row))) {
+          throw new Error('Invalid native purchase invoice list response');
+        }
+        invoices.push(...page);
+        if (invoices.length > maxInvoices) {
+          throw new Error('Purchase invoice history exceeds the safe native read limit');
+        }
+        if (page.length < pageSize) {
+          // Cursor ordering needs raw SQLite timestamp strings. Normalize
+          // only the complete result, matching the existing dbSelect API.
+          return { success: true, data: normalizeDatabaseTimestamps(invoices) };
+        }
+        const last = page[page.length - 1];
+        if (typeof last.id !== 'string' || !last.id || last.id.length > 256 ||
+            (last.created_at !== null && typeof last.created_at !== 'string') ||
+            (typeof last.created_at === 'string' && last.created_at.length > 256)) {
+          throw new Error('Invalid native purchase invoice keyset fields');
+        }
+        const nextCursor = JSON.stringify([last.created_at, last.id]);
+        if (seenCursors.has(nextCursor) || nextCursor === cursor) {
+          throw new Error('Native purchase invoice pagination did not advance');
+        }
+        seenCursors.add(nextCursor);
+        cursor = nextCursor;
+      }
+    }
 
     const pharmacyId = session.pharmacy_id || 'local_default';
     const items = await db.prepare(`
@@ -778,59 +989,132 @@ export async function createPurchaseInvoiceAction(data: {
   tax_percent?: number,
   status?: string,
   cart?: any[],
-  id?: string
+  id?: string,
+  request_id?: string
 }) {
+  // Never declare an ambiguous native commit safe to abandon.
+  let nativePostingMayHaveOccurred = false;
   try {
     const session = await getLocalSession();
-    if (!session || !hasUserPermissionSync(session, 'can_view_purchases')) return { success: false, error: 'Unauthorized' };
+    if (!session || !hasUserPermissionSync(session, 'can_view_purchases')) return { success: false, error: 'Unauthorized', ...(isTauri ? { native_write_not_attempted: true } : {}) };
     if (browserPurchaseMutationUnsupported()) return { success: false, error: 'تعديل المشتريات من المتصفح غير مدعوم لأنه يتطلب معاملة ذرية؛ استخدم تطبيق سطح المكتب' };
     assertPurchaseLifecyclePolicy(data);
     assertPurchaseItemsPolicy(data.cart || [], data.status || 'completed');
-    if (data.invoice_date && !isBusinessDate(data.invoice_date)) return { success: false, error: 'تاريخ فاتورة الشراء غير صالح' };
+    if (data.invoice_date && !isBusinessDate(data.invoice_date)) return { success: false, error: 'تاريخ فاتورة الشراء غير صالح', ...(isTauri ? { native_write_not_attempted: true } : {}) };
     if ((data.cart || []).some(item => item.expiry_date && !normalizeDateToYMD(item.expiry_date))) {
-      return { success: false, error: 'يوجد تاريخ صلاحية غير صالح في أصناف الفاتورة' };
+      return { success: false, error: 'يوجد تاريخ صلاحية غير صالح في أصناف الفاتورة', ...(isTauri ? { native_write_not_attempted: true } : {}) };
     }
     assertNoDuplicatePurchaseLots(data.cart || []);
-    if ((data.status || 'completed') !== 'draft') {
+    // The native transaction checks expiry against live catalog metadata;
+    // renderer SELECT preflight is neither permitted nor authoritative on desktop.
+    if (!isTauri && (data.status || 'completed') !== 'draft') {
       await assertCompletedPurchaseExpiryPolicyForDb(data.cart || []);
     }
-    await assertPurchaseConversionPermission(session, data.cart || []);
+    if (!isTauri) await assertPurchaseConversionPermission(session, data.cart || []);
 
     if (!isTauri) await assertPurchaseBarcodesAvailable(data.cart || []);
-    if (data.id) {
+    // The native save command validates the original draft status and its
+    // pharmacy under BEGIN IMMEDIATE with expectedExistingStatus='draft'. A
+    // renderer SELECT here is denied in strict release and races that check.
+    if (!isTauri && data.id) {
       const pharmacyId = session.pharmacy_id || 'local_default';
       const ownedDraft = await db.prepare(`
         SELECT id FROM purchase_invoices
         WHERE id = ? AND status = 'draft'
           AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
       `).get(data.id, pharmacyId, pharmacyId);
-      if (!ownedDraft) return { success: false, error: 'Purchase draft not found in this pharmacy' };
+        if (!ownedDraft) return { success: false, error: 'Purchase draft not found in this pharmacy' };
     }
 
     if (isTauri) {
       const { invoke } = await import('@tauri-apps/api/core');
-      const result = await invoke('save_purchase_invoice_critical', {
-        payload: {
-          ...data,
-          pharmacy_id: session.pharmacy_id || null,
-          user_id: String(session.id || 'admin'),
-          supplier_id: Number(data.supplier_id),
-          status: data.status || 'completed',
-          cart: (data.cart || []).map(item => ({
-            ...item,
-            id: Number(item.id || item.drug_id),
-            quantity: Number(item.quantity || 0),
-            unit_id: item.unit_id ? Number(item.unit_id) : null,
-            cost_price: Number(item.cost_price || 0),
-            selling_price: item.selling_price != null ? Number(item.selling_price) : null,
-            bonus_quantity: Number(item.bonus_quantity || 0),
-            tax_percent: Number(item.tax_percent || 0),
-            discount_percent: Number(item.discount_percent || 0),
-            strips_per_box: Number(item.strips_per_box || item.large_to_medium || 1),
-            barcode: item.barcode || null
-          }))
+      const isCreation = !data.id;
+      const requestId = isCreation ? (data.request_id || crypto.randomUUID()) : null;
+      const expectedStatus = data.status === 'draft' ? 'draft' : 'completed';
+      const expectedTotal = expectedStatus === 'draft'
+        ? 0 : calculatePurchaseAllocation(data.cart || [], data).finalTotal;
+      const expectedTotalCents = Math.round(expectedTotal * 100);
+      // Preserve the exact typed native request for immutable 047 draft
+      // acknowledgement. Neither a caller-provided digest nor 044's line
+      // count alone can prove a nonempty draft's original contents.
+      const nativePayload = {
+        id: data.id || null,
+        supplier_id: Number(data.supplier_id),
+        invoice_number: data.invoice_number || null,
+        invoice_date: data.invoice_date || null,
+        payment_method: data.payment_method || null,
+        notes: data.notes || null,
+        check_number: data.check_number || null,
+        expenses: data.expenses || 0,
+        discount_value: data.discount_value || 0,
+        discount_percent: data.discount_percent || 0,
+        tax_percent: data.tax_percent || 0,
+        status: data.status || 'completed',
+        cart: (data.cart || []).map(item => ({
+          ...item,
+          id: Number(item.id || item.drug_id),
+          quantity: Number(item.quantity || 0),
+          unit_id: item.unit_id ? Number(item.unit_id) : null,
+          cost_price: Number(item.cost_price || 0),
+          selling_price: item.selling_price != null ? Number(item.selling_price) : null,
+          bonus_quantity: Number(item.bonus_quantity || 0),
+          tax_percent: Number(item.tax_percent || 0),
+          discount_percent: Number(item.discount_percent || 0),
+          strips_per_box: Number(item.strips_per_box || item.large_to_medium || 1),
+          barcode: item.barcode || null
+        }))
+      };
+      // These are *caller expectations*, not proof. Only the native owner-
+      // scoped read may attest a matching immutable 044/042 journal/lot source.
+      const confirmationPayload = {
+        requestId,
+        supplierId: Number(data.supplier_id),
+        expectedStatus,
+        expectedLineCount: (data.cart || []).length,
+        expectedTotalCents,
+        ...(isCreation && expectedStatus === 'draft' ? { expectedDraftPayload: nativePayload } : {}),
+      };
+      type PurchaseAck = {
+        requestId: string; invoiceId: string; status: string;
+        supplierId: number; lineCount: number; totalCents: number;
+      };
+      const matchesReceipt = (ack: PurchaseAck | null): ack is PurchaseAck =>
+        !!ack && !!ack.invoiceId && ack.requestId === requestId &&
+        ack.status === expectedStatus && ack.supplierId === confirmationPayload.supplierId &&
+        ack.lineCount === confirmationPayload.expectedLineCount &&
+        ack.totalCents === confirmationPayload.expectedTotalCents;
+      const confirmReceipt = async (): Promise<PurchaseAck | null> =>
+        invoke<PurchaseAck | null>('confirm_purchase_creation_native', { payload: confirmationPayload });
+      let confirmed: PurchaseAck | null = null;
+      // Resolve reload/retry uncertainty before risking a second creation.
+      if (isCreation) {
+        try { confirmed = await confirmReceipt(); } catch { /* Writer remains protected by 044. */ }
+      }
+      let result: any;
+      if (matchesReceipt(confirmed)) {
+        nativePostingMayHaveOccurred = true;
+        result = { id: confirmed.invoiceId };
+      } else {
+        try {
+          nativePostingMayHaveOccurred = true;
+          result = await invoke('save_purchase_invoice_critical', {
+        expectedExistingStatus: data.id ? 'draft' : null,
+        requestId,
+        payload: nativePayload
+          }) as any;
+          if (!result?.id || typeof result.id !== 'string') {
+            throw new Error('Incomplete native purchase creation response');
+          }
+        } catch (writerError) {
+          if (isCreation) {
+            try { confirmed = await confirmReceipt(); } catch { /* Preserve original error. */ }
+            if (matchesReceipt(confirmed)) result = { id: confirmed.invoiceId };
+            else throw writerError;
+          } else {
+            throw writerError;
+          }
         }
-      }) as any;
+      }
       if ((data.status || 'completed') !== 'draft') notifyInventoryChanged();
       revalidatePath('/purchases');
       revalidatePath('/inventory');
@@ -1018,7 +1302,11 @@ export async function createPurchaseInvoiceAction(data: {
     return { success: true, id: invoiceId };
   } catch (error: any) {
     console.error('createPurchaseInvoiceAction error:', error?.message || error);
-    return { success: false, error: error?.message || String(error) || 'فشل تسجيل الفاتورة' };
+    return {
+      success: false,
+      error: error?.message || String(error) || 'فشل تسجيل الفاتورة',
+      ...(isTauri && !nativePostingMayHaveOccurred ? { native_write_not_attempted: true } : {}),
+    };
   }
 }
 
@@ -1263,7 +1551,7 @@ export async function createPurchaseOrderAction(data: { supplier_name: string; n
 
     if (!data.supplier_name?.trim()) return { success: false, error: 'Supplier name is required' };
     if (!data.items || data.items.length === 0) return { success: false, error: 'لا توجد أصناف في الطلب' };
-    if (data.items.some(i => !Number.isFinite(i.quantity) || i.quantity <= 0 || !Number.isFinite(i.expected_price) || i.expected_price < 0)) {
+    if (data.items.some(i => !Number.isSafeInteger(i.quantity) || i.quantity <= 0 || !Number.isFinite(i.expected_price) || i.expected_price < 0)) {
       return { success: false, error: 'Invalid purchase order quantity or expected price' };
     }
     const drugIds = [...new Set(data.items.map(item => Number(item.drug_id)))];
@@ -1412,7 +1700,82 @@ export async function getPurchasesReportsAction(filters: any = {}) {
     if (!session || (!hasUserPermissionSync(session, 'can_view_purchases') && !hasUserPermissionSync(session, 'rep_can_view_purchases'))) {
       return { success: false, error: 'Unauthorized' };
     }
+    if (!session.pharmacy_id || session.pharmacy_id === 'local_default') {
+      return { success: false, error: 'Legacy purchasing ownership needs independent tenant verification' };
+    }
+    if (isTauri) {
+      const reportFilters = {
+        startDate: filters.startDate || null, endDate: filters.endDate || null,
+        userId: filters.userId || null, paymentMethod: filters.paymentMethod || null,
+        supplierId: filters.supplierId && filters.supplierId !== 'all' ? Number(filters.supplierId) : null,
+        status: filters.status || 'completed', invoiceNumber: filters.invoiceNumber || null,
+        drugName: filters.drugName?.trim() || null,
+      };
+      const items = await nativePurchasingAll('purchases.reports', JSON.stringify(reportFilters));
+      // The date, supplier, status and text filters choose original invoices.
+      // Return adjustments always use every posted native receipt for those
+      // invoices as of this read, including returns posted after endDate.
+      const adjustments = await nativePurchasingAll('purchases.report_return_adjustments');
+      const seenReturns = new Set<string>();
+      const centsByInvoice = new Map<string, number>();
+      for (const adjustment of adjustments) {
+        if (typeof adjustment.return_id !== 'string' || !adjustment.return_id.trim() ||
+            seenReturns.has(adjustment.return_id) ||
+            typeof adjustment.purchase_invoice_id !== 'string' || !adjustment.purchase_invoice_id.trim() ||
+            !Number.isSafeInteger(adjustment.amount_cents) || adjustment.amount_cents <= 0) {
+          throw new Error('Native purchase return adjustment lacks immutable receipt provenance');
+        }
+        seenReturns.add(adjustment.return_id);
+        const next = (centsByInvoice.get(adjustment.purchase_invoice_id) || 0) + adjustment.amount_cents;
+        if (!Number.isSafeInteger(next)) throw new Error('Native purchase return adjustments exceed safe arithmetic');
+        centsByInvoice.set(adjustment.purchase_invoice_id, next);
+      }
+      const seenInvoices = new Set<string>();
+      const adjustedInvoices = items.map(inv => {
+        const amount = inv.total_amount;
+        if (typeof inv.id !== 'string' || !inv.id.trim() ||
+            inv.pharmacy_id !== session.pharmacy_id ||
+            typeof amount !== 'number' || !Number.isFinite(amount) || amount < 0) {
+          throw new Error('Purchase invoice amount or tenant cannot be verified');
+        }
+        if (seenInvoices.has(inv.id)) throw new Error('Native purchase report repeats an invoice');
+        seenInvoices.add(inv.id);
+        const originalCents = Math.round(amount * 100);
+        if (!Number.isSafeInteger(originalCents) || Math.abs(amount * 100 - originalCents) > 0.001) {
+          throw new Error('Purchase invoice amount does not reconcile to cents');
+        }
+        const returnedCents = centsByInvoice.get(inv.id) || 0;
+        if (returnedCents > originalCents) {
+          throw new Error('Verified purchase returns exceed the original invoice value');
+        }
+        return { ...inv, returned_amount: returnedCents / 100,
+          net_after_returns: (originalCents - returnedCents) / 100 };
+      });
+      const totalReturns = adjustedInvoices.reduce((sum, inv) => sum + Math.round(inv.returned_amount * 100), 0);
+      const totalAfterReturns = adjustedInvoices.reduce((sum, inv) => sum + Math.round(inv.net_after_returns * 100), 0);
+      return {
+        success: true, data: adjustedInvoices,
+        totalCost: items.reduce((sum, inv) => sum + Number(inv.total_amount || 0), 0),
+        totalSelling: items.reduce((sum, inv) => sum + Number(inv.total_selling_amount || 0), 0),
+        invoiceCount: items.length,
+        totalReturns: totalReturns / 100,
+        totalAfterReturns: totalAfterReturns / 100,
+      };
+    }
     const pharmacyId = session.pharmacy_id || 'local_default';
+    // Old invoices may link items by their human invoice number. That link
+    // is attributable only if the number is globally unique, there are no
+    // directly linked lines, and it cannot collide with another invoice ID.
+    const reportLineLink = (lineAlias: 'pii' | 'pii_search') => `(
+      ${lineAlias}.invoice_id = i.id OR (
+        ${lineAlias}.invoice_id = i.invoice_number
+        AND NOT EXISTS (SELECT 1 FROM purchase_invoice_items own WHERE own.invoice_id = i.id)
+        AND (SELECT COUNT(*) FROM purchase_invoices candidate
+             WHERE candidate.invoice_number = i.invoice_number) = 1
+        AND NOT EXISTS (SELECT 1 FROM purchase_invoices collision
+                        WHERE collision.id = i.invoice_number AND collision.id <> i.id)
+      )
+    )`;
     let sql = `
       SELECT DISTINCT i.*,
              s.name_ar as supplier_name,
@@ -1420,8 +1783,8 @@ export async function getPurchasesReportsAction(filters: any = {}) {
              COALESCE((
                SELECT SUM(pii.quantity * COALESCE(pii.selling_price, md.official_price, 0))
                FROM purchase_invoice_items pii
-               JOIN master_drugs md ON pii.drug_id = md.id
-               WHERE pii.invoice_id = i.id
+               LEFT JOIN master_drugs md ON pii.drug_id = md.id
+               WHERE ${reportLineLink('pii')}
              ), 0) as total_selling_amount,
              COALESCE((
                SELECT SUM(
@@ -1430,7 +1793,7 @@ export async function getPurchasesReportsAction(filters: any = {}) {
                  * (1 + CAST(COALESCE(i.tax_percent, 0) AS REAL) / 100.0)
                )
                FROM purchase_invoice_items pii
-               WHERE pii.invoice_id = i.id
+               WHERE ${reportLineLink('pii')}
              ), 0) + CAST(COALESCE(i.expenses, 0) AS REAL) AS gross_amount,
              MAX(0,
                COALESCE((
@@ -1440,7 +1803,7 @@ export async function getPurchasesReportsAction(filters: any = {}) {
                    * (1 + CAST(COALESCE(i.tax_percent, 0) AS REAL) / 100.0)
                  )
                  FROM purchase_invoice_items pii
-                 WHERE pii.invoice_id = i.id
+                 WHERE ${reportLineLink('pii')}
                ), 0) + CAST(COALESCE(i.expenses, 0) AS REAL)
                - CAST(COALESCE(i.total_amount, 0) AS REAL)
              ) AS discount_amount
@@ -1451,7 +1814,7 @@ export async function getPurchasesReportsAction(filters: any = {}) {
     const params: any[] = [pharmacyId, pharmacyId];
 
     if (filters.drugName && filters.drugName.trim()) {
-      sql += ` JOIN purchase_invoice_items pii_search ON pii_search.invoice_id = i.id JOIN master_drugs md_search ON pii_search.drug_id = md_search.id`;
+      sql += ` JOIN purchase_invoice_items pii_search ON ${reportLineLink('pii_search')} JOIN master_drugs md_search ON pii_search.drug_id = md_search.id`;
     }
 
     sql += " WHERE (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))";
@@ -1476,19 +1839,36 @@ export async function getPurchasesReportsAction(filters: any = {}) {
     const totalCost = items.reduce((sum, inv) => sum + Number(inv.total_amount || 0), 0);
     const totalSelling = items.reduce((sum, inv) => sum + Number(inv.total_selling_amount || 0), 0);
     return { success: true, data: items, totalCost, totalSelling, invoiceCount: items.length };
-  } catch (error: any) { return { success: false, error: error.message }; }
+  } catch (error: unknown) {
+    // Tauri rejects native command errors as strings, not necessarily Error objects.
+    // Preserve the ownership denial so the report can explain its fail-closed state.
+    const message = typeof error === 'string'
+      ? error
+      : error instanceof Error ? error.message : 'Failed to load purchases report';
+    return { success: false, error: message };
+  }
 }
 
 /**
  * Search purchase invoices across all suppliers and history by barcode, drug name, invoice number, or supplier name
  */
-export async function searchPurchaseInvoicesForReturnAction(searchTerm: string) {
+export async function searchPurchaseInvoicesForReturnAction(searchTerm: string, supplierId?: number) {
   try {
     const session = await getLocalSession();
     if (!session || !hasUserPermissionSync(session, 'can_view_purchases')) return { success: false, error: 'Unauthorized', data: [] };
     const pharmacyId = session.pharmacy_id || 'local_default';
     const term = searchTerm.trim();
-    if (!term) return { success: true, data: [] };
+    if (!term && !supplierId) return { success: true, data: [] };
+    if (supplierId !== undefined && (!Number.isInteger(supplierId) || supplierId <= 0)) {
+      return { success: false, error: 'Invalid supplier ID', data: [] };
+    }
+    if (isTauri) {
+      const queryId = term ? 'purchases.return_search' : 'purchases.return_supplier';
+      return {
+        success: true,
+        data: await nativePurchasingAll(queryId, term ? null : String(supplierId), term || null),
+      };
+    }
 
     const query = `
       SELECT DISTINCT 
@@ -1500,6 +1880,7 @@ export async function searchPurchaseInvoicesForReturnAction(searchTerm: string) 
       LEFT JOIN master_drugs md ON pii.drug_id = md.id
       WHERE (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
         AND (i.status = 'completed')
+        AND (? IS NULL OR i.supplier_id = ?)
         AND EXISTS (
           SELECT 1
           FROM purchase_invoice_items candidate
@@ -1553,6 +1934,7 @@ export async function searchPurchaseInvoicesForReturnAction(searchTerm: string) 
     const wildcard = `%${term}%`;
     const invoices = await db.prepare(query).all(
       pharmacyId, pharmacyId,
+      supplierId ?? null, supplierId ?? null,
       wildcard, wildcard, wildcard, wildcard, wildcard, wildcard,
       term, term,
       wildcard, wildcard,
@@ -1576,14 +1958,23 @@ export async function getPurchaseInvoiceDetailsAction(
       || (options.reportScope && hasUserPermissionSync(session, 'rep_can_view_purchases'))
     );
     if (!canViewDetails) return { success: false, error: 'Unauthorized' };
+    if (options.reportScope && (!session.pharmacy_id || session.pharmacy_id === 'local_default')) {
+      return { success: false, error: 'Legacy purchasing ownership needs independent tenant verification' };
+    }
     const pharmacyId = session.pharmacy_id || 'local_default';
-    let invoice = await db.prepare(`
+    const nativeHeader = isTauri
+      ? await nativePurchasingPage('purchases.detail_header', { recordId: invoiceId, limit: 2 })
+      : null;
+    if (nativeHeader && nativeHeader.length > 1) throw new Error('Ambiguous purchase invoice number');
+    let invoice = nativeHeader
+      ? nativeHeader[0]
+      : await db.prepare(`
       SELECT * FROM purchase_invoices
       WHERE id = ?
         AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
     `).get(invoiceId, pharmacyId, pharmacyId) as any;
 
-    if (!invoice) {
+    if (!invoice && !isTauri) {
       const matches = await db.prepare(`
         SELECT * FROM purchase_invoices
         WHERE invoice_number = ?
@@ -1594,6 +1985,7 @@ export async function getPurchaseInvoiceDetailsAction(
       if (matches.length !== 1) throw new Error(matches.length ? 'Ambiguous purchase invoice number' : 'Purchase invoice not found');
       invoice = matches[0];
     }
+    if (!invoice) throw new Error('Purchase invoice not found');
 
     const loadItems = (itemInvoiceId: string) => db.prepare(`
       SELECT pii.*,
@@ -1624,7 +2016,7 @@ export async function getPurchaseInvoiceDetailsAction(
              lot.batch_number,
              lot.pharmacy_id AS inventory_pharmacy_id
       FROM purchase_invoice_items pii
-      JOIN master_drugs d ON pii.drug_id = d.id
+      LEFT JOIN master_drugs d ON pii.drug_id = d.id
       LEFT JOIN units u ON pii.unit_id = u.id
       LEFT JOIN inventory lot ON lot.id = pii.inventory_id
         AND (lot.pharmacy_id = ? OR (lot.pharmacy_id IS NULL AND ? = 'local_default'))
@@ -1632,14 +2024,22 @@ export async function getPurchaseInvoiceDetailsAction(
       ORDER BY pii.id
     `).all(pharmacyId, pharmacyId, itemInvoiceId) as Promise<any[]>;
 
-    let items = await loadItems(String(invoice.id));
-    if (!items.length && invoice.invoice_number) {
-      const duplicateNumber = await db.prepare(`
-        SELECT COUNT(*) AS count FROM purchase_invoices
-        WHERE invoice_number = ?
-          AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
-      `).get(invoice.invoice_number, pharmacyId, pharmacyId) as any;
-      if (Number(duplicateNumber?.count || 0) === 1) items = await loadItems(String(invoice.invoice_number));
+    let items = isTauri
+      ? await nativePurchasingAll('purchases.detail_items', String(invoice.id))
+      : await loadItems(String(invoice.id));
+    if (!isTauri && !items.length && invoice.invoice_number) {
+      // Historical lines may use a human invoice number instead of the ID.
+      // Resolve that link only when it is unique across *all* pharmacies,
+      // including cases where another invoice ID equals that number.
+      const provenance = await db.prepare(`
+        SELECT
+          (SELECT COUNT(*) FROM purchase_invoices WHERE invoice_number = ?) AS matches,
+          (SELECT COUNT(*) FROM purchase_invoices WHERE id = ? AND id <> ?) AS id_collisions
+      `).get(invoice.invoice_number, invoice.invoice_number, invoice.id) as any;
+      if (Number(provenance?.matches || 0) !== 1 || Number(provenance?.id_collisions || 0) !== 0) {
+        throw new Error('Ambiguous purchase invoice number');
+      }
+      items = await loadItems(String(invoice.invoice_number));
     }
 
     const rawItemsTotal = items.reduce((sum, item) => sum
@@ -1652,7 +2052,9 @@ export async function getPurchaseInvoiceDetailsAction(
         * (1 - Number(invoice.discount_percent || 0) / 100)
       : 1;
 
-    const priorReturns = await db.prepare(`
+    const priorReturns = isTauri
+      ? await nativePurchasingAll('purchases.detail_returns', String(invoice.id))
+      : await db.prepare(`
       SELECT pri.purchase_invoice_item_id, pri.inventory_id, pri.drug_id,
              pri.quantity_returned, COALESCE(pri.unit, 'large') AS unit
       FROM purchase_return_items pri
@@ -1701,6 +2103,9 @@ export async function getPurchaseInvoiceDetailsAction(
 }
 
 type PurchaseReturnRequest = {
+  // A desktop intent may survive a lost IPC response. Never silently mint a
+  // different nonce when its caller already holds an uncertain request.
+  request_id?: string;
   purchase_invoice_id: string;
   supplier_id: number;
   reason: string;
@@ -1888,6 +2293,7 @@ export async function createPurchaseReturnAction(data: PurchaseReturnRequest) {
     if (isTauri) {
       const { invoke } = await import('@tauri-apps/api/core');
       const result = await invoke<any>('create_purchase_return_critical', {
+        requestId: data.request_id ?? crypto.randomUUID(),
         payload: {
           purchase_invoice_id: data.purchase_invoice_id,
           supplier_id: Number(data.supplier_id),
@@ -2045,6 +2451,16 @@ export async function getPurchaseReturnsAction(options: { limit?: number; offset
     const search = String(options.search || '').trim();
     const like = `%${search}%`;
 
+    if (isTauri) {
+      const fetched = await nativePurchasingPage('purchases.returns_list', {
+        search: search || null, limit: limit + 1, offset,
+      });
+      return {
+        success: true,
+        data: normalizeDatabaseTimestamps(fetched.slice(0, limit)),
+        hasMore: fetched.length > limit,
+      };
+    }
     const params: any[] = [pharmacyId, pharmacyId];
     let sql = `
       SELECT pr.*, s.name_ar as supplier_name, u.full_name as user_name,
@@ -2095,20 +2511,21 @@ export async function deletePurchaseInvoiceAction(invoiceId: string, removeInven
     const session = await getLocalSession();
     if (!session || !hasUserPermissionSync(session, 'can_view_purchases')) return { success: false, error: 'Unauthorized' };
     const pharmacyId = session.pharmacy_id || 'local_default';
-    const invoice = await db.prepare(`
+    const invoice = !isTauri ? await db.prepare(`
       SELECT id FROM purchase_invoices
       WHERE id = ?
         AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
-    `).get(invoiceId, pharmacyId, pharmacyId);
-    if (!invoice) return { success: false, error: 'Purchase invoice not found in this pharmacy' };
+    `).get(invoiceId, pharmacyId, pharmacyId) : null;
+    // In Tauri, delete_purchase_invoice_critical rechecks owner and linked
+    // stock under the database writer lock. The old generic SELECT was both
+    // release-blocked and vulnerable to a stale preflight race.
+    if (!isTauri && !invoice) return { success: false, error: 'Purchase invoice not found in this pharmacy' };
     if (!isTauri) return { success: false, error: 'Purchase deletion is available in the offline desktop app' };
     const { invoke } = await import('@tauri-apps/api/core');
     await invoke('delete_purchase_invoice_critical', {
       payload: {
         invoice_id: invoiceId,
         remove_inventory: removeInventory,
-        user_id: String(session.id),
-        pharmacy_id: session.pharmacy_id || 'local_default',
       }
     });
     if (removeInventory) notifyInventoryChanged();
@@ -2142,6 +2559,14 @@ export async function getPurchaseReturnDetailsAction(returnId: string) {
     if (!session || !hasUserPermissionSync(session, 'can_view_purchases')) return { success: false, error: 'Unauthorized' };
     const pharmacyId = session.pharmacy_id || 'local_default';
 
+    if (isTauri) {
+      const header = (await nativePurchasingPage('purchases.return_detail', {
+        recordId: returnId, limit: 1,
+      }))[0];
+      if (!header) return { success: false, error: 'Purchase return not found' };
+      const items = await nativePurchasingAll('purchases.return_items', returnId);
+      return { success: true, data: { ...normalizeDatabaseTimestamps([header])[0], items } };
+    }
     const header = await db.prepare(`
       SELECT pr.*, s.name_ar as supplier_name, s.phone as supplier_phone,
              u.full_name as user_name, pi.invoice_number, pi.invoice_date,
@@ -2176,6 +2601,25 @@ export async function getPurchaseInvoiceAction(invoiceId: string) {
     const session = await getLocalSession();
     if (!session || !hasUserPermissionSync(session, 'can_view_purchases')) return { success: false, error: 'Unauthorized' };
 
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const rows = await invoke<any[]>('db_read_scoped', {
+        queryId: 'purchases.invoice_get',
+        recordId: invoiceId,
+        limit: 1,
+        offset: 0,
+        search: null,
+        drugId: null,
+      });
+      if (!Array.isArray(rows) || rows.length > 1 ||
+          rows.some(row => !row || typeof row !== 'object' || Array.isArray(row))) {
+        throw new Error('Invalid native purchase invoice detail response');
+      }
+      // dbGet normalizes legacy SQLite UTC timestamps and returns null for
+      // missing IDs. Foreign-tenant IDs are indistinguishable from missing.
+      return { success: true, data: normalizeDatabaseTimestamps(rows)[0] ?? null };
+    }
+
     const pharmacyId = session.pharmacy_id || 'local_default';
     const invoice = await db.prepare(`
       SELECT * FROM purchase_invoices
@@ -2192,6 +2636,46 @@ export async function getDraftPurchaseInvoicesAction() {
   try {
     const session = await getLocalSession();
     if (!session || !hasUserPermissionSync(session, 'can_view_purchases')) return { success: false, error: 'Unauthorized' };
+
+    if (isTauri) {
+      const pageSize = 200;
+      const readScope = {
+        actorId: String(session.id ?? ''),
+        pharmacyId: String(session.pharmacy_id || 'local_default'),
+      };
+      const maxDrafts = 100_000;
+      const drafts: any[] = [];
+      let cursor: string | null = null;
+      const seenCursors = new Set<string>();
+      while (true) {
+        const page = await nativeOwnedPurchasingListPage(
+          'purchases.drafts_list', cursor, pageSize, readScope,
+        );
+        if (!Array.isArray(page) || page.length > pageSize ||
+            page.some(row => !row || typeof row !== 'object' || Array.isArray(row) ||
+              typeof row.id !== 'string' || !row.id || row.id.length > 256 ||
+              !Object.prototype.hasOwnProperty.call(row, '__cursor_created_at') ||
+              (row.__cursor_created_at !== null &&
+                (typeof row.__cursor_created_at !== 'string' ||
+                  row.__cursor_created_at.length > 256)))) {
+          throw new Error('Invalid native purchase draft list response');
+        }
+        // The keyset timestamp is an internal transport field. The public
+        // response must retain the original six-column draft picker shape.
+        drafts.push(...page.map(({ __cursor_created_at, ...draft }) => draft));
+        if (drafts.length > maxDrafts) {
+          throw new Error('Purchase drafts exceed the safe native read limit');
+        }
+        if (page.length < pageSize) return { success: true, data: drafts };
+        const last = page[page.length - 1];
+        const nextCursor = JSON.stringify([last.__cursor_created_at, last.id]);
+        if (nextCursor === cursor || seenCursors.has(nextCursor)) {
+          throw new Error('Native purchase draft pagination did not advance');
+        }
+        seenCursors.add(nextCursor);
+        cursor = nextCursor;
+      }
+    }
 
     const pharmacyId = session.pharmacy_id || 'local_default';
     const drafts = await db.prepare(`
@@ -2234,25 +2718,35 @@ export async function updateCompletedPurchaseInvoiceAction(data: {
     }
     assertPurchaseItemsPolicy(data.cart, 'completed');
     assertNoDuplicatePurchaseLots(data.cart);
-    await assertCompletedPurchaseExpiryPolicyForDb(data.cart);
+    if (!isTauri) await assertCompletedPurchaseExpiryPolicyForDb(data.cart);
 
     const pharmacyId = session.pharmacy_id || 'local_default';
-    const ownedInvoice = await db.prepare(`
+    const ownedInvoice = !isTauri ? await db.prepare(`
       SELECT id FROM purchase_invoices
       WHERE id = ? AND status = 'completed'
         AND (pharmacy_id = ? OR (pharmacy_id IS NULL AND ? = 'local_default'))
-    `).get(data.id, pharmacyId, pharmacyId);
-    if (!ownedInvoice) return { success: false, error: 'Completed purchase invoice not found in this pharmacy' };
+    `).get(data.id, pharmacyId, pharmacyId) : null;
+    // The native status/tenant check is transactional. Web compatibility keeps
+    // its original preflight without introducing another desktop SQL path.
+    if (!isTauri && !ownedInvoice) return { success: false, error: 'Completed purchase invoice not found in this pharmacy' };
     if (!isTauri) await assertPurchaseBarcodesAvailable(data.cart || []);
 
     if (isTauri) {
       const { invoke } = await import('@tauri-apps/api/core');
       await invoke('save_purchase_invoice_critical', {
+        expectedExistingStatus: 'completed',
         payload: {
-          ...data,
-          pharmacy_id: session.pharmacy_id || null,
-          user_id: String(session.id || 'admin'),
+          id: data.id,
           supplier_id: Number(data.supplier_id),
+          invoice_number: data.invoice_number || null,
+          invoice_date: data.invoice_date || null,
+          payment_method: data.payment_method || null,
+          notes: data.notes || null,
+          check_number: data.check_number || null,
+          expenses: data.expenses || 0,
+          discount_value: data.discount_value || 0,
+          discount_percent: data.discount_percent || 0,
+          tax_percent: data.tax_percent || 0,
           status: 'completed',
           cart: (data.cart || []).map(item => ({
             ...item,

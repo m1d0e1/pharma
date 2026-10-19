@@ -152,6 +152,7 @@ describe('Sales & Purchases Reports Totals Display', () => {
           created_at: '2026-09-01T10:00:00Z',
           total_amount: 900,
           discount_amount: 100,
+          refunded_amount: 0,
           payment_method: 'cash',
           patient_name: 'أحمد علي',
           staff_name: 'د. محمد',
@@ -162,6 +163,7 @@ describe('Sales & Purchases Reports Totals Display', () => {
           created_at: '2026-09-01T11:00:00Z',
           total_amount: 450,
           discount_amount: 50,
+          refunded_amount: 0,
           payment_method: 'visa',
           patient_name: 'محمود حسن',
           staff_name: 'د. محمد',
@@ -190,6 +192,25 @@ describe('Sales & Purchases Reports Totals Display', () => {
     expect(screen.getAllByText('150').length).toBeGreaterThan(0);
     expect(screen.getByRole('button', { name: 'طباعة تقرير المبيعات' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'تصدير تقرير المبيعات إلى CSV' })).toBeInTheDocument();
+  });
+
+  it('deducts approved sale returns from net sales without rewriting the original invoice total', async () => {
+    (getSalesReportsAction as jest.Mock).mockResolvedValue({
+      success: true,
+      data: [{
+        id: 'qa-refund-invoice', created_at: '2026-10-16T08:00:00Z',
+        total_amount: 48, discount_amount: 0, refunded_amount: 24,
+        payment_method: 'cash', status: 'completed',
+      }],
+    });
+    render(<SalesReportsClient userRole="owner" />);
+    const netCard = (await screen.findByText('صافي المبيعات')).parentElement;
+    await waitFor(() => expect(netCard).toHaveTextContent('24'));
+    expect(netCard).toHaveTextContent('مرتجعات معتمدة: 24 ج.م');
+    expect(screen.getByText('الإجمالي (1 فاتورة)')).toBeInTheDocument();
+    // The invoice footer represents the original completed invoice, not a
+    // duplicate adjusted document; refunds are deducted only in net revenue.
+    expect(screen.getAllByText('48').length).toBeGreaterThan(0);
   });
 
   it('reports wallet sales as wallet rather than credit and includes the wallet filter', async () => {
@@ -237,7 +258,11 @@ describe('Sales & Purchases Reports Totals Display', () => {
     render(<PurchasesReportsClient userRole="owner" />);
 
     await waitFor(() => {
-      expect(screen.getByText('صافي المشتريات')).toBeInTheDocument();
+      // Both pre-return invoice and verified-return-adjusted totals are
+      // separately labeled; the latter is NOT the supplier's payable.
+      expect(screen.getByText('صافي فواتير الشراء قبل مرتجعات الموردين')).toBeInTheDocument();
+      expect(screen.getByText('صافي المشتريات بعد مرتجعات الموردين الموثقة')).toBeInTheDocument();
+      expect(screen.getByText(/الصافي بعد المرتجعات ليس رصيد المورد بعد الدفعات/)).toBeInTheDocument();
       expect(screen.getByText('القيمة البيعية المتوقعة')).toBeInTheDocument();
       expect(screen.getByText('الإجمالي (1 فاتورة)')).toBeInTheDocument();
     });

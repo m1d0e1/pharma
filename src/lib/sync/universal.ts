@@ -1,21 +1,17 @@
-// Universal sync wrapper for hybrid environments
+// The installed desktop app is the only supported runtime for reference-data sync.
 import { isTauri } from '@/lib/env';
 
-export async function syncFromCloud() {
-  if (isTauri) {
-    console.log('Running cloud sync on Tauri...');
-    const { syncFromCloudClient } = await import('./client');
-    return syncFromCloudClient();
-  } else {
-    console.log('Running cloud sync via Server Action...');
-    // We dynamically import the server action to avoid Webpack bundling issues in Tauri static builds
-    try {
-      const { syncFromCloudAction } = await import('@/app/actions-client/sync');
-      return syncFromCloudAction();
-    } catch (err) {
-      console.error('Failed to import syncFromCloudAction, falling back to client-side sync:', err);
-      const { syncFromCloudClient } = await import('./client');
-      return syncFromCloudClient();
-    }
+interface ReferenceSyncResult {
+  success: boolean;
+  error?: string;
+  message?: string;
+  syncedUsernames?: string[];
+}
+
+export async function syncFromCloud(): Promise<ReferenceSyncResult> {
+  if (!isTauri) {
+    return { success: false, error: 'تحديث الأدوية والتفاعلات متاح فقط داخل تطبيق سطح المكتب.' };
   }
+  const { syncFromCloudClient } = await import('./client');
+  return syncFromCloudClient();
 }

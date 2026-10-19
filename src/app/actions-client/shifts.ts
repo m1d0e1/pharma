@@ -1,5 +1,6 @@
 
 import { dbSelect, dbExecute, dbGet, dbTransaction, generateId, type TransactionDb } from '@/lib/db/tauri';
+import { isTauri } from '@/lib/env';
 const logActivity = async (userId, action, details) => {
   try {
     await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [userId, action, details]);
@@ -46,6 +47,12 @@ import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 const normalizePharmacyId = (pharmacyId?: string | null) =>
   pharmacyId && String(pharmacyId).trim() ? String(pharmacyId).trim() : 'local_default';
 
+// A drawer float is posted in currency cents. Do not forward fractional-cent
+// values to either native open/close command (or convert invalid values to 0).
+const validShiftCash = (amount: number) => Number.isFinite(amount) &&
+  amount >= 0 && amount <= 1_000_000_000_000 &&
+  Math.abs(amount * 100 - Math.round(amount * 100)) <= 0.000001;
+
 type ShiftDb = Pick<TransactionDb, 'prepare'>;
 
 async function resolveUserPharmacyId(userId: string | number, scopedDb: ShiftDb = db) {
@@ -78,6 +85,16 @@ export async function getShiftForPharmacy(
   openOnly = false,
   scopedDb: ShiftDb = db,
 ) {
+  if (isTauri) {
+    if (scopedDb !== db) {
+      throw new Error('Native scoped shift lookup cannot use renderer SQL transactions');
+    }
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke<{ id: string; user_id: string; start_time: string | null; starting_cash: number | null; status: string } | null>(
+      'get_pharmacy_shift_native',
+      { shiftId, openOnly },
+    );
+  }
   const scope = normalizePharmacyId(pharmacyId);
   return await scopedDb.prepare(`
     SELECT s.id, s.user_id, s.start_time, s.starting_cash, s.status
@@ -99,6 +116,17 @@ export async function ensurePermanentShiftForUser(
   notes = 'وردية مشتركة أُنشئت تلقائياً',
   scopedDb: ShiftDb = db,
 ) {
+  if (isTauri) {
+    // Native session identity owns the shared shift. Neither this legacy
+    // userId argument nor a browser-supplied pharmacy reaches native SQL.
+    // A renderer-owned SQL transaction cannot be safely bridged to the
+    // atomic native write; fail closed instead of running generic SQL.
+    if (scopedDb !== db) {
+      throw new Error('Native shared shift creation cannot run inside a renderer SQL transaction');
+    }
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke<{ id: string; user_id: string; start_time: string | null; starting_cash: number | null; status: string }>('ensure_shared_shift_native');
+  }
   const pharmacyId = await resolveUserPharmacyId(userId, scopedDb);
   const existing = await getOpenShiftForPharmacy(pharmacyId, scopedDb);
   if (existing?.id) return existing;
@@ -126,11 +154,27 @@ export async function ensurePermanentShiftForUser(
  */
 export async function openShiftAction(data: { starting_cash_amount: number; opening_notes?: string; user_id?: string | number }) {
   try {
+    if (isTauri) {
+      if (!validShiftCash(data.starting_cash_amount)) {
+        return { success: false, error: 'الرصيد الافتتاحي غير صالح' };
+      }
+      // A caller cannot nominate another employee as creator on desktop.
+      // Only Rust's live authenticated actor is used in the actual INSERT.
+      if (data.user_id !== undefined && data.user_id !== null) {
+        return { success: false, error: 'لا يمكن فتح وردية نيابة عن موظف آخر' };
+      }
+      const { invoke } = await import('@tauri-apps/api/core');
+      const opened = await invoke<{ shift_id: string; already_open: boolean }>('open_shared_shift_native', {
+        payload: { startingCashAmount: data.starting_cash_amount, openingNotes: data.opening_notes || null },
+      });
+      revalidatePath('/');
+      return { success: true, shiftId: opened.shift_id, alreadyOpen: opened.already_open };
+    }
     const user = await getLocalSession();
     if (!user || !hasUserPermissionSync(user, 'can_view_shifts')) {
       return { success: false, error: 'غير مصرح' };
     }
-    if (!Number.isFinite(data.starting_cash_amount) || data.starting_cash_amount < 0) {
+    if (!validShiftCash(data.starting_cash_amount)) {
       return { success: false, error: 'الرصيد الافتتاحي غير صالح' };
     }
 
@@ -163,11 +207,22 @@ export async function openShiftAction(data: { starting_cash_amount: number; open
  */
 export async function closeShiftAction(data: { shift_id?: string; ending_cash_amount: number; closing_notes?: string }) {
   try {
+    if (isTauri) {
+      if (!validShiftCash(data.ending_cash_amount)) {
+        return { success: false, error: 'الرصيد الختامي غير صالح' };
+      }
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke<void>('close_shared_shift_native', {
+        payload: { shiftId: data.shift_id || null, endingCashAmount: data.ending_cash_amount, closingNotes: data.closing_notes || null },
+      });
+      revalidatePath('/');
+      return { success: true };
+    }
     const user = await getLocalSession();
     if (!user || !hasUserPermissionSync(user, 'acc_can_view_handover')) {
       return { success: false, error: 'غير مصرح' };
     }
-    if (!Number.isFinite(data.ending_cash_amount) || data.ending_cash_amount < 0) {
+    if (!validShiftCash(data.ending_cash_amount)) {
       return { success: false, error: 'الرصيد الختامي غير صالح' };
     }
 
@@ -240,9 +295,9 @@ export async function closeShiftAction(data: { shift_id?: string; ending_cash_am
       if (Math.abs(difference) > 0.01) {
         const journalId = generateId();
         await db.prepare(`
-          INSERT INTO daily_journals (id, date, description, created_by, total_amount)
-          VALUES (?, date('now', 'localtime'), ?, ?, ?)
-        `).run(journalId, `تسوية وردية: عجز/زيادة نقدية`, user.id, Math.abs(difference));
+          INSERT INTO daily_journals (id, date, description, created_by, total_amount, pharmacy_id)
+          VALUES (?, date('now', 'localtime'), ?, ?, ?, ?)
+        `).run(journalId, `تسوية وردية: عجز/زيادة نقدية`, user.id, Math.abs(difference), pharmacyId);
 
         const getAccountId = async (cat: string) => {
           const s = await db.prepare('SELECT account_id FROM trial_balance_settings WHERE category = ?').get(cat) as any;
@@ -287,8 +342,20 @@ export async function closeShiftAction(data: { shift_id?: string; ending_cash_am
   }
 }
 
-export async function getShiftsAction(filter: { status: string }) {
+export async function getShiftsAction(filter: { status: string; page?: number }) {
   try {
+    const page = filter.page ?? 0;
+    if (!Number.isSafeInteger(page) || page < 0 || page > 500) {
+      return { success: false, error: 'رقم صفحة سجل الورديات غير صالح' };
+    }
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const history = await invoke<{ rows: any[]; has_more: boolean; next_page: number | null }>(
+        'get_shift_history_native',
+        { status: filter.status, page },
+      );
+      return { success: true, data: history.rows, has_more: history.has_more, next_page: history.next_page };
+    }
     const user = await getLocalSession();
     if (!user || !hasUserPermissionSync(user, 'can_view_shifts')) return { success: false, error: 'غير مصرح' };
 
@@ -299,8 +366,9 @@ export async function getShiftsAction(filter: { status: string }) {
     if (filter.status !== 'all') {
       params.push(filter.status);
     }
+    params.push(page * 100);
 
-    const rawShifts = await db.prepare(`
+    const rawPage = await db.prepare(`
       SELECT s.id, s.start_time as shift_start, s.end_time as shift_end, 
              s.starting_cash as starting_cash_amount, s.ending_cash as ending_cash_amount,
              s.actual_cash, s.transfer_amount, s.transfer_target, s.treasury_retained_cash, s.cash_difference,
@@ -345,8 +413,11 @@ export async function getShiftsAction(filter: { status: string }) {
       ) moves ON s.id = moves.shift_id
       WHERE COALESCE(NULLIF(TRIM(s.pharmacy_id), ''), 'local_default') = ?
       ${filter.status !== 'all' ? 'AND s.status = ?' : ''}
-      ORDER BY COALESCE(datetime(s.start_time), s.start_time, s.rowid) DESC LIMIT 100
+      ORDER BY COALESCE(datetime(s.start_time), s.start_time) DESC, s.rowid DESC
+      LIMIT 101 OFFSET ?
     `).all(...params) as any[];
+    const hasMore = rawPage.length > 100;
+    const rawShifts = rawPage.slice(0, 100);
     
     const shifts = rawShifts.map(s => {
       const startingCash = Number(s.starting_cash_amount || 0);
@@ -418,7 +489,7 @@ export async function getShiftsAction(filter: { status: string }) {
       };
     });
 
-    return { success: true, data: shifts };
+    return { success: true, data: shifts, has_more: hasMore, next_page: hasMore ? page + 1 : null };
   } catch (error) {
     console.error('Get shifts error:', error);
     return { success: false, error: 'فشل جلب سجل الشفتات' };
@@ -430,6 +501,20 @@ export async function getShiftsAction(filter: { status: string }) {
  */
 export async function getCurrentShiftAction() {
   try {
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const { shift, suggested_starting_cash } = await invoke<{
+        shift: { id: string; user_id: string; start_time: string | null; starting_cash: number | null; status: string };
+        suggested_starting_cash: number;
+      }>('current_shared_shift_native');
+      return {
+        success: true,
+        data: { id: shift.id, user_id: shift.user_id, shift_start: shift.start_time,
+          starting_cash_amount: Number(shift.starting_cash || 0), status: shift.status },
+        has_open_shift: true,
+        suggested_starting_cash,
+      };
+    }
     const user = await getLocalSession();
     if (!user) return { success: false, error: 'غير مصرح' };
 
@@ -473,6 +558,14 @@ export async function getCurrentShiftAction() {
  */
 export async function getCurrentShiftStatsAction() {
   try {
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const data = await invoke<{
+        id: string; user_id: string; start_time: string | null; starting_cash: number | null;
+        status: string; transactions: number; revenue: number; total_refunds: number; expected_cash: number;
+      }>('get_current_shift_stats_native');
+      return { success: true, data };
+    }
     const user = await getLocalSession();
     if (!user) return { success: false, error: 'غير مصرح' };
 
@@ -551,6 +644,13 @@ export async function getCurrentShiftStatsAction() {
  */
 export async function forceCloseAllShiftsAction() {
   try {
+    if (isTauri) {
+      // Owner-only operation: native live role/pharmacy decide what can close.
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke<void>('force_close_pharmacy_shifts_native');
+      revalidatePath('/');
+      return { success: true };
+    }
     const user = await getLocalSession();
     if (!user || user.role !== 'owner') {
       return { success: false, error: 'غير مصرح - للمالك فقط' };
@@ -580,6 +680,11 @@ export async function forceCloseAllShiftsAction() {
  */
 export async function getShiftReceiptsAction(shiftId: string) {
   try {
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const data = await invoke<any[]>('get_shift_receipts_native', { shiftId });
+      return { success: true, data };
+    }
     const user = await getLocalSession();
     if (!user || (!hasUserPermissionSync(user, 'can_view_shifts') && !hasUserPermissionSync(user, 'can_view_receipts') && !hasUserPermissionSync(user, 'rep_can_view_shifts'))) {
       return { success: false, error: 'غير مصرح' };

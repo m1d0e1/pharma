@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { usePathname } from 'next/navigation';
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 import AccessDenied from '@/components/AccessDenied';
 
@@ -11,6 +12,7 @@ interface PermissionGuardProps {
 }
 
 export default function PermissionGuard({ children, permissionKey, fallback = <AccessDenied /> }: PermissionGuardProps) {
+  const pathname = usePathname();
   const [authorized, setAuthorized] = useState<boolean | null>(null);
   const [checkError, setCheckError] = useState(false);
   const [retryAttempt, setRetryAttempt] = useState(0);
@@ -48,7 +50,10 @@ export default function PermissionGuard({ children, permissionKey, fallback = <A
     return () => {
       active = false;
     };
-  }, [permissionKey, retryAttempt]);
+  // The route-level guard is the single navigation-time UI session check.
+  // Reverify even when two routes share one permission key; AuthGuard's
+  // shared-shell check no longer blocks every tab switch with a full-page UI.
+  }, [pathname, permissionKey, retryAttempt]);
 
   if (checkError) {
     return (

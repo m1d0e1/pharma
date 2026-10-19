@@ -1,5 +1,6 @@
 
 import { dbSelect, dbExecute, dbGet, dbTransaction } from '@/lib/db/tauri';
+import { isTauri } from '@/lib/env';
 const logActivity = async (userId, action, details) => {
   try {
     await dbExecute('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)', [userId, action, details]);
@@ -65,6 +66,13 @@ export async function clearAuditLogsAction() {
       return { success: false, error: 'غير مصرح - للمالك فقط' };
     }
     const pharmacyId = user.pharmacy_id || 'local_default';
+
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('clear_audit_logs', { userId: user.id });
+      revalidatePath('/audit');
+      return { success: true };
+    }
 
     const success = await clearAuditLogs(pharmacyId);
     if (success) {

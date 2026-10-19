@@ -1,4 +1,5 @@
 import { dbTransaction, type TransactionDb } from '@/lib/db/tauri';
+import { isTauri } from '@/lib/env';
 
 const LEGACY_PHARMACY_ID = 'placeholder-id';
 const DEFAULT_PHARMACY_ID = 'local_default';
@@ -91,5 +92,9 @@ async function migrateWithDb(db: Pick<TransactionDb, 'prepare'>): Promise<Legacy
 }
 
 export async function migrateLegacyPlaceholderInventoryScope(): Promise<LegacyPharmacyScopeMigrationResult> {
+  if (isTauri) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke<LegacyPharmacyScopeMigrationResult>('migrate_legacy_placeholder_inventory_scope');
+  }
   return dbTransaction(async transactionDb => migrateWithDb(transactionDb));
 }

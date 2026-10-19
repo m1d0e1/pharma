@@ -223,6 +223,45 @@ test('keeps a payment form open and reusable when payment creation throws', asyn
   expect(screen.getByDisplayValue('25')).toBeInTheDocument();
 });
 
+test('retains cash payment code when a native select emits its Arabic display label', async () => {
+  (getPatientProfileAction as jest.Mock).mockResolvedValue({ success: true, data: profileData });
+  (addPatientPaymentAction as jest.Mock).mockResolvedValue({ success: false, error: 'native settlement denied' });
+  render(<PatientProfileModal patientId="p1" onClose={jest.fn()} onSuccess={jest.fn()} />);
+  await screen.findByDisplayValue('محمد أحمد');
+  fireEvent.click(screen.getByRole('button', { name: /توريدات نقدية/ }));
+  fireEvent.click(screen.getByRole('button', { name: /إضافة توريد/ }));
+  const paymentMethod = screen.getByLabelText('طريقة الدفع');
+  expect(paymentMethod).toHaveValue('cash');
+  fireEvent.change(paymentMethod, { target: { value: 'نقدي (Cash)' } });
+  fireEvent.change(screen.getByLabelText('مبلغ الدفعة'), { target: { value: '24' } });
+  fireEvent.click(screen.getByRole('button', { name: 'تأكيد تسجيل الدفعة' }));
+  await waitFor(() => expect(addPatientPaymentAction).toHaveBeenCalledWith(expect.objectContaining({
+    patient_id: 'p1', payment_method: 'cash', amount: 24,
+  })));
+  expect(await screen.findByRole('alert')).toHaveTextContent('native settlement denied');
+  expect(screen.getByLabelText('مبلغ الدفعة')).toHaveValue(24);
+});
+
+test('notifies the owning patient list only after native payment commit so displayed debt can refresh', async () => {
+  (getPatientProfileAction as jest.Mock).mockResolvedValue({ success: true, data: profileData });
+  const onSuccess = jest.fn();
+  let resolvePayment!: (value: { success: boolean; error?: string }) => void;
+  (addPatientPaymentAction as jest.Mock).mockImplementationOnce(() => new Promise(resolve => {
+    resolvePayment = resolve;
+  }));
+  render(<PatientProfileModal patientId="p1" onClose={jest.fn()} onSuccess={onSuccess} />);
+  await screen.findByDisplayValue('محمد أحمد');
+  fireEvent.click(screen.getByRole('button', { name: /توريدات نقدية/ }));
+  fireEvent.click(await screen.findByRole('button', { name: /إضافة توريد/ }));
+  fireEvent.change(screen.getByPlaceholderText('0.00'), { target: { value: '25' } });
+  fireEvent.click(screen.getByRole('button', { name: 'تأكيد تسجيل الدفعة' }));
+  await waitFor(() => expect(addPatientPaymentAction).toHaveBeenCalledTimes(1));
+  expect(onSuccess).not.toHaveBeenCalled();
+  await act(async () => resolvePayment({ success: true }));
+  await waitFor(() => expect(onSuccess).toHaveBeenCalledTimes(1));
+  expect(getPatientProfileAction).toHaveBeenCalledTimes(2);
+});
+
 test('keeps the patient profile open after a committed payment when only the follow-up profile reload fails', async () => {
   const onClose = jest.fn();
   (getPatientProfileAction as jest.Mock)
@@ -274,6 +313,83 @@ test('blocks repeated patient-payment submission while the financial write is pe
   expect(screen.getByDisplayValue('35')).toBeInTheDocument();
 });
 
+test('reuses a failed patient-payment intent ID and changes it only for edited payment data', async () => {
+  (getPatientProfileAction as jest.Mock).mockResolvedValue({ success: true, data: profileData });
+  (addPatientPaymentAction as jest.Mock).mockResolvedValue({ success: false, error: 'reply lost' });
+  render(<PatientProfileModal patientId="p1" onClose={jest.fn()} onSuccess={jest.fn()} />);
+
+  await screen.findByDisplayValue('محمد أحمد');
+  fireEvent.click(screen.getByRole('button', { name: 'توريدات نقدية' }));
+  fireEvent.click(screen.getByRole('button', { name: /إضافة توريد/ }));
+  const amount = screen.getByLabelText('مبلغ الدفعة');
+  const submit = screen.getByRole('button', { name: 'تأكيد تسجيل الدفعة' });
+  fireEvent.change(amount, { target: { value: '35' } });
+  fireEvent.click(submit);
+  await waitFor(() => expect(addPatientPaymentAction).toHaveBeenCalledTimes(1));
+  fireEvent.click(submit);
+  await waitFor(() => expect(addPatientPaymentAction).toHaveBeenCalledTimes(2));
+
+  const [first, retry] = (addPatientPaymentAction as jest.Mock).mock.calls.map(([payload]) => payload);
+  expect(retry.request_id).toBe(first.request_id);
+
+  fireEvent.change(amount, { target: { value: '40' } });
+  fireEvent.click(submit);
+  await waitFor(() => expect(addPatientPaymentAction).toHaveBeenCalledTimes(3));
+  expect((addPatientPaymentAction as jest.Mock).mock.calls[2][0].request_id)
+    .not.toBe(first.request_id);
+});
+
+test('keeps a pending patient cash collection visible when cancel, modal close, or tab switching is attempted', async () => {
+  (getPatientProfileAction as jest.Mock).mockResolvedValue({ success: true, data: profileData });
+  let resolvePayment!: (value: { success: boolean; error?: string }) => void;
+  (addPatientPaymentAction as jest.Mock).mockImplementationOnce(() => new Promise(resolve => {
+    resolvePayment = resolve;
+  }));
+  const onClose = jest.fn();
+  render(<PatientProfileModal patientId="p1" onClose={onClose} onSuccess={jest.fn()} />);
+
+  await screen.findByDisplayValue('محمد أحمد');
+  fireEvent.click(screen.getByRole('button', { name: 'توريدات نقدية' }));
+  fireEvent.click(screen.getByRole('button', { name: /إضافة توريد/ }));
+  fireEvent.change(screen.getByLabelText('مبلغ الدفعة'), { target: { value: '62.75' } });
+  fireEvent.submit(screen.getByRole('button', { name: 'تأكيد تسجيل الدفعة' }).closest('form')!);
+  await waitFor(() => expect(addPatientPaymentAction).toHaveBeenCalledTimes(1));
+
+  fireEvent.click(screen.getByRole('button', { name: 'إلغاء' }));
+  fireEvent.click(screen.getByRole('button', { name: 'إغلاق نموذج الدفعة' }));
+  fireEvent.click(screen.getByRole('button', { name: 'إغلاق ملف العميل' }));
+  fireEvent.click(screen.getByRole('button', { name: 'المالية والتأمين' }));
+
+  expect(onClose).not.toHaveBeenCalled();
+  expect(screen.getByLabelText('مبلغ الدفعة')).toHaveValue(62.75);
+  expect(screen.getByRole('button', { name: 'توريدات نقدية' })).toHaveAttribute('aria-pressed', 'true');
+  expect(addPatientPaymentAction).toHaveBeenCalledTimes(1);
+
+  await act(async () => resolvePayment({ success: false, error: 'payment denied' }));
+  await waitFor(() => expect(toast.error).toHaveBeenCalledWith('payment denied'));
+  fireEvent.click(screen.getByRole('button', { name: 'إلغاء' }));
+  expect(screen.queryByLabelText('مبلغ الدفعة')).not.toBeInTheDocument();
+});
+
+test('does not describe an acknowledged patient cash collection as failed when the parent list callback throws', async () => {
+  (getPatientProfileAction as jest.Mock).mockResolvedValue({ success: true, data: profileData });
+  (addPatientPaymentAction as jest.Mock).mockResolvedValueOnce({ success: true });
+  const onSuccess = jest.fn(() => { throw new Error('parent refresh crashed'); });
+  render(<PatientProfileModal patientId="p1" onClose={jest.fn()} onSuccess={onSuccess} />);
+
+  await screen.findByDisplayValue('محمد أحمد');
+  fireEvent.click(screen.getByRole('button', { name: 'توريدات نقدية' }));
+  fireEvent.click(screen.getByRole('button', { name: /إضافة توريد/ }));
+  fireEvent.change(screen.getByLabelText('مبلغ الدفعة'), { target: { value: '62.75' } });
+  fireEvent.click(screen.getByRole('button', { name: 'تأكيد تسجيل الدفعة' }));
+
+  await waitFor(() => expect(onSuccess).toHaveBeenCalledTimes(1));
+  expect(addPatientPaymentAction).toHaveBeenCalledTimes(1);
+  expect(toast.success).toHaveBeenCalledWith('تم تسجيل الدفعة بنجاح');
+  expect(toast.error).not.toHaveBeenCalledWith('حدث خطأ أثناء إضافة الدفعة');
+  expect(screen.queryByLabelText('مبلغ الدفعة')).not.toBeInTheDocument();
+});
+
 test('locks wallet top-up while pending and preserves the amount when the action rejects it', async () => {
   (getPatientProfileAction as jest.Mock).mockResolvedValue({ success: true, data: profileData });
   let resolveTopUp!: (value: { success: boolean; error?: string }) => void;
@@ -294,8 +410,43 @@ test('locks wallet top-up while pending and preserves the amount when the action
 
   await act(async () => resolveTopUp({ success: false, error: 'لا توجد وردية مفتوحة' }));
   await waitFor(() => expect(toast.error).toHaveBeenCalledWith('لا توجد وردية مفتوحة'));
+  expect(screen.getByRole('alert')).toHaveTextContent('لا توجد وردية مفتوحة');
   expect(screen.getByRole('button', { name: 'تأكيد الشحن' })).toBeEnabled();
   expect(screen.getByDisplayValue('40')).toBeInTheDocument();
+  const firstRequestId = (updatePatientWalletAction as jest.Mock).mock.calls[0][3];
+  expect(firstRequestId).toEqual(expect.any(String));
+  (updatePatientWalletAction as jest.Mock).mockResolvedValueOnce({ success: false, error: 'pending issuer denial' });
+  fireEvent.click(screen.getByRole('button', { name: 'تأكيد الشحن' }));
+  await waitFor(() => expect(updatePatientWalletAction).toHaveBeenCalledTimes(2));
+  expect((updatePatientWalletAction as jest.Mock).mock.calls[1][3]).toBe(firstRequestId);
+  expect(await screen.findByRole('alert')).toHaveTextContent('pending issuer denial');
+});
+
+test('does not let a pending wallet top-up disappear when the patient profile is closed or changed to another tab', async () => {
+  (getPatientProfileAction as jest.Mock).mockResolvedValue({ success: true, data: profileData });
+  let resolveTopUp!: (value: { success: boolean; error?: string }) => void;
+  (updatePatientWalletAction as jest.Mock).mockImplementationOnce(() => new Promise(resolve => {
+    resolveTopUp = resolve;
+  }));
+  const onClose = jest.fn();
+  render(<PatientProfileModal patientId="p1" onClose={onClose} onSuccess={jest.fn()} />);
+
+  await screen.findByDisplayValue('محمد أحمد');
+  fireEvent.click(screen.getByRole('button', { name: 'المالية والتأمين' }));
+  fireEvent.change(screen.getByLabelText('المبلغ المراد شحنه'), { target: { value: '41.25' } });
+  fireEvent.click(screen.getByRole('button', { name: 'تأكيد الشحن' }));
+  await waitFor(() => expect(updatePatientWalletAction).toHaveBeenCalledTimes(1));
+
+  fireEvent.click(screen.getByRole('button', { name: 'إغلاق ملف العميل' }));
+  fireEvent.click(screen.getByRole('button', { name: 'توريدات نقدية' }));
+  expect(onClose).not.toHaveBeenCalled();
+  expect(screen.getByRole('button', { name: 'المالية والتأمين' })).toHaveAttribute('aria-pressed', 'true');
+  expect(screen.getByLabelText('المبلغ المراد شحنه')).toHaveValue(41.25);
+
+  await act(async () => resolveTopUp({ success: false, error: 'wallet denied' }));
+  await waitFor(() => expect(toast.error).toHaveBeenCalledWith('wallet denied'));
+  fireEvent.click(screen.getByRole('button', { name: 'توريدات نقدية' }));
+  expect(screen.getByRole('button', { name: 'توريدات نقدية' })).toHaveAttribute('aria-pressed', 'true');
 });
 
 test('keeps an allergy visible and surfaces a returned delete failure without false refresh', async () => {

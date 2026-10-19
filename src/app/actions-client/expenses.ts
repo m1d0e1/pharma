@@ -43,8 +43,10 @@ const db = {
 import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { createCashMovementAction } from './finance';
 import { isBusinessDate, localMonth } from '@/lib/time';
+import { isTauri } from '@/lib/env';
 
 const revalidatePath = (...args: any[]) => {};
+const nativeRequestIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 /**
  * Add an expense
@@ -56,8 +58,32 @@ export async function addExpenseAction(data: {
   date: string;
   source_type?: string;
   shift_id?: string;
+  request_id?: string;
 }) {
   try {
+    if (data.request_id !== undefined && !nativeRequestIdPattern.test(data.request_id)) {
+      throw new Error('معرف محاولة المصروف غير صالح');
+    }
+    if (isTauri) {
+      // The expense, cash movement, ledger entries and shift must all commit
+      // together. Do not use the renderer's nested DB transaction in release.
+      const { invoke } = await import('@tauri-apps/api/core');
+      const receipt = await invoke<{ id: string }>('create_expense_native', {
+        payload: {
+          category: data.category,
+          amount: data.amount,
+          description: data.description,
+          date: data.date,
+          sourceType: data.source_type ?? null,
+          shiftId: data.shift_id ?? null,
+          requestId: data.request_id ?? generateId(),
+        },
+      });
+      if (!receipt?.id) throw new Error('Native expense posting confirmation was incomplete');
+      revalidatePath('/expenses');
+      revalidatePath('/accounts');
+      return { success: true, id: receipt.id };
+    }
     const user = await getLocalSession();
     if (!user || (!hasUserPermissionSync(user, 'acc_can_define_expenses') && !hasUserPermissionSync(user, 'acc_can_process_cash_flow'))) {
       return { success: false, error: 'غير مصرح' };
@@ -101,6 +127,60 @@ export async function addExpenseAction(data: {
  */
 export async function getExpensesAction(filter?: { from?: string; to?: string; category?: string }) {
   try {
+    if ((filter?.from && !isBusinessDate(filter.from))
+      || (filter?.to && !isBusinessDate(filter.to))
+      || (filter?.from && filter?.to && filter.from > filter.to)
+      || (filter?.category && filter.category !== 'all'
+        && (filter.category.length > 128 || !filter.category.trim()
+          || /[\x00-\x1f\x7f]/.test(filter.category)))) {
+      throw new Error('Invalid expense history filters');
+    }
+    const pageSize = 200;
+    const maxPages = 50;
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      type ExpensePage = {
+        rows: any[];
+        hasMore: boolean;
+        page: number;
+        actorId: string;
+        pharmacyId: string;
+      };
+      const expenses: any[] = [];
+      const seenIds = new Set<string>();
+      let nativeScope: string | undefined;
+      let nativeActor: string | undefined;
+      for (let page = 0; page < maxPages; page++) {
+        const response = await invoke<ExpensePage>('list_expenses_native', {filters: {
+          from: filter?.from || null, to: filter?.to || null,
+          category: filter?.category || null, page,
+        }});
+        if (!response || !Array.isArray(response.rows)
+          || typeof response.hasMore !== 'boolean' || response.page !== page
+          || typeof response.actorId !== 'string' || !response.actorId
+          || typeof response.pharmacyId !== 'string' || !response.pharmacyId
+          || response.rows.length > pageSize
+          || (response.hasMore && response.rows.length !== pageSize)) {
+          throw new Error('Invalid native expense page');
+        }
+        if (nativeScope !== undefined
+          && (nativeScope !== response.pharmacyId || nativeActor !== response.actorId)) {
+          throw new Error('Expense actor or pharmacy changed during pagination');
+        }
+        nativeScope = response.pharmacyId;
+        nativeActor = response.actorId;
+        for (const row of response.rows) {
+          if (!row || typeof row.id !== 'string' || !row.id
+            || seenIds.has(row.id)) {
+            throw new Error('Unstable or duplicate native expense page');
+          }
+          seenIds.add(row.id);
+          expenses.push(row);
+        }
+        if (!response.hasMore) return { success: true, data: expenses };
+      }
+      throw new Error('Expense history exceeds the safe 10,000-row read limit');
+    }
     const user = await getLocalSession();
     if (!user || !hasUserPermissionSync(user, 'can_view_expenses')) return { success: false, error: 'غير مصرح' };
     const pharmacyId = user.pharmacy_id || 'local_default';
@@ -126,10 +206,17 @@ export async function getExpensesAction(filter?: { from?: string; to?: string; c
       params.push(filter.category);
     }
 
-    query += ' ORDER BY e.date DESC, e.created_at DESC LIMIT 200';
-
-    const expenses = await db.prepare(query).all(...params);
-    return { success: true, data: expenses };
+    query += ' ORDER BY e.date DESC, e.created_at DESC, e.id DESC LIMIT 201 OFFSET ?';
+    const expenses: any[] = [];
+    for (let page = 0; page < maxPages; page++) {
+      const pageRows = await db.prepare(query).all(...params, page * pageSize) as any[];
+      if (!Array.isArray(pageRows) || pageRows.length > pageSize + 1) {
+        throw new Error('Invalid expense history database page');
+      }
+      expenses.push(...pageRows.slice(0, pageSize));
+      if (pageRows.length <= pageSize) return { success: true, data: expenses };
+    }
+    throw new Error('Expense history exceeds the safe 10,000-row read limit');
   } catch (error) {
     return { success: false, error: 'فشل جلب المصروفات' };
   }
@@ -140,6 +227,9 @@ export async function getExpensesAction(filter?: { from?: string; to?: string; c
  */
 export async function deleteExpenseAction(id: string) {
   try {
+    if (isTauri) {
+      return { success: false, error: 'Posted expenses require a documented native reversal, not deletion' };
+    }
     const user = await getLocalSession();
     if (!user || !hasUserPermissionSync(user, 'acc_can_define_expenses')) return { success: false, error: 'غير مصرح' };
     const pharmacyId = user.pharmacy_id || 'local_default';

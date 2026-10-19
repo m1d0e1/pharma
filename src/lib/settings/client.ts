@@ -2,6 +2,7 @@ import { dbExecute, dbSelect, dbTransaction } from '@/lib/db/tauri';
 import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { isStaffOwner } from '@/lib/auth/staff-policy';
 import { normalizePharmacyId, pharmacyIdentityConfigKey } from '@/lib/settings/pharmacy-identity';
+import { isTauri } from '@/lib/env';
 
 const LOCAL_PHARMACY_FIELDS: Record<string, string> = {
   name: 'pharmacy_name',
@@ -22,6 +23,15 @@ const LOCAL_PHARMACY_FIELDS: Record<string, string> = {
 
 export async function getLocalPharmacySettingsClient() {
   const user = await getLocalSession();
+  if (isTauri) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const values = await invoke<Record<string, string>>('read_pharmacy_settings_scoped');
+    return Object.fromEntries(
+      Object.entries(LOCAL_PHARMACY_FIELDS)
+        .filter(([, key]) => Object.prototype.hasOwnProperty.call(values, key))
+        .map(([field, key]) => [field, values[key] ?? '']),
+    );
+  }
   const pharmacyId = normalizePharmacyId(user?.pharmacy_id);
   const scopedKeys = Object.values(LOCAL_PHARMACY_FIELDS).map(key => pharmacyIdentityConfigKey(key, pharmacyId));
   const rows = await dbSelect(
@@ -44,16 +54,27 @@ export async function updatePharmacyClient(formData: any) {
       return { success: false, error: 'غير مصرح' };
     }
     const pharmacyId = normalizePharmacyId(user.pharmacy_id);
+    const payload = Object.fromEntries(
+      Object.keys(LOCAL_PHARMACY_FIELDS).map(field => [
+        field,
+        formData[field] == null ? '' : String(formData[field]),
+      ])
+    );
     // Pharmacy identity is local-first; cloud sync is read-only public catalog data.
-    await dbTransaction(async (db) => {
-      for (const [field, key] of Object.entries(LOCAL_PHARMACY_FIELDS)) {
-        const scopedKey = pharmacyIdentityConfigKey(key, pharmacyId);
-        await db.execute(`
-          INSERT INTO config (key, value) VALUES (?, ?)
-          ON CONFLICT(key) DO UPDATE SET value = excluded.value
-        `, [scopedKey, formData[field] == null ? '' : String(formData[field])]);
-      }
-    });
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('update_pharmacy_settings', { userId: user.id, payload });
+    } else {
+      await dbTransaction(async (db) => {
+        for (const [field, key] of Object.entries(LOCAL_PHARMACY_FIELDS)) {
+          const scopedKey = pharmacyIdentityConfigKey(key, pharmacyId);
+          await db.execute(`
+            INSERT INTO config (key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+          `, [scopedKey, payload[field]]);
+        }
+      });
+    }
     return { success: true };
   } catch (error) {
     console.error('Unexpected error in updatePharmacyClient:', error);
@@ -63,11 +84,17 @@ export async function updatePharmacyClient(formData: any) {
 
 export async function runDatabaseMaintenanceClient() {
   try {
-    if (!isStaffOwner(await getLocalSession())) {
+    const user = await getLocalSession();
+    if (!isStaffOwner(user) || !user?.id) {
       return { success: false, error: 'غير مصرح - للمالك فقط' };
     }
-    await dbExecute('VACUUM');
-    await dbExecute('ANALYZE');
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('run_database_maintenance', { userId: user.id });
+    } else {
+      await dbExecute('VACUUM');
+      await dbExecute('ANALYZE');
+    }
     return { success: true, message: 'تم تحسين وضغط قاعدة البيانات وتحديث الفهارس بنجاح!' };
   } catch (error) {
     console.error('Failed to run database maintenance on client:', error);
@@ -79,6 +106,10 @@ export async function getLocalUsersClient() {
   try {
     const user = await getLocalSession();
     if (!isStaffOwner(user)) return { success: false, error: 'غير مصرح - للمالك فقط' };
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      return { success: true, data: await invoke<any[]>('list_local_staff_summaries') };
+    }
     const pharmacyId = user.pharmacy_id || 'local_default';
     const users = await dbSelect(
       `SELECT id, username, full_name, role, (password_hash IS NOT NULL) as has_password

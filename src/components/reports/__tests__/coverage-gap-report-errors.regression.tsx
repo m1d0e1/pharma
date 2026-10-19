@@ -128,6 +128,26 @@ describe('coverage gap: report error recovery', () => {
     expect(screen.getByRole('button', { name: /بحث في الفواتير/ })).toBeEnabled();
   });
 
+  it('does not present fabricated zero purchase totals when native tenant ownership denies the read', async () => {
+    (getPurchasesReportsAction as jest.Mock)
+      .mockResolvedValueOnce({ success: false, error: 'Legacy purchasing ownership needs independent tenant verification' })
+      .mockResolvedValueOnce({ success: true, data: [{
+        id: 'qa-report-1', status: 'completed', payment_method: 'cash',
+        invoice_date: '2026-10-15', total_amount: 79, gross_amount: 80,
+        total_selling_amount: 90, discount_amount: 1,
+      }] });
+    render(<PurchasesReportsClient userRole="owner" />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('ملكية بيانات المشتريات');
+    expect(screen.queryByText('صافي فواتير الشراء قبل مرتجعات الموردين')).not.toBeInTheDocument();
+    expect(screen.queryByText('لا توجد فواتير مطابقة للبحث')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /بحث في الفواتير/ })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: 'إعادة المحاولة' }));
+    expect(await screen.findByText('صافي فواتير الشراء قبل مرتجعات الموردين')).toBeInTheDocument();
+    expect(screen.getAllByText(/79/).length).toBeGreaterThan(0);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(getPurchasesReportsAction).toHaveBeenCalledTimes(2);
+  });
+
   it('recovers SalesReportsClient search after a thrown action failure', async () => {
     (getSalesReportsAction as jest.Mock)
       .mockResolvedValueOnce({ success: true, data: [] })

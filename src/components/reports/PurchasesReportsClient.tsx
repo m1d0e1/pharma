@@ -6,7 +6,7 @@ import Link from 'next/link';
 import { 
   Search, Filter, Calendar, User, ShoppingBag, 
   ChevronDown, FileText, Download, Printer, 
-  ArrowRight, CreditCard, DollarSign, Wallet
+  ArrowRight, CreditCard, DollarSign, Wallet, BarChart3, ReceiptText, Scale
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { getPurchasesReportsAction, getPurchaseInvoiceDetailsAction, getSuppliersAction } from '@/app/actions-client/purchases';
@@ -31,6 +31,62 @@ export function purchaseReportPaymentLabel(method: unknown): string {
   if (method === 'credit') return 'آجل';
   if (method === 'check') return 'شيك';
   return String(method || '-');
+}
+
+// Literal cell values must stay inert when the workbook is opened in Excel or
+// converted to CSV. A leading whitespace/control character does not make a
+// formula prefix safe; prefix the entire original value with an apostrophe.
+export function safePurchasesReportExportText(value: unknown): string {
+  const text = String(value ?? '');
+  return /^[\x00-\x20\uFEFF]*[=+@-]/u.test(text) ? `'${text}` : text;
+}
+
+// Report SQL can produce e.g. 462.00000000000006 for an exact 462.00 posting.
+// Normalize *only* cent-equivalent, finite numbers. Never turn missing, malformed
+// or fractional-cent values into a plausible 0.00 in a financial workbook.
+function purchaseReportExportMoney(value: unknown, field: string, required = false): number | string {
+  if ((value === undefined || value === null) && !required) return 'غير متاح';
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    throw new Error(`Invalid purchase report export amount: ${field}`);
+  }
+  const scaled = value * 100;
+  const cents = Math.round(scaled);
+  if (!Number.isSafeInteger(cents) || Math.abs(scaled - cents) > 0.001) {
+    throw new Error(`Invalid purchase report export amount: ${field}`);
+  }
+  return cents / 100;
+}
+
+// Deterministic, offline export builder. Numeric verified financial figures
+// remain numeric XLSX cells. No additional database read occurs during export.
+export function buildPurchasesReportWorkbook(invoices: any[], XLSX: typeof import('xlsx')) {
+  const rows = invoices.map((invoice) => {
+    const original = purchaseReportExportMoney(invoice.total_amount, 'total_amount', true) as number;
+    const returned = purchaseReportExportMoney(invoice.returned_amount, 'returned_amount');
+    const adjusted = purchaseReportExportMoney(invoice.net_after_returns, 'net_after_returns');
+    if ((typeof returned === 'number') !== (typeof adjusted === 'number') ||
+        (typeof returned === 'number' && typeof adjusted === 'number' &&
+          Math.round(original * 100) !== Math.round(returned * 100) + Math.round(adjusted * 100))) {
+      throw new Error('Invalid purchase report export amount: return reconciliation');
+    }
+    return {
+      'رقم الفاتورة': safePurchasesReportExportText(invoice.invoice_number || invoice.id),
+      'تاريخ الفاتورة': safePurchasesReportExportText(invoice.invoice_date || invoice.created_at),
+      'المورد': safePurchasesReportExportText(invoice.supplier_name),
+      'المستخدم': safePurchasesReportExportText(invoice.staff_name),
+      'طريقة الدفع': safePurchasesReportExportText(purchaseReportPaymentLabel(invoice.payment_method)),
+      'إجمالي قبل الخصم': purchaseReportExportMoney(invoice.gross_amount, 'gross_amount'),
+      'الخصم': purchaseReportExportMoney(invoice.discount_amount, 'discount_amount'),
+      'صافي الفاتورة قبل مرتجعات الموردين': original,
+      'مرتجعات الموردين الموثقة حتى وقت التقرير': returned,
+      'صافي الفاتورة بعد المرتجعات الموثقة': adjusted,
+      'إجمالي البيع المتوقع': purchaseReportExportMoney(invoice.total_selling_amount, 'total_selling_amount'),
+      'الحالة': safePurchasesReportExportText(invoice.status),
+    };
+  });
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows), 'Purchases');
+  return workbook;
 }
 
 export function purchaseReportUnitLabel(item: Record<string, unknown>): string {
@@ -78,6 +134,9 @@ export function purchaseReportLineAmounts(item: Record<string, unknown>) {
 export default function PurchasesReportsClient({ userRole, user }: { userRole?: string; user?: any }) {
   const [invoices, setInvoices] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
+  // A denied/failed native read must never masquerade as an audited zero total.
+  const [reportState, setReportState] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [reportError, setReportError] = useState('');
   const [selectedInvoice, setSelectedInvoice] = useState<string | null>(null);
   const [invoiceItems, setInvoiceItems] = useState<any[]>([]);
   const [loadingItems, setLoadingItems] = useState(false);
@@ -99,7 +158,7 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
   });
 
   useEffect(() => {
-    async function loadData() {
+    async function loadFilters() {
       const [staffResult, supplierResult] = await Promise.allSettled([
         getStaffAction(),
         getSuppliersAction({ reportScope: true }),
@@ -117,10 +176,9 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
         metadataFailed = true;
       }
       if (metadataFailed) toast.error('تعذر تحميل بعض فلاتر تقرير المشتريات');
-
-      await handleSearch();
     }
-    void loadData();
+    void loadFilters();
+    void handleSearch();
     // Initial load uses the default filters; edited filters run only when Search is pressed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -128,6 +186,7 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
   const handleSearch = async () => {
     const requestId = ++searchRequestRef.current;
     setLoading(true);
+    setReportState('loading');
     try {
       const res = await getPurchasesReportsAction({
         ...filters,
@@ -138,16 +197,30 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
       if (res.success) {
         const nextInvoices = res.data || [];
         setInvoices(nextInvoices);
+        setReportError('');
+        setReportState('ready');
         if (selectedInvoice && !nextInvoices.some((invoice: any) => invoice.id === selectedInvoice)) {
           invoiceDetailsRequestRef.current += 1;
           setSelectedInvoice(null);
           setInvoiceItems([]);
           setLoadingItems(false);
         }
-      } else toast.error(res.error || 'فشل تحميل تقرير المشتريات');
+      } else {
+        const ownershipDenied = String(res.error || '').includes('Legacy purchasing ownership needs independent tenant verification');
+        const unverifiedReturns = String(res.error || '').includes('Unverified tenant-owned purchase return');
+        setReportError(ownershipDenied
+          ? 'تعذر التحقق من ملكية بيانات المشتريات. يلزم إثبات تبعية الفواتير للصيدلية قبل عرض التقرير.'
+          : unverifiedReturns
+          ? 'توجد مرتجعات مشتريات لا يمكن التحقق من سنداتها المحاسبية للصيدلية. تعذر احتساب الصافي بعد المرتجعات.'
+          : 'تعذر تحميل تقرير المشتريات. القيم المالية غير متاحة حتى تنجح إعادة المحاولة.');
+        setReportState('error');
+        toast.error(res.error || 'فشل تحميل تقرير المشتريات');
+      }
     } catch (err) {
       if (requestId !== searchRequestRef.current) return;
       console.error('Purchases report search error:', err);
+      setReportError('تعذر تحميل تقرير المشتريات. القيم المالية غير متاحة حتى تنجح إعادة المحاولة.');
+      setReportState('error');
       toast.error('فشل تحميل تقرير المشتريات');
     } finally {
       if (requestId === searchRequestRef.current) setLoading(false);
@@ -190,21 +263,7 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
 
     try {
       const XLSX = await import('xlsx');
-      const rows = invoices.map((invoice) => ({
-        'رقم الفاتورة': invoice.invoice_number || invoice.id,
-        'تاريخ الفاتورة': invoice.invoice_date || invoice.created_at,
-        'المورد': invoice.supplier_name || '',
-        'المستخدم': invoice.staff_name || '',
-        'طريقة الدفع': purchaseReportPaymentLabel(invoice.payment_method),
-        'إجمالي قبل الخصم': Number(invoice.gross_amount ?? invoice.total_amount ?? 0),
-        'الخصم': Number(invoice.discount_amount || 0),
-        'صافي الفاتورة': Number(invoice.total_amount || 0),
-        'إجمالي البيع المتوقع': Number(invoice.total_selling_amount || 0),
-        'الحالة': invoice.status || '',
-      }));
-      const workbook = XLSX.utils.book_new();
-      const worksheet = XLSX.utils.json_to_sheet(rows);
-      XLSX.utils.book_append_sheet(workbook, worksheet, 'Purchases');
+      const workbook = buildPurchasesReportWorkbook(invoices, XLSX);
       XLSX.writeFile(workbook, `purchase-report-${format(new Date(), 'yyyy-MM-dd')}.xlsx`);
       toast.success('تم تصدير تقرير المشتريات');
     } catch (error) {
@@ -216,6 +275,13 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
   const totalGrossAmount = invoices.reduce((sum, inv) => sum + Number(inv.gross_amount ?? inv.total_amount ?? 0), 0);
   const totalDiscountAmount = invoices.reduce((sum, inv) => sum + Number(inv.discount_amount || 0), 0);
   const totalNetAmount = invoices.reduce((sum, inv) => sum + Number(inv.total_amount || 0), 0);
+  const returnTotalsVerified = invoices.length > 0 && invoices.every(inv =>
+    typeof inv.returned_amount === 'number' && Number.isFinite(inv.returned_amount) &&
+    typeof inv.net_after_returns === 'number' && Number.isFinite(inv.net_after_returns));
+  const totalReturnedAmount = returnTotalsVerified
+    ? invoices.reduce((sum, inv) => sum + inv.returned_amount, 0) : null;
+  const totalAfterReturns = returnTotalsVerified
+    ? invoices.reduce((sum, inv) => sum + inv.net_after_returns, 0) : null;
   const totalSellingAmount = invoices.reduce((sum, inv) => sum + Number(inv.total_selling_amount || 0), 0);
   const cashPurchasesTotal = invoices
     .filter(i => i.payment_method === 'cash')
@@ -232,12 +298,13 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
         <div className="flex flex-col gap-4 sm:flex-row sm:justify-between sm:items-center mb-5">
           <div>
             <h1 className="text-2xl font-bold text-slate-800 dark:text-white">تقرير فواتير المشتريات</h1>
-            <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">عرض وتحليل تفصيلي لعمليات البيع والمرتجعات والأسعار</p>
+            <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">فواتير الشراء الأصلية ومرتجعات الموردين المثبتة على نفس الفواتير</p>
           </div>
           <div className="flex gap-2">
             <button
               type="button"
               onClick={() => window.print()}
+              disabled={reportState !== 'ready'}
               aria-label="طباعة تقرير المشتريات"
               title="طباعة تقرير المشتريات"
               className="inline-flex h-11 w-11 items-center justify-center bg-slate-50 dark:bg-slate-800 text-slate-600 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
@@ -247,6 +314,7 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
             <button
               type="button"
               onClick={handleExport}
+              disabled={reportState !== 'ready'}
               aria-label="تصدير تقرير المشتريات إلى Excel"
               title="تصدير تقرير المشتريات إلى Excel"
               className="inline-flex h-11 w-11 items-center justify-center bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300 rounded-lg border border-blue-100 dark:border-blue-900/50 hover:bg-blue-100 dark:hover:bg-blue-950/50 transition-colors"
@@ -365,7 +433,7 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
             <button 
               type="button"
               onClick={handleSearch}
-              className="px-10 py-4 bg-slate-900 text-white rounded-2xl font-black flex items-center justify-center gap-3 hover:bg-slate-800 transition-all shadow-xl text-base"
+              className="px-6 py-2.5 bg-slate-900 text-white rounded-lg font-semibold flex items-center justify-center gap-2 hover:bg-slate-800 transition-colors shadow-sm text-sm"
             >
               <Search className="w-5 h-5" /> بحث في الفواتير (F)
             </button>
@@ -380,7 +448,7 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
             href="/reports" 
             className="pb-4 border-b-2 border-transparent font-bold text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors flex items-center gap-2"
           >
-            <span>📊</span> التحليلات والمخططات
+            <BarChart3 className="w-4 h-4" aria-hidden="true" /> التحليلات والمخططات
           </Link>
         )}
         {hasUserPermissionSync(reportUser, 'rep_can_view_sales') && (
@@ -388,7 +456,7 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
             href="/reports/sales"
             className="pb-4 border-b-2 border-transparent font-bold text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors flex items-center gap-2"
           >
-            <span>🧾</span> تقرير فواتير المبيعات
+            <ReceiptText className="w-4 h-4" aria-hidden="true" /> تقرير فواتير المبيعات
           </Link>
         )}
         {hasUserPermissionSync(reportUser, 'rep_can_view_purchases') && (
@@ -396,7 +464,7 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
             href="/reports/purchases"
             className="pb-4 border-b-2 border-blue-600 font-black text-blue-600 dark:text-blue-400 flex items-center gap-2"
           >
-            <span>🛒</span> تقارير المشتريات
+            <ShoppingBag className="w-4 h-4" aria-hidden="true" /> تقارير المشتريات
           </Link>
         )}
         {hasUserPermissionSync(reportUser, 'acc_can_view_reports') && (
@@ -404,24 +472,49 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
             href="/reports/trial-balance"
             className="pb-4 border-b-2 border-transparent font-bold text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors flex items-center gap-2"
           >
-            <span>⚖️</span> ميزان المراجعة
+            <Scale className="w-4 h-4" aria-hidden="true" /> ميزان المراجعة
           </Link>
         )}
       </div>
 
+      {reportState === 'error' && (
+        <div role="alert" className="rounded-xl border border-rose-300 bg-rose-50 p-5 text-rose-900 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-200">
+          <p className="font-bold">{reportError}</p>
+          <button type="button" onClick={() => void handleSearch()} className="mt-3 rounded-lg border border-rose-400 px-4 py-2 font-bold focus-visible:ring-2 focus-visible:ring-rose-500">
+            إعادة المحاولة
+          </button>
+        </div>
+      )}
+      {reportState === 'loading' && (
+        <p role="status" className="py-5 text-center font-bold text-slate-500">جاري التحقق من بيانات تقرير المشتريات...</p>
+      )}
+      {reportState === 'ready' && <>
+      <p role="note" className="rounded-lg border border-amber-300/70 bg-amber-50 p-3 text-sm font-bold text-amber-900 dark:border-amber-700 dark:bg-amber-950/20 dark:text-amber-200">
+        نطاق التاريخ يحدد تاريخ فواتير الشراء. عند توفر السندات الأصلية تخصم جميع مرتجعات تلك الفواتير المثبتة حتى وقت تحميل التقرير، بما فيها المرتجعات اللاحقة لنهاية الفترة. غير الموثق يظهر «غير متاح». الصافي بعد المرتجعات ليس رصيد المورد بعد الدفعات.
+      </p>
       {/* Purchases Summary KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-        <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-sm flex items-center gap-4">
-          <div className="w-14 h-14 bg-blue-50 dark:bg-blue-900/30 text-blue-600 rounded-2xl flex items-center justify-center shrink-0">
-            <DollarSign className="w-7 h-7" />
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm flex items-center gap-4">
+          <div className="w-10 h-10 bg-blue-50 dark:bg-blue-900/30 text-blue-600 rounded-lg flex items-center justify-center shrink-0">
+            <DollarSign className="w-5 h-5" />
           </div>
           <div>
-            <p className="text-xs font-bold text-slate-400">صافي المشتريات</p>
+            <p className="text-xs font-bold text-slate-400">صافي فواتير الشراء قبل مرتجعات الموردين</p>
             <p className="text-2xl font-black text-slate-900 dark:text-white">
               {totalNetAmount.toLocaleString()} <span className="text-xs text-slate-400">ج.م</span>
             </p>
             <p className="text-xs text-slate-500 font-bold mt-0.5">{invoices.length} فاتورة</p>
           </div>
+        </div>
+
+        <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
+          <p className="text-xs font-bold text-slate-500">مرتجعات الموردين الموثقة لتلك الفواتير</p>
+          <p className="text-2xl font-black text-rose-600">{totalReturnedAmount === null ? 'غير متاح' : totalReturnedAmount.toLocaleString()} <span className="text-xs text-slate-400">{totalReturnedAmount === null ? '' : 'ج.م'}</span></p>
+        </div>
+
+        <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
+          <p className="text-xs font-bold text-slate-500">صافي المشتريات بعد مرتجعات الموردين الموثقة</p>
+          <p className="text-2xl font-black text-emerald-600">{totalAfterReturns === null ? 'غير متاح' : totalAfterReturns.toLocaleString()} <span className="text-xs text-slate-400">{totalAfterReturns === null ? '' : 'ج.م'}</span></p>
         </div>
 
         <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-sm flex items-center gap-4">
@@ -479,15 +572,17 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
                   <th className="px-5 py-3.5">إجمالي قبل الخصم</th>
                   <th className="px-5 py-3.5">ق. البيع المتوقعة</th>
                   <th className="px-5 py-3.5">ق. الخصم</th>
-                  <th className="px-5 py-3.5">صافي الشراء</th>
+                  <th className="px-5 py-3.5">صافي الفاتورة قبل المرتجعات</th>
+                  <th className="px-5 py-3.5">مرتجعات المورد الموثقة</th>
+                  <th className="px-5 py-3.5">الصافي بعد المرتجعات</th>
                   <th className="px-5 py-3.5">الحالة</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                 {loading ? (
-                  <tr><td colSpan={10} className="py-20 text-center font-bold text-slate-400 italic animate-pulse">جاري البحث...</td></tr>
+                  <tr><td colSpan={12} className="py-20 text-center font-bold text-slate-400 italic animate-pulse">جاري البحث...</td></tr>
                 ) : invoices.length === 0 ? (
-                  <tr><td colSpan={10} className="py-20 text-center font-bold text-slate-400 italic">لا توجد فواتير مطابقة للبحث</td></tr>
+                  <tr><td colSpan={12} className="py-20 text-center font-bold text-slate-400 italic">لا توجد فواتير مطابقة للبحث</td></tr>
                 ) : invoices.map((inv) => (
                   <tr 
                     key={inv.id} 
@@ -521,6 +616,8 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
                     <td className="px-6 py-6 font-black text-emerald-600">{(inv.total_selling_amount || 0).toLocaleString()}</td>
                     <td className="px-6 py-6 font-black text-rose-500">{Number(inv.discount_amount || 0).toLocaleString()}</td>
                     <td className="px-6 py-6 font-black text-lg text-slate-900 dark:text-white">{Number(inv.total_amount || 0).toLocaleString()}</td>
+                    <td className="px-6 py-6 font-bold text-rose-600">{typeof inv.returned_amount === 'number' ? inv.returned_amount.toLocaleString() : 'غير متاح'}</td>
+                    <td className="px-6 py-6 font-black text-lg text-emerald-600">{typeof inv.net_after_returns === 'number' ? inv.net_after_returns.toLocaleString() : 'غير متاح'}</td>
                     <td className="px-6 py-6">
                       <span className={cn(
                         "px-3 py-1 rounded-lg text-xs font-black",
@@ -672,6 +769,7 @@ export default function PurchasesReportsClient({ userRole, user }: { userRole?: 
           </div>
         )}
       </div>
+      </>}
     </div>
   );
 }

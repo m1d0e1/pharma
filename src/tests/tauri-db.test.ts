@@ -1,8 +1,7 @@
 jest.mock('uuid', () => ({ v4: () => '00000000-0000-0000-0000-000000000000' }));
 
-// Note: In Jest (jsdom), isServer is always true due to JEST_WORKER_ID check.
-// Tauri/web client branches require integration test environment with real window.
-// These tests verify the server branch routing only.
+// Most tests exercise the server branch; the native routing regression below
+// temporarily selects the Tauri environment in jsdom.
 
 describe('Tauri DB — Server branch (isServer = true)', () => {
   beforeEach(() => { jest.resetModules(); });
@@ -102,7 +101,24 @@ describe('Tauri DB — Server branch (isServer = true)', () => {
       throw new Error('boom');
     })).rejects.toThrow('boom');
 
-    expect(calls).toEqual(['db_transaction_begin', 'WORK', 'db_transaction_finish:false']);
+    expect(calls).toEqual(['db_transaction_begin', 'WORK', 'db_transaction_abort']);
+  });
+
+  it('aborts an open native transaction when license denial blocks committing it', async () => {
+    const invoke = jest.fn((command: string, args?: any) => {
+      if (command === 'db_transaction_begin') return Promise.resolve('tx-expiring');
+      if (command === 'db_transaction_finish' && args?.commit) {
+        return Promise.reject(new Error('License required: License has expired'));
+      }
+      if (command === 'db_transaction_abort') return Promise.resolve();
+      return Promise.reject(new Error(`Unexpected command: ${command}`));
+    });
+    jest.doMock('@tauri-apps/api/core', () => ({ invoke }));
+    const { runTauriTransaction } = await import('@/lib/db/tauri');
+
+    await expect(runTauriTransaction(null, async () => 'completed')).rejects.toThrow('License required');
+    expect(invoke).toHaveBeenCalledWith('db_transaction_finish', { txId: 'tx-expiring', commit: true });
+    expect(invoke).toHaveBeenCalledWith('db_transaction_abort', { txId: 'tx-expiring' });
   });
 
   it('binds transactional reads and writes to the explicit transaction id', async () => {
@@ -164,6 +180,10 @@ describe('Tauri DB — Server branch (isServer = true)', () => {
       if (command === 'db_execute_guarded') return Promise.resolve({ rowsAffected: 1, lastInsertId: 1 });
       if (command === 'db_transaction_finish') {
         finishes.push(args);
+        return Promise.resolve({});
+      }
+      if (command === 'db_transaction_abort') {
+        finishes.push({ txId: args.txId, commit: false });
         return Promise.resolve({});
       }
       return Promise.reject(new Error(`Unexpected command: ${command}`));
@@ -238,5 +258,83 @@ describe('Tauri DB — Server branch (isServer = true)', () => {
     const standaloneIndex = invoke.mock.calls.findIndex(([command, args]) =>
       command === 'db_execute_guarded' && args?.params?.[0] === 'outside');
     expect(standaloneIndex).toBeGreaterThan(finishIndex);
+  });
+});
+
+describe('Tauri DB — guarded standalone reads', () => {
+  it('routes reads through the native guard and normalizes timestamps', async () => {
+    const oldWorkerId = process.env.JEST_WORKER_ID;
+    const oldTauriFlag = process.env.NEXT_PUBLIC_TAURI;
+    delete process.env.JEST_WORKER_ID;
+    process.env.NEXT_PUBLIC_TAURI = '1';
+    jest.resetModules();
+
+    const pluginSelect = jest.fn();
+    const pluginLoad = jest.fn(async () => ({ select: pluginSelect }));
+    const invoke = jest.fn(async () => [{ created_at: '2026-10-09 12:34:56' }]);
+    jest.doMock('@tauri-apps/plugin-sql', () => ({ __esModule: true, default: { load: pluginLoad } }));
+    jest.doMock('@tauri-apps/api/core', () => ({ invoke }));
+
+    try {
+      const { dbSelect } = await import('@/lib/db/tauri');
+      const rows = await dbSelect('SELECT created_at FROM users WHERE id = ?', [undefined]);
+
+      expect(pluginLoad).not.toHaveBeenCalled();
+      expect(invoke).toHaveBeenCalledWith('db_select_guarded', {
+        sql: 'SELECT created_at FROM users WHERE id = ?',
+        params: [null],
+        txId: null,
+      });
+      expect(pluginSelect).not.toHaveBeenCalled();
+      expect(rows).toEqual([{ created_at: '2026-10-09T12:34:56Z' }]);
+    } finally {
+      if (oldWorkerId === undefined) delete process.env.JEST_WORKER_ID;
+      else process.env.JEST_WORKER_ID = oldWorkerId;
+      if (oldTauriFlag === undefined) delete process.env.NEXT_PUBLIC_TAURI;
+      else process.env.NEXT_PUBLIC_TAURI = oldTauriFlag;
+      jest.resetModules();
+    }
+  });
+
+  it('uses a tenant-bound native query ID instead of renderer SQL for inventory paging', async () => {
+    const oldWorker = process.env.JEST_WORKER_ID;
+    const oldFlag = process.env.NEXT_PUBLIC_TAURI;
+    delete process.env.JEST_WORKER_ID;
+    process.env.NEXT_PUBLIC_TAURI = '1';
+    jest.resetModules();
+    const invoke = jest.fn(async (command: string, args: any) => {
+      if (command !== 'db_read_scoped') throw new Error('Unexpected native command');
+      return args.offset === 0 ? [{ id: 'pharmacy-owned', created_at: '2026-10-09 12:34:56' }] : [];
+    });
+    jest.doMock('@tauri-apps/api/core', () => ({ invoke }));
+    try {
+      const { dbReadScopedAll } = await import('@/lib/db/tauri');
+      const rows = await dbReadScopedAll('inventory.enriched', { search: 'aspirin' });
+      expect(rows).toEqual([{ id: 'pharmacy-owned', created_at: '2026-10-09T12:34:56Z' }]);
+      expect(invoke).toHaveBeenCalledTimes(1);
+      expect(invoke).toHaveBeenCalledWith('db_read_scoped', {
+        queryId: 'inventory.enriched', recordId: null,
+        limit: 200, offset: 0, search: 'aspirin', drugId: null,
+      });
+    } finally {
+      if (oldWorker === undefined) delete process.env.JEST_WORKER_ID;
+      else process.env.JEST_WORKER_ID = oldWorker;
+      if (oldFlag === undefined) delete process.env.NEXT_PUBLIC_TAURI;
+      else process.env.NEXT_PUBLIC_TAURI = oldFlag;
+      jest.resetModules();
+    }
+  });
+
+  it('removes direct SQL plugin permissions so all business DB calls use native licensing guard', async () => {
+    const fs = await import('fs');
+    const path = await import('path');
+    const capability = JSON.parse(fs.readFileSync(
+      path.resolve(process.cwd(), 'src-tauri/capabilities/default.json'), 'utf8'
+    ));
+
+    expect(capability.permissions).not.toContain('sql:allow-load');
+    expect(capability.permissions).not.toContain('sql:allow-close');
+    expect(capability.permissions).not.toContain('sql:allow-select');
+    expect(capability.permissions).not.toContain('sql:default');
   });
 });

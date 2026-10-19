@@ -34,14 +34,14 @@ describe('config mutation permission boundary', () => {
   it('honors an explicit settings denial for admins before writing config', async () => {
     mockSession = { id: 'admin-1', role: 'admin', permissions: { can_view_settings: false } };
 
-    expect(await updateConfigAction('subscription_status', 'activated')).toEqual({ success: false, error: 'غير مصرح' });
-    expect(values.has('subscription_status')).toBe(false);
+    expect(await updateConfigAction('unrelated_global_setting', 'enabled')).toEqual({ success: false, error: 'غير مصرح' });
+    expect(values.has('unrelated_global_setting')).toBe(false);
   });
 
   it('lets a delegated staff user mutate config when can_view_settings is explicitly granted', async () => {
     mockSession = { id: 'manager-1', role: 'manager', permissions: { can_view_settings: true } };
 
-    expect(await updateConfigAction('subscription_status', 'activated')).toEqual({ success: true });
-    expect(values.get('subscription_status')).toBe('activated');
+    expect(await updateConfigAction('unrelated_global_setting', 'enabled')).toEqual({ success: true });
+    expect(values.get('unrelated_global_setting')).toBe('enabled');
   });
 });

@@ -7,6 +7,7 @@ import PatientProfileModal from './PatientProfileModal'
 import { toast } from 'react-hot-toast'
 import { User, UserRound, Search, Phone, MapPin, CreditCard, ChevronLeft, Trash2, Pencil } from 'lucide-react'
 import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap'
+import { isTauri } from '@/lib/env'
 
 interface Patient {
   id: string
@@ -15,9 +16,9 @@ interface Patient {
   phone?: string | null
   address: string
   notes: string
-  points_balance: number
-  outstanding_balance?: number
-  wallet_balance?: number
+  points_balance: number | null
+  outstanding_balance?: number | null
+  wallet_balance?: number | null
   credit_limit?: number
   customer_type: string
   created_at: string
@@ -34,8 +35,11 @@ export default function PatientListClient({ initialPatients, pharmacyId, canDele
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null)
   const [patients, setPatients] = useState<Patient[]>(initialPatients)
+  const [createRefreshFailed, setCreateRefreshFailed] = useState(false)
+  const [isRetryingRefresh, setIsRetryingRefresh] = useState(false)
   const router = useRouter()
   const patientsRequestRef = useRef(0)
+  const refreshRetryRef = useRef(false)
 
   useEffect(() => {
     patientsRequestRef.current += 1
@@ -62,6 +66,38 @@ export default function PatientListClient({ initialPatients, pharmacyId, canDele
     (p.phone || '').includes(searchTerm) ||
     (p.name_en && p.name_en.toLowerCase().includes(searchTerm.toLowerCase()))
   )
+
+  const handlePatientCreated = () => {
+    setCreateRefreshFailed(false)
+    void fetchPatients().then(refreshed => {
+      if (!refreshed) {
+        setCreateRefreshFailed(true)
+        toast.error('تم حفظ المريض لكن تعذر تحديث القائمة')
+      }
+    })
+    try {
+      router.refresh()
+    } catch (error) {
+      console.error('Patient route refresh failed:', error)
+      toast.error('تم حفظ المريض لكن تعذر تحديث القائمة')
+    }
+  }
+
+  const retryCreatedPatientRefresh = async () => {
+    if (refreshRetryRef.current) return
+    refreshRetryRef.current = true
+    setIsRetryingRefresh(true)
+    try {
+      if (await fetchPatients()) {
+        setCreateRefreshFailed(false)
+      } else {
+        toast.error('تعذر تحديث قائمة المرضى')
+      }
+    } finally {
+      refreshRetryRef.current = false
+      setIsRetryingRefresh(false)
+    }
+  }
 
   const [deletingPatient, setDeletingPatient] = useState<Patient | null>(null)
   const [isDeleting, setIsDeleting] = useState(false)
@@ -126,6 +162,20 @@ export default function PatientListClient({ initialPatients, pharmacyId, canDele
         </button>
       </div>
 
+      {createRefreshFailed && (
+        <div role="alert" className="flex flex-wrap items-center gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+          <span>تم حفظ المريض لكن تعذر تحديث القائمة. لن تظهر البيانات الجديدة حتى يتم تحميلها.</span>
+          <button
+            type="button"
+            disabled={isRetryingRefresh}
+            onClick={() => void retryCreatedPatientRefresh()}
+            className="rounded-lg border border-amber-400 bg-white px-3 py-2 font-semibold disabled:opacity-50"
+          >
+            {isRetryingRefresh ? 'جاري تحميل المرضى...' : 'إعادة تحميل قائمة المرضى'}
+          </button>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {filteredPatients.map(patient => (
           <div 
@@ -138,7 +188,7 @@ export default function PatientListClient({ initialPatients, pharmacyId, canDele
                 <UserRound className="h-5 w-5" aria-hidden="true" />
               </div>
               <div className="bg-slate-50 dark:bg-slate-800 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-slate-500 flex items-center gap-1.5">
-                 <CreditCard className="w-3 h-3" /> {patient.points_balance || 0} نقطة
+                 <CreditCard className="w-3 h-3" /> {patient.points_balance == null ? 'النقاط غير متاحة' : `${patient.points_balance} نقطة`}
               </div>
             </div>
 
@@ -154,12 +204,12 @@ export default function PatientListClient({ initialPatients, pharmacyId, canDele
                     {Number(patient.outstanding_balance || 0) < 0 ? 'رصيد دائن' : 'المديونية'}
                   </p>
                   <p className={`font-black ${Number(patient.outstanding_balance || 0) < 0 ? 'text-cyan-600' : 'text-rose-600'}`}>
-                    {Math.abs(Number(patient.outstanding_balance || 0)).toFixed(2)} ج.م
+                    {patient.outstanding_balance == null ? 'غير متاح' : `${Math.abs(Number(patient.outstanding_balance)).toFixed(2)} ج.م`}
                   </p>
                 </div>
                 <div className="rounded-xl bg-purple-50 dark:bg-purple-950/20 px-3 py-2">
                   <p className="text-xs font-black text-purple-500">رصيد المحفظة</p>
-                  <p className="font-black text-purple-600">{Number(patient.wallet_balance || 0).toFixed(2)} ج.م</p>
+                  <p className="font-black text-purple-600">{patient.wallet_balance == null ? 'غير متاح' : `${Number(patient.wallet_balance).toFixed(2)} ج.م`}</p>
                 </div>
               </div>
               <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400 font-semibold text-sm">
@@ -174,7 +224,7 @@ export default function PatientListClient({ initialPatients, pharmacyId, canDele
 
               <div className="pt-4 border-t border-slate-100 dark:border-slate-800 flex justify-between items-center">
                  <div className="flex items-center gap-2">
-                   {canDeletePatients && (
+                   {canDeletePatients && !isTauri && (
                      <button
                        type="button"
                        onClick={(e) => { e.stopPropagation(); handleDeletePatient(patient); }}
@@ -188,9 +238,9 @@ export default function PatientListClient({ initialPatients, pharmacyId, canDele
                    <button
                      type="button"
                      onClick={(e) => { e.stopPropagation(); setSelectedPatientId(patient.id); }}
-                     aria-label={`تعديل بيانات المريض ${patient.full_name}`}
+                     aria-label={`${isTauri ? 'عرض ملف المريض' : 'تعديل بيانات المريض'} ${patient.full_name}`}
                      className="inline-flex h-11 w-11 items-center justify-center text-purple-600 hover:bg-purple-50 dark:hover:bg-purple-950/30 rounded-lg transition-colors"
-                     title="تعديل بيانات المريض"
+                     title={isTauri ? 'عرض ملف المريض' : 'تعديل بيانات المريض'}
                    >
                      <Pencil className="w-4 h-4" />
                    </button>
@@ -201,7 +251,7 @@ export default function PatientListClient({ initialPatients, pharmacyId, canDele
                    onClick={(event) => { event.stopPropagation(); setSelectedPatientId(patient.id); }}
                    className="inline-flex min-h-11 items-center gap-1 px-2 text-purple-700 dark:text-purple-300 font-semibold text-sm rounded-lg hover:bg-purple-50 dark:hover:bg-purple-950/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-500"
                  >
-                    عرض وتعديل الملف <ChevronLeft className="w-4 h-4" />
+                    {isTauri ? 'عرض الملف' : 'عرض وتعديل الملف'} <ChevronLeft className="w-4 h-4" />
                  </button>
               </div>
             </div>
@@ -211,7 +261,7 @@ export default function PatientListClient({ initialPatients, pharmacyId, canDele
         {filteredPatients.length === 0 && (
           <div className="col-span-full py-12 text-center bg-slate-50 dark:bg-slate-900 rounded-xl border border-dashed border-slate-300 dark:border-slate-700">
             <UserRound className="h-10 w-10 mx-auto mb-3 text-slate-300 dark:text-slate-600" aria-hidden="true" />
-            <p className="text-slate-500 font-medium text-sm">لم يتم العثور على مرضى بهذا الاسم.</p>
+            <p className="text-slate-500 font-medium text-sm">{searchTerm.trim() ? 'لم يتم العثور على مرضى بهذا الاسم.' : 'لا يوجد مرضى مسجلون حتى الآن.'}</p>
           </div>
         )}
       </div>
@@ -220,7 +270,7 @@ export default function PatientListClient({ initialPatients, pharmacyId, canDele
         <AddPatientModal 
           pharmacyId={pharmacyId} 
           onClose={() => setIsModalOpen(false)} 
-          onSuccess={() => { fetchPatients(); router.refresh(); }} 
+          onSuccess={handlePatientCreated}
         />
       )}
 

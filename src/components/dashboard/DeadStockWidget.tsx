@@ -4,6 +4,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { dbSelect } from '@/lib/db/tauri';
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { subscribeInventoryChanges } from '@/lib/inventory/refresh';
+import { Package, Snowflake } from 'lucide-react';
 
 export default function DeadStockWidget() {
   const [items, setItems] = useState<any[]>([]);
@@ -93,7 +94,7 @@ export default function DeadStockWidget() {
 
   if (loading) {
     return (
-      <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-xl h-full flex items-center justify-center">
+      <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm h-full flex items-center justify-center">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
       </div>
     );
@@ -101,7 +102,7 @@ export default function DeadStockWidget() {
 
   if (accessDenied) {
     return (
-      <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-xl h-full flex items-center justify-center">
+      <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm h-full flex items-center justify-center">
         <p className="font-black text-slate-500 dark:text-slate-300">غير مصرح بعرض بيانات المخزون</p>
       </div>
     );
@@ -109,12 +110,12 @@ export default function DeadStockWidget() {
 
   if (loadError) {
     return (
-      <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-xl h-full flex flex-col items-center justify-center gap-4 text-center">
+      <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm h-full flex flex-col items-center justify-center gap-4 text-center">
         <p className="font-black text-slate-800 dark:text-slate-100">تعذر تحميل تحليل الرواكد</p>
         <button
           type="button"
           onClick={() => setLoadAttempt(attempt => attempt + 1)}
-          className="px-4 py-2 rounded-xl bg-blue-600 text-white text-xs font-black hover:bg-blue-700"
+          className="px-4 py-2 rounded-lg bg-primary-700 text-white text-xs font-semibold hover:bg-primary-800 transition-colors"
         >
           إعادة المحاولة
         </button>
@@ -123,24 +124,24 @@ export default function DeadStockWidget() {
   }
 
   return (
-    <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-xl h-full">
-      <div className="flex items-center justify-between mb-6">
-        <h3 className="text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
-          <span className="text-2xl">🧊</span> تحليل الرواكد
+    <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm h-full">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-lg font-semibold text-slate-900 dark:text-white flex items-center gap-2">
+          <Snowflake className="w-5 h-5 text-blue-600" aria-hidden="true" /> تحليل الرواكد
         </h3>
         <span className="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-xs font-bold">راكد</span>
       </div>
 
-      <div className="space-y-4">
+      <div className="space-y-3">
         {items.length === 0 ? (
-          <p className="text-slate-400 text-center py-8">جميع الأصناف تتحرك بشكل جيد! 🚀</p>
+          <p className="text-slate-500 dark:text-slate-400 text-center py-8">لا توجد أصناف راكدة ضمن الفترة الحالية</p>
         ) : (
           items.map(item => (
             <div key={item.id} className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border border-slate-100 dark:border-slate-700">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 bg-white dark:bg-slate-800 rounded-xl flex items-center justify-center shadow-sm">📦</div>
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-9 h-9 bg-white dark:bg-slate-800 rounded-lg flex items-center justify-center border border-slate-200 dark:border-slate-700 shrink-0"><Package className="w-4 h-4 text-slate-600 dark:text-slate-300" aria-hidden="true" /></div>
                 <div>
-                  <p className="font-bold text-slate-900 dark:text-white text-sm">{item.drug_name}</p>
+                  <p className="font-semibold text-slate-900 dark:text-white text-sm truncate">{item.drug_name}</p>
                   <p className="text-xs text-slate-500">المتاح: {item.quantity}</p>
                 </div>
               </div>

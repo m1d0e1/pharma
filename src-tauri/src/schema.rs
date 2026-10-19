@@ -3,7 +3,6 @@ use sqlx::{Connection, Row, Sqlite, SqliteConnection, Transaction};
 use std::fmt::Write as _;
 use std::path::Path;
 use std::str::FromStr;
-use tauri::Manager;
 
 #[allow(dead_code)]
 struct ChecksumRepair {
@@ -42,7 +41,11 @@ fn checksum_bytes_hex(checksum: &[u8]) -> String {
     hex
 }
 
-fn embedded_migration_checksum_hex(version: i64, description: &'static str, sql: &'static str) -> String {
+fn embedded_migration_checksum_hex(
+    version: i64,
+    description: &'static str,
+    sql: &'static str,
+) -> String {
     let migration = sqlx::migrate::Migration::new(
         version,
         description.into(),
@@ -223,6 +226,163 @@ async fn table_exists_in_transaction(
     .bind(table)
     .fetch_one(&mut **transaction)
     .await
+}
+
+async fn ensure_trial_balance_metadata_columns(
+    transaction: &mut Transaction<'_, Sqlite>,
+) -> Result<(), sqlx::Error> {
+    if !table_exists_in_transaction(transaction, "trial_balance_settings").await? {
+        return Ok(());
+    }
+    for column in ["target_id", "target_name"] {
+        if !has_column(transaction, "trial_balance_settings", column).await? {
+            sqlx::query(&format!(
+                "ALTER TABLE trial_balance_settings ADD COLUMN {column} TEXT"
+            ))
+            .execute(&mut **transaction)
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+async fn preapply_shared_open_shift_per_pharmacy(
+    transaction: &mut Transaction<'_, Sqlite>,
+) -> Result<bool, sqlx::Error> {
+    for (table, columns) in [
+        (
+            "shifts",
+            &[
+                "id",
+                "user_id",
+                "start_time",
+                "end_time",
+                "starting_cash",
+                "ending_cash",
+                "status",
+                "notes",
+                "pharmacy_id",
+            ][..],
+        ),
+        ("sales_invoices", &["shift_id"][..]),
+        ("returns", &["shift_id"][..]),
+        ("cash_movements", &["shift_id"][..]),
+    ] {
+        if !table_exists_in_transaction(transaction, table).await? {
+            return Ok(false);
+        }
+        for column in columns {
+            if !has_column(transaction, table, column).await? {
+                return Ok(false);
+            }
+        }
+    }
+
+    // Migration 015 predates multi-pharmacy shift scope and merges every open
+    // drawer in the database. On a pre-015 upgrade, compatibility has already
+    // snapshotted shifts.pharmacy_id, so perform the same merge within each
+    // pharmacy and record 015 as applied before the plugin sees it.
+    sqlx::raw_sql(
+        r#"
+        UPDATE shifts AS target
+        SET starting_cash = (
+          SELECT COALESCE(SUM(CAST(COALESCE(source.starting_cash, 0) AS REAL)), 0)
+          FROM shifts source
+          WHERE LOWER(COALESCE(source.status, '')) = 'open'
+            AND COALESCE(NULLIF(TRIM(source.pharmacy_id), ''), 'local_default') =
+                COALESCE(NULLIF(TRIM(target.pharmacy_id), ''), 'local_default')
+        )
+        WHERE LOWER(COALESCE(target.status, '')) = 'open'
+          AND target.id = (
+            SELECT canonical.id
+            FROM shifts canonical
+            WHERE LOWER(COALESCE(canonical.status, '')) = 'open'
+              AND COALESCE(NULLIF(TRIM(canonical.pharmacy_id), ''), 'local_default') =
+                  COALESCE(NULLIF(TRIM(target.pharmacy_id), ''), 'local_default')
+            ORDER BY datetime(canonical.start_time) ASC, canonical.rowid ASC
+            LIMIT 1
+          );
+
+        UPDATE sales_invoices
+        SET shift_id = (
+          SELECT canonical.id
+          FROM shifts current_shift
+          JOIN shifts canonical
+            ON COALESCE(NULLIF(TRIM(canonical.pharmacy_id), ''), 'local_default') =
+               COALESCE(NULLIF(TRIM(current_shift.pharmacy_id), ''), 'local_default')
+          WHERE current_shift.id = sales_invoices.shift_id
+            AND LOWER(COALESCE(current_shift.status, '')) = 'open'
+            AND LOWER(COALESCE(canonical.status, '')) = 'open'
+          ORDER BY datetime(canonical.start_time) ASC, canonical.rowid ASC
+          LIMIT 1
+        )
+        WHERE shift_id IN (
+          SELECT id FROM shifts WHERE LOWER(COALESCE(status, '')) = 'open'
+        );
+
+        UPDATE returns
+        SET shift_id = (
+          SELECT canonical.id
+          FROM shifts current_shift
+          JOIN shifts canonical
+            ON COALESCE(NULLIF(TRIM(canonical.pharmacy_id), ''), 'local_default') =
+               COALESCE(NULLIF(TRIM(current_shift.pharmacy_id), ''), 'local_default')
+          WHERE current_shift.id = returns.shift_id
+            AND LOWER(COALESCE(current_shift.status, '')) = 'open'
+            AND LOWER(COALESCE(canonical.status, '')) = 'open'
+          ORDER BY datetime(canonical.start_time) ASC, canonical.rowid ASC
+          LIMIT 1
+        )
+        WHERE shift_id IN (
+          SELECT id FROM shifts WHERE LOWER(COALESCE(status, '')) = 'open'
+        );
+
+        UPDATE cash_movements
+        SET shift_id = (
+          SELECT canonical.id
+          FROM shifts current_shift
+          JOIN shifts canonical
+            ON COALESCE(NULLIF(TRIM(canonical.pharmacy_id), ''), 'local_default') =
+               COALESCE(NULLIF(TRIM(current_shift.pharmacy_id), ''), 'local_default')
+          WHERE current_shift.id = cash_movements.shift_id
+            AND LOWER(COALESCE(current_shift.status, '')) = 'open'
+            AND LOWER(COALESCE(canonical.status, '')) = 'open'
+          ORDER BY datetime(canonical.start_time) ASC, canonical.rowid ASC
+          LIMIT 1
+        )
+        WHERE shift_id IN (
+          SELECT id FROM shifts WHERE LOWER(COALESCE(status, '')) = 'open'
+        );
+
+        UPDATE shifts AS extra
+        SET end_time = COALESCE(end_time, CURRENT_TIMESTAMP),
+            ending_cash = 0,
+            status = 'merged',
+            notes = CASE
+              WHEN notes IS NULL OR TRIM(notes) = '' THEN 'دُمجت في الوردية المشتركة'
+              ELSE notes || ' | دُمجت في الوردية المشتركة'
+            END
+        WHERE LOWER(COALESCE(extra.status, '')) = 'open'
+          AND extra.id != (
+            SELECT canonical.id
+            FROM shifts canonical
+            WHERE LOWER(COALESCE(canonical.status, '')) = 'open'
+              AND COALESCE(NULLIF(TRIM(canonical.pharmacy_id), ''), 'local_default') =
+                  COALESCE(NULLIF(TRIM(extra.pharmacy_id), ''), 'local_default')
+            ORDER BY datetime(canonical.start_time) ASC, canonical.rowid ASC
+            LIMIT 1
+          );
+
+        DROP INDEX IF EXISTS idx_shifts_single_open;
+        CREATE UNIQUE INDEX idx_shifts_single_open
+        ON shifts(COALESCE(NULLIF(TRIM(pharmacy_id), ''), 'local_default'))
+        WHERE LOWER(COALESCE(status, '')) = 'open';
+        "#,
+    )
+    .execute(&mut **transaction)
+    .await?;
+
+    Ok(true)
 }
 
 async fn surface_legacy_patient_wallet_review(
@@ -425,6 +585,22 @@ async fn repair_unambiguous_user_pharmacy(
         return Ok(0);
     }
 
+    // One observed scope is NOT a grant to every legacy staff account. In
+    // particular, a still-unscoped (or local_default) historical owner makes
+    // even a nominally single-pharmacy source unauthenticated. Retain the
+    // exact NULL / blank historical staff literals for ownership review rather
+    // than making a one-way source identity change in native preparation.
+    let unresolved_owners: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM users WHERE LOWER(TRIM(COALESCE(role,'')))='owner' \
+         AND (typeof(pharmacy_id)!='text' OR NULLIF(TRIM(pharmacy_id),'') IS NULL \
+              OR LOWER(TRIM(pharmacy_id))='local_default')",
+    )
+    .fetch_one(&mut **transaction)
+    .await?;
+    if unresolved_owners != 0 {
+        return Ok(0);
+    }
+
     let scopes: Vec<String> = sqlx::query_scalar(
         "SELECT DISTINCT TRIM(pharmacy_id) FROM users WHERE pharmacy_id IS NOT NULL AND TRIM(pharmacy_id) != ''",
     )
@@ -453,7 +629,13 @@ async fn snapshot_branch_local_pharmacy_scope(
 
     let sales_ready = table_exists_in_transaction(transaction, "sales_invoices").await?;
     if sales_ready {
-        add_column(transaction, "sales_invoices", "pharmacy_id", "pharmacy_id TEXT").await?;
+        add_column(
+            transaction,
+            "sales_invoices",
+            "pharmacy_id",
+            "pharmacy_id TEXT",
+        )
+        .await?;
         if users_ready && has_column(transaction, "sales_invoices", "user_id").await? {
             sqlx::query(
                 r#"
@@ -612,7 +794,13 @@ async fn snapshot_branch_local_pharmacy_scope(
 
     let cash_ready = table_exists_in_transaction(transaction, "cash_movements").await?;
     if cash_ready {
-        add_column(transaction, "cash_movements", "pharmacy_id", "pharmacy_id TEXT").await?;
+        add_column(
+            transaction,
+            "cash_movements",
+            "pharmacy_id",
+            "pharmacy_id TEXT",
+        )
+        .await?;
         let has_user_id = has_column(transaction, "cash_movements", "user_id").await?;
         let has_shift_id = has_column(transaction, "cash_movements", "shift_id").await?;
         if shifts_ready && has_shift_id && users_ready && has_user_id {
@@ -685,7 +873,9 @@ async fn snapshot_branch_local_pharmacy_scope(
                 END;
                 "#
             };
-            sqlx::raw_sql(trigger_sql).execute(&mut **transaction).await?;
+            sqlx::raw_sql(trigger_sql)
+                .execute(&mut **transaction)
+                .await?;
         }
     }
 
@@ -719,11 +909,31 @@ async fn snapshot_branch_local_pharmacy_scope(
     }
 
     for (table, actor, date_column, index_name) in [
-        ("daily_journals", "created_by", "date", "idx_daily_journals_pharmacy_date"),
+        (
+            "daily_journals",
+            "created_by",
+            "date",
+            "idx_daily_journals_pharmacy_date",
+        ),
         ("expenses", "user_id", "date", "idx_expenses_pharmacy_date"),
-        ("financial_notices", "user_id", "created_at", "idx_financial_notices_pharmacy_created"),
-        ("activity_log", "user_id", "created_at", "idx_activity_log_pharmacy_created"),
-        ("purchase_orders", "user_id", "created_at", "idx_purchase_orders_pharmacy_created"),
+        (
+            "financial_notices",
+            "user_id",
+            "created_at",
+            "idx_financial_notices_pharmacy_created",
+        ),
+        (
+            "activity_log",
+            "user_id",
+            "created_at",
+            "idx_activity_log_pharmacy_created",
+        ),
+        (
+            "purchase_orders",
+            "user_id",
+            "created_at",
+            "idx_purchase_orders_pharmacy_created",
+        ),
     ] {
         if !table_exists_in_transaction(transaction, table).await? {
             continue;
@@ -740,7 +950,9 @@ async fn snapshot_branch_local_pharmacy_scope(
             sqlx::query(&sql).execute(&mut **transaction).await?;
         }
         if has_column(transaction, table, date_column).await? {
-            let sql = format!("CREATE INDEX IF NOT EXISTS {index_name} ON {table}(pharmacy_id, {date_column})");
+            let sql = format!(
+                "CREATE INDEX IF NOT EXISTS {index_name} ON {table}(pharmacy_id, {date_column})"
+            );
             sqlx::query(&sql).execute(&mut **transaction).await?;
         }
         if users_ready && actor_ready && has_column(transaction, table, "id").await? {
@@ -782,7 +994,13 @@ async fn snapshot_branch_local_pharmacy_scope(
     }
 
     if table_exists_in_transaction(transaction, "commercial_papers").await? {
-        add_column(transaction, "commercial_papers", "pharmacy_id", "pharmacy_id TEXT").await?;
+        add_column(
+            transaction,
+            "commercial_papers",
+            "pharmacy_id",
+            "pharmacy_id TEXT",
+        )
+        .await?;
         sqlx::query("UPDATE commercial_papers SET pharmacy_id = 'local_default' WHERE pharmacy_id IS NULL OR TRIM(pharmacy_id) = ''")
             .execute(&mut **transaction)
             .await?;
@@ -799,6 +1017,7 @@ async fn snapshot_branch_local_pharmacy_scope(
 pub(crate) async fn ensure_compatibility(
     transaction: &mut Transaction<'_, Sqlite>,
 ) -> Result<(), sqlx::Error> {
+    ensure_trial_balance_metadata_columns(transaction).await?;
     sqlx::raw_sql(
         r#"
         CREATE TABLE IF NOT EXISTS purchase_returns (
@@ -1328,7 +1547,11 @@ pub(crate) async fn ensure_compatibility(
         ("purchase_orders", "notes", "notes TEXT"),
         ("purchase_orders", "updated_at", "updated_at DATETIME"),
         ("purchase_order_items", "po_id", "po_id TEXT"),
-        ("purchase_order_items", "expected_price", "expected_price REAL"),
+        (
+            "purchase_order_items",
+            "expected_price",
+            "expected_price REAL",
+        ),
         (
             "purchase_order_items",
             "received_quantity",
@@ -1499,7 +1722,14 @@ pub(crate) async fn ensure_compatibility(
     }
 
     if table_exists_in_transaction(transaction, "sales_items").await? {
-        if !has_column(transaction, "sales_items", "large_to_medium").await? {
+        let needs_large_to_medium = !has_column(transaction, "sales_items", "large_to_medium").await?;
+        let needs_medium_to_small = !has_column(transaction, "sales_items", "medium_to_small").await?;
+        // Migration 043 already installs the immutable receipted-sale UPDATE
+        // guard on some databases that lack these legacy unit snapshots. SQLite
+        // resolves *all* NEW.column references in that guard before executing
+        // any UPDATE, even one matching zero rows. Install both definitions
+        // first; never drop or bypass the financial source trigger.
+        if needs_large_to_medium {
             add_column(
                 transaction,
                 "sales_items",
@@ -1507,6 +1737,17 @@ pub(crate) async fn ensure_compatibility(
                 "large_to_medium INTEGER DEFAULT 1",
             )
             .await?;
+        }
+        if needs_medium_to_small {
+            add_column(
+                transaction,
+                "sales_items",
+                "medium_to_small",
+                "medium_to_small INTEGER DEFAULT 1",
+            )
+            .await?;
+        }
+        if needs_large_to_medium {
             sqlx::query(
                 r#"
                 UPDATE sales_items
@@ -1531,14 +1772,7 @@ pub(crate) async fn ensure_compatibility(
             .await?;
         }
 
-        if !has_column(transaction, "sales_items", "medium_to_small").await? {
-            add_column(
-                transaction,
-                "sales_items",
-                "medium_to_small",
-                "medium_to_small INTEGER DEFAULT 1",
-            )
-            .await?;
+        if needs_medium_to_small {
             sqlx::query(
                 r#"
                 UPDATE sales_items
@@ -1712,16 +1946,18 @@ pub(crate) async fn ensure_compatibility(
 
     let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
         .fetch_one(&mut **transaction)
-        .await
-        .unwrap_or(0);
+        .await?;
     if user_count == 0 {
         sqlx::raw_sql(
             r#"
+            -- An empty legacy users table must never receive a public password.
+            -- Applied migration 001 stays unchanged; native login blocks its
+            -- historical default hash until operator-proven owner enrollment.
             INSERT OR IGNORE INTO users (id, username, password_hash, role, full_name, permissions, is_active)
             VALUES (
               'admin',
               'admin',
-              '$2b$12$.FYM9XhLwanE5PdySaxB2uMwZwwLpF9fI6HXf/2XArluRQt0kfvVm',
+              NULL,
               'owner',
               'System Administrator',
               '{"view_dashboard":true,"view_reports":true,"manage_inventory":true,"manage_staff":true,"process_sales":true,"manage_patients":true,"view_all_sales":true,"manage_settings":true,"void_transactions":true,"manage_shifts":true,"manage_pharmacy":true,"export_data":true,"import_data":true,"view_audit_logs":true,"can_sell":true,"can_view_patients":true,"can_view_sales":true,"can_manage_inventory":true,"can_view_reports":true,"can_manage_users":true,"can_manage_settings":true,"can_view_shifts":true,"can_manage_shifts":true,"can_view_returns":true,"can_view_purchases":true}',
@@ -1758,6 +1994,17 @@ pub(crate) async fn ensure_compatibility(
         CREATE INDEX IF NOT EXISTS idx_inventory_barcode ON inventory(barcode) WHERE barcode IS NOT NULL;
         CREATE INDEX IF NOT EXISTS idx_inventory_drug_qty_expiry ON inventory(drug_id, quantity, expiry_date) WHERE quantity > 0;
         CREATE INDEX IF NOT EXISTS idx_inventory_pharmacy_qty_exp ON inventory(pharmacy_id, quantity, expiry_date) WHERE quantity > 0;
+
+        -- Legacy desktop builds accepted DD/MM/YYYY expiry strings. Normalize
+        -- them before any inventory/purchase linking so renderer startup code
+        -- never needs write access merely to repair stored date formatting.
+        UPDATE inventory
+        SET expiry_date = substr(expiry_date, 7, 4) || '-' || substr(expiry_date, 4, 2) || '-' || substr(expiry_date, 1, 2)
+        WHERE expiry_date LIKE '__/__/____';
+
+        UPDATE purchase_invoice_items
+        SET expiry_date = substr(expiry_date, 7, 4) || '-' || substr(expiry_date, 4, 2) || '-' || substr(expiry_date, 1, 2)
+        WHERE expiry_date LIKE '__/__/____';
 
         -- Old completed receipts predate inventory_id. Prefer their exact receipt
         -- batch; otherwise link only one unambiguous, sufficiently stocked lot.
@@ -1865,21 +2112,29 @@ pub(crate) async fn ensure_compatibility(
     // account used by purchase/POS transactions self-healing on each startup.
     sqlx::raw_sql(
         r#"
-        INSERT OR IGNORE INTO accounts (code, name_ar, name_en, type, is_group) VALUES
-          ('1.1.1', 'الصندوق', 'Cash Drawer', 'asset', 0),
-          ('2.1', 'دائنون', 'Accounts Payable', 'liability', 0),
-          ('1.1.2', 'حسابات العملاء', 'Accounts Receivable', 'asset', 0),
-          ('3.1', 'إيرادات المبيعات', 'Sales Revenue', 'revenue', 0),
-          ('1.1.3', 'المخزون السلعي', 'Inventory Asset', 'asset', 0),
-          ('4.1', 'تكلفة البضاعة المباعة', 'Cost of Goods Sold', 'expense', 0),
-          ('1.1.4', 'تسويات البنوك', 'Bank Clearing', 'asset', 0),
-          ('2.2', 'أرصدة محافظ العملاء', 'Patient Wallet Liability', 'liability', 0),
-          ('4.2', 'تسويات حسابات العملاء', 'Customer Adjustments', 'expense', 0),
-          ('3.9', 'حقوق ملكية الأرصدة الافتتاحية', 'Opening Balance Equity', 'equity', 0),
-          ('3.2', 'إيرادات نقدية أخرى', 'Other Cash Income', 'revenue', 0),
-          ('3.3', 'تسويات نقدية للموردين', 'Supplier Cash Adjustments', 'revenue', 0),
-          ('3.8', 'مسحوبات المالك', 'Owner Drawings', 'equity', 0),
-          ('4.4', 'مصروفات تشغيلية عامة', 'General Operating Expenses', 'expense', 0);
+        -- Ignored duplicate AUTOINCREMENT inserts still advance sqlite_sequence.
+        -- Skip existing codes before attempting any insert; retain IGNORE for races.
+        WITH required(position, code, name_ar, name_en, type, is_group) AS (VALUES
+          (1, '1.1.1', 'الصندوق', 'Cash Drawer', 'asset', 0),
+          (2, '2.1', 'دائنون', 'Accounts Payable', 'liability', 0),
+          (3, '1.1.2', 'حسابات العملاء', 'Accounts Receivable', 'asset', 0),
+          (4, '3.1', 'إيرادات المبيعات', 'Sales Revenue', 'revenue', 0),
+          (5, '1.1.3', 'المخزون السلعي', 'Inventory Asset', 'asset', 0),
+          (6, '4.1', 'تكلفة البضاعة المباعة', 'Cost of Goods Sold', 'expense', 0),
+          (7, '1.1.4', 'تسويات البنوك', 'Bank Clearing', 'asset', 0),
+          (8, '2.2', 'أرصدة محافظ العملاء', 'Patient Wallet Liability', 'liability', 0),
+          (9, '4.2', 'تسويات حسابات العملاء', 'Customer Adjustments', 'expense', 0),
+          (10, '3.9', 'حقوق ملكية الأرصدة الافتتاحية', 'Opening Balance Equity', 'equity', 0),
+          (11, '3.2', 'إيرادات نقدية أخرى', 'Other Cash Income', 'revenue', 0),
+          (12, '3.3', 'تسويات نقدية للموردين', 'Supplier Cash Adjustments', 'revenue', 0),
+          (13, '3.8', 'مسحوبات المالك', 'Owner Drawings', 'equity', 0),
+          (14, '4.4', 'مصروفات تشغيلية عامة', 'General Operating Expenses', 'expense', 0)
+        )
+        INSERT OR IGNORE INTO accounts (code, name_ar, name_en, type, is_group)
+        SELECT code, name_ar, name_en, type, is_group
+        FROM required
+        WHERE NOT EXISTS (SELECT 1 FROM accounts a WHERE a.code = required.code)
+        ORDER BY position;
 
         WITH required(category, code) AS (VALUES
           ('cash_drawer', '1.1.1'),
@@ -1937,14 +2192,20 @@ pub(crate) async fn ensure_compatibility(
     .execute(&mut **transaction)
     .await?;
 
-    // Deduplicate trial_balance_settings: keep the highest-id row per category.
-    // Pre-UNIQUE-constraint databases may have accumulated duplicate entries from
-    // repeated startup seeds. Safe to run on every startup — no-op if no duplicates.
+    // Remove only exact duplicate settings. Older installations can legitimately
+    // contain conflicting legacy/custom category definitions. Preserve those
+    // until migration 031 can fail closed instead of silently deleting metadata.
     sqlx::raw_sql(
         r#"
         DELETE FROM trial_balance_settings
-        WHERE id NOT IN (
-          SELECT MAX(id) FROM trial_balance_settings GROUP BY category
+        WHERE EXISTS (
+          SELECT 1 FROM trial_balance_settings newer
+          WHERE newer.category = trial_balance_settings.category
+            AND newer.target_type IS trial_balance_settings.target_type
+            AND newer.target_id IS trial_balance_settings.target_id
+            AND newer.target_name IS trial_balance_settings.target_name
+            AND newer.account_id IS trial_balance_settings.account_id
+            AND newer.id > trial_balance_settings.id
         );
         "#,
     )
@@ -1993,6 +2254,7 @@ async fn prepare_connection(connection: &mut SqliteConnection) -> Result<(), Str
     .await
     .map_err(|e| e.to_string())?;
     let migration_13_applied = applied.iter().any(|row| row.get::<i64, _>("version") == 13);
+    let migration_15_applied = applied.iter().any(|row| row.get::<i64, _>("version") == 15);
     let migration_20_applied = applied.iter().any(|row| row.get::<i64, _>("version") == 20);
     let migration_25_applied = applied.iter().any(|row| row.get::<i64, _>("version") == 25);
     let migration_26_applied = applied.iter().any(|row| row.get::<i64, _>("version") == 26);
@@ -2062,9 +2324,20 @@ async fn prepare_connection(connection: &mut SqliteConnection) -> Result<(), Str
         repairs.push((repair, checksum));
     }
     let mut transaction = connection.begin().await.map_err(|e| e.to_string())?;
+    // Some supported pre-plugin databases had trial-balance settings without
+    // target_id/target_name. Migration 031 compares these fields to avoid
+    // discarding distinct custom mappings. Add the nullable fields before
+    // the plugin migrator runs, without touching existing settings or journals.
+    ensure_trial_balance_metadata_columns(&mut transaction)
+        .await
+        .map_err(|e| e.to_string())?;
     ensure_compatibility(&mut transaction)
         .await
         .map_err(|e| e.to_string())?;
+    let shared_open_shift_preapplied = !migration_15_applied
+        && preapply_shared_open_shift_per_pharmacy(&mut transaction)
+            .await
+            .map_err(|e| e.to_string())?;
     let treasury_retained_cash_preapplied = !migration_29_applied
         && has_column(&mut transaction, "shifts", "treasury_retained_cash")
             .await
@@ -2166,6 +2439,19 @@ async fn prepare_connection(connection: &mut SqliteConnection) -> Result<(), Str
         .await
         .map_err(|e| e.to_string())?;
     }
+    if shared_open_shift_preapplied {
+        let checksum = embedded_migration_checksum_hex(
+            15,
+            "shared_open_shift",
+            include_str!("../migrations/015_shared_open_shift.sql"),
+        );
+        sqlx::query(&format!(
+            "INSERT OR IGNORE INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (15, 'shared_open_shift', 1, X'{checksum}', 0)"
+        ))
+        .execute(&mut *transaction)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
     for (version, description, sql, already_applied) in [
         (
             13_i64,
@@ -2228,8 +2514,254 @@ async fn prepare_connection(connection: &mut SqliteConnection) -> Result<(), Str
     transaction.commit().await.map_err(|e| e.to_string())
 }
 
+// Some native unit tests deliberately start with registered migration 001 and
+// exercise the remaining SQLx chain against an entirely new temp fixture.
+// That is NOT the supported public upgrade entry point for an existing v001
+// customer profile; keep this internal bypass unavailable in release builds.
+#[cfg(test)]
+pub(crate) async fn prepare_registered_001_synthetic_test_connection(
+    connection: &mut SqliteConnection,
+) -> Result<(), String> {
+    prepare_connection(connection).await
+}
+
+/// The only native offline owner-proof input is a purpose-staged, single-file
+/// v67 SQLite copy under the private disposable custody root. A live app
+/// profile, WAL-active file, generic caller pathname or symlink is never
+/// eligible. The source must be produced by SQLite's WAL-aware backup before
+/// this verifier is called; this function does not open the installed source.
+fn checked_detached_owner_stage(path: &Path, root: &Path) -> Result<(), String> {
+    let denied = || "Detached primary_pharmacy source custody not verified".to_owned();
+    if path.file_name().and_then(|name| name.to_str()) != Some("candidate.sqlite3") {
+        return Err(denied());
+    }
+    let stage = path.parent().ok_or_else(denied)?;
+    let token = stage.file_name().and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix("pharma-owner-v67-stage-"))
+        .ok_or_else(denied)?;
+    if token.len() != 32 || !token.bytes().all(|byte| byte.is_ascii_digit()
+        || (b'a'..=b'f').contains(&byte)) {
+        return Err(denied());
+    }
+    for folder in [root, stage] {
+        let info = std::fs::symlink_metadata(folder).map_err(|_| denied())?;
+        if !info.file_type().is_dir() { return Err(denied()); }
+    }
+    let source_info = std::fs::symlink_metadata(path).map_err(|_| denied())?;
+    if !source_info.file_type().is_file() || source_info.len() == 0 {
+        return Err(denied());
+    }
+    let canonical_root = root.canonicalize().map_err(|_| denied())?;
+    let canonical_stage = stage.canonicalize().map_err(|_| denied())?;
+    if canonical_stage.parent() != Some(canonical_root.as_path())
+        || path.canonicalize().map_err(|_| denied())?.parent() != Some(canonical_stage.as_path())
+    {
+        return Err(denied());
+    }
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let sidecar = stage.join(format!("candidate.sqlite3{suffix}"));
+        match std::fs::symlink_metadata(sidecar) {
+            Ok(_) => return Err(denied()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+            Err(_) => return Err(denied()),
+        }
+    }
+    Ok(())
+}
+
+fn pinned_detached_file_sha256(path: &Path) -> Result<[u8; 32], String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)
+        .map_err(|_| "Detached owner source cannot be read".to_owned())?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 65536];
+    loop {
+        let count = file.read(&mut buffer)
+            .map_err(|_| "Detached owner source read failed".to_owned())?;
+        if count == 0 { break; }
+        digest.update(&buffer[..count]);
+    }
+    Ok(digest.finalize().into())
+}
+
+fn owner_receipt_hex(value: &[u8]) -> String {
+    value.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Deliberately explicit, native-only entry point. Callers name ONLY a
+/// disposable 32-hex stage token, never a filesystem path or owner key. The
+/// trust anchor is compiled into an independently provisioned native build;
+/// regular customer builds have no key and refuse BEFORE reading a source.
+///
+/// A valid owner proof writes a single immutable evidence sidecar, not an 068
+/// database attestation and not a 065 reviewer authorization. Verification
+/// of the whole original physical-row audit and its relationships is a
+/// separate required gate before any future forward-only normalization.
+pub(crate) fn run_native_owner_only_offline_stage(
+    stage_token: &str,
+) -> Result<std::path::PathBuf, String> {
+    let trusted = crate::legacy_upgrade_guard::independently_pinned_native_owner_key()?;
+    run_owner_only_stage_with_pinned_key(stage_token, &trusted)
+}
+
+fn run_owner_only_stage_with_pinned_key(
+    stage_token: &str,
+    trusted: &crate::legacy_upgrade_guard::IndependentlyAuthenticatedOwnerKey,
+) -> Result<std::path::PathBuf, String> {
+    if stage_token.len() != 32
+        || !stage_token.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err("Invalid offline owner stage token".into());
+    }
+    let local = std::env::var_os("LOCALAPPDATA")
+        .ok_or("LOCALAPPDATA custody root unavailable")?;
+    let root = std::path::PathBuf::from(local).join("pharma-disposable-data-copies");
+    let stage = root.join(format!("pharma-owner-v67-stage-{stage_token}"));
+    let source = stage.join("candidate.sqlite3");
+    checked_detached_owner_stage(&source, &root)?;
+    let proof_path = stage.join("owner-proof.json");
+    let proof_metadata = std::fs::symlink_metadata(&proof_path)
+        .map_err(|_| "Owner proof sidecar is missing")?;
+    if !proof_metadata.file_type().is_file() || proof_metadata.len() == 0
+        || proof_metadata.len() > 4096
+    {
+        return Err("Owner proof sidecar is unsafe or malformed".into());
+    }
+    let proof_bytes = std::fs::read(&proof_path)
+        .map_err(|_| "Cannot read detached owner proof")?;
+    let proof = crate::legacy_upgrade_guard::parse_detached_owner_only_proof_json(&proof_bytes)?;
+    let (_verified, receipt) = import_owner_verified_detached_v67_authorization(
+        &source, trusted, &proof,
+    )?;
+    Ok(receipt)
+}
+
+/// Native-only owner-authenticated OFFLINE evidence import for a staged v67
+/// source. This is deliberately not a Tauri command or automatic startup
+/// override. A separately authenticated owner public key is mandatory, and
+/// the signed source/typed-row commitment must match the exact detached file.
+/// The resulting create_new evidence receipt is cryptographically sealed,
+/// durable and read-only; there are NO writes to source SQLite or 065 records.
+///
+/// Physical historical scope normalization and activation are separate
+/// forward operations, and must independently check this receipt, reverify
+/// its trusted owner key, and preserve 032/052 original source literals.
+pub(crate) fn import_owner_verified_detached_v67_authorization(
+    path: &Path,
+    trusted: &crate::legacy_upgrade_guard::IndependentlyAuthenticatedOwnerKey,
+    proof: &crate::legacy_upgrade_guard::OfflineOwnerOnlyProof,
+) -> Result<(crate::legacy_upgrade_guard::VerifiedOwnerOnlyImport, std::path::PathBuf), String> {
+    let local = std::env::var_os("LOCALAPPDATA")
+        .ok_or("LOCALAPPDATA custody root unavailable")?;
+    let root = std::path::PathBuf::from(local).join("pharma-disposable-data-copies");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "Cannot verify owner authorization expiry")?.as_secs();
+    import_owner_verified_detached_v67_authorization_in_root(path, &root, trusted, proof, now)
+}
+
+fn import_owner_verified_detached_v67_authorization_in_root(
+    path: &Path,
+    root: &Path,
+    trusted: &crate::legacy_upgrade_guard::IndependentlyAuthenticatedOwnerKey,
+    proof: &crate::legacy_upgrade_guard::OfflineOwnerOnlyProof,
+    now: u64,
+) -> Result<(crate::legacy_upgrade_guard::VerifiedOwnerOnlyImport, std::path::PathBuf), String> {
+    use std::io::Write;
+    checked_detached_owner_stage(path, root)?;
+    let pinned_before = pinned_detached_file_sha256(path)?;
+    if pinned_before != proof.detached_v67_sha256 {
+        return Err("Detached owner source SHA-256 mismatch".into());
+    }
+    let verified = tauri::async_runtime::block_on(async {
+        let options = SqliteConnectOptions::new()
+            .filename(path).read_only(true).create_if_missing(false)
+            .busy_timeout(std::time::Duration::from_secs(5));
+        let mut db = SqliteConnection::connect_with(&options).await
+            .map_err(|_| "Detached owner source unavailable")?;
+        sqlx::query("PRAGMA query_only=ON").execute(&mut db).await
+            .map_err(|_| "Cannot enforce read-only detached source")?;
+        let result = crate::legacy_upgrade_guard::verify_detached_primary_pharmacy_owner_only(
+            &mut db, trusted, proof, pinned_before, now
+        ).await;
+        db.close().await.map_err(|_| "Cannot close detached owner source")?;
+        result
+    })?;
+    checked_detached_owner_stage(path, root)?;
+    if pinned_detached_file_sha256(path)? != pinned_before {
+        return Err("Detached owner source changed during signature verification".into());
+    }
+    let parent = path.parent().ok_or("Missing detached stage parent")?;
+    let receipt = parent.join("primary_pharmacy.owner-only.signed-evidence.json");
+    let json = serde_json::json!({
+        "contract": "pharma/native/offline-owner-primary-pharmacy/v1",
+        "tenant": crate::legacy_upgrade_guard::PRIMARY_PHARMACY_TENANT,
+        "owner_id": verified.owner_id,
+        "original_v29_sha256": owner_receipt_hex(&proof.original_v29_sha256),
+        "detached_v67_sha256": owner_receipt_hex(&proof.detached_v67_sha256),
+        "typed_scope_sha256": owner_receipt_hex(&verified.typed_scope_sha256),
+        "mapping_rows": verified.mappings.len(),
+        "request_nonce": owner_receipt_hex(&proof.request_nonce),
+        "expires_unix_seconds": proof.expires_unix_seconds,
+        "independently_pinned_owner_key_sha256": owner_receipt_hex(&trusted.key_fingerprint_sha256()),
+        "signed_message_hex": owner_receipt_hex(&verified.signed_message),
+        "ed25519_signature_hex": owner_receipt_hex(&proof.signature),
+        "evidence_sha256": owner_receipt_hex(&verified.evidence_sha256),
+        "authority": "owner-only-offline-evidence; no legacy SQL mutation or finance grant"
+    });
+    // A retry or already-present proof cannot silently overwrite custody.
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true)
+        .open(&receipt).map_err(|_| "Detached owner evidence already exists or cannot be sealed")?;
+    file.write_all(serde_json::to_string_pretty(&json).map_err(|_| "Owner evidence serialization failed")?.as_bytes())
+        .and_then(|_| file.sync_all())
+        .map_err(|_| "Could not durably seal owner evidence")?;
+    let mut permissions = file.metadata().map_err(|_| "Owner receipt metadata failed")?.permissions();
+    permissions.set_readonly(true);
+    file.set_permissions(permissions).map_err(|_| "Could not seal owner evidence read-only")?;
+    Ok((verified, receipt))
+}
+
 pub fn prepare_legacy_database(path: &Path) -> Result<(), String> {
     tauri::async_runtime::block_on(async {
+        // Defence in depth: callers other than main.rs must not take the
+        // compatibility-preparation shortcut around the read-only ownership
+        // gate. Registered versions 001–063 predate complete source-row custody and their
+        // old NULL/local_default identities must not be rewritten by staff
+        // repairs, migration 032 credential reset or migration 052 owner scope
+        // inference on an unapproved source. The first-run bundled seed has no
+        // SQLx ledger, while an already migrated and reviewed v064+ profile
+        // can follow the normal idempotent preparation path.
+        if path.is_file() {
+            let options = SqliteConnectOptions::new()
+                .filename(path)
+                .read_only(true)
+                .create_if_missing(false);
+            let mut probe = SqliteConnection::connect_with(&options)
+                .await
+                .map_err(|e| e.to_string())?;
+            sqlx::query("PRAGMA query_only=ON")
+                .execute(&mut probe)
+                .await
+                .map_err(|e| e.to_string())?;
+            let version: Option<i64> = if table_exists(&mut probe, "_sqlx_migrations")
+                .await
+                .map_err(|e| e.to_string())?
+            {
+                sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations WHERE success=1")
+                    .fetch_one(&mut probe)
+                    .await
+                    .map_err(|e| e.to_string())?
+            } else {
+                None
+            };
+            if matches!(version, Some(1..=63)) {
+                crate::legacy_upgrade_guard::assess_existing_connection(&mut probe)
+                    .await
+                    .map_err(|_| "Legacy ownership review required before native compatibility preparation; original database left unchanged".to_string())?;
+            }
+            probe.close().await.map_err(|e| e.to_string())?;
+        }
         let mut connection = connect(path).await?;
         prepare_connection(&mut connection).await
     })
@@ -2730,22 +3262,35 @@ async fn repair_legacy_catalog_name_drift_on_connection(
 const CATALOG_REPAIR_VERSION: &str = "csv-catalog-name-metadata-v2";
 const CATALOG_PRICE_REPAIR_VERSION: &str = "csv-inventory-selling-price-v1";
 
-async fn attach_catalog_reference(connection: &mut SqliteConnection, seed_path: &Path) -> Result<(), String> {
+async fn attach_catalog_reference(
+    connection: &mut SqliteConnection,
+    seed_path: &Path,
+) -> Result<(), String> {
     // Installed resources may be under Program Files. The seed is a checkpointed
     // read-only artifact, even though its SQLite header still says WAL mode.
     // A normal ATTACH can try to create -wal/-shm beside that protected resource.
-    let absolute = std::fs::canonicalize(seed_path).map_err(|e| format!("Cannot locate bundled catalog: {e}"))?;
+    let absolute = std::fs::canonicalize(seed_path)
+        .map_err(|e| format!("Cannot locate bundled catalog: {e}"))?;
     let mut wal = absolute.as_os_str().to_os_string();
     wal.push("-wal");
     match std::fs::metadata(std::path::PathBuf::from(wal)) {
-        Ok(metadata) if metadata.len() > 0 => return Err("Bundled catalog has an uncheckpointed WAL; refusing to ignore its contents".into()),
-        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(format!("Cannot check bundled catalog WAL: {error}")),
+        Ok(metadata) if metadata.len() > 0 => {
+            return Err(
+                "Bundled catalog has an uncheckpointed WAL; refusing to ignore its contents".into(),
+            )
+        }
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+            return Err(format!("Cannot check bundled catalog WAL: {error}"))
+        }
         _ => {}
     }
-    let mut uri = tauri::Url::from_file_path(&absolute).map_err(|_| "Invalid bundled catalog path")?;
+    let mut uri =
+        tauri::Url::from_file_path(&absolute).map_err(|_| "Invalid bundled catalog path")?;
     uri.set_query(Some("mode=ro&immutable=1"));
     sqlx::query("ATTACH DATABASE ? AS bundled_catalog")
-        .bind(uri.as_str()).execute(&mut *connection).await
+        .bind(uri.as_str())
+        .execute(&mut *connection)
+        .await
         .map_err(|e| format!("Cannot read bundled catalog: {e}"))?;
     Ok(())
 }
@@ -2756,7 +3301,6 @@ async fn repair_catalog_name_drift_on_connection(
     connection: &mut SqliteConnection,
     seed_path: &Path,
 ) -> Result<u64, String> {
-
     let already_repaired: Option<String> = sqlx::query_scalar(
         "SELECT value FROM config WHERE key = 'catalog_name_metadata_repair_version'",
     )
@@ -2765,16 +3309,24 @@ async fn repair_catalog_name_drift_on_connection(
     .map_err(|e| e.to_string())?;
     let price_version: Option<String> = sqlx::query_scalar(
         "SELECT value FROM config WHERE key = 'catalog_inventory_price_repair_version'",
-    ).fetch_optional(&mut *connection).await.map_err(|e| e.to_string())?;
+    )
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(|e| e.to_string())?;
     if already_repaired.as_deref() == Some(CATALOG_REPAIR_VERSION)
-        && price_version.as_deref() == Some(CATALOG_PRICE_REPAIR_VERSION) {
+        && price_version.as_deref() == Some(CATALOG_PRICE_REPAIR_VERSION)
+    {
         return Ok(0);
     }
     let legacy_repair: Option<String> = sqlx::query_scalar(
         "SELECT value FROM config WHERE key = 'catalog_reference_repair_version'",
-    ).fetch_optional(&mut *connection).await.map_err(|e| e.to_string())?;
+    )
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(|e| e.to_string())?;
     if already_repaired.as_deref() != Some(CATALOG_REPAIR_VERSION)
-        && legacy_repair.as_deref() == Some("csv-catalog-reference-v1") {
+        && legacy_repair.as_deref() == Some("csv-catalog-reference-v1")
+    {
         return Err("Earlier ID-based catalog repair detected. Recover the original drug names from its pre-repair backup before applying name-based correction.".into());
     }
 
@@ -2864,14 +3416,22 @@ async fn repair_catalog_with_backup(path: &Path, seed_path: &Path) -> Result<u64
     .map_err(|e| e.to_string())?;
     let price_version: Option<String> = sqlx::query_scalar(
         "SELECT value FROM config WHERE key = 'catalog_inventory_price_repair_version'",
-    ).fetch_optional(&mut connection).await.map_err(|e| e.to_string())?;
+    )
+    .fetch_optional(&mut connection)
+    .await
+    .map_err(|e| e.to_string())?;
     if version.as_deref() != Some(CATALOG_REPAIR_VERSION)
-        || price_version.as_deref() != Some(CATALOG_PRICE_REPAIR_VERSION) {
+        || price_version.as_deref() != Some(CATALOG_PRICE_REPAIR_VERSION)
+    {
         let legacy: Option<String> = sqlx::query_scalar(
             "SELECT value FROM config WHERE key = 'catalog_reference_repair_version'",
-        ).fetch_optional(&mut connection).await.map_err(|e| e.to_string())?;
+        )
+        .fetch_optional(&mut connection)
+        .await
+        .map_err(|e| e.to_string())?;
         if version.as_deref() != Some(CATALOG_REPAIR_VERSION)
-            && legacy.as_deref() == Some("csv-catalog-reference-v1") {
+            && legacy.as_deref() == Some("csv-catalog-reference-v1")
+        {
             // The repair will explain the missing identity evidence; do not make
             // another full backup on every startup of an installation awaiting review.
             return repair_catalog_name_drift_on_connection(&mut connection, seed_path).await;
@@ -2899,28 +3459,699 @@ pub fn repair_catalog_name_drift(path: &Path, seed_path: &Path) -> Result<u64, S
     })
 }
 
-#[tauri::command]
-pub fn ensure_schema_compatibility(app: tauri::AppHandle) -> Result<(), String> {
-    let path = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join("pharma_local.db");
-    tauri::async_runtime::block_on(async {
-        let mut connection = connect(&path).await?;
-        let mut transaction = connection.begin().await.map_err(|e| e.to_string())?;
-        ensure_compatibility(&mut transaction)
-            .await
-            .map_err(|e| e.to_string())?;
-        transaction.commit().await.map_err(|e| e.to_string())
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    async fn application_schema_objects(connection: &mut SqliteConnection) -> Vec<(String, String)> {
+    #[test]
+    fn native_offline_owner_entry_denies_missing_compiled_owner_provenance_before_source_access() {
+        use crate::legacy_upgrade_guard::independently_pinned_native_owner_key;
+        // QA and regular customer builds have no independently enrolled
+        // historical key. No fabricated credential or historical source path.
+        if independently_pinned_native_owner_key().is_err() {
+            let denial = run_native_owner_only_offline_stage("0123456789abcdef0123456789abcdef");
+            assert!(denial.is_err());
+            assert!(denial.unwrap_err().contains("original database left unchanged"),
+                "Missing authentic owner provenance must fail before looking up a stage");
+        }
+        let token = "00112233445566778899aabbccddeeff";
+        // The supplied synthetic key is deliberately NEVER made available to
+        // the production CLI. This only tests the stage-token guard.
+        let synthetic = crate::legacy_upgrade_guard::IndependentlyAuthenticatedOwnerKey::
+            from_trusted_native_custody("synthetic", [1; 32], [2; 32]).unwrap();
+        for malformed in ["", "..", "pharma_local.db", "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
+            "0123456789abcdef0123456789abcdeg", "0123456789abcdef0123456789abcdef\\original.sqlite3"
+        ] {
+            assert!(run_owner_only_stage_with_pinned_key(malformed, &synthetic).is_err(),
+                "Absolute paths, original profile names and malformed stage tokens must be rejected");
+        }
+        assert!(token.len() == 32);
+    }
+
+    #[test]
+    fn owner_only_offline_v67_stage_requires_exact_private_candidate_and_no_sidecars() {
+        let root = std::env::temp_dir().join(format!(
+            "pharma-test-owner-only-stage-root-{}", uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let stage = root.join("pharma-owner-v67-stage-0123456789abcdef0123456789abcdef");
+        std::fs::create_dir(&stage).unwrap();
+        let detached = stage.join("candidate.sqlite3");
+        std::fs::write(&detached, b"synthetic-staged-data-no-credential").unwrap();
+        assert!(checked_detached_owner_stage(&detached, &root).is_ok());
+        let sidecar = stage.join("candidate.sqlite3-wal");
+        std::fs::write(&sidecar, b"synthetic-hot-wal").unwrap();
+        assert!(checked_detached_owner_stage(&detached, &root).is_err());
+        std::fs::remove_file(&sidecar).unwrap();
+        assert!(checked_detached_owner_stage(&stage.join("pharma_local.db"), &root).is_err(),
+            "An installed database filename must never satisfy detached custody");
+        let unexpected = root.join("pharma-owner-v67-stage-unpinned");
+        std::fs::create_dir(&unexpected).unwrap();
+        std::fs::write(unexpected.join("candidate.sqlite3"), b"synthetic").unwrap();
+        assert!(checked_detached_owner_stage(&unexpected.join("candidate.sqlite3"), &root).is_err());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn startup_schema_repair_must_not_be_renderer_callable() {
+        // Compatibility repair writes account mappings and legacy financial
+        // state. It is for the trusted startup migrator, never renderer IPC.
+        assert!(
+            !include_str!("main.rs").contains("schema::ensure_schema_compatibility,"),
+            "Schema compatibility repair is registered as unauthenticated renderer IPC"
+        );
+    }
+
+    #[tokio::test]
+    async fn receipted_credit_patient_identity_cannot_be_reassigned() {
+        use sqlx::Executor;
+        // Use the real 043, 045 and forward-only 050 triggers on disposable
+        // SQLite. A receipted credit source must retain its patient.
+        let mut db = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        db.execute(r#"
+          CREATE TABLE users(id TEXT PRIMARY KEY,pharmacy_id TEXT,is_active INTEGER);
+          INSERT INTO users VALUES('a','branch-a',1);
+          CREATE TABLE sales_invoices(id TEXT PRIMARY KEY,patient_id TEXT,pharmacy_id TEXT,
+            user_id TEXT,total_amount REAL,payment_method TEXT,status TEXT);
+          CREATE TABLE sales_items(id INTEGER PRIMARY KEY,invoice_id TEXT,inventory_id TEXT,
+            drug_id INTEGER,quantity_sold REAL,unit_price REAL,unit TEXT,
+            is_negative INTEGER,cost_price REAL,large_to_medium INTEGER,medium_to_small INTEGER);
+          CREATE TABLE returns(id TEXT PRIMARY KEY,invoice_id TEXT,pharmacy_id TEXT,
+            user_id TEXT,refund_method TEXT,status TEXT,total_refund REAL);
+          CREATE TABLE return_items(id INTEGER PRIMARY KEY,return_id TEXT);
+          CREATE TABLE accounts(id INTEGER PRIMARY KEY,code TEXT);
+          INSERT INTO accounts VALUES(1,'1.1.2'),(2,'3.1');
+          CREATE TABLE daily_journals(id TEXT PRIMARY KEY,pharmacy_id TEXT,
+            created_by TEXT,total_amount REAL);
+          CREATE TABLE journal_entries(id INTEGER PRIMARY KEY,journal_id TEXT,
+            account_id INTEGER,type TEXT,amount REAL);
+          CREATE TABLE cash_movements(id TEXT PRIMARY KEY);
+          INSERT INTO sales_invoices VALUES('sale-a','patient-a','branch-a','a',100,'credit','completed');
+          INSERT INTO sales_items VALUES(1,'sale-a',NULL,1,1,100,'large',0,0,1,1);
+          INSERT INTO daily_journals VALUES('sale-j','branch-a','a',100);
+          INSERT INTO journal_entries(journal_id,account_id,type,amount)
+            VALUES('sale-j',1,'debit',100),('sale-j',2,'credit',100);
+        "#).await.unwrap();
+        sqlx::raw_sql(include_str!(
+            "../migrations/043_native_sales_cogs_provenance.sql"
+        ))
+        .execute(&mut db)
+        .await
+        .unwrap();
+        db.execute(
+            r#"INSERT INTO native_sale_cogs_provenance
+          (sale_id,request_id,pharmacy_id,actor_id,journal_id,payment_method,
+           sale_micros,cogs_micros,line_count,line_snapshot)
+          VALUES('sale-a','12345678-abcd-4abc-8abc-123456789abc','branch-a','a',
+                 'sale-j','credit',100000000,0,1,'[{"lineId":1}]')"#,
+        )
+        .await
+        .unwrap();
+        sqlx::raw_sql(include_str!(
+            "../migrations/045_native_delivery_collection.sql"
+        ))
+        .execute(&mut db)
+        .await
+        .unwrap();
+        sqlx::raw_sql(include_str!(
+            "../migrations/050_receipted_credit_patient_ownership.sql"
+        ))
+        .execute(&mut db)
+        .await
+        .unwrap();
+        let changed =
+            sqlx::query("UPDATE sales_invoices SET patient_id='patient-b' WHERE id='sale-a'")
+                .execute(&mut db)
+                .await;
+        assert!(
+            changed.is_err(),
+            "Receipted credit source was assigned to a different patient"
+        );
+        let current: String =
+            sqlx::query_scalar("SELECT patient_id FROM sales_invoices WHERE id='sale-a'")
+                .fetch_one(&mut db)
+                .await
+                .unwrap();
+        assert_eq!(current, "patient-a");
+        db.execute("UPDATE sales_invoices SET patient_id='patient-a' WHERE id='sale-a'")
+            .await
+            .unwrap();
+        db.execute("INSERT INTO sales_invoices VALUES('legacy','patient-a','branch-a','a',5,'credit','completed')")
+            .await.unwrap();
+        db.execute("UPDATE sales_invoices SET patient_id='patient-b' WHERE id='legacy'")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn real_legacy_scope_snapshot_cannot_certify_inferred_patient_credit_or_return() {
+        use sqlx::Executor;
+        let mut db = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        db.execute(r#"
+            CREATE TABLE users(id TEXT PRIMARY KEY,username TEXT,pharmacy_id TEXT);
+            INSERT INTO users VALUES('local','local','local_default');
+            CREATE TABLE sales_invoices(id TEXT PRIMARY KEY,user_id TEXT,patient_id TEXT,
+                pharmacy_id TEXT,payment_method TEXT,status TEXT,total_amount REAL);
+            INSERT INTO sales_invoices VALUES('old','local','legacy-patient',NULL,'credit','completed',100);
+            CREATE TABLE returns(id TEXT PRIMARY KEY,invoice_id TEXT,user_id TEXT,pharmacy_id TEXT,
+                refund_method TEXT,status TEXT,total_refund REAL);
+            INSERT INTO returns VALUES('old-return','old','local',NULL,'patient_account','approved',10);
+            CREATE TABLE native_sale_cogs_provenance(sale_id TEXT PRIMARY KEY,pharmacy_id TEXT,
+                payment_method TEXT,sale_micros INTEGER);
+            CREATE TABLE native_sale_return_cogs_provenance(return_id TEXT PRIMARY KEY,sale_id TEXT,
+                pharmacy_id TEXT,refund_method TEXT,refund_micros INTEGER);
+        "#).await.unwrap();
+        let mut tx = db.begin().await.unwrap();
+        snapshot_branch_local_pharmacy_scope(&mut tx).await.unwrap();
+        tx.commit().await.unwrap();
+        let inferred_sale: String =
+            sqlx::query_scalar("SELECT pharmacy_id FROM sales_invoices WHERE id='old'")
+                .fetch_one(&mut db)
+                .await
+                .unwrap();
+        let inferred_return: String =
+            sqlx::query_scalar("SELECT pharmacy_id FROM returns WHERE id='old-return'")
+                .fetch_one(&mut db)
+                .await
+                .unwrap();
+        assert_eq!(inferred_sale, "local_default");
+        assert_eq!(inferred_return, "local_default");
+        let unsafe_origin =
+            crate::commands::financial_notices_native::verify_proven_patient_credit_sources(
+                &mut db,
+                "legacy-patient",
+                "local_default",
+            )
+            .await;
+        assert!(unsafe_origin.as_ref().is_err_and(|e|e.contains("unverified credit source")),
+            "Compatibility inference was mistaken for historical financial ownership: {unsafe_origin:?}");
+        let old_source: String =
+            sqlx::query_scalar("SELECT patient_id FROM sales_invoices WHERE id='old'")
+                .fetch_one(&mut db)
+                .await
+                .unwrap();
+        assert_eq!(old_source, "legacy-patient");
+    }
+
+    fn actual_native_startup_migrator(count: usize) -> sqlx::migrate::Migrator {
+        let listed = crate::app_migrations();
+        assert_eq!(
+            listed.len(),
+            69,
+            "native startup must register 001 through 069"
+        );
+        assert_eq!(listed[32].description, "patient_payment_scope");
+        assert_eq!(listed[33].description, "expense_posting_requests");
+        assert_eq!(listed[34].description, "commercial_paper_replay");
+        assert_eq!(listed[35].description, "financial_notice_provenance");
+        assert_eq!(listed[36].description, "finance_device_create_requests");
+        assert_eq!(listed[37].description, "inventory_lot_create_requests");
+        assert_eq!(listed[38].description, "inventory_create_acknowledgements");
+        assert_eq!(listed[39].description, "stock_ledger_provenance");
+        assert_eq!(listed[40].description, "purchase_return_posting_provenance");
+        assert_eq!(listed[41].description, "purchase_posting_events");
+        assert_eq!(listed[42].description, "native_sales_cogs_provenance");
+        assert_eq!(listed[46].description, "purchase_draft_create_witnesses");
+        assert_eq!(
+            listed[47].description,
+            "purchase_return_supplier_cash_provenance"
+        );
+        assert_eq!(listed[48].description, "purchase_return_reference_indexes");
+        assert_eq!(listed[49].description, "receipted_credit_patient_ownership");
+        assert_eq!(listed[50].description, "patient_financial_journal_receipts");
+        assert_eq!(listed[51].description, "explicit_local_owner_pharmacy");
+        assert_eq!(listed[52].description, "ambiguous_owner_scope_review");
+        assert_eq!(listed[53].description, "native_supplier_partial_payment");
+        assert_eq!(listed[54].description, "patient_cash_movement_witness");
+        assert_eq!(listed[55].description, "financial_notice_cash_witness");
+        assert_eq!(listed[56].description, "supplier_cash_shift_identity_guard");
+        assert_eq!(listed[57].description, "supplier_cash_shift_replace_guard");
+        assert_eq!(listed[58].description, "supplier_payment_receipt_replace_guard");
+        assert_eq!(listed[59].description, "native_patient_wallet_topups");
+        assert_eq!(listed[60].description, "native_patient_directory_ownership");
+        assert_eq!(listed[61].description, "native_supplier_directory_ownership");
+        assert_eq!(listed[62].description, "unused_drug_reference_indexes");
+        assert_eq!(listed[64].description, "legacy_upgrade_provenance");
+        assert_eq!(listed[65].description, "legacy_mapped_source_row_seal");
+        assert_eq!(listed[66].description, "legacy_original_detail_row_seal");
+        assert_eq!(listed[67].description, "primary_pharmacy_typed_scope_audit");
+        assert_eq!(listed[68].description, "supplier_return_aware_payment_guard");
+        for (index, migration) in listed.iter().enumerate() {
+            assert_eq!(migration.version, (index + 1) as i64);
+            assert!(matches!(
+                migration.kind,
+                tauri_plugin_sql::MigrationKind::Up
+            ));
+        }
+        sqlx::migrate::Migrator {
+            migrations: std::borrow::Cow::Owned(
+                listed
+                    .into_iter()
+                    .take(count)
+                    .map(|entry| {
+                        sqlx::migrate::Migration::new(
+                            entry.version,
+                            entry.description.into(),
+                            sqlx::migrate::MigrationType::ReversibleUp,
+                            entry.sql.into(),
+                            false,
+                        )
+                    })
+                    .collect(),
+            ),
+            ignore_missing: false,
+            locking: true,
+            no_tx: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn native_051_real_startup_is_forward_only_without_guessing_old_financial_journals() {
+        let mut db = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        actual_native_startup_migrator(1)
+            .run(&mut db)
+            .await
+            .unwrap();
+        let protected_001: Vec<u8> = sqlx::query_scalar(
+            "SELECT checksum FROM _sqlx_migrations WHERE version=1 AND success=1",
+        )
+        .fetch_one(&mut db)
+        .await
+        .unwrap();
+        // This is the production order: compatibility prepares an existing
+        // installation, then the native SQLx migrator installs the forward DDL.
+        prepare_connection(&mut db).await.unwrap();
+        actual_native_startup_migrator(51)
+            .run(&mut db)
+            .await
+            .unwrap();
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations WHERE success=1")
+                .fetch_one(&mut db)
+                .await
+                .unwrap();
+        assert_eq!(count, 51);
+        let current_001: Vec<u8> = sqlx::query_scalar(
+            "SELECT checksum FROM _sqlx_migrations WHERE version=1 AND success=1",
+        )
+        .fetch_one(&mut db)
+        .await
+        .unwrap();
+        assert_eq!(protected_001, current_001);
+        let present:i64=sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name='native_patient_financial_journal_receipts' AND type='table'")
+            .fetch_one(&mut db).await.unwrap();
+        assert_eq!(present, 1);
+        let initially_empty: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM native_patient_financial_journal_receipts")
+                .fetch_one(&mut db)
+                .await
+                .unwrap();
+        assert_eq!(
+            initially_empty, 0,
+            "No V1 payment or notice can be assigned an invented journal"
+        );
+    }
+
+    #[tokio::test]
+    async fn native_052_real_startup_explicitly_scopes_only_original_unambiguous_owner() {
+        let mut db = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        actual_native_startup_migrator(1).run(&mut db).await.unwrap();
+        prepare_connection(&mut db).await.unwrap();
+        actual_native_startup_migrator(51).run(&mut db).await.unwrap();
+        let old_043_checksum: Vec<u8> = sqlx::query_scalar(
+            "SELECT checksum FROM _sqlx_migrations WHERE version=43 AND success=1",
+        )
+        .fetch_one(&mut db).await.unwrap();
+        let before: Option<String> =
+            sqlx::query_scalar("SELECT pharmacy_id FROM users WHERE id='admin'")
+                .fetch_one(&mut db).await.unwrap();
+        assert_eq!(before, None);
+        actual_native_startup_migrator(52).run(&mut db).await.unwrap();
+        let after: String =
+            sqlx::query_scalar("SELECT pharmacy_id FROM users WHERE id='admin'")
+                .fetch_one(&mut db).await.unwrap();
+        assert_eq!(after, "local_default");
+        let preserved_043_checksum: Vec<u8> = sqlx::query_scalar(
+            "SELECT checksum FROM _sqlx_migrations WHERE version=43 AND success=1",
+        )
+        .fetch_one(&mut db).await.unwrap();
+        assert_eq!(preserved_043_checksum, old_043_checksum);
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM _sqlx_migrations WHERE success=1",
+        )
+        .fetch_one(&mut db).await.unwrap();
+        assert_eq!(count, 52);
+    }
+
+    #[tokio::test]
+    async fn native_053_quarantines_original_owner_if_052_missed_foreign_bank_scope() {
+        let mut db = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        actual_native_startup_migrator(1).run(&mut db).await.unwrap();
+        prepare_connection(&mut db).await.unwrap();
+        actual_native_startup_migrator(51).run(&mut db).await.unwrap();
+        let original_043: Vec<u8> =
+            sqlx::query_scalar("SELECT checksum FROM _sqlx_migrations WHERE version=43")
+                .fetch_one(&mut db).await.unwrap();
+        // The only branch-B evidence belongs to a bank, which the already
+        // installed 052 did not check. Reproduce the original bad claim.
+        sqlx::query("INSERT INTO banks(name_ar,pharmacy_id) VALUES ('Foreign bank','branch-B')")
+            .execute(&mut db).await.unwrap();
+        actual_native_startup_migrator(52).run(&mut db).await.unwrap();
+        let mistakenly_claimed: String =
+            sqlx::query_scalar("SELECT pharmacy_id FROM users WHERE id='admin'")
+                .fetch_one(&mut db).await.unwrap();
+        assert_eq!(mistakenly_claimed, "local_default");
+
+        actual_native_startup_migrator(53).run(&mut db).await.unwrap();
+        let review: String = sqlx::query_scalar(
+            "SELECT reason FROM native_owner_scope_review WHERE owner_id='admin'",
+        ).fetch_one(&mut db).await.unwrap();
+        assert!(review.contains("Ambiguous"));
+        let preserved_043: Vec<u8> =
+            sqlx::query_scalar("SELECT checksum FROM _sqlx_migrations WHERE version=43")
+                .fetch_one(&mut db).await.unwrap();
+        assert_eq!(original_043, preserved_043);
+        let still_scoped: String =
+            sqlx::query_scalar("SELECT pharmacy_id FROM users WHERE id='admin'")
+                .fetch_one(&mut db).await.unwrap();
+        assert_eq!(still_scoped, "local_default", "Do not guess a different owner tenant");
+        assert!(sqlx::query("DELETE FROM native_owner_scope_review WHERE owner_id='admin'")
+            .execute(&mut db).await.is_err(), "Review cannot be removed through general SQL");
+    }
+
+    #[tokio::test]
+    async fn native_053_keeps_unambiguous_original_local_owner_operational() {
+        let mut db = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        actual_native_startup_migrator(1).run(&mut db).await.unwrap();
+        prepare_connection(&mut db).await.unwrap();
+        actual_native_startup_migrator(53).run(&mut db).await.unwrap();
+        let pharmacy: String =
+            sqlx::query_scalar("SELECT pharmacy_id FROM users WHERE id='admin'")
+                .fetch_one(&mut db).await.unwrap();
+        assert_eq!(pharmacy, "local_default");
+        let review_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM native_owner_scope_review")
+                .fetch_one(&mut db).await.unwrap();
+        assert_eq!(review_count, 0);
+    }
+
+    #[tokio::test]
+    async fn native_startup_001_to_032_disarms_only_original_owner_and_preserves_sqlx_history() {
+        use crate::commands::auth::{
+            authenticate_on_connection, enroll_owner_on_connection,
+            owner_enrollment_pending_on_connection,
+        };
+        // Start from the actual 001 SQLx migration in memory. Do not open the
+        // bundled seed or an operator/customer database.
+        let migrator_001 = actual_native_startup_migrator(1);
+        let migrator_032 = actual_native_startup_migrator(39);
+        for changed_admin in [false, true] {
+            let mut connection = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+            migrator_001.run(&mut connection).await.unwrap();
+            let published_hash: String = sqlx::query_scalar(
+                "SELECT password_hash FROM users WHERE CAST(id AS TEXT) = 'admin'",
+            )
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+            assert!(bcrypt::verify("admin", &published_hash).unwrap());
+            let version_001_checksum_before: Vec<u8> = sqlx::query_scalar(
+                "SELECT checksum FROM _sqlx_migrations WHERE version = 1 AND success = 1",
+            )
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+
+            let edited_hash = bcrypt::hash("Existing!OwnerPassword2026", 4).unwrap();
+            if changed_admin {
+                sqlx::query("UPDATE users SET password_hash = ? WHERE id = 'admin'")
+                    .bind(&edited_hash)
+                    .execute(&mut connection)
+                    .await
+                    .unwrap();
+            }
+            let another_hash = bcrypt::hash("Other!OwnerPassword2026", 4).unwrap();
+            sqlx::query(
+                "INSERT INTO users(id,username,role,full_name,pharmacy_id,password_hash,is_active) \
+                 VALUES('existing-owner-b','owner-b','owner','Branch B Owner','branch-B',?,1)",
+            ).bind(&another_hash).execute(&mut connection).await.unwrap();
+
+            // Match main.rs licensed startup: prepare first, then run all the
+            // pending native SQLx migrations. This also covers checksum repairs
+            // and pre-applied ledger entries on a historical installation.
+            prepare_connection(&mut connection).await.unwrap();
+            migrator_032.run(&mut connection).await.unwrap();
+            let version_001_checksum_after: Vec<u8> = sqlx::query_scalar(
+                "SELECT checksum FROM _sqlx_migrations WHERE version = 1 AND success = 1",
+            )
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+            assert_eq!(version_001_checksum_after, version_001_checksum_before);
+            let versions: Vec<i64> = sqlx::query_scalar(
+                "SELECT version FROM _sqlx_migrations WHERE success = 1 ORDER BY version",
+            )
+            .fetch_all(&mut connection)
+            .await
+            .unwrap();
+            assert_eq!(versions, (1_i64..=39).collect::<Vec<_>>());
+
+            let hash_after: Option<String> =
+                sqlx::query_scalar("SELECT password_hash FROM users WHERE id = 'admin'")
+                    .fetch_one(&mut connection)
+                    .await
+                    .unwrap();
+            if changed_admin {
+                assert_eq!(hash_after.as_deref(), Some(edited_hash.as_str()));
+                assert!(!owner_enrollment_pending_on_connection(&mut connection)
+                    .await
+                    .unwrap());
+                assert!(
+                    authenticate_on_connection(
+                        &mut connection,
+                        "admin",
+                        "Existing!OwnerPassword2026",
+                    )
+                    .await
+                    .unwrap()
+                    .success
+                );
+                assert!(enroll_owner_on_connection(
+                    &mut connection,
+                    "Replacement!OwnerPassword2026",
+                )
+                .await
+                .is_err());
+            } else {
+                assert!(
+                    hash_after.is_none(),
+                    "migration 032 must neutralize 001's public secret"
+                );
+                assert!(owner_enrollment_pending_on_connection(&mut connection)
+                    .await
+                    .unwrap());
+                assert!(
+                    !authenticate_on_connection(&mut connection, "admin", "admin")
+                        .await
+                        .unwrap()
+                        .success
+                );
+                enroll_owner_on_connection(&mut connection, "New!OwnerPassword2026")
+                    .await
+                    .unwrap();
+                assert!(!owner_enrollment_pending_on_connection(&mut connection)
+                    .await
+                    .unwrap());
+                assert!(
+                    authenticate_on_connection(&mut connection, "admin", "New!OwnerPassword2026",)
+                        .await
+                        .unwrap()
+                        .success
+                );
+            }
+            let branch_b_hash: String =
+                sqlx::query_scalar("SELECT password_hash FROM users WHERE id = 'existing-owner-b'")
+                    .fetch_one(&mut connection)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                branch_b_hash, another_hash,
+                "unrelated owner's hash must be preserved"
+            );
+            let branch_b_name: String =
+                sqlx::query_scalar("SELECT full_name FROM users WHERE id = 'existing-owner-b'")
+                    .fetch_one(&mut connection)
+                    .await
+                    .unwrap();
+            assert_eq!(branch_b_name, "Branch B Owner");
+
+            // Restarting the same isolated state cannot overwrite a changed
+            // password, re-seed credentials or re-run the forward-only cleanup.
+            prepare_connection(&mut connection).await.unwrap();
+            migrator_032.run(&mut connection).await.unwrap();
+            let restarted_hash: Option<String> =
+                sqlx::query_scalar("SELECT password_hash FROM users WHERE id = 'admin'")
+                    .fetch_one(&mut connection)
+                    .await
+                    .unwrap();
+            assert!(restarted_hash.is_some());
+            assert!(
+                enroll_owner_on_connection(&mut connection, "Replay!OwnerPassword2026")
+                    .await
+                    .is_err()
+            );
+            let after_replay: Option<String> =
+                sqlx::query_scalar("SELECT password_hash FROM users WHERE id = 'admin'")
+                    .fetch_one(&mut connection)
+                    .await
+                    .unwrap();
+            assert_eq!(after_replay, restarted_hash);
+            let integrity: String = sqlx::query_scalar("PRAGMA integrity_check")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
+            assert_eq!(integrity, "ok");
+        }
+    }
+
+    #[tokio::test]
+    async fn native_001_to_032_empty_users_recovery_creates_only_unconfigured_owner() {
+        let mut connection = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        actual_native_startup_migrator(1)
+            .run(&mut connection)
+            .await
+            .unwrap();
+        // Synthetic recovery of an emptied 001 users table: no customer data.
+        sqlx::query("DELETE FROM users")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        prepare_connection(&mut connection).await.unwrap();
+        let owner: (String, String, Option<String>) =
+            sqlx::query_as("SELECT username, role, password_hash FROM users WHERE id='admin'")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
+        assert_eq!(owner, ("admin".into(), "owner".into(), None));
+        actual_native_startup_migrator(37)
+            .run(&mut connection)
+            .await
+            .unwrap();
+        assert!(
+            crate::commands::auth::owner_enrollment_pending_on_connection(&mut connection,)
+                .await
+                .unwrap()
+        );
+        let denied =
+            crate::commands::auth::authenticate_on_connection(&mut connection, "admin", "admin")
+                .await
+                .unwrap();
+        assert!(!denied.success);
+        prepare_connection(&mut connection).await.unwrap();
+        actual_native_startup_migrator(37)
+            .run(&mut connection)
+            .await
+            .unwrap();
+        let owner_after: Option<String> =
+            sqlx::query_scalar("SELECT password_hash FROM users WHERE id='admin'")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
+        assert!(
+            owner_after.is_none(),
+            "restart must not re-seed the public password"
+        );
+    }
+
+    #[tokio::test]
+    async fn native_upgrade_rejects_unknown_migration_001_checksum_without_mutating_owner() {
+        let mut connection = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        actual_native_startup_migrator(1)
+            .run(&mut connection)
+            .await
+            .unwrap();
+        let original: String =
+            sqlx::query_scalar("SELECT password_hash FROM users WHERE id='admin'")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
+        sqlx::query("UPDATE _sqlx_migrations SET checksum = X'00000000' WHERE version = 1")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        // Pre-migrator native compatibility must not silently accept an
+        // unknown original migration signature and rewrite customer state.
+        assert!(prepare_connection(&mut connection).await.is_err());
+        let still_original: String =
+            sqlx::query_scalar("SELECT password_hash FROM users WHERE id='admin'")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
+        assert_eq!(still_original, original);
+        assert!(actual_native_startup_migrator(37)
+            .run(&mut connection)
+            .await
+            .is_err());
+        let ledger_032: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations WHERE version = 32")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
+        assert_eq!(ledger_032, 0);
+    }
+
+    #[tokio::test]
+    async fn adds_missing_trial_balance_metadata_without_rewriting_custom_settings() {
+        let mut connection = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        sqlx::raw_sql(
+            r#"
+            CREATE TABLE trial_balance_settings (
+              id INTEGER PRIMARY KEY, category TEXT NOT NULL,
+              target_type TEXT, account_id INTEGER
+            );
+            INSERT INTO trial_balance_settings(id, category, target_type, account_id)
+            VALUES (17, 'bank:legacy', 'bank', 44);
+            "#,
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+
+        let mut transaction = connection.begin().await.unwrap();
+        ensure_trial_balance_metadata_columns(&mut transaction)
+            .await
+            .unwrap();
+        ensure_trial_balance_metadata_columns(&mut transaction)
+            .await
+            .unwrap();
+        assert!(
+            has_column(&mut transaction, "trial_balance_settings", "target_id")
+                .await
+                .unwrap()
+        );
+        assert!(
+            has_column(&mut transaction, "trial_balance_settings", "target_name")
+                .await
+                .unwrap()
+        );
+        let (id, category, target_type, account_id, target_id, target_name):
+            (i64, String, String, i64, Option<String>, Option<String>) =
+            sqlx::query_as(
+                "SELECT id, category, target_type, account_id, target_id, target_name FROM trial_balance_settings"
+            ).fetch_one(&mut *transaction).await.unwrap();
+        assert_eq!(
+            (id, category.as_str(), target_type.as_str(), account_id),
+            (17, "bank:legacy", "bank", 44)
+        );
+        assert_eq!(target_id, None);
+        assert_eq!(target_name, None);
+        transaction.commit().await.unwrap();
+    }
+
+    async fn application_schema_objects(
+        connection: &mut SqliteConnection,
+    ) -> Vec<(String, String)> {
         sqlx::query_as::<_, (String, String)>(
             r#"
             SELECT type, name
@@ -2964,7 +4195,8 @@ mod tests {
                     row.get::<String, _>("name"),
                     row.get::<String, _>("type"),
                     row.get::<i64, _>("notnull"),
-                    row.get::<Option<String>, _>("dflt_value").unwrap_or_default(),
+                    row.get::<Option<String>, _>("dflt_value")
+                        .unwrap_or_default(),
                     row.get::<i64, _>("pk")
                 ));
             }
@@ -3043,7 +4275,82 @@ mod tests {
         .fetch_all(connection)
         .await
         .unwrap();
-        assert_eq!(versions, (1_i64..=29_i64).collect::<Vec<_>>());
+        assert_eq!(versions, (1_i64..=31_i64).collect::<Vec<_>>());
+    }
+
+    async fn assert_relationship_lookup_indexes(connection: &mut SqliteConnection) {
+        for (table, index_name, expected_column) in [
+            (
+                "journal_entries",
+                "idx_journal_entries_account",
+                "account_id",
+            ),
+            (
+                "journal_entries",
+                "idx_journal_entries_journal",
+                "journal_id",
+            ),
+            (
+                "purchase_invoice_items",
+                "idx_purchase_invoice_items_invoice",
+                "invoice_id",
+            ),
+            (
+                "purchase_invoice_items",
+                "idx_purchase_invoice_items_drug",
+                "drug_id",
+            ),
+            ("return_items", "idx_return_items_return", "return_id"),
+            ("returns", "idx_returns_invoice_id", "invoice_id"),
+        ] {
+            let index_rows = sqlx::query(&format!("PRAGMA index_list({table})"))
+                .fetch_all(&mut *connection)
+                .await
+                .unwrap();
+            assert!(
+                index_rows
+                    .iter()
+                    .any(|row| row.get::<String, _>("name") == index_name),
+                "missing expected relationship index {index_name} on {table}"
+            );
+
+            let columns = sqlx::query(&format!("PRAGMA index_info({index_name})"))
+                .fetch_all(&mut *connection)
+                .await
+                .unwrap();
+            assert_eq!(
+                columns.len(),
+                1,
+                "{index_name} should contain one key column"
+            );
+            assert_eq!(
+                columns[0].get::<Option<String>, _>("name").as_deref(),
+                Some(expected_column),
+                "{index_name} points at the wrong key"
+            );
+        }
+    }
+
+    async fn assert_trial_balance_category_unique_index(connection: &mut SqliteConnection) {
+        let indexes = sqlx::query("PRAGMA index_list(trial_balance_settings)")
+            .fetch_all(&mut *connection)
+            .await
+            .unwrap();
+        let index = indexes
+            .iter()
+            .find(|row| {
+                row.get::<String, _>("name") == "idx_trial_balance_settings_category_unique"
+            })
+            .expect("missing trial balance category unique index");
+        assert_eq!(index.get::<i64, _>("unique"), 1);
+        let columns = sqlx::query("PRAGMA index_info(idx_trial_balance_settings_category_unique)")
+            .fetch_all(&mut *connection)
+            .await
+            .unwrap();
+        assert_eq!(
+            columns[0].get::<Option<String>, _>("name").as_deref(),
+            Some("category")
+        );
     }
 
     async fn assert_catalog_delete_tombstone(connection: &mut SqliteConnection, id: i64) {
@@ -3119,16 +4426,26 @@ mod tests {
         .unwrap();
 
         let mut transaction = connection.begin().await.unwrap();
-        assert_eq!(surface_legacy_patient_wallet_review(&mut transaction).await.unwrap(), 1);
+        assert_eq!(
+            surface_legacy_patient_wallet_review(&mut transaction)
+                .await
+                .unwrap(),
+            1
+        );
         transaction.commit().await.unwrap();
 
-        let balances: Vec<(String, f64)> = sqlx::query_as(
-            "SELECT id, CAST(wallet_balance AS REAL) FROM patients ORDER BY id",
-        )
-        .fetch_all(&mut connection)
-        .await
-        .unwrap();
-        assert_eq!(balances, vec![("legacy-patient".into(), 40.0), ("post-fix-patient".into(), 20.0)]);
+        let balances: Vec<(String, f64)> =
+            sqlx::query_as("SELECT id, CAST(wallet_balance AS REAL) FROM patients ORDER BY id")
+                .fetch_all(&mut connection)
+                .await
+                .unwrap();
+        assert_eq!(
+            balances,
+            vec![
+                ("legacy-patient".into(), 40.0),
+                ("post-fix-patient".into(), 20.0)
+            ]
+        );
         let status: String = sqlx::query_scalar(
             "SELECT value FROM config WHERE key = 'legacy_patient_wallet_review_status'",
         )
@@ -3147,7 +4464,12 @@ mod tests {
         assert_eq!(audit_count, 1);
 
         let mut transaction = connection.begin().await.unwrap();
-        assert_eq!(surface_legacy_patient_wallet_review(&mut transaction).await.unwrap(), 1);
+        assert_eq!(
+            surface_legacy_patient_wallet_review(&mut transaction)
+                .await
+                .unwrap(),
+            1
+        );
         transaction.commit().await.unwrap();
         let audit_count_after_repeat: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM activity_log WHERE action = 'LEGACY_PATIENT_WALLET_REVIEW_REQUIRED'",
@@ -3160,31 +4482,51 @@ mod tests {
 
     #[tokio::test]
     async fn reads_checkpointed_read_only_resource_without_creating_sidecars() {
-        let directory = std::env::temp_dir().join(format!("pharma-resource-{}", uuid::Uuid::new_v4()));
+        let directory =
+            std::env::temp_dir().join(format!("pharma-resource-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&directory).unwrap();
         let path = directory.join("catalog space # % ' عربي.db");
         let mut seed = connect(&path).await.unwrap();
-        sqlx::query("PRAGMA journal_mode=WAL").execute(&mut seed).await.unwrap();
+        sqlx::query("PRAGMA journal_mode=WAL")
+            .execute(&mut seed)
+            .await
+            .unwrap();
         sqlx::raw_sql("CREATE TABLE catalog_csv_reference(trade_name TEXT); INSERT INTO catalog_csv_reference VALUES ('ANDODERMA');")
             .execute(&mut seed).await.unwrap();
         let mut live = SqliteConnection::connect("sqlite::memory:").await.unwrap();
-        assert!(attach_catalog_reference(&mut live, &path).await.unwrap_err().contains("uncheckpointed WAL"));
+        assert!(attach_catalog_reference(&mut live, &path)
+            .await
+            .unwrap_err()
+            .contains("uncheckpointed WAL"));
         seed.close().await.unwrap();
         let original = std::fs::read(&path).unwrap();
         let original_permissions = std::fs::metadata(&path).unwrap().permissions();
-        let mut read_only = original_permissions.clone(); read_only.set_readonly(true);
+        let mut read_only = original_permissions.clone();
+        read_only.set_readonly(true);
         std::fs::set_permissions(&path, read_only).unwrap();
         let result = attach_catalog_reference(&mut live, &path).await;
         // Restore permissions before asserting, so a failing test leaves no locked fixture.
         std::fs::set_permissions(&path, original_permissions).unwrap();
         result.unwrap();
-        let name: String = sqlx::query_scalar("SELECT trade_name FROM bundled_catalog.catalog_csv_reference")
-            .fetch_one(&mut live).await.unwrap();
+        let name: String =
+            sqlx::query_scalar("SELECT trade_name FROM bundled_catalog.catalog_csv_reference")
+                .fetch_one(&mut live)
+                .await
+                .unwrap();
         assert_eq!(name, "ANDODERMA");
-        assert!(sqlx::query("DELETE FROM bundled_catalog.catalog_csv_reference").execute(&mut live).await.is_err());
+        assert!(
+            sqlx::query("DELETE FROM bundled_catalog.catalog_csv_reference")
+                .execute(&mut live)
+                .await
+                .is_err()
+        );
         live.close().await.unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), original);
-        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1, "No WAL/SHM should be created beside an installed resource");
+        assert_eq!(
+            std::fs::read_dir(&directory).unwrap().count(),
+            1,
+            "No WAL/SHM should be created beside an installed resource"
+        );
         std::fs::remove_file(path).unwrap();
         std::fs::remove_dir(directory).unwrap();
     }
@@ -3297,11 +4639,31 @@ mod tests {
         prepare_connection(&mut connection).await.unwrap();
 
         for (version, description, sql) in [
-            (6_i64, "accounting_upgrade_seed", include_str!("../migrations/006_accounting_upgrade_seed.sql")),
-            (8_i64, "patient_accounting", include_str!("../migrations/008_patient_accounting.sql")),
-            (9_i64, "rebuild_master_drugs_fts", include_str!("../migrations/009_rebuild_master_drugs_fts.sql")),
-            (13_i64, "shift_handover_details", include_str!("../migrations/013_shift_handover_details.sql")),
-            (14_i64, "inventory_performance", include_str!("../migrations/014_inventory_performance.sql")),
+            (
+                6_i64,
+                "accounting_upgrade_seed",
+                include_str!("../migrations/006_accounting_upgrade_seed.sql"),
+            ),
+            (
+                8_i64,
+                "patient_accounting",
+                include_str!("../migrations/008_patient_accounting.sql"),
+            ),
+            (
+                9_i64,
+                "rebuild_master_drugs_fts",
+                include_str!("../migrations/009_rebuild_master_drugs_fts.sql"),
+            ),
+            (
+                13_i64,
+                "shift_handover_details",
+                include_str!("../migrations/013_shift_handover_details.sql"),
+            ),
+            (
+                14_i64,
+                "inventory_performance",
+                include_str!("../migrations/014_inventory_performance.sql"),
+            ),
         ] {
             let expected = embedded_migration_checksum_hex(version, description, sql);
             let actual: String = sqlx::query_scalar(
@@ -3311,7 +4673,10 @@ mod tests {
             .fetch_one(&mut connection)
             .await
             .unwrap();
-            assert_eq!(actual, expected, "migration {version} checksum was not normalized");
+            assert_eq!(
+                actual, expected,
+                "migration {version} checksum was not normalized"
+            );
         }
 
         connection.close().await.unwrap();
@@ -3401,7 +4766,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn repairs_only_unambiguous_legacy_staff_pharmacy() {
+    async fn never_assigns_legacy_staff_while_historical_owner_is_unresolved() {
         let mut connection = SqliteConnection::connect("sqlite::memory:").await.unwrap();
         sqlx::raw_sql(
             r#"
@@ -3418,7 +4783,12 @@ mod tests {
         .unwrap();
 
         let mut transaction = connection.begin().await.unwrap();
-        assert_eq!(repair_unambiguous_user_pharmacy(&mut transaction).await.unwrap(), 2);
+        assert_eq!(
+            repair_unambiguous_user_pharmacy(&mut transaction)
+                .await
+                .unwrap(),
+            0
+        );
         transaction.commit().await.unwrap();
 
         let repaired: Vec<(String, Option<String>)> =
@@ -3429,9 +4799,9 @@ mod tests {
         assert_eq!(
             repaired,
             vec![
-                ("legacy-cashier".into(), Some("ph-1".into())),
+                ("legacy-cashier".into(), Some("".into())),
                 ("legacy-owner".into(), None),
-                ("legacy-staff".into(), Some("ph-1".into())),
+                ("legacy-staff".into(), None),
                 ("owner-one".into(), Some("ph-1".into())),
             ]
         );
@@ -3446,7 +4816,12 @@ mod tests {
         .await
         .unwrap();
         let mut transaction = connection.begin().await.unwrap();
-        assert_eq!(repair_unambiguous_user_pharmacy(&mut transaction).await.unwrap(), 0);
+        assert_eq!(
+            repair_unambiguous_user_pharmacy(&mut transaction)
+                .await
+                .unwrap(),
+            0
+        );
         transaction.commit().await.unwrap();
         let ambiguous: Option<String> =
             sqlx::query_scalar("SELECT pharmacy_id FROM users WHERE id = 'ambiguous-staff'")
@@ -3503,7 +4878,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            repair_unambiguous_user_pharmacy(&mut transaction).await.unwrap(),
+            repair_unambiguous_user_pharmacy(&mut transaction)
+                .await
+                .unwrap(),
             1
         );
         transaction.commit().await.unwrap();
@@ -3518,21 +4895,26 @@ mod tests {
             "financial_notices",
             "purchase_orders",
         ] {
-            let rows: Vec<String> = sqlx::query_scalar(&format!(
-                "SELECT pharmacy_id FROM {table} ORDER BY id"
-            ))
-            .fetch_all(&mut connection)
-            .await
-            .unwrap();
-            assert_eq!(rows, vec!["ph-1".to_string(), "local_default".to_string()], "{table}");
+            let rows: Vec<String> =
+                sqlx::query_scalar(&format!("SELECT pharmacy_id FROM {table} ORDER BY id"))
+                    .fetch_all(&mut connection)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                rows,
+                vec!["ph-1".to_string(), "local_default".to_string()],
+                "{table}"
+            );
         }
-        let activity_rows: Vec<String> = sqlx::query_scalar(
-            "SELECT pharmacy_id FROM activity_log ORDER BY id",
-        )
-        .fetch_all(&mut connection)
-        .await
-        .unwrap();
-        assert_eq!(activity_rows, vec!["ph-1".to_string(), "local_default".to_string()]);
+        let activity_rows: Vec<String> =
+            sqlx::query_scalar("SELECT pharmacy_id FROM activity_log ORDER BY id")
+                .fetch_all(&mut connection)
+                .await
+                .unwrap();
+        assert_eq!(
+            activity_rows,
+            vec!["ph-1".to_string(), "local_default".to_string()]
+        );
 
         sqlx::query("INSERT INTO daily_journals (id, created_by, date, total_amount) VALUES ('journal-after-snapshot', 'known', '2026-01-02', 77.5)")
             .execute(&mut connection)
@@ -3552,12 +4934,11 @@ mod tests {
             .await
             .unwrap();
 
-        let historical: String = sqlx::query_scalar(
-            "SELECT pharmacy_id FROM daily_journals WHERE id = 'journal-known'",
-        )
-        .fetch_one(&mut connection)
-        .await
-        .unwrap();
+        let historical: String =
+            sqlx::query_scalar("SELECT pharmacy_id FROM daily_journals WHERE id = 'journal-known'")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
         assert_eq!(historical, "ph-1");
         let new_journal: (String, f64) = sqlx::query_as(
             "SELECT pharmacy_id, total_amount FROM daily_journals WHERE id = 'journal-after-snapshot'",
@@ -3573,19 +4954,17 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(new_expense, ("ph-1".to_string(), 12.25));
-        let historical_activity: String = sqlx::query_scalar(
-            "SELECT pharmacy_id FROM activity_log WHERE id = 1",
-        )
-        .fetch_one(&mut connection)
-        .await
-        .unwrap();
+        let historical_activity: String =
+            sqlx::query_scalar("SELECT pharmacy_id FROM activity_log WHERE id = 1")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
         assert_eq!(historical_activity, "ph-1");
-        let historical_po: String = sqlx::query_scalar(
-            "SELECT pharmacy_id FROM purchase_orders WHERE id = 'po-known'",
-        )
-        .fetch_one(&mut connection)
-        .await
-        .unwrap();
+        let historical_po: String =
+            sqlx::query_scalar("SELECT pharmacy_id FROM purchase_orders WHERE id = 'po-known'")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
         assert_eq!(historical_po, "ph-1");
         let shifted_cash: String = sqlx::query_scalar(
             "SELECT pharmacy_id FROM cash_movements WHERE id = 'cash-after-move'",
@@ -3644,23 +5023,21 @@ mod tests {
             .unwrap();
         transaction.commit().await.unwrap();
 
-        let sale_scope: String = sqlx::query_scalar(
-            "SELECT pharmacy_id FROM sales_invoices WHERE id = 'old-sale'",
-        )
-        .fetch_one(&mut connection)
-        .await
-        .unwrap();
+        let sale_scope: String =
+            sqlx::query_scalar("SELECT pharmacy_id FROM sales_invoices WHERE id = 'old-sale'")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
         let shift_scope: String =
             sqlx::query_scalar("SELECT pharmacy_id FROM shifts WHERE id = 'old-shift'")
                 .fetch_one(&mut connection)
                 .await
                 .unwrap();
-        let cash_scope: String = sqlx::query_scalar(
-            "SELECT pharmacy_id FROM cash_movements WHERE id = 'old-cash'",
-        )
-        .fetch_one(&mut connection)
-        .await
-        .unwrap();
+        let cash_scope: String =
+            sqlx::query_scalar("SELECT pharmacy_id FROM cash_movements WHERE id = 'old-cash'")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
 
         assert_eq!(sale_scope, "ph-A");
         assert_eq!(shift_scope, "ph-A");
@@ -3736,10 +5113,12 @@ mod tests {
             .unwrap();
         transaction.commit().await.unwrap();
 
-        sqlx::raw_sql(include_str!("../migrations/016_financial_expense_wiring.sql"))
-            .execute(&mut connection)
-            .await
-            .unwrap();
+        sqlx::raw_sql(include_str!(
+            "../migrations/016_financial_expense_wiring.sql"
+        ))
+        .execute(&mut connection)
+        .await
+        .unwrap();
 
         let scopes: (String, String, String, String) = sqlx::query_as(
             r#"
@@ -3753,7 +5132,10 @@ mod tests {
         .fetch_one(&mut connection)
         .await
         .unwrap();
-        assert_eq!(scopes, ("ph-A".into(), "ph-A".into(), "ph-A".into(), "ph-A".into()));
+        assert_eq!(
+            scopes,
+            ("ph-A".into(), "ph-A".into(), "ph-A".into(), "ph-A".into())
+        );
     }
 
     #[tokio::test]
@@ -4097,7 +5479,8 @@ mod tests {
 
     #[tokio::test]
     async fn restores_csv_metadata_by_name_without_moving_barcodes_or_history() {
-        let directory = std::env::temp_dir().join(format!("pharma-stable-catalog-{}", uuid::Uuid::new_v4()));
+        let directory =
+            std::env::temp_dir().join(format!("pharma-stable-catalog-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&directory).unwrap();
         let seed_path = directory.join("seed.db");
         let live_path = directory.join("live.db");
@@ -4177,27 +5560,51 @@ mod tests {
 
         // An unavailable backup location must prevent any catalog write.
         std::fs::write(directory.join("backups"), b"blocked directory").unwrap();
-        assert!(repair_catalog_with_backup(&live_path, &seed_path).await.is_err());
-        let marker_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM config WHERE key = 'catalog_reference_repair_version'")
-            .fetch_one(&mut live).await.unwrap();
+        assert!(repair_catalog_with_backup(&live_path, &seed_path)
+            .await
+            .is_err());
+        let marker_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM config WHERE key = 'catalog_reference_repair_version'",
+        )
+        .fetch_one(&mut live)
+        .await
+        .unwrap();
         assert_eq!(marker_count, 0);
         std::fs::remove_file(directory.join("backups")).unwrap();
-        assert_eq!(repair_catalog_with_backup(&live_path, &seed_path).await.unwrap(), 7);
-        let backups: Vec<_> = std::fs::read_dir(directory.join("backups")).unwrap().collect();
+        assert_eq!(
+            repair_catalog_with_backup(&live_path, &seed_path)
+                .await
+                .unwrap(),
+            7
+        );
+        let backups: Vec<_> = std::fs::read_dir(directory.join("backups"))
+            .unwrap()
+            .collect();
         assert_eq!(backups.len(), 1);
         let backup_path = backups[0].as_ref().unwrap().path().join("pharma_local.db");
         let mut before = connect(&backup_path).await.unwrap();
-        let old_name: String = sqlx::query_scalar("SELECT trade_name FROM master_drugs WHERE id = 101")
-            .fetch_one(&mut before).await.unwrap();
+        let old_name: String =
+            sqlx::query_scalar("SELECT trade_name FROM master_drugs WHERE id = 101")
+                .fetch_one(&mut before)
+                .await
+                .unwrap();
         assert_eq!(old_name, "ALPHA");
-        let old_ingredient: String = sqlx::query_scalar("SELECT active_ingredient FROM master_drugs WHERE id = 101")
-            .fetch_one(&mut before).await.unwrap();
+        let old_ingredient: String =
+            sqlx::query_scalar("SELECT active_ingredient FROM master_drugs WHERE id = 101")
+                .fetch_one(&mut before)
+                .await
+                .unwrap();
         assert_eq!(old_ingredient, "ACTIVE B");
         let before_quantity: f64 = sqlx::query_scalar("SELECT SUM(quantity) FROM inventory")
-            .fetch_one(&mut before).await.unwrap();
+            .fetch_one(&mut before)
+            .await
+            .unwrap();
         assert_eq!(before_quantity, 9.0);
-        let backup_price: f64 = sqlx::query_scalar("SELECT local_selling_price FROM inventory WHERE id='lot-alpha'")
-            .fetch_one(&mut before).await.unwrap();
+        let backup_price: f64 =
+            sqlx::query_scalar("SELECT local_selling_price FROM inventory WHERE id='lot-alpha'")
+                .fetch_one(&mut before)
+                .await
+                .unwrap();
         assert_eq!(backup_price, 20.0);
         before.close().await.unwrap();
 
@@ -4285,17 +5692,35 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(mappings, 0);
-        let lot_prices: Vec<(f64, f64, f64)> = sqlx::query_as("SELECT local_selling_price, cost_price, strips_per_box FROM inventory ORDER BY id")
-            .fetch_all(&mut live).await.unwrap();
-        assert_eq!(lot_prices, vec![(10.0, 7.0, 2.0), (20.0, 18.0, 1.0), (30.0, 25.0, 3.0)]);
-        let note: String = sqlx::query_scalar("SELECT value FROM config WHERE key='catalog_csv_repair_status'")
-            .fetch_one(&mut live).await.unwrap();
+        let lot_prices: Vec<(f64, f64, f64)> = sqlx::query_as(
+            "SELECT local_selling_price, cost_price, strips_per_box FROM inventory ORDER BY id",
+        )
+        .fetch_all(&mut live)
+        .await
+        .unwrap();
+        assert_eq!(
+            lot_prices,
+            vec![(10.0, 7.0, 2.0), (20.0, 18.0, 1.0), (30.0, 25.0, 3.0)]
+        );
+        let note: String =
+            sqlx::query_scalar("SELECT value FROM config WHERE key='catalog_csv_repair_status'")
+                .fetch_one(&mut live)
+                .await
+                .unwrap();
         assert!(note.contains("4 سجل دواء و3 سعر مخزون"));
-        let ambiguous: (String, f64) = sqlx::query_as("SELECT active_ingredient, official_price FROM master_drugs WHERE id=901")
-            .fetch_one(&mut live).await.unwrap();
+        let ambiguous: (String, f64) = sqlx::query_as(
+            "SELECT active_ingredient, official_price FROM master_drugs WHERE id=901",
+        )
+        .fetch_one(&mut live)
+        .await
+        .unwrap();
         assert_eq!(ambiguous, ("KEEP".into(), 5.0));
-        let duplicate: (String, String, f64) = sqlx::query_as("SELECT barcode, active_ingredient, official_price FROM master_drugs WHERE id=902")
-            .fetch_one(&mut live).await.unwrap();
+        let duplicate: (String, String, f64) = sqlx::query_as(
+            "SELECT barcode, active_ingredient, official_price FROM master_drugs WHERE id=902",
+        )
+        .fetch_one(&mut live)
+        .await
+        .unwrap();
         assert_eq!(duplicate, ("BAR-ALPHA-NEW".into(), "ACTIVE A".into(), 10.0));
 
         // The repair runs once per reference version, so a later intentional
@@ -4305,7 +5730,9 @@ mod tests {
             .await
             .unwrap();
         sqlx::query("UPDATE inventory SET local_selling_price=13 WHERE id='lot-alpha'")
-            .execute(&mut live).await.unwrap();
+            .execute(&mut live)
+            .await
+            .unwrap();
         assert_eq!(
             repair_catalog_with_backup(&live_path, &seed_path)
                 .await
@@ -4318,24 +5745,56 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(local_price, 12.0);
-        let lot_price: f64 = sqlx::query_scalar("SELECT local_selling_price FROM inventory WHERE id='lot-alpha'")
-            .fetch_one(&mut live).await.unwrap();
+        let lot_price: f64 =
+            sqlx::query_scalar("SELECT local_selling_price FROM inventory WHERE id='lot-alpha'")
+                .fetch_one(&mut live)
+                .await
+                .unwrap();
         assert_eq!(lot_price, 13.0);
-        assert_eq!(std::fs::read_dir(directory.join("backups")).unwrap().count(), 1);
+        assert_eq!(
+            std::fs::read_dir(directory.join("backups"))
+                .unwrap()
+                .count(),
+            1
+        );
         // Upgrade from a metadata-only repair: it must still back up and apply
         // the newly approved selling-price correction, then stop on later starts.
         sqlx::query("DELETE FROM config WHERE key='catalog_inventory_price_repair_version'")
-            .execute(&mut live).await.unwrap();
+            .execute(&mut live)
+            .await
+            .unwrap();
         sqlx::query("UPDATE master_drugs SET official_price=10 WHERE id=101")
-            .execute(&mut live).await.unwrap();
-        assert_eq!(repair_catalog_with_backup(&live_path, &seed_path).await.unwrap(), 1);
-        assert_eq!(std::fs::read_dir(directory.join("backups")).unwrap().count(), 2);
-        assert_eq!(repair_catalog_with_backup(&live_path, &seed_path).await.unwrap(), 0);
+            .execute(&mut live)
+            .await
+            .unwrap();
+        assert_eq!(
+            repair_catalog_with_backup(&live_path, &seed_path)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            std::fs::read_dir(directory.join("backups"))
+                .unwrap()
+                .count(),
+            2
+        );
+        assert_eq!(
+            repair_catalog_with_backup(&live_path, &seed_path)
+                .await
+                .unwrap(),
+            0
+        );
         sqlx::query("DELETE FROM config WHERE key='catalog_name_metadata_repair_version'")
-            .execute(&mut live).await.unwrap();
+            .execute(&mut live)
+            .await
+            .unwrap();
         sqlx::query("UPDATE config SET value='csv-catalog-reference-v1' WHERE key='catalog_reference_repair_version'")
             .execute(&mut live).await.unwrap();
-        assert!(repair_catalog_with_backup(&live_path, &seed_path).await.unwrap_err().contains("pre-repair backup"));
+        assert!(repair_catalog_with_backup(&live_path, &seed_path)
+            .await
+            .unwrap_err()
+            .contains("pre-repair backup"));
 
         live.close().await.unwrap();
         std::fs::remove_dir_all(directory).unwrap();
@@ -4907,6 +6366,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn compatibility_normalizes_legacy_expiry_dates_before_renderer_startup() {
+        let mut connection = representative_purchase_database(false).await;
+        sqlx::query("UPDATE inventory SET expiry_date = '31/12/2028' WHERE id = 'legacy-exact'")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+
+        prepare_connection(&mut connection).await.unwrap();
+
+        let inventory_expiry: String =
+            sqlx::query_scalar("SELECT expiry_date FROM inventory WHERE id = 'legacy-exact'")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
+        assert_eq!(inventory_expiry, "2028-12-31");
+        let purchase_expiries: Vec<String> = sqlx::query_scalar(
+            "SELECT DISTINCT expiry_date FROM purchase_invoice_items ORDER BY expiry_date",
+        )
+        .fetch_all(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(purchase_expiries, vec!["2028-12-31".to_string()]);
+    }
+
+    #[tokio::test]
     async fn snapshot_backfill_rejects_barcode_sized_conversion_outliers() {
         let mut connection = representative_purchase_database(true).await;
         sqlx::raw_sql(
@@ -4943,10 +6427,12 @@ mod tests {
         prepare_connection(&mut connection).await.unwrap();
 
         assert_eq!(
-            sqlx::query_scalar::<_, i64>("SELECT strips_per_box FROM inventory WHERE id = 'legacy-exact'")
-                .fetch_one(&mut connection)
-                .await
-                .unwrap(),
+            sqlx::query_scalar::<_, i64>(
+                "SELECT strips_per_box FROM inventory WHERE id = 'legacy-exact'"
+            )
+            .fetch_one(&mut connection)
+            .await
+            .unwrap(),
             10
         );
         assert_eq!(
@@ -4957,26 +6443,29 @@ mod tests {
             10
         );
         assert_eq!(
-            sqlx::query_scalar::<_, i64>("SELECT large_to_medium FROM master_drugs WHERE id = 9101")
-                .fetch_one(&mut connection)
-                .await
-                .unwrap(),
+            sqlx::query_scalar::<_, i64>(
+                "SELECT large_to_medium FROM master_drugs WHERE id = 9101"
+            )
+            .fetch_one(&mut connection)
+            .await
+            .unwrap(),
             1
         );
         assert_eq!(
-            sqlx::query_scalar::<_, i64>("SELECT strips_per_box FROM inventory WHERE id = 'legacy-fallback'")
-                .fetch_one(&mut connection)
-                .await
-                .unwrap(),
+            sqlx::query_scalar::<_, i64>(
+                "SELECT strips_per_box FROM inventory WHERE id = 'legacy-fallback'"
+            )
+            .fetch_one(&mut connection)
+            .await
+            .unwrap(),
             1
         );
 
-        let snapshots = sqlx::query(
-            "SELECT id, large_to_medium, medium_to_small FROM sales_items ORDER BY id",
-        )
-        .fetch_all(&mut connection)
-        .await
-        .unwrap();
+        let snapshots =
+            sqlx::query("SELECT id, large_to_medium, medium_to_small FROM sales_items ORDER BY id")
+                .fetch_all(&mut connection)
+                .await
+                .unwrap();
         assert_eq!(snapshots[0].get::<i64, _>("large_to_medium"), 10);
         assert_eq!(snapshots[0].get::<i64, _>("medium_to_small"), 1);
         assert_eq!(snapshots[1].get::<i64, _>("large_to_medium"), 1);
@@ -5247,6 +6736,8 @@ mod tests {
             include_str!("../migrations/027_drug_catalog_reconciliation.sql"),
             include_str!("../migrations/028_finance_definitions_pharmacy_scope.sql"),
             include_str!("../migrations/029_shift_treasury_retained_cash.sql"),
+            include_str!("../migrations/030_relationship_lookup_indexes.sql"),
+            include_str!("../migrations/031_trial_balance_unique_categories.sql"),
         ];
         let migrator = sqlx::migrate::Migrator {
             migrations: std::borrow::Cow::Owned(
@@ -5300,7 +6791,10 @@ mod tests {
             ("points_of_sale", "pharmacy_id"),
             ("shifts", "treasury_retained_cash"),
         ] {
-            assert!(has_column(&mut transaction, table, column).await.unwrap(), "{table}.{column}");
+            assert!(
+                has_column(&mut transaction, table, column).await.unwrap(),
+                "{table}.{column}"
+            );
         }
         transaction.commit().await.unwrap();
 
@@ -5314,8 +6808,10 @@ mod tests {
             .fetch_one(&mut connection)
             .await
             .unwrap();
-        assert_eq!(migration_max, 29);
+        assert_eq!(migration_max, 31);
         assert_current_migration_ledger(&mut connection).await;
+        assert_relationship_lookup_indexes(&mut connection).await;
+        assert_trial_balance_category_unique_index(&mut connection).await;
         let foreign_key_violations = sqlx::query("PRAGMA foreign_key_check")
             .fetch_all(&mut connection)
             .await
@@ -5330,6 +6826,8 @@ mod tests {
         migrator.run(&mut blank_current).await.unwrap();
         prepare_connection(&mut blank_current).await.unwrap();
         assert_current_migration_ledger(&mut blank_current).await;
+        assert_relationship_lookup_indexes(&mut blank_current).await;
+        assert_trial_balance_category_unique_index(&mut blank_current).await;
         assert_eq!(
             application_schema_objects(&mut connection).await,
             application_schema_objects(&mut blank_current).await,
@@ -5354,6 +6852,85 @@ mod tests {
         assert_eq!(drug_count_after_restart, drug_count_before);
         connection.close().await.unwrap();
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn migration_31_preserves_custom_settings_and_rejects_conflicting_categories() {
+        let migrator = || sqlx::migrate::Migrator {
+            migrations: std::borrow::Cow::Owned(vec![sqlx::migrate::Migration::new(
+                31,
+                "trial_balance_unique_categories".into(),
+                sqlx::migrate::MigrationType::ReversibleUp,
+                include_str!("../migrations/031_trial_balance_unique_categories.sql").into(),
+                false,
+            )]),
+            ignore_missing: true,
+            locking: true,
+            no_tx: false,
+        };
+
+        let mut connection = representative_purchase_database(true).await;
+        prepare_connection(&mut connection).await.unwrap();
+        sqlx::raw_sql(
+            r#"
+            INSERT INTO trial_balance_settings(category, target_type, target_id, target_name)
+            VALUES
+              ('bank:preserved', 'bank', 'bank-1', 'Primary bank'),
+              ('bank:exact', 'bank', 'bank-2', 'Duplicate bank'),
+              ('bank:exact', 'bank', 'bank-2', 'Duplicate bank');
+            "#,
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+        migrator().run(&mut connection).await.unwrap();
+        assert_eq!(
+            sqlx::query_as::<_, (String, String, String)>(
+                "SELECT target_type, target_id, target_name FROM trial_balance_settings WHERE category = 'bank:preserved'",
+            )
+            .fetch_one(&mut connection)
+            .await
+            .unwrap(),
+            ("bank".into(), "bank-1".into(), "Primary bank".into())
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM trial_balance_settings WHERE category = 'bank:exact'",
+            )
+            .fetch_one(&mut connection)
+            .await
+            .unwrap(),
+            1
+        );
+        assert_trial_balance_category_unique_index(&mut connection).await;
+
+        let mut conflicting = representative_purchase_database(true).await;
+        prepare_connection(&mut conflicting).await.unwrap();
+        sqlx::raw_sql(
+            r#"
+            INSERT INTO trial_balance_settings(category, target_type, target_id, target_name)
+            VALUES
+              ('bank:conflict', 'bank', 'bank-a', 'Bank A'),
+              ('bank:conflict', 'bank', 'bank-b', 'Bank B');
+            "#,
+        )
+        .execute(&mut conflicting)
+        .await
+        .unwrap();
+        assert!(migrator().run(&mut conflicting).await.is_err());
+        let conflict_rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT target_id, target_name FROM trial_balance_settings WHERE category = 'bank:conflict' ORDER BY target_id",
+        )
+        .fetch_all(&mut conflicting)
+        .await
+        .unwrap();
+        assert_eq!(
+            conflict_rows,
+            vec![
+                ("bank-a".into(), "Bank A".into()),
+                ("bank-b".into(), "Bank B".into()),
+            ]
+        );
     }
 
     #[tokio::test]
@@ -5412,6 +6989,132 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pre015_upgrade_keeps_open_shifts_and_transactions_in_their_pharmacies() {
+        let sources = [
+            include_str!("../migrations/001_initial.sql"),
+            include_str!("../migrations/002_performance.sql"),
+            include_str!("../migrations/003_sync_metadata.sql"),
+            include_str!("../migrations/004_return_items_patch.sql"),
+            include_str!("../migrations/005_purchase_return_details.sql"),
+            include_str!("../migrations/006_accounting_upgrade_seed.sql"),
+            include_str!("../migrations/007_purchase_inventory_links.sql"),
+            include_str!("../migrations/008_patient_accounting.sql"),
+            include_str!("../migrations/009_rebuild_master_drugs_fts.sql"),
+            include_str!("../migrations/010_shift_handover_indexes.sql"),
+            include_str!("../migrations/011_shift_cash_difference_account.sql"),
+            include_str!("../migrations/012_shortages_pharmacy_scope.sql"),
+            include_str!("../migrations/013_shift_handover_details.sql"),
+            include_str!("../migrations/014_inventory_performance.sql"),
+            include_str!("../migrations/015_shared_open_shift.sql"),
+            include_str!("../migrations/016_financial_expense_wiring.sql"),
+            include_str!("../migrations/017_cloud_drug_identity.sql"),
+            include_str!("../migrations/018_unit_conversion_snapshots.sql"),
+            include_str!("../migrations/019_shift_pharmacy_scope.sql"),
+            include_str!("../migrations/020_daily_snapshot_pharmacy_scope.sql"),
+            include_str!("../migrations/021_returns_pharmacy_scope.sql"),
+            include_str!("../migrations/022_finance_pharmacy_scope.sql"),
+            include_str!("../migrations/023_shift_immutable_scope.sql"),
+            include_str!("../migrations/024_commercial_papers_pharmacy_scope.sql"),
+            include_str!("../migrations/025_sales_item_discount_snapshot.sql"),
+            include_str!("../migrations/026_sales_loyalty_redemption_snapshot.sql"),
+            include_str!("../migrations/027_drug_catalog_reconciliation.sql"),
+            include_str!("../migrations/028_finance_definitions_pharmacy_scope.sql"),
+            include_str!("../migrations/029_shift_treasury_retained_cash.sql"),
+            include_str!("../migrations/030_relationship_lookup_indexes.sql"),
+            include_str!("../migrations/031_trial_balance_unique_categories.sql"),
+        ];
+        let migrator = |count: usize| sqlx::migrate::Migrator {
+            migrations: std::borrow::Cow::Owned(
+                sources
+                    .iter()
+                    .take(count)
+                    .enumerate()
+                    .map(|(index, sql)| {
+                        sqlx::migrate::Migration::new(
+                            (index + 1) as i64,
+                            format!("migration_{}", index + 1).into(),
+                            sqlx::migrate::MigrationType::ReversibleUp,
+                            (*sql).into(),
+                            false,
+                        )
+                    })
+                    .collect(),
+            ),
+            ignore_missing: false,
+            locking: true,
+            no_tx: false,
+        };
+
+        let mut connection = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        migrator(14).run(&mut connection).await.unwrap();
+        sqlx::raw_sql(
+            r#"
+            INSERT INTO users(id, username, role, pharmacy_id) VALUES
+              ('a', 'a', 'cashier', 'A'),
+              ('b', 'b', 'cashier', 'B');
+            INSERT INTO shifts(id, user_id, start_time, starting_cash, status) VALUES
+              ('a-open', 'a', '2026-08-01 08:00:00', 10, 'open'),
+              ('b-open', 'b', '2026-08-01 09:00:00', 20, 'open');
+            INSERT INTO sales_invoices(id, user_id, pharmacy_id, shift_id, total_amount, status) VALUES
+              ('a-sale', 'a', 'A', 'a-open', 10, 'completed'),
+              ('b-sale', 'b', 'B', 'b-open', 20, 'completed');
+            INSERT INTO returns(id, invoice_id, user_id, shift_id, total_refund, status) VALUES
+              ('b-return', 'b-sale', 'b', 'b-open', 2, 'approved');
+            INSERT INTO cash_movements(id, user_id, shift_id, type, category, amount, date) VALUES
+              ('b-movement', 'b', 'b-open', 'receipt', 'pharmacy', 3, '2026-08-01');
+            "#,
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+
+        prepare_connection(&mut connection).await.unwrap();
+        let scoped_open_before: Vec<(String, String)> =
+            sqlx::query_as("SELECT id, pharmacy_id FROM shifts WHERE status = 'open' ORDER BY id")
+                .fetch_all(&mut connection)
+                .await
+                .unwrap();
+        assert_eq!(
+            scoped_open_before,
+            vec![("a-open".into(), "A".into()), ("b-open".into(), "B".into())]
+        );
+
+        migrator(31).run(&mut connection).await.unwrap();
+
+        let open_after: Vec<(String, String, f64)> = sqlx::query_as(
+            "SELECT id, pharmacy_id, starting_cash FROM shifts WHERE status = 'open' ORDER BY id",
+        )
+        .fetch_all(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(
+            open_after,
+            vec![
+                ("a-open".into(), "A".into(), 10.0),
+                ("b-open".into(), "B".into(), 20.0),
+            ]
+        );
+        let sale_shift: String =
+            sqlx::query_scalar("SELECT shift_id FROM sales_invoices WHERE id = 'b-sale'")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
+        assert_eq!(sale_shift, "b-open");
+        let return_shift: String =
+            sqlx::query_scalar("SELECT shift_id FROM returns WHERE id = 'b-return'")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
+        assert_eq!(return_shift, "b-open");
+        let movement_shift: String =
+            sqlx::query_scalar("SELECT shift_id FROM cash_movements WHERE id = 'b-movement'")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
+        assert_eq!(movement_shift, "b-open");
+    }
+
+    #[tokio::test]
     async fn v091_upgrade_keeps_shift_scope_after_pending_migrations_and_restart() {
         let sources = [
             include_str!("../migrations/001_initial.sql"),
@@ -5443,14 +7146,26 @@ mod tests {
             include_str!("../migrations/027_drug_catalog_reconciliation.sql"),
             include_str!("../migrations/028_finance_definitions_pharmacy_scope.sql"),
             include_str!("../migrations/029_shift_treasury_retained_cash.sql"),
+            include_str!("../migrations/030_relationship_lookup_indexes.sql"),
+            include_str!("../migrations/031_trial_balance_unique_categories.sql"),
         ];
         let migrator = |count: usize| sqlx::migrate::Migrator {
-            migrations: std::borrow::Cow::Owned(sources.iter().take(count).enumerate().map(|(index, sql)| {
-                sqlx::migrate::Migration::new(
-                    (index + 1) as i64, format!("migration_{}", index + 1).into(),
-                    sqlx::migrate::MigrationType::ReversibleUp, (*sql).into(), false,
-                )
-            }).collect()),
+            migrations: std::borrow::Cow::Owned(
+                sources
+                    .iter()
+                    .take(count)
+                    .enumerate()
+                    .map(|(index, sql)| {
+                        sqlx::migrate::Migration::new(
+                            (index + 1) as i64,
+                            format!("migration_{}", index + 1).into(),
+                            sqlx::migrate::MigrationType::ReversibleUp,
+                            (*sql).into(),
+                            false,
+                        )
+                    })
+                    .collect(),
+            ),
             ignore_missing: false,
             locking: true,
             no_tx: false,
@@ -5473,51 +7188,89 @@ mod tests {
         prepare_connection(&mut connection).await.unwrap();
         // Once snapshotted, a staff move cannot move the original open drawer.
         sqlx::query("UPDATE users SET pharmacy_id = 'B' WHERE id = 'moved'")
-            .execute(&mut connection).await.unwrap();
-        migrator(29).run(&mut connection).await.unwrap();
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        migrator(31).run(&mut connection).await.unwrap();
 
         for restart in [false, true] {
             if restart {
                 prepare_connection(&mut connection).await.unwrap();
-                migrator(29).run(&mut connection).await.unwrap();
+                migrator(31).run(&mut connection).await.unwrap();
             }
             // The second pharmacy can open a drawer; the first cannot open another.
-            sqlx::query("INSERT INTO shifts(id,user_id,pharmacy_id,status) VALUES('new-b','b','B','open')")
-                .execute(&mut connection).await.unwrap();
+            sqlx::query(
+                "INSERT INTO shifts(id,user_id,pharmacy_id,status) VALUES('new-b','b','B','open')",
+            )
+            .execute(&mut connection)
+            .await
+            .unwrap();
             assert!(sqlx::query("INSERT INTO shifts(id,user_id,pharmacy_id,status) VALUES('duplicate-a','a','A','open')")
                 .execute(&mut connection).await.is_err());
-            assert!(sqlx::query("UPDATE shifts SET pharmacy_id='A' WHERE id='new-b'")
-                .execute(&mut connection).await.is_err());
+            assert!(
+                sqlx::query("UPDATE shifts SET pharmacy_id='A' WHERE id='new-b'")
+                    .execute(&mut connection)
+                    .await
+                    .is_err()
+            );
             // An omitted scope is inferred from the new creator, not the old creator.
-            assert!(sqlx::query("INSERT INTO shifts(id,user_id,status) VALUES('duplicate-b','b','open')")
-                .execute(&mut connection).await.is_err());
-            sqlx::query("INSERT INTO shifts(id,user_id,status) VALUES('local-shift','local','open')")
-                .execute(&mut connection).await.unwrap();
+            assert!(sqlx::query(
+                "INSERT INTO shifts(id,user_id,status) VALUES('duplicate-b','b','open')"
+            )
+            .execute(&mut connection)
+            .await
+            .is_err());
+            sqlx::query(
+                "INSERT INTO shifts(id,user_id,status) VALUES('local-shift','local','open')",
+            )
+            .execute(&mut connection)
+            .await
+            .unwrap();
             assert!(sqlx::query("INSERT INTO shifts(id,user_id,pharmacy_id,status) VALUES('duplicate-local','local','local_default','open')")
                 .execute(&mut connection).await.is_err());
             sqlx::query("DELETE FROM shifts WHERE id IN ('new-b','local-shift')")
-                .execute(&mut connection).await.unwrap();
+                .execute(&mut connection)
+                .await
+                .unwrap();
         }
         let old: (String, String, f64, String) = sqlx::query_as(
-            "SELECT user_id,pharmacy_id,starting_cash,status FROM shifts WHERE id='old'")
-            .fetch_one(&mut connection).await.unwrap();
+            "SELECT user_id,pharmacy_id,starting_cash,status FROM shifts WHERE id='old'",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
         assert_eq!(old, ("moved".into(), "A".into(), 123.45, "open".into()));
-        let quantity: f64 = sqlx::query_scalar("SELECT CAST(quantity AS REAL) FROM inventory WHERE id='sentinel'")
-            .fetch_one(&mut connection).await.unwrap();
+        let quantity: f64 =
+            sqlx::query_scalar("SELECT CAST(quantity AS REAL) FROM inventory WHERE id='sentinel'")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
         assert_eq!(quantity, 2.5);
         let sale: (String, String, String, f64) = sqlx::query_as(
             "SELECT user_id,pharmacy_id,shift_id,total_amount FROM sales_invoices WHERE id='old-sale'")
             .fetch_one(&mut connection).await.unwrap();
         assert_eq!(sale, ("moved".into(), "A".into(), "old".into(), 25.0));
-        let permissions: Option<String> = sqlx::query_scalar("SELECT permissions FROM users WHERE id='b'")
-            .fetch_one(&mut connection).await.unwrap();
+        let permissions: Option<String> =
+            sqlx::query_scalar("SELECT permissions FROM users WHERE id='b'")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
         assert_eq!(permissions, None);
-        let stored_permissions: String = sqlx::query_scalar("SELECT permissions FROM users WHERE id='moved'")
-            .fetch_one(&mut connection).await.unwrap();
+        let stored_permissions: String =
+            sqlx::query_scalar("SELECT permissions FROM users WHERE id='moved'")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
         assert_eq!(stored_permissions, r#"{"can_access_pos":true}"#);
-        assert!(sqlx::query("PRAGMA foreign_key_check").fetch_all(&mut connection).await.unwrap().is_empty());
+        assert!(sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(&mut connection)
+            .await
+            .unwrap()
+            .is_empty());
         let integrity: String = sqlx::query_scalar("PRAGMA integrity_check")
-            .fetch_one(&mut connection).await.unwrap();
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
         assert_eq!(integrity, "ok");
 
         let source = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("pharma_local.db");
@@ -5528,9 +7281,13 @@ mod tests {
         std::fs::copy(&source, &fresh_path).unwrap();
         let mut fresh = connect(&fresh_path).await.unwrap();
         prepare_connection(&mut fresh).await.unwrap();
-        migrator(29).run(&mut fresh).await.unwrap();
+        migrator(31).run(&mut fresh).await.unwrap();
         assert_current_migration_ledger(&mut connection).await;
         assert_current_migration_ledger(&mut fresh).await;
+        assert_relationship_lookup_indexes(&mut connection).await;
+        assert_relationship_lookup_indexes(&mut fresh).await;
+        assert_trial_balance_category_unique_index(&mut connection).await;
+        assert_trial_balance_category_unique_index(&mut fresh).await;
         assert_eq!(
             application_schema_objects(&mut connection).await,
             application_schema_objects(&mut fresh).await,
@@ -5823,5 +7580,352 @@ mod tests {
         live.close().await.unwrap();
         std::fs::remove_file(seed_path).unwrap();
         std::fs::remove_file(live_path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn opt_in_pinned_v29_custody_copy_uses_real_native_sqlx_startup_and_blocks_source_drift() {
+        use sha2::{Digest, Sha256};
+        use std::fs;
+        use std::io::Read;
+        use std::path::PathBuf;
+
+        // Opt-in only: the source must be the separately staged CUSTODY COPY,
+        // never an installed profile, immutable archive or sealed backup.
+        // The upstream custody tool generated a private candidate.sqlite3.
+        const SOURCE_ENV: &str = "PHARMA_NATIVE_SQLX_V29_STAGE_CANDIDATE";
+        const PIN_ENV: &str = "PHARMA_NATIVE_SQLX_V29_STAGE_SHA256";
+        let (Some(source), Some(pin)) = (std::env::var_os(SOURCE_ENV), std::env::var_os(PIN_ENV))
+        else {
+            assert!(
+                std::env::var_os(SOURCE_ENV).is_none()
+                    && std::env::var_os(PIN_ENV).is_none(),
+                "Partial v29 custody pin is refused"
+            );
+            eprintln!("Native SQLx v29 staged-copy rehearsal not requested; no database opened");
+            return;
+        };
+
+        fn file_sha256(path: &Path) -> String {
+            let mut reader = fs::File::open(path).expect("pinned stage unreadable");
+            let mut hasher = Sha256::new();
+            let mut buffer = [0u8; 64 * 1024];
+            loop {
+                let count = reader.read(&mut buffer).expect("pinned stage read failed");
+                if count == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..count]);
+            }
+            hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
+        }
+
+        let expected = pin.to_str().expect("Pin must be ASCII");
+        assert!(
+            expected.len() == 64
+                && expected.starts_with("06fc00f3")
+                && expected.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "Explicit full SHA-256 pin for the fresh private v29 candidate is required"
+        );
+        let source = PathBuf::from(source);
+        assert!(source.is_absolute(), "Custody candidate path must be absolute");
+        assert_eq!(source.file_name().and_then(|name| name.to_str()), Some("candidate.sqlite3"));
+        let stage = source.parent().expect("No custody parent");
+        let stage_name = stage.file_name().and_then(|name| name.to_str()).unwrap_or("");
+        let token = stage_name.strip_prefix("pharma-legacy-stage-")
+            .expect("Only custody-stage candidate paths are accepted");
+        assert!(
+            token.len() == 32 && token.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "Custody stage token is not canonical"
+        );
+        assert!(
+            fs::symlink_metadata(stage).expect("Custody stage absent").file_type().is_dir()
+                && fs::symlink_metadata(&source).expect("Custody candidate absent").file_type().is_file(),
+            "Symlinked stage/candidate is refused"
+        );
+        let parent = stage.parent().expect("Custody stage root absent").canonicalize().unwrap();
+        let temp = std::env::temp_dir().canonicalize().unwrap();
+        let app_data_root = std::env::var_os("LOCALAPPDATA")
+            .and_then(|root| {
+                PathBuf::from(root).join("pharma-disposable-data-copies").canonicalize().ok()
+            });
+        assert!(
+            parent == temp || app_data_root.as_ref() == Some(&parent),
+            "Only an isolated private custody-stage root is permitted"
+        );
+        let canonical_stage = stage.canonicalize().unwrap();
+        assert_eq!(canonical_stage.parent(), Some(parent.as_path()),
+            "Custody stage cannot redirect outside its private root");
+        assert_eq!(
+            source.canonicalize().unwrap().parent(),
+            Some(canonical_stage.as_path()),
+            "Candidate cannot escape the pinned custody stage"
+        );
+        let size = fs::metadata(&source).unwrap().len();
+        assert!(size > 4096 && size < 1_000_000_000, "Invalid pinned v29 candidate size");
+        for suffix in ["-wal", "-shm", "-journal"] {
+            assert!(
+                !source.with_file_name(format!("candidate.sqlite3{suffix}")).exists(),
+                "Custody stage with active SQLite sidecars is refused"
+            );
+        }
+        let original_pin = file_sha256(&source);
+        assert_eq!(original_pin, expected.to_ascii_lowercase(), "Custody candidate pin mismatch");
+
+        // Copy bytes into a NEW unique temp directory; all SQLx/compatibility
+        // writes occur only there. A drop guard cannot remove anything except
+        // this test-owned path, even if an assertion rejects the migration.
+        struct DisposableNativeSqlxCopy(PathBuf);
+        impl Drop for DisposableNativeSqlxCopy {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let folder = std::env::temp_dir().join(format!(
+            "pharma-native-sqlx-v29-{}", uuid::Uuid::new_v4().simple()
+        ));
+        fs::create_dir(&folder).expect("Cannot create isolated native SQLx test dir");
+        let _cleanup = DisposableNativeSqlxCopy(folder.clone());
+        let candidate = folder.join("working-clone.sqlite3");
+        assert_eq!(fs::copy(&source, &candidate).unwrap(), size);
+        assert_eq!(file_sha256(&candidate), original_pin);
+        assert_eq!(file_sha256(&source), original_pin, "Custody stage changed during copy");
+
+        // The public native preparation entry point must refuse this legacy
+        // source BEFORE mutating even a disposable copy. Direct SQLx below is
+        // deliberately a negative *diagnostic*, not a customer migration.
+        let guard_path = candidate.clone();
+        let denied = tokio::task::spawn_blocking(move || prepare_legacy_database(&guard_path))
+            .await
+            .expect("Native legacy guard worker failed");
+        assert!(denied.is_err(), "Native preparer bypassed old-history ownership guard");
+        assert_eq!(file_sha256(&candidate), original_pin,
+            "Denied native preparation changed original v29 record bytes");
+
+        let mut db = SqliteConnection::connect_with(
+            &SqliteConnectOptions::new()
+                .filename(&candidate)
+                .create_if_missing(false)
+                .foreign_keys(true),
+        ).await.expect("Cannot open isolated v29 SQLx clone");
+        let before_versions: Vec<i64> = sqlx::query_scalar(
+            "SELECT version FROM _sqlx_migrations WHERE success=1 ORDER BY version"
+        ).fetch_all(&mut db).await.unwrap();
+        assert_eq!(before_versions, (1_i64..=29).collect::<Vec<_>>(),
+            "Pinned custody candidate is not a complete original SQLx v29 source");
+        let inherited_foreign_key_issues = sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(&mut db).await.unwrap().len();
+
+        // Witness the real original storage class + exact bytes, without
+        // logging any user identity, password hash, or pharmacy literal.
+        let user_witness = r#"
+            SELECT CAST(id AS TEXT), typeof(password_hash),
+                   CASE WHEN password_hash IS NULL THEN NULL
+                        ELSE hex(CAST(password_hash AS BLOB)) END,
+                   typeof(pharmacy_id),
+                   CASE WHEN pharmacy_id IS NULL THEN NULL
+                        ELSE hex(CAST(pharmacy_id AS BLOB)) END
+            FROM users ORDER BY CAST(id AS TEXT)
+        "#;
+        type OriginalUser = (String, String, Option<String>, String, Option<String>);
+        let original_users: Vec<OriginalUser> =
+            sqlx::query_as(user_witness).fetch_all(&mut db).await.unwrap();
+        assert!(!original_users.is_empty(), "No original users; refusing staged upgrade");
+
+        // Exactly mirror trusted licensed startup; DO NOT run migrations
+        // without prepare_connection and call that an application upgrade.
+        prepare_connection(&mut db).await
+            .expect("RELEASE BLOCKED: native pre-migrator compatibility refused v29 clone");
+        actual_native_startup_migrator(67).run(&mut db).await
+            .expect("RELEASE BLOCKED: real native SQLx migration sequence refused v29 clone");
+        let versions: Vec<i64> = sqlx::query_scalar(
+            "SELECT version FROM _sqlx_migrations WHERE success=1 ORDER BY version"
+        ).fetch_all(&mut db).await.unwrap();
+        assert_eq!(versions, (1_i64..=67).collect::<Vec<_>>(),
+            "Real SQLx upgrade has missing/unexpected versions");
+        for registry in [
+            "native_legacy_upgrade_manifests",
+            "native_legacy_upgrade_source_mappings",
+            "native_legacy_upgrade_manifest_seals",
+            "native_legacy_original_detail_rows",
+        ] {
+            let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {registry}"))
+                .fetch_one(&mut db).await.unwrap();
+            assert_eq!(count, 0, "Native migration must not fabricate any 065-067 grants");
+        }
+        let integrity: String = sqlx::query_scalar("PRAGMA integrity_check")
+            .fetch_one(&mut db).await.unwrap();
+        assert_eq!(integrity, "ok", "RELEASE BLOCKED: SQLite integrity failure");
+        let after_foreign_key_issues = sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(&mut db).await.unwrap().len();
+        assert!(
+            after_foreign_key_issues <= inherited_foreign_key_issues,
+            "RELEASE BLOCKED: native migration added foreign-key violations"
+        );
+
+        // Verify restart/idempotency through the SAME compatibility gate.
+        prepare_connection(&mut db).await
+            .expect("RELEASE BLOCKED: native post-upgrade restart compatibility refused clone");
+        actual_native_startup_migrator(67).run(&mut db).await
+            .expect("RELEASE BLOCKED: second native SQLx startup refused clone");
+        let post_versions: Vec<i64> = sqlx::query_scalar(
+            "SELECT version FROM _sqlx_migrations WHERE success=1 ORDER BY version"
+        ).fetch_all(&mut db).await.unwrap();
+        assert_eq!(post_versions, versions, "Native SQLx restart changed applied migration list");
+        let after_users: Vec<OriginalUser> =
+            sqlx::query_as(user_witness).fetch_all(&mut db).await.unwrap();
+        assert_eq!(original_users.len(), after_users.len(), "Original user records changed");
+        assert!(
+            original_users.iter().zip(&after_users).all(|(old, new)| old.0 == new.0),
+            "Original user identities changed"
+        );
+        let password_drift = original_users.iter().zip(&after_users)
+            .filter(|(old, new)| old.1 != new.1 || old.2 != new.2).count();
+        let tenant_drift = original_users.iter().zip(&after_users)
+            .filter(|(old, new)| old.3 != new.3 || old.4 != new.4).count();
+
+        // Optional private proof of what REAL native SQLx and compatibility
+        // produced. SQLite VACUUM INTO copies the committed state consistently,
+        // including WAL-backed writes; unlike copying a live base file it
+        // cannot omit committed sidecars. Only a separate, uniquely named
+        // private QA evidence folder is allowed, never an installed profile.
+        // The file remains QUARANTINED even if the release-blocking assertion
+        // below fails. A separate read-only Python typed-graph auditor must
+        // compare every original source row against this actual native output.
+        if std::env::var("PHARMA_NATIVE_SQLX_RETAIN_PRIVATE_DIAGNOSTIC").as_deref() == Ok("1") {
+            let root = PathBuf::from(std::env::var_os("LOCALAPPDATA")
+                .expect("Private SQLx diagnostic requires Windows LocalAppData"))
+                .join("pharma-disposable-data-copies");
+            assert!(root.is_dir() && !fs::symlink_metadata(&root).unwrap().file_type().is_symlink(),
+                "Private custody root missing or redirected");
+            let output_dir = root.join(format!(
+                "pharma-v02110-native-sqlx-diagnostic-{}", uuid::Uuid::new_v4().simple()
+            ));
+            fs::create_dir(&output_dir).expect("Private native diagnostic folder collision");
+            let diagnostic_file = output_dir.join("native-v67-working-only.sqlite3");
+            let filename = diagnostic_file.to_str().expect("Private SQLite path not UTF-8");
+            sqlx::query("VACUUM INTO ?")
+                .bind(filename)
+                .execute(&mut db)
+                .await
+                .expect("Committed native SQLx output could not be snapshotted");
+            assert!(diagnostic_file.is_file(), "Native diagnostic was not committed");
+            eprintln!(
+                "PRIVATE_UNACTIVATED_NATIVE_SQLX_STAGE={} WORKING_COPY_SHA256={} SOURCE_UNCHANGED=true",
+                output_dir.file_name().unwrap().to_string_lossy(),
+                file_sha256(&diagnostic_file)
+            );
+        }
+        db.close().await.unwrap();
+        assert_eq!(file_sha256(&source), original_pin,
+            "RELEASE BLOCKED: protected custody candidate changed");
+        assert_eq!(
+            (password_drift, tenant_drift), (0, 0),
+            "RELEASE BLOCKED: native SQLx v29→v67 changed original users.password_hash \
+            ({password_drift}) or original users.pharmacy_id ({tenant_drift}); \
+            no historical tenant authorization or release approval is inferred"
+        );
+        eprintln!(
+            "Native v29→v67 disposable-clone SQLx sequencing checked; \
+            historical ownership and activation remain NOT authorized"
+        );
+    }
+
+    #[test]
+    fn registered_pre29_source_direct_preparer_denies_before_original_bytes_change() {
+        // This is a new isolated SQLite fixture, never the installed profile.
+        // The public preparer must not treat migrations 001–028 as exempt from
+        // the same v029+ read-only historical identity protection.
+        let path = std::env::temp_dir().join(format!(
+            "pharma-guard-pre29-{}.sqlite3", uuid::Uuid::new_v4().simple()
+        ));
+        tauri::async_runtime::block_on(async {
+            let mut db = SqliteConnection::connect_with(
+                &SqliteConnectOptions::new().filename(&path).create_if_missing(true),
+            ).await.unwrap();
+            sqlx::raw_sql(
+                "CREATE TABLE users(id TEXT,role TEXT,pharmacy_id TEXT,is_active INTEGER,password_hash TEXT); \
+                 CREATE TABLE _sqlx_migrations(version INTEGER,success INTEGER); \
+                 WITH RECURSIVE n(v) AS (SELECT 1 UNION ALL SELECT v+1 FROM n WHERE v<12) \
+                 INSERT INTO _sqlx_migrations SELECT v,1 FROM n; \
+                 INSERT INTO users VALUES('admin','owner',NULL,1,'synthetic-only-stub-hash');"
+            ).execute(&mut db).await.unwrap();
+            db.close().await.unwrap();
+        });
+        let before = std::fs::read(&path).unwrap();
+        let refused = prepare_legacy_database(&path);
+        assert!(refused.is_err(), "Old registered source bypassed direct native preflight");
+        assert_eq!(std::fs::read(&path).unwrap(), before,
+            "Denied legacy preparation rewrote original SQLite bytes");
+        // Windows can briefly keep a read-only SQLite sharing lease alive
+        // after the preflight rejects a synthetic fixture. Fixture disposal is
+        // not part of the checked original-byte preservation assertion.
+        for attempt in 0..10 {
+            match std::fs::remove_file(&path) {
+                Ok(()) => break,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                Err(error) if attempt < 9 && error.raw_os_error() == Some(32) => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(_) => break,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn synthetic_v67_explicit_one_owner_authenticates_after_native_restart_without_legacy_grant() {
+        // Genuine native auth/SQLx functions, but strictly in-memory with a
+        // NEW synthetic owner. This is NOT a grant to any old v29 records.
+        let mut db = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        actual_native_startup_migrator(67).run(&mut db).await.unwrap();
+        sqlx::query("DELETE FROM users WHERE id='admin'")
+            .execute(&mut db).await.unwrap();
+        let synthetic_password = "SyntheticUnique!2026NativeOnly";
+        let synthetic_hash = bcrypt::hash(synthetic_password, 4).unwrap();
+        sqlx::query(
+            "INSERT INTO users(id,username,role,full_name,pharmacy_id,password_hash,is_active,permissions) \
+             VALUES('qa-v67-owner','qa-v67-owner','owner','Synthetic owner','qa_v67_explicit',?,1,'{}')"
+        ).bind(&synthetic_hash).execute(&mut db).await.unwrap();
+        crate::legacy_upgrade_guard::assess_existing_connection(&mut db)
+            .await.expect("One explicit synthetic owner should satisfy the native read-only guard");
+
+        prepare_connection(&mut db).await.unwrap();
+        actual_native_startup_migrator(67).run(&mut db).await.unwrap();
+        prepare_connection(&mut db).await.unwrap();
+        actual_native_startup_migrator(67).run(&mut db).await.unwrap();
+
+        let successful = crate::commands::auth::authenticate_on_connection(
+            &mut db, "qa-v67-owner", synthetic_password,
+        ).await.unwrap();
+        assert!(successful.success, "Native login of explicit synthetic owner failed");
+        let actor = successful.user.expect("Native login omitted approved QA actor");
+        assert_eq!(actor.id, "qa-v67-owner");
+        assert_eq!(actor.pharmacy_id.as_deref(), Some("qa_v67_explicit"));
+
+        let wrong = crate::commands::auth::authenticate_on_connection(
+            &mut db, "qa-v67-owner", "SyntheticDefinitelyWrongPassword",
+        ).await.unwrap();
+        assert!(!wrong.success, "Native login accepted incorrect password");
+
+        let (owner_count, explicit_count): (i64, i64) = sqlx::query_as(
+            "SELECT COUNT(*), SUM(CASE WHEN pharmacy_id='qa_v67_explicit' THEN 1 ELSE 0 END) \
+             FROM users WHERE role='owner'"
+        ).fetch_one(&mut db).await.unwrap();
+        assert_eq!((owner_count, explicit_count), (1, 1));
+        for registration in [
+            "native_legacy_upgrade_manifests",
+            "native_legacy_upgrade_source_mappings",
+            "native_legacy_upgrade_manifest_seals",
+            "native_legacy_original_detail_rows",
+        ] {
+            let rows: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {registration}"))
+                .fetch_one(&mut db).await.unwrap();
+            assert_eq!(rows, 0, "Synthetic test cannot mint historical owner grants");
+        }
+        let version: i64 = sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations")
+            .fetch_one(&mut db).await.unwrap();
+        assert_eq!(version, 67);
+        let check: String = sqlx::query_scalar("PRAGMA integrity_check")
+            .fetch_one(&mut db).await.unwrap();
+        assert_eq!(check, "ok");
     }
 }

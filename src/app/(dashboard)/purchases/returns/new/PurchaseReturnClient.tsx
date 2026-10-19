@@ -3,7 +3,7 @@ import TableScrollContainer from '@/components/ui/TableScrollContainer';
 
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { getSuppliersAction, createPurchaseReturnAction, getPurchasesReportsAction, getPurchaseInvoiceDetailsAction, searchPurchaseInvoicesForReturnAction } from '@/app/actions-client/purchases';
+import { getSuppliersAction, createPurchaseReturnAction, getPurchaseInvoiceDetailsAction, searchPurchaseInvoicesForReturnAction } from '@/app/actions-client/purchases';
 import { Search, Save, ArrowRight, FileText } from 'lucide-react';
 import Link from 'next/link';
 import { toast } from 'react-hot-toast';
@@ -41,12 +41,14 @@ export default function PurchaseReturnClient() {
   const listRef = React.useRef<HTMLDivElement>(null);
   const selectedInvoiceIdRef = React.useRef('');
   const detailRequestRef = React.useRef(0);
+  const failedInvoiceDetailsRef = React.useRef('');
   const [suppliers, setSuppliers] = useState<any[]>([]);
   const [selectedSupplierId, setSelectedSupplierId] = useState<string>('');
   const [searchTerm, setSearchTerm] = useState<string>('');
   
   // Invoice state
   const [invoices, setInvoices] = useState<any[]>([]);
+  const [invoiceSourceCurrent, setInvoiceSourceCurrent] = useState(true);
   const [listRevision, setListRevision] = useState(0);
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string>('');
   const [isLoadingInvoices, setIsLoadingInvoices] = useState(false);
@@ -57,12 +59,19 @@ export default function PurchaseReturnClient() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isCommitted, setIsCommitted] = useState(false);
   const submissionRef = React.useRef(false);
+  // Retain the native single-use return nonce on an uncertain transport
+  // failure. New automatic IDs could duplicate a completed financial return.
+  const purchaseReturnRequestIdRef = React.useRef<string | null>(null);
   const [itemSearch, setItemSearch] = useState('');
 
   const [selectedIndex, setSelectedIndex] = useState<number>(-1);
 
   const invalidatePreparedReturn = () => {
     detailRequestRef.current += 1;
+    failedInvoiceDetailsRef.current = '';
+    // Retain the chosen ID for a successful same-source refresh, but never
+    // offer old invoice controls while the new search is unverified.
+    setInvoiceSourceCurrent(false);
     setSelectedInvoiceId('');
     setItems([]);
   };
@@ -91,6 +100,7 @@ export default function PurchaseReturnClient() {
             const nextIndex = preservedIndex >= 0 ? preservedIndex : (list.length > 0 ? 0 : -1);
             selectedInvoiceIdRef.current = nextIndex >= 0 ? list[nextIndex].id : '';
             setInvoices(list);
+            setInvoiceSourceCurrent(true);
             setSelectedIndex(nextIndex);
             setListRevision(value => value + 1);
           } else {
@@ -98,14 +108,16 @@ export default function PurchaseReturnClient() {
           }
         } else if (selectedSupplierId) {
           setIsLoadingInvoices(true);
-          const res = await getPurchasesReportsAction({ supplierId: selectedSupplierId, status: 'completed' });
+          const res = await searchPurchaseInvoicesForReturnAction('', Number(selectedSupplierId));
           if (cancelled) return;
           if (res.success && res.data) {
-            const list = res.data.filter((invoice: any) => invoice.status === 'completed');
+            const list = res.data.filter((invoice: any) =>
+              invoice.status === 'completed' && Number(invoice.supplier_id) === Number(selectedSupplierId));
             const preservedIndex = list.findIndex((item: any) => item.id === selectedInvoiceIdRef.current);
             const nextIndex = preservedIndex >= 0 ? preservedIndex : (list.length > 0 ? 0 : -1);
             selectedInvoiceIdRef.current = nextIndex >= 0 ? list[nextIndex].id : '';
             setInvoices(list);
+            setInvoiceSourceCurrent(true);
             setSelectedIndex(nextIndex);
             setListRevision(value => value + 1);
           } else {
@@ -114,6 +126,7 @@ export default function PurchaseReturnClient() {
         } else {
           selectedInvoiceIdRef.current = '';
           setInvoices([]);
+          setInvoiceSourceCurrent(true);
           setSelectedIndex(-1);
           setItems([]);
         }
@@ -166,7 +179,7 @@ export default function PurchaseReturnClient() {
         return;
       }
 
-      if (invoices.length === 0) return;
+      if (!invoiceSourceCurrent || invoices.length === 0) return;
 
       if (e.key === 'ArrowDown') {
         e.preventDefault();
@@ -187,11 +200,12 @@ export default function PurchaseReturnClient() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [invoices]);
+  }, [invoices, invoiceSourceCurrent]);
 
   // Fetch items when invoice changes
   const handleInvoiceSelect = async (invId: string) => {
     const requestId = ++detailRequestRef.current;
+    failedInvoiceDetailsRef.current = '';
     selectedInvoiceIdRef.current = invId;
     setSelectedInvoiceId(invId);
     if (!invId) {
@@ -237,11 +251,13 @@ export default function PurchaseReturnClient() {
         })));
       } else {
         toast.error('لم يتم العثور على تفاصيل الفاتورة');
+        failedInvoiceDetailsRef.current = invId;
         setItems([]);
       }
     } catch {
       if (requestId === detailRequestRef.current) {
         toast.error('فشل تحميل تفاصيل الفاتورة');
+        failedInvoiceDetailsRef.current = invId;
         setItems([]);
       }
     } finally {
@@ -328,7 +344,11 @@ export default function PurchaseReturnClient() {
     setIsSubmitting(true);
     let committed = false;
     try {
+      if (!purchaseReturnRequestIdRef.current) {
+        purchaseReturnRequestIdRef.current = crypto.randomUUID();
+      }
       const res = await createPurchaseReturnAction({
+        request_id: purchaseReturnRequestIdRef.current,
         purchase_invoice_id: selectedInvoiceId,
         supplier_id: Number(selectedSupplierId),
         reason,
@@ -391,7 +411,7 @@ export default function PurchaseReturnClient() {
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
                       e.preventDefault();
-                      if (invoices.length > 0) {
+                      if (invoiceSourceCurrent && invoices.length > 0) {
                         selectedInvoiceIdRef.current = invoices[0].id;
                         setSelectedIndex(0);
                       }
@@ -431,7 +451,7 @@ export default function PurchaseReturnClient() {
             <div ref={listRef} className="space-y-2 max-h-[500px] overflow-y-auto pr-1">
               {!selectedSupplierId && !searchTerm.trim() ? (
                 <div className="py-12 text-center text-slate-400 font-bold text-xs">امسح الباركود أو اختر المورد للبحث</div>
-              ) : invoices.length === 0 ? (
+              ) : !invoiceSourceCurrent || invoices.length === 0 ? (
                 <div className="py-12 text-center text-slate-400 font-bold text-xs">لا توجد فواتير مشتريات مطابقة</div>
               ) : (
                 invoices.map((inv, idx) => (
@@ -441,7 +461,11 @@ export default function PurchaseReturnClient() {
                     key={inv.id}
                     onClick={() => {
                       selectedInvoiceIdRef.current = inv.id;
-                      setSelectedIndex(idx);
+                      if (selectedIndex === idx && failedInvoiceDetailsRef.current === inv.id) {
+                        void handleInvoiceSelect(inv.id);
+                      } else {
+                        setSelectedIndex(idx);
+                      }
                     }}
                     className={`w-full text-right p-3 rounded-xl border transition-all flex flex-col gap-1 ${
                       selectedIndex === idx
@@ -469,7 +493,7 @@ export default function PurchaseReturnClient() {
                 ))
               )}
             </div>
-            {invoices.length > 0 && (
+            {invoiceSourceCurrent && invoices.length > 0 && (
               <div className="mt-3 text-[11px] text-slate-500 font-bold text-center border-t border-slate-100 dark:border-slate-700/50 pt-2">
                 💡 استخدم الأسهم <span className="font-black text-slate-600 dark:text-slate-300">↑</span> و <span className="font-black text-slate-600 dark:text-slate-300">↓</span> للتنقل السريع
               </div>
@@ -531,7 +555,7 @@ export default function PurchaseReturnClient() {
                           <td className="p-3 text-slate-500">
                             <div>{item.original_quantity} {item.large_unit || 'علبة'}</div>
                             <div className="mt-1 text-[11px] font-bold text-emerald-600">
-                              المتبقي: {purchaseReturnQuantityForUnit(
+                              المتبقي القابل للإرجاع من فاتورة الشراء: {purchaseReturnQuantityForUnit(
                                 item.remaining_large_quantity,
                                 item.unit as PurchaseReturnUnit,
                                 item.large_to_medium,
@@ -599,6 +623,9 @@ export default function PurchaseReturnClient() {
                     <h3 className="font-bold text-slate-700 dark:text-slate-300 mb-2">إجمالي قيمة المرتجع</h3>
                     <span className="text-3xl font-black text-slate-900 dark:text-white">{totalAmount.toFixed(2)} ج.م</span>
                   </div>
+                  <p role="note" className="mt-4 text-xs leading-5 text-slate-600 dark:text-slate-300">
+                    يتم التحقق من الكمية المتاحة فعليًا في تشغيلة المخزون عند تنفيذ المرتجع، وقد يُرفض الطلب إذا لم تتوفر كمية كافية.
+                  </p>
                   
                   <button
                     type="button"

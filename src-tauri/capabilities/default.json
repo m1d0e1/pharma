@@ -8,10 +8,6 @@
   ],
   "permissions": [
     "core:default",
-    "sql:default",
-    "sql:allow-select",
-    "sql:allow-load",
-    "sql:allow-close",
     "core:window:allow-create",
     "core:webview:allow-create-webview-window",
     "dialog:default",

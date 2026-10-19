@@ -134,6 +134,9 @@ export default function PurchaseOrderModal({ initialItems, onClose, onSuccess }:
     if (!supplier) return toast.error('يرجى إدخال اسم المورد');
     if (items.length === 0) return toast.error('لا يوجد أصناف في الطلب');
     if (items.some(i => i.quantity <= 0)) return toast.error('لا يمكن طلب أصناف بكمية صفر');
+    if (items.some(i => !Number.isFinite(i.expected_price) || i.expected_price < 0)) {
+      return toast.error('سعر الشراء المتوقع غير صالح');
+    }
 
     submissionLockRef.current = true;
     setLoading(true);

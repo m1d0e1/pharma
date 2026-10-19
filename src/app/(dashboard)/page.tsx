@@ -22,7 +22,6 @@ const ExpiryWidget = dynamic(() => import('@/components/dashboard/ExpiryWidget')
 const DeadStockWidget = dynamic(() => import('@/components/dashboard/DeadStockWidget'));
 const ReorderAlerts = dynamic(() => import('@/components/dashboard/ReorderAlerts'));
 const ShiftManagement = dynamic(() => import('@/components/dashboard/ShiftManagement'));
-const SubscriptionStatus = dynamic(() => import('@/components/dashboard/SubscriptionStatus'));
 const DrugSyncButton = dynamic(() => import('@/components/dashboard/DrugSyncButton'));
 const InteractionsSyncButton = dynamic(() => import('@/components/dashboard/InteractionsSyncButton'));
 const NewsBar = dynamic(() => import('@/components/dashboard/NewsBar'), { ssr: false });
@@ -31,6 +30,7 @@ const ReceiptDetailsModal = dynamic(() => import('@/components/receipts/ReceiptD
 
 import { getInvoiceDetailsAction } from '@/app/actions-client/sales-reports';
 import { getLowStockAction } from '@/app/actions-client/inventory';
+import { getDashboardKPIsAction, getDashboardReadAction } from '@/app/actions-client/reports';
 import { toast } from 'react-hot-toast';
 
 export default function DashboardPage() {
@@ -44,7 +44,6 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [masterDrugCount, setMasterDrugCount] = useState(0);
-  const [canManageSettings, setCanManageSettings] = useState(false);
   
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(null);
   const [invoiceItems, setInvoiceItems] = useState<any[]>([]);
@@ -110,19 +109,49 @@ export default function DashboardPage() {
 
         setUser(localUser);
         const pharmacist = localUser.role === 'pharmacist';
-        setCanManageSettings(hasUserPermissionSync(localUser, 'can_view_settings'));
         setIsPharmacist(pharmacist);
 
         const todayStr = format(new Date(), 'yyyy-MM-dd');
         const yesterdayStr = format(subDays(new Date(), 1), 'yyyy-MM-dd');
         const pharmacyId = localUser.pharmacy_id || 'local_default';
 
-        // 1. Fetch total master drugs
-        const drugCountRow = await dbGet('SELECT COUNT(*) as count FROM master_drugs');
+        const canViewSalesReports = hasUserPermissionSync(localUser, 'rep_can_view_sales');
+        const canViewAudit = hasUserPermissionSync(localUser, 'can_view_audit');
+        // These native reads are independently permission- and tenant-checked.
+        // Run them together rather than making each widget wait for the count,
+        // aggregates, and low-stock queries in turn. Keep one all-or-error
+        // boundary: no dashboard totals render until every required read settles.
+        const nativeReadBatch = isTauriRuntime && canViewSalesReports
+          ? await Promise.all([
+              getDashboardReadAction('dashboard.drug_count'),
+              getDashboardKPIsAction(),
+              getDashboardReadAction('dashboard.trend'),
+              getLowStockAction(10),
+              getDashboardReadAction('dashboard.top_items'),
+              getDashboardReadAction('dashboard.recent_sales'),
+              canViewAudit ? getDashboardReadAction('dashboard.audit_logs') : Promise.resolve(null),
+            ] as const)
+          : null;
         if (requestId !== dashboardLoadRequestRef.current) return;
-        setMasterDrugCount(drugCountRow?.count || 0);
 
-        if (!hasUserPermissionSync(localUser, 'rep_can_view_sales')) {
+        // 1. Fetch total master drugs
+        const drugCountRow = isTauriRuntime
+          ? (nativeReadBatch ? nativeReadBatch[0] : await getDashboardReadAction('dashboard.drug_count'))
+          : { success: true, data: await dbGet('SELECT COUNT(*) as count FROM master_drugs') };
+        if (requestId !== dashboardLoadRequestRef.current) return;
+        if (!drugCountRow.success) {
+          const message = 'error' in drugCountRow && drugCountRow.error
+            ? drugCountRow.error
+            : 'Failed to load drug count';
+          throw new Error(message);
+        }
+        const drugCount = Array.isArray(drugCountRow.data) ? drugCountRow.data[0] : drugCountRow.data;
+        if (!drugCount || !Number.isSafeInteger(drugCount.count) || drugCount.count < 0) {
+          throw new Error('Invalid native drug count');
+        }
+        setMasterDrugCount(drugCount.count);
+
+        if (!canViewSalesReports) {
           setStats([]);
           setTrendData([]);
           setTopItemsData([]);
@@ -130,9 +159,29 @@ export default function DashboardPage() {
           return;
         }
 
+        let salesTodayRow: any;
+        let salesYesterdayRow: any;
+        let liquidityRow: any;
+        let pendingDeliveryRow: any;
+        let shrinkageRow: any;
+        let nativeTrendRows: any[] | null = null;
+        if (isTauriRuntime) {
+          const kpiResult = nativeReadBatch![1];
+          const trendResult = nativeReadBatch![2];
+          if (requestId !== dashboardLoadRequestRef.current) return;
+          if (!kpiResult.success || !kpiResult.data || !trendResult.success || !trendResult.data) {
+            throw new Error(kpiResult.error || trendResult.error || 'Failed to load dashboard reports');
+          }
+          nativeTrendRows = trendResult.data;
+          salesTodayRow = { total: kpiResult.data.sales_today };
+          salesYesterdayRow = { total: nativeTrendRows.find(row => row.date === yesterdayStr)?.sales || 0 };
+          liquidityRow = { balance: kpiResult.data.liquidity };
+          pendingDeliveryRow = { total: kpiResult.data.pending_delivery_cash };
+          shrinkageRow = { total_loss: kpiResult.data.shrinkage_today };
+        } else {
         // 2. Fetch KPIs
         // Sales today + COGS today
-        const salesTodayRow = await dbGet(`
+        salesTodayRow = await dbGet(`
           SELECT COALESCE(SUM(total_amount), 0) as total,
                  (SELECT COALESCE(SUM(
                     CASE 
@@ -166,7 +215,7 @@ export default function DashboardPage() {
         `, [todayStr, pharmacyId, pharmacyId, todayStr, pharmacyId, pharmacyId]);
         if (requestId !== dashboardLoadRequestRef.current) return;
 
-        const salesYesterdayRow = await dbGet(`
+        salesYesterdayRow = await dbGet(`
           SELECT COALESCE(SUM(total_amount), 0) as total
           FROM sales_invoices
           WHERE date(created_at, 'localtime') = ?
@@ -179,7 +228,7 @@ export default function DashboardPage() {
         const cashAccRow = await dbGet("SELECT account_id FROM trial_balance_settings WHERE category = 'cash_drawer'");
         if (requestId !== dashboardLoadRequestRef.current) return;
         const cashAccId = cashAccRow?.account_id || 6;
-        const liquidityRow = await dbGet(`
+        liquidityRow = await dbGet(`
           SELECT COALESCE(SUM(CASE WHEN je.type = 'debit' THEN je.amount ELSE -je.amount END), 0) as balance
           FROM journal_entries je
           JOIN daily_journals dj ON dj.id = je.journal_id
@@ -189,7 +238,7 @@ export default function DashboardPage() {
         if (requestId !== dashboardLoadRequestRef.current) return;
 
         // Pending delivery cash
-        const pendingDeliveryRow = await dbGet(`
+        pendingDeliveryRow = await dbGet(`
           SELECT COALESCE(SUM(total_amount), 0) as total
           FROM sales_invoices
           WHERE payment_method = 'delivery' AND status = 'completed'
@@ -198,7 +247,7 @@ export default function DashboardPage() {
         if (requestId !== dashboardLoadRequestRef.current) return;
 
         // Shrinkage today
-        const shrinkageRow = await dbGet(`
+        shrinkageRow = await dbGet(`
           SELECT COALESCE(SUM((old_quantity - new_quantity) * i.cost_price), 0) as total_loss
           FROM stock_adjustments sa
           JOIN inventory i ON sa.inventory_id = i.id
@@ -206,10 +255,11 @@ export default function DashboardPage() {
             AND (i.pharmacy_id = ? OR (i.pharmacy_id IS NULL AND ? = 'local_default'))
         `, [todayStr, pharmacyId, pharmacyId]);
         if (requestId !== dashboardLoadRequestRef.current) return;
+        }
 
         // Keep this KPI on the same pharmacy-scoped, expiry-aware source as the
         // reorder widget and low-stock page so all three surfaces stay in sync.
-        const lowStockResult = await getLowStockAction(10);
+        const lowStockResult = nativeReadBatch ? nativeReadBatch[3] : await getLowStockAction(10);
         if (requestId !== dashboardLoadRequestRef.current) return;
         const lowStockRows = lowStockResult.success && Array.isArray(lowStockResult.data)
           ? lowStockResult.data
@@ -271,7 +321,7 @@ export default function DashboardPage() {
         ]);
 
         // 3. Fetch Trend Data (Past 30 days recursive dates)
-        const trend = await dbSelect(`
+        const trend = nativeTrendRows ?? await dbSelect(`
           WITH RECURSIVE dates(date) AS (
             SELECT date('now', '-29 days', 'localtime')
             UNION ALL
@@ -337,8 +387,15 @@ export default function DashboardPage() {
         if (requestId !== dashboardLoadRequestRef.current) return;
         setTrendData(trend || []);
 
+        const nativeSecondaryResults = nativeReadBatch
+          ? [nativeReadBatch[4], nativeReadBatch[5], nativeReadBatch[6]]
+          : null;
+        if (requestId !== dashboardLoadRequestRef.current) return;
+
         // 3.5 Fetch Top Selling Items (Past 30 days)
-        const topItems = await dbSelect(`
+        const topItemsResult = isTauriRuntime
+          ? nativeSecondaryResults![0]
+          : { success: true, data: await dbSelect(`
           SELECT 
             COALESCE(NULLIF(m.trade_name_en, ''), m.trade_name, 'بدون اسم') as name,
             SUM(
@@ -364,12 +421,15 @@ export default function DashboardPage() {
           GROUP BY i.drug_id, name
           ORDER BY quantity DESC
           LIMIT 5
-        `, [pharmacyId, pharmacyId]);
+        `, [pharmacyId, pharmacyId]) };
         if (requestId !== dashboardLoadRequestRef.current) return;
-        setTopItemsData(topItems || []);
+        if (!topItemsResult.success) throw new Error(topItemsResult.error || 'Failed to load top items');
+        setTopItemsData(topItemsResult.data || []);
 
         // 4. Fetch Recent Transactions
-        const recent = await dbSelect(`
+        const recentResult = isTauriRuntime
+          ? nativeSecondaryResults![1]
+          : { success: true, data: await dbSelect(`
           SELECT s.*, p.full_name as patient_name
           FROM sales_invoices s
           LEFT JOIN patients p ON s.patient_id = p.id
@@ -377,22 +437,26 @@ export default function DashboardPage() {
             AND (s.status IS NULL OR s.status = '' OR s.status IN ('completed', 'approved', 'delivered'))
           ORDER BY s.created_at DESC
           LIMIT 5
-        `, [pharmacyId, pharmacyId]);
+        `, [pharmacyId, pharmacyId]) };
         if (requestId !== dashboardLoadRequestRef.current) return;
-        setRecentTransactions(recent || []);
+        if (!recentResult.success) throw new Error(recentResult.error || 'Failed to load recent transactions');
+        setRecentTransactions(recentResult.data || []);
 
         // 5. Fetch Activity Logs (If Owner)
-        if (hasUserPermissionSync(localUser, 'can_view_audit')) {
-          const logs = await dbSelect(`
+        if (canViewAudit) {
+          const logsResult = isTauriRuntime
+            ? nativeSecondaryResults![2]
+            : { success: true, data: await dbSelect(`
             SELECT a.*, u.full_name 
             FROM activity_log a 
             JOIN users u ON a.user_id = u.id 
             WHERE (a.pharmacy_id = ? OR (a.pharmacy_id IS NULL AND ? = 'local_default'))
             ORDER BY a.created_at DESC 
             LIMIT 5
-          `, [pharmacyId, pharmacyId]);
+          `, [pharmacyId, pharmacyId]) };
           if (requestId !== dashboardLoadRequestRef.current) return;
-          setActivityLogs(logs || []);
+          if (!logsResult.success) throw new Error(logsResult.error || 'Failed to load activity logs');
+          setActivityLogs(logsResult.data || []);
         }
     } catch (err: any) {
       if (requestId !== dashboardLoadRequestRef.current) return;
@@ -416,14 +480,14 @@ export default function DashboardPage() {
 
   if (loading) {
     return (
-      <div className="space-y-12 md:space-y-14 animate-in slide-in-up" dir="rtl">
+      <div className="space-y-8 md:space-y-10" dir="rtl">
         <div className="page-header">
           <div className="h-9 w-64 bg-slate-200 dark:bg-slate-700 rounded-lg animate-pulse" />
           <div className="h-5 w-96 mt-2 bg-slate-100 dark:bg-slate-800 rounded animate-pulse" />
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-7">
           {[1,2,3,4].map(i => (
-            <div key={i} className="bg-slate-100 dark:bg-slate-800 p-6 rounded-3xl animate-pulse">
+            <div key={i} className="bg-slate-100 dark:bg-slate-800 p-5 rounded-xl animate-pulse">
               <div className="flex justify-between mb-4">
                 <div className="h-4 w-24 bg-slate-200 dark:bg-slate-700 rounded" />
                 <div className="h-12 w-12 bg-slate-200 dark:bg-slate-700 rounded-2xl" />
@@ -435,10 +499,10 @@ export default function DashboardPage() {
         </div>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-7">
           {[1,2].map(i => (
-            <div key={i} className="bg-slate-100 dark:bg-slate-800 p-6 rounded-3xl animate-pulse h-48" />
+            <div key={i} className="bg-slate-100 dark:bg-slate-800 p-5 rounded-xl animate-pulse h-48" />
           ))}
         </div>
-        <div className="bg-slate-100 dark:bg-slate-800 p-6 rounded-3xl animate-pulse h-24" />
+        <div className="bg-slate-100 dark:bg-slate-800 p-5 rounded-xl animate-pulse h-24" />
       </div>
     );
   }
@@ -450,7 +514,7 @@ export default function DashboardPage() {
         <button
           type="button"
           onClick={() => void loadDashboardData()}
-          className="px-6 py-3 rounded-2xl bg-slate-900 text-white font-black"
+          className="px-5 py-2.5 rounded-lg bg-slate-900 text-white font-semibold hover:bg-slate-800 transition-colors"
         >
           إعادة المحاولة
         </button>
@@ -459,15 +523,23 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="space-y-12 md:space-y-14 animate-in slide-in-up" dir="rtl">
+    <div className="space-y-6 md:space-y-8" dir="rtl">
       <NewsBar />
       {/* Page Header */}
-      <div className="page-header flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-        <div>
-          <h1 className="text-3xl font-bold text-slate-900 dark:text-white">لوحة التحكم الرئيسية (محلي)</h1>
-          <p className="text-slate-500 mt-1">نظرة شاملة على أداء صيدليتك من قاعدة البيانات المحلية</p>
+      <div className="flex flex-col gap-4 border-b border-slate-200 pb-5 dark:border-slate-800">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className="text-2xl font-bold text-slate-900 dark:text-white">لوحة التحكم الرئيسية</h1>
+            <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">المبيعات والمخزون والتنبيهات التشغيلية اليوم</p>
+          </div>
+          <div className="flex min-h-10 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 dark:border-slate-700 dark:bg-slate-900">
+            <Calendar className="h-4 w-4 shrink-0 text-slate-500 dark:text-slate-400" aria-hidden="true" />
+            <time className="text-sm font-medium text-slate-700 dark:text-slate-200" dateTime={format(new Date(), 'yyyy-MM-dd')}>
+              {new Date().toLocaleDateString('ar-EG', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+            </time>
+          </div>
         </div>
-        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 w-full md:w-auto">
+        <div className="flex w-full min-w-0 flex-wrap items-center gap-2">
           {isTauri && (
             <button 
               type="button"
@@ -479,16 +551,16 @@ export default function DashboardPage() {
                   console.error(e);
                 }
               }} 
-              className="flex items-center gap-2 bg-indigo-600 text-white hover:bg-indigo-700 px-4 py-2.5 rounded-xl font-bold shadow-md transition-all active:scale-95"
+              className="flex min-h-11 items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
             >
                <ArrowUpLeft className="w-4 h-4" />
               تحديث البرنامج
             </button>
           )}
-          <div className="px-5 py-3 bg-white/50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-800 backdrop-blur-sm">
-            <p className="text-sm font-bold text-slate-600 dark:text-slate-400">
-              <Package className="inline w-4 h-4 ml-2 text-blue-500" />
-              الأدوية في الدليل: <span className="text-blue-600 dark:text-blue-400 text-lg">{masterDrugCount.toLocaleString()}</span>
+          <div className="flex min-h-11 items-center rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-700 dark:bg-slate-900">
+            <p className="text-sm font-medium text-slate-700 dark:text-slate-200">
+              <Package className="ml-2 inline h-4 w-4 text-primary-700 dark:text-primary-300" aria-hidden="true" />
+              الأدوية في الدليل: <span className="font-bold tabular-nums text-slate-900 dark:text-white">{masterDrugCount.toLocaleString()}</span>
             </p>
           </div>
           {user?.role === 'owner' && <DrugSyncButton />}
@@ -498,7 +570,7 @@ export default function DashboardPage() {
             onClick={toggleNewsBar}
             aria-pressed={newsBarEnabled}
             className={`
-              flex items-center gap-2 px-4 py-2.5 rounded-xl font-bold shadow-md transition-all active:scale-95 border text-sm
+              flex min-h-11 items-center gap-2 px-3 py-2 rounded-lg font-semibold transition-colors border text-sm
               ${newsBarEnabled 
                 ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800 hover:bg-amber-200' 
                 : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-800 hover:bg-slate-200'}
@@ -507,17 +579,11 @@ export default function DashboardPage() {
             <Megaphone className="w-4 h-4" />
             {newsBarEnabled ? 'إخفاء الأخبار' : 'عرض الأخبار'}
           </button>
-          <div className="px-5 py-3 bg-gradient-to-r from-primary-500/10 to-primary-600/10 dark:from-primary-900/30 dark:to-primary-800/30 rounded-xl border border-primary-200/50 dark:border-primary-800/50 backdrop-blur-sm w-full sm:w-auto">
-            <p className="text-sm md:text-base font-medium text-primary-700 dark:text-primary-300 flex items-center justify-center sm:justify-start">
-              <Calendar className="inline w-4 h-4 ml-2" />
-              {new Date().toLocaleDateString('ar-EG', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
-            </p>
-          </div>
         </div>
       </div>
 
       {/* Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-7">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
         {stats.map((stat, index) => {
           const Icon = stat.icon;
           const isLowStock = stat.title === 'تنبيهات المخزون';
@@ -543,18 +609,18 @@ export default function DashboardPage() {
                     </div>
                   </div>
                   <p className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white mt-2 tabular-nums">{stat.value}</p>
-                  <p className="text-sm font-medium text-slate-500 dark:text-slate-400 mt-1">{stat.title}</p>
+                  <p className="text-sm font-medium text-slate-600 dark:text-slate-300 mt-1">{stat.title}</p>
                   {typeof stat.change === 'number' && (
                     <div className="flex items-center gap-3 mt-3">
                       <div className={`flex items-center gap-1.5 px-2 py-1 rounded-lg ${stat.trend === 'up' ? 'text-emerald-700 bg-emerald-100 dark:bg-emerald-500/20 dark:text-emerald-400' : 'text-rose-700 bg-rose-100 dark:bg-rose-500/20 dark:text-rose-400'}`}>
                         {stat.trend === 'up' ? <ArrowUpLeft className="w-4 h-4" /> : <ArrowDownLeft className="w-4 h-4" />}
                         <span className="text-xs font-bold">{stat.change >= 0 ? '+' : ''}{stat.change.toFixed(1)}%</span>
                       </div>
-                      <span className="text-xs font-medium text-slate-400">من الأمس</span>
+                      <span className="text-xs font-medium text-slate-600 dark:text-slate-300">من الأمس</span>
                     </div>
                   )}
                   {typeof stat.change !== 'number' && stat.comparisonText && (
-                    <p className="text-xs font-medium text-slate-400 mt-3">{stat.comparisonText}</p>
+                    <p className="text-xs font-medium text-slate-600 dark:text-slate-300 mt-3">{stat.comparisonText}</p>
                   )}
                 </div>
               </div>
@@ -575,7 +641,7 @@ export default function DashboardPage() {
 
       {/* Advanced PMS Features: Inventory Alerts Grid */}
       {canViewInventory && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-7">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
           <ExpiryWidget />
           <DeadStockWidget />
         </div>
@@ -592,56 +658,53 @@ export default function DashboardPage() {
       )}
 
       {/* Management Row */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-7">
-        {canViewShifts && <ShiftManagement />}
-        {canManageSettings && <SubscriptionStatus />}
-      </div>
+      {canViewShifts && <ShiftManagement />}
 
       {/* Quick Actions */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        {canAccessPos && <Link href="/pos" className="flex items-center gap-3 p-4 bg-white dark:bg-slate-900 rounded-xl shadow-sm border border-slate-200 dark:border-slate-800 hover:border-blue-300 dark:hover:border-blue-700 transition-colors group">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+        {canAccessPos && <Link href="/pos" className="flex min-h-20 min-w-0 items-center gap-3 rounded-lg border border-slate-200 bg-white p-4 transition-colors hover:border-primary-400 hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-900 dark:hover:border-primary-600 dark:hover:bg-slate-800/50">
           <div className="w-10 h-10 bg-blue-50 dark:bg-blue-950/30 rounded-lg flex items-center justify-center text-blue-600">
             <ShoppingCart className="w-5 h-5" />
           </div>
-          <div>
+          <div className="min-w-0">
             <p className="font-semibold text-slate-900 dark:text-white">نقطة البيع</p>
-            <p className="text-xs text-slate-500">بيع سريع</p>
+            <p className="text-xs text-slate-600 dark:text-slate-300">بيع سريع</p>
           </div>
         </Link>}
 
-        {canViewInventory && <Link href="/inventory" className="flex items-center gap-3 p-4 bg-white dark:bg-slate-900 rounded-xl shadow-sm border border-slate-200 dark:border-slate-800 hover:border-emerald-300 dark:hover:border-emerald-700 transition-colors group">
+        {canViewInventory && <Link href="/inventory" className="flex min-h-20 min-w-0 items-center gap-3 rounded-lg border border-slate-200 bg-white p-4 transition-colors hover:border-emerald-400 hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-900 dark:hover:border-emerald-600 dark:hover:bg-slate-800/50">
           <div className="w-10 h-10 bg-emerald-50 dark:bg-emerald-950/30 rounded-lg flex items-center justify-center text-emerald-600">
             <Package className="w-5 h-5" />
           </div>
-          <div>
+          <div className="min-w-0">
             <p className="font-semibold text-slate-900 dark:text-white">المخزون</p>
-            <p className="text-xs text-slate-500">إدارة الأصناف</p>
+            <p className="text-xs text-slate-600 dark:text-slate-300">إدارة الأصناف</p>
           </div>
         </Link>}
 
-        {canViewPatients && <Link href="/patients" className="flex items-center gap-3 p-4 bg-white dark:bg-slate-900 rounded-xl shadow-sm border border-slate-200 dark:border-slate-800 hover:border-purple-300 dark:hover:border-purple-700 transition-colors group">
+        {canViewPatients && <Link href="/patients" className="flex min-h-20 min-w-0 items-center gap-3 rounded-lg border border-slate-200 bg-white p-4 transition-colors hover:border-purple-400 hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-900 dark:hover:border-purple-600 dark:hover:bg-slate-800/50">
           <div className="w-10 h-10 bg-purple-50 dark:bg-purple-950/30 rounded-lg flex items-center justify-center text-purple-600">
             <Users className="w-5 h-5" />
           </div>
-          <div>
+          <div className="min-w-0">
             <p className="font-semibold text-slate-900 dark:text-white">المرضى</p>
-            <p className="text-xs text-slate-500">سجل العملاء</p>
+            <p className="text-xs text-slate-600 dark:text-slate-300">سجل العملاء</p>
           </div>
         </Link>}
 
-        {canViewReports && <Link href="/reports" className="flex items-center gap-3 p-4 bg-white dark:bg-slate-900 rounded-xl shadow-sm border border-slate-200 dark:border-slate-800 hover:border-amber-300 dark:hover:border-amber-700 transition-colors group">
+        {canViewReports && <Link href="/reports" className="flex min-h-20 min-w-0 items-center gap-3 rounded-lg border border-slate-200 bg-white p-4 transition-colors hover:border-amber-400 hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-900 dark:hover:border-amber-600 dark:hover:bg-slate-800/50">
           <div className="w-10 h-10 bg-orange-50 dark:bg-orange-950/30 rounded-lg flex items-center justify-center text-orange-600">
             <ArrowUpLeft className="w-5 h-5" />
           </div>
-          <div>
+          <div className="min-w-0">
             <p className="font-semibold text-slate-900 dark:text-white">التقارير</p>
-            <p className="text-xs text-slate-500">تحليل الأداء</p>
+            <p className="text-xs text-slate-600 dark:text-slate-300">تحليل الأداء</p>
           </div>
         </Link>}
       </div>
 
       {/* Charts & Widgets Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-7">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
         <div className="lg:col-span-2">
           <div className="space-y-6">
             <h2 className="text-xl font-bold text-slate-900 dark:text-white">تحليل أداء المبيعات والنمو</h2>

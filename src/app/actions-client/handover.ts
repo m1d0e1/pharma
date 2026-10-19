@@ -34,6 +34,7 @@ const db = {
 
 
 import { getLocalSession, hasUserPermissionSync, verifyPassword } from '@/lib/auth/local';
+import { isTauri } from '@/lib/env';
 import { ensurePermanentShiftForUser, getShiftForPharmacy } from './shifts';
 
 const revalidatePath = (...args: any[]) => {};
@@ -43,6 +44,18 @@ import { loadHandoverDetails } from '@/lib/finance/drawer';
 
 export async function getHandoverDetailsAction(shiftId: string) {
   try {
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const response = await invoke<{actorId:string;pharmacyId:string;data:any}>(
+        'get_handover_details_native', {payload:{shiftId}});
+      const row=response?.data;
+      if (!response?.actorId || !response?.pharmacyId ||
+          !row || row.id !== shiftId || typeof row.status !== 'string' ||
+          !Number.isFinite(row.expected_cash) || !Number.isFinite(row.starting_cash)) {
+        throw new Error('Incomplete native handover details');
+      }
+      return {success:true,data:row};
+    }
     const user = await getLocalSession();
     if (!user || !hasUserPermissionSync(user, 'acc_can_view_handover')) {
       return { success: false, error: 'غير مصرح' };
@@ -77,6 +90,35 @@ export async function processHandoverAction(data: {
   if (handoverInProgress) return { success:false, error:'جاري تنفيذ تسليم آخر؛ انتظر انتهاء العملية' };
   handoverInProgress = true;
   try {
+    if (isTauri) {
+      if (data.closeOnly || data.managedUserId || data.deactivateManagedUser ||
+          data.authorizerPassword || data.autoOpenNewShift === false) {
+        throw new Error('Managed closure requires a separate native owner-authorized transaction');
+      }
+      const { invoke } = await import('@tauri-apps/api/core');
+      const result = await invoke<any>('process_handover_native', { payload: {
+        shiftId: data.shiftId, actualCash: data.actualCash,
+        transferAmount: data.transferAmount,
+        transferTargetType: data.transferTargetType,
+        transferTargetId: data.transferTargetId || null,
+        receiverUsername: data.receiverUsername,
+        receiverPassword: data.receiverPasswordHash,
+        notes: data.notes ?? null,
+        requestId: generateId(),
+      } });
+      if (!result || !Number.isFinite(result.difference) ||
+          !Number.isFinite(result.remainingCash) ||
+          !Number.isFinite(result.startingCash) ||
+          !['closed','discrepancy'].includes(result.status) ||
+          typeof result.newShiftId !== 'string' || !result.newShiftId) {
+        throw new Error('Incomplete native handover confirmation');
+      }
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new Event('shift-updated'));
+        try { localStorage.setItem('pharma:shift-updated', result.newShiftId); } catch {}
+      }
+      return { success:true, ...result };
+    }
     const user = await getLocalSession();
     const managedUserId = data.closeOnly ? data.managedUserId : undefined;
     const isManagedClosure = Boolean(managedUserId);
@@ -116,19 +158,36 @@ export async function processHandoverAction(data: {
       if (managedUser.role === 'owner' && user.role !== 'owner') {
         return { success: false, error: 'لا يمكنك تعطيل حساب المالك' };
       }
-      const authorizer = await db.prepare('SELECT password_hash FROM users WHERE id = ? AND is_active = 1').get(user.id) as any;
-      if (!data.authorizerPassword || !authorizer?.password_hash || !await verifyPassword(data.authorizerPassword, authorizer.password_hash)) {
+      const ownerCredentialOk = isTauri
+        ? await (await import('@tauri-apps/api/core')).invoke<string | null>('verify_handover_credentials', {
+            kind: 'authorizer', username: null, password: data.authorizerPassword || '',
+          }) === String(user.id)
+        : await (async () => {
+            const authorizer = await db.prepare('SELECT password_hash FROM users WHERE id = ? AND is_active = 1').get(user.id) as any;
+            return Boolean(data.authorizerPassword && authorizer?.password_hash &&
+              await verifyPassword(data.authorizerPassword, authorizer.password_hash));
+          })();
+      if (!ownerCredentialOk) {
         return { success: false, error: 'كلمة مرور المسؤول غير صحيحة' };
       }
     } else {
       // Validate receiver for a normal handover.
-      receiver = await db.prepare('SELECT id, password_hash, pharmacy_id FROM users WHERE username = ? AND is_active = 1').get(data.receiverUsername) as any;
+      receiver = await db.prepare(isTauri
+        ? 'SELECT id, pharmacy_id FROM users WHERE username = ? AND is_active = 1'
+        : 'SELECT id, password_hash, pharmacy_id FROM users WHERE username = ? AND is_active = 1'
+      ).get(data.receiverUsername) as any;
       if (!receiver) return { success: false, error: 'المستلم غير موجود' };
       const receiverPharmacyId = receiver.pharmacy_id && String(receiver.pharmacy_id).trim()
         ? String(receiver.pharmacy_id).trim()
         : 'local_default';
       if (receiverPharmacyId !== pharmacyId) return { success: false, error: 'المستلم يتبع صيدلية أخرى' };
-      if (!data.receiverPasswordHash || !receiver.password_hash || !await verifyPassword(data.receiverPasswordHash, receiver.password_hash)) {
+      const receiverCredentialOk = isTauri
+        ? await (await import('@tauri-apps/api/core')).invoke<string | null>('verify_handover_credentials', {
+            kind: 'receiver', username: data.receiverUsername, password: data.receiverPasswordHash || '',
+          }) === String(receiver.id)
+        : Boolean(data.receiverPasswordHash && receiver.password_hash &&
+            await verifyPassword(data.receiverPasswordHash, receiver.password_hash));
+      if (!receiverCredentialOk) {
         return { success: false, error: 'كلمة مرور المستلم غير صحيحة' };
       }
     }
@@ -347,7 +406,20 @@ export async function processHandoverAction(data: {
     return { success: true, ...result };
   } catch (error) {
     console.error('Handover error:', error);
-    return { success: false, error: error instanceof Error ? error.message : 'فشل إتمام عملية التسليم' };
+    // Tauri commands reject with a string, rather than Error. Preserve only
+    // explicitly safe native business denials; never expose raw SQLite errors.
+    const safeNativeReasons = new Set([
+      'Receiver authentication failed or account is not active in this pharmacy',
+      'Shift was closed, replaced or belongs to another pharmacy',
+      'Shared pharmacy shift state is ambiguous',
+      'Unowned legacy shared shift cannot be handed over without reconciliation',
+      'Shift contains foreign or unowned payment history',
+      'Shift contains malformed accounting history',
+      'Old shift contains unresolved prior transfers',
+      'Native normal handover permission required',
+    ]);
+    return { success: false, error: typeof error === 'string' && safeNativeReasons.has(error)
+      ? error : error instanceof Error ? error.message : 'فشل إتمام عملية التسليم' };
   } finally {
     handoverInProgress = false;
   }
@@ -355,6 +427,20 @@ export async function processHandoverAction(data: {
 
 export async function getOpenShiftHandoverAction() {
   try {
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const shift = await invoke<{
+        id: string; user_id: string; start_time: string | null;
+        starting_cash: number | null; status: string;
+      }>('ensure_handover_shift_native');
+      if (!shift || typeof shift.id !== 'string' || !shift.id ||
+          typeof shift.user_id !== 'string' || !shift.user_id ||
+          shift.status !== 'open' ||
+          (shift.starting_cash != null && !Number.isFinite(shift.starting_cash))) {
+        throw new Error('Incomplete native handover shift confirmation');
+      }
+      return { success: true, data: shift };
+    }
     const user = await getLocalSession();
     if (!user || !hasUserPermissionSync(user, 'acc_can_view_handover')) {
       return { success: false, error: 'غير مصرح', data: null };
@@ -368,6 +454,21 @@ export async function getOpenShiftHandoverAction() {
 
 export async function getShiftCreditSalesAction(shiftId?: string) {
   try {
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const response = await invoke<{
+        actorId:string;pharmacyId:string;shiftId:string|null;rows:any[];
+      }>('get_shift_credit_sales_native', {payload:{shiftId:shiftId ?? null}});
+      const rows=response?.rows;
+      if (!response?.actorId || !response?.pharmacyId ||
+          (shiftId && response.shiftId !== shiftId) ||
+          !Array.isArray(rows) || rows.length > 1000 || rows.some(row =>
+        !row || typeof row.id !== 'string' && typeof row.id !== 'number' ||
+        !Number.isFinite(row.credit_amount))) {
+        throw new Error('Incomplete native credit-sales projection');
+      }
+      return {success:true,data:rows};
+    }
     const user = await getLocalSession();
     if (!user || !hasUserPermissionSync(user, 'acc_can_view_handover')) {
       return { success: false, error: 'غير مصرح', data: [] };

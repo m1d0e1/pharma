@@ -60,7 +60,7 @@ describe('settlement ownership', () => {
     expect(stayedOpenWhilePending).toBe(true);
   });
 
-  it('does not let a pre-settlement refresh reintroduce an item after a newer post-settlement refresh', async () => {
+  it('does not let an older pending read reintroduce a source after a newer verified empty refresh', async () => {
     let resolveOlder!: (value: { success: boolean; data?: any[] }) => void;
     let resolveNewer!: (value: { success: boolean; data?: any[] }) => void;
     const older = new Promise<{ success: boolean; data?: any[] }>(resolve => { resolveOlder = resolve; });
@@ -68,16 +68,18 @@ describe('settlement ownership', () => {
     (getUnsettledSalesAction as jest.Mock)
       .mockImplementationOnce(() => older)
       .mockImplementationOnce(() => newer);
-    (settleSaleItemAction as jest.Mock).mockResolvedValue({ success: true });
-
     render(<SettlementClient initialItems={[unsettledItem]} />);
     await screen.findByRole('button', { name: 'تسوية الآن' });
     act(() => window.dispatchEvent(new Event('focus')));
     await waitFor(() => expect(getUnsettledSalesAction).toHaveBeenCalledTimes(1));
-
+    // The previous test tried to commit while ownership/provenance was still
+    // unverified. A pending strict-native read must disable stale write controls.
+    expect(screen.getByRole('button', { name: 'تسوية الآن' })).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'تسوية الآن' }));
-    fireEvent.click(await screen.findByRole('button', { name: /دفعة: batch-1/ }));
-    await waitFor(() => expect(settleSaleItemAction).toHaveBeenCalledTimes(1));
+    expect(getDrugBatchesAction).not.toHaveBeenCalled();
+    expect(settleSaleItemAction).not.toHaveBeenCalled();
+
+    act(() => window.dispatchEvent(new Event('focus')));
     await waitFor(() => expect(getUnsettledSalesAction).toHaveBeenCalledTimes(2));
 
     await act(async () => {
@@ -91,5 +93,6 @@ describe('settlement ownership', () => {
       await older;
     });
     expect(screen.queryByText('Unsettled Drug')).not.toBeInTheDocument();
+    expect(settleSaleItemAction).not.toHaveBeenCalled();
   });
 });

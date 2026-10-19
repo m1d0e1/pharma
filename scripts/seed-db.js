@@ -134,6 +134,9 @@ const drugsData = BASELINE_ONLY ? { header: [], rows: [] } : parseCsv(DRUGS_CSV,
 const baselineDrugsData = parseCsv(BASELINE_DRUGS_CSV, true);
 const interactionsData = parseCsv(INTERACTIONS_CSV);
 assertColumns(baselineDrugsData.header, ['id', 'Trade Name', 'Price', 'Active Ingredient', 'Category', 'Manufacturer'], path.basename(BASELINE_DRUGS_CSV));
+if (fs.existsSync(INTERACTIONS_CSV)) {
+  assertColumns(interactionsData.header, ['Drug 1', 'Drug 2', 'Interaction Description'], path.basename(INTERACTIONS_CSV));
+}
 let preparedDrugRows;
 if (drugsData.rows.length > 0) {
   assertColumns(drugsData.header, ['Trade Name', 'Price', 'Active Ingredient', 'Category', 'Manufacturer'], path.basename(DRUGS_CSV));

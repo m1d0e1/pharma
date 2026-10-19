@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useRouter, usePathname } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import { getClientSession } from '@/lib/auth/local';
 
 interface AuthGuardProps {
@@ -15,31 +15,28 @@ export default function AuthGuard({ children, requiredRole }: AuthGuardProps) {
   const [checkError, setCheckError] = useState(false);
   const [retryAttempt, setRetryAttempt] = useState(0);
   const router = useRouter();
-  const pathname = usePathname();
 
   useEffect(() => {
     let active = true;
     setAuthorized(false);
     setLoading(true);
     setCheckError(false);
-    const log = (m: string) => typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__?.invoke('log_frontend_error', { message: m });
     async function checkAuth() {
       try {
-        log('AUTHGUARD: checking session...');
         const user = await getClientSession();
         if (!active) return;
-        log('AUTHGUARD: user=' + (user ? user.username : 'NULL'));
         
         if (!user) {
-          // Prevent infinite redirect loops if already on login page
-          if (pathname !== '/login') {
-            log('AUTHGUARD: redirecting to /login');
-            router.push('/login');
-          }
+          // DashboardLayout is not mounted on /login. Revalidate this shared
+          // shell at mount/role change/retry, not every child pathname change:
+          // route-specific PermissionGuard still checks each destination.
+          router.push('/login');
           return;
         }
 
-        if (requiredRole && user.role !== requiredRole && user.role !== 'owner' && user.role !== 'admin') {
+        const satisfiesRequiredRole = !requiredRole || user.role === requiredRole ||
+          user.role === 'owner' || (requiredRole !== 'owner' && user.role === 'admin');
+        if (!satisfiesRequiredRole) {
           router.push('/');
           return;
         }
@@ -58,7 +55,7 @@ export default function AuthGuard({ children, requiredRole }: AuthGuardProps) {
     return () => {
       active = false;
     };
-  }, [router, pathname, requiredRole, retryAttempt]);
+  }, [router, requiredRole, retryAttempt]);
 
   if (loading) {
     return (

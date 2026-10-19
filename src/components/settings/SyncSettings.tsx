@@ -4,6 +4,7 @@ import React, { useRef, useState } from 'react';
 import { syncFromCloud } from '@/lib/sync/universal';
 import { toast } from 'react-hot-toast';
 import { useRouter } from 'next/navigation';
+import { DatabaseZap, RefreshCw } from 'lucide-react';
 
 export default function SyncSettings() {
   const router = useRouter();
@@ -40,9 +41,9 @@ export default function SyncSettings() {
   };
 
   return (
-    <div className="bg-indigo-950 p-6 sm:p-8 rounded-3xl text-white shadow-xl border border-indigo-900">
+    <div className="bg-slate-900 dark:bg-slate-900 p-5 sm:p-6 rounded-xl text-white shadow-sm border border-slate-800">
       <div className="flex items-center gap-4 mb-6">
-        <div className="w-12 h-12 bg-white/10 rounded-2xl flex items-center justify-center text-2xl">🧠</div>
+        <div className="w-10 h-10 bg-white/10 rounded-lg flex items-center justify-center"><DatabaseZap className="w-5 h-5" aria-hidden="true" /></div>
         <div>
           <h4 className="text-xl font-bold">تحديث البيانات المرجعية</h4>
           <p className="text-indigo-200 text-sm">تحميل قائمة الأدوية والتفاعلات العامة</p>
@@ -50,7 +51,7 @@ export default function SyncSettings() {
       </div>
 
       <div className="space-y-4">
-        <div className="bg-white/5 border border-white/10 p-6 rounded-2xl">
+        <div className="bg-white/5 border border-white/10 p-5 rounded-lg">
           <p className="text-sm text-indigo-100 leading-relaxed mb-6">
             الاتصال بالسحابة اختياري ويُستخدم فقط لجلب أحدث قائمة أدوية وتفاعلات عامة. تسجيل الدخول وإدارة المستخدمين يظلان محليين بالكامل.
           </p>
@@ -59,10 +60,10 @@ export default function SyncSettings() {
             type="button"
             onClick={handleSync}
             disabled={syncing}
-            className="w-full py-4 bg-white text-indigo-900 rounded-2xl font-black shadow-xl hover:bg-indigo-50 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+            className="w-full py-2.5 bg-white text-slate-900 rounded-lg font-semibold shadow-sm hover:bg-slate-100 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
           >
             {syncing ? 'جاري التحديث...' : 'تحديث البيانات المرجعية الآن'}
-            {!syncing && <span>⚡</span>}
+            {!syncing && <RefreshCw className="w-4 h-4" aria-hidden="true" />}
           </button>
         </div>
         

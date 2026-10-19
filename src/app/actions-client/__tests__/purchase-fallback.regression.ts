@@ -774,6 +774,8 @@ describe('purchase SQLite fallback accounting and lot safety', () => {
     const source = sqlite.prepare('SELECT id,inventory_id FROM purchase_invoice_items WHERE invoice_id=?').get(purchase.id) as any;
 
     expect((await searchPurchaseInvoicesForReturnAction('RETURN-SEARCH-1')).data?.map((row: any) => row.id)).toEqual([purchase.id]);
+    expect((await searchPurchaseInvoicesForReturnAction('', 1)).data?.map((row: any) => row.id)).toContain(purchase.id);
+    expect((await searchPurchaseInvoicesForReturnAction('', 2)).data?.map((row: any) => row.id)).not.toContain(purchase.id);
 
     sqlite.prepare(`
       INSERT INTO purchase_returns
@@ -787,6 +789,7 @@ describe('purchase SQLite fallback accounting and lot safety', () => {
     `).run(source.id, source.inventory_id);
 
     expect((await searchPurchaseInvoicesForReturnAction('RETURN-SEARCH-1')).data?.map((row: any) => row.id)).toEqual([purchase.id]);
+    expect((await searchPurchaseInvoicesForReturnAction('', 1)).data?.map((row: any) => row.id)).toContain(purchase.id);
 
     sqlite.prepare(`
       INSERT INTO purchase_returns
@@ -800,6 +803,7 @@ describe('purchase SQLite fallback accounting and lot safety', () => {
     `).run(source.id, source.inventory_id);
 
     expect(await searchPurchaseInvoicesForReturnAction('RETURN-SEARCH-1')).toMatchObject({ success: true, data: [] });
+    expect(await searchPurchaseInvoicesForReturnAction('', 1)).toMatchObject({ success: true, data: [] });
   });
 
   it('refunds stored allocated cost and bonus stock despite a forged client price', async () => {

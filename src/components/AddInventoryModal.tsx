@@ -2,13 +2,15 @@
 import { useHotkeys } from 'react-hotkeys-hook';
 
 import { useState, useEffect, useMemo, useRef } from 'react'
-import { addInventoryAction } from '@/app/actions-client/inventory'
+import { addInventoryAction, getPendingInventoryCreationsAction, acknowledgePendingInventoryCreationAction, type PendingInventoryCreation } from '@/app/actions-client/inventory'
 import { searchMasterDrugsAction, getUnitsAction } from '@/app/actions-client/master-drugs'
 import { toast } from 'react-hot-toast'
-import { Plus, Search, Sparkles, Save, X } from 'lucide-react'
+import { Pill, Plus, Search, Save, X } from 'lucide-react'
 import QuickAddDrugModal from './master-drugs/QuickAddDrugModal'
 import { isSinglePackageUnitName, resolveDrugUnitProfile } from '@/lib/inventory/unit-profile'
 import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap'
+import { isTauri } from '@/lib/env'
+import { generateId } from '@/lib/db/tauri'
 
 interface MasterDrug {
   id: number
@@ -49,6 +51,11 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
   const barcodeRef = useRef<HTMLInputElement>(null)
   const searchRequestRef = useRef(0)
   const submissionRef = useRef(false)
+  const createRequestRef = useRef<{ fingerprint: string; requestId: string } | null>(null)
+  const [pendingRecovery, setPendingRecovery] = useState<PendingInventoryCreation[] | null>(isTauri ? null : [])
+  const [recoveryError, setRecoveryError] = useState(false)
+  const [recoveryErrorDetail, setRecoveryErrorDetail] = useState<string | null>(null)
+  const [recoveringId, setRecoveringId] = useState<string | null>(null)
   const dialogRef = useDialogFocusTrap<HTMLDivElement>(!isQuickAddOpen)
 
   const handleClose = () => {
@@ -68,6 +75,51 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
     }
     fetchUnits()
   }, [])
+
+  useEffect(() => {
+    if (!isTauri) return
+    let active = true
+    void getPendingInventoryCreationsAction().then(result => {
+      if (!active) return
+      if (result.success) {
+        setPendingRecovery(result.data)
+        setRecoveryError(false)
+        setRecoveryErrorDetail(null)
+      } else {
+        setRecoveryError(true)
+        setRecoveryErrorDetail(result.error || null)
+      }
+    }).catch(() => { if (active) { setRecoveryError(true); setRecoveryErrorDetail(null) } })
+    return () => { active = false }
+  }, [])
+
+  const reconcilePreviousCreate = async (entry: PendingInventoryCreation) => {
+    if (recoveringId) return
+    setRecoveringId(entry.requestId)
+    try {
+      const result = await acknowledgePendingInventoryCreationAction(entry.requestId, entry.inventoryId)
+      if (!result.success) {
+        toast.error(result.error)
+        return
+      }
+      // Acknowledgement is an explicit operator reconciliation of a stock lot
+      // that already exists, not another stock creation.
+      const remaining = await getPendingInventoryCreationsAction()
+      if (!remaining.success) {
+        setRecoveryError(true)
+        setRecoveryErrorDetail(remaining.error || null)
+        toast.error('تعذر إعادة فحص سجل الإضافات')
+        return
+      }
+      setPendingRecovery(remaining.data)
+      setRecoveryError(false)
+      setRecoveryErrorDetail(null)
+      toast.success('تم تأكيد الدفعة الموجودة سابقاً دون تكرار إضافتها')
+      onSuccess()
+    } finally {
+      setRecoveringId(null)
+    }
+  }
 
   useEffect(() => {
     const requestId = ++searchRequestRef.current
@@ -149,6 +201,10 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
 
   const handleSaveToInventory = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (isTauri && (pendingRecovery === null || recoveryError || pendingRecovery.length > 0)) {
+      toast.error('راجع عمليات إضافة المخزون السابقة وأكدها قبل إضافة دفعة جديدة')
+      return
+    }
     if (!selectedDrug) return
 
     // Client-side validation
@@ -195,6 +251,12 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
       return
     }
 
+    const catalogUnit = String(selectedDrug.large_unit ?? '').trim()
+    if (isTauri && !catalogUnit && selectedUnit.trim() !== resolveDrugUnitProfile(selectedDrug).largeUnit) {
+      toast.error('لا يمكن تغيير الوحدة من شاشة إضافة المخزون؛ يرجى تعديل وحدة الصنف أولاً')
+      return
+    }
+
     if (submissionRef.current) return
     submissionRef.current = true
     setIsSubmitting(true)
@@ -207,15 +269,29 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
       local_selling_price: price,
       expiry_date: expiryDate || null,
       barcode: barcode || null,
-      unit: selectedUnit,
-      large_to_medium: largeToMedium ? parseInt(largeToMedium) : null
+      // Inferred display units are not catalog writes. Only assert a persisted
+      // native unit; reject edits to an inferred unit before reaching Rust.
+      unit: isTauri && !catalogUnit ? null : selectedUnit,
+      large_to_medium: largeToMedium ? parseInt(largeToMedium) : null,
+      ...(isTauri && !catalogUnit ? { expect_null_large_unit: true } : {})
     }
-
-    console.log('[AddInventoryModal] Submitting formData:', JSON.stringify(formData))
 
     let result: Awaited<ReturnType<typeof addInventoryAction>> | undefined
     try {
-      result = await addInventoryAction(formData)
+      let submissionData: typeof formData & { request_id?: string } = formData
+      if (isTauri) {
+        // An ACK can be lost after Rust commits. Retries of the same intent
+        // must carry the original nonce so Rust can return its original ACK.
+        const fingerprint = JSON.stringify(formData)
+        if (createRequestRef.current?.fingerprint !== fingerprint) {
+          createRequestRef.current = { fingerprint, requestId: generateId() }
+        }
+        submissionData = { ...formData, request_id: createRequestRef.current.requestId }
+      }
+      // The form contains the pharmacy's private barcode, selected drug,
+      // quantity and price. Neither the payload nor its durable nonce belongs
+      // in WebView diagnostic logs (including ambiguous-ACK recovery).
+      result = await addInventoryAction(submissionData)
     } catch {
       toast.error('حدث خطأ أثناء الإضافة. يرجى المحاولة مرة أخرى.')
     } finally {
@@ -225,10 +301,11 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
 
     if (!result) return
 
-    console.log('[AddInventoryModal] Result:', JSON.stringify(result))
-
     if (result.success) {
-      toast.success('تمت إضافة المخزون بنجاح!')
+      createRequestRef.current = null
+      toast.success(isTauri
+        ? 'تم حفظ الدفعة. ستظل معلّقة للمراجعة؛ تحقق من وجودها وأكّدها قبل إضافة دفعة أخرى.'
+        : 'تمت إضافة المخزون بنجاح!')
       onSuccess()
       onClose()
     } else {
@@ -263,16 +340,42 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
           </button>
         </div>
 
+        {isTauri && (pendingRecovery === null || recoveryError || pendingRecovery.length > 0) && (
+          <section aria-label="استعادة عمليات إضافة المخزون" className="p-4 border-b border-amber-200 bg-amber-50 dark:bg-amber-950/30 space-y-3">
+            <p className="text-sm font-bold text-amber-900 dark:text-amber-100">
+              {recoveryError ? 'تعذر التحقق من إضافات المخزون السابقة. الإضافة الجديدة متوقفة لحماية الكميات.' :
+                pendingRecovery === null ? 'جاري فحص عمليات إضافة المخزون السابقة...' :
+                  'هناك دفعة أضيفت سابقاً ولم يتم تأكيد استلام نتيجتها. تحقق من سجل المخزون قبل إضافة دفعة جديدة.'}
+            </p>
+            {recoveryError && recoveryErrorDetail && (
+              <p role="alert" className="text-sm text-amber-900 dark:text-amber-100 break-words">
+                {recoveryErrorDetail}
+              </p>
+            )}
+            {pendingRecovery?.map(entry => (
+              <div key={entry.requestId} className="text-sm border border-amber-300 rounded-lg p-3 space-y-2">
+                <p>رقم الصنف: {entry.drugId} — الكمية: {entry.quantity} — الدفعة: {entry.inventoryId}</p>
+                <p className="text-xs">المستخدم الذي أنشأ الدفعة: {entry.createdBy}</p>
+                <p className="text-xs">الوقت: {entry.createdAt} — تاريخ الصلاحية: {entry.expiryDate || 'غير محدد'}</p>
+                <button type="button" disabled={Boolean(recoveringId)} onClick={() => void reconcilePreviousCreate(entry)}
+                  className="rounded-lg px-3 py-2 bg-amber-800 text-white font-bold disabled:opacity-50">
+                  تأكدت من وجود الدفعة؛ إقرار دون إضافة جديدة
+                </button>
+              </div>
+            ))}
+          </section>
+        )}
+
         {/* Step 1: Search */}
         {step === 1 && (
-          <div className="p-6 space-y-6">
+          <div className="p-5 space-y-5">
             <div className="relative">
-              <span className="absolute inset-y-0 right-4 flex items-center text-slate-400">🔍</span>
+              <Search className="absolute right-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" aria-hidden="true" />
               <input
                 type="text"
                 aria-label="البحث عن صنف لإضافته للمخزون"
                 placeholder="ابحث باسم الدواء (مثلاً: Panadol)..."
-                className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 pr-12 pl-4 py-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all font-bold"
+                className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 pr-10 pl-4 py-2.5 rounded-lg focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 outline-none transition-colors font-medium"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 autoFocus
@@ -296,7 +399,7 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
                 <div className="w-2 h-2 bg-current rounded-full animate-pulse"></div>
                 <div className="w-2 h-2 bg-current rounded-full animate-pulse delay-75"></div>
                 <div className="w-2 h-2 bg-current rounded-full animate-pulse delay-150"></div>
-                <span className="text-sm font-bold">جاري البحث في قاعدة البيانات...</span>
+                <span className="text-sm font-medium">جاري البحث في قاعدة البيانات...</span>
               </div>
             )}
 
@@ -305,14 +408,14 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
                 <button
                   key={drug.id}
                   onClick={() => handleSelectDrug(drug)}
-                  className="w-full text-right p-5 rounded-2xl border border-slate-100 dark:border-slate-800 hover:border-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-all flex items-center justify-between group"
+                  className="w-full text-right p-4 rounded-lg border border-slate-200 dark:border-slate-800 hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors flex items-center justify-between gap-4 group"
                 >
                   <div className="flex flex-col">
-                    <span className="font-black text-slate-800 dark:text-white group-hover:text-blue-600 transition-colors">{drug.trade_name || drug.trade_name_en || 'بدون اسم تجاري'}</span>
+                    <span className="font-semibold text-slate-800 dark:text-white group-hover:text-blue-600 transition-colors">{drug.trade_name || drug.trade_name_en || 'بدون اسم تجاري'}</span>
                     <span className="text-xs text-slate-500 dark:text-slate-400 mt-1">{drug.active_ingredient || 'بدون مادة فعالة'}</span>
                   </div>
                   <div className="flex flex-col items-end">
-                    <span className="text-lg font-black text-emerald-600">{drug.official_price} <span className="text-[11px]">ج.م</span></span>
+                    <span className="text-sm font-semibold text-emerald-700 dark:text-emerald-400 tabular-nums">{drug.official_price} <span className="text-[11px]">ج.م</span></span>
                     <span className="text-[11px] text-slate-500 font-bold">السعر الرسمي</span>
                   </div>
                 </button>
@@ -321,13 +424,13 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
               {!isSearching && (
                 <button 
                   onClick={() => setIsQuickAddOpen(true)}
-                  className="w-full p-5 rounded-2xl border-2 border-dashed border-slate-200 dark:border-slate-800 hover:border-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/10 transition-all flex items-center justify-center gap-3 group"
+                  className="w-full p-4 rounded-lg border border-dashed border-slate-300 dark:border-slate-700 hover:border-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/10 transition-colors flex items-center justify-center gap-3 group"
                 >
                   <div className="w-10 h-10 bg-slate-100 dark:bg-slate-800 rounded-xl flex items-center justify-center text-slate-400 group-hover:bg-blue-100 group-hover:text-blue-600 transition-colors">
                     <Plus className="w-5 h-5" />
                   </div>
                   <div className="text-right">
-                    <p className="font-black text-slate-900 dark:text-white">أضف صنف مخصص</p>
+                    <p className="font-semibold text-slate-900 dark:text-white">إضافة صنف مخصص</p>
                     <p className="text-[11px] font-bold text-slate-500">إذا لم تجد الدواء في القاعدة العامة</p>
                   </div>
                 </button>
@@ -338,22 +441,22 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
 
         {/* Step 2: Data Entry Form */}
         {step === 2 && selectedDrug && (
-          <form onSubmit={handleSaveToInventory} className="p-6 space-y-6">
+          <form onSubmit={handleSaveToInventory} className="p-5 space-y-5">
             
-            <div className="bg-slate-50 dark:bg-slate-800/50 p-6 rounded-3xl border border-blue-100 dark:border-blue-900/30 flex items-center justify-between gap-4">
+            <div className="bg-slate-50 dark:bg-slate-800/50 p-4 rounded-xl border border-slate-200 dark:border-slate-700 flex items-center justify-between gap-4">
                <div className="flex items-center gap-4">
-                 <div className="w-12 h-12 bg-blue-600 rounded-2xl flex items-center justify-center text-2xl shadow-lg shadow-blue-500/20">💊</div>
+                 <div className="w-10 h-10 bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300 rounded-lg flex items-center justify-center border border-blue-100 dark:border-blue-900/50"><Pill className="w-5 h-5" aria-hidden="true" /></div>
                  <div>
-                    <p className="font-black text-xl text-slate-900 dark:text-white leading-none">{selectedDrug.trade_name}</p>
+                    <p className="font-semibold text-base text-slate-900 dark:text-white leading-tight">{selectedDrug.trade_name}</p>
                     <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">المادة الفعالة: {selectedDrug.active_ingredient || '---'}</p>
                  </div>
                </div>
-               <div className="flex flex-col items-end bg-white dark:bg-slate-900 px-4 py-2 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm">
+               <div className="flex flex-col items-end bg-white dark:bg-slate-900 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700">
                   <select
                     aria-label="الوحدة الأساسية للمخزون"
                     value={selectedUnit}
                     onChange={(e) => setSelectedUnit(e.target.value)}
-                    className="text-lg font-black text-blue-600 dark:text-blue-400 bg-slate-50 dark:bg-slate-800 outline-none hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg px-3 py-1 text-right w-full border border-blue-200 dark:border-blue-800 focus:ring-2 focus:ring-blue-500 appearance-none"
+                    className="text-sm font-semibold text-blue-700 dark:text-blue-300 bg-slate-50 dark:bg-slate-800 outline-none hover:bg-slate-100 dark:hover:bg-slate-700 rounded-md px-2.5 py-1.5 text-right w-full border border-blue-200 dark:border-blue-800 focus:ring-2 focus:ring-blue-500/30 appearance-none"
                   >
                     <option value="" disabled>اختر الوحدة</option>
                     {unitsList.map((u, i) => (
@@ -376,7 +479,8 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
                   min="0"
                   value={quantity}
                   onChange={(e) => setQuantity(e.target.value)}
-                  className={`w-full bg-slate-50 dark:bg-slate-800 border p-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all font-bold ${
+                  aria-invalid={errors.quantity ? true : undefined}
+                  className={`w-full bg-slate-50 dark:bg-slate-800 border px-3 py-2.5 rounded-lg focus:ring-2 focus:ring-blue-500/30 outline-none transition-colors font-medium ${
                     errors.quantity ? 'border-red-500 ring-2 ring-red-500/20' : 'border-slate-200 dark:border-slate-700'
                   }`}
                   placeholder="مثلاً: 20"
@@ -391,7 +495,8 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
                     min="0"
                     value={stripsQuantity}
                     onChange={(e) => setStripsQuantity(e.target.value)}
-                    className={`w-full bg-slate-50 dark:bg-slate-800 border p-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all font-bold ${
+                    aria-invalid={errors.stripsQuantity ? true : undefined}
+                    className={`w-full bg-slate-50 dark:bg-slate-800 border px-3 py-2.5 rounded-lg focus:ring-2 focus:ring-blue-500/30 outline-none transition-colors font-medium ${
                       errors.stripsQuantity ? 'border-red-500 ring-2 ring-red-500/20' : 'border-slate-200 dark:border-slate-700'
                     }`}
                     placeholder="اختياري"
@@ -406,7 +511,8 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
                   required={Number(selectedDrug.has_expiry ?? 1) !== 0}
                   value={expiryDate}
                   onChange={(e) => setExpiryDate(e.target.value)}
-                  className={`w-full bg-slate-50 dark:bg-slate-800 border p-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all font-bold ${
+                  aria-invalid={errors.expiryDate ? true : undefined}
+                  className={`w-full bg-slate-50 dark:bg-slate-800 border px-3 py-2.5 rounded-lg focus:ring-2 focus:ring-blue-500/30 outline-none transition-colors font-medium ${
                     errors.expiryDate ? 'border-red-500 ring-2 ring-red-500/20' : 'border-slate-200 dark:border-slate-700'
                   }`}
                 />
@@ -423,7 +529,8 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
                   step="0.01"
                   value={localPrice}
                   onChange={(e) => setLocalPrice(e.target.value)}
-                  className={`w-full bg-slate-50 dark:bg-slate-800 border p-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all font-bold ${
+                  aria-invalid={errors.localPrice ? true : undefined}
+                  className={`w-full bg-slate-50 dark:bg-slate-800 border px-3 py-2.5 rounded-lg focus:ring-2 focus:ring-blue-500/30 outline-none transition-colors font-medium ${
                     errors.localPrice ? 'border-red-500 ring-2 ring-red-500/20' : 'border-slate-200 dark:border-slate-700'
                   }`}
                 />
@@ -440,7 +547,7 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') e.preventDefault();
                   }}
-                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all font-bold"
+                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-3 py-2.5 rounded-lg focus:ring-2 focus:ring-blue-500/30 outline-none transition-colors font-medium"
                 />
               </div>
             </div>
@@ -456,7 +563,8 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
                     required
                     value={largeToMedium}
                     onChange={(e) => setLargeToMedium(e.target.value)}
-                    className={`w-full bg-slate-50 dark:bg-slate-800 border p-4 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all font-bold ${
+                    aria-invalid={errors.largeToMedium ? true : undefined}
+                    className={`w-full bg-slate-50 dark:bg-slate-800 border px-3 py-2.5 rounded-lg focus:ring-2 focus:ring-blue-500/30 outline-none transition-colors font-medium ${
                       errors.largeToMedium ? 'border-red-500 ring-2 ring-red-500/20' : 'border-slate-200 dark:border-slate-700'
                     }`}
                     placeholder="مثال: 3 (مطلوب)"
@@ -471,7 +579,7 @@ export default function AddInventoryModal({ pharmacyId, onClose, onSuccess }: Ad
             <div className="flex gap-4 pt-2">
               <button
                 type="submit"
-                disabled={isSubmitting}
+                disabled={isSubmitting || (isTauri && (pendingRecovery === null || recoveryError || pendingRecovery.length > 0))}
                 className="flex-[2] min-h-11 bg-emerald-700 text-white py-2.5 rounded-lg font-semibold text-sm hover:bg-emerald-800 transition-colors shadow-sm disabled:opacity-50 flex items-center justify-center gap-2"
               >
                 {isSubmitting ? (

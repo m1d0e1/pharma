@@ -3,7 +3,7 @@
 import React, { useRef, useState } from 'react';
 import { format } from 'date-fns';
 import { ar } from 'date-fns/locale';
-import { Search, Filter, Eye, CheckCircle2, XCircle, Clock } from 'lucide-react';
+import { Search, CheckCircle2, XCircle, Clock } from 'lucide-react';
 import { updatePurchaseOrderStatusAction } from '@/app/actions-client/purchases';
 import { toast } from 'react-hot-toast';
 
@@ -53,11 +53,12 @@ export default function PurchaseOrdersClient({ initialOrders }: Props) {
   return (
     <div className="space-y-6">
       {/* Filters */}
-      <div className="flex flex-wrap items-center gap-4 bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm">
+      <div className="flex flex-wrap items-center gap-3 bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
         <div className="relative flex-1 min-w-[240px]">
           <Search className="absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
           <input
             type="text"
+            aria-label="بحث في أوامر الشراء"
             placeholder="بحث برقم الطلب أو اسم المورد..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -67,9 +68,11 @@ export default function PurchaseOrdersClient({ initialOrders }: Props) {
         <div className="flex gap-2">
           {['all', 'pending', 'completed', 'cancelled'].map((f) => (
             <button
+              type="button"
               key={f}
               onClick={() => setFilter(f)}
-              className={`px-4 py-2 rounded-xl text-xs font-black transition-all ${
+              aria-pressed={filter === f}
+              className={`px-3.5 py-2 rounded-lg text-xs font-semibold transition-colors ${
                 filter === f 
                   ? 'bg-blue-600 text-white' 
                   : 'bg-slate-50 dark:bg-slate-800 text-slate-500 hover:bg-slate-100'
@@ -82,8 +85,9 @@ export default function PurchaseOrdersClient({ initialOrders }: Props) {
       </div>
 
       {/* Orders List */}
-      <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-xl overflow-hidden">
-        <table className="w-full text-right">
+      <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+        <div className="overflow-x-auto">
+        <table className="w-full min-w-[900px] text-right">
           <thead>
             <tr className="bg-slate-50/50 dark:bg-slate-800/50 border-b border-slate-100 dark:border-slate-800">
               <th className="px-6 py-4 text-xs font-black text-slate-400">رقم الطلب</th>
@@ -98,7 +102,9 @@ export default function PurchaseOrdersClient({ initialOrders }: Props) {
           <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
             {filtered.length === 0 ? (
               <tr>
-                <td colSpan={7} className="py-20 text-center text-slate-400 font-bold">لا توجد أوامر شراء مطابقة</td>
+                <td colSpan={7} className="py-12 text-center text-slate-500 dark:text-slate-400 font-medium">
+                  {search.trim() || filter !== 'all' ? 'لا توجد أوامر شراء مطابقة للفلاتر الحالية' : 'لا توجد أوامر شراء مسجلة'}
+                </td>
               </tr>
             ) : (
               filtered.map((order: any) => {
@@ -132,6 +138,8 @@ export default function PurchaseOrdersClient({ initialOrders }: Props) {
                         {order.status === 'pending' && (
                           <>
                             <button 
+                              type="button"
+                              aria-label={`إغلاق أمر الشراء ${order.id}`}
                               onClick={() => handleStatusUpdate(order.id, 'completed')}
                               className="p-2 bg-emerald-50 text-emerald-600 rounded-lg hover:bg-emerald-100"
                               title="إغلاق الطلب (التوريد يتم بفاتورة شراء)"
@@ -139,6 +147,8 @@ export default function PurchaseOrdersClient({ initialOrders }: Props) {
                               <CheckCircle2 className="w-4 h-4" />
                             </button>
                             <button 
+                              type="button"
+                              aria-label={`إلغاء أمر الشراء ${order.id}`}
                               onClick={() => handleStatusUpdate(order.id, 'cancelled')}
                               className="p-2 bg-red-50 text-red-600 rounded-lg hover:bg-red-100"
                               title="إلغاء الطلب"
@@ -155,6 +165,7 @@ export default function PurchaseOrdersClient({ initialOrders }: Props) {
             )}
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   );

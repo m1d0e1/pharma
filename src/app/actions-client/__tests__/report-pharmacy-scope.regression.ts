@@ -17,8 +17,9 @@ import {
   getReportsDataAction,
   getSalesTrendAction,
 } from '@/app/actions-client/reports';
-import { getSalesReportsAction } from '@/app/actions-client/sales-reports';
+import { getSalesReportsAction, getInvoiceDetailsAction } from '@/app/actions-client/sales-reports';
 import { dbGet, dbSelect } from '@/lib/db/tauri';
+import { getLocalSession, hasUserPermissionSync } from '@/lib/auth/local';
 
 const mockDbSelect = dbSelect as jest.Mock;
 const mockDbGet = dbGet as jest.Mock;
@@ -129,6 +130,125 @@ describe('report pharmacy scoping', () => {
     expect(String(sql)).toContain('si.pharmacy_id = ?');
     expect(String(sql)).toContain("si.status IN ('completed', 'approved', 'delivered')");
     expect(params).toContain('ph-1');
+  });
+
+  it('does not let a renderer pharmacy filter choose tenant ownership for a legacy actor with no tenant', async () => {
+    (getLocalSession as jest.Mock).mockResolvedValueOnce({ id: 'legacy-1', role: 'admin', pharmacy_id: null });
+    const sqlite = new Database(':memory:');
+    try {
+      sqlite.exec(`
+        CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT, full_name TEXT);
+        CREATE TABLE patients (id TEXT PRIMARY KEY, full_name TEXT);
+        CREATE TABLE sales_invoices (
+          id TEXT PRIMARY KEY, user_id TEXT, patient_id TEXT,
+          pharmacy_id TEXT, status TEXT, created_at TEXT
+        );
+        CREATE TABLE returns (
+          invoice_id TEXT, pharmacy_id TEXT, total_refund REAL, status TEXT
+        );
+        INSERT INTO sales_invoices VALUES
+          ('local-sale', NULL, NULL, NULL, 'completed', '2026-10-12'),
+          ('foreign-sale', NULL, NULL, 'foreign-pharmacy', 'completed', '2026-10-13');
+      `);
+      mockDbSelect.mockImplementationOnce(async (sql: string, params: unknown[] = []) =>
+        sqlite.prepare(sql).all(...params));
+      const result = await getSalesReportsAction({ pharmacyId: 'foreign-pharmacy' });
+      expect(result).toEqual({ success: false, error: 'فشل جلب تقرير المبيعات' });
+      expect(mockDbSelect).not.toHaveBeenCalled();
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it('loads only original invoice items in the session pharmacy, not a foreign invoice', async () => {
+    const sqlite = new Database(':memory:');
+    try {
+      sqlite.exec(`
+        CREATE TABLE sales_invoices (id TEXT PRIMARY KEY, pharmacy_id TEXT);
+        CREATE TABLE sales_items (id TEXT PRIMARY KEY, invoice_id TEXT, drug_id INTEGER);
+        CREATE TABLE master_drugs (id INTEGER PRIMARY KEY, trade_name TEXT, trade_name_en TEXT, active_ingredient TEXT, barcode TEXT);
+        INSERT INTO sales_invoices VALUES ('local-sale','ph-1'),('foreign-sale','ph-2');
+        INSERT INTO sales_items VALUES ('local-item','local-sale',1),('foreign-item','foreign-sale',1);
+        INSERT INTO master_drugs VALUES (1,'Local Drug','Local drug EN','ingredient','barcode');
+      `);
+      mockDbSelect.mockImplementation(async (sql: string, params: unknown[] = []) =>
+        sqlite.prepare(sql).all(...params));
+      expect(await getInvoiceDetailsAction('local-sale')).toMatchObject({
+        success: true, data: [{ id: 'local-item', trade_name: 'Local Drug' }],
+      });
+      expect(await getInvoiceDetailsAction('foreign-sale')).toEqual({ success: true, data: [] });
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it('applies every optional report filter together without admitting another tenant or incomplete invoices', async () => {
+    const sqlite = new Database(':memory:');
+    try {
+      sqlite.exec(`
+        CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT, full_name TEXT);
+        CREATE TABLE patients (id TEXT PRIMARY KEY, full_name TEXT);
+        CREATE TABLE sales_invoices (
+          id TEXT PRIMARY KEY, user_id TEXT, patient_id TEXT,
+          pharmacy_id TEXT, status TEXT, created_at TEXT, payment_method TEXT
+        );
+        CREATE TABLE returns (
+          invoice_id TEXT, pharmacy_id TEXT, total_refund REAL, status TEXT
+        );
+        INSERT INTO users VALUES ('cashier-a','cashier','Cashier A');
+        INSERT INTO patients VALUES ('pat-a','Patient A');
+        INSERT INTO sales_invoices VALUES
+          ('PFX-100','cashier-a','pat-a','ph-1','completed','2026-10-12 09:00:00','cash'),
+          ('PFX-200','cashier-a','pat-a','ph-1','completed','2026-10-12 10:00:00','bank'),
+          ('PFX-300','cashier-a','pat-a','ph-1','draft','2026-10-12 10:00:00','cash'),
+          ('PFX-400','cashier-a','pat-a','ph-2','completed','2026-10-12 10:00:00','cash'),
+          ('PFX-500','cashier-a','pat-a','ph-1','completed','2026-10-13 10:00:00','cash');
+        INSERT INTO returns VALUES
+          ('PFX-100','ph-1',10,'approved'),
+          ('PFX-100','ph-1',2,'completed'),
+          ('PFX-100','ph-1',99,'pending'),
+          ('PFX-100','ph-2',200,'approved');
+      `);
+      mockDbSelect.mockImplementation(async (sql: string, params: unknown[] = []) =>
+        sqlite.prepare(sql).all(...params));
+      const full = await getSalesReportsAction({
+        startDate: '2026-10-12', endDate: '2026-10-12',
+        userId: 'cashier-a', patientId: 'pat-a',
+        paymentMethod: 'cash', invoiceNumber: 'PFX-1',
+        pharmacyId: 'ph-2',
+      });
+      expect(full).toMatchObject({ success: true, data: [{ id: 'PFX-100', staff_name: 'cashier-a', patient_name: null, refunded_amount: 12 }] });
+      expect((full as any).data).toHaveLength(1);
+      const allPaymentMethods = await getSalesReportsAction({ paymentMethod: 'all' });
+      expect((allPaymentMethods as any).data.map((row: any) => row.id)).toEqual(['PFX-500', 'PFX-200', 'PFX-100']);
+      expect(mockDbSelect.mock.calls[1][0]).not.toContain('si.payment_method = ?');
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it('reports database failures without leaking SQL or disclosing an invoice from a denied query', async () => {
+    mockDbSelect.mockRejectedValueOnce(new Error('synthetic private table name'));
+    const muted = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(await getSalesReportsAction({ invoiceNumber: 'invoice' })).toEqual({
+        success: false, error: 'فشل جلب تقرير المبيعات',
+      });
+    } finally {
+      muted.mockRestore();
+    }
+    mockDbSelect.mockRejectedValueOnce(new Error('synthetic inaccessible row'));
+    expect(await getInvoiceDetailsAction('invoice')).toEqual({
+      success: false, error: 'فشل جلب تفاصيل الفاتورة',
+    });
+  });
+
+  it('rejects unauthenticated and unpermitted invoice reports/details before database access', async () => {
+    (getLocalSession as jest.Mock).mockResolvedValueOnce(null);
+    expect(await getSalesReportsAction({})).toEqual({ success: false, error: 'غير مصرح' });
+    (hasUserPermissionSync as jest.Mock).mockReturnValueOnce(false);
+    expect(await getInvoiceDetailsAction('foreign-sale')).toEqual({ success: false, error: 'غير مصرح' });
+    expect(mockDbSelect).not.toHaveBeenCalled();
   });
 
   it('scopes KPI and trend queries to the signed-in pharmacy', async () => {

@@ -54,11 +54,13 @@ describe('Tauri Auth — loginLocal Tauri path', () => {
     jest.resetModules();
     (window as any).__TAURI_INTERNALS__ = true;
     mockStorage.clear();
+    const { invoke } = require('@tauri-apps/api/core');
+    invoke.mockReset();
   });
 
   it('returns error for non-existent user', async () => {
-    const { dbGet } = require('@/lib/db/tauri');
-    dbGet.mockResolvedValue(null);
+    const { invoke } = require('@tauri-apps/api/core');
+    invoke.mockResolvedValue({ success: false, error: 'المستخدم غير موجود' });
     const { loginLocal } = await import('@/lib/auth/local');
     const result = await loginLocal('nobody', 'password');
     expect(result.success).toBe(false);
@@ -66,47 +68,47 @@ describe('Tauri Auth — loginLocal Tauri path', () => {
   });
 
   it('returns error for inactive user', async () => {
-    const { dbGet } = require('@/lib/db/tauri');
-    dbGet.mockResolvedValue({ id: 'u1', is_active: 0, password_hash: null });
+    const { invoke } = require('@tauri-apps/api/core');
+    invoke.mockResolvedValue({ success: false, error: 'الحساب غير نشط' });
     const { loginLocal } = await import('@/lib/auth/local');
     const result = await loginLocal('disabled_user', 'password');
     expect(result.success).toBe(false);
     expect(result.error).toContain('غير نشط');
   });
 
-  it('logs login activity on success', async () => {
-    const { dbGet, dbExecute } = require('@/lib/db/tauri');
-    dbGet.mockResolvedValue({
+  it('uses native credential verification and does not retrieve hashes in the renderer', async () => {
+    const publicUser = {
       id: 'u1', username: 'admin', role: 'owner',
       full_name: 'Admin', pharmacy_id: 'p1',
-      permissions: '[]', is_active: 1, password_hash: '$2b$12$hash',
-    });
+      permissions: '[]',
+    };
     const { invoke } = require('@tauri-apps/api/core');
-    invoke.mockResolvedValue(true);
+    invoke.mockResolvedValue({ success: true, user: publicUser });
     const { loginLocal } = await import('@/lib/auth/local');
 
-    await loginLocal('admin', 'password');
-    expect(dbExecute).toHaveBeenCalledWith(
-      expect.stringContaining("'LOGIN'"),
-      expect.arrayContaining(['u1'])
-    );
+    expect(await loginLocal('admin', 'password')).toMatchObject({ success: true, user: publicUser });
+    expect(invoke).toHaveBeenCalledWith('authenticate_local', { username: 'admin', password: 'password' });
+    const { dbGet, dbExecute } = require('@/lib/db/tauri');
+    expect(dbGet).not.toHaveBeenCalled();
+    expect(dbExecute).not.toHaveBeenCalled();
+    expect(mockLocalStorage.pharma_session_user).not.toContain('password_hash');
   });
 
-  it('retries a transient DB failure when restoring a stored Tauri session', async () => {
+  it('uses native session lookup instead of restoring localStorage identity', async () => {
     mockStorage.setItem('pharma_session_user', JSON.stringify({ id: 'u1', username: 'admin' }));
-    const { dbGet } = require('@/lib/db/tauri');
-    dbGet
-      .mockRejectedValueOnce(new Error('database is still opening'))
-      .mockResolvedValueOnce({
+    const { invoke } = require('@tauri-apps/api/core');
+    invoke.mockResolvedValueOnce({
         id: 'u1', username: 'admin', role: 'owner', full_name: 'Admin',
         pharmacy_id: 'p1', permissions: '{}',
-      });
+    });
 
     const { getClientSession } = await import('@/lib/auth/local');
     const session = await getClientSession();
 
     expect(session?.username).toBe('admin');
-    expect(dbGet).toHaveBeenCalledTimes(2);
+    expect(invoke).toHaveBeenCalledWith('current_local_user');
+    const { dbGet } = require('@/lib/db/tauri');
+    expect(dbGet).not.toHaveBeenCalled();
   });
 });
 

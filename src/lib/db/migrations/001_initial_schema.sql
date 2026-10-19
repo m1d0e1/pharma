@@ -30,8 +30,6 @@ CREATE TABLE IF NOT EXISTS pharmacies (
     tax_card TEXT,
     owner_name TEXT,
     owner_phone TEXT,
-    subscription_id TEXT,
-    subscription_status TEXT DEFAULT 'active',
     last_sync_at DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );

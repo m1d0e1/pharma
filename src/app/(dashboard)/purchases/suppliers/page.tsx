@@ -9,14 +9,15 @@ import {
   updateSupplierAction,
 } from '@/app/actions-client/purchases';
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
+import { isTauri } from '@/lib/env';
 
 export default function SuppliersPage() {
   const [suppliers, setSuppliers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [refreshError, setRefreshError] = useState('');
-  const [canMutate, setCanMutate] = useState(false);
   const [canPay, setCanPay] = useState(false);
+  const [canCreate, setCanCreate] = useState(false);
   const hasLoadedRef = useRef(false);
 
   const loadSuppliers = useCallback(async () => {
@@ -28,21 +29,27 @@ export default function SuppliersPage() {
       setSuppliers(result.data || []);
       setLoadError('');
       setRefreshError('');
-      const canViewSuppliers = !!session && (
-        hasUserPermissionSync(session, 'can_view_suppliers')
-        || hasUserPermissionSync(session, 'can_view_purchases')
-      );
-      setCanMutate(!!session
-        && (session.role === 'owner' || session.role === 'admin')
+      // Creation alone now has a typed native writer. Generic edits/deletes
+      // remain blocked; native session/permission/tenant proof is authoritative.
+      setCanCreate(isTauri && !!session
+        && ['owner', 'admin'].includes(String(session.role || '').trim().toLowerCase())
+        && Boolean(session.pharmacy_id)
+        && session.pharmacy_id !== 'local_default'
         && hasUserPermissionSync(session, 'can_view_suppliers'));
-      setCanPay(!!session
+      setCanPay(isTauri && !!session
+        && typeof session.pharmacy_id === 'string'
+        && !!session.pharmacy_id.trim()
+        && session.pharmacy_id !== 'local_default'
         && hasUserPermissionSync(session, 'can_view_suppliers')
         && hasUserPermissionSync(session, 'acc_can_process_cash_flow'));
       hasLoadedRef.current = true;
     } catch (err) {
       console.error('Failed to load suppliers:', err);
       if (isInitialLoad) {
-        setLoadError(err instanceof Error ? err.message : 'فشل تحميل الموردين');
+        const reason = err instanceof Error ? err.message : '';
+        setLoadError(reason.includes('Legacy purchasing ownership needs independent tenant verification')
+          ? 'تعذر التحقق من ملكية بيانات الموردين. يلزم إثبات تبعية فواتير المشتريات للصيدلية قبل عرض دليل الموردين وأرصدتهم.'
+          : (reason || 'فشل تحميل الموردين'));
       } else {
         setRefreshError('تعذر تحديث قائمة الموردين');
       }
@@ -77,8 +84,12 @@ export default function SuppliersPage() {
 
   if (loadError) {
     return (
-      <div className="rounded-2xl border border-red-200 bg-red-50 p-6 text-center font-bold text-red-700" dir="rtl">
-        {loadError}
+      <div className="flex flex-col items-center gap-4 rounded-2xl border border-red-200 bg-red-50 p-6 text-center font-bold text-red-700" dir="rtl">
+        <p role="alert">{loadError}</p>
+        <button type="button" onClick={() => void loadSuppliers()}
+          className="rounded-xl bg-white px-5 py-2.5 font-bold text-red-800 shadow-sm ring-1 ring-red-200">
+          إعادة المحاولة
+        </button>
       </div>
     );
   }
@@ -100,7 +111,9 @@ export default function SuppliersPage() {
       <div className="flex justify-between items-center" dir="rtl">
         <div>
           <h1 className="text-3xl font-black text-slate-900 dark:text-white">دليل الموردين والحسابات</h1>
-          <p className="text-slate-500 font-bold mt-1">متابعة مديونيات الموردين، كشوف الحسابات، وسداد الدفعات النقدية والبنكية.</p>
+          <p className="text-slate-500 font-bold mt-1">{isTauri
+            ? 'متابعة مديونيات الموردين، كشوف الحسابات، وسداد الدفعات النقدية والبنكية.'
+            : 'متابعة مديونيات الموردين وكشوف الحسابات.'}</p>
         </div>
       </div>
 
@@ -110,7 +123,8 @@ export default function SuppliersPage() {
         onUpdate={handleUpdate}
         onDelete={handleDelete}
         onRefresh={loadSuppliers}
-        canMutate={canMutate}
+        canMutate={false}
+        canCreate={canCreate}
         canPay={canPay}
       />
     </div>

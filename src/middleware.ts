@@ -10,8 +10,11 @@ export async function middleware(request: NextRequest) {
   const isTauriDev = process.env.NEXT_PUBLIC_TAURI === '1';
 
   // Public routes
-  const publicRoutes = ['/login', '/setup', '/subscription'];
-  const isPublicRoute = publicRoutes.some(route => path.startsWith(route));
+  const publicRoutes = ['/login', '/setup'];
+  // Exact packaged public assets must load before login, without exposing
+  // adjacent private routes through a broad file-extension or prefix bypass.
+  const publicAssets = new Set(['/manifest.json', '/news.json', '/icon-192x192.png', '/icon-512x512.png']);
+  const isPublicRoute = publicRoutes.some(route => path.startsWith(route)) || publicAssets.has(path);
 
   // If no token and trying to access protected route
   if (!isTauriDev && !token && !isPublicRoute) {
@@ -21,17 +24,6 @@ export async function middleware(request: NextRequest) {
   // If has token and trying to access login page
   if (!isTauriDev && token && path === '/login') {
     return NextResponse.redirect(new URL('/', request.url));
-  }
-
-  // Check subscription activation for admin
-  if (!isTauriDev && token && path === '/') {
-    const subscriptionActivated = request.cookies.get('subscriptionActivated')?.value;
-    const userRole = request.cookies.get('userRole')?.value;
-
-    // If admin and subscription not activated, redirect to subscription page
-    if (userRole === 'owner' && !subscriptionActivated) {
-      return NextResponse.redirect(new URL('/subscription', request.url));
-    }
   }
 
   // Staff administration is deliberately owner-only. Other protected routes
@@ -61,7 +53,7 @@ export async function middleware(request: NextRequest) {
   // CSP header (Content Security Policy)
   const csp = [
     "default-src 'self'",
-    isTauriDev
+    process.env.NODE_ENV === 'development'
       ? "script-src 'self' 'unsafe-inline' 'unsafe-eval'"
       : "script-src 'self' 'unsafe-inline'",
     "style-src 'self' 'unsafe-inline'",

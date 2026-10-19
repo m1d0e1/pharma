@@ -44,6 +44,7 @@ it('sends only return intent and session identity to the atomic Tauri command', 
 
   expect(result).toEqual({ success: true, id: 'return-1' });
   expect(mockInvoke).toHaveBeenCalledWith('create_purchase_return_critical', {
+    requestId: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/),
     payload: {
       purchase_invoice_id: 'purchase-1',
       supplier_id: 7,

@@ -36,6 +36,7 @@ import { cn } from '@/lib/utils'
 import { toast, Toaster } from 'react-hot-toast'
 import { useSearchParams } from 'next/navigation'
 import { dbSelect } from '@/lib/db/tauri'
+import { isTauri } from '@/lib/env'
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local'
 import { findDrugBarcodeConflict } from '@/app/actions-client/drug-replacement';
 import DrugReplacementDialog from '@/components/master-drugs/DrugReplacementDialog';
@@ -118,6 +119,10 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
    const [currentPage, setCurrentPage] = useState(1);
    const pageSize = 100;
    const [filteredTotal, setFilteredTotal] = useState<number | null>(null);
+   const [catalogLoadError, setCatalogLoadError] = useState(false);
+   const [catalogLoading, setCatalogLoading] = useState(false);
+   const [catalogRetry, setCatalogRetry] = useState(0);
+   const [failedCatalogPage, setFailedCatalogPage] = useState<number | null>(null);
    const [canManageInventory, setCanManageInventory] = useState(false);
    const [canApplyCatalogUpdate, setCanApplyCatalogUpdate] = useState(false);
    const [replacement, setReplacement] = useState<any>(null);
@@ -149,7 +154,6 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
    const saveSubmissionRef = useRef(false);
    const catalogRequestRef = useRef(0);
    const editRequestRef = useRef(0);
-   const [purchaseHistory, setPurchaseHistory] = useState<any[]>([]);
    const itemEditorDialogRef = useDialogFocusTrap<HTMLDivElement>(isModalOpen && !replacement);
 
    useEffect(() => {
@@ -239,51 +243,29 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
      setContextMenu({ x, y, drugId });
    };
 
-   const loadPurchaseHistory = async (drugId: number, requestId: number) => {
-      try {
-         const user = await getClientSession();
-         if (requestId !== editRequestRef.current) return;
-         if (!user) return;
-         const pharmacyId = user.pharmacy_id || 'local_default';
-         const data = await dbSelect(`
-           SELECT pi.invoice_date, pi.invoice_number, pii.quantity, pii.cost_price, s.name_ar as supplier_name
-           FROM purchase_invoice_items pii
-           JOIN purchase_invoices pi ON pii.invoice_id = pi.id
-           JOIN suppliers s ON pi.supplier_id = s.id
-           WHERE pii.drug_id = ? AND pi.status = 'completed'
-             AND (pi.pharmacy_id = ? OR (pi.pharmacy_id IS NULL AND ? = 'local_default'))
-           ORDER BY pi.invoice_date DESC
-           LIMIT 5
-         `, [drugId, pharmacyId, pharmacyId]);
-         if (requestId !== editRequestRef.current) return;
-         setPurchaseHistory(data);
-      } catch (err) {
-         if (requestId !== editRequestRef.current) return;
-         console.error('Failed to load purchase history:', err);
-      }
-   };
-
     const handleExportAll = async () => {
        try {
           const toastId = toast.loading('جاري تصدير جميع الأصناف...');
-          const all = await dbSelect(`
+          const all = isTauri
+            ? await (async () => {
+              const { invoke } = await import('@tauri-apps/api/core');
+              const rows = await invoke<unknown>('export_master_catalog_native');
+              if (!Array.isArray(rows) || rows.length > 10000 ||
+                rows.some(row => !row || typeof row !== 'object' || Array.isArray(row) ||
+                  !Number.isSafeInteger(row.id) || row.id <= 0 ||
+                  typeof row.trade_name !== 'string' || !row.trade_name ||
+                  typeof row.official_price !== 'number' || !Number.isFinite(row.official_price))) {
+                throw new Error('Invalid native master catalog export snapshot');
+              }
+              return rows;
+            })()
+            : await dbSelect(`
              SELECT id, trade_name, trade_name_en, generic_name, active_ingredient, 
                     barcode, official_price, large_unit, medium_unit, small_unit, 
                     large_to_medium, medium_to_small, category, manufacturer, stop_dealing
              FROM master_drugs
           `);
           
-          const { save } = await import('@tauri-apps/plugin-dialog');
-          const filePath = await save({
-            filters: [{ name: 'Excel', extensions: ['xlsx'] }],
-            defaultPath: 'master_drugs_export.xlsx'
-          });
-
-          if (!filePath) {
-            toast.dismiss(toastId);
-            return;
-          }
-
           const XLSX = await import('xlsx');
           const worksheet = XLSX.utils.json_to_sheet(all);
           const workbook = XLSX.utils.book_new();
@@ -291,7 +273,25 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
           
           const fileBytes = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
           const { invoke } = await import('@tauri-apps/api/core');
-          await invoke('write_binary_file', { path: filePath, data: Array.from(new Uint8Array(fileBytes)) });
+          const bytes = Array.from(new Uint8Array(fileBytes));
+          if (isTauri) {
+            const destination = await invoke<string | null>('save_workbook_export_native', {
+              kind: 'catalog', data: bytes,
+            });
+            if (destination === null) { toast.dismiss(toastId); return; }
+            if (typeof destination !== 'string' || !destination) {
+              throw new Error('Native catalog export did not confirm the saved workbook');
+            }
+          } else {
+            // Preserve the browser workflow; native does not trust this path.
+            const { save } = await import('@tauri-apps/plugin-dialog');
+            const filePath = await save({
+              filters: [{ name: 'Excel', extensions: ['xlsx'] }],
+              defaultPath: 'master_drugs_export.xlsx',
+            });
+            if (!filePath) { toast.dismiss(toastId); return; }
+            await invoke('write_binary_file', { path: filePath, data: bytes });
+          }
 
           toast.success('تم التصدير بنجاح!', { id: toastId });
        } catch (err: any) {
@@ -394,13 +394,22 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
       const hasSearch = Boolean(searchTerm.trim());
       const hasFilters = filterType !== 'all' || filterStatus !== 'all' || Boolean(minPrice) || Boolean(maxPrice);
       setCurrentPage(1);
+      setCatalogLoadError(false);
+      setFailedCatalogPage(null);
 
       // On initial load without active search or filters, keep initialItems to prevent flicker/wipe
       if (!hasSearch && !hasFilters && initialItems && initialItems.length > 0) {
+         setCatalogLoading(false);
          setFilteredTotal(null);
          setItems(initialItems);
          return;
       }
+
+      // The previous result belongs to a different filter or authorization
+      // state. Never present it as if it matches this still-pending query.
+      setCatalogLoading(true);
+      setItems([]);
+      setFilteredTotal(null);
 
       const delayDebounceFn = setTimeout(async () => {
          const options = {
@@ -417,24 +426,35 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
          try {
             const res = await searchMasterDrugsAction(options);
             if (requestId !== catalogRequestRef.current) return;
-            if (res.success && res.data) {
+            if (res.success && Array.isArray(res.data)) {
                setItems(res.data);
                setFilteredTotal(res.total ?? res.data.length);
                setCurrentPage(res.page ?? 1);
+               setCatalogLoadError(false);
+            } else {
+               setCatalogLoadError(true);
+               toast.error(res.error || 'فشل البحث في كتالوج الأدوية');
             }
          } catch (err) {
             if (requestId !== catalogRequestRef.current) return;
             console.error('Failed to search master drugs:', err);
+            setCatalogLoadError(true);
             toast.error('فشل البحث في كتالوج الأدوية');
+         } finally {
+            if (requestId === catalogRequestRef.current) setCatalogLoading(false);
          }
       }, 400);
 
       return () => clearTimeout(delayDebounceFn);
-   }, [searchTerm, filterType, filterStatus, minPrice, maxPrice, searchByActive, initialItems]);
+   }, [searchTerm, filterType, filterStatus, minPrice, maxPrice, searchByActive, initialItems, catalogRetry]);
 
    const loadCatalogPage = async (page: number, force = false) => {
       if (page < 1 || page > totalPages || (!force && page === currentPage)) return;
       const requestId = ++catalogRequestRef.current;
+      setCatalogLoadError(false);
+      setCatalogLoading(true);
+      setFailedCatalogPage(null);
+      setItems([]);
       try {
          if (hasActiveListFilters) {
             const res = await searchMasterDrugsAction({
@@ -448,10 +468,12 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                pageSize
             });
             if (requestId !== catalogRequestRef.current) return;
-            if (res.success && res.data) {
+            if (res.success && Array.isArray(res.data)) {
                setItems(res.data);
                setFilteredTotal(res.total ?? res.data.length);
                setCurrentPage(res.page ?? page);
+            } else {
+               throw new Error(res.error || 'Invalid catalog page');
             }
             return;
          }
@@ -462,12 +484,17 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
             LIMIT ? OFFSET ?
          `, [pageSize, offset]) as MasterDrug[];
          if (requestId !== catalogRequestRef.current) return;
-         setItems(pageItems || []);
+         if (!Array.isArray(pageItems)) throw new Error('Invalid catalog page');
+         setItems(pageItems);
          setCurrentPage(page);
       } catch (err) {
          if (requestId !== catalogRequestRef.current) return;
          console.error('Failed to load master-drug catalog page:', err);
+         setCatalogLoadError(true);
+         setFailedCatalogPage(page);
          toast.error('فشل تحميل صفحة الأصناف');
+      } finally {
+         if (requestId === catalogRequestRef.current) setCatalogLoading(false);
       }
    };
 
@@ -501,8 +528,8 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
           return;
        }
        setEditingItem(fresh[0]);
-       setPurchaseHistory([]); // Reset previous
-       if (fresh[0].id) loadPurchaseHistory(fresh[0].id, requestId);
+       // Do not read supplier/purchase history with a client-claimed pharmacy ID.
+       // Historical ownership must be established by a dedicated native scoped read.
        setActiveTab('basic');
        setIsModalOpen(true);
     };
@@ -592,7 +619,7 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
    };
 
    return (
-      <div className="space-y-8 animate-in fade-in duration-700" dir="rtl">
+      <div className="space-y-6" dir="rtl">
          {barcodeConflictReviewOpen && <BarcodeConflictReviewModal
             onClose={() => setBarcodeConflictReviewOpen(false)}
             onEditDrug={async (drug) => {
@@ -641,28 +668,24 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
          }} />}
          <Toaster position="top-center" />
 
-         {/* PREMIUM FILTER HEADER */}
-         <div className="bg-gradient-to-br from-white to-slate-50 dark:from-slate-900 dark:to-slate-950 p-10 rounded-[48px] shadow-soft border border-slate-100 dark:border-slate-800 space-y-8 relative overflow-hidden">
-            <div className="absolute top-0 left-0 w-96 h-96 bg-primary-500/5 rounded-full -ml-48 -mt-48 blur-3xl" />
-
-            <div className="flex flex-wrap items-center justify-between gap-8 relative z-10">
-               <div className="flex items-center gap-5">
-                  <div className="w-16 h-16 bg-gradient-to-br from-primary-500 to-primary-700 rounded-3xl flex items-center justify-center text-white shadow-xl shadow-primary-500/30">
-                     <Package className="w-8 h-8" />
+         {/* Catalog workbench controls */}
+         <div className="bg-white dark:bg-slate-900 p-5 rounded-xl shadow-sm border border-slate-200 dark:border-slate-800 space-y-5">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+               <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-primary-50 dark:bg-primary-950/40 rounded-lg flex items-center justify-center text-primary-700 dark:text-primary-300 border border-primary-100 dark:border-primary-900/60">
+                     <Package className="w-5 h-5" />
                   </div>
                   <div>
-                     <h1 className="text-3xl font-black text-slate-900 dark:text-white tracking-tight">Inventory Management</h1>
-                     <p className="text-slate-500 font-bold flex items-center gap-2">
-                        <span className="w-2 h-2 rounded-full bg-primary-500 animate-pulse" />
-                        Master Inventory Management
-                     </p>
+                     <h2 className="text-lg font-semibold text-slate-900 dark:text-white">دليل الأصناف</h2>
+                     <p className="text-xs text-slate-500 dark:text-slate-400">بحث وتصفية وتحديث بيانات الأصناف</p>
                   </div>
                </div>
 
                 <div className="flex flex-wrap gap-3">
                    <button
                       onClick={handleExportAll}
-                      className="px-6 py-5 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-[24px] font-black hover:bg-slate-200 transition-all flex items-center gap-2"
+                      type="button"
+                      className="px-4 py-2.5 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-lg font-semibold hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors flex items-center gap-2 text-sm"
                    >
                       <Download className="w-5 h-5" />
                       تصدير الكل
@@ -673,14 +696,14 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                          <button
                             type="button"
                             onClick={() => setBarcodeConflictReviewOpen(true)}
-                            className="px-6 py-5 bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-200 border border-amber-300 dark:border-amber-800 rounded-[24px] font-black hover:bg-amber-100 dark:hover:bg-amber-950/50 transition-all flex items-center gap-2"
+                            className="px-4 py-2.5 bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-200 border border-amber-200 dark:border-amber-800 rounded-lg font-semibold hover:bg-amber-100 dark:hover:bg-amber-950/50 transition-colors flex items-center gap-2 text-sm"
                          >
                             <Barcode className="w-5 h-5" />
                             مراجعة تعارضات الباركود
                          </button>
                          {canApplyCatalogUpdate && (
                             <label
-                               className="px-6 py-5 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-[24px] font-black hover:bg-slate-200 transition-all flex items-center gap-2 cursor-pointer"
+                               className="px-4 py-2.5 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-lg font-semibold hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors flex items-center gap-2 cursor-pointer text-sm"
                             >
                                <Upload className="w-5 h-5" />
                                مراجعة تحديث الدليل
@@ -689,16 +712,17 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                                   accept=".xlsx, .xls"
                                   onChange={handleImportAll}
                                   aria-label="اختيار ملف تحديث دليل الأدوية للمراجعة"
-                                  className="hidden"
+                                  className="sr-only"
                                />
                             </label>
                          )}
 
                          <button
+                            type="button"
                             onClick={openAddModal}
-                            className="px-12 py-5 bg-primary-600 text-white rounded-[24px] font-black shadow-2xl shadow-primary-500/30 hover:bg-primary-700 hover:-translate-y-1 active:scale-95 transition-all flex items-center gap-3 group"
+                            className="px-4 py-2.5 bg-primary-700 text-white rounded-lg font-semibold shadow-sm hover:bg-primary-800 transition-colors flex items-center gap-2 text-sm"
                          >
-                            <Plus className="w-6 h-6 group-hover:rotate-90 transition-transform" />
+                            <Plus className="w-4 h-4" />
                             إضافة صنف جديد
                          </button>
                       </>
@@ -706,7 +730,7 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                 </div>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 pt-10 border-t border-slate-200/60 dark:border-slate-800/60 relative z-10">
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 pt-5 border-t border-slate-200 dark:border-slate-800">
                {/* Search Box */}
                <div className="lg:col-span-5 flex flex-col gap-2">
                   <div className="relative group w-full">
@@ -715,8 +739,9 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                      </div>
                      <input
                         type="text"
-                        placeholder="Search by English Trade Name, Active Ingredient, or Barcode..."
-                        className="w-full pr-14 pl-6 py-5 bg-white dark:bg-slate-800/50 rounded-3xl outline-none border-2 border-transparent focus:border-primary-500/20 shadow-inner-lg font-bold dark:text-white transition-all text-lg"
+                        aria-label="بحث في دليل الأصناف"
+                        placeholder="ابحث بالاسم التجاري أو المادة الفعالة أو الباركود..."
+                        className="w-full pr-11 pl-4 py-2.5 bg-white dark:bg-slate-900 rounded-lg outline-none border border-slate-300 dark:border-slate-700 focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20 font-medium dark:text-white transition-colors text-sm"
                         value={searchTerm}
                         onChange={(e) => setSearchTerm(e.target.value)}
                      />
@@ -736,16 +761,18 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                </div>
 
                {/* Type Select */}
-               <div className="lg:col-span-4 flex bg-white dark:bg-slate-800/50 p-2 rounded-3xl border-2 border-transparent shadow-inner-lg">
+               <div className="lg:col-span-4 flex bg-slate-100 dark:bg-slate-800 p-1 rounded-lg border border-slate-200 dark:border-slate-700">
                   {(['all', 'medicine', 'non-medicine', 'service'] as const).map((t) => (
                      <button
+                        type="button"
                         key={t}
                         onClick={() => setFilterType(t)}
+                        aria-pressed={filterType === t}
                         className={cn(
-                           "flex-1 py-4 text-sm font-black rounded-2xl transition-all",
+                           "flex-1 py-2 text-xs font-semibold rounded-md transition-colors",
                            filterType === t
-                              ? "bg-primary-600 text-white shadow-xl shadow-primary-500/20 scale-105"
-                              : "text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+                              ? "bg-white dark:bg-slate-700 text-primary-700 dark:text-primary-300 shadow-sm"
+                              : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
                         )}
                      >
                         {t === 'all' && 'الكل'}
@@ -758,20 +785,22 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
 
                {/* Price & Status Actions */}
                <div className="lg:col-span-3 flex gap-4">
-                  <div className="flex-1 flex items-center gap-3 bg-white dark:bg-slate-800/50 px-6 py-2 rounded-3xl shadow-inner-lg">
+                  <div className="flex-1 flex items-center gap-2 bg-white dark:bg-slate-900 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700">
                      <DollarSign className="w-4 h-4 text-emerald-500" />
                      <input
                         type="number"
+                        aria-label="الحد الأدنى للسعر"
                         placeholder="من"
-                        className="w-full bg-transparent border-none outline-none text-center font-black dark:text-white text-base"
+                        className="w-full bg-transparent border-none outline-none text-center font-semibold dark:text-white text-sm tabular-nums"
                         value={minPrice}
                         onChange={(e) => setMinPrice(e.target.value)}
                      />
                      <span className="text-slate-300">|</span>
                      <input
                         type="number"
+                        aria-label="الحد الأقصى للسعر"
                         placeholder="إلى"
-                        className="w-full bg-transparent border-none outline-none text-center font-black dark:text-white text-base"
+                        className="w-full bg-transparent border-none outline-none text-center font-semibold dark:text-white text-sm tabular-nums"
                         value={maxPrice}
                         onChange={(e) => setMaxPrice(e.target.value)}
                      />
@@ -781,31 +810,41 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
          </div>
 
          {/* ITEMS DISPLAY */}
-         <div className="bg-white dark:bg-slate-900/60 rounded-3xl shadow-hard border border-slate-100 dark:border-slate-800 overflow-hidden relative">
+         <div className="bg-white dark:bg-slate-900 rounded-xl shadow-sm border border-slate-200 dark:border-slate-800 overflow-hidden relative">
+            {catalogLoadError && (
+               <div role="alert" className="flex flex-wrap items-center justify-center gap-4 p-6 text-rose-700 dark:text-rose-300">
+                  <p className="font-bold">تعذر تحميل نتائج دليل الأصناف</p>
+                  <button type="button" className="rounded-lg border px-4 py-2 font-semibold"
+                     onClick={() => failedCatalogPage !== null ? void loadCatalogPage(failedCatalogPage, true) : setCatalogRetry(current => current + 1)}>
+                     إعادة محاولة البحث في دليل الأصناف
+                  </button>
+               </div>
+            )}
+            {catalogLoading && <p role="status" className="p-6 text-center font-semibold">جاري البحث في دليل الأصناف...</p>}
             <div className="overflow-x-auto custom-scrollbar">
                <table className="w-full text-right border-collapse">
                   <thead>
                      <tr className="bg-slate-50/50 dark:bg-slate-800/40 border-b border-slate-100 dark:border-slate-800">
-                        <th className="px-10 py-7 font-black text-slate-400 text-xs uppercase tracking-widest">ID</th>
-                        <th className="px-10 py-7 font-black text-slate-400 text-xs uppercase tracking-widest">Trade Name (English)</th>
-                        <th className="px-10 py-7 font-black text-slate-400 text-xs uppercase tracking-widest">Scientific Info</th>
-                        <th className="px-10 py-7 font-black text-slate-400 text-xs uppercase tracking-widest text-center">Official Price</th>
-                        <th className="px-10 py-7 font-black text-slate-400 text-xs uppercase tracking-widest">Manufacturer</th>
-                        <th className="px-10 py-7 font-black text-slate-400 text-xs uppercase tracking-widest text-center">الإجراءات</th>
+                        <th className="px-4 py-3 font-semibold text-slate-600 dark:text-slate-300 text-xs">الرقم</th>
+                        <th className="px-4 py-3 font-semibold text-slate-600 dark:text-slate-300 text-xs">الاسم التجاري</th>
+                        <th className="px-4 py-3 font-semibold text-slate-600 dark:text-slate-300 text-xs">المادة الفعالة والباركود</th>
+                        <th className="px-4 py-3 font-semibold text-slate-600 dark:text-slate-300 text-xs text-center">السعر الرسمي</th>
+                        <th className="px-4 py-3 font-semibold text-slate-600 dark:text-slate-300 text-xs">الشركة المصنعة</th>
+                        <th className="px-4 py-3 font-semibold text-slate-600 dark:text-slate-300 text-xs text-center">الإجراءات</th>
                      </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                      {items.map((item) => (
                         <tr key={item.id} onContextMenu={(e) => handleContextMenu(e, item.id)} className={cn(
-                           "group hover:bg-primary-500/5 dark:hover:bg-primary-500/5 transition-all duration-300",
+                           "group hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors",
                            item.stop_dealing === 1 && "bg-rose-50/30 dark:bg-rose-900/10 opacity-75"
                         )}>
-                           <td className="px-10 py-6">
-                              <span className="font-black text-slate-400 group-hover:text-primary-600 transition-colors">#{item.id}</span>
+                           <td className="px-4 py-3">
+                              <span className="font-semibold text-slate-500 group-hover:text-primary-700 transition-colors">#{item.id}</span>
                            </td>
-                           <td className="px-10 py-6">
+                           <td className="px-4 py-3">
                               <div>
-                                 <div className="font-black text-lg text-slate-900 dark:text-white group-hover:translate-x-1 transition-transform inline-block">
+                                 <div className="font-semibold text-sm text-slate-900 dark:text-white inline-block">
                                     {item.trade_name_en || item.trade_name || item.active_ingredient || '---'}
                                  </div>
                                  {item.trade_name && (
@@ -815,11 +854,11 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                                   )}
                               </div>
                            </td>
-                           <td className="px-10 py-6">
+                           <td className="px-4 py-3">
                               <div className="flex flex-col gap-1">
                                  <div className="flex items-center gap-2">
                                     <FlaskConical className="w-3.5 h-3.5 text-primary-500" />
-                                    <span className="text-xs font-black text-slate-600 dark:text-slate-300 truncate max-w-[200px]">
+                                    <span className="text-xs font-semibold text-slate-600 dark:text-slate-300 truncate max-w-[200px]">
                                        {item.active_ingredient || '---'}
                                     </span>
                                  </div>
@@ -831,26 +870,26 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                                  </div>
                               </div>
                            </td>
-                           <td className="px-10 py-6 text-center">
-                              <div className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400 rounded-2xl font-black border border-emerald-100 dark:border-emerald-800/30">
-                                 <span className="text-lg">{item.official_price}</span>
+                           <td className="px-4 py-3 text-center">
+                              <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400 rounded-lg font-semibold border border-emerald-100 dark:border-emerald-800/30 tabular-nums">
+                                 <span className="text-sm">{item.official_price}</span>
                                  <span className="text-xs opacity-80">ج.م</span>
                               </div>
                            </td>
-                           <td className="px-10 py-6">
+                           <td className="px-4 py-3">
                               <div className="flex items-center gap-3">
                                  <div className="w-8 h-8 bg-slate-100 dark:bg-slate-800 rounded-lg flex items-center justify-center">
                                     <Factory className="w-4 h-4 text-slate-400" />
                                  </div>
-                                 <span className="text-xs font-black text-slate-500 uppercase tracking-tight">{item.manufacturer || '---'}</span>
+                                 <span className="text-xs font-medium text-slate-500">{item.manufacturer || '---'}</span>
                               </div>
                            </td>
-                           <td className="px-10 py-6">
-                              <div className="flex justify-center gap-3 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 transition-opacity">
+                           <td className="px-4 py-3">
+                              <div className="flex justify-center gap-1.5 opacity-100">
                                  <button
                                     onClick={() => setDetailsDrugId(item.id)}
                                     aria-label={`عرض تفاصيل ${item.trade_name_en || item.trade_name || item.id}`}
-                                    className="p-3 bg-white dark:bg-slate-800 text-slate-500 rounded-2xl shadow-soft hover:bg-slate-100 dark:hover:bg-slate-700 transition-all active:scale-90"
+                                    className="inline-flex h-10 w-10 items-center justify-center bg-slate-50 dark:bg-slate-800 text-slate-600 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
                                     title="عرض التفاصيل الكاملة"
                                  >
                                     <Eye className="w-5 h-5" />
@@ -860,7 +899,7 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                                        <button
                                           onClick={() => openEditModal(item)}
                                           aria-label={`تعديل ${item.trade_name_en || item.trade_name || item.id}`}
-                                          className="p-3 bg-white dark:bg-slate-800 text-primary-600 rounded-2xl shadow-soft hover:bg-primary-600 hover:text-white transition-all active:scale-90"
+                                          className="inline-flex h-10 w-10 items-center justify-center bg-primary-50 dark:bg-primary-950/30 text-primary-700 dark:text-primary-300 rounded-lg border border-primary-100 dark:border-primary-900/50 hover:bg-primary-100 dark:hover:bg-primary-950/50 transition-colors"
                                           title="تعديل بيانات الصنف"
                                        >
                                           <Edit className="w-5 h-5" />
@@ -868,7 +907,7 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                                        <button
                                           onClick={() => handleCopy(item)}
                                           aria-label={`نسخ بيانات ${item.trade_name_en || item.trade_name || item.id}`}
-                                          className="p-3 bg-white dark:bg-slate-800 text-slate-400 rounded-2xl shadow-soft hover:bg-slate-900 dark:hover:bg-slate-700 hover:text-white transition-all active:scale-90"
+                                          className="inline-flex h-10 w-10 items-center justify-center bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
                                           title="نسخ بيانات الصنف"
                                        >
                                           <Copy className="w-5 h-5" />
@@ -883,10 +922,10 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                </table>
             </div>
 
-            <div className="p-10 bg-slate-50/50 dark:bg-slate-800/40 flex justify-between items-center border-t border-slate-100 dark:border-slate-800">
+            {!catalogLoadError && !catalogLoading && <div className="p-4 bg-slate-50/70 dark:bg-slate-800/40 flex flex-wrap justify-between items-center gap-3 border-t border-slate-200 dark:border-slate-800">
                 <div className="flex items-center gap-4">
-                   <div className="w-3 h-3 rounded-full bg-primary-500" />
-                   <p className="text-sm font-black text-slate-500">
+                   <div className="w-2 h-2 rounded-full bg-primary-500" />
+                   <p className="text-sm font-semibold text-slate-500">
                       إجمالي الأصناف: <span className="text-slate-900 dark:text-white ml-1">
                          {effectiveTotal}
                       </span>
@@ -897,24 +936,24 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                 </div>
                {totalPages > 1 && (
                   <div className="flex items-center gap-3">
-                     <span className="text-xs font-black text-slate-400">صفحة {currentPage} من {totalPages}</span>
+                     <span className="text-xs font-semibold text-slate-500">صفحة {currentPage} من {totalPages}</span>
                      <div className="flex gap-2">
                         <button
                            type="button"
                            disabled={currentPage === 1}
                            onClick={() => loadCatalogPage(currentPage - 1)}
-                           className="px-6 py-3 bg-white dark:bg-slate-800 rounded-2xl text-xs font-black text-slate-400 disabled:opacity-50 border border-slate-100 dark:border-slate-700"
+                           className="px-3.5 py-2 bg-white dark:bg-slate-800 rounded-lg text-xs font-semibold text-slate-600 dark:text-slate-300 disabled:opacity-50 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
                         >السابق</button>
                         <button
                            type="button"
                            disabled={currentPage === totalPages}
                            onClick={() => loadCatalogPage(currentPage + 1)}
-                           className="px-6 py-3 bg-white dark:bg-slate-800 rounded-2xl text-xs font-black text-slate-400 disabled:opacity-50 border border-slate-100 dark:border-slate-700"
+                           className="px-3.5 py-2 bg-white dark:bg-slate-800 rounded-lg text-xs font-semibold text-slate-600 dark:text-slate-300 disabled:opacity-50 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
                         >التالي</button>
                      </div>
                   </div>
                )}
-            </div>
+            </div>}
          </div>
 
          {/* PREMIUM MODAL */}
@@ -931,8 +970,8 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                            <h2 id="item-editor-title" className="text-2xl sm:text-3xl font-black text-slate-900 dark:text-white tracking-tight">
                               {editingItem.id ? 'تعديل بيانات الصنف' : 'إضافة صنف جديد لقاعدة البيانات'}
                            </h2>
-                           <p className="text-slate-500 font-bold mt-1">
-                              {editingItem.id ? `تحرير: ${editingItem.trade_name_en || editingItem.trade_name}` : 'Product Information & Configuration'}
+                           <p className="text-slate-500 font-medium mt-1">
+                              {editingItem.id ? `تحرير: ${editingItem.trade_name_en || editingItem.trade_name}` : 'بيانات الصنف وإعداداته'}
                            </p>
                         </div>
                      </div>
@@ -947,33 +986,33 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                   </div>
 
                   {/* Modal Tabs */}
-                  <div className="flex bg-slate-50 dark:bg-slate-900 p-2 gap-2 mx-4 sm:mx-6 mt-4 sm:mt-6 rounded-2xl border border-slate-100 dark:border-slate-800/60 overflow-x-auto no-scrollbar">
+                  <div className="flex bg-slate-50 dark:bg-slate-900 p-1 gap-1 mx-4 sm:mx-6 mt-4 rounded-lg border border-slate-200 dark:border-slate-800 overflow-x-auto no-scrollbar">
                      <button type="button" aria-pressed={activeTab === 'basic'} onClick={() => setActiveTab('basic')} className={cn(
-                        "flex-1 min-w-[150px] py-5 px-8 rounded-2xl font-black transition-all flex items-center justify-center gap-3 relative overflow-hidden",
-                        activeTab === 'basic' ? "bg-white dark:bg-slate-700 text-primary-600 shadow-xl" : "text-slate-400 hover:text-slate-600 dark:text-slate-500"
+                        "flex-1 min-w-[135px] py-2.5 px-4 rounded-md font-semibold transition-colors flex items-center justify-center gap-2 relative overflow-hidden text-sm",
+                        activeTab === 'basic' ? "bg-white dark:bg-slate-700 text-primary-700 dark:text-primary-300 shadow-sm" : "text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200"
                      )}>
-                        <Info className="w-6 h-6" /> البيانات الأساسية
+                        <Info className="w-4 h-4" /> البيانات الأساسية
                         {activeTab === 'basic' && <div className="absolute bottom-0 left-0 right-0 h-1 bg-primary-600" />}
                      </button>
                      <button type="button" aria-pressed={activeTab === 'units'} onClick={() => setActiveTab('units')} className={cn(
-                        "flex-1 min-w-[150px] py-5 px-8 rounded-2xl font-black transition-all flex items-center justify-center gap-3 relative overflow-hidden",
-                        activeTab === 'units' ? "bg-white dark:bg-slate-700 text-primary-600 shadow-xl" : "text-slate-400 hover:text-slate-600 dark:text-slate-500"
+                        "flex-1 min-w-[135px] py-2.5 px-4 rounded-md font-semibold transition-colors flex items-center justify-center gap-2 relative overflow-hidden text-sm",
+                        activeTab === 'units' ? "bg-white dark:bg-slate-700 text-primary-700 dark:text-primary-300 shadow-sm" : "text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200"
                      )}>
-                        <Layers className="w-6 h-6" /> الوحدات والأسعار
+                        <Layers className="w-4 h-4" /> الوحدات والأسعار
                         {activeTab === 'units' && <div className="absolute bottom-0 left-0 right-0 h-1 bg-primary-600" />}
                      </button>
                      <button type="button" aria-pressed={activeTab === 'financial'} onClick={() => setActiveTab('financial')} className={cn(
-                        "flex-1 min-w-[150px] py-5 px-8 rounded-2xl font-black transition-all flex items-center justify-center gap-3 relative overflow-hidden",
-                        activeTab === 'financial' ? "bg-white dark:bg-slate-700 text-primary-600 shadow-xl" : "text-slate-400 hover:text-slate-600 dark:text-slate-500"
+                        "flex-1 min-w-[135px] py-2.5 px-4 rounded-md font-semibold transition-colors flex items-center justify-center gap-2 relative overflow-hidden text-sm",
+                        activeTab === 'financial' ? "bg-white dark:bg-slate-700 text-primary-700 dark:text-primary-300 shadow-sm" : "text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200"
                      )}>
-                        <DollarSign className="w-6 h-6" /> البيانات المالية
+                        <DollarSign className="w-4 h-4" /> البيانات المالية
                         {activeTab === 'financial' && <div className="absolute bottom-0 left-0 right-0 h-1 bg-primary-600" />}
                      </button>
                      <button type="button" aria-pressed={activeTab === 'advanced'} onClick={() => setActiveTab('advanced')} className={cn(
-                        "flex-1 min-w-[150px] py-5 px-8 rounded-2xl font-black transition-all flex items-center justify-center gap-3 relative overflow-hidden",
-                        activeTab === 'advanced' ? "bg-white dark:bg-slate-700 text-primary-600 shadow-xl" : "text-slate-400 hover:text-slate-600 dark:text-slate-500"
+                        "flex-1 min-w-[135px] py-2.5 px-4 rounded-md font-semibold transition-colors flex items-center justify-center gap-2 relative overflow-hidden text-sm",
+                        activeTab === 'advanced' ? "bg-white dark:bg-slate-700 text-primary-700 dark:text-primary-300 shadow-sm" : "text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200"
                      )}>
-                        <Settings className="w-6 h-6" /> خيارات متقدمة
+                        <Settings className="w-4 h-4" /> خيارات متقدمة
                         {activeTab === 'advanced' && <div className="absolute bottom-0 left-0 right-0 h-1 bg-primary-600" />}
                      </button>
                   </div>
@@ -1111,32 +1150,9 @@ export default function ItemsManagementClient({ initialItems, totalCount }: Prop
                                     <h4 className="font-black text-blue-900 dark:text-blue-400">آخر حركات الشراء</h4>
                                  </div>
                                  <div className="space-y-4">
-                                    {purchaseHistory.length > 0 ? (
-                                       <div className="overflow-hidden rounded-2xl border border-blue-100 dark:border-blue-800">
-                                          <table className="w-full text-right text-xs">
-                                             <thead className="bg-blue-100 dark:bg-blue-800/50">
-                                                <tr>
-                                                   <th className="p-3 font-black">التاريخ</th>
-                                                   <th className="p-3 font-black">المورد</th>
-                                                   <th className="p-3 font-black text-center">الكمية</th>
-                                                   <th className="p-3 font-black text-center">السعر</th>
-                                                </tr>
-                                             </thead>
-                                             <tbody className="divide-y divide-blue-100 dark:divide-blue-800">
-                                                {purchaseHistory.map((h, i) => (
-                                                   <tr key={i} className="bg-white/50 dark:bg-transparent">
-                                                      <td className="p-3 font-bold">{h.invoice_date}</td>
-                                                      <td className="p-3 font-bold">{h.supplier_name}</td>
-                                                      <td className="p-3 font-black text-center text-blue-600">{h.quantity}</td>
-                                                      <td className="p-3 font-black text-center text-emerald-600">{h.cost_price.toFixed(2)}</td>
-                                                   </tr>
-                                                ))}
-                                             </tbody>
-                                          </table>
-                                       </div>
-                                    ) : (
-                                       <p className="text-xs font-bold text-blue-400 italic">لا توجد حركات شراء مسجلة حالياً لهذا الصنف</p>
-                                    )}
+                                    <p className="text-xs font-bold text-blue-700 dark:text-blue-300" role="status">
+                                       سجل المشتريات غير متاح دون تحقق مستقل من ملكية بيانات الصيدلية
+                                    </p>
                                  </div>
                               </div>
                            </div>

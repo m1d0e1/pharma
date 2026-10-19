@@ -30,6 +30,8 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [processing, setProcessing] = useState(false);
   const processingRef = useRef(false);
+  const [committed, setCommitted] = useState(false);
+  const committedRef = useRef(false);
 
   // Credit details modal
   const [showCreditModal, setShowCreditModal] = useState(false);
@@ -38,7 +40,9 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
   const creditDialogRef = useDialogFocusTrap<HTMLDivElement>(showCreditModal);
 
   const [form, setForm] = useState({
-    actualCash: 0,
+    // A blank physical count is NOT a witnessed zero-cash drawer. Preserve
+    // absence until the operator actually types the counted amount.
+    actualCash: '' as number | '',
     transferAmount: 0,
     transferTargetId: '',
     transferTargetType: 'treasury' as 'bank' | 'pos' | 'treasury' | 'next_shift',
@@ -49,6 +53,8 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
 
   useEffect(() => {
     let cancelled = false;
+    committedRef.current = false;
+    setCommitted(false);
 
     async function loadData() {
       setLoading(true);
@@ -65,10 +71,6 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
         if (cancelled) return;
         if (!detailsRes.success || !detailsRes.data) throw new Error(detailsRes.error || 'فشل تحميل بيانات التسليم');
         setDetails(detailsRes.data);
-        setForm(prev => ({
-          ...prev,
-          actualCash: prev.actualCash || 0
-        }));
 
         const banksRes = await getBanksAction();
         if (cancelled) return;
@@ -121,6 +123,13 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (committedRef.current) return;
+    if (form.actualCash === '' || !Number.isFinite(form.actualCash) ||
+        form.actualCash < 0 || form.actualCash > 1_000_000_000 ||
+        Math.abs(form.actualCash * 100 - Math.round(form.actualCash * 100)) > 0.000001) {
+      toast.error('يجب إدخال النقدية المعدودة فعليًا بدقة القرش قبل تسليم الدرج');
+      return;
+    }
     if (form.transferAmount < 0) {
       toast.error('مبلغ التحويل غير صالح');
       return;
@@ -141,16 +150,23 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
       const res = await processHandoverAction({
         shiftId,
         ...form,
+        actualCash: form.actualCash,
         receiverPasswordHash: form.receiverPassword,
         autoOpenNewShift: true
       });
 
       if (res.success) {
+        committedRef.current = true;
+        setCommitted(true);
         toast.success(`تم التسليم وإغلاق الوردية وفتح وردية مشتركة جديدة (رصيد الدرج الجديد ${Number(res.remainingCash ?? 0).toFixed(2)} ج.م)`);
-        if (onClose) {
-          onClose();
-        } else {
-          window.location.href = '/shifts';
+        try {
+          if (onClose) {
+            onClose();
+          } else {
+            window.location.href = '/shifts';
+          }
+        } catch {
+          toast.error('تم التسليم لكن تعذر إغلاق شاشة التسليم');
         }
       } else {
         toast.error(res.error || 'فشل إتمام العملية');
@@ -263,10 +279,14 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
                       id="handover-actual-cash"
                       type="number" 
                       step="0.01" 
+                      min="0"
+                      required
+                      aria-required="true"
                       className="w-full pr-12 pl-4 py-4 bg-slate-50 dark:bg-slate-800 border-none rounded-2xl font-black text-xl outline-none focus:ring-2 ring-blue-500 text-slate-900 dark:text-white"
                       placeholder="0.00"
                       value={form.actualCash}
-                      onChange={(e) => setForm({...form, actualCash: parseFloat(e.target.value) || 0})}
+                      onChange={(e) => setForm({...form,
+                        actualCash: e.target.value.trim() === '' ? '' : Number(e.target.value) })}
                     />
                   </div>
                 </div>
@@ -367,13 +387,13 @@ export default function DrawerHandoverClient({ shiftId, onClose }: DrawerHandove
               <p className="mb-3 text-sm text-slate-600 dark:text-slate-300">عند التأكيد سيتم إغلاق الوردية الحالية وتسجيل التسليم وفتح وردية مشتركة جديدة تلقائياً، مع ترحيل النقدية المتبقية وحفظ اسم منفّذ كل عملية.</p>
               <button 
                 type="submit"
-                disabled={processing}
+                disabled={processing || committed}
                 className={cn(
                   "w-full py-4 bg-slate-900 text-white rounded-2xl font-black text-lg flex items-center justify-center gap-3 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2",
-                  processing ? "opacity-50 cursor-not-allowed" : "hover:bg-slate-800"
+                  processing || committed ? "opacity-50 cursor-not-allowed" : "hover:bg-slate-800"
                 )}
               >
-                {processing ? 'جاري التنفيذ...' : (
+                {committed ? 'تم تسليم الدرج' : processing ? 'جاري التنفيذ...' : (
                   <>
                     <ShieldCheck className="w-8 h-8" /> إتمام تسليم الدرج
                   </>

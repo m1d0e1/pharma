@@ -135,9 +135,9 @@ function createTransactionDb(
 async function getTauriDb() {
   if (!tauriDbPromise) {
     tauriDbPromise = (async () => {
-      const DatabasePlugin = (await import('@tauri-apps/plugin-sql')).default;
-      const database = await DatabasePlugin.load('sqlite:pharma_local.db');
-      return database;
+      // All database access must pass native IPC licensing/session/SQL guards.
+      // Loading the SQL plugin here would expose an independent direct DB path.
+      return { guardedNativeConnection: true };
     })().catch(error => {
       tauriDbPromise = null;
       throw error;
@@ -155,8 +155,9 @@ export async function dbSelect<T = any>(sql: string, params: any[] = []): Promis
   }
 
   if (isTauriEnv) {
-    const db = await getTauriDb();
-    return normalizeDatabaseTimestamps(await db.select(sql, safeParams));
+    return normalizeDatabaseTimestamps(await (await import('@tauri-apps/api/core')).invoke<T[]>(
+      'db_select_guarded', { sql, params: safeParams, txId: null }
+    ));
   }
 
   // Web client-side: call database server action
@@ -164,6 +165,33 @@ export async function dbSelect<T = any>(sql: string, params: any[] = []): Promis
   const result = await serverDbSelect(sql, safeParams);
   if (!result.success) throw new Error(result.error || 'Database query failed');
   return normalizeDatabaseTimestamps((result.data || []) as T[]);
+}
+
+/**
+ * Bounded native-only business read. No caller SQL or claimed pharmacy is
+ * accepted; the Rust command binds the current authenticated actor and tenant.
+ * Keep paging explicit so oversized inventories fail instead of truncating.
+ */
+export async function dbReadScopedAll<T = any>(
+  queryId: 'inventory.enriched',
+  filters: { search?: string | null; drugId?: number | null } = {}
+): Promise<T[]> {
+  if (!isTauriEnv) throw new Error('Native scoped reads require the Pharma desktop app');
+  const { invoke } = await import('@tauri-apps/api/core');
+  const pageSize = 200;
+  const rows: T[] = [];
+  for (let offset = 0; offset <= 50_000; offset += pageSize) {
+    const page = await invoke<T[]>('db_read_scoped', {
+      queryId, recordId: null, limit: pageSize, offset,
+      search: filters.search ?? null, drugId: filters.drugId ?? null,
+    });
+    if (!Array.isArray(page) || page.length > pageSize) {
+      throw new Error('Invalid native scoped inventory page');
+    }
+    rows.push(...page);
+    if (page.length < pageSize) return normalizeDatabaseTimestamps(rows);
+  }
+  throw new Error('Inventory exceeds the native paginated read window; export requires keyset paging');
 }
 
 export async function dbGet<T = any>(sql: string, params: any[] = []): Promise<T | null> {
@@ -188,7 +216,6 @@ export async function dbExecute(
   }
 
   if (isTauriEnv) {
-    await getTauriDb();
     return runTauriStandaloneWrite(sql, safeParams);
   }
 
@@ -229,7 +256,10 @@ export async function runTauriTransaction<T>(_db: any, callback: (transactionDb:
       return result;
     } catch (error) {
       try {
-        await invoke('db_transaction_finish', { txId, commit: false });
+        // The license may have expired while this transaction was running.
+        // A guarded FINISH command would now reject even rollback; the
+        // window-owned abort endpoint is always rollback-only.
+        await invoke('db_transaction_abort', { txId });
       } catch (rollbackError) {
         console.error('Failed to rollback Tauri transaction:', rollbackError);
       }

@@ -1583,7 +1583,10 @@ describe('Cross-computer consistency across fresh install and update', () => {
         payment_method: 'cash',
         notes: 'restart lifecycle supplier payment',
         date: '2026-09-28',
-      })).toMatchObject({ success: true, remainingBalance: 250 });
+      })).toMatchObject({ success: false });
+      // There is no branch-owned supplier provenance in browser fallback;
+      // never settle a global shared balance as a side-effect of this chain.
+      expect(mockDb.prepare("SELECT COUNT(*) AS n FROM supplier_transactions WHERE type='payment'").get()).toEqual({ n: 0 });
 
       expect(await addFinancialNoticeAction({
         target_type: 'supplier',
@@ -1612,7 +1615,7 @@ describe('Cross-computer consistency across fresh install and update', () => {
         shift_id: shiftId,
       })).toMatchObject({ success: true });
 
-      expect(mockDb.prepare('SELECT balance FROM suppliers WHERE id = 1').get()).toEqual({ balance: 270 });
+      expect(mockDb.prepare('SELECT balance FROM suppliers WHERE id = 1').get()).toEqual({ balance: 320 });
       expect(mockDb.prepare('SELECT quantity FROM inventory WHERE id = ?').get(inventory.id)).toEqual({ quantity: 8 });
 
       const patientOutstanding = mockDb.prepare(`
@@ -1636,7 +1639,7 @@ describe('Cross-computer consistency across fresh install and update', () => {
       `).all();
       expect(unbalancedBeforeRestart).toEqual([]);
 
-      const expectedDrawerCash = 200 + 30 - 50 + 15;
+      const expectedDrawerCash = 200 + 30 + 15;
       const handover = await processHandoverAction({
         shiftId,
         actualCash: expectedDrawerCash,
@@ -1694,18 +1697,15 @@ describe('Cross-computer consistency across fresh install and update', () => {
 
       // Branch-owned finance definitions are pharmacy-scoped as of migration 028.
       expect((await getBanksAction()).data?.find((bank: any) => Number(bank.id) === 1)).toBeUndefined();
-      // Supplier and patient master/subledger ownership remains intentionally global
-      // in the current architecture; only their branch-owned operational rows are scoped.
-      expect((await getSuppliersAction()).data?.find((supplier: any) => Number(supplier.id) === 1)?.balance).toBe(270);
+      // Supplier identity is listed only after an explicit owned invoice;
+      // foreign tenants must not read the shared global supplier balance.
+      expect((await getSuppliersAction()).data?.find((supplier: any) => Number(supplier.id) === 1)).toBeUndefined();
       const foreignPatientProfile = await getPatientProfileAction('patient-1');
-      expect(foreignPatientProfile).toMatchObject({
-        success: true,
-        data: {
-          purchaseHistory: [],
-          outstandingBalance: 40,
-        },
-      });
-      expect((foreignPatientProfile.data as any)?.payments).toHaveLength(1);
+      // An owner who switches to another pharmacy must not learn a shared
+      // global patient's historic credit debt or payment details. Earlier
+      // expectations incorrectly required leaking 40 EGP and one payment.
+      expect(foreignPatientProfile.success).toBe(false);
+      expect((foreignPatientProfile as any).data).toBeUndefined();
     } finally {
       try { mockDb?.close(); } catch {}
       rmSync(tempDir, { recursive: true, force: true });

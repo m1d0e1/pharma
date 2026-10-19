@@ -96,6 +96,32 @@ describe('coverage gap: staff-management direct controls', () => {
     expect(screen.getByRole('option', { name: 'كاشير (Cashier)' })).toHaveValue('cashier');
   });
 
+  it('masks reset input and describes the native eight-character mixed-case digit symbol policy', async () => {
+    const user = userEvent.setup();
+    renderStaff();
+
+    await user.click(screen.getByTitle('إعادة تعيين كلمة المرور'));
+    const field = screen.getByLabelText('كلمة المرور الجديدة');
+    const confirm = screen.getByRole('button', { name: 'تأكيد التغيير' });
+    expect(field).toHaveAttribute('type', 'password');
+    expect(screen.getByText(/8 أحرف على الأقل/)).toHaveTextContent(/حرف كبير.*حرف صغير.*رقم.*رمز/);
+    await user.type(field, 'Abcdef1');
+    expect(confirm).toBeDisabled();
+    await user.type(field, '2');
+    expect(confirm).toBeDisabled();
+    await user.type(field, '!');
+    expect(confirm).toBeEnabled();
+    await user.clear(field);
+    await user.type(field, 'abcdefgh1!');
+    expect(confirm).toBeDisabled();
+    await user.clear(field);
+    await user.type(field, 'ABCDEFGH1!');
+    expect(confirm).toBeDisabled();
+    await user.clear(field);
+    await user.type(field, 'Abcdefgh!');
+    expect(confirm).toBeDisabled();
+  });
+
   it('enforces reset-password minimum length, preserves failure state, and closes after success', async () => {
     const onResetPassword = jest.fn()
       .mockResolvedValueOnce({ success: false, error: 'reset rejected' })
@@ -113,10 +139,13 @@ describe('coverage gap: staff-management direct controls', () => {
     await user.type(password, '12345');
     expect(confirm).toBeDisabled();
     await user.type(password, '6');
+    expect(confirm).toBeDisabled();
+    await user.clear(password);
+    await user.type(password, 'Strong!Pass1');
     expect(confirm).toBeEnabled();
     await user.click(confirm);
 
-    await waitFor(() => expect(onResetPassword).toHaveBeenCalledWith('staff-1', '123456'));
+    await waitFor(() => expect(onResetPassword).toHaveBeenCalledWith('staff-1', 'Strong!Pass1'));
     expect(toast.error).toHaveBeenCalledWith('reset rejected');
     expect(screen.getByRole('heading', { name: 'إعادة تعيين المرور' })).toBeInTheDocument();
 
@@ -150,7 +179,7 @@ describe('coverage gap: staff-management direct controls', () => {
     await user.click(screen.getByTitle('إعادة تعيين كلمة المرور'));
     const resetDialog = screen.getByRole('dialog', { name: 'إعادة تعيين المرور' });
     await waitFor(() => expect(resetDialog).toContainElement(document.activeElement as HTMLElement));
-    await user.type(screen.getByPlaceholderText('أدخل كلمة المرور الجديدة'), 'abcdef');
+    await user.type(screen.getByPlaceholderText('أدخل كلمة المرور الجديدة'), 'Strong!Pass1');
     await user.click(screen.getByRole('button', { name: 'تأكيد التغيير' }));
 
     await waitFor(() => expect(screen.getByRole('button', { name: 'تأكيد التغيير' })).toBeEnabled());
@@ -223,7 +252,7 @@ describe('coverage gap: staff-management direct controls', () => {
     renderStaff({ onResetPassword });
 
     await user.click(screen.getByTitle('إعادة تعيين كلمة المرور'));
-    await user.type(screen.getByPlaceholderText('أدخل كلمة المرور الجديدة'), 'abcdef');
+    await user.type(screen.getByPlaceholderText('أدخل كلمة المرور الجديدة'), 'Strong!Pass1');
     const confirm = screen.getByRole('button', { name: 'تأكيد التغيير' });
 
     act(() => {

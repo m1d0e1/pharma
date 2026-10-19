@@ -65,6 +65,14 @@ describe('today shift UI wiring', () => {
     expect(screen.getByLabelText('المستلم')).toHaveValue('receiver');
     expect(screen.getByLabelText('كلمة مرور المستلم')).toHaveAttribute('type', 'password');
 
+    // A physical zero must be explicitly witnessed, not inferred from a
+    // cleared/untouched count input.
+    expect(screen.getByLabelText('النقدية المعدودة فعليًا في درج الوردية')).toHaveValue(null);
+    fireEvent.click(await screen.findByRole('button', { name: /إتمام تسليم الدرج/ }));
+    expect(processHandoverAction).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText('النقدية المعدودة فعليًا في درج الوردية'), {
+      target: { value: '0' },
+    });
     fireEvent.click(await screen.findByRole('button', { name: /إتمام تسليم الدرج/ }));
 
     await waitFor(() => expect(processHandoverAction).toHaveBeenCalledWith(expect.objectContaining({
@@ -106,6 +114,7 @@ describe('today shift UI wiring', () => {
 
     render(<DrawerHandoverClient shiftId="shift-1" onClose={jest.fn()} />);
     const submitButton = await screen.findByRole('button', { name: /إتمام تسليم الدرج/ });
+    fireEvent.change(screen.getByLabelText('النقدية المعدودة فعليًا في درج الوردية'), { target: { value: '0' } });
     fireEvent.click(submitButton);
 
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith('فشل إتمام العملية'));
@@ -119,6 +128,7 @@ describe('today shift UI wiring', () => {
     render(<DrawerHandoverClient shiftId="shift-1" onClose={jest.fn()} />);
     const submitButton = await screen.findByRole('button', { name: /إتمام تسليم الدرج/ });
     const form = submitButton.closest('form') as HTMLFormElement;
+    fireEvent.change(screen.getByLabelText('النقدية المعدودة فعليًا في درج الوردية'), { target: { value: '0' } });
 
     act(() => {
       fireEvent.submit(form);
@@ -159,6 +169,7 @@ describe('today shift UI wiring', () => {
 
     render(<PosDrawerHandoverModal isOpen onClose={jest.fn()} />);
     const saveButton = await screen.findByRole('button', { name: 'حفظ S' });
+    fireEvent.change(screen.getByLabelText('النقدية المعدودة فعليًا في درج الوردية'), { target: { value: '0' } });
     fireEvent.click(saveButton);
 
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith('فشل تسليم الدرج'));
@@ -172,6 +183,7 @@ describe('today shift UI wiring', () => {
     render(<PosDrawerHandoverModal isOpen onClose={jest.fn()} />);
     const submitButton = await screen.findByRole('button', { name: 'حفظ S' });
     const form = submitButton.closest('form') as HTMLFormElement;
+    fireEvent.change(screen.getByLabelText('النقدية المعدودة فعليًا في درج الوردية'), { target: { value: '0' } });
 
     act(() => {
       fireEvent.submit(form);
@@ -192,6 +204,7 @@ describe('today shift UI wiring', () => {
     render(<PosDrawerHandoverModal isOpen onClose={onClose} />);
     const submitButton = await screen.findByRole('button', { name: 'حفظ S' });
     const form = submitButton.closest('form') as HTMLFormElement;
+    fireEvent.change(screen.getByLabelText('النقدية المعدودة فعليًا في درج الوردية'), { target: { value: '0' } });
     fireEvent.submit(form);
     await waitFor(() => expect(processHandoverAction).toHaveBeenCalledTimes(1));
 
@@ -279,7 +292,8 @@ describe('today shift UI wiring', () => {
     rerender(<PosDrawerHandoverModal isOpen onClose={onClose} />);
 
     await waitFor(() => expect(getHandoverDetailsAction).toHaveBeenCalledWith('shift-b'));
-    expect((screen.getByPlaceholderText('أدخل النقدية المعدودة في درج الوردية...') as HTMLInputElement).value).toBe('0');
+    // Reopening an unrelated shift must never imply an observed physical zero.
+    expect((screen.getByPlaceholderText('أدخل النقدية المعدودة في درج الوردية...') as HTMLInputElement).value).toBe('');
     fireEvent.click(screen.getByTitle('عرض تفاصيل فواتير الآجل والعملاء'));
     await waitFor(() => expect(getShiftCreditSalesAction).toHaveBeenLastCalledWith('shift-b'));
     expect(screen.queryByText('#invoice-a')).not.toBeInTheDocument();

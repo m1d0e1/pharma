@@ -1,6 +1,6 @@
 {
   "name": "phrama-system",
-  "version": "0.2.109",
+  "version": "0.2.110",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -12,16 +12,16 @@
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
     "test:ci": "jest --ci --coverage",
+    "qa:background": "node scripts/qa-background.js",
     "seed:db": "node scripts/seed-db.js --dest src-tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "cross-env RUSTUP_TOOLCHAIN=1.77.2-x86_64-pc-windows-msvc tauri build --target x86_64-pc-windows-msvc",
-    "tauri:build:win7-x86": "npm run seed:db && npm run build:tauri && cross-env RUSTUP_TOOLCHAIN=1.77.2-x86_64-pc-windows-msvc tauri build --bundles nsis --target i686-pc-windows-msvc --config src-tauri/tauri.windows7.conf.json",
+    "tauri:build:win7-x86": "node scripts/check-commercial-release-seed.js && npm run build:tauri && cross-env RUSTUP_TOOLCHAIN=1.77.2-x86_64-pc-windows-msvc tauri build --bundles nsis --target i686-pc-windows-msvc --config src-tauri/tauri.windows7.conf.json",
     "build:tauri": "node scripts/build-tauri.js",
     "tauri": "tauri"
   },
   "dependencies": {
     "@sentry/nextjs": "^10.50.0",
-    "@supabase/ssr": "^0.10.2",
     "@supabase/supabase-js": "^2.104.1",
     "@tauri-apps/api": "^2.11.0",
     "@tauri-apps/plugin-dialog": "^2.7.1",
@@ -39,7 +39,7 @@
     "dotenv": "^17.4.2",
     "jsonwebtoken": "^9.0.3",
     "lucide-react": "^0.460.0",
-    "next": "15.1.0",
+    "next": "15.5.27",
     "node-machine-id": "^1.1.12",
     "react": "19.0.0",
     "react-barcode": "^1.6.1",
@@ -51,7 +51,7 @@
     "tailwind-merge": "^2.6.1",
     "tsx": "^4.21.0",
     "uuid": "^14.0.0",
-    "xlsx": "^0.18.5",
+    "xlsx": "npm:@e965/xlsx@0.20.3",
     "zod": "^4.3.6",
     "zustand": "^5.0.13"
   },
@@ -71,11 +71,16 @@
     "eslint-config-next": "^16.2.9",
     "jest": "^30.3.0",
     "jest-environment-jsdom": "^30.4.1",
-    "postcss": "^8.4.31",
+    "postcss": "^8.5.29",
     "tailwindcss": "^3.3.5",
     "ts-jest": "^29.4.9",
     "typescript": "^5.2.2",
     "wait-on": "^8.0.1"
+  },
+  "overrides": {
+    "next": {
+      "postcss": "8.5.29"
+    }
   },
   "author": "Pharma Management Team",
   "description": "Professional Pharmacy Management System with Local Database Enforcer"

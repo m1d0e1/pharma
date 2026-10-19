@@ -10,6 +10,20 @@ on:
     - cron: '0 0 * * 1'
 
 jobs:
+  licensing-authority:
+    name: Licensing authority security tests (synthetic HTTPS)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install licensing test dependencies
+        run: python -m pip install -r scripts/licensing/requirements.txt
+      - name: Test HTTPS activation, replay, revocation, and release policy
+        run: python -B -m unittest discover -s scripts/licensing -p 'test_*.py' -q
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -126,9 +140,15 @@ jobs:
         run: npm run build:tauri
 
       - name: Build release executable and installer
+        env:
+          # Only the public verification key belongs in build CI.
+          PHARMA_LICENSE_VERIFY_KEY_B64: ${{ vars.PHARMA_LICENSE_VERIFY_KEY_B64 }}
+          PHARMA_LICENSE_DEVICE_MODE: tpm-v2
+          PHARMA_LICENSE_OFFLINE_ONLY: ${{ vars.PHARMA_LICENSE_OFFLINE_ONLY }}
+          PHARMA_LICENSE_AUTHORITY_URL: ${{ vars.PHARMA_LICENSE_AUTHORITY_URL }}
         run: npx tauri build ${{ matrix.build_args }} --target ${{ matrix.target }} --config src-tauri/tauri.local-build.conf.json
 
-      - name: Verify shared Windows 7+ x64 baseline
+      - name: Verify x64 PE baseline (not Windows 7 runtime support)
         if: matrix.runner == 'windows-2022'
         shell: pwsh
         run: |
@@ -147,7 +167,7 @@ jobs:
           $headers = (& $dumpbin /headers $executable) -join "`n"
           if ($headers -notmatch '(?im)^\s*8664 machine \(x64\)\s*$' -or
               $headers -notmatch '(?im)^\s*6\.00 subsystem version\s*$') {
-            throw "The x64 executable does not use the shared Windows 7+ PE baseline:`n$headers"
+            throw "The x64 executable does not use the expected PE subsystem baseline:`n$headers"
           }
 
           $dependencies = (& $dumpbin /dependents $executable) -join "`n"
@@ -199,8 +219,13 @@ jobs:
           Test-Launch 'first'
           Test-Launch 'restart'
 
+          # Without an operator-issued license, startup intentionally denies
+          # business DB creation/migrations. Valid-license migration is covered
+          # by separate isolated licensing QA and native schema tests.
           $databasePath = Join-Path $env:APPDATA 'com.pharma.system\pharma_local.db'
-          node -e "const Database=require('better-sqlite3');const db=new Database(process.argv[1],{readonly:true});const ok=db.pragma('integrity_check',{simple:true})==='ok'&&db.pragma('foreign_key_check').length===0&&db.prepare('SELECT COUNT(*) count FROM _sqlx_migrations').get().count>=12;db.close();if(!ok)process.exit(1)" $databasePath
+          if (Test-Path -LiteralPath $databasePath) {
+            throw 'Unlicensed clean-profile launch must not initialize a production pharmacy database.'
+          }
 
       - name: Clean smoke profile
         if: always()
@@ -222,8 +247,8 @@ jobs:
             }
           }
 
-  windows7-x86:
-    name: Windows 7 SP1 x86 legacy artifact
+  windows-x86-tpm:
+    name: Windows x86 TPM-required artifact (Windows 7 unsupported)
     runs-on: windows-2022
     timeout-minutes: 60
     steps:
@@ -235,7 +260,7 @@ jobs:
           node-version: '22'
           cache: 'npm'
 
-      - name: Install Windows 7-compatible Rust
+      - name: Install pinned Windows x86 Rust
         uses: dtolnay/rust-toolchain@1.77.2
         with:
           targets: i686-pc-windows-msvc
@@ -252,7 +277,12 @@ jobs:
       - name: Build desktop frontend
         run: npm run build:tauri
 
-      - name: Build Windows 7 x86 installer
+      - name: Build TPM-required Windows x86 installer
+        env:
+          PHARMA_LICENSE_VERIFY_KEY_B64: ${{ vars.PHARMA_LICENSE_VERIFY_KEY_B64 }}
+          PHARMA_LICENSE_DEVICE_MODE: tpm-v2
+          PHARMA_LICENSE_OFFLINE_ONLY: ${{ vars.PHARMA_LICENSE_OFFLINE_ONLY }}
+          PHARMA_LICENSE_AUTHORITY_URL: ${{ vars.PHARMA_LICENSE_AUTHORITY_URL }}
         run: npx tauri build --bundles nsis --target i686-pc-windows-msvc --config src-tauri/tauri.windows7.conf.json
 
       - name: Verify x86 executable and static CRT
@@ -279,7 +309,7 @@ jobs:
 
           $headers = (& $dumpbin /headers $executable) -join "`n"
           if ($headers -notmatch '(?im)^\s*6\.00 subsystem version\s*$') {
-            throw "The legacy executable does not declare a Windows 7-compatible subsystem:`n$headers"
+            throw "The x86 executable does not declare the expected PE subsystem version:`n$headers"
           }
 
           $dependencies = (& $dumpbin /dependents $executable) -join "`n"
@@ -293,8 +323,8 @@ jobs:
           $executable = Resolve-Path -LiteralPath 'src-tauri/target/i686-pc-windows-msvc/release/pharma.exe'
 
           function Test-Launch([string]$phase) {
-            $stdoutPath = Join-Path $env:RUNNER_TEMP "pharma-win7-$phase.stdout.log"
-            $stderrPath = Join-Path $env:RUNNER_TEMP "pharma-win7-$phase.stderr.log"
+            $stdoutPath = Join-Path $env:RUNNER_TEMP "pharma-x86-$phase.stdout.log"
+            $stderrPath = Join-Path $env:RUNNER_TEMP "pharma-x86-$phase.stderr.log"
             $appProcess = Start-Process `
               -FilePath $executable `
               -PassThru `
@@ -332,12 +362,14 @@ jobs:
           Test-Launch 'restart'
 
           $databasePath = Join-Path $env:APPDATA 'com.pharma.system\pharma_local.db'
-          node -e "const Database=require('better-sqlite3');const db=new Database(process.argv[1],{readonly:true});const ok=db.pragma('integrity_check',{simple:true})==='ok'&&db.pragma('foreign_key_check').length===0&&db.prepare('SELECT COUNT(*) count FROM _sqlx_migrations').get().count>=12;db.close();if(!ok)process.exit(1)" $databasePath
+          if (Test-Path -LiteralPath $databasePath) {
+            throw 'Unlicensed x86 clean-profile launch must not initialize a production pharmacy database.'
+          }
 
-      - name: Upload Windows 7 x86 installer
+      - name: Upload Windows x86 TPM-required installer
         uses: actions/upload-artifact@v4
         with:
-          name: windows7-x86-nsis
+          name: windows-x86-tpm-required-nsis
           path: src-tauri/target/i686-pc-windows-msvc/release/bundle/nsis/*-setup.exe
           if-no-files-found: error
 

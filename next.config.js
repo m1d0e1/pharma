@@ -26,9 +26,6 @@ const nextConfig = {
       config.resolve.alias = {
         ...config.resolve.alias,
         '@/app/actions': path.resolve(__dirname, 'src/app/actions-client'),
-        '@/utils/supabase/server': path.resolve(__dirname, 'src/utils/supabase/client'),
-        [path.resolve(__dirname, 'src/utils/supabase/server')]: path.resolve(__dirname, 'src/utils/supabase/client'),
-        [path.resolve(__dirname, 'src/utils/supabase/server.ts')]: path.resolve(__dirname, 'src/utils/supabase/client.ts'),
       };
     }
     if (!isServer) {

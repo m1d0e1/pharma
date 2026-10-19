@@ -29,6 +29,20 @@ function extractDrugName(action: string, details: string): string {
   return '---';
 }
 
+function movementDrugNames(move: { drug_names?: unknown; action: string; details: string }): string {
+  if (Array.isArray(move.drug_names) && move.drug_names.every((name) => typeof name === 'string')) {
+    const names = move.drug_names.filter((name: string) => name.trim().length > 0);
+    // Keep historical Arabic audit labels available where the native
+    // source has no resolvable reference. English IDs never imply a name.
+    if (names.length) return names.join('، ');
+    const legacyInventoryAction = ['ADD_INVENTORY', 'UPDATE_INVENTORY', 'DELETE_INVENTORY', 'ADJUST_STOCK', 'OPENING_BALANCE'].includes(move.action);
+    return legacyInventoryAction && /^[\u0600-\u06ff]/.test(move.details?.trim() || '')
+      ? extractDrugName(move.action, move.details)
+      : '---';
+  }
+  return extractDrugName(move.action, move.details);
+}
+
 export default function ItemMovementsPage() {
   const [user, setUser] = useState<any>(null);
   const [movements, setMovements] = useState<any[]>([]);
@@ -94,7 +108,7 @@ export default function ItemMovementsPage() {
   }
 
   const filteredMovements = movements.filter((move: any) => {
-    const parsedName = extractDrugName(move.action, move.details);
+    const parsedName = movementDrugNames(move);
     const text = `${move.action} ${parsedName} ${move.details} ${move.user_name || ''} ${move.username || ''} ${move.user_id}`.toLowerCase();
     return text.includes(searchTerm.toLowerCase());
   });
@@ -150,7 +164,7 @@ export default function ItemMovementsPage() {
                     {move.action}
                   </span>
                 </td>
-                <td className="px-8 py-6 font-black text-slate-900 dark:text-white">{extractDrugName(move.action, move.details)}</td>
+                <td className="px-8 py-6 font-black text-slate-900 dark:text-white">{movementDrugNames(move)}</td>
                 <td className="px-8 py-6 font-bold text-slate-600 dark:text-slate-400">{move.details}</td>
                 <td className="px-8 py-6 text-center font-bold text-slate-500 dark:text-slate-400">
                   {move.user_name || move.username || `@${move.user_id}`}

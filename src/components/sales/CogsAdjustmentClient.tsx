@@ -1,188 +1,86 @@
 'use client';
 
-import React, { useRef, useState } from 'react';
-import { 
-  Edit3, Search, DollarSign, 
-  TrendingDown, TrendingUp, History,
-  Save, AlertCircle
-} from 'lucide-react';
-import { cn } from '@/lib/utils';
-import { getSoldItemsForCogsAdjustmentAction, updateSoldItemCostAction } from '@/app/actions-client/cogs';
-import toast from 'react-hot-toast';
-import { format } from 'date-fns';
+import React from 'react';
+import { Edit3, Search, LockKeyhole } from 'lucide-react';
 
+// The action layer refuses correction candidates and writes in every runtime.
+// Do not render an optimistic search result, editable sale row, or Save handler
+// until source-verified append-only native posting and return reversal exist.
 export default function CogsAdjustmentClient() {
-  const [searchTerm, setSearchTerm] = useState('');
-  const [items, setItems] = useState<any[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [adjustingId, setAdjustingId] = useState<number | null>(null);
-  const [newCosts, setNewCosts] = useState<Record<number, number>>({});
-  const searchTermRef = useRef(searchTerm);
-  const searchRequestRef = useRef(0);
-  const pendingUpdateIdsRef = useRef(new Set<number>());
-
-  const handleSearch = async () => {
-    const term = searchTermRef.current;
-    const requestId = ++searchRequestRef.current;
-    setLoading(true);
-    try {
-      const res = await getSoldItemsForCogsAdjustmentAction(term);
-      if (requestId !== searchRequestRef.current) return;
-      if (res.success) {
-        setItems(res.data || []);
-      } else {
-        toast.error(res.error || 'فشل البحث');
-      }
-    } catch {
-      if (requestId === searchRequestRef.current) {
-        toast.error('فشل البحث');
-      }
-    } finally {
-      if (requestId === searchRequestRef.current) {
-        setLoading(false);
-      }
-    }
-  };
-
-  const handleUpdate = async (itemId: number) => {
-    const cost = newCosts[itemId];
-    if (!cost || cost <= 0) {
-      toast.error('يرجى إدخال تكلفة صحيحة');
-      return;
-    }
-    if (pendingUpdateIdsRef.current.has(itemId)) return;
-
-    pendingUpdateIdsRef.current.add(itemId);
-    setAdjustingId(itemId);
-    try {
-      const res = await updateSoldItemCostAction(itemId, cost);
-      if (res.success) {
-        toast.success('تم تعديل تكلفة الصنف المباع بنجاح');
-        void handleSearch();
-      } else {
-        toast.error(res.error || 'فشل التعديل');
-      }
-    } catch {
-      toast.error('فشل التعديل');
-    } finally {
-      pendingUpdateIdsRef.current.delete(itemId);
-      setAdjustingId(null);
-    }
-  };
-
   return (
-    <div className="space-y-8 pb-20" dir="rtl">
-      {/* Header */}
-      <div className="bg-white dark:bg-slate-900 p-8 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-sm">
-        <h1 className="text-3xl font-black text-slate-800 dark:text-white flex items-center gap-4">
-          <Edit3 className="w-10 h-10 text-blue-500" />
+    <div className="space-y-6 pb-20" dir="rtl">
+      <section className="rounded-[40px] border border-slate-100 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:p-8">
+        <h1 className="flex items-center gap-4 text-2xl font-black text-slate-800 dark:text-white sm:text-3xl">
+          <Edit3 aria-hidden="true" className="h-9 w-9 shrink-0 text-blue-500" />
           تعديل تكلفة الأصناف المباعة
         </h1>
-        <p className="text-slate-500 font-bold mt-2">تصحيح تكلفة الشراء للأصناف بعد إتمام عملية البيع لأغراض محاسبية</p>
-        
-        <div className="mt-8 flex gap-4">
-          <div className="relative flex-1">
-            <Search className="absolute right-4 top-1/2 -translate-y-1/2 w-6 h-6 text-slate-400" />
-            <input 
-              type="text" 
-              aria-label="بحث باسم الصنف أو رقم الفاتورة"
-              className="w-full pr-14 pl-6 py-4 bg-slate-50 dark:bg-slate-800 border-none rounded-2xl font-bold outline-none focus:ring-2 ring-blue-500"
-              placeholder="ابحث باسم الصنف أو رقم الفاتورة..."
-              value={searchTerm}
-              onChange={(e) => {
-                setSearchTerm(e.target.value);
-                searchTermRef.current = e.target.value;
-              }}
-              onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-            />
-          </div>
-          <button 
-            onClick={handleSearch}
-            className="px-10 py-4 bg-slate-900 text-white rounded-2xl font-black hover:bg-slate-800 transition-all"
-          >
-            بحث
-          </button>
-        </div>
-      </div>
+        <p className="mt-2 text-sm font-bold text-slate-500 dark:text-slate-400">
+          تصحيح تكلفة الأصناف بعد البيع يتطلب إثباتاً محاسبياً أصلياً مستقلاً، ولا يُنفَّذ بتغيير تكلفة سطر البيع.
+        </p>
 
-      {items.length > 0 ? (
-        <div className="bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 overflow-hidden shadow-sm">
-          <div className="overflow-x-auto">
-          <table className="w-full min-w-[900px] text-right">
-            <thead className="bg-slate-50 dark:bg-slate-800/50">
-              <tr className="text-slate-500 text-xs font-black">
-                <th className="px-8 py-6">الصنف والفاتورة</th>
-                <th className="px-8 py-6">التاريخ</th>
-                <th className="px-8 py-6">سعر البيع</th>
-                <th className="px-8 py-6">التكلفة المسجلة</th>
-                <th className="px-8 py-6">هامش الربح الحالي</th>
-                <th className="px-8 py-6 w-48">التكلفة الجديدة</th>
-                <th className="px-8 py-6 text-left">حفظ</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {items.map((item) => {
-                const profit = item.unit_price - item.current_inv_cost;
-                const profitMargin = (profit / item.unit_price) * 100;
-                
-                return (
-                  <tr key={item.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
-                    <td className="px-8 py-6">
-                      <p className="font-black text-slate-800 dark:text-white">{item.trade_name}</p>
-                      <p className="text-xs font-mono text-blue-500 font-bold">INV #{item.invoice_id.slice(0, 8)}</p>
-                    </td>
-                    <td className="px-8 py-6 font-bold text-slate-400 text-xs">
-                      {format(new Date(item.invoice_date), 'yyyy/MM/dd')}
-                    </td>
-                    <td className="px-8 py-6 font-black">{item.unit_price.toLocaleString()}</td>
-                    <td className="px-8 py-6 font-bold text-slate-500">{item.current_inv_cost.toLocaleString()}</td>
-                    <td className="px-8 py-6">
-                      <div className="flex items-center gap-2">
-                        {profit >= 0 ? <TrendingUp className="w-4 h-4 text-emerald-500" /> : <TrendingDown className="w-4 h-4 text-rose-500" />}
-                        <span className={cn("font-black", profit >= 0 ? "text-emerald-600" : "text-rose-600")}>
-                          %{profitMargin.toFixed(1)}
-                        </span>
-                      </div>
-                    </td>
-                    <td className="px-8 py-6">
-                      <div className="relative">
-                        <DollarSign className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                        <input 
-                          type="number" 
-                          aria-label={`التكلفة الجديدة لـ ${item.trade_name}`}
-                          step="0.01"
-                          className="w-full pr-10 pl-3 py-3 bg-slate-50 dark:bg-slate-800 border border-slate-100 dark:border-slate-700 rounded-xl font-black outline-none focus:ring-2 ring-blue-500"
-                          value={newCosts[item.id] || ''}
-                          onChange={(e) => setNewCosts({...newCosts, [item.id]: parseFloat(e.target.value) || 0})}
-                        />
-                      </div>
-                    </td>
-                    <td className="px-8 py-6 text-left">
-                      <button 
-                        type="button"
-                        aria-label={`حفظ تكلفة ${item.trade_name}`}
-                        onClick={() => handleUpdate(item.id)}
-                        disabled={adjustingId === item.id}
-                        className={cn(
-                          "p-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-all shadow-lg",
-                          adjustingId === item.id && "opacity-50"
-                        )}
-                      >
-                        <Save className="w-5 h-5" />
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+        <p
+          id="cogs-unavailable-notice"
+          role="alert"
+          className="mt-5 rounded-xl border border-amber-400 bg-amber-50 p-4 text-sm font-bold leading-7 text-amber-950 dark:bg-amber-950/30 dark:text-amber-100"
+        >
+          تصحيح تكلفة المبيعات غير متاح حالياً في التطبيق الأصلي أو المتصفح حتى التحقق من مصدر تكلفة الاقتناء
+          وإثبات البيع والمرتجعات الأصلي، وتوفير تصحيح إضافي موثق بقيد مستقل غير قابل للتعديل وطلب يمنع التكرار،
+          مع تسوية قيود المرتجعات اللاحقة والتقارير. لا يجوز إعادة كتابة تكلفة سطر بيع أو مرتجع مُرحّل أو تغيير
+          قيده الأصلي. لا يعني تعطيل البحث عدم وجود مبيعات مسجلة؛ راجع تقرير المبيعات وميزان المراجعة.
+        </p>
+
+        <div
+          role="group"
+          aria-label="البحث وتصحيح تكلفة المبيعات غير متاح"
+          className="mt-6 grid gap-5"
+        >
+          <div className="flex flex-col gap-3 sm:flex-row">
+            <div className="relative min-w-0 flex-1">
+              <Search aria-hidden="true" className="absolute right-4 top-1/2 h-5 w-5 -translate-y-1/2 text-slate-400" />
+              <input
+                type="text"
+                aria-label="بحث باسم الصنف أو رقم الفاتورة"
+                aria-describedby="cogs-unavailable-notice"
+                placeholder="ابحث باسم الصنف أو رقم الفاتورة..."
+                disabled
+                readOnly
+                className="w-full cursor-not-allowed rounded-2xl border border-slate-200 bg-slate-100 py-3 pl-4 pr-12 font-bold text-slate-500 opacity-70 dark:border-slate-700 dark:bg-slate-800"
+              />
+            </div>
+            <button
+              type="button"
+              disabled
+              aria-describedby="cogs-unavailable-notice"
+              className="cursor-not-allowed rounded-2xl bg-slate-400 px-8 py-3 font-black text-white opacity-60"
+            >
+              بحث
+            </button>
+          </div>
+
+          <div className="flex flex-col gap-3 border-t border-slate-200 pt-5 dark:border-slate-700 sm:flex-row sm:items-end">
+            <label className="min-w-0 flex-1 text-sm font-bold text-slate-600 dark:text-slate-300">
+              التكلفة الجديدة
+              <input
+                type="number"
+                aria-label="التكلفة الجديدة"
+                aria-describedby="cogs-unavailable-notice"
+                disabled
+                readOnly
+                className="mt-2 w-full cursor-not-allowed rounded-2xl border border-slate-200 bg-slate-100 px-4 py-3 opacity-60 dark:border-slate-700 dark:bg-slate-800"
+              />
+            </label>
+            <button
+              type="button"
+              disabled
+              aria-describedby="cogs-unavailable-notice"
+              className="flex cursor-not-allowed items-center justify-center gap-2 rounded-2xl bg-slate-400 px-8 py-3 font-black text-white opacity-60"
+            >
+              <LockKeyhole aria-hidden="true" className="h-5 w-5" />
+              حفظ التكلفة
+            </button>
           </div>
         </div>
-      ) : !loading && searchTerm && (
-        <div className="p-20 text-center bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 text-slate-400 font-bold italic">
-          لم يتم العثور على نتائج للبحث...
-        </div>
-      )}
+      </section>
     </div>
   );
 }

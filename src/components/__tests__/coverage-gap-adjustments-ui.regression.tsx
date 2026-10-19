@@ -72,6 +72,35 @@ describe('stock-adjustment client interactions', () => {
     expect(screen.queryByText('الرصيد الحالي: 8')).not.toBeInTheDocument();
   });
 
+  it('never interprets a cleared quantity field as an intentional zero-stock adjustment', async () => {
+    (createStockAdjustmentAction as jest.Mock).mockResolvedValue({ success: true });
+    render(<AdjustmentsClient reasons={[{ id: 9, name_ar: 'جرد فعلي' }]} />);
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'البحث عن صنف لتسوية المخزون' }), { target: { value: 'Adju' } });
+    fireEvent.click(await screen.findByRole('button', { name: /Adjustment Drug/ }));
+    fireEvent.change(screen.getByRole('combobox', { name: 'سبب التسوية' }), { target: { value: '9' } });
+
+    const quantityInput = screen.getByRole('spinbutton', { name: 'الكمية الجديدة' });
+    expect(quantityInput).toHaveValue(8);
+    fireEvent.change(quantityInput, { target: { value: '' } });
+    expect(quantityInput).toHaveValue(null);
+    fireEvent.click(screen.getByRole('button', { name: 'تنفيذ التسوية' }));
+
+    expect(createStockAdjustmentAction).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledWith('يرجى إدخال كمية جديدة صالحة');
+    expect(screen.getByText('الرصيد الحالي: 8')).toBeInTheDocument();
+
+    fireEvent.change(quantityInput, { target: { value: '0' } });
+    fireEvent.click(screen.getByRole('button', { name: 'تنفيذ التسوية' }));
+
+    await waitFor(() => expect(createStockAdjustmentAction).toHaveBeenCalledWith('inventory-1', {
+      reason_id: 9,
+      old_quantity: 8,
+      new_quantity: 0,
+    }));
+    expect(createStockAdjustmentAction).toHaveBeenCalledTimes(1);
+  });
+
   it('surfaces inventory-search failure and clears stale suggestions', async () => {
     (dbSelect as jest.Mock)
       .mockResolvedValueOnce([inventoryRow])

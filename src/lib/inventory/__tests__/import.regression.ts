@@ -21,7 +21,7 @@ function adapter(db: Database.Database): InventoryImportDatabase {
     // A Tauri transaction queues standalone calls behind itself. Imports must only
     // use the callback's scoped database once the transaction begins.
     select: async (sql, params = []) => {
-      if (!/^\s*PRAGMA\s+table_info/i.test(sql)) throw new Error('standalone select inside import');
+      if (sql !== 'SELECT name FROM pragma_table_info(?)') throw new Error('standalone select inside import');
       return db.prepare(sql).all(...params as any[]);
     },
     execute: async () => { throw new Error('standalone execute inside import'); },

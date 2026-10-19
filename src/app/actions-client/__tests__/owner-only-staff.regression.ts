@@ -95,6 +95,22 @@ it('lets the owner administer staff and jobs, read performance, and requires rec
   expect(mockDb.prepare('SELECT user_id FROM sales_invoices').get()).toEqual({ user_id: 'staff' });
 });
 
+it.each(['admin', 'pharmacist', 'cashier'])(
+  'does not persist owner-only grants when the owner creates a %s account in web mode',
+  async role => {
+    expect((await staff.addUserAction({
+      username: `new-${role}`, full_name: `New ${role}`, role, password: 'Strong!Pass1',
+    })).success).toBe(true);
+    const record = mockDb.prepare('SELECT role, permissions FROM users WHERE id = ?')
+      .get('new-staff') as { role: string; permissions: string };
+    expect(record.role).toBe(role);
+    const saved = JSON.parse(record.permissions);
+    for (const permission of OWNER_ONLY_STAFF_PERMISSIONS) {
+      expect(saved).not.toHaveProperty(permission);
+    }
+  },
+);
+
 it('keeps staff management and mutations inside the owner pharmacy', async () => {
   const management = await staff.getStaffManagementDataAction();
   expect(management.success).toBe(true);

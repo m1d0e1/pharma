@@ -7,28 +7,40 @@ import {
   Search, Filter, Receipt, AlertTriangle
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { getPendingDeliveriesAction, closeDeliveryInvoiceAction } from '@/app/actions-client/delivery';
+import { getPendingDeliveriesAction, closeDeliveryInvoiceAction, type DeliveryQueueCursor } from '@/app/actions-client/delivery';
 import toast from 'react-hot-toast';
 import { format } from 'date-fns';
 
 export default function DeliveryManagementClient() {
   const [invoices, setInvoices] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
+  const [nextCursor, setNextCursor] = useState<DeliveryQueueCursor | null>(null);
+  const [hasMore, setHasMore] = useState(false);
   const [closingIds, setClosingIds] = useState<Set<string>>(new Set());
   const [deliveryFees, setDeliveryFees] = useState<Record<string, number>>({});
   const loadRequestRef = useRef(0);
+  const loadMorePendingRef = useRef(false);
   const pendingCloseIdsRef = useRef(new Set<string>());
 
   const loadDeliveries = async () => {
     const requestId = ++loadRequestRef.current;
+    loadMorePendingRef.current = false;
     setLoading(true);
+    setLoadingMore(false);
     setLoadError(null);
+    setLoadMoreError(null);
+    setNextCursor(null);
+    setHasMore(false);
     try {
       const res = await getPendingDeliveriesAction();
       if (requestId !== loadRequestRef.current) return;
       if (res.success) {
         setInvoices(res.data || []);
+        setHasMore(res.hasMore === true);
+        setNextCursor(res.nextCursor ?? null);
       } else {
         setLoadError(res.error || 'فشل جلب فواتير التوصيل');
       }
@@ -39,6 +51,37 @@ export default function DeliveryManagementClient() {
     } finally {
       if (requestId === loadRequestRef.current) {
         setLoading(false);
+      }
+    }
+  };
+
+  const loadMoreDeliveries = async () => {
+    if (!hasMore || !nextCursor || loading || loadMorePendingRef.current) return;
+    const requestId = ++loadRequestRef.current;
+    loadMorePendingRef.current = true;
+    setLoadingMore(true);
+    setLoadMoreError(null);
+    try {
+      const res = await getPendingDeliveriesAction(nextCursor);
+      if (requestId !== loadRequestRef.current) return;
+      if (!res.success) {
+        setLoadMoreError(res.error || 'تعذر تحميل المزيد من فواتير التوصيل');
+      } else {
+        setInvoices(current => {
+          const ids = new Set(current.map(invoice => invoice.id));
+          return [...current, ...(res.data || []).filter(invoice => !ids.has(invoice.id))];
+        });
+        setHasMore(res.hasMore === true);
+        setNextCursor(res.nextCursor ?? null);
+      }
+    } catch {
+      if (requestId === loadRequestRef.current) {
+        setLoadMoreError('تعذر تحميل المزيد من فواتير التوصيل');
+      }
+    } finally {
+      if (requestId === loadRequestRef.current) {
+        loadMorePendingRef.current = false;
+        setLoadingMore(false);
       }
     }
   };
@@ -121,6 +164,12 @@ export default function DeliveryManagementClient() {
           <p className="text-slate-400 font-bold">تم إغلاق جميع فواتير التوصيل المنزلي بنجاح</p>
         </div>
       ) : (
+        <>
+        {hasMore && (
+          <p role="status" className="text-sm font-bold text-slate-600 dark:text-slate-300">
+            المعروض {invoices.length} فاتورة توصيل، وتوجد فواتير إضافية. حمّل المزيد للاطلاع عليها.
+          </p>
+        )}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
           {invoices.map((inv) => (
             <div key={inv.id} className="bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 overflow-hidden shadow-sm hover:shadow-xl transition-all group">
@@ -186,6 +235,18 @@ export default function DeliveryManagementClient() {
             </div>
           ))}
         </div>
+        {loadMoreError && <p role="alert" className="text-rose-600 font-bold">{loadMoreError}</p>}
+        {hasMore && (
+          <button
+            type="button"
+            onClick={loadMoreDeliveries}
+            disabled={loading || loadingMore || !nextCursor}
+            className="w-full px-6 py-4 rounded-2xl bg-slate-900 text-white font-black disabled:opacity-50"
+          >
+            {loadingMore ? 'جارٍ تحميل المزيد...' : 'تحميل المزيد من فواتير التوصيل'}
+          </button>
+        )}
+        </>
       )}
     </div>
   );

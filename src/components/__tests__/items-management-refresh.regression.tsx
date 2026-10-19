@@ -18,6 +18,9 @@ import { invoke } from '@tauri-apps/api/core';
 import { secureCache } from '@/lib/cache/secure_cache';
 import { toast } from 'react-hot-toast';
 
+let mockNativeMode = false;
+jest.mock('@/lib/env', () => ({ get isTauri() { return mockNativeMode; } }));
+
 jest.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(),
 }));
@@ -119,6 +122,7 @@ describe('ItemsManagementClient auto-refresh and total count regression', () => 
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockNativeMode = false;
     (getClientSession as jest.Mock).mockResolvedValue({ id: 'user-1', role: 'owner', pharmacy_id: 'ph-1' });
     (hasUserPermissionSync as jest.Mock).mockReturnValue(true);
     (searchMasterDrugsAction as jest.Mock).mockResolvedValue({
@@ -298,7 +302,7 @@ describe('ItemsManagementClient auto-refresh and total count regression', () => 
     fireEvent.click(screen.getByRole('button', { name: 'نقل الروابط وحذف القديم' }));
 
     await waitFor(() => expect(searchMasterDrugsAction).toHaveBeenCalledWith(expect.objectContaining({ query: '' })));
-    const listSearch = screen.getByPlaceholderText(/Search by English Trade Name/i);
+    const listSearch = screen.getByLabelText('بحث في دليل الأصناف');
     fireEvent.change(listSearch, { target: { value: 'Newest Filter' } });
     expect(await screen.findByText('Newest After Replacement')).toBeInTheDocument();
 
@@ -387,7 +391,7 @@ describe('ItemsManagementClient auto-refresh and total count regression', () => 
 
     render(<ItemsManagementClient initialItems={sampleItems} totalCount={100} />);
 
-    const searchInput = screen.getByPlaceholderText(/Search by English Trade Name/i);
+    const searchInput = screen.getByLabelText('بحث في دليل الأصناف');
 
     // Type search
     fireEvent.change(searchInput, { target: { value: 'Concor' } });
@@ -418,7 +422,7 @@ describe('ItemsManagementClient auto-refresh and total count regression', () => 
     });
 
     render(<ItemsManagementClient initialItems={sampleItems} totalCount={100} />);
-    const searchInput = screen.getByPlaceholderText(/Search by English Trade Name/i);
+    const searchInput = screen.getByLabelText('بحث في دليل الأصناف');
 
     fireEvent.change(searchInput, { target: { value: 'Concor' } });
     await waitFor(() => expect(searchMasterDrugsAction).toHaveBeenCalledWith(
@@ -445,7 +449,7 @@ describe('ItemsManagementClient auto-refresh and total count regression', () => 
     expect(screen.getByText('Panadol Blue')).toBeInTheDocument();
   });
 
-  it('keeps the last valid catalog rows visible when a later filtered search throws', async () => {
+  it('fails closed on a later denied catalog search, then recovers with a retry without exposing stale rows', async () => {
     (searchMasterDrugsAction as jest.Mock).mockImplementation(({ query }: { query?: string }) => {
       if (query === 'Concor') {
         return Promise.resolve({
@@ -457,19 +461,43 @@ describe('ItemsManagementClient auto-refresh and total count regression', () => 
         });
       }
       if (query === 'Broken') {
-        return Promise.reject(new Error('catalog bridge unavailable'));
+        const calls = (searchMasterDrugsAction as jest.Mock).mock.calls.filter(([options]) => options.query === 'Broken');
+        if (calls.length === 1) return Promise.reject(new Error('catalog bridge unavailable'));
+        return Promise.resolve({ success: true, data: [{ ...sampleItems[1], id: 92, trade_name_en: 'Recovered Catalog Result' }], total: 1, page: 1 });
       }
       return Promise.resolve({ success: true, data: sampleItems });
     });
 
     render(<ItemsManagementClient initialItems={sampleItems} totalCount={100} />);
-    const searchInput = screen.getByPlaceholderText(/Search by English Trade Name/i);
+    const searchInput = screen.getByLabelText('بحث في دليل الأصناف');
     fireEvent.change(searchInput, { target: { value: 'Concor' } });
     expect(await screen.findByText('Stable Search Result')).toBeInTheDocument();
 
     fireEvent.change(searchInput, { target: { value: 'Broken' } });
     expect(await screen.findByText('فشل البحث في كتالوج الأدوية')).toBeInTheDocument();
-    expect(screen.getByText('Stable Search Result')).toBeInTheDocument();
+    expect(screen.queryByText('Stable Search Result')).not.toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('تعذر تحميل نتائج دليل الأصناف');
+    fireEvent.click(screen.getByRole('button', { name: 'إعادة محاولة البحث في دليل الأصناف' }));
+    expect(await screen.findByText('Recovered Catalog Result')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('does not display stale results for a changed query when an older catalog search later resolves', async () => {
+    let resolvePrevious!: (value: any) => void;
+    (searchMasterDrugsAction as jest.Mock).mockImplementation(({ query }: { query: string }) => {
+      if (query === 'Earlier') return new Promise(resolve => { resolvePrevious = resolve; });
+      if (query === 'Newer') return Promise.resolve({ success: false, error: 'Catalog access denied' });
+      return Promise.resolve({ success: true, data: sampleItems });
+    });
+    render(<ItemsManagementClient initialItems={sampleItems} totalCount={2} />);
+    const search = screen.getByRole('textbox', { name: 'بحث في دليل الأصناف' });
+    fireEvent.change(search, { target: { value: 'Earlier' } });
+    await waitFor(() => expect(searchMasterDrugsAction).toHaveBeenCalledWith(expect.objectContaining({ query: 'Earlier' })));
+    fireEvent.change(search, { target: { value: 'Newer' } });
+    expect(await screen.findByRole('alert')).toHaveTextContent('تعذر تحميل نتائج دليل الأصناف');
+    await act(async () => resolvePrevious({ success: true, data: [{ ...sampleItems[0], id: 93, trade_name_en: 'Old Unauthorized Result' }], total: 1 }));
+    expect(screen.queryByText('Old Unauthorized Result')).not.toBeInTheDocument();
+    expect(screen.queryByText('Concor 5mg')).not.toBeInTheDocument();
   });
 
   it('re-reads the full drug card before editing a lightweight search result', async () => {
@@ -483,7 +511,7 @@ describe('ItemsManagementClient auto-refresh and total count regression', () => 
 
     render(<ItemsManagementClient initialItems={sampleItems} totalCount={100} />);
     await screen.findByRole('button', { name: 'إضافة صنف جديد' });
-    const searchInput = screen.getByPlaceholderText(/Search by English Trade Name/i);
+    const searchInput = screen.getByLabelText('بحث في دليل الأصناف');
     fireEvent.change(searchInput, { target: { value: 'Concor' } });
     await waitFor(() => expect(searchMasterDrugsAction).toHaveBeenCalled());
 
@@ -491,14 +519,9 @@ describe('ItemsManagementClient auto-refresh and total count regression', () => 
     const editButtons = screen.getAllByRole('button', { name: 'تعديل بيانات الصنف' });
     fireEvent.click(editButtons[editButtons.length - 1]);
     await waitFor(() => expect(dbSelect).toHaveBeenCalledWith('SELECT * FROM master_drugs WHERE id = ?', [1]));
-    await waitFor(() => expect((dbSelect as jest.Mock).mock.calls.some(([sql]) =>
+    expect((dbSelect as jest.Mock).mock.calls.some(([sql]) =>
       String(sql).includes('FROM purchase_invoice_items pii')
-    )).toBe(true));
-    const purchaseHistoryCall = (dbSelect as jest.Mock).mock.calls.find(([sql]) =>
-      String(sql).includes('FROM purchase_invoice_items pii')
-    );
-    expect(String(purchaseHistoryCall![0])).toContain('pi.pharmacy_id = ?');
-    expect(purchaseHistoryCall![1]).toEqual([1, 'ph-1', 'ph-1']);
+    )).toBe(false);
 
     fireEvent.click(screen.getByRole('button', { name: 'خيارات متقدمة' }));
     expect(screen.getByDisplayValue('3')).toBeInTheDocument();
@@ -507,6 +530,22 @@ describe('ItemsManagementClient auto-refresh and total count regression', () => 
 
     fireEvent.click(screen.getByRole('button', { name: 'الوحدات والأسعار' }));
      expect(screen.getByDisplayValue('9')).toBeInTheDocument();
+  });
+
+  it('never queries unverified purchasing and supplier history through the catalog editor', async () => {
+    (getClientSession as jest.Mock).mockResolvedValue({ id: 'synthetic-owner', role: 'owner', pharmacy_id: 'local_default' });
+    (dbSelect as jest.Mock).mockImplementation(async (sql: string) =>
+      sql.includes('FROM master_drugs') ? [sampleItems[0]] : []
+    );
+
+    render(<ItemsManagementClient initialItems={sampleItems} totalCount={2} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'تعديل Concor 5mg' }));
+    expect(await screen.findByRole('dialog', { name: 'تعديل بيانات الصنف' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /البيانات المالية/ }));
+    expect((dbSelect as jest.Mock).mock.calls.some(([sql]) =>
+      /purchase_invoice_items|purchase_invoices|\bsuppliers\b/i.test(String(sql))
+    )).toBe(false);
+    expect(screen.getByText('سجل المشتريات غير متاح دون تحقق مستقل من ملكية بيانات الصيدلية')).toBeInTheDocument();
   });
 
   it('keeps the newest row selected when an older full-drug edit read resolves afterwards', async () => {
@@ -540,19 +579,11 @@ describe('ItemsManagementClient auto-refresh and total count regression', () => 
     expect(screen.getByDisplayValue('Newest Edit Drug')).toBeInTheDocument();
   });
 
-  it('keeps the newest row purchase history when an older history request resolves afterwards', async () => {
-    let resolveOlderHistory: (value: any[]) => void = () => {};
+  it('keeps the newest item editor selected without reading purchase or supplier history', async () => {
     (dbSelect as jest.Mock).mockImplementation((sql: string, params?: any[]) => {
       if (sql === 'SELECT * FROM master_drugs WHERE id = ?') {
         const id = Number(params?.[0]);
         return Promise.resolve([{ ...sampleItems[id - 1], trade_name_en: id === 1 ? 'First Edit Drug' : 'Second Edit Drug' }]);
-      }
-      if (sql.includes('FROM purchase_invoice_items pii')) {
-        const id = Number(params?.[0]);
-        if (id === 1) {
-          return new Promise<any[]>(resolve => { resolveOlderHistory = resolve; });
-        }
-        return Promise.resolve([{ invoice_date: '2026-09-02', invoice_number: 'P2', quantity: 2, cost_price: 22, supplier_name: 'Newest Supplier' }]);
       }
       return Promise.resolve([]);
     });
@@ -569,12 +600,13 @@ describe('ItemsManagementClient auto-refresh and total count regression', () => 
     expect(await screen.findByDisplayValue('Second Edit Drug')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /البيانات المالية/ }));
-    expect(await screen.findByText('Newest Supplier')).toBeInTheDocument();
-
-    await act(async () => resolveOlderHistory([{ invoice_date: '2026-09-01', invoice_number: 'P1', quantity: 1, cost_price: 11, supplier_name: 'Stale Supplier' }]));
-
+    expect(await screen.findByText('سجل المشتريات غير متاح دون تحقق مستقل من ملكية بيانات الصيدلية')).toBeInTheDocument();
+    expect((dbSelect as jest.Mock).mock.calls.some(([sql]) =>
+      /purchase_invoice_items|purchase_invoices|\bsuppliers\b/i.test(String(sql))
+    )).toBe(false);
+    expect(screen.getByText('تحرير: Second Edit Drug')).toBeInTheDocument();
     expect(screen.queryByText('Stale Supplier')).not.toBeInTheDocument();
-    expect(screen.getByText('Newest Supplier')).toBeInTheDocument();
+    expect(screen.queryByText('Newest Supplier')).not.toBeInTheDocument();
   });
 
   it('loads the next unfiltered catalog page instead of leaving rows beyond the first 100 unreachable', async () => {
@@ -626,7 +658,7 @@ describe('ItemsManagementClient auto-refresh and total count regression', () => 
       });
 
     render(<ItemsManagementClient initialItems={sampleItems} totalCount={500} />);
-    fireEvent.change(screen.getByPlaceholderText(/Search by English Trade Name/i), { target: { value: 'Paged Filter' } });
+    fireEvent.change(screen.getByLabelText('بحث في دليل الأصناف'), { target: { value: 'Paged Filter' } });
 
     await waitFor(() => expect(searchMasterDrugsAction).toHaveBeenCalledWith(expect.objectContaining({
       query: 'Paged Filter',
@@ -646,7 +678,7 @@ describe('ItemsManagementClient auto-refresh and total count regression', () => 
     expect(await screen.findByText('Paged Filter 101')).toBeInTheDocument();
     expect(screen.getByText('صفحة 2 من 3')).toBeInTheDocument();
 
-    fireEvent.change(screen.getByPlaceholderText(/Search by English Trade Name/i), { target: { value: 'Reset Filter' } });
+    fireEvent.change(screen.getByLabelText('بحث في دليل الأصناف'), { target: { value: 'Reset Filter' } });
     await waitFor(() => expect(searchMasterDrugsAction).toHaveBeenCalledWith(expect.objectContaining({
       query: 'Reset Filter',
       page: 1,
@@ -685,7 +717,7 @@ describe('ItemsManagementClient auto-refresh and total count regression', () => 
     });
 
     render(<ItemsManagementClient initialItems={sampleItems} totalCount={500} />);
-    const searchInput = screen.getByPlaceholderText(/Search by English Trade Name/i);
+    const searchInput = screen.getByLabelText('بحث في دليل الأصناف');
     fireEvent.change(searchInput, { target: { value: 'Paged Filter' } });
     expect(await screen.findByText('Paged Filter 001')).toBeInTheDocument();
 
@@ -712,7 +744,7 @@ describe('ItemsManagementClient auto-refresh and total count regression', () => 
     expect(screen.getByText('Newest Filter Drug')).toBeInTheDocument();
   });
 
-  it('keeps the current filtered page visible when loading the next page throws', async () => {
+  it('does not display the previous page as a failed page and supports a retry', async () => {
     (searchMasterDrugsAction as jest.Mock).mockImplementation(({ query, page }: { query?: string; page?: number }) => {
       if (query === 'Paged Failure' && page === 1) {
         return Promise.resolve({
@@ -724,21 +756,27 @@ describe('ItemsManagementClient auto-refresh and total count regression', () => 
         });
       }
       if (query === 'Paged Failure' && page === 2) {
-        return Promise.reject(new Error('catalog page unavailable'));
+        const secondPageCalls = (searchMasterDrugsAction as jest.Mock).mock.calls.filter(([options]) => options.query === 'Paged Failure' && options.page === 2);
+        if (secondPageCalls.length === 1) return Promise.reject(new Error('catalog page unavailable'));
+        return Promise.resolve({ success: true, data: [{ ...sampleItems[1], id: 222, trade_name_en: 'Recovered Page Two' }], total: 205, page: 2, pageSize: 100 });
       }
       return Promise.resolve({ success: true, data: [] });
     });
 
     render(<ItemsManagementClient initialItems={sampleItems} totalCount={500} />);
-    const searchInput = screen.getByPlaceholderText(/Search by English Trade Name/i);
+    const searchInput = screen.getByLabelText('بحث في دليل الأصناف');
     fireEvent.change(searchInput, { target: { value: 'Paged Failure' } });
     expect(await screen.findByText('Stable Page Result')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'التالي' }));
 
     expect(await screen.findByText('فشل تحميل صفحة الأصناف')).toBeInTheDocument();
-    expect(screen.getByText('Stable Page Result')).toBeInTheDocument();
-    expect(screen.getByText('صفحة 1 من 3')).toBeInTheDocument();
+    expect(screen.queryByText('Stable Page Result')).not.toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('تعذر تحميل نتائج دليل الأصناف');
+    expect(screen.queryByText('صفحة 1 من 3')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'إعادة محاولة البحث في دليل الأصناف' }));
+    expect(await screen.findByText('Recovered Page Two')).toBeInTheDocument();
+    expect(screen.getByText('صفحة 2 من 3')).toBeInTheDocument();
   });
 
   it('exports the complete master-drug catalog through the rendered Excel action and Tauri write bridge', async () => {
@@ -756,6 +794,24 @@ describe('ItemsManagementClient auto-refresh and total count regression', () => 
       path: 'C:\\tmp\\master_drugs_export.xlsx',
       data: [1, 2, 3],
     })));
+  });
+
+  it('routes desktop catalog workbook export through live native permission checks and a native Save dialog without any renderer SQL/path', async () => {
+    mockNativeMode = true;
+    (invoke as jest.Mock).mockImplementation((name: string) => {
+      if (name === 'export_master_catalog_native') return Promise.resolve(sampleItems);
+      if (name === 'save_workbook_export_native') return Promise.resolve('C:/tmp/new_catalog.xlsx');
+      return Promise.resolve(undefined);
+    });
+    render(<ItemsManagementClient initialItems={sampleItems} totalCount={2} />);
+    fireEvent.click(screen.getByRole('button', { name: 'تصدير الكل' }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('export_master_catalog_native'));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('save_workbook_export_native', {
+      kind: 'catalog', data: [1, 2, 3],
+    }));
+    expect(save).not.toHaveBeenCalled();
+    expect((invoke as jest.Mock).mock.calls.some((call: any[]) => call[0] === 'write_binary_file')).toBe(false);
+    expect(dbSelect).not.toHaveBeenCalled();
   });
 
   it('previews the rendered master-drug workbook without writing or refreshing cache', async () => {
@@ -1010,7 +1066,7 @@ describe('ItemsManagementClient auto-refresh and total count regression', () => 
     fireEvent.click(screen.getByRole('button', { name: /حفظ البيانات/ }));
 
     await waitFor(() => expect(searchMasterDrugsAction).toHaveBeenCalledWith(expect.objectContaining({ query: '' })));
-    const searchInput = screen.getByPlaceholderText(/Search by English Trade Name/i);
+    const searchInput = screen.getByLabelText('بحث في دليل الأصناف');
     fireEvent.change(searchInput, { target: { value: 'Newest Filter' } });
     expect(await screen.findByText('Newest After Save')).toBeInTheDocument();
 

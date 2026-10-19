@@ -2,6 +2,7 @@
 import React, { useState } from 'react';
 import { archiveMasterDrugAction, searchMasterDrugsAction } from '@/app/actions-client/master-drugs';
 import { findDrugBarcodeOwners, getReplacementDrug, reconcileDrugBarcodeOwnersAction, replaceDrugAction } from '@/app/actions-client/drug-replacement';
+import { hasConflictingNamedPackSize } from '@/lib/inventory/drug-pack-identity';
 
 const fields: [string, string, ('text' | 'number' | 'flag')?][] = [
   ['trade_name','الاسم التجاري'], ['trade_name_en','الاسم الإنجليزي'], ['barcode','الباركود'],
@@ -158,6 +159,11 @@ export default function DrugReplacementDialog({ source, target, newDrug, pending
     && barcodeOwners.some(owner => Number(owner.id) === Number(sourceInfo.id))
     && barcodeOwners.some(owner => Number(owner.id) === Number(selected.id)),
   );
+  const finalTargetInfo = targetInfo ? { ...targetInfo, ...edits } : null;
+  const packSizeConflict = !loading && Boolean(sourceInfo && targetInfo && finalTargetInfo)
+    && (hasConflictingNamedPackSize(sourceInfo, targetInfo)
+      || hasConflictingNamedPackSize(sourceInfo, finalTargetInfo)
+      || hasConflictingNamedPackSize(targetInfo, finalTargetInfo));
   const searchSequence = React.useRef(0);
   const submitLock = React.useRef(false);
   const dialogRef = React.useRef<HTMLElement>(null);
@@ -229,6 +235,9 @@ export default function DrugReplacementDialog({ source, target, newDrug, pending
         <button type="button" disabled={busy || loading} className="border rounded p-2" onClick={() => setLoadAttempt(attempt => attempt + 1)}>إعادة تحميل بيانات الصنفين</button>
       </div>}
       {!loading && sourceInfo && targetInfo && <>
+        {packSizeConflict && <p role="alert" className="border border-red-600 bg-red-50 text-red-900 dark:bg-red-950 dark:text-red-100 rounded p-3 font-bold">
+          حجم العبوة أو رقم التركيز مختلف بين الصنف القديم والجديد (مثل 180 و45). لا يمكن نقل مخزون أو فواتير صنفين مختلفين أو حذف القديم. ألغِ الاستبدال، وصحّح باركود الصنف المختلف ثم أضفه كسجل مستقل.
+        </p>}
         {(ownerReviewBarcodes.length > 0 || reviewBarcodes.length > 0) && <p className="bg-emerald-50 text-emerald-800 p-2">باركود قيد المراجعة بين البطاقة أو دفعات المخزون: {(ownerReviewBarcodes.length > 0 ? ownerReviewBarcodes : reviewBarcodes).join('، ')}</p>}
         {ownersLoading && <p role="status">جاري فحص جميع الأصناف المرتبطة بالباركود...</p>}
         {ownersError && <p role="alert" className="text-red-600">{ownersError}</p>}
@@ -289,7 +298,8 @@ export default function DrugReplacementDialog({ source, target, newDrug, pending
       <p>التأكيد يحفظ التعديلات والاستبدال معاً. في شاشة الشراء: ستعود للفاتورة بالبيانات المصححة؛ راجعها ثم اضغط «حفظ نهائي» لإتمام الشراء.</p>
       {error && <p role="alert" className="text-red-600">{error}</p>}
       <div className="flex flex-col sm:flex-row sm:flex-wrap gap-3 sticky bottom-0 bg-white/95 dark:bg-slate-900/95 py-2">
-        <button type="button" disabled={busy || loading || ownersLoading || !!ownersError || !confirmed || !password || (groupMode ? !canonicalId : (!newDrug && !selected))} className="w-full sm:w-auto bg-red-600 text-white rounded p-3 disabled:opacity-40" onClick={async () => {
+        <button type="button" disabled={busy || loading || packSizeConflict || ownersLoading || !!ownersError || !confirmed || !password || (groupMode ? !canonicalId : (!newDrug && !selected))} className="w-full sm:w-auto bg-red-600 text-white rounded p-3 disabled:opacity-40" onClick={async () => {
+          if (packSizeConflict) return;
           if (submitLock.current) return;
           submitLock.current = true; setBusy(true); setError('');
           let result: any;

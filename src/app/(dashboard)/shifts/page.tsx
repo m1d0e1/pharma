@@ -6,6 +6,7 @@ import ShiftManagementClient from '@/components/shifts/ShiftManagementClient';
 import { getClientSession, hasUserPermissionSync } from '@/lib/auth/local';
 import { getCurrentShiftAction, getShiftsAction } from '@/app/actions-client/shifts';
 import AccessDenied from '@/components/AccessDenied';
+import { CircleHelp, HandCoins, CheckCircle2 } from 'lucide-react';
 
 export default function ShiftsPage() {
   const [userRole, setUserRole] = useState<string>('pharmacist');
@@ -101,19 +102,19 @@ export default function ShiftsPage() {
   const canHandover = hasUserPermissionSync(user, 'acc_can_view_handover');
 
   return (
-    <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700" dir="rtl">
+    <div className="space-y-6" dir="rtl">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
         <div>
-          <h1 className="text-3xl font-bold text-slate-900 dark:text-white">إدارة الشفتات النقدية</h1>
-          <p className="text-slate-500 mt-1">إدارة الوردية المشتركة وتتبع المستخدمين والتسليمات والفروقات</p>
+          <h1 className="text-2xl font-bold text-slate-900 dark:text-white">إدارة الشفتات النقدية</h1>
+          <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">الوردية المشتركة والتسليمات والفروقات النقدية</p>
         </div>
         {canHandover && (
           <div className="flex gap-3">
             <Link
               href="/finance/handover"
-              className="px-6 py-3 bg-slate-900 dark:bg-slate-800 hover:bg-slate-800 text-white rounded-2xl font-bold text-sm shadow-lg transition-all flex items-center gap-2"
+              className="px-4 py-2.5 bg-slate-900 dark:bg-slate-800 hover:bg-slate-800 text-white rounded-lg font-semibold text-sm shadow-sm transition-colors flex items-center gap-2"
             >
-              <span>🤝</span>
+              <HandCoins className="w-4 h-4" aria-hidden="true" />
               <span>تسليم الدرج والمناوبة</span>
             </Link>
           </div>
@@ -122,10 +123,10 @@ export default function ShiftsPage() {
 
       {/* Current Shift Status */}
       {hasOpenShift && currentShift && (
-        <div className="p-6 bg-gradient-to-r from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20 rounded-3xl border-2 border-green-200 dark:border-green-800">
+        <div className="p-5 bg-emerald-50 dark:bg-emerald-950/20 rounded-xl border border-emerald-200 dark:border-emerald-900/60">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
-              <h2 className="text-xl font-bold text-green-800 dark:text-green-300">✅ الوردية المشتركة مفتوحة حالياً</h2>
+              <h2 className="text-lg font-semibold text-green-800 dark:text-green-300 flex items-center gap-2"><CheckCircle2 className="w-5 h-5" aria-hidden="true" /> الوردية المشتركة مفتوحة حالياً</h2>
               <p className="text-green-600 dark:text-green-400 mt-1">
                 تم فتح الشفت الساعة {new Date(currentShift.shift_start).toLocaleTimeString('ar-EG-u-nu-latn', { hour: '2-digit', minute: '2-digit', hour12: true })}
               </p>
@@ -137,9 +138,9 @@ export default function ShiftsPage() {
               {canHandover && (
                 <Link
                   href="/finance/handover"
-                  className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm rounded-2xl shadow-md transition-all flex items-center gap-2 whitespace-nowrap"
+                  className="px-4 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white font-semibold text-sm rounded-lg shadow-sm transition-colors flex items-center gap-2 whitespace-nowrap"
                 >
-                  <span>🤝</span>
+                  <HandCoins className="w-4 h-4" aria-hidden="true" />
                   <span>تسليم الدرج</span>
                 </Link>
               )}
@@ -164,8 +165,8 @@ export default function ShiftsPage() {
       />
 
       {/* Information Box */}
-      <div className="p-6 bg-slate-50 dark:bg-slate-800/50 rounded-3xl border-2 border-dashed border-slate-200 dark:border-slate-800">
-        <h3 className="text-lg font-bold text-slate-800 dark:text-white mb-3">💡 كيفية عمل نظام الشفتات</h3>
+      <div className="p-5 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-800">
+        <h3 className="text-base font-semibold text-slate-800 dark:text-white mb-3 flex items-center gap-2"><CircleHelp className="w-5 h-5 text-blue-600" aria-hidden="true" /> كيفية عمل نظام الشفتات</h3>
         <ul className="space-y-2 text-slate-600 dark:text-slate-300">
           <li className="flex items-start gap-2">
             <span className="text-blue-500">1.</span>

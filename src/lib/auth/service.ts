@@ -18,9 +18,7 @@ import {
 import { ROLE_PERMISSIONS, Permission } from './roles';
 import {
   startShift,
-  closeShift,
   getOpenShift,
-  getCurrentShift,
 } from '../shifts/service';
 
 // Login request schema
@@ -143,16 +141,8 @@ export async function login(
       };
     }
 
-    // Check if user already has an open shift (for pharmacists)
-    if (user.role === 'pharmacist' || user.role === 'cashier') {
-      const existingShift = getOpenShift(user.id);
-      if (existingShift) {
-        return {
-          success: false,
-          error: 'You already have an open shift. Please close it first.',
-        };
-      }
-    }
+    // The active drawer belongs to the pharmacy, not to an employee.
+    // Logging in during an open shared shift must never block a cashier.
 
     // Parse permissions
     const permissions: Permission[] = JSON.parse(user.permissions);
@@ -176,7 +166,7 @@ export async function login(
       userAgent: options?.userAgent,
     });
 
-    // Start shift for pharmacists and cashiers
+    // Ensure/reuse the common shift for staff who open the register.
     let shiftId: string | undefined;
     if ((user.role === 'pharmacist' || user.role === 'cashier') && request.startingCashAmount !== undefined) {
       try {
@@ -250,23 +240,10 @@ export async function logout(request: LogoutRequest): Promise<{ success: boolean
       [userId]
     );
 
-    // Close shift for pharmacists and cashiers
-    let shiftClosed = false;
-    if (user && (user.role === 'pharmacist' || user.role === 'cashier')) {
-      const openShift = getOpenShift(userId);
-      if (openShift && request.endingCashAmount !== undefined) {
-        try {
-          closeShift(openShift.id, {
-            endingCashAmount: request.endingCashAmount,
-            closingNotes: request.closingNotes,
-          });
-          shiftClosed = true;
-        } catch (error) {
-          console.error('Failed to close shift:', error);
-          // Continue with logout even if shift fails
-        }
-      }
-    }
+    // A cashier logging out must NEVER close the pharmacy-wide shared
+    // drawer, even if old clients still pass endingCashAmount. Closing and
+    // reconciling the shared shift is an explicit authorized handover action.
+    const shiftClosed = false;
 
     // Delete session
     deleteSession(request.refreshToken);

@@ -51,6 +51,8 @@ import {
 } from '@/lib/purchases/invoice-form'
 import { localDate } from '@/lib/time'
 import { resolveDrugUnitProfile } from '@/lib/inventory/unit-profile'
+import { recordedCatalogPurchaseCost } from '@/lib/purchasing/catalog-cost-default'
+import { isTauri } from '@/lib/env'
 import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap'
 function normalizeDateToYMD(dateStr: string | null | undefined): string | null {
   if (!dateStr) return null;
@@ -99,6 +101,9 @@ export default function PurchaseInvoiceClient() {
   });
   const [draftReady, setDraftReady] = useState(false);
   const submittedDraftRef = React.useRef(false);
+  // Native creation nonce survives rejected/ambiguous IPC responses. Never
+  // allocate another invoice identity by silently retrying with a new nonce.
+  const purchaseCreateNonceRef = React.useRef<string | null>(null);
   const draftWarningRef = React.useRef(false);
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number, drugId: string | number, lineId: string } | null>(null);
   const [showDrugDetails, setShowDrugDetails] = useState<string | number | null>(null);
@@ -142,8 +147,24 @@ export default function PurchaseInvoiceClient() {
     setInvoiceHeaderState(prev => typeof update === 'function' ? update(prev) : { ...prev, ...update });
   };
 
-  const resetPurchase = () => {
+  const resetPurchase = (): boolean => {
+    // A create may have committed even when its IPC response was lost. Do not
+    // wipe the only reloadable original form and leave a different form with
+    // the still-single-use pending nonce. Require resolution of the original
+    // request before allowing New/Cancel to discard that recovery context.
+    if (isTauri && !submittedDraftRef.current && draftStorageKey) {
+      try {
+        if (sessionStorage.getItem(`${draftStorageKey}:pending-native-create-v1`)) {
+          toast.error('توجد محاولة شراء سابقة غير مؤكدة. أعد المحاولة من بياناتها الأصلية قبل إلغاء المسودة أو بدء فاتورة جديدة');
+          return false;
+        }
+      } catch {
+        toast.error('تعذر التحقق من حالة طلب الشراء السابق؛ لن تُمحى المسودة');
+        return false;
+      }
+    }
     submittedDraftRef.current = false;
+    purchaseCreateNonceRef.current = null;
     pendingSupplierRequestRef.current += 1;
     paymentMethodTouchedRef.current = false;
     setIsCommitted(false);
@@ -151,6 +172,7 @@ export default function PurchaseInvoiceClient() {
     setCart([]);
     setSelectedSupplier(null);
     setInvoiceHeaderState(initialHeader);
+    return true;
   };
 
   useEffect(() => {
@@ -190,7 +212,8 @@ export default function PurchaseInvoiceClient() {
             discount_percent: 0,
             discount_value: 0,
             tax_percent: 0,
-            cost_price: Number(item.last_cost_price) > 0 ? Number(item.last_cost_price) : (Number(item.official_price) || 0),
+            // The retail price is not proof of acquisition value.
+            cost_price: recordedCatalogPurchaseCost(item.last_cost_price),
             selling_price: Number(item.official_price) || 0,
             official_price: Number(item.official_price) || 0,
             batch_number: '',
@@ -353,6 +376,21 @@ export default function PurchaseInvoiceClient() {
     e.preventDefault();
     if (!isEditingCompleted) handleSubmit(true);
   }, { enableOnFormTags: true }, [cart, selectedSupplier, invoiceHeader, isEditingCompleted]);
+
+  useEffect(() => {
+    const focusSearchOnInsert = (event: KeyboardEvent) => {
+      if (event.key !== 'Insert' || event.isComposing || event.repeat || event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return;
+      if (isCommitted || isQuickAddOpen || showDraftsModal || showBarcodePrinter || showPostSavePrompt || replacement || showDrugDetails !== null) return;
+      if (event.target instanceof Element && event.target.closest('[role="dialog"], [aria-modal="true"]')) return;
+      const input = searchInputRef.current;
+      if (!input || input.disabled) return;
+      event.preventDefault();
+      input.focus();
+      input.select();
+    };
+    window.addEventListener('keydown', focusSearchOnInsert, true);
+    return () => window.removeEventListener('keydown', focusSearchOnInsert, true);
+  }, [isCommitted, isQuickAddOpen, showDraftsModal, showBarcodePrinter, showPostSavePrompt, replacement, showDrugDetails]);
 
   const handledDrugIdRef = React.useRef<string | null>(null);
 
@@ -552,7 +590,7 @@ export default function PurchaseInvoiceClient() {
 
     setCart(prev => {
       const officialPrice = Number(drug.official_price) || 0
-      const purchasePrice = Number(drug.base_price) || officialPrice
+      const purchasePrice = recordedCatalogPurchaseCost(drug.base_price)
       return [...prev, { 
         ...drug, 
         cart_line_id: newCartLineId(drug.id),
@@ -897,19 +935,31 @@ export default function PurchaseInvoiceClient() {
     submissionLockRef.current = true;
     if (isDraft) setIsDrafting(true); else setIsSubmitting(true);
     let committed = false;
+    let createdPendingNativeIdentity = false;
     
     try {
       let res;
-      for (const item of normalizedCart) {
-        const conflict = await findDrugBarcodeConflict(String(item.barcode || ''), Number(item.id));
-        if (conflict) {
-          const currentUser = await getClientSession().catch(() => null);
-          if (!currentUser || !hasUserPermissionSync(currentUser, 'can_manage_inventory')) {
-            toast.error('تعارض الباركود يحتاج صلاحية إدارة المخزون لتصحيح الصنف قبل حفظ الفاتورة');
-            return;
+      // Renderer-supplied SQL cannot inspect the master catalog or unrelated
+      // pharmacy lot barcodes in a strict Windows build. The native purchase
+      // writer already validates every global barcode collision under the same
+      // SQLx transaction before inserting the invoice/stock/journal. Calling
+      // findDrugBarcodeConflict here on Tauri would issue a forbidden generic
+      // SELECT, aborting *every* otherwise valid completed purchase before its
+      // durable request ID could reach native code. Retain the guided catalog
+      // replacement dialog for browser-only development; production native
+      // remains the authoritative fail-closed barcode/tenant validation.
+      if (!isTauri) {
+        for (const item of normalizedCart) {
+          const conflict = await findDrugBarcodeConflict(String(item.barcode || ''), Number(item.id));
+          if (conflict) {
+            const currentUser = await getClientSession().catch(() => null);
+            if (!currentUser || !hasUserPermissionSync(currentUser, 'can_manage_inventory')) {
+              toast.error('تعارض الباركود يحتاج صلاحية إدارة المخزون لتصحيح الصنف قبل حفظ الفاتورة');
+              return;
+            }
+            setReplacement({ source: conflict, target: item });
+            return; // Keep the order; replacement and posting are separate explicit operations.
           }
-          setReplacement({ source: conflict, target: item });
-          return; // Keep the order; replacement and posting are separate explicit operations.
         }
       }
       if (isEditingCompleted) {
@@ -928,6 +978,46 @@ export default function PurchaseInvoiceClient() {
           cart: normalizedCart
         });
       } else {
+        if (!invoiceHeader.id && isTauri) {
+          if (!draftStorageKey || typeof crypto?.randomUUID !== 'function') {
+            throw new Error('تعذر الاحتفاظ بمعرّف طلب الشراء بأمان؛ لم تُرسل الفاتورة');
+          }
+          // A persisted nonce is inseparable from its original draft payload:
+          // reusing it with a changed form could falsely acknowledge an older
+          // committed invoice. Never silently allocate a fresh nonce on reload.
+          const fingerprint = JSON.stringify({
+            supplierId: selectedSupplier?.id,
+            status: isDraft ? 'draft' : 'completed',
+            header: invoiceHeader,
+            cart: normalizedCart,
+          });
+          const pendingKey = `${draftStorageKey}:pending-native-create-v1`;
+          let persisted: { requestId: string; fingerprint: string } | null = null;
+          try {
+            const stored = sessionStorage.getItem(pendingKey);
+            if (stored) {
+              persisted = JSON.parse(stored);
+              if (!persisted || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(persisted.requestId)
+                  || typeof persisted.fingerprint !== 'string') {
+                throw new Error('Stored purchase creation identity is corrupt');
+              }
+            }
+            if (persisted && persisted.fingerprint !== fingerprint) {
+              throw new Error('توجد محاولة شراء سابقة غير مؤكدة ببيانات مختلفة. استعد بياناتها الأصلية قبل إعادة المحاولة');
+            }
+            if (!persisted) {
+              persisted = { requestId: crypto.randomUUID(), fingerprint };
+              sessionStorage.setItem(pendingKey, JSON.stringify(persisted));
+              createdPendingNativeIdentity = true;
+            }
+          } catch (error) {
+            if (error instanceof Error && error.message.includes('توجد محاولة شراء')) throw error;
+            throw new Error('تعذر التحقق من معرّف محاولة الشراء السابقة؛ لم تُرسل الفاتورة');
+          }
+          purchaseCreateNonceRef.current = persisted.requestId;
+        } else if (!invoiceHeader.id && !purchaseCreateNonceRef.current) {
+          purchaseCreateNonceRef.current = crypto.randomUUID();
+        }
         res = await createPurchaseInvoiceAction({
           ...invoiceHeader,
           expenses: Number(invoiceHeader.expenses) || 0,
@@ -939,11 +1029,24 @@ export default function PurchaseInvoiceClient() {
           cart: normalizedCart.map(item => {
             return { ...item, expiry_date: item.expiry_date };
           }),
-          id: invoiceHeader.id || undefined
+          id: invoiceHeader.id || undefined,
+          request_id: invoiceHeader.id ? undefined : purchaseCreateNonceRef.current || undefined
         });
       }
 
       if (!res.success) {
+        // Only a new, never-dispatched identity can be discarded automatically.
+        // Any prior nonce or possible native commit remains protected for recovery.
+        if (isTauri && createdPendingNativeIdentity && res.native_write_not_attempted === true && draftStorageKey) {
+          try {
+            const pendingKey = `${draftStorageKey}:pending-native-create-v1`;
+            const stored = sessionStorage.getItem(pendingKey);
+            if (stored && JSON.parse(stored).requestId === purchaseCreateNonceRef.current) {
+              sessionStorage.removeItem(pendingKey);
+              purchaseCreateNonceRef.current = null;
+            }
+          } catch { /* Fail closed: preserve uncertain request identity. */ }
+        }
         const errMsg = (res as any).error || 'فشل في تسجيل الفاتورة';
         console.error('Save purchase invoice failed:', (res as any).error);
         throw new Error(errMsg);
@@ -951,10 +1054,14 @@ export default function PurchaseInvoiceClient() {
 
       // Do not restore an already-posted invoice, including while printing its barcodes.
       committed = true;
+      purchaseCreateNonceRef.current = null;
       setIsCommitted(true);
       submittedDraftRef.current = true;
       if (draftStorageKey && !isEditingCompleted) {
-        try { sessionStorage.removeItem(draftStorageKey); } catch {}
+        try {
+          sessionStorage.removeItem(draftStorageKey);
+          sessionStorage.removeItem(`${draftStorageKey}:pending-native-create-v1`);
+        } catch {}
       }
 
       if (isEditingCompleted) {
@@ -1005,7 +1112,8 @@ export default function PurchaseInvoiceClient() {
 
 
   return (
-    <div className="space-y-6 pb-20" dir="rtl">
+    <div className="purchase-invoice-workspace space-y-4 pb-12" dir="rtl">
+      {!showBarcodePrinter && <style>{'@page { size: A4 landscape; margin: 8mm; }'}</style>}
       {replacement && <DrugReplacementDialog {...replacement} onClose={() => setReplacement(null)} onSuccess={(id, _backup, drug, edits, reconciledIds) => {
         const oldId = Number(replacement.source.id);
         const affectedIds = new Set<number>([
@@ -1025,14 +1133,14 @@ export default function PurchaseInvoiceClient() {
         toast.success('تم الاستبدال وحفظ نسخة احتياطية. راجع الفاتورة ثم اضغط حفظ مرة أخرى');
       }} />}
       {/* Header Form */}
-      <div className="bg-white dark:bg-slate-900 p-5 sm:p-6 rounded-xl shadow-sm border border-slate-200 dark:border-slate-800">
-        <div className="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-4 mb-6">
+      <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+        <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="flex items-center gap-4">
             <div>
-              <h1 className="text-2xl font-bold text-slate-900 dark:text-white">
+              <h1 className="text-xl font-bold text-slate-900 dark:text-white sm:text-2xl">
                 {isEditingCompleted ? 'تعديل فاتورة شراء مكتملة' : 'فاتورة شراء جديدة'}
               </h1>
-              <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
+              <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
                 {isEditingCompleted ? 'تعديل آمن لفاتورة شراء مكتملة' : 'تسجيل توريدات جديدة وتحديث أرصدة الموردين'}
               </p>
               {isEditingCompleted && (
@@ -1061,9 +1169,9 @@ export default function PurchaseInvoiceClient() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {/* Supplier Selector */}
-          <div className="space-y-3">
+          <div className="space-y-1.5">
             <label htmlFor="purchase-supplier" className="text-xs font-black text-slate-500 mr-2 flex items-center gap-2">
               <User className="w-4 h-4 text-primary-500" />
               المورد
@@ -1071,7 +1179,7 @@ export default function PurchaseInvoiceClient() {
 
             <select 
               id="purchase-supplier"
-              className={`w-full p-4 bg-slate-50 dark:bg-slate-800 border rounded-2xl font-bold outline-none ring-2 ring-transparent focus:ring-primary-500/20 transition-all ${
+              className={`min-h-11 w-full rounded-lg border bg-slate-50 px-3 py-2 text-sm font-semibold dark:bg-slate-800 focus:ring-2 focus:ring-primary-500/20 ${
                 errors.supplier ? 'border-red-500 ring-2 ring-red-500/20' : 'border-none'
               }`}
               value={selectedSupplier?.id || ''}
@@ -1099,14 +1207,16 @@ export default function PurchaseInvoiceClient() {
             )}
             {selectedSupplier && (
               <div className="px-4 py-2 bg-primary-50 dark:bg-primary-900/20 rounded-xl border border-primary-100 dark:border-primary-800 text-[11px] font-black text-primary-700 dark:text-primary-400 animate-in fade-in">
-                الرصيد الحالي: {selectedSupplier.balance.toFixed(2)} ج.م
+                الرصيد الحالي: {typeof selectedSupplier.balance === 'number' && Number.isFinite(selectedSupplier.balance)
+                  ? `${selectedSupplier.balance.toFixed(2)} ج.م`
+                  : 'غير متحقق'}
               </div>
             )}
 
           </div>
 
           {/* Invoice Number */}
-          <div className="space-y-3">
+          <div className="space-y-1.5">
             <label htmlFor="purchase-invoice-number" className="text-xs font-black text-slate-500 mr-2 flex items-center gap-2">
               <Hash className="w-4 h-4 text-slate-400" />
               رقم الفاتورة
@@ -1116,7 +1226,7 @@ export default function PurchaseInvoiceClient() {
               id="purchase-invoice-number"
               type="text"
               placeholder="مثلاً: INV-2024-001"
-              className={`w-full p-4 bg-slate-50 dark:bg-slate-800 border rounded-2xl font-bold outline-none ring-2 ring-transparent focus:ring-primary-500/20 transition-all ${
+              className={`min-h-11 w-full rounded-lg border bg-slate-50 px-3 py-2 text-sm font-semibold dark:bg-slate-800 focus:ring-2 focus:ring-primary-500/20 ${
                 errors.invoice_number ? 'border-red-500 ring-2 ring-red-500/20' : 'border-none'
               }`}
               value={invoiceHeader.invoice_number}
@@ -1125,7 +1235,7 @@ export default function PurchaseInvoiceClient() {
           </div>
 
           {/* Date */}
-          <div className="space-y-3">
+          <div className="space-y-1.5">
             <label htmlFor="purchase-invoice-date" className="text-xs font-black text-slate-500 mr-2 flex items-center gap-2">
               <Calendar className="w-4 h-4 text-slate-400" />
               تاريخ الفاتورة
@@ -1136,7 +1246,7 @@ export default function PurchaseInvoiceClient() {
               <input 
                 id="purchase-invoice-date"
                 type="date"
-                className={`w-full pr-12 pl-12 py-4 bg-slate-50 dark:bg-slate-800 border rounded-2xl font-bold outline-none ring-2 ring-transparent focus:ring-primary-500/20 transition-all cursor-pointer ${
+                className={`min-h-11 w-full cursor-pointer rounded-lg border bg-slate-50 py-2 pr-12 pl-12 text-sm font-semibold dark:bg-slate-800 focus:ring-2 focus:ring-primary-500/20 ${
                   errors.invoice_date ? 'border-red-500 ring-2 ring-red-500/20' : 'border-none'
                 }`}
                 value={invoiceHeader.invoice_date}
@@ -1148,13 +1258,13 @@ export default function PurchaseInvoiceClient() {
           </div>
 
           {/* Payment Method */}
-          <div className="space-y-3">
+          <div className="space-y-1.5">
             <div className="text-xs font-black text-slate-500 mr-2 flex items-center gap-2">
               <DollarSign className="w-4 h-4 text-emerald-500" />
               طريقة الدفع
             </div>
 
-            <div className="flex bg-slate-50 dark:bg-slate-800 rounded-2xl p-1 gap-1">
+            <div className="flex gap-1 rounded-lg bg-slate-50 p-1 dark:bg-slate-800">
               <button 
                 type="button"
                 aria-pressed={invoiceHeader.payment_method === 'cash'}
@@ -1163,7 +1273,7 @@ export default function PurchaseInvoiceClient() {
                   setInvoiceHeader(prev => ({ ...prev, payment_method: 'cash' }));
                 }}
                 className={cn(
-                  "flex-1 py-3 px-2 rounded-xl font-black text-xs transition-all whitespace-nowrap",
+                  "min-h-10 flex-1 rounded-md px-2 py-2 text-xs font-semibold transition-colors whitespace-nowrap",
                   invoiceHeader.payment_method === 'cash' ? "bg-white dark:bg-slate-700 shadow-sm text-emerald-600 border border-emerald-100" : "text-slate-400"
                 )}
               >
@@ -1178,7 +1288,7 @@ export default function PurchaseInvoiceClient() {
                   setInvoiceHeader(prev => ({ ...prev, payment_method: 'credit' }));
                 }}
                 className={cn(
-                  "flex-1 py-3 px-2 rounded-xl font-black text-xs transition-all whitespace-nowrap",
+                  "min-h-10 flex-1 rounded-md px-2 py-2 text-xs font-semibold transition-colors whitespace-nowrap",
                   invoiceHeader.payment_method === 'credit' ? "bg-white dark:bg-slate-700 shadow-sm text-primary-600 border border-primary-100" : "text-slate-400"
                 )}
               >
@@ -1193,7 +1303,7 @@ export default function PurchaseInvoiceClient() {
                   setInvoiceHeader(prev => ({ ...prev, payment_method: 'check' }));
                 }}
                 className={cn(
-                  "flex-1 py-3 px-2 rounded-xl font-black text-xs transition-all whitespace-nowrap",
+                  "min-h-10 flex-1 rounded-md px-2 py-2 text-xs font-semibold transition-colors whitespace-nowrap",
                   invoiceHeader.payment_method === 'check' ? "bg-white dark:bg-slate-700 shadow-sm text-amber-600 border border-amber-100" : "text-slate-400"
                 )}
               >
@@ -1215,9 +1325,9 @@ export default function PurchaseInvoiceClient() {
         </div>
 
         {/* Financial Details Row */}
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 mt-6 pt-6 border-t border-slate-100 dark:border-slate-800">
+        <div className="mt-3 grid grid-cols-1 gap-3 border-t border-slate-100 pt-3 sm:grid-cols-2 xl:grid-cols-4 dark:border-slate-800">
            {/* Expenses */}
-           <div className="space-y-3">
+           <div className="space-y-1.5">
             <label htmlFor="purchase-expenses" className="text-xs font-black text-slate-500 mr-2 flex items-center gap-2">
               <DollarSign className="w-4 h-4 text-slate-400" />
               المصروفات
@@ -1226,7 +1336,7 @@ export default function PurchaseInvoiceClient() {
             <input 
               id="purchase-expenses"
               type="text"
-              className="w-full p-4 bg-slate-50 dark:bg-slate-800 border-none rounded-2xl font-bold outline-none ring-2 ring-transparent focus:ring-primary-500/20 transition-all"
+              className="min-h-11 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold dark:border-slate-700 dark:bg-slate-800 focus:ring-2 focus:ring-primary-500/20"
               value={invoiceHeader.expenses}
               onChange={(e) => {
                 const val = e.target.value.replace(/[^0-9.]/g, '');
@@ -1236,7 +1346,7 @@ export default function PurchaseInvoiceClient() {
           </div>
 
           {/* Discount Value */}
-          <div className="space-y-3">
+          <div className="space-y-1.5">
             <label htmlFor="purchase-discount-value" className="text-xs font-black text-slate-500 mr-2 flex items-center gap-2">
               <Plus className="w-4 h-4 text-rose-500" />
               قيمة الخصم
@@ -1245,7 +1355,7 @@ export default function PurchaseInvoiceClient() {
             <input 
               id="purchase-discount-value"
               type="text"
-              className="w-full p-4 bg-slate-50 dark:bg-slate-800 border-none rounded-2xl font-bold outline-none ring-2 ring-transparent focus:ring-primary-500/20 transition-all"
+              className="min-h-11 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold dark:border-slate-700 dark:bg-slate-800 focus:ring-2 focus:ring-primary-500/20"
               value={invoiceHeader.discount_value}
               onChange={(e) => {
                 const val = e.target.value.replace(/[^0-9.]/g, '');
@@ -1255,7 +1365,7 @@ export default function PurchaseInvoiceClient() {
           </div>
 
           {/* Discount Percent */}
-          <div className="space-y-3">
+          <div className="space-y-1.5">
             <label htmlFor="purchase-discount-percent" className="text-xs font-black text-slate-500 mr-2 flex items-center gap-2">
               <Plus className="w-4 h-4 text-rose-500 rotate-45" />
               نسبة الخصم %
@@ -1264,7 +1374,7 @@ export default function PurchaseInvoiceClient() {
             <input 
               id="purchase-discount-percent"
               type="text"
-              className="w-full p-4 bg-slate-50 dark:bg-slate-800 border-none rounded-2xl font-bold outline-none ring-2 ring-transparent focus:ring-primary-500/20 transition-all"
+              className="min-h-11 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold dark:border-slate-700 dark:bg-slate-800 focus:ring-2 focus:ring-primary-500/20"
               value={invoiceHeader.discount_percent}
               onChange={(e) => {
                 const val = e.target.value.replace(/[^0-9.]/g, '');
@@ -1274,7 +1384,7 @@ export default function PurchaseInvoiceClient() {
           </div>
 
           {/* Added Tax */}
-          <div className="space-y-3">
+          <div className="space-y-1.5">
             <label htmlFor="purchase-tax-percent" className="text-xs font-black text-slate-500 mr-2 flex items-center gap-2">
               <ChevronDown className="w-4 h-4 text-blue-500" />
               ضريبة القيمة المضافة %
@@ -1283,7 +1393,7 @@ export default function PurchaseInvoiceClient() {
             <input 
               id="purchase-tax-percent"
               type="text"
-              className="w-full p-4 bg-slate-50 dark:bg-slate-800 border-none rounded-2xl font-bold outline-none ring-2 ring-transparent focus:ring-primary-500/20 transition-all"
+              className="min-h-11 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold dark:border-slate-700 dark:bg-slate-800 focus:ring-2 focus:ring-primary-500/20"
               value={invoiceHeader.tax_percent}
               onChange={(e) => {
                 const val = e.target.value.replace(/[^0-9.]/g, '');
@@ -1292,14 +1402,14 @@ export default function PurchaseInvoiceClient() {
             />
           </div>
         </div>
-        <div className="mt-6 space-y-3">
+        <div className="mt-3 space-y-1.5">
           <label htmlFor="purchase-notes" className="text-xs font-black text-slate-500 mr-2">
             ملاحظات الفاتورة
           </label>
           <textarea
             id="purchase-notes"
-            rows={2}
-            className="w-full p-4 bg-slate-50 dark:bg-slate-800 border-none rounded-2xl font-bold outline-none ring-2 ring-transparent focus:ring-primary-500/20 transition-all resize-y"
+            rows={1}
+            className="min-h-11 w-full resize-y rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium dark:border-slate-700 dark:bg-slate-800 focus:ring-2 focus:ring-primary-500/20"
             value={invoiceHeader.notes || ''}
             onChange={(e) => setInvoiceHeader({ ...invoiceHeader, notes: e.target.value })}
             placeholder="ملاحظات اختيارية عن فاتورة الشراء..."
@@ -1308,13 +1418,14 @@ export default function PurchaseInvoiceClient() {
       </div>
 
       {/* Item Selector & Cart Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(250px,280px)_minmax(0,1fr)]">
         {/* Left Side: Search */}
-        <div className="lg:col-span-1 space-y-6">
-          <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm sticky top-24">
-              <h2 className="font-semibold text-base mb-4 flex items-center gap-2.5">
+        <div className="min-w-0">
+          <div className="sticky top-20 rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+              <h2 className="mb-3 flex items-center gap-2.5 text-base font-semibold">
               <Package className="w-5 h-5 text-primary-600" />
               إضافة صنف
+              <span className="mr-auto rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300">Insert / F4</span>
             </h2>
 
             
@@ -1387,7 +1498,7 @@ export default function PurchaseInvoiceClient() {
               </label>
             </div>
 
-            <div className="mt-6 pt-5 border-t border-slate-100 dark:border-slate-800 space-y-3">
+            <div className="mt-4 space-y-3 border-t border-slate-100 pt-4 dark:border-slate-800">
               <div className="flex justify-between items-center mb-2">
                 <span className="text-slate-500 font-semibold text-xs">الإجمالي الفرعي</span>
                 <span className="text-lg font-bold text-slate-600 dark:text-slate-400">{subTotal.toFixed(2)} ج.م</span>
@@ -1438,13 +1549,11 @@ export default function PurchaseInvoiceClient() {
                     onClick={() => {
                       if (isEditingCompleted) {
                         if (confirm('هل أنت متأكد من إلغاء التعديلات والعودة للفواتير؟')) {
-                          resetPurchase();
-                          router.push('/purchases');
+                          if (resetPurchase()) router.push('/purchases');
                         }
                       } else {
                         if (confirm('هل أنت متأكد من إلغاء وحذف الفاتورة الحالية بالكامل؟')) {
-                          resetPurchase();
-                          toast.success('تم إلغاء الفاتورة بنجاح');
+                          if (resetPurchase()) toast.success('تم إلغاء الفاتورة بنجاح');
                         }
                       }
                     }}
@@ -1460,11 +1569,18 @@ export default function PurchaseInvoiceClient() {
         </div>
 
         {/* Right Side: Grid */}
-        <div className="lg:col-span-3">
-          <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full text-right border-collapse">
-                <thead>
+        <div className="min-w-0">
+          <div className="overflow-hidden rounded-xl border border-slate-200 bg-white print:overflow-visible dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-4 py-3 dark:border-slate-800">
+              <h2 className="text-base font-semibold text-slate-900 dark:text-white">أصناف فاتورة الشراء</h2>
+              <div className="flex flex-wrap items-center gap-3 text-sm font-medium text-slate-700 dark:text-slate-200" role="status" aria-live="polite">
+                <span>عدد الأدوية: <strong className="tabular-nums">{new Set(cart.map(item => String(item.id))).size}</strong></span>
+                <span>بنود الفاتورة: <strong className="tabular-nums">{cart.length}</strong></span>
+              </div>
+            </div>
+            <div role="region" aria-label="بنود فاتورة الشراء القابلة للتمرير" tabIndex={0} className="max-h-[70dvh] min-h-72 overflow-auto print:max-h-none print:min-h-0 print:overflow-visible focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-sky-700 dark:focus-visible:outline-sky-300">
+              <table className="w-full min-w-[1120px] border-collapse text-right print:min-w-0 [&_tbody_td]:py-2">
+                <thead className="sticky top-0 z-10 print:static">
                   <tr className="bg-slate-50 dark:bg-slate-800/50">
                     <th className="px-2 py-4 font-black text-slate-600 text-[11px] border-b border-slate-100 dark:border-slate-800">الصنف</th>
                     <th className="px-2 py-4 font-black text-slate-600 text-[11px] border-b border-slate-100 dark:border-slate-800">الباركود / QR</th>
@@ -1491,7 +1607,7 @@ export default function PurchaseInvoiceClient() {
                     const largeUnit = unitProfile.largeUnit;
                     const mediumUnit = unitProfile.mediumUnit || 'شريط';
                     return (
-                    <tr key={lineId} onContextMenu={(e) => handleContextMenu(e, item.id, lineId)} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-all group">
+                    <tr key={lineId} onContextMenu={(e) => handleContextMenu(e, item.id, lineId)} className="group transition-colors hover:bg-slate-50/70 dark:hover:bg-slate-800/40">
                       <td className="px-2 py-3">
                         <div className="font-black text-slate-900 dark:text-white group-hover:text-primary-600 transition-colors text-sm">{item.trade_name_en || item.trade_name}</div>
                         <div className="text-[11px] text-slate-500 font-bold mt-1">{item.trade_name}</div>
@@ -1621,6 +1737,11 @@ export default function PurchaseInvoiceClient() {
                           }}
                           onKeyDown={handleEnterNext}
                         />
+                        {!(Number(item.cost_price) > 0) && (
+                          <div role="note" className="mt-1 w-28 text-center text-[10px] font-semibold text-amber-700 dark:text-amber-300">
+                            أدخل تكلفة شراء مؤكدة من المورد
+                          </div>
+                        )}
                         <div className="mt-1 text-[11px] font-bold text-emerald-600 text-center">
                           {calculateTaxedUnitCost(item).toFixed(2)} {'شامل الضريبة'}
                         </div>
@@ -1642,7 +1763,7 @@ export default function PurchaseInvoiceClient() {
                   )})}
                   {cart.length === 0 && (
                     <tr>
-                      <td colSpan={10} className="p-32 text-center">
+                      <td colSpan={12} className="p-12 text-center">
                         <div className="flex flex-col items-center opacity-30">
                           <AlertTriangle className="w-16 h-16 mb-4" />
                           <p className="font-black text-xl italic">الفاتورة فارغة.. ابدأ بإضافة الأصناف</p>

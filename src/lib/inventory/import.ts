@@ -73,7 +73,7 @@ const drugName = (row: ExcelRow, id: number) => {
 };
 
 async function columns(database: Pick<InventoryImportDatabase, 'select'>, table: 'master_drugs' | 'inventory' | 'shortages') {
-  return new Set((await database.select<{ name: string }>(`PRAGMA table_info(${table})`)).map(column => column.name));
+  return new Set((await database.select<{ name: string }>('SELECT name FROM pragma_table_info(?)', [table])).map(column => column.name));
 }
 
 async function upsertRows(

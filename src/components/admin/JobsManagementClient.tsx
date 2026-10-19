@@ -46,7 +46,7 @@ export default function JobsManagementClient({ initialJobs, onAddJob, onDeleteJo
   const handleAdd = async (e: React.FormEvent) => {
     e.preventDefault()
     if (savingRef.current) return
-    if (!newJob.name_ar) return toast.error('يرجى إدخال المسمى الوظيفي بالعربي')
+    if (!newJob.name_ar.trim()) return toast.error('يرجى إدخال المسمى الوظيفي بالعربي')
     if (newJob.min_salary < 0 || newJob.max_salary < 0) return toast.error('لا يمكن أن يكون الراتب سالباً')
     if (newJob.max_salary < newJob.min_salary) return toast.error('الحد الأقصى للراتب يجب ألا يقل عن الحد الأدنى')
 

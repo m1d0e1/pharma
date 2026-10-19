@@ -5,6 +5,7 @@ import React, { useState, useEffect } from 'react';
 import { Search, Plus, ArrowRightLeft, X } from 'lucide-react';
 import Link from 'next/link';
 import { getReturnsAction } from '@/app/actions-client/returns';
+import { isTauri } from '@/lib/env';
 import { getPurchaseReturnDetailsAction, getPurchaseReturnsAction } from '@/app/actions-client/purchases';
 import { format } from 'date-fns';
 import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap';
@@ -187,9 +188,9 @@ export default function ReturnsClient({ title, type = 'sales', showHeading = tru
             <div className="w-20 h-20 bg-slate-50 dark:bg-slate-800 rounded-full flex items-center justify-center mb-4">
               <ArrowRightLeft className="w-10 h-10 text-slate-400" />
             </div>
-            <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-2">{normalizedSearch ? 'لا توجد نتائج' : 'لا توجد مرتجعات'}</h3>
+            <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-2">{normalizedSearch ? 'لا توجد نتائج' : type === 'sales' && isTauri ? 'لا توجد مرتجعات موثقة' : 'لا توجد مرتجعات'}</h3>
             <p className="text-slate-600 dark:text-slate-300 max-w-sm mx-auto mb-6">
-              {normalizedSearch ? 'لا توجد مرتجعات مطابقة لعبارة البحث الحالية.' : 'لم تقم بإنشاء أي مرتجعات بعد. يمكنك البدء بإضافة أول مرتجع.'}
+              {normalizedSearch ? 'لا توجد مرتجعات مطابقة لعبارة البحث الحالية.' : type === 'sales' && isTauri ? 'لا يوجد سجل مرتجعات متحقق من ملكيته لهذه الصيدلية.' : 'لم تقم بإنشاء أي مرتجعات بعد. يمكنك البدء بإضافة أول مرتجع.'}
             </p>
           </div>
         ) : (
@@ -221,7 +222,7 @@ export default function ReturnsClient({ title, type = 'sales', showHeading = tru
                   >
                     <td className="px-6 py-4 font-medium text-slate-900 dark:text-white">{r.id?.substring(0, 8)}</td>
                     <td className="px-6 py-4 text-slate-500">{type === 'purchases' ? (r.invoice_number || r.purchase_invoice_id?.substring(0, 8)) : (r.invoice_id?.substring(0, 8) || 'عام')}</td>
-                    {type === 'purchases' ? <td className="px-6 py-4 text-slate-500">{r.supplier_name}</td> : <td className="px-6 py-4 text-slate-500">{r.patient_name || 'عميل نقدي'}</td>}
+                    {type === 'purchases' ? <td className="px-6 py-4 text-slate-500">{r.supplier_name}</td> : <td className="px-6 py-4 text-slate-500">{r.patient_name || (r.patient_id == null ? 'عميل نقدي' : 'غير متاح')}</td>}
                     <td className="px-6 py-4 text-slate-500">{r.user_name || r.created_by_name}</td>
                     <td className="px-6 py-4 font-bold text-primary-600">{(r.total_refund || r.total_amount || 0).toFixed(2)} ج.م</td>
                     <td className="px-6 py-4 text-slate-500">{r.created_at ? format(new Date(r.created_at), 'yyyy-MM-dd HH:mm') : ''}</td>
@@ -286,7 +287,7 @@ export default function ReturnsClient({ title, type = 'sales', showHeading = tru
                   <div><span className="text-slate-500">هاتف المورد</span><p className="font-bold">{selectedReturn.supplier_phone || '-'}</p></div>
                 </>
               ) : (
-                <div><span className="text-slate-500">العميل</span><p className="font-bold">{selectedReturn.patient_name || 'عميل نقدي'}</p></div>
+                <div><span className="text-slate-500">العميل</span><p className="font-bold">{selectedReturn.patient_name || (selectedReturn.patient_id == null ? 'عميل نقدي' : 'غير متاح')}</p></div>
               )}
               <div><span className="text-slate-500">المستخدم</span><p className="font-bold">{selectedReturn.user_name || '-'}</p></div>
               <div><span className="text-slate-500">طريقة الاسترداد</span><p className="font-bold">{selectedReturn.refund_method === 'cash' ? 'نقدي' : selectedReturn.refund_method === 'patient_account' ? 'حساب المريض' : selectedReturn.refund_method === 'wallet' ? 'محفظة المريض' : selectedReturn.refund_method === 'bank' ? 'بنك / بطاقة' : 'خصم من حساب المورد'}</p></div>
