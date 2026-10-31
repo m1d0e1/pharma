@@ -6,6 +6,14 @@ on:
 
 jobs:
   publish-tauri:
+    # SOURCE-PARITY LOCKDOWN (2026-10-31). The remote v0.2.109 branch lacks
+    # the reviewed issuer, native TPM, owner-enrollment migration, x86/updater
+    # verification and authenticated current-run approval dependencies. Never
+    # enable this legacy publishing job just by setting an Actions variable.
+    # Replace the ENTIRE workflow only with a clean-checkout, source-complete
+    # reviewed commercial release pipeline after real evidence is verified.
+    if: ${{ false }}
+    environment: pharma-production-release
     permissions:
       contents: write
     strategy:
