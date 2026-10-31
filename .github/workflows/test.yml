@@ -15,6 +15,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Require legacy commercial release lockdown
+        run: python3 -B -m unittest -q scripts.release_lockdown_regression
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
